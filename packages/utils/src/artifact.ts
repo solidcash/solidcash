@@ -735,7 +735,13 @@ export interface Artifact {
         | 'SCB_FOREIGN_INTERMEDIATE_STATE_READ'
         | 'SCB_STACK_CONTEXT_UNPRESERVABLE'
         | 'SCB_EFFECT_UNSUMMARIZABLE';
-      rejectionContext?: { handlerId?: number; functionName: string; reason: string };
+      rejectionContext?: {
+        handlerId?: number;
+        functionName: string;
+        reason: string;
+        sourceLocation?: { line: number; column: number };
+        callChain?: readonly string[];
+      };
       /** OP_INVOKE body covered by CHECKSIG when this handler is called from SCB1. */
       signatureBytecode?: string;
       batchKeyWitnesses?: {

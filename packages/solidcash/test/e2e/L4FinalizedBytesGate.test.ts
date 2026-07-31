@@ -152,6 +152,12 @@ describe('L4 finalized-bytes gate: every rule, at its boundary, in both directio
       /100001 serialized bytes is 1 over the 100000-byte standard relay ceiling/,
     );
     expect(() => layer3.assertFinalizedTransactionBytes(overBy1)).toThrow(/a miner may still include them/);
+    expect(() => layer3.assertFinalizedTransactionBytes(overBy1)).toThrow(expect.objectContaining({
+      code: 'L3_FINALIZED_BYTE_LIMIT',
+      context: expect.objectContaining({
+        rule: 'relay-transaction-size', resourceIdentity: 'transaction', measured: 100_001, limit: 100_000,
+      }),
+    }));
     // POLICY, so an explicit caller opt-out admits it. This is the mineable-but-unrelayable case.
     expect(layer3.assertFinalizedTransactionBytes(overBy1, { allowNonRelayable: true }).serializedBytes)
       .toBe(100_001);

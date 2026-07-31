@@ -569,14 +569,26 @@ export function finalizeCompiledGraph(
   for (const key of Object.keys(results)) {
     const index = Number(key);
     if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
-      throw new Error(`layer3: result names unknown invocation '${key}'`);
+      throw new Layer3DiagnosticError(
+        'L3_TRANSCRIPT_ROW_INCONSISTENT',
+        `result names unknown invocation '${key}'`,
+        { invocationIds: [index], resourceIdentity: `result:${key}` },
+      );
     }
   }
   plan.participants.forEach((participant, owner) => {
     if (participant.batch.results.length === 0) return;
     const reachedPrefix = participant.invocations.map((invocation) => resultHex[invocation]).join('');
     if (!participantResultVectorsHex[owner].toLowerCase().startsWith(reachedPrefix)) {
-      throw new Error(`layer3: participant ${owner} result vector disagrees with its invocation results`);
+      throw new Layer3DiagnosticError(
+        'L3_TRANSCRIPT_ROW_INCONSISTENT',
+        `participant ${owner} result vector disagrees with its invocation results`,
+        {
+          participant: owner,
+          invocationIds: participant.invocations,
+          resourceIdentity: `participant-result-vector:${owner}`,
+        },
+      );
     }
   });
 

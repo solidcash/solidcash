@@ -57,6 +57,8 @@ describe('transcript-v1 static refusal classes', () => {
         handlerId: expect.any(Number),
         functionName: 'signed',
         reason: 'transaction-signature-route-binding-required',
+        sourceLocation: { line: 3, column: 8 },
+        callChain: ['signed'],
       },
     });
   });

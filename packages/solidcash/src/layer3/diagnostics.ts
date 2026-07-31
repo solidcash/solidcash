@@ -15,6 +15,9 @@ export type Layer3DiagnosticCode =
   | 'L3_RESOURCE_UNRESOLVED'
   | 'L3_RESULT_DEPENDENCY_INVALID'
   | 'L3_FUTURE_RESULT_DEPENDENCY'
+  | 'L3_TRANSCRIPT_ROW_INCONSISTENT'
+  | 'L3_FINALIZED_BYTE_LIMIT'
+  | 'L3_VM_RESOURCE_LIMIT'
   | 'L3_GRAPH_DEPTH_LIMIT'
   | 'L3_SCB_ENVELOPE_MALFORMED'
   | 'L3_SCB_VERSION_UNSUPPORTED'
@@ -47,6 +50,7 @@ export interface Layer3DiagnosticContext {
   producerInvocation?: number;
   cyclicEdge?: readonly [number, number];
   keyIdentity?: string;
+  rule?: string;
 }
 
 /** Machine-stable code plus the human context required by transcript-v1 section 12. */
@@ -57,7 +61,8 @@ export class Layer3DiagnosticError extends Error {
     public readonly code: Layer3DiagnosticCode,
     message: string,
     public readonly context: Layer3DiagnosticContext,
+    preserveMessage = false,
   ) {
-    super(`layer3 [${code}]: ${message}`);
+    super(preserveMessage ? message : `layer3 [${code}]: ${message}`);
   }
 }

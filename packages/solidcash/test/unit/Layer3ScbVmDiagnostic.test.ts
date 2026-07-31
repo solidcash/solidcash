@@ -82,4 +82,15 @@ describe('SCB1 VM refusal attribution', () => {
     expect(layer3.mapLayer3VmFailure({ inputs: [{}] } as never, valid, 0, raw).message)
       .toBe(`layer3: BCH-2026 preflight failed at input 0: ${raw}`);
   });
+
+  it('maps a VM-priced resource refusal without discarding its raw reason', () => {
+    const reason = 'Operation cost limit exceeded: 12000 exceeds maximum 10000.';
+    const valid = transaction([0x53, 0x43, 0x42, 0x31, 1, 0, 1, ...Array(12).fill(0)]);
+    expect(layer3.mapLayer3VmFailure(routeBuilder, valid, 0, reason)).toMatchObject({
+      code: 'L3_VM_RESOURCE_LIMIT',
+      context: expect.objectContaining({
+        inputIndex: 0, resourceIdentity: 'input:0', measured: 12000, limit: 10000, rawVmReason: reason,
+      }),
+    });
+  });
 });

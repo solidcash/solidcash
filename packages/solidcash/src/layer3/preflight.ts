@@ -669,10 +669,20 @@ export function assertFinalizedTransactionBytes(
     ? `\n  (${policy.length} policy refusal(s) suppressed by allowNonRelayable: `
       + `${policy.map((row) => row.rule).join(', ')})`
     : '';
-  throw new Error(
+  const binding = enforced[0];
+  throw new Layer3DiagnosticError(
+    'L3_FINALIZED_BYTE_LIMIT',
     `layer3: finalized transaction refused by ${enforced.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
     + `${verdict.outputCount} outputs):\n${lines.join('\n')}${suppressed}`,
+    {
+      rule: binding.rule,
+      resourceIdentity: binding.where,
+      measured: binding.measured,
+      limit: binding.allowed,
+      ...(binding.where.startsWith('input ') && { inputIndex: Number(binding.where.slice(6)) }),
+    },
+    true,
   );
 }
 
@@ -833,7 +843,9 @@ export function mapLayer3VmFailure(
   inputIndex: number,
   rawVmReason: string,
 ): Error {
-  const input = builder.inputs[inputIndex] as { unlocker?: { abiFunction?: { selector?: string } } } | undefined;
+  const input = builder.inputs[inputIndex] as {
+    unlocker?: { abiFunction?: { selector?: string; name?: string } }
+  } | undefined;
   if (input?.unlocker?.abiFunction?.selector?.toLowerCase() !== '53434231') {
     return new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);
   }
@@ -857,6 +869,21 @@ export function mapLayer3VmFailure(
       'L3_SCB_ENVELOPE_MALFORMED',
       `BCH-2026 preflight failed at input ${inputIndex}: malformed SCB1 envelope; VM: ${rawVmReason}`,
       context,
+    );
+  }
+  if (/(limit|maximum|exceed|operation cost|stack|memory|sigchecks)/i.test(rawVmReason)) {
+    const values = [...rawVmReason.matchAll(/\b\d[\d,]*\b/g)]
+      .map((match) => Number(match[0].replace(/,/g, ''))).filter(Number.isFinite);
+    return new Layer3DiagnosticError(
+      'L3_VM_RESOURCE_LIMIT',
+      `BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`,
+      {
+        inputIndex,
+        resourceIdentity: `input:${inputIndex}`,
+        rawVmReason,
+        ...(values.length >= 2 && { measured: values[0], limit: values[1] }),
+        handler: input?.unlocker?.abiFunction?.name,
+      },
     );
   }
   return new Error(`layer3: BCH-2026 preflight failed at input ${inputIndex}: ${rawVmReason}`);

@@ -3124,6 +3124,11 @@ function compileResolvedAst(
             const handlerId = artifact.invocationAnalysis?.functions.find((candidate) =>
               candidate.name === fn.name
               && candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined))?.id;
+            const summary = handlerId === undefined ? undefined
+              : artifact.invocationAnalysis?.functions.find((candidate) => candidate.id === handlerId);
+            const callChain = summary?.closure.map((id) =>
+              artifact.invocationAnalysis!.functions.find((candidate) => candidate.id === id)?.name)
+              .filter((name): name is string => name !== undefined);
             return {
               rejectionReason: reason,
               rejectionCode: classifyHiddenBatchRejection(reason),
@@ -3131,6 +3136,11 @@ function compileResolvedAst(
                 ...(handlerId !== undefined && { handlerId }),
                 functionName: fn.name,
                 reason,
+                sourceLocation: {
+                  line: fn.location.start.line,
+                  column: fn.location.start.column,
+                },
+                ...(callChain?.length && { callChain }),
               },
             };
           })(),

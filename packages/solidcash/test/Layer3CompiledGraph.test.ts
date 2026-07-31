@@ -806,8 +806,17 @@ describe('layer3.planCompiledGraph', () => {
     expect(() => layer3.finalizeCompiledGraph(
       plan, { 0: '51', 1: '52', 9: '53' }, [0, 1], [2, 3],
       ['5100000000000000', '5200000000000000'], [4, 5],
-    ))
-      .toThrow(/unknown invocation/);
+    )).toThrow(expect.objectContaining({
+      code: 'L3_TRANSCRIPT_ROW_INCONSISTENT',
+      context: expect.objectContaining({ invocationIds: [9], resourceIdentity: 'result:9' }),
+    }));
+    expect(() => layer3.finalizeCompiledGraph(
+      plan, { 0: '51', 1: '52' }, [0, 1], [2, 3],
+      ['5300000000000000', '5200000000000000'], [4, 5],
+    )).toThrow(expect.objectContaining({
+      code: 'L3_TRANSCRIPT_ROW_INCONSISTENT',
+      context: expect.objectContaining({ participant: 0, invocationIds: [0] }),
+    }));
     expect(() => layer3.finalizeCompiledGraph(
       plan, { 0: '51', 1: '52' }, [0, 1], [2, 3],
       ['5100000000000000', '5200000000000000'], [5, 4],

@@ -283,7 +283,11 @@ describe('X160: the recovered population has a WRITER that settles', () => {
         case 'dataNft': {
           const index = dataNftCursor;
           dataNftCursor += 1;
-          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, index, setup.categoryId));
+          // X180: the second argument is the MASTER's input index, not the data NFT's slot. The covenant's
+          // write path requires a minting NFT at that index and the master sits at block slot 0. Passing the
+          // slot index refuses every route with two or more data NFTs at input 2 - the reading this file's
+          // BLOCKED rows recorded and attributed to a block oracle.
+          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, 0, setup.categoryId));
           tx.addOutput({
             to: getDataNftAddress(participant, setup.categoryId),
             amount: setup.dataNftUtxos[index].satoshis,

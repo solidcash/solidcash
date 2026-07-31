@@ -63,11 +63,13 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  * WHAT IS NOT ESTABLISHED.
  *
- *  - The two BLOCKED rows are not evidence in either direction, and the reason is named on each row: both
- *    carry a BLOCK ORACLE (`__block_timestamp` plus an immutable `__blockOracleOwner` data NFT) that this
- *    staging does not reproduce - the same wall `Layer3RecoveredSetAX136.test.ts` names for `CrowdFund` and
- *    `EnglishAuction`. So NO multi-data-NFT writer and NO mapping-entry writer is run anywhere, and the
- *    UNTOUCHED-data-NFT hostile this file implements has no subject to run against.
+ *  - The two BLOCKED rows are not evidence in either direction, and THE REASON THIS FILE ORIGINALLY GAVE FOR
+ *    THEM WAS WRONG. It said both carry a block oracle this staging cannot reproduce. `X180` ran both and
+ *    both SETTLE: the wall was this file passing the data NFT's SLOT index where `createDataNftUnlocker`
+ *    takes the MASTER's input index, which refuses any route with two or more data NFTs at input 2 whether or
+ *    not an oracle is present. That argument is corrected below; the rows stay BLOCKED here only so they are
+ *    not run twice. The multi-data-NFT and mapping-entry writers, and the UNTOUCHED-data-NFT hostile this
+ *    file implements without a subject, all live in `Layer3RecoveredOracleWriterX180.test.ts` now.
  *  - This file speaks for the handlers it runs and for nothing else.
  *  - No recovered writer over a DYNAMIC string or an unbounded chunk collection is run anywhere. That shape
  *    has no subject in the eleven at all.
@@ -213,9 +215,10 @@ const ROWS: readonly Row[] = [
     writerArgs: [TOKEN0, TOKEN1],
     guards: [{ name: 'token0', args: [] }, { name: 'kLast', args: [] }],
     verdict: 'blocked',
-    blockedBy: 'the route carries a BLOCK ORACLE - `__block_timestamp` plus an immutable `__blockOracleOwner` '
-      + 'data NFT at index 3 - which this staging does not reproduce. Same wall Layer3RecoveredSetAX136 '
-      + 'names for CrowdFund and EnglishAuction. Not evidence about the covenant.',
+    blockedBy: 'SUPERSEDED by Layer3RecoveredOracleWriterX180, which RUNS this handler: it SETTLES. The wall '
+      + 'was never the block oracle - it was this file passing the data NFT SLOT index where '
+      + 'createDataNftUnlocker takes the MASTER input index, which refuses every 2+ data NFT route at input '
+      + '2. Kept BLOCKED here only to avoid duplicating X180; not evidence about the covenant.',
     pre: { token0: new Uint8Array(0), token1: new Uint8Array(0) },
     post: { token0: TOKEN0, token1: TOKEN1 },
     blockSize: 6,
@@ -230,9 +233,10 @@ const ROWS: readonly Row[] = [
     writerArgs: [86_400n],
     guards: [{ name: 'duration', args: [] }, { name: 'rewardRate', args: [] }],
     verdict: 'blocked',
-    blockedBy: 'the route carries a BLOCK ORACLE - `__block_timestamp` plus an immutable `__blockOracleOwner` '
-      + 'data NFT at index 3 - AND `setRewardsDuration` is `onlyOwner` with a `finishAt < block.timestamp` '
-      + 'guard, so it needs both the oracle and a bound msg.sender. Not evidence about the covenant.',
+    blockedBy: 'SUPERSEDED by Layer3RecoveredOracleWriterX180, which RUNS this handler: it SETTLES, with all '
+      + 'four data NFTs and all three mapping entry NFTs co-spent. What it needed was the MASTER input index '
+      + 'in the data NFT unlocker, the oracle registers named in the pre-state, and a BARE P2PKH input so the '
+      + "projection's tx.origin check has an origin to find. Kept BLOCKED here only to avoid duplicating X180.",
     pre: { duration: 3_600n },
     post: { duration: 86_400n },
     blockSize: 9,
@@ -428,7 +432,11 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
         case 'dataNft': {
           const index = dataNftCursor;
           dataNftCursor += 1;
-          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, index, setup.categoryId));
+          // X180: the second argument is the MASTER's input index, not the data NFT's slot. The covenant's
+          // write path requires a minting NFT at that index and the master sits at block slot 0. Passing the
+          // slot index refuses every route with two or more data NFTs at input 2 - the reading this file's
+          // BLOCKED rows recorded and attributed to a block oracle.
+          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, 0, setup.categoryId));
           tx.addOutput({
             to: getDataNftAddress(participant, setup.categoryId),
             amount: setup.dataNftUtxos[index].satoshis,

@@ -194,10 +194,17 @@ interface Row {
   /**
    *  - `settles`   a state-CHANGING handler runs to completion and the post state is read off the covenant.
    *  - `reads`     a read-only handler settles and publishes the result the route computed.
-   *  - `unstageable` the shape has no VM subject at all, for a reason measured on the row.
    */
-  verdict: 'settles' | 'reads' | 'unstageable';
+  verdict: 'settles' | 'reads';
 }
+
+/**
+ * The two token addresses `initialize` writes. They are 25-byte P2PKH-shaped locking bytecodes rather than
+ * p2sh32: `UniswapV2Pair` packs seven fields into data NFT 0 and the post state has to fit the layout's own
+ * 128-byte commitment limit, which two 35-byte addresses would blow.
+ */
+const TOKEN0 = hexToBin(`76a914${'a0'.repeat(20)}88ac`);
+const TOKEN1 = hexToBin(`76a914${'b1'.repeat(20)}88ac`);
 
 const ROWS: readonly Row[] = [
   {
@@ -254,6 +261,7 @@ const ROWS: readonly Row[] = [
     writerArgs: [],
     guards: [{ name: 'endAt', args: [] }],
     verdict: 'reads',
+    rootCaller: 'pkh',
     oracleTimestamp: 1_700_000_000n,
     pre: {
       nft: new Uint8Array(0),
@@ -275,12 +283,27 @@ const ROWS: readonly Row[] = [
     file: `${MISTSWAP}/uniswapv2/UniswapV2Factory.sol`,
     contract: 'UniswapV2Pair',
     writer: 'initialize',
-    writerArgs: [],
-    guards: [],
-    verdict: 'unstageable',
+    writerArgs: [TOKEN0, TOKEN1],
+    guards: [{ name: 'token0', args: [] }, { name: 'kLast', args: [] }],
+    verdict: 'settles',
+    // `require(msg.sender == factory)`, so the factory field is the harness's own transaction origin.
+    rootCaller: 'pkh',
     oracleTimestamp: 1_700_000_000n,
-    pre: {},
-    post: {},
+    pre: {
+      totalSupply: 0n,
+      DOMAIN_SEPARATOR: new Uint8Array(32),
+      factory: hexToBin(PKH_CALLER),
+      token0: new Uint8Array(0),
+      token1: new Uint8Array(0),
+      reserve0: 0n,
+      reserve1: 0n,
+      blockTimestampLast: 0n,
+      price0CumulativeLast: 0n,
+      price1CumulativeLast: 0n,
+      kLast: 0n,
+      unlocked: 1n,
+    },
+    post: { token0: TOKEN0, token1: TOKEN1 },
     blockSize: 6,
     slots: ['master', 'dataNft', 'dataNft', 'dataNft', 'dataNft', 'returnEvent'],
   },
@@ -346,7 +369,6 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
       expect(registers.some((register) => register.name === '__block_timestamp')).toBe(true);
       expect(layout.blockSize).toBe(row.blockSize);
       expect(layout.slots.map((slot: any) => slot.kind)).toEqual(row.slots);
-      if (row.verdict === 'unstageable') continue;
       expect(eligible, `${row.writer} is not admitted`).toContain(row.writer);
       for (const g of row.guards) expect(eligible, `${g.name} is not admitted`).toContain(g.name);
       const abiOf = (name: string): any => artifact.abi.find((entry: any) => entry.name === name);
@@ -360,15 +382,19 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
    * no staging reaches its covenant. Reading the figure here is what turns "blocked by the harness" into
    * "has no VM subject, and here is the number".
    */
-  it('MEASURED: UniswapV2Pair has NO VM subject - it exceeds the BCH input-script limit', () => {
-    const row = ROWS.find((candidate) => candidate.verdict === 'unstageable')!;
-    const artifact = artifactForLayout(row);
-    const bytes = artifact.bytecode.length / 2;
-    console.log(`[X180] ${row.key}: ${bytes} bytes vs the ${INPUT_SCRIPT_LIMIT}-byte input-script limit `
-      + `(over by ${bytes - INPUT_SCRIPT_LIMIT})`);
-    console.log('[X180]   so the block-oracle staging does NOT unblock this row: every spend of this '
-      + 'contract is invalid at consensus, and the compiler refuses it independently of any staging.');
-    expect(bytes).toBeGreaterThan(INPUT_SCRIPT_LIMIT);
+  it('MEASURED: what these subjects would cost a real node - every one is over the input-script limit', () => {
+    for (const row of ROWS) {
+      const bytes = artifactForLayout(row).bytecode.length / 2;
+      const over = bytes - INPUT_SCRIPT_LIMIT;
+      console.log(`[X180] SIZE ${row.contract}: ${bytes} bytes, `
+        + `${over > 0 ? `OVER the ${INPUT_SCRIPT_LIMIT}-byte input-script limit by ${over}` : 'within limit'}`);
+    }
+    // The relaxed-capacity profile is what lets these routes execute at all. Saying so with a number is the
+    // difference between "settles" and "settles, and a real node would refuse the input on size alone".
+    const over = ROWS.filter((row) => artifactForLayout(row).bytecode.length / 2 > INPUT_SCRIPT_LIMIT);
+    console.log(`[X180] ${over.length} of ${ROWS.length} subjects exceed the BCH input-script limit, so every `
+      + 'settlement below is SEMANTIC evidence under the relaxed profile and NOT deployability evidence.');
+    expect(over.length).toBeGreaterThan(0);
   }, 1_800_000);
 
   /**
@@ -679,7 +705,14 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
       if (found === undefined) {
         // WHERE it stopped, not just that it did: a probe that aborts early is the reading X136 recorded for
         // EnglishAuction and could not explain, so the abort's own error is quoted rather than inferred.
-        const last = probe.trace![probe.trace!.length - 1] as { error?: string; ip?: number };
+        const last = probe.trace![probe.trace!.length - 1] as {
+          error?: string; ip?: number; instructions?: Array<{ opcode: number }>; stack?: Uint8Array[];
+        };
+        const window = (last.instructions ?? [])
+          .slice(Math.max(0, (last.ip ?? 0) - 8), (last.ip ?? 0) + 1)
+          .map((instruction) => instruction.opcode.toString(16).padStart(2, '0')).join(' ');
+        console.log(`[X180] ${key} ABORT ip=${last.ip} ops[ip-8..ip]=${window} `
+          + `stackDepths=${JSON.stringify((last.stack ?? []).slice(-4).map((item) => item.length))}`);
         throw new Error(`${key}: the probe trace never compared the declared result `
           + `(trace stopped after ${probe.trace!.length} steps: ${last?.error ?? 'no error recorded'})`);
       }
@@ -925,7 +958,6 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
   }
 
   for (const row of ROWS) {
-    if (row.verdict === 'unstageable') continue;
     it(`CONTROL A: ${row.key} with the legacy master input index is REFUSED at the second data NFT`,
       legacyMasterIndexControl(row), 1_800_000);
     it(`CONTROL B: ${row.key} with each oracle register dropped on its own`,

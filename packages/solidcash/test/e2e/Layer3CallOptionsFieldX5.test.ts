@@ -280,6 +280,11 @@ function failingInput(builder: TransactionBuilder): number | null {
 const INPUT = {
   masterReader: 0, masterProducer: 1, projectionReader: 3, projectionProducer: 4, controller: 5,
 } as const;
+const providerOpVerify = (input: number): RegExp => new RegExp('^mandatory-script-verify-flag-failed '
+  + `\\(Unable to verify transaction: error in evaluating input index ${input}: `
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
+const PROJECTION_OP_VERIFY = providerOpVerify(INPUT.projectionReader);
+const MASTER_OP_VERIFY = providerOpVerify(INPUT.masterReader);
 
 describe('Layer-3 committed call-options field (X5)', () => {
   it('settles a compiler-authored staticcall edge and commits its call-options byte', async () => {
@@ -301,7 +306,7 @@ describe('Layer-3 committed call-options field (X5)', () => {
     expect([...built.transcript.bytes].filter((byte, at) => byte !== built.honestBytes[at]))
       .toHaveLength(1);
     expect(failingInput(built.builder)).toBe(INPUT.projectionReader);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(PROJECTION_OP_VERIFY);
   }, 120_000);
 
   // The transcript row renames the edge; the caller's emission vector still carries the honest byte, so the
@@ -311,7 +316,7 @@ describe('Layer-3 committed call-options field (X5)', () => {
     expect([...built.transcript.bytes].filter((byte, at) => byte !== built.honestBytes[at]))
       .toHaveLength(1);
     expect(failingInput(built.builder)).toBe(INPUT.projectionReader);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(PROJECTION_OP_VERIFY);
   }, 120_000);
 
   // The same rename carried into the caller's emission vector, so the projection proof agrees with the row.
@@ -321,6 +326,6 @@ describe('Layer-3 committed call-options field (X5)', () => {
     expect([...built.transcript.bytes].filter((byte, at) => byte !== built.honestBytes[at]))
       .toHaveLength(2);
     expect(failingInput(built.builder)).toBe(INPUT.masterReader);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(MASTER_OP_VERIFY);
   }, 120_000);
 });

@@ -43,10 +43,11 @@ import type { Utxo } from '../../src/interfaces.js';
  * neighbour. Both must be refused AT INPUT 0. No result is ever encoded here - for every returning handler
  * the commitment is read off the route's own traced execution.
  *
- * ONE SUBJECT IS RECORDED AS UNPROVEN IN BOTH DIRECTIONS and is not counted: `ERC20.balanceOf`, the ONE-key
- * mapping getter, whose route this harness cannot obtain a result from. Its two-key sibling `allowance` on the
- * same contract and the same entry slot DOES settle, so the shape is not the obstacle and the row is left
- * open rather than explained away.
+ * TWO SUBJECTS ARE RECORDED AS UNPROVEN IN BOTH DIRECTIONS and are not counted: `ERC20.balanceOf` in each of
+ * the two source rows, the ONE-key mapping getter whose route this harness cannot obtain a result from. Each
+ * row's two-key sibling `allowance` on the same entry slot DOES settle, so the shape is not the obstacle and
+ * the rows are left open rather than explained away. X236 added the `MyToken.sol` source row specifically so
+ * source-digest attribution proves its five other getters without conflating it with `ERC20.sol`.
  *
  * WHAT IS NOT CLAIMED. Every subject is read-only (`writesState: false`, asserted below from the DIRECT
  * artifact), so publishing the pre-state as the post-state is correct rather than accidentally correct. The
@@ -81,6 +82,7 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'defi/stable-swap-amm/StableSwap.sol::StableSwap': ['tokens', 'balances', 'totalSupply'],
   'hacks/vault-inflation/VaultInflation.sol::Token': ['totalSupply', 'decimals'],
   'app/erc20/ERC20.sol::ERC20': ['totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance'],
+  'app/erc20/MyToken.sol::ERC20': ['totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance'],
 };
 
 interface Subject {
@@ -104,6 +106,19 @@ interface Row {
 const TRAILING = Array.from({ length: 64 }, () => 'trailing');
 
 const ROWS: readonly Row[] = [
+  {
+    rel: 'app/erc20/MyToken.sol',
+    contract: 'ERC20',
+    subjects: [
+      { handler: 'totalSupply' }, { handler: 'name' }, { handler: 'symbol' }, { handler: 'decimals' },
+      { handler: 'allowance', args: [addr('55'), addr('66')] },
+    ],
+    hostileSubject: 'allowance',
+    unproven: [{ handler: 'balanceOf', args: [addr('55')] }],
+    state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
+    stateTamper: { totalSupply: 1_000_001n },
+    slots: ['master', 'dataNft', 'entry', 'returnEvent', ...TRAILING],
+  },
   {
     rel: 'defi/stable-swap-amm/StableSwap.sol',
     contract: 'StableSwap',
@@ -512,6 +527,6 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     console.log(`[V2C] ${settled.length} gained handlers settle in this file; `
       + `${ROWS.reduce((n, row) => n + (row.unproven?.length ?? 0), 0)} more are run and recorded unproven`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(10);
+    expect(settled.length).toBe(15);
   });
 });

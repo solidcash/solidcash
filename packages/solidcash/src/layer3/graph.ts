@@ -988,6 +988,7 @@ contract GraphProjectionVerifier() {
     bigint valueSkip = int(bytes.concat(ownerBatch.slice(5, 6), hex"00"));
     require(valueSkip == 0 || valueSkip == 1);
     valueSkip = valueSkip * 9;
+    bigint modeSkip = int(bytes.concat(ownerBatch.slice(4, 5), hex"00")) == 2 ? 1 : 0;
     bigint resultCursor = 0;
     bigint localRow = 0;
     bigint callerCursor = 0;
@@ -1070,14 +1071,18 @@ contract GraphProjectionVerifier() {
         require(int(bytes.concat(ownerBatch.slice(batchCursor + 8, batchCursor + 10), hex"00")) == 0);
         require(int(bytes.concat(ownerBatch.slice(batchCursor + 10, batchCursor + 12), hex"00"))
           == argsLength);
+        if (modeSkip == 1) {
+          require(int(bytes.concat(ownerBatch.slice(batchCursor + 12, batchCursor + 13), hex"00"))
+            == int(bytes.concat(row.slice(11, 12), hex"00")) % 2);
+        }
         if (valueSkip == 9) {
           require(int(bytes.concat(
-            ownerBatch.slice(batchCursor + 12, batchCursor + 13), hex"00")) <= 1);
+            ownerBatch.slice(batchCursor + 12 + modeSkip, batchCursor + 13 + modeSkip), hex"00")) <= 1);
         }
         require(ownerBatch.slice(
-          batchCursor + 12 + valueSkip, batchCursor + 12 + valueSkip + argsLength)
+          batchCursor + 12 + modeSkip + valueSkip, batchCursor + 12 + modeSkip + valueSkip + argsLength)
           == row.slice(14, 14 + argsLength));
-        batchCursor = batchCursor + 12 + valueSkip + argsLength;
+        batchCursor = batchCursor + 12 + modeSkip + valueSkip + argsLength;
         localRow = localRow + 1;
         if (resultLength > 0) {
           require(resultVector.slice(resultCursor, resultCursor + resultLength)
@@ -1664,6 +1669,7 @@ export function planCompiledGraph(
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
+      ...(invocation.parent !== null && { callMode: invocation.callMode ?? 'call' }),
       ...(invocation.parent !== null && {
         logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode),
       }),

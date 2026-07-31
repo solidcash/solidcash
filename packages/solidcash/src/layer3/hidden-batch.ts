@@ -7,6 +7,8 @@ import SignatureTemplate from '../SignatureTemplate.js';
 
 export interface HiddenBatchInvocation {
   function: string;
+  /** Authenticated graph call mode. Presence selects the SCB2 per-row mode framing. */
+  callMode?: 'call' | 'staticcall';
   args?: readonly FunctionArgument[];
   /** Logical per-invocation satoshi delta when compiler-authored effects cannot derive it. */
   msgValue?: bigint;
@@ -109,6 +111,7 @@ export function encodeHiddenBatch(
   // before any row was parsed, and widened every row from 12 to 21 bytes on the way. The compiler decides the
   // same flag over the same predicate (`compiler.ts`, `logicalValueMode`).
   const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
+  const modeVersion = invocations.some((invocation) => invocation.callMode !== undefined);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
   const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];
@@ -216,6 +219,7 @@ export function encodeHiddenBatch(
       uintLe(BigInt(rowIndex), 4),
       uintLe(0n, 2),
       uintLe(BigInt(argsBlob.length), 2),
+      ...(modeVersion ? [Uint8Array.of(invocation.callMode === 'staticcall' ? 1 : 0)] : []),
       ...(valueMode ? [signedValue(logicalValue)] : []),
       argsBlob,
     );
@@ -223,7 +227,7 @@ export function encodeHiddenBatch(
 
   const blob = concat(
     hexToBin('53434231'),
-    Uint8Array.from([1, valueMode ? 1 : 0, invocations.length]),
+    Uint8Array.from([modeVersion ? 2 : 1, valueMode ? 1 : 0, invocations.length]),
     ...rows,
   );
   if (blob.length > capability.maximumBlobBytes) {

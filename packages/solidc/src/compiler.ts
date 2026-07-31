@@ -1875,7 +1875,10 @@ function synthesizeHiddenBatchRoute(
       : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string, selectedInvokeName = invokeName): string => {
-      if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
+      const footprint = analyseFunctionFootprint(fn, byName);
+      const staticGuard = footprint.writes.length > 0 || footprint.effects.length > 0
+        ? 'require(__scb_call_options % 2 == 0); ' : '';
+      if (!captureResults || fn.returnTypes.length === 0) return `${staticGuard}${selectedInvokeName}(${args});`;
       const names = fn.returnTypes.map((_type, index) =>
         `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
       const declarations = fn.returnTypes.map((type, index) =>
@@ -1883,7 +1886,7 @@ function synthesizeHiddenBatchRoute(
       const assignment = fn.returnTypes.length === 1
         ? `${names[0]} = ${selectedInvokeName}(${args});`
         : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
-      return `${declarations} ${assignment} __scb_results = bytes.concat(
+      return `${staticGuard}${declarations} ${assignment} __scb_results = bytes.concat(
         __scb_results, abi.encode(${names.join(', ')})
       );`;
     };
@@ -2034,8 +2037,10 @@ function synthesizeHiddenBatchRoute(
           bytes rowArgs;
           bigint __scb_graph_msg_value;
           (rowSelector, rowArgs, __scb_graph_msg_value, cursor) = __scb_parse_row(
-            batchBlob, cursor, ${rowExpression}
+            batchBlob, cursor, ${rowExpression}, __scb_version
           );
+          bigint __scb_call_options = int(bytes.concat(rowArgs.slice(0, 1), hex"00"));
+          rowArgs = rowArgs.slice(1, rowArgs.length);
           bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
           ${buildDecodeAndCall(captureResults, rowIndex)}
           else { revert("unknown batch selector"); }
@@ -2099,7 +2104,7 @@ function synthesizeHiddenBatchRoute(
     ${routeStructs}
     contract __HiddenBatchHost() {
       function __scb_parse_row(
-        bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite
+        bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite, bigint __scb_version
       ) internal pure returns (bytes4, bytes, bigint, bigint) {
         require(__scb_at + ${logicalValueMode ? 21 : 12} <= __scb_blob.length);
         bytes4 __scb_parsed_selector = bytes4(__scb_blob.slice(__scb_at, __scb_at + 4));
@@ -2112,6 +2117,12 @@ function synthesizeHiddenBatchRoute(
         require(__scb_occurrence == 0);
         bigint __scb_args_length = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
         __scb_at = __scb_at + 2;
+        bigint __scb_call_options = 0;
+        if (__scb_version == 2) {
+          __scb_call_options = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 1), hex"00"));
+          require(__scb_call_options <= 1);
+          __scb_at = __scb_at + 1;
+        }
         bigint __scb_logical_value = 0;
         ${logicalValueMode ? `
         bigint __scb_value_negative = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 1), hex"00"));
@@ -2125,7 +2136,8 @@ function synthesizeHiddenBatchRoute(
           ? -__scb_value_magnitude : __scb_value_magnitude;
         ` : ''}
         require(__scb_args_length >= 0 && __scb_at + __scb_args_length <= __scb_blob.length);
-        bytes __scb_parsed_args = __scb_blob.slice(__scb_at, __scb_at + __scb_args_length);
+        bytes __scb_parsed_args = bytes.concat(bytes1(__scb_call_options),
+          __scb_blob.slice(__scb_at, __scb_at + __scb_args_length));
         return (
           __scb_parsed_selector, __scb_parsed_args, __scb_logical_value,
           __scb_at + __scb_args_length
@@ -2163,7 +2175,8 @@ function synthesizeHiddenBatchRoute(
           require(__scb_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
-        require(batchBlob.slice(4, 5) == hex"01");
+        bigint __scb_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));
+        require(__scb_version == 1 || __scb_version == 2);
         require(batchBlob.slice(5, 6) == hex"${logicalValueMode ? '01' : '00'}");
         ${graphPrologue}
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));

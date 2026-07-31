@@ -522,7 +522,10 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     const wireDeployment = await deploy();
     const gated = await errorOf(() => staticSplit(gatedDeployment, 100n, bobPriv));
     const wire = await errorOf(() => staticSplit(wireDeployment, CHANGE_DUST, bobPriv));
-    const sentence = /Program failed a signature verification with a non-null signature \(violating the "NULLFAIL" rule\)\. Algorithm used: Schnorr\./;
+    // The WHOLE sentence, not a prefix: a prefix match would still pass if the two deciders diverged in the
+    // algorithm or the rule they name.
+    const sentence = new RegExp('Program failed a signature verification with a non-null signature '
+      + '\\(violating the "NULLFAIL" rule\\)\\. Algorithm used: Schnorr\\.');
     expect(gated).toMatch(sentence);
     expect(wire).toMatch(sentence);
     expect(gated).toMatch(/\[covenant\] input 0:/);

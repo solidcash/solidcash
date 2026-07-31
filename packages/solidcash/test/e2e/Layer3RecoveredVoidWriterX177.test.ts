@@ -52,10 +52,33 @@ import type { Utxo } from '../../src/interfaces.js';
  * be a participant. The bus ACCEPTS a transaction asserting that `attack()` executed while the call it
  * consists of did not happen. That is the X115 published-but-dead admission shape with the "dead" removed.
  *
+ * X179 ANSWERED THE QUESTION THIS FILE LEFT OPEN, AND THE ANSWER IS THAT DROPPING IS NOT AN OUTCOME.
+ * `Layer3DroppedEdgeX179.test.ts` builds an INTERFACE-CAST caller with an admissible counterparty: the
+ * co-spent graph settles, and removing only the child invocation is refused at the caller's own master input
+ * with the emission vector exhausted. `Layer3OccurrenceExhaustion.test.ts` and C2's `omits the return edge`
+ * row record the same signature. So the caller covenant DOES require the co-spend, and what this file
+ * measures is `Attack.attack` ESCAPING that requirement - not the requirement's intended shape.
+ *
+ * AND THE ESCAPE IS NOT ABOUT `Wallet`. The same X179 file reproduces it on a clean pair whose counterparty
+ * the bus ADMITS, from the same source shape as `attack`: a method call on a CONTRACT-TYPED state variable
+ * (`X179SolBar bar; ... bar.log();`). It settles with an empty emission vector, with its own honest co-spend
+ * settling in the same harness. Adding a trailing `require(true)` does not change it, so the receiver
+ * spelling is the variable that survives - stated as the shape that reproduces, not as a mechanism.
+ *
+ * TWO CONSEQUENCES FOR THIS FILE.
+ *
+ *  - `planCompiledGraph` now REFUSES the one-participant plan by name (`assertHandlerRowFloor`), so the rows
+ *    below reach the VM through `bypass`: the artifact copy the PLANNER reads has the published callsite
+ *    stripped, while the contract, its locking bytecode, its compiled route and its batch blob are the real
+ *    ones. That is what an untrusted composer does, and it weakens nothing here - the covenant under test is
+ *    unchanged, and the CONTROL has no callsite to strip so it is not touched at all.
+ *  - The settlement is therefore still real, and it is the finding: for THIS handler shape the caller's route
+ *    does not bind its own outgoing edge, so the SDK refusal is the only thing in the way. Closing it is
+ *    compiler-side.
+ *
  * WHAT THIS FILE DOES NOT CLAIM. It does not show value or authority moving. Nothing here demonstrates a
- * theft primitive, and the acceptance may still be judged benign once the emission model is read properly by
- * someone who owns that code. What it does establish is narrower and it is enough to matter: the recorded
- * NEGATIVE is not a covenant property, and the row's arithmetic - "one proved NOT to settle" - does not hold.
+ * theft primitive. What it does establish is narrower and it is enough to matter: the recorded NEGATIVE is
+ * not a covenant property, and the row's arithmetic - "one proved NOT to settle" - does not hold.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -140,10 +163,12 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
    * between the two runs of the same subject; `post` is the data NFT commitment set, defaulting to the state
    * the covenant should compute.
    */
-  async function attempt(subject: Subject, slot: ReturnSlot, post?: Record<string, unknown>): Promise<{
-    sent?: string; refusal?: string; failingInput?: number; participants: number; invocations: number;
-    emissions: readonly string[]; callers: readonly string[];
-  }> {
+  async function attempt(subject: Subject, slot: ReturnSlot, post?: Record<string, unknown>, plan?: {
+    bypass?: boolean;
+  }): Promise<{
+      sent?: string; refusal?: string; failingInput?: number; participants: number; invocations: number;
+      emissions: readonly string[]; callers: readonly string[];
+    }> {
     const provider = createLayer3SemanticTestProvider();
     const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -162,15 +187,24 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, subject.state);
     const participant = base.withCategory(hexToBin(setup.categoryId));
 
-    const plan = layer3.planCompiledGraph(
-      [{ artifact, lockingBytecode: participant.lockingBytecode }],
+    // X179 BYPASS. `assertHandlerRowFloor` refuses a plan that drops a published callsite's row, which is what
+    // a one-participant `attack` plan is. Only the ABI copy the PLANNER reads is stripped; the participant,
+    // its locking bytecode and the batch blob below all come from the real artifact, so the covenant under
+    // test is byte-identical. The CONTROL publishes no callsite, so this is a no-op for it.
+    const planned = plan?.bypass !== true ? artifact : {
+      ...artifact,
+      abi: artifact.abi.map((entry: any) => (entry.name === subject.handler
+        ? { ...entry, externalCalls: undefined } : entry)),
+    };
+    const compiledPlan = layer3.planCompiledGraph(
+      [{ artifact: planned, lockingBytecode: participant.lockingBytecode }],
       [{ parent: null, callee: 0, function: subject.handler, args: subject.args as never[] }],
     );
-    const layout = layer3.compiledGraphPhysicalLayout(plan);
+    const layout = layer3.compiledGraphPhysicalLayout(compiledPlan);
     // VOID: no result, no return output, no result vector. That is what `finalizeCompiledGraph` demands and
     // it is not in question here - what is in question is what the OUTPUT in that slot has to look like.
     const transcript = layer3.finalizeCompiledGraph(
-      plan, {}, layout.participantInputs, [null], [''], layout.projectionInputs, '',
+      compiledPlan, {}, layout.participantInputs, [null], [''], layout.projectionInputs, '',
     );
 
     const initFee = randomUtxo({ satoshis: 20_000n });
@@ -264,8 +298,8 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     tx.addOutput({ to: p2pkh.address, amount: 150_000n });
 
     const shape = {
-      participants: plan.participants.length,
-      invocations: plan.invocations.length,
+      participants: compiledPlan.participants.length,
+      invocations: compiledPlan.invocations.length,
       emissions: (transcript as any).participantEmissionsHex as readonly string[],
       callers: (transcript as any).participantCallersHex as readonly string[],
     };
@@ -283,7 +317,7 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
    * property of the staging rather than of `attack`.
    */
   const plainIsRefused = (subject: Subject) => async (): Promise<void> => {
-    const result = await attempt(subject, 'plain');
+    const result = await attempt(subject, 'plain', undefined, { bypass: true });
     console.log(`[X177V] ${subject.label} plain: ${(result.refusal ?? `ACCEPTED ${result.sent}`)
       .split('\n')[0]} input=${result.failingInput}`);
     expect(result.sent, `${subject.label} settled with a plain return-event output`).toBeUndefined();
@@ -296,10 +330,30 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   it('CONTROL: a void writer with NO external call is refused identically with a PLAIN output',
     plainIsRefused(CONTROL), 900_000);
 
-  /** THE FLIP. One field moves - the return-event slot - and the recorded negative becomes a settlement. */
+  /**
+   * X179. THE SDK NOW REFUSES THE PLAN, BY NAME, before any of this reaches a VM. `attack` publishes one
+   * unconditional `once` callsite and the plan answers it with no row, which is the count
+   * `deriveCompiledGraphPlan` cannot produce and `occurrenceBoundOf` already publishes a floor for.
+   */
+  it('X179: the one-participant `Attack.attack` plan is refused by name at plan time', async () => {
+    let refusal: string | undefined;
+    try {
+      await attempt(ATTACK, 'empty-vector-nft');
+    } catch (error) {
+      refusal = (error as Error).message;
+    }
+    console.log(`[X177V] attack plan: ${refusal ?? 'ADMITTED'}`);
+    expect(refusal, '`Attack.attack` was still planned with its edge dropped').toBeDefined();
+    expect(refusal).toContain('layer3: callsite 0 was planned with 0 occurrences, below the 1 proven');
+  }, 900_000);
+
+  /**
+   * THE FLIP. One field moves - the return-event slot - and the recorded negative becomes a settlement. Built
+   * through the X179 bypass, so what it measures is the covenant and not the SDK refusal above.
+   */
   it('MEASURED: `Attack.attack` SETTLES once its void return-event slot carries the empty result vector',
     async () => {
-      const result = await attempt(ATTACK, 'empty-vector-nft');
+      const result = await attempt(ATTACK, 'empty-vector-nft', undefined, { bypass: true });
       console.log(`[X177V] attack empty-vector-nft: ${result.sent ?? result.refusal?.split('\n')[0]}`);
       console.log(`[X177V] attack graph: participants=${result.participants} `
         + `invocations=${result.invocations} emissions=${JSON.stringify(result.emissions)} `
@@ -318,7 +372,7 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
    * acceptance above is a covenant that ran and agreed, not a covenant that was never reached.
    */
   it('GUARD: the settling `Attack.attack` with one persisted field moved is refused at input 0', async () => {
-    const result = await attempt(ATTACK, 'empty-vector-nft', ATTACK.tamper);
+    const result = await attempt(ATTACK, 'empty-vector-nft', ATTACK.tamper, { bypass: true });
     console.log(`[X177V] attack tampered: ${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} `
       + `input=${result.failingInput}`);
     expect(result.sent, 'a moved persisted field was ACCEPTED').toBeUndefined();

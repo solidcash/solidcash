@@ -1180,6 +1180,76 @@ function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: n
 }
 
 /**
+ * Rows one compiler-authored callsite MUST answer.
+ *
+ * The mirror of `callsiteRowCapacity`, leg for leg, on the same shared bound. A collapsed repeated-call
+ * callsite names its rows outright. Every other class takes the floor `occurrenceBoundOf` publishes, which is
+ * 1 for a straight-line `once` callsite - reached structurally, whether or not the compiler spent bytes saying
+ * so - and, for a conditional or loop callsite, only what the compiler actually proved. An absent floor is
+ * zero: a branch that was not taken legitimately emits no row.
+ */
+const callsiteRowFloor = (call: ExternalCallAbi): number => {
+  if (call.batchInvocations !== undefined) return call.batchInvocations.length;
+  return occurrenceBoundOf(call).minimum ?? 0;
+};
+
+/**
+ * X179: refuse a caller-supplied row set that DROPS a row one handler must have emitted.
+ *
+ * `assertHandlerRowCapacity` bounds this from above only, and was skipped entirely for a handler planned with
+ * no children at all - so a handler whose whole body is one unconditional external call could be planned with
+ * the call simply left out, and the route published it as an admitted handler whose observable effect is
+ * nothing. `deriveCompiledGraphPlan` cannot produce that plan: it expands every `once` callsite
+ * unconditionally and `takeTarget` throws when no participant answers it, which is the derivation entry
+ * point's statement that a dropped edge is not an outcome. This is the same statement on the entry point that
+ * takes rows from the caller.
+ *
+ * THE VM AGREES, FOR THE ORDINARY SHAPE. A caller route partitions its authenticated emission vector row by
+ * row, so a dropped edge leaves it with nothing to split and the transaction is refused at the caller's own
+ * master input - `Layer3DroppedEdgeX179.test.ts` settles both argument shapes co-spent and refuses both with
+ * the child removed, and `Layer3OccurrenceExhaustion.test.ts` records the same signature for a transcript
+ * that omits a reached occurrence. This turns that unnamed `OP_SPLIT` failure into a named plan-time
+ * diagnostic, in the same way `assertSingleConsumedResult` does for result fan-in.
+ *
+ * IT IS NOT A BOUNDARY. `Attack.attack` - one unconditional callsite, counterparty bus-inadmissible - settles
+ * with an EMPTY emission vector (`Layer3RecoveredVoidWriterX177.test.ts`), so for at least that handler shape
+ * the caller covenant does not bind its own outgoing edge and this refusal is the only thing between the
+ * composer and a published handler that does nothing. The SDK is an untrusted witness constructor: a spender
+ * who hand-assembles the plan is not subject to this at all. Closing it properly is compiler-side.
+ *
+ * Reported against the first callsite the rows do not reach, for the same reason the ceiling side reports
+ * against the last: with every earlier callsite at its published floor, that is the only callsite a missing
+ * row can belong to, so the attribution is guess-free rather than `bindConsumerCallsites`' by-name guess.
+ */
+function assertHandlerRowFloor(callsites: readonly ExternalCallAbi[], rows: number): void {
+  if (callsites.length === 0) return;
+  const floors = callsites.map(callsiteRowFloor);
+  if (rows >= floors.reduce((sum, floor) => sum + floor, 0)) return;
+  let remaining = rows;
+  for (const [index, callsite] of callsites.entries()) {
+    if (remaining >= floors[index]) {
+      remaining -= floors[index];
+      continue;
+    }
+    // A collapsed repeated-call callsite is `once` yet emits every row it NAMES, so the occurrence wording
+    // would read "reached at most once" against a callsite that legitimately emits several.
+    if (callsite.batchInvocations !== undefined) {
+      throw new Error(
+        `layer3: callsite ${callsite.callsiteId ?? '?'} collapses ${callsite.batchInvocations.length} `
+        + `repeated calls, but only ${remaining} rows were planned`,
+      );
+    }
+    assertPlannedOccurrenceCount(callsite, remaining);
+    // The shared bound admitted a count this floor does not, so the two have drifted. Refuse rather than
+    // fall through to a plan whose only remaining decider is a covenant measured not to bind this edge.
+    throw new Error(
+      `layer3: callsite ${callsite.callsiteId ?? '?'} must be answered by ${floors[index]} rows, `
+      + `but ${remaining} were planned`,
+    );
+  }
+}
+
+/**
  * X3: refuse a handler asked to consume more than one producer result - result fan-in.
  *
  * This is a capability gap, not a policy: no compiler-emitted artifact can execute such a row. The wall has a
@@ -1692,11 +1762,16 @@ export function planCompiledGraph(
   const resultDependencies: number[][] = invocations.map(() => []);
   for (let parent = 0; parent < invocations.length; parent += 1) {
     const children = childrenOf[parent];
-    if (children.length === 0) continue;
     const parentInvocation = invocations[parent];
     const parentFunction = resolveGraphAbiFunction(
       participants[parentInvocation.callee].artifact, parentInvocation.function,
     );
+    // X179: the floor, ordered before the ceiling and before the `children.length === 0` skip, because a
+    // handler planned with NO children is exactly the shape it refuses - the skip is what let a dropped edge
+    // through. The ABI lookup above already ran once per invocation in `optionBits`, so a handler with no ABI
+    // entry has already been refused by name and this cannot be the first place it is noticed.
+    assertHandlerRowFloor(parentFunction?.externalCalls ?? [], children.length);
+    if (children.length === 0) continue;
     // X36: the occurrence bound `deriveCompiledGraphPlan` applies during expansion, applied here to the rows
     // this entry point is handed instead. Ordered before the binding so a row count the handler cannot have
     // emitted is named as such rather than surfacing as a result-schema or covenant partition mismatch.

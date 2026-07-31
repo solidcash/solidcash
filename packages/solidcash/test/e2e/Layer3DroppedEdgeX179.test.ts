@@ -19,7 +19,7 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * `Wallet` is refused from the bus by `LowLevelCallShapeError` and so no correct co-spend exists to compare
  * against.
  *
- * THIS FILE ANSWERS IT WITH SUBJECTS WHOSE COUNTERPARTY IS ADMITTED. Four caller shapes, all minimal, all
+ * THIS FILE ANSWERS IT WITH SUBJECTS WHOSE COUNTERPARTY IS ADMITTED. Five caller shapes, all minimal, all
  * compiled in bus mode against the same callee, all staged by the same harness. Each settles its honest
  * co-spend first, so every negative below discriminates against a positive; then the ONLY field that moves is
  * whether the child invocation is planned.
@@ -31,9 +31,9 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * nothing to split - the `VECTOR_EXHAUSTED` signature `Layer3OccurrenceExhaustion.test.ts` records for a
  * transcript that omits a reached occurrence, and C2 for a graph that omits its return edge.
  *
- * ANSWER 2: AND THE COVENANT DOES ENFORCE IT - for the two INTERFACE-CAST callers, `IX179Callee(addr).tick()`
- * with a forwarded argument and with an expression argument. Both are refused at input 0 with the vector
- * exhausted.
+ * ANSWER 2: AND THE COVENANT DOES ENFORCE IT - for all three INTERFACE-CAST callers, `IX179Callee(addr).m()`.
+ * Forwarded argument, expression argument, and the same caller compiled under `solidityImportCompat` with a
+ * return-event slot in its block: all three are refused at input 0 with the vector exhausted.
  *
  * ANSWER 3: THE OTHER TWO ESCAPE, AND THEY ARE `Attack.attack`'s SHAPE. A method call on a CONTRACT-TYPED
  * STATE VARIABLE - `X179SolBar bar; ... bar.log();` - settles with an EMPTY emission vector, no co-spent
@@ -42,11 +42,14 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * of the staging. `Attack.attack` is therefore not a curiosity of a bus-inadmissible counterparty: the escape
  * reproduces on a clean pair where the counterparty is admitted.
  *
- * THE DISCRIMINATING VARIABLE IS THE RECEIVER SPELLING, NOT THE TAIL STATEMENT. Adding a trailing
- * `require(true)` to the escaping body - the one thing that separates it from the eligible interface-cast
- * bodies - changes nothing: it escapes identically. See `SOLIDITY_PAIR_REQUIRE`.
+ * THE ISOLATION IS COMPLETE, AND WHAT SURVIVES IS THE RECEIVER SPELLING. Five candidate variables separated
+ * the bound shapes from the escaping ones, and four are eliminated by a subject that BINDS while carrying
+ * them: the argument source (forwarded vs compiler-labelled expression), the target source (constructor
+ * parameter vs state variable), `solidityImportCompat`, and the return-event slot / result mode - all present
+ * in `expression-compat`, which is refused. The fifth, the tail `require(true)`, is eliminated from the other
+ * direction by `solidity-require`, which ESCAPES while carrying it. Only how the callee is named is left.
  *
- * WHAT CLOSED, AND WHAT DID NOT. The SDK now refuses all four dropped plans by name at plan time
+ * WHAT CLOSED, AND WHAT DID NOT. The SDK now refuses all five dropped plans by name at plan time
  * (`assertHandlerRowFloor`), which is the same statement `deriveCompiledGraphPlan` already made. That is a
  * diagnostic, NOT a boundary - the SDK is an untrusted witness constructor, and `dropped-bypass` below shows
  * exactly how a composer walks past it. For the escaping shapes the caller covenant does not bind its own
@@ -79,6 +82,16 @@ contract X179Expression() {
   address callee;
   int knob;
   function ping() { IX179Callee(callee).tick(knob + 1); require(true); }
+}`;
+
+/**
+ * THE SAME CALLER WITH THE OTHER TWO CONFOUNDS TURNED ON: compiled under `solidityImportCompat`, and given a
+ * returning getter sibling so its route is in result mode and its block carries a return-event slot - which is
+ * what the escaping pair below has and the two shapes above do not. Everything else is byte-identical to
+ * `EXPRESSION_CALLER`, so if this still binds, the receiver spelling is the only variable left standing.
+ */
+const EXPRESSION_COMPAT_CALLER = `${EXPRESSION_CALLER.slice(0, -2)}
+  function peek() returns (int) { return knob; }
 }`;
 
 /**
@@ -127,7 +140,7 @@ const raw = (builder: TransactionBuilder): string =>
 const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 /** Which caller shape is under test. */
-type Shape = 'forward' | 'expression' | 'solidity' | 'solidity-require';
+type Shape = 'forward' | 'expression' | 'expression-compat' | 'solidity' | 'solidity-require';
 /**
  * The ONE field that moves: whether the callsite's child invocation is planned and co-spent. `dropped-bypass`
  * additionally strips the published callsite from the artifact copy the PLANNER reads, which is how an
@@ -175,9 +188,11 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, {});
   const callee = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
 
-  const callerArtifact: any = solidity ? (solidity as any).X179SolFoo : compileString(
-    shape === 'forward' ? FORWARD_CALLER : EXPRESSION_CALLER, options,
-  );
+  const callerArtifact: any = solidity ? (solidity as any).X179SolFoo
+    : shape === 'expression-compat'
+      ? compileString(EXPRESSION_COMPAT_CALLER,
+        { ...options, solidityImportCompat: true, ecrecover: 'p2pkh' } as never)
+      : compileString(shape === 'forward' ? FORWARD_CALLER : EXPRESSION_CALLER, options);
   const handler = solidity ? 'callBar' : 'ping';
   // The callsite publishes `addressStateVar: 'callee_IX179Callee'` - the external-call lowering's internal
   // name - while the STATE LAYOUT still calls the slot `callee`. Seeding by the ABI name silently leaves the
@@ -354,6 +369,7 @@ const VECTOR_EXHAUSTED = 'Program called an OP_SPLIT operation with an invalid i
 const SUBJECTS = [
   { shape: 'forward', label: 'interface cast, forwarded argument', covenantBinds: true },
   { shape: 'expression', label: 'interface cast, expression argument, state-var target', covenantBinds: true },
+  { shape: 'expression-compat', label: 'interface cast, compat mode, return-event slot', covenantBinds: true },
   { shape: 'solidity', label: 'CONTRACT-TYPED state variable, bare call body', covenantBinds: false },
   { shape: 'solidity-require', label: 'CONTRACT-TYPED state variable, trailing require', covenantBinds: false },
 ] as const;

@@ -629,59 +629,64 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
 });
 
 describe('Layer-3 result graph hostile cases (E1)', () => {
+  // `failingInput` above names the covenant that rejected each mutation. This second assertion owns the
+  // broadcast boundary: the finalized bytes must reach script verification, not fail for relay policy,
+  // missing inputs, a mempool conflict, or an RPC condition.
+  const SCRIPT_REFUSAL = /mandatory-script-verify-flag-failed/;
+
   it('rejects a forged producer result commitment on an otherwise honest transcript', async () => {
     const built = await buildResultGraph('forge-producer-commitment');
     expect(failingInput(built.builder)).toBe(INPUT.masterC);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a forged non-leading tuple field produced by the deepest consumer', async () => {
     const built = await buildResultGraph('forge-deep-tuple-field');
     // The next consumer up the chain checks the tuple it consumed, so the forgery stops at E, not at D.
     expect(failingInput(built.builder)).toBe(INPUT.masterE);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a forged struct field midway along the transitive chain', async () => {
     const built = await buildResultGraph('forge-struct-field');
     expect(failingInput(built.builder)).toBe(INPUT.masterC);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a forged dynamic string result midway along the transitive chain', async () => {
     const built = await buildResultGraph('forge-string-result');
     expect(failingInput(built.builder)).toBe(INPUT.masterE);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a forged dynamic bytes result consumed by the root', async () => {
     const built = await buildResultGraph('forge-bytes-result');
     expect(failingInput(built.builder)).toBe(INPUT.masterA);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects swapping the two occurrences one producer contributes to two consumers', async () => {
     const built = await buildResultGraph('swap-producer-occurrences');
     expect(failingInput(built.builder)).toBe(INPUT.masterA);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects consuming one producer occurrence twice', async () => {
     const built = await buildResultGraph('duplicate-producer-occurrence');
     expect(failingInput(built.builder)).toBe(INPUT.masterD);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a consumer emission that substitutes another occurrence of the same producer', async () => {
     const built = await buildResultGraph('substitute-consumer-emission');
     expect(failingInput(built.builder)).toBe(INPUT.masterA);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a transcript that reorders one producer result vector', async () => {
     const built = await buildResultGraph('reorder-producer-result-vector');
     expect(failingInput(built.builder)).toBe(INPUT.projectionC);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 
   it('rejects a producer result vector carrying a suffix no invocation consumes', async () => {
@@ -689,6 +694,6 @@ describe('Layer-3 result graph hostile cases (E1)', () => {
     // Only the producer's own route catches this: the controller sees a commitment that matches the
     // transcript, and the projection verifier's result cursor is never asserted to be exhausted.
     expect(failingInput(built.builder)).toBe(INPUT.masterC);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
   });
 });

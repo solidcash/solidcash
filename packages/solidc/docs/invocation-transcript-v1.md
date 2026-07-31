@@ -409,7 +409,11 @@ The root has `parentInvocationId = 0xffffffff`, `callsiteId = 0`, and `occurrenc
 Every non-root invocation is authenticated by exactly one external callsite executed by its parent
 handler. A parent may have several children; their `(callsiteId, occurrence)` sequence MUST match
 runtime execution exactly. For each `(parentInvocationId, callsiteId)`, occurrences start at zero and
-are contiguous with no gaps. Invocation IDs are not replay nonces and have no meaning outside the
+are contiguous with no gaps. SDK derivation resolves typed targets by this same compiler-stable tuple, not by a
+global interface cursor: each reached conditional/loop occurrence may select or reuse a participant
+independently. Compiler-proven minimum/maximum occurrence bounds remain mandatory, and a
+parameter-sourced target MUST equal the registered participant locking bytecode. Invocation IDs are
+not replay nonces and have no meaning outside the
 consumed transaction.
 
 `valueDelta` is within the signed 64-bit range and BCH money range. It is the net satoshi-container

@@ -23,6 +23,18 @@ export interface DeriveCompiledGraphOptions {
   function: string;
   args?: readonly FunctionArgument[];
   targets: WorklistTargetRegistry;
+  /**
+   * Resolve a typed call target by its compiler-stable callsite and reached occurrence. Unlike interface
+   * arrays this is independent of traversal-global cursor order, so conditional/loop fixed points can reuse
+   * one owner or select heterogeneous owners without pre-enumerating unrelated callsites.
+   */
+  target?: (context: {
+    participant: WorklistParticipant;
+    function: string;
+    callsiteId: number;
+    occurrence: number;
+    interfaceName: string;
+  }) => WorklistParticipant | undefined;
   /** Correctness bound for source recursion and runtime-sized shapes. The transcript v1 ceiling is 24. */
   maximumInvocations?: number;
   /**
@@ -167,7 +179,17 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   };
 
   const targetCursors = new Map<string, number>();
-  const takeTarget = (call: ExternalCallAbi): WorklistParticipant => {
+  const takeTarget = (
+    call: ExternalCallAbi,
+    participant: WorklistParticipant,
+    functionName: string,
+    occurrence: number,
+  ): WorklistParticipant => {
+    const resolved = options.target?.({
+      participant, function: functionName, callsiteId: call.callsiteId!, occurrence,
+      interfaceName: call.interfaceName,
+    });
+    if (resolved) return resolved;
     const registered = options.targets[call.interfaceName];
     if (!registered) {
       throw new Error(`layer3: no symbolic target registered for '${call.interfaceName}'`);
@@ -319,7 +341,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if ((call.occurrence ?? 'once') !== 'once') {
           throw new Error(`layer3: batched callsite ${call.callsiteId} must be straight-line`);
         }
-        const target = takeTarget(call);
+        const target = takeTarget(call, participant, functionName, 0);
         const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
         rows.forEach((row, index) => {
           if (row.logicalIndex !== index) {
@@ -409,7 +431,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         continue;
       }
       for (let reached = 0; reached < count; reached += 1) {
-        const target = takeTarget(call);
+        const target = takeTarget(call, participant, functionName, reached);
         assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,

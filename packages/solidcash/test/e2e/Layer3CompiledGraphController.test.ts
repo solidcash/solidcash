@@ -1750,7 +1750,13 @@ async function buildStateCycle(tamperState = false) {
     root: participantA,
     function: 'start',
     args: commonArgs,
-    targets: { IStateB: participantB, IStateA: participantA },
+    targets: {},
+    target: ({ interfaceName, occurrence }) => {
+      expect(occurrence).toBe(0);
+      if (interfaceName === 'IStateB') return participantB;
+      if (interfaceName === 'IStateA') return participantA;
+      return undefined;
+    },
   });
   expect(plan.invocations.map(({ parent, callee, function: name }) => ({ parent, callee, name }))).toEqual([
     { parent: null, callee: 0, name: 'start' },

@@ -368,8 +368,14 @@ describe('layer3.planCompiledGraph', () => {
       root: loopParticipant,
       function: 'repeat',
       args: [new Uint8Array([0x53]), false, 2n],
-      targets: { IPeer: [leafParticipant, leafParticipant] },
+      targets: {},
       occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+      target: ({ callsiteId, occurrence, interfaceName }) => {
+        expect({ callsiteId, occurrence, interfaceName }).toEqual({
+          callsiteId: 0, occurrence: expect.any(Number), interfaceName: 'IPeer',
+        });
+        return leafParticipant;
+      },
     });
     expect(repeated.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
 

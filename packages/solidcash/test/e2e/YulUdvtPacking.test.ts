@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
@@ -41,6 +42,6 @@ describe('Yul assembly bit-packing over UDVT operands (LibClock)', () => {
 
   it('a wrong expected duration fails (the shl/or/shr packing actually ran)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.verify(7n, 999n, 8n, 999n)).rejects.toThrow();
+    await expect(sc.verify(7n, 999n, 8n, 999n)).rejects.toThrow(inputZeroVerifyFailure);
   });
 });

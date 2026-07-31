@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
@@ -48,7 +49,7 @@ describe('sorted address-valued mapping (NFT owner shape)', () => {
     expect((await call('setOwner', 5n, bobAddress)).txid).toBeDefined();
     expect(await valOf(5n)).toBe(binToHex(addressToLockScript(bobAddress)));
     await expect(call('check', 5n, bobAddress)).resolves.toBeDefined();
-    await expect(call('check', 5n, aliceAddress)).rejects.toThrow();
+    await expect(call('check', 5n, aliceAddress)).rejects.toThrow(inputZeroVerifyFailure);
 
     // Update owner[5] -> alice (present-key update of an address value).
     expect((await call('setOwner', 5n, aliceAddress)).txid).toBeDefined();

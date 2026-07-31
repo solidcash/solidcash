@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 import { compileString as compile } from 'solidc';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
@@ -187,7 +188,7 @@ describe('S1 review: collection-address output cardinality', () => {
     ));
     await expectCovenantRejection(provider, forged);
     await expectAccepted(provider, hex);
-    await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow();
+    await expect(sc.getFunction('check')(9999n, 999n).send()).rejects.toThrow(inputZeroVerifyFailure);
   }, 120_000);
 
   // Honest control for the multi-slot shape: the unmutated derivation is valid, so the two `it.fails` blocks

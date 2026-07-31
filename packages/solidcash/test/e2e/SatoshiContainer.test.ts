@@ -1,4 +1,7 @@
 import { compileString } from 'solidc';
+const providerInputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
@@ -490,7 +493,7 @@ contract C(bytes20 owner) {
       // Submitted against LIVE utxos (a rejected tx spends nothing): rejected by the covenant, not a utxo error.
       let msg = '';
       await expect(provider.sendRawTransaction(attackRaw).catch((e) => { msg = (e as Error).message; throw e; }))
-        .rejects.toThrow();
+        .rejects.toThrow(providerInputZeroVerifyFailure);
       expect(/missingorspent|inputs/i.test(msg)).toBe(false);
       expect(/verify|script/i.test(msg)).toBe(true);
 

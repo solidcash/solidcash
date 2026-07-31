@@ -157,6 +157,8 @@ async function sendRow(s: Awaited<ReturnType<typeof setup>>, row: RowArgs): Prom
 }
 
 describe('layer-3 participant-binding spike (E2E)', () => {
+  const COVENANT_REFUSAL = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
+  const TOKEN_CONSERVATION_REFUSAL = /mandatory-script-verify-flag-failed .*outputs include a minting token that is not substantiated by the transaction inputs/;
   it('POSITIVE: binds two clone participants to the actual transaction on BCH-2026', async () => {
     const s = await setup();
     const { builder, rawHex } = buildTx(s, s.valid);
@@ -192,7 +194,7 @@ describe('layer-3 participant-binding spike (E2E)', () => {
   it('HOSTILE: forged owner locking bytecode in the row is rejected by the covenant', async () => {
     const s = await setup();
     const forgedLbc0 = new Uint8Array(35).fill(0xab); // distinct from lbc1, but not the actual input-0 owner
-    await expect(sendRow(s, { ...s.valid, lbc0: forgedLbc0 })).rejects.toThrow();
+    await expect(sendRow(s, { ...s.valid, lbc0: forgedLbc0 })).rejects.toThrow(COVENANT_REFUSAL);
     // positive control on the SAME still-unspent master UTXOs
     await expect(sendRow(s, s.valid)).resolves.toBeTypeOf('string');
   });
@@ -200,7 +202,7 @@ describe('layer-3 participant-binding spike (E2E)', () => {
   it('HOSTILE: forged owner category in the row is rejected by the covenant', async () => {
     const s = await setup();
     const forgedCat0 = concat(new Uint8Array(32).fill(0xcd), Uint8Array.from([0x02]));
-    await expect(sendRow(s, { ...s.valid, cat0: forgedCat0 })).rejects.toThrow();
+    await expect(sendRow(s, { ...s.valid, cat0: forgedCat0 })).rejects.toThrow(COVENANT_REFUSAL);
     await expect(sendRow(s, s.valid)).resolves.toBeTypeOf('string');
   });
 
@@ -213,7 +215,8 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // Flip a byte of output 0's token category: breaks both the handler output binding and master preservation.
     forged.outputs[0].token!.category = forged.outputs[0].token!.category.slice();
     forged.outputs[0].token!.category[0] ^= 1;
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(TOKEN_CONSERVATION_REFUSAL);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
@@ -226,13 +229,14 @@ describe('layer-3 participant-binding spike (E2E)', () => {
     // Corrupt input 1's SCB1 selector push (bytes 1..4 of its unlocking bytecode = "SCB1").
     forged.inputs[1].unlockingBytecode = forged.inputs[1].unlockingBytecode.slice();
     forged.inputs[1].unlockingBytecode[1] ^= 1;
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(COVENANT_REFUSAL);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: an unbranded participant (no L3B1CTRL controller prefix) is rejected', async () => {
     const s = await setup(false); // clones whose redeem scripts lack the controller prefix
-    await expect(sendRow(s, s.valid)).rejects.toThrow();
+    await expect(sendRow(s, s.valid)).rejects.toThrow(COVENANT_REFUSAL);
     // Positive control: a branded setup with the same construction is accepted.
     const branded = await setup(true);
     await expect(sendRow(branded, branded.valid)).resolves.toBeTypeOf('string');

@@ -118,6 +118,15 @@ for (const route of drove) {
   }
 }
 
+const uniqueUnresolved = [...new Set(unresolved)].sort();
+const uniqueUnmatched = [...new Set(unmatched)].sort();
+if (uniqueUnresolved.length > 0 || uniqueUnmatched.length > 0) {
+  throw new Error(`X235 refuses unresolved route attribution: ${JSON.stringify({
+    unresolved: uniqueUnresolved,
+    unmatched: uniqueUnmatched,
+  })}`);
+}
+
 console.log(JSON.stringify({
   partition: { rows: rows.length, gained: gained.length, lost: lost.length },
   observation: {
@@ -129,6 +138,6 @@ console.log(JSON.stringify({
   },
   proved: proved.size,
   handlers: [...proved].sort(),
-  unresolved: [...new Set(unresolved)].sort(),
-  unmatched: [...new Set(unmatched)].sort(),
+  unresolved: uniqueUnresolved,
+  unmatched: uniqueUnmatched,
 }, null, 2));

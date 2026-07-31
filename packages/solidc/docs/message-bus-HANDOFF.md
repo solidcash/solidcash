@@ -28,7 +28,7 @@ refused at a NAMED INPUT INDEX.
 | figure | status |
 |---|---|
 | 206 recovered handlers | SOLID. Re-taken with one shared probe binary across two worktrees, both directions checked (206 gained, 0 lost). |
-| **82 of 206 VM-proved** | Current. Machine-derived, denominator parsed from the partition literal itself. It was 35 before the last round, and it was reported as 12 by me - that was wrong by ~3x. |
+| **82 of 206 VM-proved, and the union is LARGER** | Two independent machine re-takes both land on 82, each with a parser self-checked against X160's own published 135 rows / 206 gained. **But they are not the same 82**: the second run includes `EnglishAuction.highestBid/endAt/started`, which did not settle at all when the first was taken, so the second set must be missing ~3 the first covered. The two file sets differ (24 files + indirect helpers vs 25 by corpus-root grep). **Do not publish a single number until one run covers the UNION of both file sets.** It was 35 before the last round, and I reported it as 12 - wrong by ~3x. |
 | 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 INADMISSIBLE since X187 (`Attack.attack`, `Foo.callBar` - X201 would have re-admitted them but was reverted), 4 publish `writesState` ABSENT and mutate nothing. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
 | "co-spent-callee graphs have no subject in the 206" | SOLID. Exactly 2 of 206 publish an outgoing external call; the other 81 measured directly at 0. A boundary of the POPULATION, not the machinery. |

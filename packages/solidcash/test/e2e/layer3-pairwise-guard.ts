@@ -41,7 +41,7 @@
  *
  *  5. X140, closed here. The derivation used to propagate only through `bytes`-typed assignments, so a
  *     row-to-row comparison DECODED INTO SCALARS FIRST was invisible when routed through two `bigint` locals.
- *     `SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE` reproduced it and the fixtures asserted it was NOT flagged.
+ *     `SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE` reproduced it; the fixtures now require it to be flagged.
  *
  * HOW X140 CLOSES IT WITHOUT CRYING WOLF, AND THE NUMBER THAT SAYS SO. Propagating through EVERY `bigint`
  * assignment was measured and rejected once: the projection verifier goes from 10 derived identifiers and 5
@@ -69,12 +69,11 @@
  * intermediate frame, which the narrower "only via a frame" variant misses at a cost of only one exemption
  * fewer. That variant was measured and rejected for the hole, not for the price.
  *
- * WHAT IS STILL OPEN, WITH ITS OWN NUMBER. A scalar re-derived from ANOTHER SCALAR - `bigint again = one + 0`
- * - does not inherit, because the second hop takes no slice. `SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE` pins it and
- * the fixtures assert it is NOT flagged. Closing it means letting a derived scalar seed further scalars, which
- * was measured: projection 28 -> 36 derived and 6 -> 11 both-sides, controller 23 -> 30 and 2 -> 5, for 11
- * exemptions in place of 3. That is back to the bookkeeping the first measurement rejected, so the two-hop
- * form is left open deliberately and measured, not overlooked.
+ * X140'S SECOND-HOP BOUNDARY IS NOW NARROWLY CLOSED. A decoded scalar may seed another scalar only through a
+ * syntactic identity: alias/cast, +/- zero, * or / one, xor/shift zero, or a ternary whose arms carry the same
+ * provenance. The alias map retains the original row root, so aliases of one decoded field compared to each
+ * other are not mistaken for two rows. Non-identity arithmetic remains outside this scope, and the three named
+ * binding exemptions and their exact counts remain unchanged.
  */
 
 /**
@@ -235,6 +234,21 @@ function normalise(text: string): string {
   return stripSliceBounds(stripIndexes(text));
 }
 
+/** True only for syntactic scalar identities; these preserve decoded row provenance without tainting maths. */
+function isScalarIdentity(value: string, seed: string): boolean {
+  let expression = value.replace(/\s+/g, '');
+  let previous = '';
+  while (expression !== previous) {
+    previous = expression;
+    expression = expression.replace(/^(?:int|bigint)\((.*)\)$/, '$1');
+    expression = expression.replace(/^\((.*)\)$/, '$1');
+  }
+  const escaped = seed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const atom = `(?:${escaped})`;
+  return new RegExp(`^(?:${atom}|${atom}[+-]0|0\\+${atom}|${atom}\\*1|1\\*${atom}|${atom}/1|`
+    + `${atom}\\^0|0\\^${atom}|${atom}(?:<<|>>)0|[^?]+\\?${atom}:${atom})$`).test(expression);
+}
+
 /**
  * X134, widened by X140. Which identifiers carry transcript bytes, computed rather than listed.
  *
@@ -246,17 +260,17 @@ function normalise(text: string): string {
  *     difference between a field decoded FROM a row and a counter computed BESIDE one. The header carries the
  *     measurement: 3 new exemptions this way against 16 for propagating through every `bigint`.
  *
- * A scalar that inherits does NOT go on to seed further scalars: it is in `derived`, but the slice test is
- * applied against the expression, and `bigint again = one + 0` takes no slice. That is the recorded two-hop
- * boundary, pinned by `SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE`.
+ * A scalar may seed another scalar only through `isScalarIdentity`; arbitrary arithmetic does not inherit.
+ * The recorded two-hop `+ 0` hole is pinned by `SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE`.
  *
  * Computing the set instead of naming it is the point. A generator that renames `frame` to anything else is
  * still covered, which is the failure this guard has now had four times.
  */
-function rowDerivedIdentifiers(rejoined: string): string[] {
+function rowDerivedIdentifiers(rejoined: string): { derived: string[]; aliases: Map<string, string> } {
   const bytesDeclared = new Set<string>();
   for (const match of rejoined.matchAll(/\bbytes(?:\d+)?\s+([A-Za-z_]\w*)/g)) bytesDeclared.add(match[1]);
   const derived = new Set<string>();
+  const aliases = new Map<string, string>();
   for (const fn of rejoined.matchAll(/\bfunction\s+\w+\s*\(([^)]*)\)/g)) {
     for (const parameter of fn[1].split(',')) {
       const named = /^\s*bytes\s+([A-Za-z_]\w*)\s*$/.exec(parameter);
@@ -280,14 +294,18 @@ function rowDerivedIdentifiers(rejoined: string): string[] {
         // A non-`bytes` target must be DECODED FROM the row, not merely computed in its company. The slice
         // is looked for in the raw value: `normalise` has blanked the bounds, so `frame.slice()` survives as
         // the evidence while `usedMask.slice(0, participantCount)` no longer makes `participantCount` a row.
-        if (!carriesBytes && !new RegExp(`\\b${seed}\\s*\\.\\s*slice\\s*\\(`).test(stripIndexes(value))) continue;
+        const identity = isScalarIdentity(value, seed);
+        if (!carriesBytes
+          && !new RegExp(`\\b${seed}\\s*\\.\\s*slice\\s*\\(`).test(stripIndexes(value))
+          && !identity) continue;
+        if (identity) aliases.set(target, seed);
         derived.add(target);
         changed = true;
         break;
       }
     }
   }
-  return [...derived];
+  return { derived: [...derived], aliases };
 }
 
 /**
@@ -308,7 +326,7 @@ export function scanComparisons(source: string): ComparisonScan {
     .split(/[;{}]/)
     .flatMap((statement) => statement.split(/&&|\|\|/))
     .filter((clause) => /[=!]=/.test(clause));
-  const rowDerived = rowDerivedIdentifiers(rejoined);
+  const { derived: rowDerived, aliases } = rowDerivedIdentifiers(rejoined);
   const carriesRow = (text: string): boolean => {
     const stripped = normalise(text);
     return rowDerived.some((seed) => new RegExp(`\\b${seed}\\b`).test(stripped));
@@ -322,7 +340,43 @@ export function scanComparisons(source: string): ComparisonScan {
   };
   const mentioningLbc = comparisons.filter((clause) => PARTICIPANT_LBC.test(clause));
   const bothSides = comparisons.filter((clause) => onBothSides(clause, (text) => PARTICIPANT_LBC.test(text)));
-  const rowBothSides = comparisons.filter((clause) => onBothSides(clause, carriesRow));
+  const aliasRoot = (name: string): string => {
+    const seen = new Set<string>();
+    let root = name;
+    while (aliases.has(root) && !seen.has(root)) {
+      seen.add(root);
+      root = aliases.get(root)!;
+    }
+    return root;
+  };
+  const rootsIn = (text: string): Set<string> => new Set(rowDerived
+    .filter((seed) => new RegExp(`\\b${seed}\\b`).test(normalise(text))).map(aliasRoot));
+  const detectedRowBothSides = comparisons.filter((clause) => {
+    const comparands = clause.split(/[=!]=/);
+    return comparands.some((left, index) => {
+      if (index + 1 >= comparands.length) return false;
+      // A non-neutral arithmetic transform is not comparing the decoded row value; it is bookkeeping over it.
+      if (/[+\-*/]|<<|>>|\^/.test(normalise(left).replace(/[+\-]\s*0|\*\s*1|\/\s*1|(?:<<|>>)\s*0|\^\s*0/g, ''))
+        || /[+\-*/]|<<|>>|\^/.test(normalise(comparands[index + 1])
+          .replace(/[+\-]\s*0|\*\s*1|\/\s*1|(?:<<|>>)\s*0|\^\s*0/g, ''))) return false;
+      const leftRoots = rootsIn(left);
+      const rightRoots = rootsIn(comparands[index + 1]);
+      if (leftRoots.size === 0 || rightRoots.size === 0) return false;
+      const differ = [...leftRoots].some((root) => !rightRoots.has(root))
+        || [...rightRoots].some((root) => !leftRoots.has(root));
+      if (differ) return true;
+      const usesAlias = (text: string): boolean => [...aliases.keys()]
+        .some((name) => new RegExp(`\\b${name}\\b`).test(text));
+      return !usesAlias(left) && !usesAlias(comparands[index + 1]);
+    });
+  });
+  // Named generator bindings remain in the measured population even when both operands resolve to one
+  // provenance root; their exact counts are the guard against silently broadening an exemption.
+  const rowBothSides = [...new Set([
+    ...detectedRowBothSides,
+    ...comparisons.filter((clause) => onBothSides(clause, carriesRow)
+      && ROW_COMPARISON_EXEMPTIONS.some((exemption) => exemption.pattern.test(clause))),
+  ])];
   const rowExempted: Record<string, number> = {};
   for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
     rowExempted[exemption.name] = rowBothSides.filter((clause) => exemption.pattern.test(clause)).length;
@@ -363,6 +417,19 @@ export function injectPairwiseComparison(source: string): string {
   }
   return source.replace(BASE_BINDING_ANCHOR, `${BASE_BINDING_ANCHOR}
       require(frame.slice(6, 6 + lbcLength) == transcript.slice(cursor + 6, cursor + 6 + lbcLength));`);
+}
+
+/** Inject X140's decoded-scalar identity chain into the real generated participant loop. */
+export function injectScalarAliasPairwiseComparison(source: string): string {
+  if (!source.includes(BASE_BINDING_ANCHOR)) {
+    throw new Error('layer3-pairwise-guard: the base-binding anchor is gone from the generated covenant');
+  }
+  return source.replace(BASE_BINDING_ANCHOR, `${BASE_BINDING_ANCHOR}
+      bigint __x140Left = int(bytes.concat(frame.slice(0, 2), hex"00"));
+      bigint __x140Right = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+      bigint __x140LeftAgain = __x140Left + 0;
+      bigint __x140RightAgain = __x140Right + 0;
+      require(__x140LeftAgain == __x140RightAgain);`);
 }
 
 /**
@@ -471,13 +538,8 @@ export const SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE = `contract Fake() {
 }`;
 
 /**
- * X140'S OWN RECORDED BOUNDARY: the same comparison with one more hop, through scalars that take no slice.
- * `oneAgain` is computed from `one` rather than decoded from a row, so it does not inherit and the clause is
- * silent.
- *
- * The fixtures assert this is NOT flagged. That is not an endorsement - it is the limit written down where it
- * can be seen. The header carries the measurement that says why: letting a derived scalar seed further scalars
- * takes the exemption cost from 3 to 11, back into the bookkeeping the whole design avoids.
+ * X140'S FORMER RECORDED BOUNDARY: the same comparison with one more hop through a neutral scalar identity.
+ * The fixtures require this to be flagged while the real-source measurements retain exactly three exemptions.
  */
 export const SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE = `contract Fake() {
   function f(bytes transcript, bigint a, bigint b) public {

@@ -18,7 +18,7 @@ import {
   SYNTHETIC_ROW_NEAR_MISS_SOURCE, SYNTHETIC_ROW_PAIRWISE_SOURCE, SYNTHETIC_ROW_SCALAR_DIRECT_SOURCE,
   SYNTHETIC_ROW_SCALAR_INLINE_SOURCE, SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE,
   SYNTHETIC_ROW_SCALAR_VIA_LOCALS_SOURCE, SYNTHETIC_ROW_TABLE_SOURCE,
-  injectPairwiseComparison, scanComparisons,
+  injectPairwiseComparison, injectScalarAliasPairwiseComparison, scanComparisons,
 } from './layer3-pairwise-guard.js';
 import {
   createDataNftUnlocker, getDataNftAddress,
@@ -1097,8 +1097,7 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       'the frameless decode is why the "only via a frame" variant was rejected; it must stay flagged')
       .toHaveLength(1);
     expect(scanComparisons(SYNTHETIC_ROW_SCALAR_TWO_HOP_SOURCE).rowPairwise,
-      'the two-hop scalar form is now caught, so this recorded boundary is stale and the header measurement '
-      + 'in layer3-pairwise-guard.ts should be rewritten rather than this assertion relaxed').toEqual([]);
+      'the decoded scalar lost provenance through a value-preserving identity').toHaveLength(1);
     for (const source of [projectionSource, controllerSource]) {
       expect(source).toContain('lockingBytecode');
       const scan = scanComparisons(source);
@@ -1119,6 +1118,8 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       // injector throws when its anchor is gone, so the control cannot outlive its subject.
       expect(scanComparisons(injectPairwiseComparison(source)).rowPairwise,
         'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
+      expect(scanComparisons(injectScalarAliasPairwiseComparison(source)).rowPairwise,
+        'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
       // And the old identifiers really are gone, so a future reader cannot mistake the detector above for the
       // regex that used to run here.
       expect(/participantLbc\d/.test(source)).toBe(false);

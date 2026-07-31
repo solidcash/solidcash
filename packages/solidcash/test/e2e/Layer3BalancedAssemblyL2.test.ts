@@ -258,6 +258,8 @@ async function build(malformation: Malformation = 'none'): Promise<Built> {
 }
 
 describe('L2 balanced funding/change/event-NFT block assembly', () => {
+  const VM_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('SEMANTIC: settles a balanced two-block assembly and preflights clean before broadcast', async () => {
     const built = await build();
     // No exception: every block is a complete span, concatenated from 0, with paired inputs and 1,000-satoshi
@@ -327,7 +329,7 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     const built = await build('missing-slot-funder');
     expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
       .toThrow(/balanced assembly: transaction has 7 slots, layout declares 8/);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(VM_REFUSAL);
   }, 180_000);
 
   it('HOSTILE: a return-event NFT moved out of its block is rejected by preflight and by the VM', async () => {
@@ -336,7 +338,7 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     expect(built.builder.inputs.length).toBe(built.builder.outputs.length);
     expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
       .toThrow(/participant 0 'returnEvent' output 1 carries no authenticated NFT/);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(VM_REFUSAL);
   }, 180_000);
 
   // This WAS a measured limit: "event NFTs remain inside the emitting participant's block" was an SDK assembly
@@ -349,7 +351,7 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     expect(built.builder.outputs[1].token?.nft?.commitment).toBeTruthy();
     expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
       .toThrow(/output 7 carries a token outside every participant block \(region ends at 4\)/);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(VM_REFUSAL);
   }, 180_000);
 
   /**
@@ -384,7 +386,7 @@ describe('L2 balanced funding/change/event-NFT block assembly', () => {
     expect(() => preflightBalancedBlockAssembly(built.builder, built.assembly))
       .toThrow(/'returnEvent' output 1 is 5000 satoshis, the emitting covenant bounds an event slot at 1200/);
     // Unlike the old off-spec-value row, this one is NOT preflight-only: consensus rejects it too.
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(VM_REFUSAL);
   }, 180_000);
 
   it('FAIL_CLOSED: a terminal change output inside a participant block is rejected by preflight', async () => {

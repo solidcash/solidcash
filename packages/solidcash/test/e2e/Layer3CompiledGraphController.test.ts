@@ -3193,7 +3193,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the authenticated result of a low-level staticcall edge', async () => {
     const { provider, transaction } = await buildRawCallGraph(true, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('executes a pinned delegate covenant in the proxy balanced block', async () => {
@@ -3205,12 +3205,12 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a delegate input selecting calldata other than the transcript-bound payload', async () => {
     const { provider, transaction } = await buildDelegateGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('rejects a forged proxy post-state computed outside the delegate covenant', async () => {
     const { provider, transaction } = await buildDelegateGraph(false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
   it('relocates a delegate proxy behind an independently compiled caller block', async () => {
@@ -3221,7 +3221,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a delegate witness pointing outside its adjacent proxy block', async () => {
     const { provider, transaction } = await buildRelocatedDelegateGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(3));
   });
 
   it('joins independently compiled application SCB1 routes under one canonical graph', async () => {
@@ -3231,12 +3231,12 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects an application input executing a different locally-valid batch', async () => {
     const { provider, transaction } = await build(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(1));
   });
 
   it('rejects a canonical graph whose child arguments differ from the source-executed call', async () => {
     const { provider, transaction } = await build(false, false, false, false, false, false, 2n);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('binds conditional call reachability to the runtime emission cursor', async () => {
@@ -3252,11 +3252,11 @@ describe('Layer-3 compiled graph controller', () => {
   it('rejects omitted and injected conditional child rows', async () => {
     const omitted = await build(false, false, false, false, false, false, 1n,
       { take: true, includeChild: false });
-    await expect(omitted.provider.sendRawTransaction(omitted.transaction)).rejects.toThrow();
+    await expect(omitted.provider.sendRawTransaction(omitted.transaction)).rejects.toThrow(scriptRefusalAt(0));
 
     const injected = await build(false, false, false, false, false, false, 1n,
       { take: false, includeChild: true });
-    await expect(injected.provider.sendRawTransaction(injected.transaction)).rejects.toThrow();
+    await expect(injected.provider.sendRawTransaction(injected.transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('consumes one authenticated child row per reached loop iteration', async () => {
@@ -3275,12 +3275,13 @@ describe('Layer-3 compiled graph controller', () => {
       false, false, false, false, false, false, 1n, undefined, undefined,
       undefined, false, false, false, 8n,
     );
-    await expect(substituted.provider.sendRawTransaction(substituted.transaction)).rejects.toThrow();
+    await expect(substituted.provider.sendRawTransaction(substituted.transaction))
+      .rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('rejects omitting the graph controller even when every local batch remains valid', async () => {
     const { provider, transaction } = await build(false, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('rejects a root-committed but structurally invalid invocation tree', async () => {

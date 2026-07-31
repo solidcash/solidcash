@@ -238,4 +238,29 @@ contract CtxOutState(int brand, address peer) {
     const direct = admission(compileString(outStateSource, directOptions), 'observe');
     expect(direct).toEqual({ eligible: false, reason: 'batched-handler-forward-call-not-enabled' });
   }, 300_000);
+
+  it('refuses a shared foreign outState read that source-orders before its settling call', () => {
+    const source = `pragma solidcash >=0.8.0;
+interface ICtxPeer {
+  public int count;
+  function bump(int n);
+}
+contract CtxEarlyOutState(int brand, address peer) {
+  int seen;
+  function keepRoute(int n) public {
+    this.seen = this.seen + n;
+    require(n >= 0);
+  }
+  function observe(int n) public {
+    int unsettled = ICtxPeer(peer).outState.count;
+    ICtxPeer(peer).bump(n);
+    this.seen = unsettled;
+    require(n >= 0);
+  }
+}`;
+    expect(admission(compileString(source, graphOptions), 'observe')).toEqual({
+      eligible: false,
+      reason: 'foreign-outstate-read-precedes-shared-call-settlement',
+    });
+  }, 300_000);
 });

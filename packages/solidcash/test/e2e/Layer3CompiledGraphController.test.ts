@@ -494,6 +494,11 @@ async function build(
       cursor += 2 + emissionsLength;
       const callersLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + callersLength;
+      cursor += 2; // settlement boundary
+      const completionPositionsLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + completionPositionsLength;
+      const settlementTableLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + settlementTableLength;
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;

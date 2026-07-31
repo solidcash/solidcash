@@ -756,10 +756,12 @@ describe('layer3.planCompiledGraph', () => {
     // C3 is thereby INSIDE the 100,000-byte standard relay ceiling by 3,698 bytes, with all 108 slots intact.
     // (This comment used to give C1 as 62,670 and C3 as 99,618 - both the 129 x N arithmetic rather than the
     // build, and the two figures the F1 and F2 tables disagreed with. The measurements are above.)
-    // The controller row is unchanged across all three cuts, and that is a control rather than a coincidence:
-    // each edited `generateGraphProjectionVerifier` only, so exactly one covenant's compiled size may move.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_775);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_420);
+    // The settlement-boundary extension necessarily moves both rows: the controller authenticates the canonical
+    // participant settlement table and re-derives every owner maximum, while each projection authenticates its
+    // owner's row-completion vector. Keep both exact sizes pinned so a later parser change is measured rather
+    // than silently consuming the relay margin documented above.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_444);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_773);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

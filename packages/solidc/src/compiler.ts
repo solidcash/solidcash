@@ -4,9 +4,9 @@ import { Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
-  ExpressionNode,
+  ExpressionNode, FieldAccessNode,
   FunctionCallNode, FunctionDefinitionNode,
-  ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
+  ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   FunctionCallStatementNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
@@ -547,6 +547,58 @@ function hiddenBatchAbsenceMessage(
   const remedies = [...new Set(entryPoints.map(reasonOf))]
     .map((reason) => HIDDEN_BATCH_REJECTION_REMEDIES[reason]).filter((remedy) => remedy !== undefined);
   return `${head}Rejected entry points - ${stated}.${remedies.length ? ` To admit one: ${remedies.join('; ')}.` : ''}`;
+}
+
+/** A shared call/outState group exposes the callee's final output, so source cannot read it before invoking it. */
+function foreignOutStatePrecedesSharedCall(fn: FunctionDefinitionNode): boolean {
+  const calls: ExternalFunctionCallNode[] = [];
+  const reads: ExternalOutputStateAccessNode[] = [];
+  const rawReads: { node: FieldAccessNode; interfaceName: string; addressName: string }[] = [];
+  const rawCalls: { node: MethodCallNode; interfaceName: string; addressName: string }[] = [];
+  const seen = new Set<Node>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof ExternalFunctionCallNode) calls.push(value);
+    if (value instanceof ExternalOutputStateAccessNode) reads.push(value);
+    if (value instanceof FieldAccessNode && value.expression instanceof FieldAccessNode
+      && value.expression.name === 'outState'
+      && value.expression.expression instanceof FunctionCallNode
+      && value.expression.expression.identifier instanceof IdentifierNode
+      && value.expression.expression.parameters[0] instanceof IdentifierNode) {
+      rawReads.push({
+        node: value,
+        interfaceName: value.expression.expression.identifier.name,
+        addressName: value.expression.expression.parameters[0].name,
+      });
+    }
+    if (value instanceof MethodCallNode && value.object instanceof FunctionCallNode
+      && value.object.identifier instanceof IdentifierNode
+      && value.object.parameters[0] instanceof IdentifierNode) {
+      rawCalls.push({
+        node: value,
+        interfaceName: value.object.identifier.name,
+        addressName: value.object.parameters[0].name,
+      });
+    }
+    for (const child of Object.values(value)) {
+      if (child instanceof Node) visit(child);
+      else if (Array.isArray(child)) child.forEach(visit);
+    }
+  };
+  visit(fn.body);
+  const before = (left: Node, right: Node): boolean => left.location.start.line < right.location.start.line
+    || (left.location.start.line === right.location.start.line
+      && left.location.start.column < right.location.start.column);
+  return rawReads.some((read) => rawCalls.some((call) => call.interfaceName === read.interfaceName
+    && call.addressName === read.addressName && before(read.node, call.node))) || reads.some((read) => {
+    const address = read.outStateNode.addressExpression;
+    if (!(address instanceof IdentifierNode)) return false;
+    return calls.some((call) => call.interfaceName === read.outStateNode.interfaceName
+      && call.addressExpression instanceof IdentifierNode
+      && call.addressExpression.name === address.name
+      && before(read.outStateNode, call));
+  });
 }
 
 /** Add the experimental Release 4 physical dispatcher after source lowering
@@ -1100,6 +1152,9 @@ function synthesizeHiddenBatchRoute(
           : admitExternalHandlers && !(attribution?.refused.has(externalHandlerKey(fn)) ?? false)
             ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
+    else if (!reason && foreignOutStatePrecedesSharedCall(fn)) {
+      reason = 'foreign-outstate-read-precedes-shared-call-settlement';
+    }
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
@@ -1905,7 +1960,8 @@ function synthesizeHiddenBatchRoute(
     }
     const decodedParameters = fn.parameters
       .map((parameter, index) => ({ parameter, index }))
-      .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString()));
+      .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString())
+        && !parameter.name.startsWith('__internal__'));
     const declarations = decodedParameters.map(({ parameter, index }) =>
       `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
     const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
@@ -1929,6 +1985,14 @@ function synthesizeHiddenBatchRoute(
       ...fn.parameters.map((parameter, i) =>
         isTransactionSignatureType(parameter.type.toString())
           ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
+          : parameter.name === '__internal__externalOutStateInputBase'
+          ? (() => {
+            const targetName = fn.externalOutStateReads?.find((read) => read.addressParam)?.addressParam;
+            const targetIndex = fn.parameters.findIndex((candidate) => candidate.name === targetName);
+            if (targetIndex < 0) throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
+            return `__scb_graph_owner_input(__internal__graphSettlementTable, `
+              + `__scb_arg_${handlerIndex}_${targetIndex})`;
+          })()
           : i === tokenCategoryInputByHandler.get(fn)
           ? '__scb_token_category'
           : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
@@ -1942,6 +2006,15 @@ function synthesizeHiddenBatchRoute(
         !entry.perRow && `${entry.base}_row` === varyingEntry.base)
       : -1;
     const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
+    const outStateBoundaryChecks = graphControllerLbc === undefined ? '' : (fn.externalOutStateReads ?? [])
+      .map((read) => {
+        const targetIndex = fn.parameters.findIndex((parameter) => parameter.name === read.addressParam);
+        if (targetIndex < 0) {
+          throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
+        }
+        return `require(__scb_graph_completion >= __scb_graph_settlement(`
+          + `__internal__graphSettlementTable, __scb_arg_${handlerIndex}_${targetIndex}));`;
+      }).join(' ');
     const decode = declarations.length === 0
       ? 'require(rowArgs.length == 0);'
       : declarations.length === 1
@@ -1987,7 +2060,7 @@ function synthesizeHiddenBatchRoute(
           ? resourceSelfAliasHandlerInvokeName : invokeName;
         dispatch = `if (${varying} == ${candidate}) { ${invoke(aliasedArgs, selectedInvoke)} } else { ${dispatch} }`;
       }
-      return `${condition} { ${decode} ${keyChecks} ${dispatch} }`;
+    return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch} }`;
     }
     return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
     }).join(' ');
@@ -2022,10 +2095,15 @@ function synthesizeHiddenBatchRoute(
     'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
+    'bigint __internal__graphSettlementBoundary',
+    'bytes __internal__graphCompletionPositions',
+    'bytes __internal__graphSettlementTable',
   ];
   const routeParameters = [
     'bytes batchBlob', ...graphRouteParameters, ...routeSignatureParameters, ...routeKeyParameters,
   ].join(', ');
+  const graphOutStateMode = graphControllerLbc !== undefined
+    && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
   const parseGraphCaller = graphControllerLbc === undefined ? '' : `
           address __scb_graph_caller;
           (__scb_graph_caller, __scb_graph_caller_cursor) = __scb_parse_graph_caller(
@@ -2043,6 +2121,12 @@ function synthesizeHiddenBatchRoute(
           bigint __scb_call_options = int(bytes.concat(rowArgs.slice(0, 1), hex"00"));
           rowArgs = rowArgs.slice(1, rowArgs.length);
           bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
+          ${!graphOutStateMode ? '' : `require((${rowExpression} + 1) * 2
+            <= __internal__graphCompletionPositions.length);
+          bigint __scb_graph_completion = int(bytes.concat(
+            __internal__graphCompletionPositions.slice(${rowExpression} * 2, (${rowExpression} + 1) * 2),
+            hex"00"
+          ));`}
           ${buildDecodeAndCall(captureResults, rowIndex)}
           else { revert("unknown batch selector"); }
   `;
@@ -2085,7 +2169,12 @@ function synthesizeHiddenBatchRoute(
           bytes2(__internal__graphEmissions.length),
           __internal__graphEmissions,
           bytes2(__internal__graphCallers.length),
-          __internal__graphCallers
+          __internal__graphCallers,
+          bytes2(__internal__graphSettlementBoundary),
+          bytes2(__internal__graphCompletionPositions.length),
+          __internal__graphCompletionPositions,
+          bytes2(__internal__graphSettlementTable.length),
+          __internal__graphSettlementTable
         );
         require(__internal__graphParticipantOffset >= 0
           && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);
@@ -2159,6 +2248,39 @@ function synthesizeHiddenBatchRoute(
           __scb_at + __scb_caller_length
         );
       }`}
+      ${!graphOutStateMode ? '' : `
+      function __scb_graph_owner_input(bytes __scb_table, address __scb_target) internal pure returns (bigint) {
+        bigint __scb_at = 0;
+        while (__scb_at < __scb_table.length) {
+          require(__scb_at + 2 <= __scb_table.length);
+          bigint __scb_lbc_length = int(bytes.concat(__scb_table.slice(__scb_at, __scb_at + 2), hex"00"));
+          __scb_at = __scb_at + 2;
+          require(__scb_at + __scb_lbc_length + 4 <= __scb_table.length);
+          bytes __scb_lbc = __scb_table.slice(__scb_at, __scb_at + __scb_lbc_length);
+          bigint __scb_input = int(bytes.concat(
+            __scb_table.slice(__scb_at + __scb_lbc_length, __scb_at + __scb_lbc_length + 2), hex"00"
+          ));
+          if (__scb_lbc == __scb_target) { return __scb_input; }
+          __scb_at = __scb_at + __scb_lbc_length + 4;
+        }
+        revert("foreign outState owner absent");
+      }
+      function __scb_graph_settlement(bytes __scb_table, address __scb_target) internal pure returns (bigint) {
+        bigint __scb_at = 0;
+        while (__scb_at < __scb_table.length) {
+          require(__scb_at + 2 <= __scb_table.length);
+          bigint __scb_lbc_length = int(bytes.concat(__scb_table.slice(__scb_at, __scb_at + 2), hex"00"));
+          __scb_at = __scb_at + 2;
+          require(__scb_at + __scb_lbc_length + 4 <= __scb_table.length);
+          bytes __scb_lbc = __scb_table.slice(__scb_at, __scb_at + __scb_lbc_length);
+          bigint __scb_boundary = int(bytes.concat(
+            __scb_table.slice(__scb_at + __scb_lbc_length + 2, __scb_at + __scb_lbc_length + 4), hex"00"
+          ));
+          if (__scb_lbc == __scb_target) { return __scb_boundary; }
+          __scb_at = __scb_at + __scb_lbc_length + 4;
+        }
+        revert("foreign outState owner absent");
+      }`}
       function __scb1(${routeParameters}) external${returnDeclaration} {
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
@@ -2189,6 +2311,8 @@ function synthesizeHiddenBatchRoute(
         ${resultDeclarations}
         ${parser}
         require(cursor == batchBlob.length);
+        ${graphControllerLbc === undefined ? ''
+    : 'require(__internal__graphCompletionPositions.length == rowCount * 2);'}
         ${graphControllerLbc === undefined
     ? ''
     : 'require(__scb_graph_caller_cursor == __internal__graphCallers.length);'}

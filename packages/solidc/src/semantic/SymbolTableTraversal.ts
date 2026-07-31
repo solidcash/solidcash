@@ -1157,6 +1157,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphBlockSize',
         '__internal__graphEmissions',
         '__internal__graphCallers',
+        '__internal__graphSettlementBoundary',
+        '__internal__graphCompletionPositions',
+        '__internal__graphSettlementTable',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);

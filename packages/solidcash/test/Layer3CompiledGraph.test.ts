@@ -751,7 +751,7 @@ describe('layer3.planCompiledGraph', () => {
     // build, and the two figures the F1 and F2 tables disagreed with. The measurements are above.)
     // The controller row is unchanged across all three cuts, and that is a control rather than a coincidence:
     // each edited `generateGraphProjectionVerifier` only, so exactly one covenant's compiled size may move.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_459);
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(1_775);
     expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_121);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),

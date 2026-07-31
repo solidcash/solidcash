@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
+import { asmToScript, buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileFileMulti, compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -367,7 +367,7 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
         .filter((handler) => handler.eligible).map((handler) => handler.name);
       const layout = artifact.hiddenBatch!.route.blockLayout!;
       const registers = blockOracleRegisters(artifact.stateLayout);
-      const bytes = artifact.bytecode.length / 2;
+      const bytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
       console.log(`[X180] ${row.key}`);
       console.log(`[X180]   shape: ${row.shape}`);
       console.log(`[X180]   bytes=${bytes} dataNftCount=${artifact.stateLayout.dataNftCount} `
@@ -395,18 +395,23 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
    * no staging reaches its covenant. Reading the figure here is what turns "blocked by the harness" into
    * "has no VM subject, and here is the number".
    */
-  it('MEASURED: what these subjects would cost a real node - every one is over the input-script limit', () => {
+  /** The contract's real redeem-script length. `artifact.bytecode` is ASM, so it is assembled, not divided. */
+  const scriptBytes = (row: Row): number =>
+    scriptToBytecode(asmToScript(artifactForLayout(row).bytecode)).length;
+
+  it('MEASURED: what these subjects would cost a real node - the ones over the input-script limit', () => {
     for (const row of ROWS) {
-      const bytes = artifactForLayout(row).bytecode.length / 2;
+      const bytes = scriptBytes(row);
       const over = bytes - INPUT_SCRIPT_LIMIT;
       console.log(`[X180] SIZE ${row.contract}: ${bytes} bytes, `
         + `${over > 0 ? `OVER the ${INPUT_SCRIPT_LIMIT}-byte input-script limit by ${over}` : 'within limit'}`);
     }
-    // The relaxed-capacity profile is what lets these routes execute at all. Saying so with a number is the
-    // difference between "settles" and "settles, and a real node would refuse the input on size alone".
-    const over = ROWS.filter((row) => artifactForLayout(row).bytecode.length / 2 > INPUT_SCRIPT_LIMIT);
-    console.log(`[X180] ${over.length} of ${ROWS.length} subjects exceed the BCH input-script limit, so every `
-      + 'settlement below is SEMANTIC evidence under the relaxed profile and NOT deployability evidence.');
+    // The relaxed-capacity profile is what lets the two big routes execute at all. Saying so with a number is
+    // the difference between "settles" and "settles, and a real node would refuse the input on size alone".
+    const over = ROWS.filter((row) => scriptBytes(row) > INPUT_SCRIPT_LIMIT);
+    console.log(`[X180] ${over.length} of ${ROWS.length} subjects exceed the BCH input-script limit `
+      + `(${over.map((row) => row.contract).join(', ')}), so THEIR settlements are SEMANTIC evidence under `
+      + 'the relaxed profile and NOT deployability evidence.');
     expect(over.length).toBeGreaterThan(0);
   }, 1_800_000);
 

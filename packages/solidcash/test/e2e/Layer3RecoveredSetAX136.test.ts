@@ -69,11 +69,15 @@ import type { Utxo } from '../../src/interfaces.js';
  *  - SEVEN of 112. That is what this file adds; it does not speak for the other rows.
  *  - Every subject here is `writesState: false`. Set A's gained population is read-only, so this is a read
  *    surface. The one recovered WRITER is the separate, negative `Layer3RecoveredWriterX136.test.ts`.
- *  - `CrowdFund` and `EnglishAuction` are Set A rows this file does NOT run, and the reason is this harness,
- *    not the covenant: both carry a block oracle (`__block_timestamp` + an immutable `__blockOracleOwner` data
- *    NFT) that this staging does not reproduce. `CrowdFund.count` was refused at input index 2 - its ORACLE
- *    data NFT - and `EnglishAuction`'s probe never reached its return-event check. Neither is evidence that
- *    those routes fail; they are unproven, exactly as before.
+ *  - `CrowdFund` and `EnglishAuction` are Set A rows this file does NOT run, and THE REASON GIVEN HERE FOR
+ *    `CrowdFund` WAS WRONG. This file blamed a block oracle and cited the refusal at input index 2 - "its
+ *    ORACLE data NFT" - as the evidence. `Layer3RecoveredOracleWriterX180.test.ts` shows input 2 is simply
+ *    the SECOND data NFT, and that this file was passing the data NFT's slot index where
+ *    `createDataNftUnlocker` takes the MASTER's input index; any route with two or more data NFTs is refused
+ *    there, oracle or not. `CrowdFund.count` SETTLES once the master index is right and the oracle registers
+ *    are named in the pre-state. The unlocker argument is corrected below. `EnglishAuction` is still
+ *    unproven: X180 measures its route aborting at a fixed instruction pointer before any handler dispatch,
+ *    unchanged by the handler, by the declared state and by the caller shape, and does not say what it is.
  *  - `MarketplaceV1/V2/V3`, `FakeToken`, `UnicrowArbitrator`, `UnicrowDispute` and `StableSwap` are Set A
  *    members this file does not run at all.
  */
@@ -383,7 +387,11 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after it
         case 'dataNft': {
           const index = dataNftCursor;
           dataNftCursor += 1;
-          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, index, setup.categoryId));
+          // X180: the second argument is the MASTER's input index, not the data NFT's slot. The covenant's
+          // write path requires a minting NFT at that index and the master sits at block slot 0. Passing the
+          // slot index refuses every route with two or more data NFTs at input 2 - the reading this file's
+          // BLOCKED rows recorded and attributed to a block oracle.
+          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, 0, setup.categoryId));
           tx.addOutput({
             to: getDataNftAddress(participant, setup.categoryId),
             amount: setup.dataNftUtxos[index].satoshis,

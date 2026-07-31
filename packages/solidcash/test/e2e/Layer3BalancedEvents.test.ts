@@ -18,6 +18,8 @@ const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 const num8 = (n: bigint): Uint8Array => Uint8Array.from({ length: 8 }, (_, i) => Number((n >> BigInt(8 * i)) & 0xffn));
 const TOPIC = 'deadbeef';
 const DEPOSIT = layer3.methodSelector('deposit');
+const COVENANT_REFUSAL =
+  /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 1: Program failed an OP_VERIFY operation/;
 
 // A: executor only (pure caller). B: executor + state(minting) + event.
 const BLOCKS: layer3.BalancedBlock[] = [{ dataSlots: 0, events: 0 }, { dataSlots: 1, events: 1 }];
@@ -102,21 +104,21 @@ describe('P10: event NFT slots within balanced block bounds (no global OP_RETURN
 
   it('HOSTILE: an event NFT with the wrong topic is rejected', async () => {
     const { provider, rawTx } = await run('cafebabe');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(COVENANT_REFUSAL);
   });
 
   it('AUDIT-FIXED: a minting-capability NFT in the event slot is rejected (no smuggled mint authority)', async () => {
     const { provider, rawTx } = await run(TOPIC, 'minting');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(COVENANT_REFUSAL);
   });
 
   it('AUDIT-FIXED: a mutable-capability NFT in the event slot is rejected', async () => {
     const { provider, rawTx } = await run(TOPIC, 'mutable');
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(COVENANT_REFUSAL);
   });
 
   it('AUDIT-FIXED: siphoning satoshis from the journaled state slot into change is rejected', async () => {
     const { provider, rawTx } = await run(TOPIC, 'none', true);
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow(COVENANT_REFUSAL);
   });
 });

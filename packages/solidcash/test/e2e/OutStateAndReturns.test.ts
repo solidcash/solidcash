@@ -15,7 +15,7 @@ import {
 import { Utxo } from '../../src/interfaces.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // ===== Contract Sources =====
 
@@ -680,6 +680,8 @@ contract Reader(bytes32 counterCategory) {
       const builder = await caller.updateAndCheck(alicePkh, 17n)
         .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
         .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      builder.addInput(feeFunder.utxo, feeFunder.unlocker);
       const entry = builder.outputs.find((output) =>
         output.token?.category === targetSetup.categoryId
         && output.token.nft?.capability === 'mutable'
@@ -693,7 +695,9 @@ contract Reader(bytes32 counterCategory) {
         },
       };
 
-      await expect(builder.send()).rejects.toThrow();
+      await expect(builder.send()).rejects.toThrow(
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+      );
     });
 
     it('returns the default only with an authenticated final C2 predecessor', async () => {
@@ -741,6 +745,8 @@ contract Reader(bytes32 counterCategory) {
       const builder = await caller.insertAndCheckMissing(alicePkh, bobPkh, 17n)
         .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
         .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      builder.addInput(feeFunder.utxo, feeFunder.unlocker);
       const predecessor = builder.outputs.find((output) =>
         output.token?.category === targetSetup.categoryId
         && output.token.nft?.capability === 'mutable'
@@ -754,7 +760,9 @@ contract Reader(bytes32 counterCategory) {
         },
       };
 
-      await expect(builder.send()).rejects.toThrow();
+      await expect(builder.send()).rejects.toThrow(
+        /error in evaluating input index 1: Program failed an OP_VERIFY operation/,
+      );
     });
   });
 

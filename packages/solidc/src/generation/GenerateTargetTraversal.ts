@@ -12537,6 +12537,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return node;
       }
       this.consumeGraphRuntimeEmissionRow(physicalSlot, node.parameters, node, locationData);
+      if (node.opaqueReturn) {
+        // A reached graph edge is successful or the co-spend aborts. Pair that success bit with the exact
+        // producer-authenticated blob peeled from this occurrence's row.
+        this.emit(Op.OP_1, locationData);
+        this.pushToStack('(success)');
+        this.emit(Op.OP_SWAP, locationData);
+        const result = this.stack[1];
+        this.stack[1] = this.stack[0];
+        this.stack[0] = result;
+        this.stack[0] = '(returnData)';
+      }
       return node;
     }
     if (this.currentFunction.graphEmissionHandler) {
@@ -12723,6 +12734,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData,
     compare = true,
     parametersAreCallArguments = false,
+    consumeRuntimeReturn = false,
   ): number {
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
     if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
@@ -12925,6 +12937,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(3);
     this.pushToStack('(__graph_result_frame)');
 
+    if (consumeRuntimeReturn) {
+      // The expected operand is a VECTOR here, not the single-row value used by the wrapper verifier above.
+      // Peel exactly one `resultLength:u16le || result` frame, retain the suffix for the next loop iteration,
+      // and leave the authenticated result on top for the source tuple assignment.
+      this.emit(encodeInt(2n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.popFromStack();
+      this.pushToStack('(__graph_runtime_result_length_bytes)');
+      this.pushToStack('(__graph_runtime_result_and_suffix)');
+      this.emit(Op.OP_SWAP, locationData);
+      this.emit(Op.OP_BIN2NUM, locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.popFromStack(2);
+      this.pushToStack('(__graph_result_blob)');
+      this.pushToStack('(__graph_runtime_remainder)');
+      this.emitReplace(this.getStackIndex(expected), handler);
+      this.popFromStack();
+      if (!slot.opaqueReturn) {
+        throw new Error('Runtime graph return consumption currently requires an opaque raw result');
+      }
+      return 1;
+    }
+
     // The remainder must be exactly resultLength:u16le || result.
     this.emit(Op.OP_DUP, locationData);
     this.emit(encodeInt(2n), locationData);
@@ -12980,7 +13015,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: Node,
     locationData: SingleLocationData,
   ): void {
-    this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, false, true);
+    const returned = this.verifyGraphEmissionRow(
+      slot, this.currentFunction, parameters, locationData, false, true, slot.hasReturnValues === true,
+    );
+    if (returned > 0) return;
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);

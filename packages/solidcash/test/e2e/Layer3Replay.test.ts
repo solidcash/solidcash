@@ -15,6 +15,10 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 const INV = [{ caller: 0, callee: 1, selectorHex: 'aabbccdd' }];
+const nonTruthyFailure = [
+  'error in evaluating input index 2:',
+  'Unsuccessful evaluation: completed with a non-truthy value on top of the stack',
+].join(' ');
 
 async function setup(): Promise<any> {
   const provider = createTestProvider();
@@ -89,6 +93,6 @@ describe('refinement: one-shot controller replay policy', () => {
       to: s.controller.tokenAddress, amount: s.ctrlUtxo.satoshis,
       token: { category: s.ctrlCat, amount: 0n, nft: { capability: 'mutable', commitment: s.root } },
     });
-    await expect(s.provider.sendRawTransaction(raw(tx))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(raw(tx))).rejects.toThrow(nonTruthyFailure);
   });
 });

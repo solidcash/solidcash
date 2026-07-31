@@ -12,13 +12,6 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-const invalidSenderSplitAt = (input: number, length: number): RegExp => new RegExp(
-  '^mandatory-script-verify-flag-failed '
-  + `\\(Unable to verify transaction: error in evaluating input index ${input}: `
-  + 'Program called an OP_SPLIT operation with an invalid index\\. '
-  + `stack item length: ${length}; requested split index: 83\\.\\)$`,
-);
-
 // Round-13 independent hostile review of E4 (Worker B's). I implemented none of it.
 //
 // THE FIXTURE. One THREE-participant chain ROOT -> MID -> LEAF, so all three positions a graph handler can
@@ -93,6 +86,26 @@ const checksSender = (source: string): string =>
   source.replace(PREDICATE, 'require(msg.sender == expectedSender);');
 /** Any other context value, consumed in a require so no pass can eliminate it. */
 const reads = (source: string, predicate: string): string => source.replace(PREDICATE, predicate);
+
+/** Keep one context-free handler admitted so the compiler publishes the rejected handler's named reason. */
+const emissionAdmission = (source: string, name: string): { eligible: boolean; reason?: string } => {
+  const withControl = source.replace(/\n}\s*$/, `
+  function keepRoute(int n) public pure { require(n >= 0); }
+}`);
+  const artifact = compileString(withControl, {
+    forceStateful: true,
+    experimentalHiddenBatch: true,
+    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+    experimentalMessageBusControllerCategory: '22'.repeat(32),
+  });
+  const handler = artifact.hiddenBatch!.handlers.find((candidate) => candidate.name === name)!;
+  return { eligible: handler.eligible, reason: handler.rejectionReason };
+};
+
+const EMISSION_CONTEXT_REFUSAL = {
+  eligible: false,
+  reason: 'emission-handler-logical-context-reconstruction-unsupported',
+} as const;
 
 interface ChainOverrides {
   /** `bare` funds the fee slot from a real 25-byte P2PKH; `p2sh` funds it from the repo's P2SH artifact. */
@@ -245,20 +258,9 @@ describe('A13 review of E4: the open row, reproduced independently', () => {
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 120_000);
 
-  it("A13-3b: C's correction reproduced - a ROOT handler READING msg.sender cannot execute", async () => {
-    // One token differs from the control, and a real 25-byte origin is present in both the caller frame and
-    // the fee slot, so "no origin exists" cannot be the reason.
-    const built = await buildChain(readsSender(ROOT_PLAIN), MID_PLAIN, LEAF_PLAIN, {
-      rootCaller: HONEST_ROOT_CALLER,
-    });
-    const results = evaluateEachInput(built.builder);
-    expect(results[CHAIN.root]).toMatch(/OP_SPLIT operation with an invalid index/);
-    expect(results[CHAIN.root]).toMatch(/stack item length: 25/);
-    // Only the root's own route refuses. Nothing else on the transaction objects to the caller frame.
-    expect(results.filter((_result, index) => index !== CHAIN.root)).toEqual(new Array(7).fill(null));
-    await expect(built.provider.sendRawTransaction(built.transaction))
-      .rejects.toThrow(invalidSenderSplitAt(CHAIN.root, 25));
-  }, 120_000);
+  it('A13-3b: a ROOT emission handler reading msg.sender now fails closed before routing', () => {
+    expect(emissionAdmission(readsSender(ROOT_PLAIN), 'go')).toEqual(EMISSION_CONTEXT_REFUSAL);
+  });
 });
 
 describe('A13 review of E4: the row C did not determine - a NON-ROOT EMISSION handler', () => {
@@ -273,35 +275,13 @@ describe('A13 review of E4: the row C did not determine - a NON-ROOT EMISSION ha
       await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
     }, 120_000);
 
-  it('A13-4b: FINDING - the MID position is NOT. An emission handler reading msg.sender cannot execute',
-    async () => {
-      // Same tautology, same transaction shape, same fixture, one position up the chain: the only difference
-      // from A13-4a is that this handler also makes an outgoing call.
-      const built = await buildChain(ROOT_PLAIN, readsSender(MID_PLAIN), LEAF_PLAIN, {
-        rootCaller: HONEST_ROOT_CALLER,
-      });
-      const results = evaluateEachInput(built.builder);
-      expect(results[CHAIN.mid]).toMatch(/OP_SPLIT operation with an invalid index/);
-      // The split operand is 35 bytes - exactly one participant locking bytecode - and the requested index
-      // is past its end. Same defect class as the root's "stack item length: 25".
-      expect(results[CHAIN.mid]).toMatch(/stack item length: 35/);
-      expect(results.filter((_result, index) => index !== CHAIN.mid)).toEqual(new Array(7).fill(null));
-      await expect(built.provider.sendRawTransaction(built.transaction))
-        .rejects.toThrow(invalidSenderSplitAt(CHAIN.mid, 35));
-    }, 120_000);
+  it('A13-4b: the MID emission position now refuses msg.sender before routing', () => {
+    expect(emissionAdmission(readsSender(MID_PLAIN), 'mid')).toEqual(EMISSION_CONTEXT_REFUSAL);
+  });
 
-  it('A13-4c: and the comparison spelling does not resolve to ANY participant either', async () => {
-    // `msg.sender == x` does not crash - it compares - so it could in principle have silently resolved to
-    // the wrong principal, which would be a live authorization escape rather than a fail-closed defect.
-    // Driving every locking bytecode in the transaction through `expectedSender` shows it resolves to none
-    // of them: the emission handler's msg.sender is fail-closed, not silently wrong.
-    for (const expected of ['root', 'mid', 'leaf', 'origin'] as const) {
-      const built = await buildChain(ROOT_PLAIN, checksSender(MID_PLAIN), LEAF_PLAIN, {
-        rootCaller: HONEST_ROOT_CALLER, expected,
-      });
-      expect(evaluateEachInput(built.builder)[CHAIN.mid]).toMatch(/OP_VERIFY/);
-    }
-  }, 300_000);
+  it('A13-4c: the comparison spelling reaches the same named refusal', () => {
+    expect(emissionAdmission(checksSender(MID_PLAIN), 'mid')).toEqual(EMISSION_CONTEXT_REFUSAL);
+  });
 });
 
 describe('A13 review of E4: EQUIVALENT rows at the emission-handler position', () => {
@@ -328,12 +308,15 @@ describe('A13 review of E4: EQUIVALENT rows at the emission-handler position', (
       predicate: 'require(this.activeInputIndex >= 0 && n >= 0);',
       verdict: 'both-execute',
     },
-    { row: 'msg.sig', predicate: 'require(msg.sig.length == 4 && n >= 0);', verdict: 'mid-diverges', mid: /OP_VERIFY/ },
+    {
+      row: 'msg.sig', predicate: 'require(msg.sig.length == 4 && n >= 0);', verdict: 'mid-diverges',
+      mid: /emission-handler-logical-context-reconstruction-unsupported/,
+    },
     {
       row: 'msg.data',
       predicate: 'require(msg.data.length >= 4 && n >= 0);',
       verdict: 'mid-diverges',
-      mid: /OP_SPLIT operation with an invalid index/,
+      mid: /emission-handler-logical-context-reconstruction-unsupported/,
     },
     { row: 'msg.value', predicate: 'require(msg.value >= 0 && n >= 0);', verdict: 'not-reachable' },
     {
@@ -351,6 +334,9 @@ describe('A13 review of E4: EQUIVALENT rows at the emission-handler position', (
   /** Evaluate one predicate at one position, reporting a build-time refusal as its own outcome. */
   const at = async (position: 'leaf' | 'mid', predicate: string): Promise<string | null> => {
     try {
+      const candidate = position === 'mid' ? reads(MID_PLAIN, predicate) : reads(LEAF_PLAIN, predicate);
+      const admission = emissionAdmission(candidate, position);
+      if (!admission.eligible) return `BUILD: ${admission.reason}`;
       const built = await buildChain(
         ROOT_PLAIN,
         position === 'mid' ? reads(MID_PLAIN, predicate) : MID_PLAIN,

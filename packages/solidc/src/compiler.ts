@@ -640,6 +640,37 @@ function synthesizeHiddenBatchRoute(
     }
     return undefined;
   };
+  /**
+   * X187. A method call whose receiver is a CONTRACT/INTERFACE-TYPED VARIABLE - `bar.log()` for `IBar bar` -
+   * parses as a NAMESPACED FunctionCall (`bar.log`), never as a MethodCall: `SymbolTableTraversal` turns it into
+   * an `ExternalFunctionCallNode` only in the FOLLOWING semantic pass, from the receiver's declared type. The
+   * conservative MethodCall rejection below therefore never saw this spelling, so a handler carrying an outgoing
+   * edge was admitted as a plain scalar handler - not a graph tail handler - and its route bound NO emission for
+   * the edge it published in the ABI. Recover the call from the same declared type the semantic pass reads, so
+   * both spellings of one call reach the same verdict.
+   *
+   * Later declarations win: a local or parameter that shadows a contract-typed state variable with an ordinary
+   * type names an ordinary value, exactly as symbol resolution decides it.
+   */
+  const interfaceTypedReceivers = (candidate: FunctionDefinitionNode): Set<string> => {
+    const typed = new Map<string, boolean>();
+    const record = (name: string, type: Type | undefined): void => {
+      typed.set(name, type instanceof AddressType && type.interfaceName !== undefined);
+    };
+    for (const state of contract.stateVariables) record(state.name, state.type);
+    for (const parameter of candidate.parameters) record(parameter.name, parameter.type);
+    walkInvocationAst(candidate.body, (node) => {
+      if (node instanceof VariableDefinitionNode) record(node.name, node.type);
+    });
+    return new Set([...typed].filter(([, isInterface]) => isInterface).map(([name]) => name));
+  };
+  /** `recv.method(..)` on a contract-typed receiver, excluding the low-level forms counted separately. */
+  const contractTypedReceiverCall = (node: Node, receivers: Set<string>): node is FunctionCallNode => {
+    if (!(node instanceof FunctionCallNode)) return false;
+    const parts = node.identifier.name.split('.');
+    return parts.length === 2 && receivers.has(parts[0])
+      && !['call', 'staticcall', 'delegatecall'].includes(parts[1]);
+  };
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -656,6 +687,7 @@ function synthesizeHiddenBatchRoute(
     let graphHasDelegatecall = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
+        const receivers = interfaceTypedReceivers(candidate);
         walkInvocationAst(candidate.body, (node) => {
           if (node instanceof NullaryOpNode && [
             NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
@@ -696,6 +728,14 @@ function synthesizeHiddenBatchRoute(
               graphHasComputedCallArguments = true;
             }
           }
+          // X187. The namespaced spelling of the same outgoing edge, recovered from the receiver's declared type.
+          if (contractTypedReceiverCall(node, receivers)) {
+            statefulExternalCall = true;
+            methodCallCount += 1;
+            if (node.parameters.some((parameter) => !(parameter instanceof IdentifierNode))) {
+              graphHasComputedCallArguments = true;
+            }
+          }
           if (node instanceof FunctionCallNode
             && ['checkSig', 'checkMultiSig'].includes(node.identifier.name)) signatureCheck = true;
           if (node instanceof FunctionCallNode
@@ -714,6 +754,11 @@ function synthesizeHiddenBatchRoute(
     fn.usesMsgValue = routeUsesMsgValue;
     let reason: string | undefined;
     const bodyStatements = fn.body.statements ?? [];
+    // X187. A namespaced call on a contract-typed receiver is deliberately NOT counted here. Its target is a
+    // synthesized `__extaddr_*` LOCAL of the handler, never a route parameter, so the wrapper-epilogue emission
+    // form cannot name it (`Expected variable '__extaddr_bar' does not exist on the stack`). Leaving it out keeps
+    // `graphTailStatement` false, which routes the shape to the runtime form that authenticates the row at the
+    // call site itself, where that local is in scope.
     const directMethodCallCount = bodyStatements.filter((statement) =>
       statement instanceof MethodCallStatementNode).length;
     const graphTailStatement = bodyStatements.length >= 2

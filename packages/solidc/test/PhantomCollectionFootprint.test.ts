@@ -56,14 +56,41 @@ contract TupleDecl() {
   /**
    * GUARD. The same shape over a REAL collection must keep its established refusal: the name shadowing test
    * above must not be reachable by a collection the contract actually declares.
+   *
+   * MEASURED. `handlerState` returns `undefined` for THREE different states - no route at all, no such handler,
+   * and no `hiddenBatch` key on the artifact - and `toBe(undefined)` cannot tell them apart. On this fixture it
+   * is the first: `act` is the only entry point, so refusing it erases the route and there is no handlers
+   * channel to read. The established refusal this case is named for, `collection-helper-route-not-enabled`, was
+   * therefore never compared to anything. It is read below on the channel this fixture actually uses, and then
+   * on the handlers channel from a fixture differing in exactly ONE field - an admitted sibling handler.
    */
   it('still refuses a handler that reaches a real collection through a helper', () => {
-    expect(handlerState(`pragma solidcash >=0.8.0;
+    const artifact = compileString(`pragma solidcash >=0.8.0;
 contract RealCollection() {
   mapping(bytes20 => bigint) balances;
   function credit(bytes20 k, bigint v) internal { this.balances[k] = this.balances[k] + v; }
   function act(bytes20 k, bigint v) public { credit(k, v); require(v > 0); }
-}`, 'act')).toBe(undefined);
+}`, BUS);
+    expect(artifact.hiddenBatch, 'a route now survives, so the refusal moved to the handlers channel')
+      .toBeUndefined();
+    const absence = (artifact.diagnostics ?? [])
+      .filter((entry) => entry.code === 'hidden-batch-route-not-synthesized');
+    expect(absence).toHaveLength(1);
+    expect(absence[0].message).toContain("'act': collection-helper-route-not-enabled");
+  });
+
+  it('publishes that refusal per handler when an admitted sibling keeps the route', () => {
+    const handlers = compileString(`pragma solidcash >=0.8.0;
+contract RealCollection() {
+  mapping(bytes20 => bigint) balances;
+  bigint total;
+  function credit(bytes20 k, bigint v) internal { this.balances[k] = this.balances[k] + v; }
+  function act(bytes20 k, bigint v) public { credit(k, v); require(v > 0); }
+  function bump(bigint v) public { this.total = this.total + v; require(v >= 0); }
+}`, BUS).hiddenBatch!.handlers;
+    expect(handlers.map((entry) => `${entry.name}:${entry.eligible}`)).toEqual(['act:false', 'bump:true']);
+    expect(handlers.find((entry) => entry.name === 'act')!.rejectionReason)
+      .toBe('collection-helper-route-not-enabled');
   });
 
   /**

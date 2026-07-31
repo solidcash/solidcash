@@ -42,6 +42,11 @@ import type { Utxo } from '../../src/interfaces.js';
  * commitment. With no settling positive anywhere in this file, `Foo.callBar`'s refusal DISCRIMINATES NOTHING
  * and is not evidence that the covenant refuses the handler. It is recorded as a harness result.
  *
+ * X204 SHARPENED THAT, AND IT IS THIS HARNESS. `Foo.bar` DOES settle - `Layer3RecoveredBreadthV2.test.ts`
+ * broadcasts it on a ONE-participant plan. So the handler is not unsettleable and the failure below is this
+ * file's two-participant staging, exactly as the paragraph above suspected but could not show. The assertion
+ * is left scoped to this staging and still holds; do not read it as a property of `Foo.bar`.
+ *
  * So `Foo.callBar` remains UNPROVEN in both directions, and the reason is this harness rather than the
  * covenant. It is the ONLY recovered writer whose external call could carry a sound co-spend, so it is the
  * row most worth finishing, and it is named here as open rather than counted anywhere.

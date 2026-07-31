@@ -3068,6 +3068,10 @@ async function buildScalarPlusEntryBatchGraph(
 }
 
 describe('Layer-3 compiled graph controller', () => {
+  const scriptRefusalAt = (input: number): RegExp => new RegExp(
+    `mandatory-script-verify-flag-failed .*error in evaluating input index ${input}:`,
+  );
+
   it('executes a compiler-authenticated received function pointer', async () => {
     const { provider, transaction } = await buildPointerGraph();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
@@ -3077,7 +3081,7 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a function-pointer %s choice which disagrees with the canonical child row',
     async (tamper) => {
       const { provider, transaction } = await buildPointerGraph(tamper);
-      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
     },
   );
 
@@ -3090,7 +3094,7 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a returned-pointer %s disagreement with the compiler-reduced child row',
     async (tamper) => {
       const { provider, transaction } = await buildPointerGraph(tamper, true);
-      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
     },
   );
 
@@ -3103,7 +3107,7 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a state-backed varying-selector pointer %s disagreement',
     async (tamper) => {
       const { provider, transaction } = await buildVaryingSelectorGraph(tamper);
-      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
     },
   );
 
@@ -3118,7 +3122,7 @@ describe('Layer-3 compiled graph controller', () => {
     'rejects a combined callback graph with a forged %s effect',
     async (tamper) => {
       const { provider, transaction } = await buildCombinedGraph(tamper);
-      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+      await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
     },
   );
 
@@ -3129,7 +3133,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a transcript row whose expected outpoint differs from the finalized transaction', async () => {
     const { provider, transaction } = await buildIntrospectionGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('verifies a root-excluded transaction-signature witness on the final graph transaction', async () => {
@@ -3139,7 +3143,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a transaction-signature witness from a key other than the transcript-bound owner', async () => {
     const { provider, transaction } = await buildSignedGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('verifies two root-excluded ECDSA witnesses in checkMultiSig', async () => {
@@ -3149,7 +3153,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a multisig route witness whose key is absent from the rooted key set', async () => {
     const { provider, transaction } = await buildSignedGraph(true, true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('verifies a canonical root-excluded sig[] witness against rooted owners', async () => {
@@ -3159,7 +3163,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a sig[] signer absent from the rooted owner vector', async () => {
     const { provider, transaction } = await buildSignedGraph(true, 'array');
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('forwards a root-excluded transaction signature across an authenticated graph edge', async () => {
@@ -3169,7 +3173,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects a forwarded graph signature from a key other than the child-row owner', async () => {
     const { provider, transaction } = await buildForwardedSignedGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('executes canonical low-level calldata as an authenticated typed graph edge', async () => {
@@ -3179,7 +3183,7 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('rejects substituting the typed result of a low-level graph edge', async () => {
     const { provider, transaction } = await buildRawCallGraph(true);
-    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 
   it('executes canonical low-level staticcall calldata as an authenticated read-only edge', async () => {

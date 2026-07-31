@@ -72,6 +72,10 @@ function addTails(s: any, builder: TransactionBuilder, ordered: any[], controlle
 }
 
 describe('layer-3 sound N-party mutual authentication (controller-attested canonical transcript)', () => {
+  const ROOT_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
+  const INJECTED_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 3: Program failed an OP_VERIFY operation/;
   it('POSITIVE: a controller-attested 2-party binding is accepted', async () => {
     const s = await setup(2);
     const builder = buildTx(s, s.ordered, 2, s.controller); // participants 0,1; controller input 2
@@ -109,7 +113,7 @@ describe('layer-3 sound N-party mutual authentication (controller-attested canon
     builder.addInput(fee, s.p2.unlock.spend(alicePub, new SignatureTemplate(alicePriv)));
     addTails(s, builder, s.ordered, bad);
     builder.addOutput({ to: s.ordered[0].contract.address, amount: 12000n });
-    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow(ROOT_REFUSAL);
   });
 
   it('HOSTILE: an INJECTED extra participant (not in the controller attestation) is rejected', async () => {
@@ -133,7 +137,7 @@ describe('layer-3 sound N-party mutual authentication (controller-attested canon
       token: { category: extraP.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
     });
     builder.addOutput({ to: s.ordered[0].contract.address, amount: 12000n });
-    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(raw(builder))).rejects.toThrow(INJECTED_REFUSAL);
   });
 
   it('R1 CLOSED: siphoning satoshis from the controller output is rejected', async () => {

@@ -1,7 +1,7 @@
 import type { Artifact, AbiFunction, ReadValueProvenance } from '@solidcash/utils';
 import {
   describeProvenance, isAddressCommittedProvenance, lowLevelCallTargetProvenance, signatureGuardKeyCommitment,
-  signatureGuardKeyProvenance,
+  signatureGuardDominatesDelegatecalls, signatureGuardKeyProvenance,
 } from '@solidcash/utils';
 
 /**
@@ -497,6 +497,14 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
             + 'function overwrote from a caller parameter. Recompile the proxy; if the field is still absent, '
             + 'the pin is not one. An absent field is never the claim that the key is pinned'
           : ''),
+      );
+    }
+    if (!signatureGuardDominatesDelegatecalls(proxyFn)) {
+      throw new DelegateParticipantClassError(
+        `class 'non-dominating-signature-guard' is not admitted: proxy function '${input.proxy.functionName}' `
+        + 'does not publish proof that a required signature check dominates every delegatecall. A check in an '
+        + 'optional branch does not authorize code reached after that branch; artifacts predating the dominance '
+        + 'field also fail closed and must be recompiled',
       );
     }
     codeIdentity = 'caller-authorized';

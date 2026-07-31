@@ -380,15 +380,8 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
       }
     });
 
-    /**
-     * A RESIDUAL X51 REACHES BY A NEW ROUTE AND DOES NOT WIDEN, measured with its own control. `signatureGuard`
-     * has never said whether the signature check DOMINATES the delegatecall - a `checkSig` inside a branch
-     * publishes exactly what an unconditional one publishes - and the module header has always said so. X51 lets
-     * a PINNED caller-supplied key reach that same gap. Both rows below are admitted, and they differ only in
-     * which route gets there, so the honest claim is "unchanged", not "introduced": deciding whether the check
-     * runs stays the compiler's `checkSig` emission, not an artifact field.
-     */
-    it('admits a branch-guarded signature check by the X51 route exactly as by the pre-X51 one', () => {
+    /** X62: key provenance is not control flow. An optional check cannot authorize a later delegatecall. */
+    it('refuses a branch-guarded signature check by both the X51 and pre-X51 routes', () => {
       const branched = (guard: string, name: string): Artifact => compileString(`pragma solidcash >=0.8.0;
 contract ${name}(bytes20 adminPkh, pubkey owner) {
     bigint counter;
@@ -409,9 +402,63 @@ contract ${name}(bytes20 adminPkh, pubkey owner) {
       expect(preX51.abi.find((entry) => entry.name === 'up')!.signatureGuard)
         .toEqual({ key: { kind: 'constructorArg', name: 'owner' } });
       for (const artifact of [viaX51, preX51]) {
-        expect(classify(artifact, [alicePkh, alicePub])().id)
-          .toBe('caller-authorized/adjacent-proxy-block/scalar');
+        expect(artifact.abi.find((entry) => entry.name === 'up')!.signatureGuardDominatesDelegatecalls)
+          .toBeUndefined();
+        expect(classify(artifact, [alicePkh, alicePub]))
+          .toThrow(/class 'non-dominating-signature-guard' is not admitted/);
       }
+    });
+
+    it('admits checks that dominate the call, including from an enclosing block and an && requirement', () => {
+      const artifact = compileString(`pragma solidcash >=0.8.0;
+contract X62Dominating(bytes20 adminPkh) {
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s, bool flag) external {
+        require(hash160(pk) == adminPkh);
+        if (flag) { require(input.length > 0); }
+        { require(flag && checkSig(s, pk)); impl.delegatecall(input); }
+        require(input.length > 0);
+    }
+}`);
+      expect(artifact.abi.find((entry) => entry.name === 'up')!.signatureGuardDominatesDelegatecalls).toBe(true);
+      expect(classify(artifact, [alicePkh])().id).toBe('caller-authorized/adjacent-proxy-block/scalar');
+    });
+
+    it('fails closed for old artifacts and when only some delegatecalls are dominated', () => {
+      const old = structuredClone(committedProxyArtifact);
+      const oldFn = old.abi.find((entry) => entry.name === 'up')!;
+      delete oldFn.signatureGuardDominatesDelegatecalls;
+      expect(classify(old, [alicePkh]))
+        .toThrow(/class 'non-dominating-signature-guard' is not admitted.*predating the dominance field/);
+
+      const partial = compileString(`pragma solidcash >=0.8.0;
+contract X62Partial(pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, sig s) external {
+        impl.delegatecall(input);
+        require(checkSig(s, owner));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(partial.abi.find((entry) => entry.name === 'up')!.signatureGuardDominatesDelegatecalls)
+        .toBeUndefined();
+      expect(classify(partial, [alicePub]))
+        .toThrow(/class 'multi-edge-proxy' is not admitted/);
+
+      const disjunction = compileString(`pragma solidcash >=0.8.0;
+contract X62Disjunction(pubkey owner) {
+    bigint counter;
+    function up(bytes input, address impl, sig s, bool flag) external {
+        require(flag || checkSig(s, owner));
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}`);
+      expect(disjunction.abi.find((entry) => entry.name === 'up')!.signatureGuardDominatesDelegatecalls)
+        .toBeUndefined();
+      expect(classify(disjunction, [alicePub]))
+        .toThrow(/class 'non-dominating-signature-guard' is not admitted/);
     });
 
     /**

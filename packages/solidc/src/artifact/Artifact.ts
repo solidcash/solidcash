@@ -12,7 +12,7 @@ import {
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
   BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode, TupleAssignmentNode,
   ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
-  LowLevelCallStatementNode, StateAccessNode,
+  LowLevelCallStatementNode, StateAccessNode, RequireNode,
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
@@ -484,6 +484,58 @@ const signatureGuardOf = (
   return { key: weakestKey, ...(anyPinned && weakestBound && { keyCommitment: weakestBound }) };
 };
 
+interface ControlSite { block: BlockNode; index: number }
+
+/**
+ * X62. Prove that every delegatecall is reached only after a signature requirement on the same control-flow
+ * path. Merely finding `checkSig` in the function is insufficient: a check in an optional branch authorizes no
+ * code after that branch. This deliberately recognizes only requirements whose truth entails the signature
+ * check (`checkSig(..)` itself, or an `&&` containing it); an `||` may succeed without evaluating the check.
+ */
+const signatureGuardDominatesDelegatecalls = (fn: FunctionDefinitionNode): boolean => {
+  const guards: ControlSite[][] = [];
+  const delegates: ControlSite[][] = [];
+  const requiredCheck = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode
+      && SIGNATURE_CHECK_KEY_ARGUMENT[expression.identifier.name] !== undefined) return true;
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (requiredCheck(expression.left) || requiredCheck(expression.right));
+  };
+  const seen = new Set<object>();
+  const walk = (value: unknown, path: ControlSite[]): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof RequireNode && requiredCheck(value.expression)) guards.push(path);
+    if ((value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode)
+      && value.callMode === 'delegatecall') delegates.push(path);
+    if (value instanceof BlockNode) {
+      for (const [index, statement] of (value.statements ?? []).entries()) {
+        walk(statement, [...path, { block: value, index }]);
+      }
+      return;
+    }
+    // eslint-disable-next-line no-restricted-syntax, guard-for-in
+    for (const key in value) {
+      if (PROVENANCE_WALK_SKIP.has(key)) continue;
+      const child = (value as unknown as Record<string, unknown>)[key];
+      if (child instanceof Node) walk(child, path);
+      else if (Array.isArray(child)) for (const item of child) walk(item, path);
+    }
+  };
+  walk(fn.body, []);
+  if (delegates.length === 0) return false;
+  const dominates = (guard: ControlSite[], call: ControlSite[]): boolean => {
+    const guardSite = guard[guard.length - 1];
+    if (!guardSite) return false;
+    const callLevel = call.findIndex((site) => site.block === guardSite.block);
+    if (callLevel < 0 || guard.length - 1 !== callLevel) return false;
+    return guard.slice(0, -1).every((site, index) => call[index]?.block === site.block
+      && call[index]?.index === site.index)
+      && guardSite.index < call[callLevel].index;
+  };
+  return delegates.every((call) => guards.some((guard) => dominates(guard, call)));
+};
+
 /** Build the common metadata fields for an ABI function entry. */
 function buildFunctionAbiMetadata(
   func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
@@ -707,6 +759,7 @@ function buildFunctionAbiMetadata(
     // Absent means no signature check was proven - a body with none, or an artifact predating the field.
     // Both read as "unguarded"; absent is never a proof of authority.
     ...(signatureGuard && { signatureGuard }),
+    ...(signatureGuardDominatesDelegatecalls(func) && { signatureGuardDominatesDelegatecalls: true }),
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),

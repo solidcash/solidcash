@@ -244,6 +244,8 @@ export interface AbiFunction {
    * `unknown`, never as "unconstrained".
    */
   signatureGuard?: { key: ValueProvenance; keyCommitment?: ValueProvenance };
+  /** True only when a required signature check dominates every delegatecall in this function. */
+  signatureGuardDominatesDelegatecalls?: boolean;
   unsafeTier?: number;
   splitCountParam?: string;
   mergeCountParam?: string;
@@ -920,6 +922,13 @@ export function signatureGuardKeyProvenance(fn: Pick<AbiFunction, 'signatureGuar
  */
 export function signatureGuardKeyCommitment(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
   return fn.signatureGuard?.keyCommitment ?? UNKNOWN_PROVENANCE;
+}
+
+/** Old artifacts and guards that do not publish control-flow evidence fail closed. */
+export function signatureGuardDominatesDelegatecalls(
+  fn: Pick<AbiFunction, 'signatureGuardDominatesDelegatecalls'>,
+): boolean {
+  return fn.signatureGuardDominatesDelegatecalls === true;
 }
 
 /**

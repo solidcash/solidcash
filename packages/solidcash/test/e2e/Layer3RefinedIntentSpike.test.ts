@@ -18,7 +18,8 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const SELECTOR = hexToBin('deadbeef');
-const AUTH_CAT = 'ab'.repeat(32);
+const verifyFailure = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -156,7 +157,10 @@ describe('layer-3 refined intent (method granularity + one-shot nonce) spike (E2
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Method-specific authorization + one-shot nonce advance, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -165,19 +169,19 @@ describe('layer-3 refined intent (method granularity + one-shot nonce) spike (E2
 
   it('HOSTILE: calling a method the caller did not authorize (wrong selector) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { selector: hexToBin('cafebabe') })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { selector: hexToBin('cafebabe') })))).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: presenting a stale nonce (replay) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { nonce: 1n })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { nonce: 1n })))).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: failing to advance the nonce (keeping it usable) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { outNonce: 0n })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { outNonce: 0n })))).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

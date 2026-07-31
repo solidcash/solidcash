@@ -56,6 +56,48 @@ describe('layer3.planCompiledGraph', () => {
       { parent: 0, callee: 1, name: 'add', argsHex: '52' },
       { parent: 0, callee: 1, name: 'add', argsHex: '53' },
     ]);
+    const callsite = caller.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!
+      .externalCalls![0];
+    expect(callsite.sourceLocation).toEqual({ line: 5, column: 10 });
+    try {
+      layer3.deriveCompiledGraphPlan({
+        root,
+        function: 'run',
+        args: [new Uint8Array([0x52]), 2n, 3n],
+        targets: {},
+      });
+      throw new Error('expected unresolved target diagnostic');
+    } catch (error) {
+      expect(error).toBeInstanceOf(layer3.Layer3DiagnosticError);
+      const diagnostic = error as layer3.Layer3DiagnosticError;
+      expect(diagnostic.code).toBe('L3_TARGET_UNRESOLVED');
+      expect(diagnostic.context).toMatchObject({
+        invocationIds: [0],
+        callChain: ['0:BatchCaller.run'],
+        callsiteId: 0,
+        callsiteLocation: { line: 5, column: 10 },
+        interfaceName: 'ICounter',
+      });
+    }
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      args: [new Uint8Array([0x52]), 2n, 3n],
+      targets: { ICounter: target },
+      maximumInvocations: 1,
+    })).toThrow(expect.objectContaining({
+      code: 'L3_INVOCATION_LIMIT',
+      context: expect.objectContaining({ measured: 2, limit: 1 }),
+    }));
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root,
+      function: 'run',
+      args: [new Uint8Array([0x51]), 2n, 3n],
+      targets: { ICounter: { ...target, lockingBytecode: '51' } },
+    })).toThrow(expect.objectContaining({
+      code: 'L3_OWNER_ARTIFACT_CONFLICT',
+      context: expect.objectContaining({ ownerIdentity: '51' }),
+    }));
   });
 
   it('expands a compiler-authored worklist while acquiring each physical owner once', () => {
@@ -407,12 +449,24 @@ describe('layer3.planCompiledGraph', () => {
         }
       }`, options);
     const recursiveParticipant = { artifact: recursive, lockingBytecode: '52' };
-    expect(() => layer3.deriveCompiledGraphPlan({
-      root: recursiveParticipant,
-      function: 'again',
-      args: [new Uint8Array([0x52])],
-      targets: { IPeer: recursiveParticipant },
-    })).toThrow(/explicit bounded occurrence proof/);
+    try {
+      layer3.deriveCompiledGraphPlan({
+        root: recursiveParticipant,
+        function: 'again',
+        args: [new Uint8Array([0x52])],
+        targets: { IPeer: recursiveParticipant },
+      });
+      throw new Error('expected recursive closure diagnostic');
+    } catch (error) {
+      expect(error).toBeInstanceOf(layer3.Layer3DiagnosticError);
+      const diagnostic = error as layer3.Layer3DiagnosticError;
+      expect(diagnostic.code).toBe('L3_RECURSIVE_CLOSURE');
+      expect(diagnostic.context).toMatchObject({
+        invocationIds: [0, 1],
+        callChain: ['0:RecursiveGraph.again', '1:RecursiveGraph.again'],
+      });
+      expect(diagnostic.message).toContain('explicit bounded occurrence proof');
+    }
   });
 
   it('uses VM-probed expression values while leaving argument authentication on-chain', () => {

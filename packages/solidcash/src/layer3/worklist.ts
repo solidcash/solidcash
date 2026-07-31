@@ -8,6 +8,7 @@ import {
   assertNoUnboundCallOptions, assertPlannedOccurrenceCount, planCompiledGraph, resolveGraphAbiFunction,
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
+import { Layer3DiagnosticError, type Layer3DiagnosticContext } from './diagnostics.js';
 
 export interface WorklistParticipant extends CompiledGraphParticipant {
   /** Constructor values are needed only when an emitted call argument forwards a constructor parameter. */
@@ -162,13 +163,27 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     throw new Error('layer3: symbolic worklist maximum must be between 1 and 24');
   }
   const participants: WorklistParticipant[] = [];
+  const invocations: CompiledGraphInvocation[] = [];
+  const diagnosticContext = (call?: ExternalCallAbi): Layer3DiagnosticContext => ({
+    invocationIds: invocations.map((_row, index) => index),
+    callChain: invocations.map((row, index) =>
+      `${index}:${participants[row.callee]?.artifact.contractName ?? '?owner'}.${row.function}`),
+    ...(call?.callsiteId !== undefined && { callsiteId: call.callsiteId }),
+    ...(call?.sourceLocation !== undefined && { callsiteLocation: call.sourceLocation }),
+    ...(call !== undefined && { interfaceName: call.interfaceName }),
+  });
   const participantByLbc = new Map<string, number>();
   const intern = (participant: WorklistParticipant): number => {
     const lbc = participant.lockingBytecode.toLowerCase();
     const existing = participantByLbc.get(lbc);
     if (existing !== undefined) {
       if (participants[existing].artifact !== participant.artifact) {
-        throw new Error('layer3: one physical owner was registered with different artifacts');
+        throw new Layer3DiagnosticError(
+          'L3_OWNER_ARTIFACT_CONFLICT',
+          `one physical owner '${lbc}' was registered with different artifacts while deriving `
+            + `${diagnosticContext().callChain?.join(' -> ') || 'the root invocation'}`,
+          { ...diagnosticContext(), ownerIdentity: lbc },
+        );
       }
       return existing;
     }
@@ -201,12 +216,24 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     const registered = options.targets[call.interfaceName];
     if (!registered) {
-      throw new Error(`layer3: no symbolic target registered for '${call.interfaceName}'`);
+      throw new Layer3DiagnosticError(
+        'L3_TARGET_UNRESOLVED',
+        `no symbolic target registered for '${call.interfaceName}' at callsite ${call.callsiteId ?? '?'}; `
+          + `call chain ${diagnosticContext(call).callChain?.join(' -> ')}`,
+        diagnosticContext(call),
+      );
     }
     if (!Array.isArray(registered)) return registered as WorklistParticipant;
     const cursor = targetCursors.get(call.interfaceName) ?? 0;
     const target = registered[cursor];
-    if (!target) throw new Error(`layer3: symbolic target list for '${call.interfaceName}' is exhausted`);
+    if (!target) {
+      throw new Layer3DiagnosticError(
+        'L3_TARGET_EXHAUSTED',
+        `symbolic target list for '${call.interfaceName}' is exhausted at callsite ${call.callsiteId ?? '?'}; `
+          + `call chain ${diagnosticContext(call).callChain?.join(' -> ')}`,
+        diagnosticContext(call),
+      );
+    }
     targetCursors.set(call.interfaceName, cursor + 1);
     return target;
   };
@@ -235,7 +262,6 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
   };
 
-  const invocations: CompiledGraphInvocation[] = [];
   const active = new Set<string>();
   const expand = (
     participant: WorklistParticipant,
@@ -245,7 +271,12 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     callMode?: 'call' | 'staticcall',
   ): void => {
     if (invocations.length >= maximum) {
-      throw new Error(`layer3: symbolic worklist exceeds its ${maximum}-invocation bound`);
+      throw new Layer3DiagnosticError(
+        'L3_INVOCATION_LIMIT',
+        `symbolic worklist would append invocation ${invocations.length}, exceeding its `
+          + `${maximum}-invocation bound; call chain ${diagnosticContext().callChain?.join(' -> ')}`,
+        { ...diagnosticContext(), measured: invocations.length + 1, limit: maximum },
+      );
     }
     const owner = intern(participant);
     const invocation = invocations.length;
@@ -256,8 +287,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     );
     const key = `${owner}:${functionName}`;
     if (active.has(key)) {
-      throw new Error(
-        `layer3: recursive call closure at '${functionName}' needs an explicit bounded occurrence proof`,
+      throw new Layer3DiagnosticError(
+        'L3_RECURSIVE_CLOSURE',
+        `recursive call closure at invocation ${invocation} '${functionName}' needs an explicit bounded `
+          + `occurrence proof; call chain ${diagnosticContext().callChain?.join(' -> ')}`,
+        diagnosticContext(),
       );
     }
     active.add(key);

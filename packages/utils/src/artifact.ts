@@ -466,6 +466,8 @@ export interface ArgSource {
 export interface ExternalCallAbi {
   /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
   callsiteId?: number;
+  /** Source start of the call expression, retained for deterministic SDK derivation diagnostics. */
+  sourceLocation?: { line: number; column: number };
   /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
   occurrence?: 'once' | 'conditional' | 'loop';
   /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */

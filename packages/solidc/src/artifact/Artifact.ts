@@ -691,6 +691,12 @@ function buildFunctionAbiMetadata(
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
         callsiteId: ec.slotIndex,
+        ...(ec.sourceCallNode && {
+          sourceLocation: {
+            line: ec.sourceCallNode.location.start.line,
+            column: ec.sourceCallNode.location.start.column,
+          },
+        }),
         ...occurrenceInfoOf(func, ec.sourceCallNode),
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,

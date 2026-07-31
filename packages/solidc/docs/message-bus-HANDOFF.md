@@ -56,7 +56,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **76 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
+- **X214** - **56 bare `rejects.toThrow()` sites with no named reason, all E2E.** This is the highest-yield
   remaining vacuity surface. The AST census began at 436 executable sites. The unit partition is exhausted;
   two previously skipped P2PKH cases are now live, and `DynamicLoopEntryAdversarial` no longer passes on
   spent-input or signature failure before its mapping covenant runs. `Layer3BalancedCall` and

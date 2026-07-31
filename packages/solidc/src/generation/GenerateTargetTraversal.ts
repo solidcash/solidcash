@@ -21953,12 +21953,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // own covenant still gates its master/merge spends. When it IS co-spent, emitSatoshiContainerIdentity pins
     // the input to the real container and forces its output to preserve the container LBC or be a 0-sat drain -
     // the container's own covenant does NOT protect its output on the master-spend path.
-    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout) {
+    // A hidden graph route also has synthetic pending-transfer slots from its flattened parser arm. Those
+    // locals remain empty when the selected handler runs through OP_INVOKE, so treating them as the transfer
+    // authority would compare (for example) `5000 <= 4000 + 0` and reject the authenticated 1000-sat output.
+    // GRAPH_TRANSFER_REACHED below is the occurrence aggregate for precisely this route shape.
+    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
+      && !this.graphTransferFlagActive) {
       this.emitSatoshiContainerIdentity(locationData);
     }
 
     // containerInputSats <= containerOutputSats + sum(transferValues)
-    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout) {
+    if (this.pendingTransfers.length > 0 && this.currentFunction.blockLayout
+      && !this.graphTransferFlagActive) {
       // Read satoshi container input value
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
       this.emit(Op.OP_UTXOVALUE, locationData);

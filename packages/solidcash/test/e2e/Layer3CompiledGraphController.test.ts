@@ -900,7 +900,10 @@ async function buildVaryingSelectorGraph(
   return { provider, transaction: raw(tx) };
 }
 
-async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' = 'none') {
+async function buildCombinedGraph(
+  tamper: 'none' | 'state' | 'event' | 'value' = 'none',
+  variant: 'all' | 'no-transfer' | 'no-events' | 'no-state' | 'value-only' = 'all',
+) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -911,8 +914,26 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactA = compileString(COMBINED_A, options);
-  const artifactB = compileString(COMBINED_B, options);
+  const sourceA = variant === 'no-transfer'
+    ? COMBINED_A.replace('    this.transfer(recipient, amount);\n', '')
+    : variant === 'no-events' ? COMBINED_A
+      .replace('  event Seen(bigint amount);\n', '')
+      .replaceAll('    emit Seen(amount);\n', '')
+      : variant === 'no-state' || variant === 'value-only' ? COMBINED_A
+        .replace('  bigint count;\n', '')
+        .replaceAll('    this.count = this.count + amount;\n', '')
+        .replace(variant === 'value-only' ? '  event Seen(bigint amount);\n' : '', '')
+        .replaceAll(variant === 'value-only' ? '    emit Seen(amount);\n' : '', '') : COMBINED_A;
+  const sourceB = variant === 'no-events' ? COMBINED_B
+    .replace('  event Stepped(bigint amount);\n', '')
+    .replace('    emit Stepped(amount);\n', '')
+    : variant === 'no-state' || variant === 'value-only' ? COMBINED_B
+      .replace('  bigint count;\n', '')
+      .replace('    this.count = this.count + amount;\n', '')
+      .replace(variant === 'value-only' ? '  event Stepped(bigint amount);\n' : '', '')
+      .replace(variant === 'value-only' ? '    emit Stepped(amount);\n' : '', '') : COMBINED_B;
+  const artifactA = compileString(sourceA, options);
+  const artifactB = compileString(sourceB, options);
   const baseA = new Contract(artifactA, [], { provider });
   const baseB = new Contract(artifactB, [], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, { count: 0n });
@@ -942,6 +963,9 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const blockA = plan.participants[0].blockLayout!;
   const blockB = plan.participants[1].blockLayout!;
+  const hasContainerA = blockA.slots.some((slot) => slot.kind === 'satoshiContainer');
+  const hasDataA = blockA.slots.some((slot) => slot.kind === 'dataNft');
+  const hasDataB = blockB.slots.some((slot) => slot.kind === 'dataNft');
   const transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
@@ -949,13 +973,15 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   const rootedController = await initializeGraphAuthority(
     provider, controller, genesisUtxo, controllerCategory, transcript.root, p2pkh,
   );
-  const fundingA = Array.from({ length: blockA.blockSize - 3 }, () => randomUtxo({ satoshis: 1000n }));
-  const fundingB = Array.from({ length: blockB.blockSize - 2 }, () => randomUtxo({ satoshis: 1000n }));
+  const fundingA = Array.from({
+    length: blockA.blockSize - 1 - (hasDataA ? 1 : 0) - (hasContainerA ? 1 : 0),
+  }, () => randomUtxo({ satoshis: 1000n }));
+  const fundingB = Array.from({ length: blockB.blockSize - 1 - (hasDataB ? 1 : 0) }, () => randomUtxo({ satoshis: 1000n }));
   const container = randomUtxo({ satoshis: containerSats });
   const projectionA = randomUtxo({ satoshis: 1000n });
   const projectionB = randomUtxo({ satoshis: 1000n });
   const fee = randomUtxo({ satoshis: 50_000n });
-  await provider.addUtxo(getSatoshiContainerAddress(a, setupA.categoryId), container);
+  if (hasContainerA) await provider.addUtxo(getSatoshiContainerAddress(a, setupA.categoryId), container);
   for (const funding of [...fundingA, ...fundingB, fee]) {
     await provider.addUtxo(p2pkh.address, funding);
   }
@@ -972,19 +998,19 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
     setupA.masterUtxo,
     routeA(...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any),
   );
-  tx.addInput(
-    setupA.dataNftUtxos[0],
-    createDataNftUnlocker(a, layout.participantInputs[0], setupA.categoryId),
+  if (hasDataA) tx.addInput(
+    setupA.dataNftUtxos[0], createDataNftUnlocker(a, layout.participantInputs[0], setupA.categoryId),
   );
-  tx.addInput(container, createSatoshiContainerUnlocker(a, layout.participantInputs[0], setupA.categoryId));
+  if (hasContainerA) {
+    tx.addInput(container, createSatoshiContainerUnlocker(a, layout.participantInputs[0], setupA.categoryId));
+  }
   fundingA.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
   tx.addInput(
     setupB.masterUtxo,
     routeB(...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any),
   );
-  tx.addInput(
-    setupB.dataNftUtxos[0],
-    createDataNftUnlocker(b, layout.participantInputs[1], setupB.categoryId),
+  if (hasDataB) tx.addInput(
+    setupB.dataNftUtxos[0], createDataNftUnlocker(b, layout.participantInputs[1], setupB.categoryId),
   );
   fundingB.forEach((funding) => tx.addInput(funding, p2pkh.unlock.spend(alicePub, signature())));
   tx.addInput(
@@ -998,23 +1024,26 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   // A accrues the amount twice (start + finish), B once. The forged-state attack is still an off-by-one.
-  const nextA = buildInitialStateCommitments(
+  const nextA = hasDataA ? buildInitialStateCommitments(
     artifactA.stateLayout!, { count: tamper === 'state' ? transferSats * 2n + 1n : transferSats * 2n },
-  )[0];
-  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: transferSats })[0];
+  )[0] : '';
+  const nextB = hasDataB
+    ? buildInitialStateCommitments(artifactB.stateLayout!, { count: transferSats })[0] : '';
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
     token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
   });
-  tx.addOutput({
+  if (hasDataA) tx.addOutput({
     to: getDataNftAddress(a, setupA.categoryId), amount: setupA.dataNftUtxos[0].satoshis,
     token: {
       category: setupA.categoryId, amount: 0n,
       nft: { capability: 'mutable', commitment: nextA },
     },
   });
-  tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: containerSats - transferSats });
-  tx.addOutput({ to: recipient, amount: tamper === 'value' ? transferSats + 1n : transferSats });
+  if (hasContainerA) {
+    tx.addOutput({ to: getSatoshiContainerAddress(a, setupA.categoryId), amount: containerSats - transferSats });
+    tx.addOutput({ to: recipient, amount: tamper === 'value' ? transferSats + 1n : transferSats });
+  }
   const aTransferSlots = blockA.slots.filter((slot) => slot.kind === 'transfer');
   const aEventSlots = blockA.slots.filter((slot) => slot.kind === 'event');
   const bEventSlots = blockB.slots.filter((slot) => slot.kind === 'event');
@@ -1022,7 +1051,8 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
   }
   const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(transferSats)]));
-  const eventA = getEventNftAddress(a, setupA.categoryId, artifactA.events![0].signature);
+  const eventA = aEventSlots.length > 0
+    ? getEventNftAddress(a, setupA.categoryId, artifactA.events![0].signature) : '';
   for (const [eventOrdinal] of aEventSlots.entries()) {
     const reached = eventOrdinal < 2;
     tx.addOutput(reached ? {
@@ -1038,21 +1068,23 @@ async function buildCombinedGraph(tamper: 'none' | 'state' | 'event' | 'value' =
     to: b.tokenAddress, amount: setupB.masterUtxo.satoshis,
     token: { category: setupB.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
   });
-  tx.addOutput({
+  if (hasDataB) tx.addOutput({
     to: getDataNftAddress(b, setupB.categoryId), amount: setupB.dataNftUtxos[0].satoshis,
     token: {
       category: setupB.categoryId, amount: 0n,
       nft: { capability: 'mutable', commitment: nextB },
     },
   });
-  const eventB = getEventNftAddress(b, setupB.categoryId, artifactB.events![0].signature);
-  tx.addOutput({
-    to: eventB, amount: 1000n,
-    token: {
-      category: setupB.categoryId, amount: 0n,
-      nft: { capability: 'none', commitment: eventCommitment },
-    },
-  });
+  if (bEventSlots.length > 0) {
+    const eventB = getEventNftAddress(b, setupB.categoryId, artifactB.events![0].signature);
+    tx.addOutput({
+      to: eventB, amount: 1000n,
+      token: {
+        category: setupB.categoryId, amount: 0n,
+        nft: { capability: 'none', commitment: eventCommitment },
+      },
+    });
+  }
   for (const _slot of bEventSlots.slice(1)) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -3207,6 +3239,26 @@ describe('Layer-3 compiled graph controller', () => {
     const { provider, transaction, plan } = await buildCombinedGraph();
     expect(plan.participants.map((participant) => participant.invocations)).toEqual([[0, 2], [1]]);
     expectRelayable(transaction);
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('composes a callback cycle with state and event effects but no value transfer', async () => {
+    const { provider, transaction } = await buildCombinedGraph('none', 'no-transfer');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('composes a callback cycle with state and value effects but no events', async () => {
+    const { provider, transaction } = await buildCombinedGraph('none', 'no-events');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('composes a callback cycle with event and value effects but no state', async () => {
+    const { provider, transaction } = await buildCombinedGraph('none', 'no-state');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('composes a callback cycle with only a value-transfer effect', async () => {
+    const { provider, transaction } = await buildCombinedGraph('none', 'value-only');
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 

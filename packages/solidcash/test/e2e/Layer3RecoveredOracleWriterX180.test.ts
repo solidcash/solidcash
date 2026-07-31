@@ -379,7 +379,8 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
    */
   async function attempt(row: Row, handler: string, args: readonly unknown[], attack: Attack, options: {
     probe?: boolean; declaredResult?: Uint8Array; publishedState?: readonly string[]; oracle?: boolean;
-    entryOverride?: { slot: number; commitment: string };
+    entryOverride?: { slot: number; commitment: string }; legacyMasterIndex?: boolean;
+    preOverride?: Record<string, unknown>;
   }): Promise<{
       sent?: string; refusal?: string; failingInput?: number; trace?: unknown[];
       preCommitments: string[]; publishedState: readonly string[];
@@ -404,7 +405,8 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     });
     const artifact = artifactOf(row, controller.lockingBytecode as never, controllerCategory);
     const base = new Contract(artifact, [], { provider });
-    const pre = options.oracle === false ? row.pre : stagedPre(row, artifact);
+    const pre = options.preOverride
+      ?? (options.oracle === false ? row.pre : stagedPre(row, artifact));
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, pre);
     const participant = base.withCategory(hexToBin(setup.categoryId));
 
@@ -524,7 +526,14 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
         case 'dataNft': {
           const index = dataNftCursor;
           dataNftCursor += 1;
-          tx.addInput(setup.dataNftUtxos[index], createDataNftUnlocker(participant, index, setup.categoryId));
+          // THE SECOND ARGUMENT IS THE MASTER'S INPUT INDEX, NOT THE DATA NFT'S SLOT. The data NFT covenant's
+          // write path reads `tx.inputs[masterInputIndex]` and requires a MINTING NFT there; the master sits
+          // at block slot 0. `legacyMasterIndex` reproduces the recovered-writer harness's argument - the slot
+          // index - which is only ever the master for slot 0 and is what refused every 2+ data NFT route.
+          tx.addInput(
+            setup.dataNftUtxos[index],
+            createDataNftUnlocker(participant, options.legacyMasterIndex === true ? index : 0, setup.categoryId),
+          );
           tx.addOutput({
             to: getDataNftAddress(participant, setup.categoryId),
             amount: setup.dataNftUtxos[index].satoshis,
@@ -671,31 +680,87 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
   }
 
   /**
-   * THE CONTROL THAT PINS THE WALL ON THE STAGING. The identical route, differing from the settling subject in
-   * EXACTLY the oracle registers - `__block_timestamp` left at 0 and `__blockOracleOwner` left at 33 zero
-   * bytes, which is what the earlier staging published - is refused, at a pinned input index.
+   * CONTROL A: THE WALL, AND IT IS NOT THE ORACLE.
+   *
+   * The identical route, differing from the settling subject in EXACTLY ONE argument - the master input index
+   * handed to the data NFT covenant - is refused, at input index 2, the SECOND data NFT. That index is the
+   * reading `Layer3RecoveredSetAX136` recorded for `CrowdFund.count` and attributed to the block oracle.
+   *
+   * The covenant's write path reads `tx.inputs[masterInputIndex]` and requires a MINTING NFT there. The
+   * recovered-writer harnesses pass the data NFT's own SLOT index instead, which names the master only for
+   * slot 0 - so every route with two or more data NFTs was refused at input 2 whether or not it carried an
+   * oracle, and no oracle-free multi-NFT route was ever run to notice.
    */
-  const oracleOmitted = (row: Row) => async (): Promise<void> => {
+  const legacyMasterIndexControl = (row: Row) => async (): Promise<void> => {
+    const subject = await attempt(row, row.writer, row.writerArgs, 'none', {
+      publishedState: row.verdict === 'settles' ? await covenantPostState(row) : undefined,
+      declaredResult: row.verdict === 'reads'
+        ? await routeResult(row, row.writer, row.writerArgs) : undefined,
+    });
+    expect(subject.refusal, `${row.key}: the subject arm of this control did not settle`).toBeUndefined();
+    const control = await attempt(row, row.writer, row.writerArgs, 'none', {
+      publishedState: row.verdict === 'settles' ? await covenantPostState(row) : undefined,
+      declaredResult: row.verdict === 'reads'
+        ? await routeResult(row, row.writer, row.writerArgs) : undefined,
+      legacyMasterIndex: true,
+    });
+    console.log(`[X180] ${row.key} CONTROL-A subject (masterInputIndex=0) SETTLED ${subject.sent}`);
+    console.log(`[X180] ${row.key} CONTROL-A control (masterInputIndex=slot): `
+      + `${(control.refusal ?? `ACCEPTED ${control.sent}`).split('\n')[0]}`);
+    expect(control.sent, `${row.key} settled with the legacy master index - it is not the wall`).toBeUndefined();
+    expect(control.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    console.log(`[X180] ${row.key} CONTROL-A refused at input index ${control.failingInput}`);
+    expect(control.failingInput, 'the refusal did not name the SECOND data NFT input').toBe(2);
+  };
+
+  /**
+   * CONTROL B: WHAT THE ORACLE STAGING IS ACTUALLY FOR, ONE REGISTER AT A TIME.
+   *
+   * Omitting all the registers at once and reading a refusal would say nothing about WHICH one mattered. So
+   * each injected register is dropped on its own - left at the encoder's zero, which is exactly what a
+   * pre-state that never named it produces - with every other field, the master input index and the published
+   * commitments identical to the settling subject. The verdict and the failing INPUT INDEX are printed per
+   * register, and the run asserts what it measured: the registers are load-bearing, and the whole-oracle
+   * omission is refused at the PARTICIPANT input rather than at the data NFT the earlier files blamed.
+   */
+  const oracleRegisterControl = (row: Row) => async (): Promise<void> => {
     const artifact = artifactForLayout(row);
     const registers = blockOracleRegisters(artifact.stateLayout);
+    const seededPre = stagedPre(row, artifact);
     const omitted = buildInitialStateCommitments(artifact.stateLayout!, row.pre);
     const seeded = preCommitmentsOf(row);
     const differing = seeded
       .map((value, index) => (value === omitted[index] ? '.' : index)).filter((entry) => entry !== '.');
-    console.log(`[X180] ${row.key} CONTROL registers=${JSON.stringify(registers.map((r) => r.name))}`);
-    console.log(`[X180] ${row.key} CONTROL omitted  ${JSON.stringify(omitted)}`);
-    console.log(`[X180] ${row.key} CONTROL seeded   ${JSON.stringify(seeded)}`);
-    console.log(`[X180] ${row.key} CONTROL data NFT slots that differ: ${JSON.stringify(differing)}`);
+    console.log(`[X180] ${row.key} CONTROL-B registers=${JSON.stringify(registers.map((r) => r.name))}`);
+    console.log(`[X180] ${row.key} CONTROL-B omitted  ${JSON.stringify(omitted)}`);
+    console.log(`[X180] ${row.key} CONTROL-B seeded   ${JSON.stringify(seeded)}`);
+    console.log(`[X180] ${row.key} CONTROL-B data NFT slots that differ: ${JSON.stringify(differing)}`);
     // The two stagings must differ ONLY in the oracle registers' own NFTs, which is what makes this a control.
     expect(differing.sort()).toEqual([...new Set(registers.map((r) => r.nftIndex))].sort());
-    const result = await attempt(row, row.writer, row.writerArgs, 'none', { oracle: false });
-    console.log(`[X180] ${row.key} CONTROL (oracle omitted): `
-      + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]}`);
-    expect(result.sent, `${row.key} settled WITHOUT the oracle staged - the wall was not the oracle`)
-      .toBeUndefined();
-    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-    console.log(`[X180] ${row.key} CONTROL refused at input index ${result.failingInput}`);
-    expect(result.failingInput).toBeGreaterThanOrEqual(0);
+    let refusedByOneRegister = 0;
+    for (const register of registers) {
+      const preOverride = { ...seededPre };
+      delete preOverride[register.name];
+      const result = await attempt(row, row.writer, row.writerArgs, 'none', { preOverride });
+      console.log(`[X180] ${row.key} CONTROL-B drop ${register.name} (nft ${register.nftIndex}): `
+        + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} `
+        + `at input ${result.failingInput ?? '-'}`);
+      if (result.refusal !== undefined) {
+        refusedByOneRegister += 1;
+        expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+        expect(result.failingInput, `${register.name}: the refusal did not name the participant input`).toBe(0);
+      }
+    }
+    expect(refusedByOneRegister, `${row.key}: no single oracle register changed the verdict, so seeding them `
+      + 'is not what this staging bought').toBeGreaterThan(0);
+    const all = await attempt(row, row.writer, row.writerArgs, 'none', { oracle: false });
+    console.log(`[X180] ${row.key} CONTROL-B drop ALL: `
+      + `${(all.refusal ?? `ACCEPTED ${all.sent}`).split('\n')[0]} at input ${all.failingInput ?? '-'}`);
+    expect(all.sent, `${row.key} settled with every oracle register omitted`).toBeUndefined();
+    expect(all.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
+    // The index is the whole point: X136 read a refusal at the ORACLE DATA NFT and blamed the oracle. Staged
+    // correctly, an oracle-shaped refusal names input 0 - the participant - and never a data NFT.
+    expect(all.failingInput, 'the refusal did not name the participant input').toBe(0);
   };
 
   /**
@@ -845,8 +910,10 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
 
   for (const row of ROWS) {
     if (row.verdict === 'unstageable') continue;
-    it(`CONTROL: ${row.key} staged WITHOUT the oracle registers - the old staging - is REFUSED`,
-      oracleOmitted(row), 1_800_000);
+    it(`CONTROL A: ${row.key} with the legacy master input index is REFUSED at the second data NFT`,
+      legacyMasterIndexControl(row), 1_800_000);
+    it(`CONTROL B: ${row.key} with each oracle register dropped on its own`,
+      oracleRegisterControl(row), 1_800_000);
     if (row.verdict === 'reads') {
       it(`MEASURED: ${row.key} SETTLES once the block oracle is staged`, positiveRead(row), 1_800_000);
       for (const g of row.guards) {

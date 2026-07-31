@@ -1166,12 +1166,17 @@ describe('Layer-3 C2 heterogeneous cycle capstone (SEMANTIC)', () => {
 
   // MISSING RETURN EDGE. The hub still dispatches to both legs, but B's callback is absent from the graph, so
   // B's emission vector is empty where B's compiled source emits one row.
-  it('rejects a graph that omits the return edge', async () => {
-    const built = await buildCycleGraph('missingReturnEdge');
-    expect(built.transcript.participantEmissionsHex[1]).toBe('');
-    expect(built.transcript.plan.participants[0].invocations).toEqual([0]);
-    expectRejectionAtInput(built, built.participantInputs[1]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+  /**
+   * X179 MOVED THIS REFUSAL EARLIER, and the VM evidence it carried is not lost - it is stronger. A dropped
+   * outgoing edge is now refused by name at plan time, by the mirror of an existing capacity check on the same
+   * shared occurrence bound. `Layer3DroppedEdgeX179.test.ts` keeps the covenant half against a SETTLING
+   * positive, and does it through an artifact-stripped bypass that walks past the SDK gate entirely - so the
+   * covenant refusal at input 0 is still demonstrated, on a path no SDK rule can reach.
+   */
+  it('refuses a graph that omits the return edge, ahead of the covenant that also rejects it', async () => {
+    await expect(buildCycleGraph('missingReturnEdge')).rejects.toThrow(
+      'was planned with 0 occurrences, below the 1 proven',
+    );
   }, 600_000);
 });
 

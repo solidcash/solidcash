@@ -164,8 +164,18 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, state);
     const participant = base.withCategory(hexToBin(setup.categoryId));
 
+    // X179 added a plan-time floor refusing a callsite planned with 0 occurrences, which is CORRECT and is
+    // exactly what `attack` does - its published external call is dropped. This file is measuring the
+    // return-event slot, not the dropped edge, so it strips the callsite to reach the covenant. That strip is
+    // a no-op for the `owner`/`wallet` rows, which publish no callsite at all. The dropped edge has its own
+    // coverage in `Layer3DroppedEdgeX179.test.ts`, including a covenant refusal at input 0.
+    const planned = {
+      ...artifact,
+      abi: artifact.abi.map((entry: any) => (entry.name === handler
+        ? { ...entry, externalCalls: undefined } : entry)),
+    };
     const plan = layer3.planCompiledGraph(
-      [{ artifact, lockingBytecode: participant.lockingBytecode }],
+      [{ artifact: planned, lockingBytecode: participant.lockingBytecode }],
       [{ parent: null, callee: 0, function: handler, args: [] as never[] }],
     );
     const layout = layer3.compiledGraphPhysicalLayout(plan);

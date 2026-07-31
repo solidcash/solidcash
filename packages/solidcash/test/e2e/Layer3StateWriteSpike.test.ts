@@ -171,7 +171,7 @@ describe('layer-3 persistent state-write spike (E2E)', () => {
 
   it('HOSTILE: a forged post-state (not E+M, B+S) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { newState: pack(E + M, B + (M * B) / E + 1n) })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { newState: pack(E + M, B + (M * B) / E + 1n) })))).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 0: Program failed an OP_VERIFY operation.)');
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

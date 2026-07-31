@@ -20,6 +20,6 @@ describe('unnamed return defaults on fall-through', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.check(0n).send();       // g(5) falls through -> returns 0
     expect(tx.txid).toBeDefined();
-    await expect(sc.check(6n).send()).rejects.toThrow(); // NOT the local x+1
+    await expect(sc.check(6n).send()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.'); // NOT the local x+1
   });
 });

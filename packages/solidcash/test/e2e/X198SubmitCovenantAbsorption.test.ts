@@ -396,7 +396,7 @@ describe('X198 row 3: the submit-path decider admits a covenant that objects', (
 
     // AND THE REFUSAL AGREES WITH THE NETWORK RATHER THAN OVER-REFUSING: the provider rejects these same
     // bytes on its own, so the gate only moved the verdict earlier.
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 7: Unsuccessful evaluation: completed with a non-truthy value on top of the stack. Top stack item: "".)');
   }, 300_000);
 
   it('3c. THE SAME REFUSAL ON THE BROADCASTING ENTRY POINT, before the network is asked', async () => {

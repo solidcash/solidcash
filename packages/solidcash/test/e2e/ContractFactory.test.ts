@@ -23,6 +23,8 @@ async function fundedSigner(txidByte: string): Promise<{ signer: Signer; funding
 }
 
 describe('ContractFactory (ethers/hardhat-style deploy)', () => {
+  const REQUIRE_REFUSAL =
+    /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   it('new ContractFactory(artifact, signer).deploy() returns a ready contract', async () => {
     const { signer } = await fundedSigner('a1');
     const art = compileString(CHECK, { forceStateful: true });
@@ -47,7 +49,7 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
 
     const sc = await new ContractFactory(art, signer).deploy(42n);
     await sc.check(42n); // magic baked as 42
-    await expect(sc.check(43n)).rejects.toThrow();
+    await expect(sc.check(43n)).rejects.toThrow(REQUIRE_REFUSAL);
   });
 
   it('binds the predicted CREATE address to the deployed category and resolves it across handles', async () => {
@@ -93,7 +95,7 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
 
     const sc = await new ContractFactory(art, signer).deploy(42n);
     await sc.check(42n);
-    await expect(sc.check(43n)).rejects.toThrow();
+    await expect(sc.check(43n)).rejects.toThrow(REQUIRE_REFUSAL);
   });
 
   it('getContractFactory + deployContract shortcuts', async () => {

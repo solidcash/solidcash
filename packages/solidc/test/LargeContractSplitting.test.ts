@@ -35,6 +35,10 @@ describe('large-contract state-local splitting', () => {
     const bundle = compileStringSplit(SOURCE);
     expect(bundle.facets).toEqual({});
     expect(bundle.root.bytecode).toBe(ordinary.bytecode);
+    // `.every` is true on an EMPTY array, so the route set has to be pinned before its targets are judged -
+    // otherwise a manifest that lost every route keeps this green.
+    expect(bundle.manifest.routes.map((route) => route.function).sort())
+      .toEqual(['addX', 'getX', 'setX', 'setY']);
     expect(bundle.manifest.routes.every((route) => route.target === 'root')).toBe(true);
   });
 
@@ -469,7 +473,11 @@ contract Mixed() {
         function reset() public { this.x = 0; require(true); }
       }
     `, { forceSplit: true });
-    expect(bundle.manifest.routes.find((route) => route.function === 'set')?.target).not.toBe('root');
+    // `find(...)?.target` is undefined when the route is missing, and `undefined !== 'root'` PASSES, so the
+    // route must be pinned present before its target is judged.
+    const setRoute = bundle.manifest.routes.find((route) => route.function === 'set');
+    expect(setRoute).toBeDefined();
+    expect(setRoute!.target).not.toBe('root');
   });
 
   it('keeps compiler-generated maintenance entry points on the root', () => {
@@ -495,9 +503,16 @@ contract Mixed() {
         function burn(int v) public { this.total = this.total - v; require(v >= 0); }
       }
     `, { forceSplit: true });
-    expect(Object.values(bundle.facets).every((facet) => facet.constructorInputs
+    // Both halves were vacuous on an empty collection: `.every` over no facets is true, and `find(...)?.target`
+    // over a missing route is undefined, which is `not.toBe('root')`. Pin both collections first.
+    const facets = Object.values(bundle.facets);
+    expect(facets).toHaveLength(1);
+    expect(facets.every((facet) => facet.constructorInputs.length > 0)).toBe(true);
+    expect(facets.every((facet) => facet.constructorInputs
       .every((input) => input.name !== 'supply'))).toBe(true);
-    expect(bundle.manifest.routes.find((route) => route.function === 'transfer')?.target).not.toBe('root');
+    const transferRoute = bundle.manifest.routes.find((route) => route.function === 'transfer');
+    expect(transferRoute).toBeDefined();
+    expect(transferRoute!.target).not.toBe('root');
   });
 
   it('moves return-valued state transitions with their state-affinity group', () => {

@@ -182,7 +182,7 @@ describe('layer-3 multi-resource oracle spike (E2E)', () => {
   it('HOSTILE: a wrong token balance transition (Y not += M) is rejected', async () => {
     const s = await setup();
     const bad = binToHex(concat(num4(X - M), num4(Y + M + 1n)));
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { tokenState: bad })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { tokenState: bad })))).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 0: Program failed an OP_VERIFY operation.)');
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

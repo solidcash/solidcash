@@ -151,7 +151,7 @@ describe('layer-3 Rebase.toBase share math spike (E2E)', () => {
   it('HOSTILE: a shareOut off by the flooring remainder (5 not 4) is rejected', async () => {
     const s = await setup();
     // floor(48/10)=4; 5 would be a rounding-up forgery.
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { shareOut: 5n })))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { shareOut: 5n })))).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 0: Program failed an OP_VERIFY operation.)');
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

@@ -409,6 +409,7 @@ async function build(
   tamperBlockSize = false,
   transformedChildArg?: bigint,
   oversizedParticipantCount = false,
+  mixedStatic = false,
 ) {
   const provider = createTestProvider();
   const {
@@ -424,7 +425,11 @@ async function build(
   const baseB = new Contract(artifactB, [2n], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const artifactA = compileString(CALLING_APP, options);
+  const callerSource = mixedStatic
+    ? CALLING_APP.replace('ICompiledGraphTarget(target).ping(first);',
+      'ICompiledGraphTarget(target).viewPing.staticcall();')
+    : CALLING_APP;
+  const artifactA = compileString(callerSource, options);
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
@@ -460,8 +465,11 @@ async function build(
       ? [{ parent: 0, callee: 1, function: 'ping', args: [3n] }] : []),
   ] : [
     { parent: null, callee: 0, function: 'start', args: [1n, 2n] },
-    { parent: 0, callee: 1, function: 'ping', args: [sourceChildArg] },
-    { parent: 0, callee: 1, function: 'ping', args: [2n] },
+    { parent: 0, callee: 1, function: mixedStatic ? 'viewPing' : 'ping',
+      args: mixedStatic ? [] : [sourceChildArg],
+      ...(mixedStatic && { callMode: 'staticcall' as const }) },
+    { parent: 0, callee: 1, function: 'ping', args: [2n],
+      ...(mixedStatic && { callMode: 'call' as const }) },
   ];
   const plan = layer3.planCompiledGraph([
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
@@ -3340,6 +3348,17 @@ describe('Layer-3 compiled graph controller', () => {
       false, false, false, false, false, false, 1n,
       undefined, undefined, undefined, false, true,
     );
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('executes static then ordinary SCB2 rows against one physical participant', async () => {
+    const { provider, transaction, transcript } = await build(
+      false, false, false, false, false, false, 1n,
+      undefined, undefined, undefined, false, false, false, undefined, false, true,
+    );
+    expect(transcript.plan.invocations.slice(1).map((row) => row.callMode))
+      .toEqual(['staticcall', 'call']);
+    expect(transcript.plan.participants[1].batch.blob[4]).toBe(2);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 

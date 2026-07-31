@@ -136,6 +136,8 @@ async function build(s: any): Promise<TransactionBuilder> {
 const rawOf = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 
 describe('layer-3 full authenticated transcript spike (E2E)', () => {
+  const TRANSCRIPT_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('POSITIVE: participant + sender + intent + result all bound in one covenant', async () => {
     const s = await setup();
     const b = await build(s);
@@ -147,7 +149,10 @@ describe('layer-3 full authenticated transcript spike (E2E)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Full transcript (binding + sender + intent + result) in one covenant, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -160,7 +165,8 @@ describe('layer-3 full authenticated transcript spike (E2E)', () => {
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[2].lockingBytecode = forged.outputs[2].lockingBytecode.slice();
     forged.outputs[2].lockingBytecode[10] ^= 1;
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(TRANSCRIPT_REFUSAL);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
@@ -169,7 +175,8 @@ describe('layer-3 full authenticated transcript spike (E2E)', () => {
     const valid = rawOf(await build(s));
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[3].lockingBytecode = concat(hexToBin('6a08'), num8(AMOUNT * RATE + 1n));
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(TRANSCRIPT_REFUSAL);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 });

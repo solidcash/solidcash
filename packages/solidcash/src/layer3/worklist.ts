@@ -270,8 +270,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           if (binToHex(canonicalPayload) !== binToHex(payload)) {
             throw new Error(`layer3: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
           }
-          const targetInput = fn.inputs.findIndex((input) => input.name === call.addressParam);
-          const targetValue = targetInput >= 0 ? args[targetInput] : undefined;
+          const targetName = call.addressParam ?? call.loopArrayVar;
+          const targetInput = fn.inputs.findIndex((input) => input.name === targetName);
+          const targetArgument = targetInput >= 0 ? args[targetInput] : undefined;
+          const targetValue = call.loopArrayVar && Array.isArray(targetArgument)
+            ? targetArgument[reached] : targetArgument;
           const encodedTarget = targetValue === undefined
             ? undefined : encodeFunctionArgument(targetValue, 'address', structs);
           if (!(encodedTarget instanceof Uint8Array)

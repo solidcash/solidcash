@@ -228,6 +228,8 @@ interface Cell {
   noteEmits?: boolean;
   /** Give fireAll two event payloads while note owns one slot of the shared width-two frame. */
   wideFire?: boolean;
+  /** Forge the scalar journal settlement while leaving heterogeneous event/value frames honest. */
+  forgeHubState?: boolean;
 }
 
 async function buildStrideCase(cell: Cell): Promise<{
@@ -407,7 +409,8 @@ async function buildStrideCase(cell: Cell): Promise<{
     : (cell.mode === 'noteThenFire' || cell.mode === 'fireThenNote') ? CALL_VALUE : 0n;
   const currentCommitment: string = hubSetup.dataNftUtxos[0].token.nft.commitment;
   const zeroFieldHex = binToHex(packed(0n));
-  const hubNext = binToHex(packed(hubTotal)) + currentCommitment.slice(zeroFieldHex.length);
+  const hubNext = binToHex(packed(hubTotal + (cell.forgeHubState ? 1n : 0n)))
+    + currentCommitment.slice(zeroFieldHex.length);
   const eventCommitment = binToHex(packed(CALL_VALUE));
   const eventAddress = cell.emitting
     ? getEventNftAddress(hub, hubSetup.categoryId, hubArtifact.events![0].signature) : '';
@@ -538,6 +541,18 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
       forgedEventOrdinal: 1,
     });
     expect(await reject(hostile)).toContain('input index 0');
+  }, 900_000);
+
+  it('binds the scalar journal beside heterogeneous event and value frames', async () => {
+    const honest = await buildStrideCase({
+      mode: 'noteThenFire', effectOrdinals: [1], emitting: true, wideFire: true,
+    });
+    await expect(honest.provider.sendRawTransaction(honest.transaction)).resolves.toBeDefined();
+    const forged = await buildStrideCase({
+      mode: 'noteThenFire', effectOrdinals: [1], emitting: true, wideFire: true,
+      forgeHubState: true,
+    });
+    expect(await reject(forged)).toContain('input index 0');
   }, 900_000);
 
   it('the hub really does dispatch fireAll on LOCAL ROW 1', async () => {

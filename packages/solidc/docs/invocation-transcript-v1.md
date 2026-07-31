@@ -788,6 +788,13 @@ After projected replay, the settlement controller:
 an imagined per-call transaction. This is the unavoidable BCH meaning and MUST be documented in the
 language compatibility diagnostics.
 
+In v1, an SCB1 handler that reads `this.activeBytecode` MUST be rejected before route publication.
+On the direct route `OP_ACTIVEBYTECODE` observes the participant redeem script; inside the SCB1
+`OP_INVOKE` it observes the active invoked body. The participant locking bytecode, the public
+function body published in `artifact.functionBodies`, and the invoked value are distinct and MUST
+NOT be substituted for one another. Admission requires a future route to capture and thread the
+entry-time redeem script with positive and divergent BCH-2026 proofs.
+
 A foreign ordinary state read always means authenticated transaction pre-state. For a foreign
 `outState` read, the reader MUST verify on-chain that its current logical position is not earlier
 than the target participant's authenticated `settlementBoundary`; the streaming validator proves

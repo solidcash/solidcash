@@ -1186,8 +1186,12 @@ index in both handler executions while settling state once.
 `this.activeBytecode` is deliberately not grouped with it. Measurement showed `OP_ACTIVEBYTECODE`
 inside the invoked route observes the active invoked body rather than the direct wrapper's whole
 execution context, so admitting it would create direct-versus-batch divergence. The compiler
-continues to reject both active-bytecode and `tx.origin` handlers. This is a measured fail-closed
-boundary, not an assumed equivalence.
+continues to reject active-bytecode handlers with
+`direct-versus-batch-introspection-divergence`. A further BCH-2026 probe also ruled out the public
+`artifact.functionBodies` body as the invoked value, so neither participant locking bytecode nor a
+published function body is an admissible substitute. Controller-authenticated `tx.origin` is now
+separately admitted and bound to the carrier signer's P2PKH locking bytecode. This is a measured
+fail-closed boundary, not an assumed equivalence.
 
 ### 2026-07-26: Release C — runtime structural alias canonicalization
 
@@ -1283,7 +1287,8 @@ The fixture also records two representation details which are load-bearing for S
 `OP_UTXOTXID` and CashToken category introspection expose the VM's internal byte order, so the
 human-facing transaction ID and category ID are reversed before comparison. The builder's normal
 unlocked sequence is `0xfffffffe`. This proves the physical semantics required by the
-specification; logical `activeBytecode`/`tx.origin` substitution remains deliberately rejected,
+specification; `activeBytecode` substitution remains deliberately rejected while controller-bound
+`tx.origin` is proven separately,
 and collection/chunk `outState` is tracked separately.
 
 ### 2026-07-26: Release E — root-excluded transaction signatures

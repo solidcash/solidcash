@@ -43,4 +43,11 @@ describe('E4 emission-handler logical context boundary', () => {
       rejectionReason: undefined,
     });
   });
+
+  it('fails physical activeBytecode closed instead of substituting participant locking bytecode', () => {
+    expect(admission('require(this.activeBytecode == bytes(seed));')).toEqual({
+      eligible: false,
+      rejectionReason: 'direct-versus-batch-introspection-divergence',
+    });
+  });
 });

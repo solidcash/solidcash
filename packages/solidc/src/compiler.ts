@@ -8,6 +8,7 @@ import {
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
+  FunctionCallStatementNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
@@ -780,9 +781,35 @@ function synthesizeHiddenBatchRoute(
       });
       return containsCall;
     });
+    // X201. THE BARE FORWARDING BODY - one statement-level call, no trailing require.
+    //
+    // `graphTailStatement` needs two statements AND a trailing `require(true)`, so a body ending in the call
+    // itself has it false unconditionally - which means this shape lands in `graphRuntimeHandlers` below, the
+    // form that authenticates the emission row AT THE CALL SITE where the callee address is in scope. That is
+    // the only form it may reach: the wrapper epilogue names a synthesized `__extaddr_*` LOCAL of the handler
+    // on the ROUTE stack and throws instead of refusing. So `graphRuntimeHandlers` membership is made a
+    // PRECONDITION here (`!graphResultStatement && !graphHasDelegatecall`) rather than a consequence.
+    // MEASURED BOUNDARIES, both kept deliberately narrow.
+    //
+    // LOW-LEVEL forms are excluded. Admitting `callee.call(payload);` here routes it to the raw-calldata graph
+    // lowering, which aborts with the INTERNAL `Graph handler '__scb_graph_*' requires one forwarded raw
+    // calldata argument` - a throw where the handler previously got the named refusal
+    // `batched-handler-forward-call-not-enabled`. Widening must not trade a named refusal for a crash.
+    //
+    // MULTI-EDGE bare bodies are excluded (`methodCallCount === 1`). Two bare calls DO compile and publish two
+    // edges, but the covenant binding is only VM-proved here for the single-edge shape, and admitting an
+    // unproven emission shape is the exact failure X187 closed. They keep the named refusal until proved.
+    const lastStatement = bodyStatements[bodyStatements.length - 1];
+    const graphBareTailStatement = bodyStatements.length >= 1
+      && fn.returnTypes.length === 0
+      && methodCallCount === 1
+      && !graphResultStatement && !graphHasDelegatecall
+      && (lastStatement instanceof MethodCallStatementNode
+        || (lastStatement instanceof FunctionCallStatementNode
+          && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
     const graphTailCallEligible = graphControllerLbc !== undefined
       && methodCallCount >= 1
-      && (graphTailStatement || graphResultStatement
+      && (graphTailStatement || graphResultStatement || graphBareTailStatement
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     // X22. A physical effect written directly in the handler body - an event NFT, a satoshi transfer or a token

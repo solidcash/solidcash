@@ -25,6 +25,8 @@ describe('bytesN single-byte index', () => {
   it('fails when the indexed byte does not match', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f(Uint8Array.from([0x00, 0x11, 0x99, 0x33]), 2n)).rejects.toThrow();
+    await expect(sc.f(Uint8Array.from([0x00, 0x11, 0x99, 0x33]), 2n)).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

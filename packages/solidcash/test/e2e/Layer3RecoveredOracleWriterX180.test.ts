@@ -325,6 +325,33 @@ const ROWS: readonly Row[] = [
 /** The BCH consensus limit on an input script. A contract above it is invalid at every spend. */
 const INPUT_SCRIPT_LIMIT = 10_000;
 
+/**
+ * WHICH HANDLERS THE REPAIR GAINED, quoted from `Layer3RecoveredPartitionX160.test.ts`'s own PARTITION rows so
+ * the count below is checkable against its source rather than asserted here.
+ *
+ * A gained handler is one in a row's `after` list and not in its `before` list. `UniswapV2Pair` and
+ * `StakingRewards` are `set: 'NEW'` with `before: []`, so their whole surface is gained; `CrowdFund` is set A
+ * with `before: ['pledgedAmount']`; `EnglishAuction` is set A with `before: ['bids']`.
+ *
+ * This is a CITATION, not a re-measurement. This file does not re-take the partition, and if X160's rows move
+ * this constant is stale.
+ */
+const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
+  UniswapV2Pair: [
+    'getReserves', 'initialize', 'totalSupply', 'DOMAIN_SEPARATOR', 'factory', 'token0', 'token1',
+    'price0CumulativeLast', 'price1CumulativeLast', 'kLast', 'balanceOf', 'allowance', 'nonces',
+  ],
+  StakingRewards: [
+    'lastTimeRewardApplicable', 'rewardPerToken', 'earned', 'setRewardsDuration', 'stakingToken',
+    'rewardsToken', 'owner', 'duration', 'finishAt', 'updatedAt', 'rewardRate', 'rewardPerTokenStored',
+    'totalSupply', 'userRewardPerTokenPaid', 'rewards', 'balanceOf',
+  ],
+  CrowdFund: ['token', 'count'],
+  EnglishAuction: [
+    'nft', 'nftId', 'seller', 'endAt', 'started', 'ended', 'highestBidder', 'highestBid',
+  ],
+};
+
 describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recovered writer', () => {
   /**
    * ONE COMPILE PER (contract, controller). The controller genesis is pinned, so the compile inputs are
@@ -395,6 +422,33 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
    * no staging reaches its covenant. Reading the figure here is what turns "blocked by the harness" into
    * "has no VM subject, and here is the number".
    */
+  /**
+   * HOW MANY OF THE 206, and no rounding. Every handler this file runs to a BROADCAST settlement is checked
+   * against X160's own gained list, so the figure is a count of named rows rather than an impression.
+   */
+  it('MEASURED: how many of the 206 gained handlers this file settles on the VM', () => {
+    const settled: string[] = [];
+    const notSettled: string[] = [];
+    for (const row of ROWS) {
+      const gained = GAINED_BY_THE_REPAIR[row.contract] ?? [];
+      for (const handler of [row.writer, ...row.guards.map((g) => g.name)]) {
+        const label = `${row.contract}.${handler}`;
+        if (!gained.includes(handler)) continue;
+        (row.verdict === 'unproven' ? notSettled : settled).push(label);
+      }
+    }
+    for (const handler of settled) console.log(`[X180] SETTLED ON THE VM: ${handler}`);
+    for (const handler of notSettled) console.log(`[X180] STILL UNPROVEN: ${handler}`);
+    console.log(`[X180] ${settled.length} gained handlers settle here; ${206 - settled.length} of the 206 `
+      + 'are NOT proved by this file, and most of them are not proved anywhere.');
+    expect(settled).toEqual([
+      'StakingRewards.setRewardsDuration', 'StakingRewards.duration', 'StakingRewards.rewardRate',
+      'CrowdFund.count', 'CrowdFund.token',
+      'UniswapV2Pair.initialize', 'UniswapV2Pair.token0', 'UniswapV2Pair.kLast',
+    ]);
+    expect(notSettled).toEqual(['EnglishAuction.highestBid', 'EnglishAuction.endAt', 'EnglishAuction.started']);
+  }, 1_800_000);
+
   /** The contract's real redeem-script length. `artifact.bytecode` is ASM, so it is assembled, not divided. */
   const scriptBytes = (row: Row): number =>
     scriptToBytecode(asmToScript(artifactForLayout(row).bytecode)).length;

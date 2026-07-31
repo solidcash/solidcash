@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // Runtime (e2e) coverage for recent porting features: ++/-- on element lvalues, the empty-void function
 // no-op synthesis, and `transient` state vars (lowered to zero-init locals). Each contract asserts its own
 // behavior via require(), so a successful direct call proves the feature works end-to-end through the SDK
@@ -31,7 +33,7 @@ describe('++ / -- on element lvalues (runtime)', () => {
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).rejects.toThrow();
+    await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -93,7 +95,7 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
       }`, { solidityImportCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkPersisted()).rejects.toThrow();
+    await expect(sc.checkPersisted()).rejects.toThrow(verifyFailure);
   });
 
   it('uses a transient var as scratch within a function', async () => {
@@ -138,6 +140,6 @@ describe('tuple ternary (runtime; Solidity porting)', () => {
   it('rejects when the wrong branch values are expected (the ternary really selects)', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(1n, 3n, 4n)).rejects.toThrow();
+    await expect(sc.check(1n, 3n, 4n)).rejects.toThrow(verifyFailure);
   });
 });

@@ -40,7 +40,7 @@ const partition = sites.reduce<Record<string, number>>((counts, site) => {
 }, {});
 
 // Self-check against the source population measured on 2026-07-31. Fail loudly when it moves.
-if (sites.length !== 175 || partition['solidcash/e2e'] !== 175 || partition['solidcash/unit'] !== undefined) {
+if (sites.length !== 172 || partition['solidcash/e2e'] !== 172 || partition['solidcash/unit'] !== undefined) {
   throw new Error(`X214 census drift: ${sites.length} sites ${JSON.stringify(partition)}`);
 }
 console.log(JSON.stringify({ total: sites.length, partition, sites }, null, 2));

@@ -17,13 +17,10 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * split is wrong with the right total: the next probe reads every $len off the data NFT and the split snaps to
  * its exact value. So the linear grow generalises and no search is needed; the bound moved to the region total.
  *
- * What this file can pin in THIS tree is the base behaviour, which the generalisation deliberately leaves
- * unchanged: multi-var writes that fit one chunk each settle beside the mint, multi-var writes without a mint
- * settle at any size, and a multi-var write that the covenant cannot size is refused BY NAME with nothing
- * broadcast. The accepting multi-var mint cases are gated on the covenant half (emitAddDynamicOutputsBeforeEntries
- * PICKing at trackedIndex + 1 rather than + 6), which is not in this tree and not this lease - measured jointly,
- * (200,60), (60,200) and (200,200) all settle; measured with that depth and X10's one-var restriction back, all
- * three stall at the seeded region and refuse. Nothing here asserts that, because nothing here can run it.
+ * The later covenant-depth repair is now in this tree, so the previously gated positive boundary is executable:
+ * (200,60), (60,200) and (200,200) all settle beside the mint. The hostile split mutation below remains the
+ * consensus boundary: the SDK may discover the total linearly, but the covenant authenticates each variable's
+ * exact chunk commitments at its own addresses.
  */
 
 type Provider = ReturnType<typeof createTestProvider>;
@@ -126,16 +123,18 @@ describe('X101 trailing chunk region with several dynamic vars', () => {
     expect(commitments[OUT.chunk + 2].length).toBe(130); // NEW node: slot32 || next32 || value
   }, 180_000);
 
-  it('refuses by name, before signing, when a multi-var chunk region cannot be fully derived', async () => {
-    // THE boundary, in all three ways a two-var region can outgrow what the covenant sizes: the first var over
-    // one chunk, the second var over one chunk, and both. Each names the variable and the shortfall, and
-    // nothing at all reaches the network.
+  it('settles every two-var multi-chunk split beside an entry mint', async () => {
+    // Mutation boundary: restoring X10's one-var restriction stalls all three shapes at the seeded region.
+    // Current derivation grows the region TOTAL, then snaps the per-variable split from the authenticated lengths.
     for (const [lenA, lenB] of [[200, 60], [60, 200], [200, 200]] as const) {
       const { outcome, broadcasts } = await attempt(MINT, lenA, lenB);
-      expect(outcome).toContain('dynamic storage chunk region');
-      expect(outcome).toContain("'tagA'");
-      expect(outcome).toContain('is not fully derived');
-      expect(broadcasts).toEqual([]);
+      expect(outcome).toBe('ACCEPTED');
+      expect(broadcasts).toHaveLength(1);
+      const commitments = commitmentsOf(broadcasts[0]);
+      const expectedChunks = Math.ceil(lenA / 120) + Math.ceil(lenB / 120);
+      expect(commitments.slice(OUT.chunk, OUT.chunk + expectedChunks))
+        .toHaveLength(expectedChunks);
+      expect(commitments[OUT.chunk + expectedChunks].length).toBe(130); // trailing NEW node
     }
   }, 180_000);
 

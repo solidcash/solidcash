@@ -169,7 +169,7 @@ task-specific report, not in this table.
 | X79 | The route-scope gates are STACKED; no single lift admits anything | D2 | F3 | **MEASURED** | the ERC-20's transfer/approve/transferFrom ARE admissible; 3 gates stacked; relaxing the third hits an unnamed abort |
 | X76b | Lift `result-route` and normalize the bare entry spelling | E1 | X79 | **INTEGRATED** | 2 of 3 stacked gates; every bare shape lands on its DOTTED TWIN'S byte count; +2 state-changing, 0 lost - see 4.88 |
 | X94 | `mixed-scalar` needs its own mixed-route VM settle | — | X76b | **TODO** | the only gate whose relaxation puts a row with NO physical entry into a route sized for per-row entry slots; 139/88 firings |
-| X95 | `bareShapeIsNormalizable` is over-conservative | — | X76b | **TODO** | blocks on any bare index of a non-collection name; narrowing to collection names is sound but was not shipped |
+| X95 | `bareShapeIsNormalizable` is over-conservative | — | X76b | **REFUSED (unsafe widening)** | Narrowing admits dynamic/packed state-array writes onto an entry route; the conservative predicate and focused negative controls remain |
 | X96 | X73's never-shrink guard may no longer have a subject | F2 | X76b | **INTEGRATED** | it HAD lost it and is not unreachable; re-pointed at a fresh arithmetic subject, old one kept as a collapse record |
 | X80 | F3's 455 is a ~2.2x undercount of gate reach | D2 | F3 | **MEASURED** | 419 firings, 226 on contracts that DO get a route and are invisible to the route-absent channel |
 | X70 | F2 UNDER-predicts unlocking bytecode 45/45, mean -7.0% | D4 | F3,F2 | **INTEGRATED** | 44/45 under -> **0/45 under**; one defect was an IMPOSSIBILITY (intercept below the redeem it pushes) - see 4.83 |
@@ -218,7 +218,7 @@ task-specific report, not in this table.
 | X8 | Two chunk-backed dynamic writes plus a collection write | C | S2 | INTEGRATED | NOT a silent miscompile; settles, fails closed past 1 chunk |
 | X9 | Resolve G1-C compile-cost fragility in `HiddenBatch` | A | G1 | INTEGRATED | Lazy mutation analysis; 56.6s -> 35.7s, below pre-G1 |
 | X10 | Grow the trailing chunk region past one output beside an entry mint | H3 | X8 | **SDK HALF INTEGRATED** | the pin was wrong IN KIND - the region grew and filled wrong; positional trace attribution - see 4.94 |
-| X101 | Speculative chunk growth handles a single chunk var only | — | X10 | **TODO** | multi-var + mint + multi-chunk needs a real search, not a linear grow; inert until the covenant half lands |
+| X101 | Speculative chunk growth handles a single chunk var only | — | X10 | **INTEGRATED** | Growth is bounded by the region total; after the covenant-depth repair, multi-var + mint settles for (200,60), (60,200), and (200,200), with hostile per-var commitment swaps VM-rejected |
 | X11 | Delegate C2 sorted writes have no settling instance | A2 | — | **INTEGRATED** | premise stale; chasing it found a LIVE forgery - reader returned `[5n, 99n]` - see 4.64 |
 | X12 | `emit`-funder delegate class does not settle | A2 | — | **INTEGRATED** | cause was split-facet data-NFT offsets, not a graft position; -6 bytes |
 | X13 | Direct `withExternalCall` route does not balance callee blocks | B | L2 | INTEGRATED | assembler corrected; position remains covenant-UNBOUND |

@@ -227,7 +227,7 @@ task-specific report, not in this table.
 | X15 | Silent eligibility gap: no `hiddenBatch` route and NO diagnostic | A | — | INTEGRATED | REFUSED with a named reason and a remedy; silence ended |
 | X18 | Void `target.call(payload)` leaks on the bus route | C | X6 | INTEGRATED | admitted on the bus route; planner handoff applied by Main |
 | X19 | `m[k]` and `this.m[k]` diverge on the bus route | C+A | X15 | INTEGRATED (scoped) | bare spelling admitted; a second key alternative or `msg.sender` key still needs `bindEntryKeyParameters` |
-| **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **INTEGRATED (PARTIAL)** | closed for EFFECT-FREE handlers; effect-carrying variant still unbound - see 4.24 |
+| **SEC-5** | Pointer-table caller stops binding its own emission rows | A | C2 | **PROVEN, INCLUDING PHYSICAL EFFECTS** | effect-free matrix remains closed; persisted pointer-table callers carrying an event or satoshi transfer now settle honestly, reject a replaced reached effect output, and reject an argument-substituted caller row at the caller. Full containing suite 39/39 - see 4.24 |
 | **SEC-6** | Emission handler with a transfer/emit/token-container is unbound | C | SEC-5 | **INTEGRATED (REPAIRED)** | refusal replaced by X29's real repair - see 4.33 |
 | **SEC-7** | Routed token-container transfer is silently dropped | C | SEC-6 | **INTEGRATED (fail-closed)** | spender-selectable; NOT bus-specific - see 4.33 |
 | **SEC-8** | X29's shared reached flag permitted satoshi-container theft | A | X29 | **INTEGRATED (closed)** | per-handler flag; design credited to C, validated by A |
@@ -4257,6 +4257,13 @@ form declares. The guard excludes those - the same line `synthesizeBatchBeforeLo
 token-container operation is **still flattened and still generates unbound edges**. Measured at codegen level:
 emission-binding sites are 0 both at baseline and after the fix, while the effect-free shape goes 0 -> 16. It is
 pre-existing and unchanged, and the worker refused to let SEC-5's claim cover it.
+
+**Later closure, re-audited after X29.** SEC-6/X29 repaired the event and satoshi-transfer branch, but the tree
+had never combined that repair with SEC-5's persisted function-pointer dispatch in one VM fixture. It now does:
+the two honest event/transfer graphs settle; replacing the reached event or transfer output rejects; and an
+argument-substituted caller row rejects for both variants, always at the caller input. The full containing suite
+passes 39/39. Token-container operations retain their separately named refusal and are not smuggled into this
+claim.
 
 **Corpus discipline, now fully established.** The 867-file general corpus reports 0 changed - and the worker
 states it has **zero discriminating power** here and explains why: none of those files compiles with a message

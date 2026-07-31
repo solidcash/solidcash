@@ -5,7 +5,7 @@ import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  Contract, SignatureTemplate, TransactionBuilder, layer3,
+  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { setupStatefulUtxos } from '../test-util.js';
@@ -13,8 +13,8 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
-  createDataNftUnlocker, createSatoshiContainerUnlocker,
-  getDataNftAddress, getEventNftAddress, getSatoshiContainerAddress,
+  createDataNftUnlocker, createReadOnlyDynamicChunkUnlocker, createSatoshiContainerUnlocker,
+  getDataNftAddress, getDynamicChunkAddress, getEventNftAddress, getSatoshiContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 
 /**
@@ -83,22 +83,26 @@ const TRANSFER_SATS = 900n;
 
 /**
  * The caller. `emit` is the single measured variable of the original SEC-6 control: with it the handler carries
- * a physical effect. Both spellings reach the same two legs through the same ordinary interface calls, so the
- * dispatch is not a second variable.
+ * a physical effect. The original cells reach the same two legs through ordinary interface calls; SEC-5's
+ * closure cells switch only that dispatch to a persisted runtime-sized function-pointer table.
  *
  * `transferring` is X29's second, INDEPENDENT variable, and it changes the signature (a recipient parameter), so
  * it is never combined with an `emitting`-only cell - the two are measured on their own fixtures.
  */
-const hubSource = (emitting: boolean, transferring = false): string => `pragma solidcash >=0.8.0;
+const hubSource = (emitting: boolean, transferring = false, pointerTable = false): string => `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); function debit(uint value); }
 contract EscapeEffectHub() {
+${pointerTable ? '  function(uint) external[] legs;' : ''}
   uint total;
   event Fired(uint value);
-  function fireAll(address first, address second, uint value${transferring ? ', bytes recipient' : ''}) public {
+${pointerTable ? `  function registerCredit(address target) public { this.legs.push(IEffectLeg(target).credit); require(true); }
+  function registerDebit(address target) public { this.legs.push(IEffectLeg(target).debit); require(true); }` : ''}
+  function fireAll(${pointerTable ? '' : 'address first, address second, '}uint value${transferring ? ', bytes recipient' : ''}) public {
 ${emitting ? '    emit Fired(value);' : ''}
 ${transferring ? `    this.transfer(recipient, ${TRANSFER_SATS});` : ''}
-    IEffectLeg(first).credit(value);
-    IEffectLeg(second).debit(value);
+${pointerTable ? `    require(legs.length <= 2);
+    for (int i = 0; i < legs.length; i = i + 1) { legs[i](value); }` : `    IEffectLeg(first).credit(value);
+    IEffectLeg(second).debit(value);`}
     require(true);
   }
   function note(uint credited) public {
@@ -151,6 +155,8 @@ interface Cell {
   transferring?: boolean;
   /** Pay the reached transfer slot to a filler instead of the recipient. The transfer's guard control. */
   dropTransfer?: boolean;
+  /** Dispatch the same two calls through a persisted runtime-sized function-pointer table. */
+  pointerTable?: boolean;
 }
 
 async function createGraphAuthority(provider: SemanticProvider): Promise<any> {
@@ -186,12 +192,15 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const hubArtifact = compileString(hubSource(cell.emitting, cell.transferring === true), options);
+  const hubArtifact = compileString(hubSource(
+    cell.emitting, cell.transferring === true, cell.pointerTable === true,
+  ), options);
   const legBArtifact = compileString(legBSource(cell.senderChecked === true), options);
   const legCArtifact = compileString(legCSource(cell.senderChecked === true), options);
 
   const hubBase = new Contract(hubArtifact, [], { provider });
-  const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, { total: 0n });
+  const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, cell.pointerTable
+    ? { total: 0n, legs: [], __fnsel_legs: [] } : { total: 0n });
   const hub = hubBase.withCategory(hexToBin(hubSetup.categoryId));
   const legBBase = new Contract(legBArtifact, [hub.lockingBytecode], { provider });
   const legBSetup = await setupStatefulUtxos(provider, legBBase, legBArtifact.stateLayout!, { seen: 0n });
@@ -200,6 +209,15 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   const legCSetup = await setupStatefulUtxos(provider, legCBase, legCArtifact.stateLayout!, { burned: 0n });
   const legC = legCBase.withCategory(hexToBin(legCSetup.categoryId));
 
+  if (cell.pointerTable) {
+    const stateful = StatefulContract.withCategory(hubBase, hubSetup.categoryId);
+    await stateful.registerCredit(legB.lockingBytecode).send();
+    await stateful.registerDebit(legC.lockingBytecode).send();
+  }
+  const currentHub = cell.pointerTable
+    ? await StatefulContract.withCategory(hubBase, hubSetup.categoryId).getFullState()
+    : { masterUtxo: hubSetup.masterUtxo, dataNftUtxos: hubSetup.dataNftUtxos };
+
   const participants: layer3.CompiledGraphParticipant[] = [
     { artifact: hubArtifact, lockingBytecode: hub.lockingBytecode },
     { artifact: legBArtifact, lockingBytecode: legB.lockingBytecode },
@@ -207,9 +225,11 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   ];
   // The caller ALWAYS forwards its own `value` to both legs and always names its own two address arguments.
   const recipient = new Contract(p2pkhArtifact, [alicePkh], { provider }).lockingBytecode;
-  const rootArgs = cell.transferring === true
-    ? [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE, recipient]
-    : [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE];
+  const rootArgs = cell.pointerTable
+    ? (cell.transferring === true ? [CALL_VALUE, recipient] : [CALL_VALUE])
+    : (cell.transferring === true
+      ? [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE, recipient]
+      : [legB.lockingBytecode, legC.lockingBytecode, CALL_VALUE]);
   const substituted = cell.tamper === 'argument' ? CALL_VALUE + 1n : CALL_VALUE;
   const statedSelector = cell.tamper === 'selector' ? 'credit' : 'debit';
   const invocations: layer3.CompiledGraphInvocation[] = [
@@ -247,6 +267,12 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   const fee = uniqueUtxo(outpoints, { satoshis: 300_000n });
   await provider.addUtxo(p2pkh.address, fee);
 
+  const chunks: { variable: any; utxo: any; address: string }[] = [];
+  for (const variable of hubArtifact.stateLayout!.variables.filter((entry: any) => entry.dynamic)) {
+    const address = getDynamicChunkAddress(hub, hubSetup.categoryId, variable.name, variable.type);
+    for (const utxo of await provider.getUtxos(address)) chunks.push({ variable, utxo, address });
+  }
+
   const hubLayout = hubArtifact.hiddenBatch!.route.blockLayout!;
   const hubSlotKind = new Map<number, string>(hubLayout.slots.map((slot: any) => [slot.offset, slot.kind]));
   const fillers = Array.from(
@@ -266,21 +292,28 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     )(...args);
 
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+  let chunkCursor = 0;
   let fillerCursor = 0;
   for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
     const kind = hubSlotKind.get(offset);
     if (kind === 'master') {
-      tx.addInput(hubSetup.masterUtxo, routeFor(hub, hubArtifact)(
+      tx.addInput(currentHub.masterUtxo, routeFor(hub, hubArtifact)(
         ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
       ));
     } else if (kind === 'dataNft') {
       tx.addInput(
-        hubSetup.dataNftUtxos[0],
+        currentHub.dataNftUtxos[0],
         createDataNftUnlocker(hub, layout.participantInputs[0], hubSetup.categoryId),
       );
     } else if (kind === 'satoshiContainer') {
       tx.addInput(container, createSatoshiContainerUnlocker(
         hub, layout.participantInputs[0], hubSetup.categoryId,
+      ));
+    } else if (kind === 'trailing' && chunkCursor < chunks.length) {
+      const { variable, utxo } = chunks[chunkCursor];
+      chunkCursor += 1;
+      tx.addInput(utxo, createReadOnlyDynamicChunkUnlocker(
+        hub, layout.participantInputs[0], hubSetup.categoryId, variable.name, variable.type,
       ));
     } else {
       tx.addInput(fillers[fillerCursor], p2pkh.unlock.spend(alicePub, signature()));
@@ -307,7 +340,7 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
 
-  const currentCommitment: string = hubSetup.dataNftUtxos[0].token.nft.commitment;
+  const currentCommitment: string = currentHub.dataNftUtxos[0].token.nft.commitment;
   const zeroFieldHex = binToHex(packed(0n));
   const hubNext = binToHex(packed(0n)) + currentCommitment.slice(zeroFieldHex.length);
   const eventCommitment = binToHex(packed(CALL_VALUE));
@@ -315,16 +348,17 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
     ? getEventNftAddress(hub, hubSetup.categoryId, hubArtifact.events![0].signature) : '';
   let eventCursor = 0;
   let transferCursor = 0;
+  let chunkOutCursor = 0;
   for (let offset = 0; offset < hubLayout.blockSize; offset += 1) {
     const kind = hubSlotKind.get(offset);
     if (kind === 'master') {
       tx.addOutput({
-        to: hub.tokenAddress, amount: hubSetup.masterUtxo.satoshis,
+        to: hub.tokenAddress, amount: currentHub.masterUtxo.satoshis,
         token: { category: hubSetup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
       });
     } else if (kind === 'dataNft') {
       tx.addOutput({
-        to: getDataNftAddress(hub, hubSetup.categoryId), amount: hubSetup.dataNftUtxos[0].satoshis,
+        to: getDataNftAddress(hub, hubSetup.categoryId), amount: currentHub.dataNftUtxos[0].satoshis,
         token: {
           category: hubSetup.categoryId, amount: 0n, nft: { capability: 'mutable', commitment: hubNext },
         },
@@ -351,6 +385,10 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
           nft: { capability: 'none', commitment: eventCommitment },
         },
       } : { to: p2pkh.address, amount: 1000n });
+    } else if (kind === 'trailing' && chunkOutCursor < chunks.length) {
+      const { address, utxo } = chunks[chunkOutCursor];
+      chunkOutCursor += 1;
+      tx.addOutput({ to: address, amount: utxo.satoshis, token: utxo.token });
     } else {
       tx.addOutput({ to: p2pkh.address, amount: 1000n });
     }
@@ -1105,6 +1143,46 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
     }, 600_000,
   );
+
+  /**
+   * SEC-5's formerly unproved intersection: the caller's two edges come from a persisted runtime-sized
+   * function-pointer table AND the caller carries a physical output effect. These are VM cases rather than a
+   * composition of the effect-free pointer-table test with the ordinary-call effect test.
+   */
+  it.each([
+    { emitting: true, transferring: false, label: 'event' },
+    { emitting: false, transferring: true, label: 'transfer' },
+  ])('settles persisted pointer-table dispatch carrying an honest $label', async (cell) => {
+    const built = await buildEffectSubstitution({
+      emitting: cell.emitting, transferring: cell.transferring, pointerTable: true, tamper: 'none',
+    });
+    expect(cell.emitting ? built.emissionSlots : built.transferSlots).toBeGreaterThan(0);
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  it.each([
+    { emitting: true, transferring: false, dropEvent: true, label: 'event' },
+    { emitting: false, transferring: true, dropTransfer: true, label: 'transfer' },
+  ])('rejects persisted pointer-table dispatch with its reached $label output missing', async (cell) => {
+    const built = await buildEffectSubstitution({
+      emitting: cell.emitting, transferring: cell.transferring, pointerTable: true, tamper: 'none',
+      dropEvent: cell.dropEvent, dropTransfer: cell.dropTransfer,
+    });
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
+  }, 600_000);
+
+  it.each([
+    { emitting: true, transferring: false, label: 'event' },
+    { emitting: false, transferring: true, label: 'transfer' },
+  ])('rejects an argument-substituted caller row for persisted pointer-table + $label', async (cell) => {
+    const built = await buildEffectSubstitution({
+      emitting: cell.emitting, transferring: cell.transferring, pointerTable: true, tamper: 'argument',
+    });
+    expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(SCRIPT_REFUSAL);
+  }, 600_000);
 
   /**
    * X29's own hostile case. Moving the container settlement into the subroutine leaves the not-reached path

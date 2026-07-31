@@ -1797,6 +1797,19 @@ export function planCompiledGraph(
       resultTypes: Object.freeze([...(result?.types ?? [])]),
     });
   });
+  // Compiler-side diagnostic for §6.3's transitive rule. This is deliberately duplicated by the root
+  // controller's `staticFrames` walk: artifacts and plans are builder input, so this early refusal improves
+  // attribution but is not the security boundary.
+  for (const invocation of plannedBase) {
+    if (invocation.callMode !== 'staticcall') continue;
+    for (let descendant = invocation.index + 1; descendant <= invocation.subtreeEnd; descendant += 1) {
+      if (plannedBase[descendant].callMode !== 'staticcall') {
+        throw new Error(
+          `layer3: staticcall invocation ${invocation.index} has non-static descendant ${descendant}`,
+        );
+      }
+    }
+  }
   // X111: ordered after `plannedBase` because the rule reads each owner's local row ORDER, and before the
   // result-dependency walk so a stale-read composition names its own cause rather than whatever schema or
   // callsite mismatch it happens to also carry.

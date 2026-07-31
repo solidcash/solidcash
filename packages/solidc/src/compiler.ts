@@ -90,7 +90,7 @@ import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
-import { CircularContractReferenceError, EmittingStateHelperEventError } from './Errors.js';
+import { CircularContractReferenceError, EmittingStateHelperEventError, SolidcDiagnosticError } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
@@ -401,6 +401,26 @@ function setPrimaryContract(ast: Ast, name: string): void {
 }
 
 const SCB1_SELECTOR_HEX = '53434231';
+
+export function assertNoReservedHiddenBatchSelector(
+  functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
+): void {
+  const collision = functions.find((fn) => fn.functionSelector
+    && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX);
+  if (!collision) return;
+  throw new SolidcDiagnosticError(
+    'SCB_RESERVED_SELECTOR_COLLISION',
+    'source function selector collides with reserved hidden batch selector 0x53434231',
+    {
+      selector: SCB1_SELECTOR_HEX,
+      functionName: collision.name,
+      sourceLocation: {
+        line: collision.location.start.line,
+        column: collision.location.start.column,
+      },
+    },
+  );
+}
 const MAX_HIDDEN_BATCH_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 
@@ -627,10 +647,7 @@ function synthesizeHiddenBatchRoute(
   const graphControllerCategoryInternal = graphControllerCategory === undefined
     ? undefined
     : (graphControllerCategory.match(/../g) as string[]).reverse().join('');
-  if (contract.functions.some((fn) => fn.functionSelector
-    && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX)) {
-    throw new Error('Source function selector collides with reserved hidden batch selector 0x53434231');
-  }
+  assertNoReservedHiddenBatchSelector(contract.functions);
   const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
   // X100. Record every external entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.

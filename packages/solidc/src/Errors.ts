@@ -51,6 +51,21 @@ import { Symbol, SymbolType } from './ast/SymbolTable.js';
 import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
+export type SolidcDiagnosticCode = 'SCB_RESERVED_SELECTOR_COLLISION';
+
+/** Machine-stable compiler refusal with source-owned context. */
+export class SolidcDiagnosticError extends Error {
+  readonly name = 'SolidcDiagnosticError';
+
+  constructor(
+    public readonly code: SolidcDiagnosticCode,
+    message: string,
+    public readonly context: Readonly<Record<string, unknown>>,
+  ) {
+    super(`solidc [${code}]: ${message}`);
+  }
+}
+
 /**
  * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
  *

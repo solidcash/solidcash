@@ -97,5 +97,30 @@ describe('layer3.encodeHiddenBatch', () => {
     expect(() => layer3.encodeHiddenBatch(artifact, [])).toThrow(/row count/);
     expect(() => layer3.encodeHiddenBatch(artifact, [{ function: 'missing' }])).toThrow(/Unknown/);
     expect(() => layer3.encodeHiddenBatch(artifact, [{ function: 'add' }])).toThrow(/number of arguments/);
+
+    const unsupported = {
+      ...artifact,
+      hiddenBatch: { ...artifact.hiddenBatch!, version: 2 },
+    } as unknown as typeof artifact;
+    expect(() => layer3.encodeHiddenBatch(unsupported, [{ function: 'clear' }])).toThrow(
+      expect.objectContaining({
+        code: 'L3_PROTOCOL_VERSION_UNSUPPORTED',
+        context: expect.objectContaining({
+          metadataField: 'hiddenBatch.version', actual: 2, expected: 1,
+          ownerIdentity: 'Layer3HiddenBatch',
+        }),
+      }),
+    );
+
+    const malformed = {
+      ...artifact,
+      hiddenBatch: { ...artifact.hiddenBatch!, selector: '00000000' },
+    } as unknown as typeof artifact;
+    expect(() => layer3.encodeHiddenBatch(malformed, [{ function: 'clear' }])).toThrow(
+      expect.objectContaining({
+        code: 'L3_PROTOCOL_METADATA_MALFORMED',
+        context: expect.objectContaining({ metadataField: 'hiddenBatch' }),
+      }),
+    );
   });
 });

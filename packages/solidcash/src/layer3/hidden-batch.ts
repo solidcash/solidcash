@@ -4,6 +4,7 @@ import {
 } from '@solidcash/utils';
 import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument } from '../Argument.js';
 import SignatureTemplate from '../SignatureTemplate.js';
+import { Layer3DiagnosticError } from './diagnostics.js';
 
 export interface HiddenBatchInvocation {
   function: string;
@@ -97,6 +98,31 @@ export function encodeHiddenBatch(
 ): EncodedHiddenBatch {
   const capability = artifact.hiddenBatch;
   if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+  if (capability.version !== 1) {
+    throw new Layer3DiagnosticError(
+      'L3_PROTOCOL_VERSION_UNSUPPORTED',
+      `artifact '${artifact.contractName}' advertises unsupported SCB version ${String(capability.version)}`,
+      { metadataField: 'hiddenBatch.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
+    );
+  }
+  if (capability.selector !== '53434231'
+    || !Number.isInteger(capability.maximumRows) || capability.maximumRows < 1
+    || !Number.isInteger(capability.maximumBlobBytes) || capability.maximumBlobBytes < 1) {
+    throw new Layer3DiagnosticError(
+      'L3_PROTOCOL_METADATA_MALFORMED',
+      `artifact '${artifact.contractName}' publishes malformed SCB1 capability metadata`,
+      {
+        metadataField: 'hiddenBatch',
+        actual: {
+          selector: capability.selector,
+          maximumRows: capability.maximumRows,
+          maximumBlobBytes: capability.maximumBlobBytes,
+        },
+        expected: { selector: '53434231', positiveIntegerBounds: true },
+        ownerIdentity: artifact.contractName,
+      },
+    );
+  }
   const minimumRows = capability.minimumRows ?? 1;
   if (invocations.length < minimumRows || invocations.length > capability.maximumRows) {
     throw new Error(

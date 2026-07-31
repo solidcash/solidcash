@@ -28,6 +28,9 @@ describe('compiler-integrated message-bus SCB1 route', () => {
       '__internal__graphBlockSize',
       '__internal__graphEmissions',
       '__internal__graphCallers',
+      '__internal__graphSettlementBoundary',
+      '__internal__graphCompletionPositions',
+      '__internal__graphSettlementTable',
     ]);
     expect(artifact.bytecode.length).toBeGreaterThan(0);
   });

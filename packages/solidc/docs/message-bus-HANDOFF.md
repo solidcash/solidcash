@@ -71,8 +71,9 @@ These are the only rows where a defect is believed live. Everything else is hygi
   on a single-statement body.
 - **X213** - 10 `resolves.not.toThrow()` sites whose `not.toThrow()` clause is DEAD (measured);
   `.resolves` carries the whole claim. Marked in-file, not repaired.
-- **X217** - two throw-census tools now exist (`test/e2e/layer3-throw-census.ts` and V3's). Reconcile
-  rather than write a third.
+- **X217 is CLOSED** - the committed `test/e2e/layer3-throw-census.ts` observes SDK boundary throws.
+  V3's chai-matcher instrument covered assertion semantics, was validated, and was deliberately reverted
+  after the measurement. They have complementary scopes and only the reusable boundary tool remains.
 - **X221** - 435 settled transactions carry no route blob and are excluded from the count by
   construction. Named assumption, not a measurement.
 

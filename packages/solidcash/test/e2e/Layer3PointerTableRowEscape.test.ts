@@ -404,6 +404,9 @@ const outcomeOf = (builder: TransactionBuilder): string => {
   return 'ACCEPTED';
 };
 
+const verifyAtCaller =
+  /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
+
 describe('Layer-3 pointer-table emission binding vs a declared returning handler (SEMANTIC)', () => {
   const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
 
@@ -427,7 +430,7 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
     const built = await buildArgumentSubstitution({ ...cell, returningHandler: 'none' });
     expect(built.resultMode).toBe(false);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   // Control: the same declared returning handler, reached through ordinary interface calls instead of the
@@ -441,7 +444,7 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
       });
       expect(built.resultMode).toBe(true);
       expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
     }, 600_000,
   );
 
@@ -458,7 +461,7 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
     expect(built.resultMode).toBe(true);
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   // The declared handler's own body never mattered to the measurement: a state-writing returning handler binds
@@ -470,6 +473,6 @@ describe('Layer-3 pointer-table emission binding vs a declared returning handler
     expect(built.resultMode).toBe(true);
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 });

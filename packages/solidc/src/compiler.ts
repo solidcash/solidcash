@@ -1706,6 +1706,35 @@ function synthesizeHiddenBatchRoute(
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
+  // A route can admit getters from more than one sorted collection (for example ERC-20 `balanceOf` and
+  // `allowance`). Calling those public handlers directly lets the wrapper lowering collapse their two reads
+  // onto one physical journal slot: the canonical route then publishes only the last collection even though it
+  // still publishes both key witnesses. Clone every fixed-entry handler into the shared journal pool so the
+  // wrapper owns one authenticated cache/slot per collection identity. This is also what the resource-shaped
+  // path above already does for its siblings; applying it to ordinary entry handlers keeps the physical route
+  // and the per-handler ABI in agreement.
+  for (const sourceHandler of eligible) {
+    if (sourceHandler === resourceShapedHandler
+      || graphTailHandlers.has(sourceHandler)
+      || siblingHandlerInvokeNames.has(sourceHandler)) continue;
+    let touchesEntry = false;
+    walkInvocationAst(sourceHandler.body, (node) => {
+      if (isMappingNode(node) && collectionByName.has(node.name)) touchesEntry = true;
+    });
+    if (!touchesEntry) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_entry_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.forceCollectionJournalPool = true;
+    bindEntryKeyParameters(handler, sourceHandler);
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
   for (const sourceHandler of graphTailHandlers) {
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
     const handler = cloneNode(sourceHandler);

@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { asmToScript, buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
+import {
+  asmToScript, buildInitialStateCommitments, encodePushdataValue, scriptToBytecode,
+} from '@solidcash/utils';
 import { compileFile, compileFileMulti, compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -13,6 +15,7 @@ import {
   createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import type { Utxo } from '../../src/interfaces.js';
+import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 
 /**
  * X177/X180 BREADTH: RECOVERED HANDLERS THAT READ A SORTED COLLECTION, AN ARRAY, OR FOUR DATA NFTS.
@@ -43,11 +46,10 @@ import type { Utxo } from '../../src/interfaces.js';
  * neighbour. Both must be refused AT INPUT 0. No result is ever encoded here - for every returning handler
  * the commitment is read off the route's own traced execution.
  *
- * TWO SUBJECTS ARE RECORDED AS UNPROVEN IN BOTH DIRECTIONS and are not counted: `ERC20.balanceOf` in each of
- * the two source rows, the ONE-key mapping getter whose route this harness cannot obtain a result from. Each
- * row's two-key sibling `allowance` on the same entry slot DOES settle, so the shape is not the obstacle and
- * the rows are left open rather than explained away. X236 added the `MyToken.sol` source row specifically so
- * source-digest attribution proves its five other getters without conflating it with `ERC20.sol`.
+ * X236 adds the source-distinct `MyToken.sol` ERC20 row and closes both formerly unproved `balanceOf` getters.
+ * The shared route used to publish only `allowance` in `entryAccesses` while still accepting a balance key;
+ * giving each collection identity its own physical entry slot makes the one-key and two-key getters both
+ * observable and authenticated. Source-digest attribution keeps `MyToken.sol` distinct from `ERC20.sol`.
  *
  * WHAT IS NOT CLAIMED. Every subject is read-only (`writesState: false`, asserted below from the DIRECT
  * artifact), so publishing the pre-state as the post-state is correct rather than accidentally correct. The
@@ -100,6 +102,10 @@ interface Row {
   unproven?: readonly Subject[];
   state: Record<string, unknown>;
   stateTamper: Record<string, unknown>;
+  /** Optional authenticated nondefault mapping entries, keyed by collection name. */
+  presentEntries?: Readonly<Record<string, { key: Uint8Array; value: bigint; valueType: string }>>;
+  /** Exact route-computed commitment for nondefault-result controls. */
+  expectedResultCommitments?: Readonly<Record<string, string>>;
   slots: readonly string[];
 }
 
@@ -112,12 +118,14 @@ const ROWS: readonly Row[] = [
     subjects: [
       { handler: 'totalSupply' }, { handler: 'name' }, { handler: 'symbol' }, { handler: 'decimals' },
       { handler: 'allowance', args: [addr('55'), addr('66')] },
+      { handler: 'balanceOf', args: [addr('55')] },
     ],
-    hostileSubject: 'allowance',
-    unproven: [{ handler: 'balanceOf', args: [addr('55')] }],
+    hostileSubject: 'balanceOf',
+    presentEntries: { balanceOf: { key: addr('55'), value: 42n, valueType: 'uint256' } },
+    expectedResultCommitments: { balanceOf: '0302012a' },
     state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
     stateTamper: { totalSupply: 1_000_001n },
-    slots: ['master', 'dataNft', 'entry', 'returnEvent', ...TRAILING],
+    slots: ['master', 'dataNft', 'entry', 'entry', 'returnEvent', ...TRAILING],
   },
   {
     rel: 'defi/stable-swap-amm/StableSwap.sol',
@@ -150,19 +158,15 @@ const ROWS: readonly Row[] = [
     subjects: [
       { handler: 'totalSupply' }, { handler: 'name' }, { handler: 'symbol' }, { handler: 'decimals' },
       { handler: 'allowance', args: [addr('55'), addr('66')] },
+      { handler: 'balanceOf', args: [addr('55')] },
     ],
-    // `allowance` is the hostile subject because it SETTLES, and a hostile without a settling positive
-    // discriminates nothing. It is also the deeper of the two mapping getters - two keys rather than one -
-    // so the collection-read path is still what the hostiles move.
-    hostileSubject: 'allowance',
-    // `balanceOf` is the ONE-key mapping getter and this harness cannot obtain a result for it: its route
-    // never puts the declared value beside a computed one. Its sibling `allowance`, two keys deep on the
-    // same contract and the same entry slot, does. Recorded rather than deleted - deleting it would have
-    // made 10 read as 11.
-    unproven: [{ handler: 'balanceOf', args: [addr('55')] }],
+    // The formerly unproved one-key getter now reads an authenticated present entry with value 42.
+    hostileSubject: 'balanceOf',
+    presentEntries: { balanceOf: { key: addr('55'), value: 42n, valueType: 'uint256' } },
+    expectedResultCommitments: { balanceOf: '0302012a' },
     state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
     stateTamper: { totalSupply: 1_000_001n },
-    slots: ['master', 'dataNft', 'entry', 'returnEvent', ...TRAILING],
+    slots: ['master', 'dataNft', 'entry', 'entry', 'returnEvent', ...TRAILING],
   },
 ];
 
@@ -256,6 +260,22 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, row.state);
     const participant = base.withCategory(hexToBin(setup.categoryId));
+    const presentEntryUtxos = new Map<string, Utxo>();
+    for (const [collection, entry] of Object.entries(row.presentEntries ?? {})) {
+      const commitment = encodeEntryCommitment(
+        keyToSlot(entry.key), new Uint8Array(32), encodePushdataValue(entry.value, entry.valueType),
+      );
+      const entryAddress = getEntryNftAddress(participant, setup.categoryId, collection);
+      const utxo = await provider.addUtxo(entryAddress, randomUtxo({
+        satoshis: 10_000n,
+        token: {
+          category: setup.categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(commitment) },
+        },
+      }));
+      presentEntryUtxos.set(collection, utxo);
+    }
 
     const forge = (value: Uint8Array): Uint8Array => {
       const wrong = Uint8Array.from(value);
@@ -379,7 +399,7 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
             ?.collection as string;
           if (collection === undefined) throw new Error(`${key(row)}: the route names no entry collection`);
           const entryAddress = getEntryNftAddress(participant, setup.categoryId, collection);
-          const entryUtxo = (await provider.getUtxos(entryAddress))[0];
+          const entryUtxo = presentEntryUtxos.get(collection) ?? (await provider.getUtxos(entryAddress))[0];
           if (entryUtxo === undefined) throw new Error(`${key(row)}: the ${collection} entry NFT is unstaged`);
           tx.addInput(entryUtxo, createEntryNftUnlocker(participant, 0, setup.categoryId, collection));
           tx.addOutput({
@@ -450,6 +470,10 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     const cacheKey = `${key(row)}.${subject.handler}`;
     if (!cached.has(cacheKey)) {
       const probe = await attempt(row, subject, 'none', undefined);
+      const expected = row.expectedResultCommitments?.[subject.handler];
+      if (expected !== undefined) {
+        expect(binToHex(probe.discovered!), `${cacheKey}: authenticated nondefault result moved`).toBe(expected);
+      }
       cached.set(cacheKey, probe.discovered!);
       console.log(`[V2C] ${cacheKey} result off its own trace: ${binToHex(probe.discovered!)}`);
     }
@@ -527,6 +551,6 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     console.log(`[V2C] ${settled.length} gained handlers settle in this file; `
       + `${ROWS.reduce((n, row) => n + (row.unproven?.length ?? 0), 0)} more are run and recorded unproven`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(15);
+    expect(settled.length).toBe(17);
   });
 });

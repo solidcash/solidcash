@@ -4430,6 +4430,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
 
+    // A transfer reached through an invoked helper is not represented in branchOps (the semantic branch census
+    // only sees the surface arm). Discover those exact indices before condition evaluation so their covenant
+    // values live below stackDepth and survive arm-local cleanup.
+    const transitiveTransfers = new Set<number>();
+    this.collectTransferIndices(node.ifBlock, transitiveTransfers);
+    if (node.elseBlock) this.collectTransferIndices(node.elseBlock, transitiveTransfers);
+    for (const idx of transitiveTransfers) {
+      if (this.preAllocatedTransfers.has(idx)) continue;
+      const lbName = `__internal__transfer_lb_${idx}`;
+      const amtName = `__internal__transfer_amt_${idx}`;
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack(lbName);
+      this.emit(encodeInt(0n), locationData);
+      this.pushToStack(amtName);
+      this.pendingTransfers.push({ transferIndex: idx, lockingBytecodeStackName: lbName, amountStackName: amtName });
+      this.preAllocatedTransfers.add(idx);
+      this.conditionalTransferIndices.add(idx);
+    }
+
     // Conditional mapping deletes -> existence-gated soft-delete writes (see preAllocateCondDeleteWrite).
     for (const slotIndex of mappingDeleteSlots) {
       // An enclosing loop that already registered this slot owns the delete. Seeding a soft-delete here would
@@ -4648,29 +4667,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Recursively walk a block to collect transfer indices.
    */
-  private collectTransferIndices(block: BlockNode, indices: Set<number>): void {
-    if (!block.statements) return;
-    for (const stmt of block.statements) {
-      if (stmt instanceof TransferStatementNode) {
-        indices.add(stmt.transferIndex);
-      } else if (stmt instanceof AddressTransferStatementNode) {
-        indices.add(stmt.transferIndex);
-      } else if (stmt instanceof BranchNode) {
-        this.collectTransferIndices(stmt.ifBlock, indices);
-        if (stmt.elseBlock) this.collectTransferIndices(stmt.elseBlock, indices);
-      } else if (stmt instanceof TryCatchNode) {
-        this.collectTransferIndices(stmt.tryBlock, indices);
-      } else if (stmt instanceof DoWhileNode || stmt instanceof WhileNode) {
-        this.collectTransferIndices(stmt.block, indices);
-      } else if (stmt instanceof CollectionIterationNode) {
-        this.collectTransferIndices(stmt.body, indices);
-      } else if (stmt instanceof UncheckedNode) {
-        this.collectTransferIndices(stmt.block, indices);
-      } else if (stmt instanceof SwitchNode) {
-        for (const c of stmt.cases) this.collectTransferIndices(c.body, indices);
-        if (stmt.defaultCase) this.collectTransferIndices(stmt.defaultCase, indices);
+  private collectTransferIndices(
+    block: BlockNode, indices: Set<number>, seenCallees: Set<FunctionDefinitionNode> = new Set(),
+  ): void {
+    const seenNodes = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seenNodes.has(node)) return;
+      seenNodes.add(node);
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode) {
+        indices.add(node.transferIndex);
       }
-    }
+      const valueCall = node as Node & {
+        valueTransferIndex?: number; callOptions?: { value?: ExpressionNode };
+      };
+      if (valueCall.callOptions?.value && (valueCall.valueTransferIndex ?? -1) >= 0) {
+        indices.add(valueCall.valueTransferIndex!);
+      }
+      if (node instanceof FunctionCallNode) {
+        const callee = node.resolvedFunction;
+        if (callee?.body && !seenCallees.has(callee)) {
+          seenCallees.add(callee);
+          walk(callee.body);
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'definition' || key === 'resolvedFunction' || key === 'functionReference'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) {
+          for (const item of value) if (item instanceof Node) walk(item);
+        }
+      }
+    };
+    walk(block);
   }
 
   /**

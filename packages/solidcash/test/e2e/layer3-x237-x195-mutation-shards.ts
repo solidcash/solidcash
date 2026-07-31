@@ -66,12 +66,26 @@ const compact = (text: string): string => text.replace(/\s+/g, ' ').trim();
 // leaf title supplied to it/test. Match the exact leaf at the end while
 // admitting any suite prefix; a bare ^leaf$ silently selects zero nested tests.
 const leafTitleRegex = (leafPattern: string): string => `(?:^| )${leafPattern}$`;
+const eachTitlePattern = (title: string): string => {
+  // Mirrors Vitest's it.each title expansion: printf placeholders and object
+  // attributes are substituted before -t sees the full test name.
+  const escaped = regexEscape(title.replace(/\$[$\w.]+/g, '%s'));
+  const replacements: Record<string, string> = {
+    '%i': '\\d+?', '%#': '\\d+?', '%$': '\\d+?',
+    '%d': '[\\d.eE+-]+?', '%f': '[\\d.eE+-]+?',
+    '%s': '.+?', '%j': '.+?', '%o': '.+?', '%O': '.+?', '%%': '%',
+  };
+  return escaped.replace(/%[i#$dfsjoO%]/g, (placeholder) => replacements[placeholder] ?? placeholder);
+};
 const selectorSelfCheckTitle = 'accepts [x] (exact)';
 const selectorSelfCheck = new RegExp(leafTitleRegex(regexEscape(selectorSelfCheckTitle)));
+const eachSelectorSelfCheck = new RegExp(leafTitleRegex(eachTitlePattern('case %s at %# is %% done')));
 if (!selectorSelfCheck.test(selectorSelfCheckTitle)
   || !selectorSelfCheck.test(`outer nested ${selectorSelfCheckTitle}`)
   || selectorSelfCheck.test(`outer ${selectorSelfCheckTitle} suffix`)
-  || selectorSelfCheck.test(`outer prefix${selectorSelfCheckTitle}`)) {
+  || selectorSelfCheck.test(`outer prefix${selectorSelfCheckTitle}`)
+  || !eachSelectorSelfCheck.test('outer case value at 12 is % done')
+  || eachSelectorSelfCheck.test('outer case value at index is % done')) {
   throw new Error('X237 refusal: Vitest hierarchical title selector self-check failed');
 }
 
@@ -99,8 +113,8 @@ for (const file of files) {
       if (title && (ts.isStringLiteral(title) || ts.isNoSubstitutionTemplateLiteral(title))) {
         return {
           title: title.text,
-          regex: leafTitleRegex(regexEscape(title.text)),
-          strategy: 'direct-title',
+          regex: leafTitleRegex(isEach ? eachTitlePattern(title.text) : regexEscape(title.text)),
+          strategy: isEach ? 'parameterized-title' : 'direct-title',
         };
       }
       if (title && ts.isTemplateExpression(title)) {

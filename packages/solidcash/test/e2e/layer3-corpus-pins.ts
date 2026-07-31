@@ -54,8 +54,14 @@ export interface CorpusSampling {
   population: number;
   /** False once the stride is DERIVED from the recorded counts rather than guessed. See `stridesConsistentWith`. */
   strideIsInferred: boolean;
-  /** Still false everywhere: the probe does not emit its stride, so it is derived from outputs, never read. */
+  /** True when the probe emitted the exact stride alongside this recorded census denominator. */
   strideRecordedByProbe: boolean;
+}
+
+export interface RecordedCensusSampling {
+  stride: number;
+  population: number;
+  sampled: number;
 }
 
 /**
@@ -80,6 +86,40 @@ export interface CorpusManifest {
   samplingOfTheRecordedCensus: { byCorpus: Record<string, CorpusSampling> };
   corpora: CorpusPin[];
 }
+
+/** Fail loudly when a generated census's recorded sampling inputs disagree with its manifest or gate counts. */
+export const assertRecordedSamplingOrRefuse = (
+  manifest: CorpusManifest,
+  recorded: Record<string, RecordedCensusSampling>,
+  gates: Record<string, { files: number }>,
+): void => {
+  const expected = manifest.samplingOfTheRecordedCensus.byCorpus;
+  const names = [...new Set([...Object.keys(expected), ...Object.keys(recorded), ...Object.keys(gates)])].sort();
+  const refusals: string[] = [];
+  for (const name of names) {
+    const pin = expected[name];
+    const actual = recorded[name];
+    const gate = gates[name];
+    if (!pin || !actual || !gate) {
+      refusals.push(`'${name}' is missing from ${!pin ? 'the sampling manifest' : !actual
+        ? 'F3_CENSUS_SAMPLING' : 'F3_CENSUS_GATES'}`);
+      continue;
+    }
+    if (actual.stride !== pin.stride) refusals.push(`'${name}' stride is ${actual.stride}, pinned ${pin.stride}`);
+    if (actual.population !== pin.population) {
+      refusals.push(`'${name}' population is ${actual.population}, pinned ${pin.population}`);
+    }
+    if (actual.sampled !== pin.sampled) {
+      refusals.push(`'${name}' sampled count is ${actual.sampled}, pinned ${pin.sampled}`);
+    }
+    if (actual.sampled !== gate.files) {
+      refusals.push(`'${name}' sampling records ${actual.sampled} files but its census gate records ${gate.files}`);
+    }
+  }
+  if (refusals.length > 0) {
+    throw new Error(`corpus-sampling refusal: ${refusals.length} finding(s):\n- ${refusals.join('\n- ')}`);
+  }
+};
 
 /** Terminal state of one corpus. Only `verified` means the census may use it without qualification. */
 export type CorpusVerdict = 'verified' | 'drifted' | 'unpinnable' | 'absent';

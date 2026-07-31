@@ -48,11 +48,10 @@
       "     when F3_LIMIT, F3_CORPORA or F3_MERGE is set, so the recorded counts cannot be a truncation or a",
       "     merge of two runs at different strides.",
       "",
-      "So the solc-corpus row is a 1-in-12 systematic sample, 407 of 4,876. What is still NOT true is that the",
-      "probe RECORDS the stride: strideRecordedByProbe is false for every corpus, and that is the residual gap.",
-      "The above derives the stride from outputs; only the probe emitting F3_STRIDE into the census module would",
-      "read it from the source. Until then a stride that produced counts consistent with another stride would be",
-      "misread - the derivation is sound but it is arithmetic over results, not a record of the input.",
+      "X125 is now closed: the probe emits F3_CENSUS_SAMPLING with stride, population and sampled count for",
+      "every corpus. A committed re-take requires an explicit F3_STRIDES entry for all four corpora and refuses",
+      "missing, malformed or unknown entries. The manifest/census consumer validates those emitted values against",
+      "both this pin and F3_CENSUS_GATES, so a changed stride cannot silently move a denominator.",
       "",
       "Consequence for any consumer: a solc-corpus percentage has a denominator of 407 sampled files, not the",
       "4,876 population, and must not be quoted as if the whole corpus were censused."
@@ -60,19 +59,19 @@
     "byCorpus": {
       "solc-corpus": {
         "stride": 12, "sampled": 407, "population": 4876,
-        "strideIsInferred": false, "strideRecordedByProbe": false
+        "strideIsInferred": false, "strideRecordedByProbe": true
       },
       "mistswap": {
         "stride": 1, "sampled": 16, "population": 16,
-        "strideIsInferred": false, "strideRecordedByProbe": false
+        "strideIsInferred": false, "strideRecordedByProbe": true
       },
       "eacc": {
         "stride": 1, "sampled": 22, "population": 22,
-        "strideIsInferred": false, "strideRecordedByProbe": false
+        "strideIsInferred": false, "strideRecordedByProbe": true
       },
       "solidity-by-example": {
         "stride": 1, "sampled": 141, "population": 141,
-        "strideIsInferred": false, "strideRecordedByProbe": false
+        "strideIsInferred": false, "strideRecordedByProbe": true
       }
     }
   },

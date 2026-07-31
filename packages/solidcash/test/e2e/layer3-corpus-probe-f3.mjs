@@ -344,13 +344,23 @@ const limit = process.env.F3_LIMIT ? Number(process.env.F3_LIMIT) : Infinity;
 // A SYSTEMATIC sample, for a corpus too large to compile twice in full. Every stride-th in-scope file is
 // probed, which spreads the sample across the whole sorted corpus; a `F3_LIMIT` prefix would instead take an
 // alphabetical block, which for a corpus laid out by feature directory is a sample of one or two features.
-const stride = process.env.F3_STRIDE ? Number(process.env.F3_STRIDE) : 1;
+const legacyStride = process.env.F3_STRIDE ? Number(process.env.F3_STRIDE) : 1;
+const configuredStrides = Object.fromEntries((process.env.F3_STRIDES ?? '').split(',').filter(Boolean).map((part) => {
+  const [name, raw] = part.split('=');
+  const value = Number(raw);
+  if (!name || !Number.isSafeInteger(value) || value < 1) {
+    throw new Error(`corpus-sampling refusal: invalid F3_STRIDES entry '${part}'; expected corpus=positive-integer`);
+  }
+  return [name, value];
+}));
+const strideFor = (name) => configuredStrides[name] ?? legacyStride;
 const out = process.env.F3_OUT
   || '/tmp/claude-0/-Code-cashscript/97db2cb3-5b7a-49a1-82fd-6dd1634533cf/scratchpad/f3-census.json';
 
 const rows = [];
 const skipped = {};
 const files = {};
+const populations = {};
 
 /**
  * ENRICHMENT PASS. `F3_ENRICH=a.json,b.json` recompiles ONLY the files that produced a bus-reachable contract
@@ -469,9 +479,14 @@ function verifyCorpusPinsOrRefuse(active) {
 }
 
 const activeCorpora = process.env.F3_MERGE ? [] : corpora();
+const activeNames = new Set(activeCorpora.map((corpus) => corpus.name));
+for (const name of Object.keys(configuredStrides)) {
+  if (!activeNames.has(name)) throw new Error(`corpus-sampling refusal: F3_STRIDES names unknown corpus '${name}'`);
+}
 if (activeCorpora.length > 0) verifyCorpusPinsOrRefuse(activeCorpora);
 
 for (const corpus of activeCorpora) {
+  const stride = strideFor(corpus.name);
   let seen = 0;
   let inScope = 0;
   const started = Date.now();
@@ -496,10 +511,14 @@ for (const corpus of activeCorpora) {
         + `(${((Date.now() - started) / 1000).toFixed(0)}s)\n`);
     }
   }
+  populations[corpus.name] = inScope;
   process.stderr.write(`${corpus.name}: ${seen} probed in ${((Date.now() - started) / 1000).toFixed(0)}s\n`);
 }
 
-writeFileSync(out, JSON.stringify({ skipped, files, rows }, null, 1));
+const sampling = Object.fromEntries(activeCorpora.map((corpus) => [corpus.name, {
+  stride: strideFor(corpus.name), population: populations[corpus.name] ?? 0, sampled: files[corpus.name] ?? 0,
+}]));
+writeFileSync(out, JSON.stringify({ sampling, skipped, files, rows }, null, 1));
 process.stderr.write(`\nwrote ${rows.length} rows to ${out}\n`);
 
 /* ---------------------------------------------------------------------------------------------------- */
@@ -547,7 +566,7 @@ for (const corpus of [...new Set(rows.map((row) => row.corpus))]) {
 }
 const eligibleRows = rows.filter((row) => (row.eligibleHandlers?.length ?? 0) > 0);
 
-const module = `import type { CensusGates, CensusRow } from './layer3-corpus-fit-f3.js';
+const module = `import type { CensusGates, CensusRow, CensusSampling } from './layer3-corpus-fit-f3.js';
 
 /**
  * THE RECORDED F3 CORPUS CENSUS, produced by \`layer3-corpus-probe-f3.mjs\` at the commit named below by
@@ -583,6 +602,9 @@ export const F3_CENSUS_COMMIT = '${process.env.F3_COMMIT ?? 'UNSTAMPED'}';
 /** Corpora present in this census, in the order they were merged. A partial re-take shows up here. */
 export const F3_CENSUS_CORPORA: string[] = ${JSON.stringify([...new Set(rows.map((row) => row.corpus))])};
 
+/** Exact sampling inputs and resulting denominators emitted by this probe run. */
+export const F3_CENSUS_SAMPLING: Record<string, CensusSampling> = ${JSON.stringify(sampling, null, 2)};
+
 export const F3_CENSUS_GATES: Record<string, CensusGates> = ${JSON.stringify(gates, null, 2)};
 
 /** Named route refusals, per corpus, counted per rejected entry point (a contract can contribute several). */
@@ -614,6 +636,18 @@ if (wantsCommitted && partial) {
 if (wantsCommitted && process.env.F3_COMMIT === undefined) {
   throw new Error('refusing to overwrite the committed census without F3_COMMIT: the stamp is what makes every '
     + 'recorded figure attributable to a compiler, and UNSTAMPED silently detaches all of them.');
+}
+if (wantsCommitted && process.env.F3_STRIDES === undefined) {
+  throw new Error('corpus-sampling refusal: refusing to overwrite the committed census without F3_STRIDES. '
+    + 'Sampling is an input to every denominator and must be recorded explicitly, for example '
+    + 'F3_STRIDES=mistswap=1,eacc=1,solidity-by-example=1,solc-corpus=12.');
+}
+if (wantsCommitted) {
+  const missing = activeCorpora.map((corpus) => corpus.name).filter((name) => configuredStrides[name] === undefined);
+  if (missing.length > 0) {
+    throw new Error(`corpus-sampling refusal: F3_STRIDES omits ${missing.join(', ')}; every committed corpus must `
+      + 'record an explicit stride.');
+  }
 }
 const moduleOut = process.env.F3_MODULE_OUT ?? (wantsCommitted ? committedCensus : scratchCensus);
 writeFileSync(moduleOut, module);

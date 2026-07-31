@@ -512,9 +512,10 @@ differs - `BentoBoxV1.sol`, one of the two load-bearing anchors. The divergence 
 immaterial to what the census measures, and the manifest says plainly that no public commit reproduces it,
 with a test to stop a later pin refresh quietly upgrading that.
 
-**A second unpinned reproducibility parameter**: the recorded solc-corpus row is a **1-in-12 stride sample,
-407 of 4,876**, and the stride was written down nowhere. Marked `strideIsInferred: true` with both
-corroborations stated rather than asserted as known.
+**X125 closed the second unpinned reproducibility parameter**: the recorded solc-corpus row is a **1-in-12
+stride sample, 407 of 4,876**. The probe now emits stride, population and sampled count into the census,
+requires explicit per-corpus `F3_STRIDES` for a committed re-take, and the consumer refuses metadata that
+disagrees with either the manifest or gate denominators.
 
 **Two silent degradations closed**: `findSol` returned `[]` for a missing root, so an absent corpus
 contributed zero while a total was still reported; and the mistswap list is `.filter(existsSync)`, so a

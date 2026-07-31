@@ -31,6 +31,13 @@ export interface CensusGates {
   instantiable: number;
 }
 
+/** Sampling inputs recorded by the probe alongside each corpus denominator. */
+export interface CensusSampling {
+  stride: number;
+  population: number;
+  sampled: number;
+}
+
 export interface CensusRow {
   corpus: string;
   rel: string;

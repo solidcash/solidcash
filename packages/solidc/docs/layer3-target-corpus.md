@@ -87,12 +87,11 @@ TWO FINDINGS THAT PINNING SURFACED, both recorded rather than papered over:
   so it is immaterial to what the census measures. The corpus is still not publicly recreatable and
   must not be described as if it were.
 - **The recorded solc-corpus row is a sample, not a census.** It reports 407 files against an in-scope
-  population of 4,876: a 1-in-12 systematic stride sample. The stride was not recorded anywhere, so a
-  re-take at a different stride would move every solc-corpus percentage with nothing to distinguish it
-  from a compiler or corpus change. It is now recorded in the manifest, and marked as INFERRED
-  (`ceil(4876 / 12) = 407` exactly, corroborated by the probe's own note that a full four-corpus
-  re-take at stride 12 costs 29 minutes) rather than read from the census. A solc-corpus percentage has
-  a denominator of 407 sampled files and must not be quoted as if the whole corpus were censused.
+  population of 4,876: a 1-in-12 systematic stride sample. X125 now makes the probe emit stride,
+  population and sampled count into `F3_CENSUS_SAMPLING`; committed re-takes require explicit
+  `F3_STRIDES` entries for all corpora. The consumer validates those emitted inputs against the manifest
+  and gate counts, so changing stride cannot masquerade as compiler or corpus movement. A solc-corpus
+  percentage has a denominator of 407 sampled files and must not be quoted as if the whole corpus were censused.
 
 ## 2. Selected real workload
 

@@ -3,10 +3,11 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import {
-  assertCorpusPinsOrRefuse, censusFiles, corpusRoot, digestOf, loadCorpusManifest, stridesConsistentWith,
+  assertCorpusPinsOrRefuse, assertRecordedSamplingOrRefuse, censusFiles, corpusRoot, digestOf, loadCorpusManifest,
+  stridesConsistentWith,
   verifyCorpus, verifyCorpusPins,
 } from './layer3-corpus-pins.js';
-import { F3_CENSUS_CORPORA, F3_CENSUS_GATES } from './layer3-corpus-census-f3.js';
+import { F3_CENSUS_CORPORA, F3_CENSUS_GATES, F3_CENSUS_SAMPLING } from './layer3-corpus-census-f3.js';
 
 /**
  * ROW R3-16. The F3 census reads four external checkouts that were pinned to nothing, so its denominators were
@@ -218,10 +219,24 @@ describe('F3 corpus checkouts are pinned and drift is detectable', () => {
       expect(probe, `${flag} is no longer part of the partial-run refusal`)
         .toContain(`process.env.${flag} !== undefined`);
     }
-    // The stride is still an unrecorded INPUT: the probe reads F3_STRIDE and emits it nowhere. This asserts the
-    // gap rather than the fix, so that closing it must come here and flip the pin deliberately.
-    expect(probe).toContain('process.env.F3_STRIDE');
-    expect(manifest.samplingOfTheRecordedCensus.byCorpus['solc-corpus']!.strideRecordedByProbe).toBe(false);
+    expect(probe).toContain('export const F3_CENSUS_SAMPLING');
+    expect(probe).toContain('refusing to overwrite the committed census without F3_STRIDES');
+    for (const sampling of Object.values(manifest.samplingOfTheRecordedCensus.byCorpus)) {
+      expect(sampling.strideRecordedByProbe).toBe(true);
+    }
+  });
+
+  it('validates emitted sampling metadata and names stride mutation', () => {
+    expect(() => assertRecordedSamplingOrRefuse(manifest, F3_CENSUS_SAMPLING, F3_CENSUS_GATES)).not.toThrow();
+    const mutated = structuredClone(F3_CENSUS_SAMPLING);
+    mutated['solc-corpus']!.stride = 11;
+    expect(() => assertRecordedSamplingOrRefuse(manifest, mutated, F3_CENSUS_GATES))
+      .toThrow(/corpus-sampling refusal:.*'solc-corpus' stride is 11, pinned 12/s);
+
+    const movedDenominator = structuredClone(F3_CENSUS_SAMPLING);
+    movedDenominator['solc-corpus']!.sampled = 444;
+    expect(() => assertRecordedSamplingOrRefuse(manifest, movedDenominator, F3_CENSUS_GATES))
+      .toThrow(/'solc-corpus' sampling records 444 files but its census gate records 407/s);
   });
 
   /**

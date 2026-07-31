@@ -1,4 +1,4 @@
-import type { CensusGates, CensusRow } from './layer3-corpus-fit-f3.js';
+import type { CensusGates, CensusRow, CensusSampling } from './layer3-corpus-fit-f3.js';
 
 /**
  * THE RECORDED F3 CORPUS CENSUS, produced by `layer3-corpus-probe-f3.mjs` at the commit named below by
@@ -30,6 +30,14 @@ export const F3_CENSUS_COMMIT = 'b4d33fc1';
 
 /** Corpora present in this census, in the order they were merged. A partial re-take shows up here. */
 export const F3_CENSUS_CORPORA: string[] = ['mistswap', 'eacc', 'solidity-by-example', 'solc-corpus'];
+
+/** Exact probe sampling inputs and resulting denominators; X125 makes stride an emitted fact, not an inference. */
+export const F3_CENSUS_SAMPLING: Record<string, CensusSampling> = {
+  'mistswap': { stride: 1, population: 16, sampled: 16 },
+  'eacc': { stride: 1, population: 22, sampled: 22 },
+  'solidity-by-example': { stride: 1, population: 141, sampled: 141 },
+  'solc-corpus': { stride: 12, population: 4876, sampled: 407 },
+};
 
 export const F3_CENSUS_GATES: Record<string, CensusGates> = {
   'mistswap': {

@@ -56,7 +56,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X186 is CLOSED** - the finalized-byte gate no longer absorbs covenant objections; it decides with
   `stateSuccess`, including non-raised falsy-top failures. X198 applied the same repair to the sibling
   all-input evaluator, and X210 now wires that evaluator into ordinary stateful submission.
-- **X214** - **236 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
+- **X214** - **232 bare `rejects.toThrow()` sites with no named reason.** This is the highest-yield
   remaining vacuity surface. The AST census began at 436 executable sites. `SortedUpsertLoop` is now
   exhausted: all five bare sites pin the exact input-0 BCH-2026 `OP_VERIFY` preflight reason, and a
   never-match mutation made all five red.

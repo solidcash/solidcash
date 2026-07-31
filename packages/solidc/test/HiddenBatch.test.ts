@@ -512,9 +512,21 @@ describe('Release 4 compiler-hidden local batch', () => {
   // budget being too small for the test, not a cost regression.
   }, 60_000);
 
+  /**
+   * Only the shared alternative can be caller-keyed; a row-local one would need a witness per row. This must
+   * fail closed with its own reason rather than be swept up by the check that used to catch `transfer`.
+   *
+   * VACUOUS AS WRITTEN, MEASURED. `drain` is this contract's ONLY entry point, so refusing it leaves no route
+   * and `hiddenBatch` is `undefined` - there is no handlers list to read. The old assertion read
+   * `hiddenBatch?.handlers.find(...)` (undefined), passed it through `?? false`, and put the reason string
+   * behind `if (rejectionReason !== undefined)`, which never fired. `row-local-msg-sender-collection-key-not-
+   * enabled` was never compared to anything: deleting it from `compiler.ts` left this test green.
+   *
+   * Both channels are now read, unconditionally. The absence channel is where this fixture states the reason;
+   * the handlers channel is reached by a second fixture differing in exactly ONE field - an admitted sibling
+   * handler that keeps the route alive - which is what turns route-erasure into a published refused row.
+   */
   it('rejects a row-local caller-keyed collection instead of mis-binding it', () => {
-    // Only the shared alternative can be caller-keyed; a row-local one would need a witness per row. This must
-    // fail closed with its own reason rather than be swept up by the check that used to catch `transfer`.
     const artifact = compileString(`contract RowLocalSender() {
       mapping(address => bigint) balances;
       function drain(address from, bigint amount) public {
@@ -522,11 +534,30 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.balances[msg.sender] = this.balances[msg.sender] + amount;
       }
     }`, graphOptions);
-    const handler = artifact.hiddenBatch?.handlers.find((entry) => entry.name === 'drain');
-    expect(handler?.eligible ?? false).toBe(false);
-    if (handler?.rejectionReason !== undefined) {
-      expect(handler.rejectionReason).toBe('row-local-msg-sender-collection-key-not-enabled');
-    }
+    expect(artifact.hiddenBatch, 'a route now survives, so the reason moved to the handlers channel')
+      .toBeUndefined();
+    const absence = (artifact.diagnostics ?? [])
+      .filter((entry) => entry.code === 'hidden-batch-route-not-synthesized');
+    expect(absence).toHaveLength(1);
+    expect(absence[0].message).toContain("'drain': row-local-msg-sender-collection-key-not-enabled");
+  });
+
+  it('publishes the row-local refusal per handler when an admitted sibling keeps the route', () => {
+    const artifact = compileString(`contract RowLocalSender() {
+      mapping(address => bigint) balances;
+      bigint total;
+      function drain(address from, bigint amount) public {
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[msg.sender] = this.balances[msg.sender] + amount;
+      }
+      function bump(bigint amount) public { this.total = this.total + amount; require(amount >= 0); }
+    }`, graphOptions);
+    const handlers = artifact.hiddenBatch!.handlers;
+    // The admitted sibling is what makes this a REFUSED ROW rather than an absent route, so it is asserted
+    // beside the refusal instead of being assumed.
+    expect(handlers.map((entry) => `${entry.name}:${entry.eligible}`)).toEqual(['drain:false', 'bump:true']);
+    expect(handlers.find((entry) => entry.name === 'drain')!.rejectionReason)
+      .toBe('row-local-msg-sender-collection-key-not-enabled');
   });
 
   it('admits modifiers, reverts, custom errors, while loops and multi-argument events', () => {

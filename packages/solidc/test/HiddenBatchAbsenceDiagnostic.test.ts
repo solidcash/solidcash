@@ -194,8 +194,7 @@ contract X15Caller(address sink) {
  * result is consumed - and the control is admitted. That is what makes the refusal a property of the
  * combination rather than of either half.
  */
-describe('X22 a result-consuming handler that carries an effect is refused by name', () => {
-  const REASON = 'result-consuming-handler-requires-effect-free-body';
+describe('X22 result-consuming handlers carry authenticated effects', () => {
   const vault = (body: string): string => `pragma solidcash >=0.8.0;
 interface IX22Vault { function deposit(bigint amount) returns (bigint); }
 interface IX22Sink { function ping(bigint amount); }
@@ -222,14 +221,15 @@ ${body}
     expect(compileString(resultAndEmit, graph).contractName).toBe('X22Accrue');
   });
 
-  it('names the refused handler and the reason', () => {
-    expect(compileString(resultAndEmit, graph).hiddenBatch).toBeUndefined();
-    expect(absenceDiagnostics(resultAndEmit, graph)[0].message).toContain(`'accrue': ${REASON}`);
+  it('admits the result-consuming event handler', () => {
+    const artifact = compileString(resultAndEmit, graph);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
+    expect(absenceDiagnostics(resultAndEmit, graph)).toHaveLength(0);
   });
 
-  it('tells the user what to do instead', () => {
-    expect(absenceDiagnostics(resultAndEmit, graph)[0].message)
-      .toContain('move the effect into a second handler that consumes no result');
+  it('publishes the effect frame on the admitted route', () => {
+    expect(compileString(resultAndEmit, graph).hiddenBatch?.route.blockLayout?.slots
+      .some((slot) => slot.kind === 'event')).toBe(true);
   });
 
   it('CONTROL: the same handler without the emit is admitted', () => {
@@ -255,7 +255,7 @@ ${body}
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 
-  it('refuses a satoshi transfer alongside a consumed result, by the same name', () => {
+  it('admits a satoshi transfer alongside a consumed result', () => {
     const source = vault(`  function accrue(bigint amount) public {
     bigint shares = IX22Vault(vault).deposit(amount);
     this.collateral = this.collateral + shares;
@@ -263,7 +263,8 @@ ${body}
     require(shares >= 0);
   }`);
     expect(() => compileString(source, graph)).not.toThrow();
-    expect(absenceDiagnostics(source, graph)[0].message).toContain(`'accrue': ${REASON}`);
+    expect(compileString(source, graph).hiddenBatch?.handlers
+      .find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
   });
 
   /** The rejection must reach the user through `hiddenBatch.handlers` when a sibling still routes. */
@@ -276,9 +277,8 @@ ${body}
   }
   function bump(bigint amount) public { this.collateral = this.collateral + amount; require(amount >= 0); }`);
     const artifact = compileString(source, graph);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'accrue'))
-      .toMatchObject({ eligible: false, rejectionReason: REASON });
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump')?.eligible).toBe(true);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bump')?.eligible).toBe(false);
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 

@@ -836,11 +836,6 @@ function synthesizeHiddenBatchRoute(
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     if (admitBareForwardingHandlers && graphBareTailStatement) graphBareTailHandlers.add(fn);
-    let directPhysicalEffect = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
-        || node instanceof TokenContainerMethodStatementNode) directPhysicalEffect = true;
-    });
     const keyWitnesses: {
       routeInput: string;
       inputIndex: number;
@@ -1136,14 +1131,8 @@ function synthesizeHiddenBatchRoute(
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
-    } else if (!reason && graphTailCallEligible && graphResultStatement && directPhysicalEffect) {
-      reason = 'result-consuming-handler-requires-effect-free-body';
-    // X22. Consuming a call result while carrying one of those effects is the shape that gets flattened WITH a
-    // returning edge in it: the edge is generated with __scb1 as the current function, finds no physical return
-    // slot, and code generation aborted with the internal `Unbound return call in __scb1; graph=undefined` -
-    // no named refusal and no diagnostic-channel entry. Refuse it here by name instead. Not admissible while
-    // flattening is what the effect's block slot requires: the flattened edge has no emission frame to bind to,
-    // which is the same reason the void effect-carrying clones are unsound to flatten (tracked separately).
+    // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's
+    // per-dispatch effect-site ordinal binds their event/transfer outputs, so no separate refusal is needed.
     } else if (!reason && fn.modifiers.some((modifier) => disallowedModifiers.has(modifier))) {
       reason = 'lifecycle-or-unsafe-handler';
     } else if (!reason && (footprint.unknown
@@ -1176,6 +1165,16 @@ function synthesizeHiddenBatchRoute(
   }
 
   const eligibleFootprint = (fn: FunctionDefinitionNode) => analyseFunctionFootprint(fn, byName);
+  const consumesExternalResult = (fn: FunctionDefinitionNode): boolean => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof VariableDefinitionNode || node instanceof TupleAssignmentNode)) return;
+      walkInvocationAst(node, (candidate) => {
+        if (candidate instanceof MethodCallNode || candidate instanceof ExternalFunctionCallNode) found = true;
+      });
+    });
+    return found;
+  };
   const carriesRawValueOption = (fn: FunctionDefinitionNode): boolean => {
     let found = false;
     walkInvocationAst(fn.body, (node) => {
@@ -1281,11 +1280,12 @@ function synthesizeHiddenBatchRoute(
       // property of the SET, so ONE emitting sibling refused every effect-free handler on the route - including
       // returning getters that are admitted when compiled alone. Measured on the real solidity-by-example
       // ERC-20: `balanceOf`/`allowance` are eligible until `transfer` is present, then the route vanishes.
-      // The remaining rule is unchanged and still fires on the same handler: a handler that both returns and
-      // carries an effect is refused, because the effect's block slot flattens it into the wrapper and its
-      // returning edge then has no slot to bind (the same mechanism `result-consuming-handler-...` names).
+      // Producer-returning effect handlers remain refused. A result CONSUMER is distinct: its producer result
+      // is authenticated before the handler resumes, and X29 binds the consumer's effect frame by site.
       for (const fn of survivors) {
-        if (eligibleFootprint(fn).effects.length > 0 || (!relaxResultRouteEffects && eventMode)) {
+        const continuationEffect = graphControllerLbc !== undefined && consumesExternalResult(fn);
+        if ((!continuationEffect && eligibleFootprint(fn).effects.length > 0)
+          || (!relaxResultRouteEffects && eventMode)) {
           fn.hiddenBatchEligible = false;
           fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
         }

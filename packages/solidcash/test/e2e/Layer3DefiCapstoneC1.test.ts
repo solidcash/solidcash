@@ -1068,7 +1068,7 @@ contract C1VaultEmitting() {
     expect(message).toContain('split the return and the effect into two handlers');
   });
 
-  it('BOUNDARY: a handler that CONSUMES a result and carries an effect is refused by name', () => {
+  it('admits a handler that consumes a result and carries an effect', () => {
     // Was the fourth entry in this block and the only GAP: code generation threw its own internal
     // `Unbound return call in __scb1; graph=undefined` with no named refusal and no diagnostic channel entry.
     // Closed as board task X22 - route synthesis now names the handler and the reason before code generation.
@@ -1086,10 +1086,8 @@ contract C1AccrueEmitting(address vault) {
   }
 }`;
     expect(() => compileString(source, boundaryOptions)).not.toThrow();
-    const message = rejectionOf(source);
-    expect(message).toContain("'accrue': result-consuming-handler-requires-effect-free-body");
-    // This is why the event NFT is emitted by the Router and the Accrue participant is effect-free.
-    expect(message).toContain('move the effect into a second handler that consumes no result');
+    const artifact = compileString(source, boundaryOptions);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'accrue')?.eligible).toBe(true);
   });
 
   it('admits a consumed result alongside a second edge', () => {

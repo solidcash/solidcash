@@ -62,6 +62,15 @@ contract EffectLegB(address hub) {
     require(value > 0);
   }
 }`;
+const returningLegBSource = `pragma solidcash >=0.8.0;
+contract EffectLegBResult(address hub) {
+  uint seen;
+  function credit(uint value) public returns (uint) {
+    this.seen = this.seen + value;
+    require(value > 0);
+    return this.seen;
+  }
+}`;
 
 /**
  * `note`'s SECOND emit is one-armed. Both handlers carry `emitInfos.length === 2`, so SEC-9's divergent-width
@@ -85,6 +94,18 @@ contract Sec10EffectHub() {
     IEffectLeg(first).credit(credited);
     this.total = this.total + credited;
     require(credited > 0);
+  }
+}`;
+const resultEffectHubSource = `pragma solidcash >=0.8.0;
+interface IEffectLegResult { function credit(uint value) returns (uint); }
+contract ResultEffectHub() {
+  uint total;
+  event Fired(uint value);
+  function note(address first, uint credited) public {
+    uint observed = IEffectLegResult(first).credit(credited);
+    emit Fired(observed);
+    this.total = observed;
+    require(observed >= 0);
   }
 }`;
 
@@ -124,11 +145,15 @@ interface CondCell {
   first?: 'honest' | 'forge';
   /** Use the width-1 single-handler shape, whose only emit is the one-armed one. */
   narrow?: boolean;
+  /** Exercise a consumed result together with the state write and event. */
+  resultEffect?: boolean;
+  tamperResult?: boolean;
 }
 
 async function buildConditionalEmitBatch(cell: CondCell): Promise<{
   builder: TransactionBuilder; transaction: string; provider: SemanticProvider;
-  callerInput: number; eventSlots: number; eventAddress: string; categoryId: string; eventDef: any;
+  callerInput: number; producerInput: number; eventSlots: number;
+  eventAddress: string; categoryId: string; eventDef: any;
 }> {
   const provider = createLayer3SemanticTestProvider();
   const outpoints = new Set<string>();
@@ -141,11 +166,13 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const hubArtifact = compileString(cell.narrow ? narrowHubSource : condHubSource, options);
+  const hubArtifact = compileString(
+    cell.resultEffect ? resultEffectHubSource : cell.narrow ? narrowHubSource : condHubSource, options,
+  );
   const hubBase = new Contract(hubArtifact, [], { provider });
   const hubSetup = await setupStatefulUtxos(provider, hubBase, hubArtifact.stateLayout!, { total: 0n });
   const hub = hubBase.withCategory(hexToBin(hubSetup.categoryId));
-  const legBArtifact = compileString(legBSource, options);
+  const legBArtifact = compileString(cell.resultEffect ? returningLegBSource : legBSource, options);
   const legBBase = new Contract(legBArtifact, [hub.lockingBytecode], { provider });
   const legBSetup = await setupStatefulUtxos(provider, legBBase, legBArtifact.stateLayout!, { seen: 0n });
   const legB = legBBase.withCategory(hexToBin(legBSetup.categoryId));
@@ -158,9 +185,12 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
     { parent: 0, callee: 1, function: 'credit', args: [cell.value], callMode: 'call' },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const declaredResultValue = cell.tamperResult ? cell.value + 1n : cell.value;
+  const declaredResult = packed(declaredResultValue);
   const transcript = layer3.finalizeCompiledGraph(
-    plan, {}, layout.participantInputs, plan.participants.map(() => null),
-    plan.participants.map(() => ''), layout.projectionInputs,
+    plan, cell.resultEffect ? { 1: binToHex(declaredResult) } : {},
+    layout.participantInputs, layout.returnOutputs,
+    cell.resultEffect ? ['', binToHex(declaredResult)] : ['', ''], layout.projectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -185,6 +215,8 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
   for (const proof of projections) await provider.addUtxo(projection.address, proof);
   const fee = uniqueUtxo(outpoints, { satoshis: 300_000n });
   await provider.addUtxo(p2pkh.address, fee);
+  const returnFunding = uniqueUtxo(outpoints, { satoshis: 1000n });
+  if (cell.resultEffect) await provider.addUtxo(p2pkh.address, returnFunding);
 
   const hubLayout = hubArtifact.hiddenBatch!.route.blockLayout!;
   const hubSlotKind = new Map<number, string>(hubLayout.slots.map((slot: any) => [slot.offset, slot.kind]));
@@ -225,11 +257,13 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
   }
   tx.addInput(legBSetup.masterUtxo, routeFor(legB, legBArtifact)(
     ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
+    ...(cell.resultEffect ? [BigInt(layout.returnOutputs[1]!)] : []),
   ));
   tx.addInput(
     legBSetup.dataNftUtxos[0],
     createDataNftUnlocker(legB, layout.participantInputs[1], legBSetup.categoryId),
   );
+  if (cell.resultEffect) tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
   projections.forEach((proof, participant) => tx.addInput(
     proof, projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
   ));
@@ -261,7 +295,9 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
           amount: 0n,
           nft: {
             capability: 'mutable',
-            commitment: buildInitialStateCommitments(hubArtifact.stateLayout!, { total: cell.value })[0],
+            commitment: buildInitialStateCommitments(
+              hubArtifact.stateLayout!, { total: cell.resultEffect ? declaredResultValue : cell.value },
+            )[0],
           },
         },
       });
@@ -277,7 +313,8 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
       // The narrow shape's ONLY slot is the one-armed one, so its slot 0 plays the role of slot 1 below.
       const armed = cell.narrow ? 0 : 1;
       if (index === 0 && !cell.narrow) {
-        tx.addOutput(cell.first === 'forge' ? eventNft(999_999n) : eventNft(cell.value));
+        tx.addOutput(cell.first === 'forge' ? eventNft(999_999n)
+          : eventNft(cell.resultEffect ? declaredResultValue : cell.value));
       } else if (index === armed && cell.second === 'forge') tx.addOutput(eventNft(999_999n));
       else if (index === armed && branchTaken) tx.addOutput(eventNft(cell.value + 7n));
       else tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -300,6 +337,18 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
       },
     },
   });
+  if (cell.resultEffect) {
+    tx.addOutput({
+      to: hexToBin('51'), amount: 1000n,
+      token: {
+        category: legBSetup.categoryId, amount: 0n,
+        nft: {
+          capability: 'none' as const,
+          commitment: binToHex(scriptToBytecode([packed(cell.value)])),
+        },
+      },
+    });
+  }
   for (let slot = 0; slot < projections.length + 1; slot += 1) {
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
   }
@@ -310,6 +359,7 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
     transaction: raw(tx),
     provider,
     callerInput: layout.participantInputs[0],
+    producerInput: layout.participantInputs[1],
     eventSlots: hubLayout.slots.filter((slot: any) => slot.kind === 'event').length,
     eventAddress,
     categoryId: hubSetup.categoryId,
@@ -785,6 +835,16 @@ const verifyAtCaller =
 
 describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies (SEMANTIC)', () => {
   const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
+  it('settles a consumed result together with its state write and event', async () => {
+    const built = await buildConditionalEmitBatch({ value: 40n, resultEffect: true });
+    expect(outcomeOf(built.builder)).toBe('ACCEPTED');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+  }, 600_000);
+
+  it('rejects a tampered result while keeping the consumer state/event internally consistent', async () => {
+    const built = await buildConditionalEmitBatch({ value: 40n, resultEffect: true, tamperResult: true });
+    expect(outcomeOf(built.builder)).not.toBe('ACCEPTED');
+  }, 600_000);
 
   it('compiles: the conditional second emit counts toward the frame width SEC-9 compares', () => {
     const artifact = compileString(condHubSource, {

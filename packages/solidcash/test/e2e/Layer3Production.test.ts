@@ -44,6 +44,8 @@ async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Prom
 const rawOf = (b: any): string => binToHex(encodeTransaction(b.buildLibauthTransaction()));
 
 describe('layer-3 production API (src/layer3) - complete transcript from a spec', () => {
+  const VM_REFUSAL =
+    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('builds a valid A->B invocation transcript end to end', async () => {
     const provider = createTestProvider();
     const spec: layer3.TranscriptSpec = { participants: 2, invocations: [{ caller: 0, callee: 1 }] };
@@ -70,7 +72,8 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     // Forge the msg.sender record (output 2) to name participant 1 instead of the caller (participant 0).
     const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
     forged.outputs[2].lockingBytecode = concat(hexToBin('6a23'), hexToBin(ordered[1].contract.lockingBytecode));
-    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(VM_REFUSAL);
   });
 
   it('HOSTILE: an unauthorized caller (master commits to no callee) is rejected (M4)', async () => {
@@ -91,7 +94,7 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
       fee: { utxo: fee.utxo, unlocker: fee.unlocker },
       change: { address: participants[0].contract.address, satoshis: 12000n },
     });
-    await expect(provider.sendRawTransaction(rawOf(builder))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawOf(builder))).rejects.toThrow(VM_REFUSAL);
   });
 
   it('builds a COMPLETE Kashi-shaped transcript (invocation + resource transition + settlement) from a spec', async () => {
@@ -261,6 +264,7 @@ describe('layer-3 production API (src/layer3) - complete transcript from a spec'
     const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
     const evOut = layer3.transcriptLayout(spec).eventOutput(0);
     forged.outputs[evOut].lockingBytecode[forged.outputs[evOut].lockingBytecode.length - 1] ^= 0xff;
-    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(VM_REFUSAL);
   });
 });

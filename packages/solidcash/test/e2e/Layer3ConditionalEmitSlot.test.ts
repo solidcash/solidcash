@@ -780,6 +780,9 @@ const byteRefusals = (rawTx: string): string[] =>
   layer3.assessFinalizedTransactionBytes(decodeTransactionUnsafe(hexToBin(rawTx)))
     .refusals.map((row) => row.rule).sort();
 
+const verifyAtCaller =
+  /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
+
 describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies (SEMANTIC)', () => {
   const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
 
@@ -809,7 +812,7 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     const built = await buildConditionalEmitBatch({ value: 200n, second: 'forge' });
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   // Control C: the branch is NOT taken and the reserved slot carries a plain funding output.
@@ -826,7 +829,7 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     const built = await buildConditionalEmitBatch({ value: 4n, first: 'forge' });
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   /**
@@ -837,7 +840,7 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
   it('SEC-10: rejects a forged event NFT in the reserved slot of a NOT-taken branch', async () => {
     const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge' });
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   /**
@@ -928,14 +931,14 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
     expect(built.eventSlots).toBe(8);
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   // The capability needed neither a sibling nor a width divergence: one handler, one emit, one arm.
   it('SEC-10 narrow: rejects a forged NFT in the width-1 slot of a NOT-taken branch', async () => {
     const built = await buildConditionalEmitBatch({ value: 4n, second: 'forge', narrow: true });
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   /**
@@ -1029,7 +1032,7 @@ contract ArmHub() {
     const built = await buildDivergentTransferBatch('settled');
     expect(built.callerInput).toBe(0);
     expect(outcomeOf(built.builder)).toContain(at(built.callerInput));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow(verifyAtCaller);
   }, 600_000);
 
   /**

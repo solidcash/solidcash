@@ -70,8 +70,9 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
 - **X159 is CLOSED on HEAD** - `StableSwap` compiles in bus mode with four eligible handlers, and the
   three gained handlers (`tokens`, `balances`, `totalSupply`) settle. The focused compile pin and VM
   proof are `Layer3RecoveredPartitionX160.test.ts` and `Layer3RecoveredCollectionBreadthV2.test.ts`.
-- **X226** - multi-statement bodies ending in a call are admitted by construction but VM-proved only
-  on a single-statement body.
+- **X226 is DORMANT with X201 reverted** - the multi-statement write-then-call subject is currently
+  refused as `batched-handler-forward-call-not-enabled`. Its missing VM proof matters only if X201 is
+  retaken, and must then accompany the X229 uniformity repair and full bus sweep.
 - **X213** - 10 `resolves.not.toThrow()` sites whose `not.toThrow()` clause is DEAD (measured);
   `.resolves` carries the whole claim. Marked in-file, not repaired.
 - **X217 is CLOSED** - the committed `test/e2e/layer3-throw-census.ts` observes SDK boundary throws.

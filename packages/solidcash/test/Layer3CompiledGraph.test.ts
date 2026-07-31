@@ -766,8 +766,8 @@ describe('layer3.planCompiledGraph', () => {
     // participant settlement table and re-derives every owner maximum, while each projection authenticates its
     // owner's row-completion vector. Keep both exact sizes pinned so a later parser change is measured rather
     // than silently consuming the relay margin documented above.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_444);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(4_773);
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_731);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_073);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

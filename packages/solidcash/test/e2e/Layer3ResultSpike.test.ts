@@ -19,6 +19,9 @@ const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const RATE = 3n;
 const AMOUNT = 5n;
+const inputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -143,7 +146,10 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Compact binding + result production + settlement consumption, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -155,7 +161,8 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     const valid = rawOf(await build(s));
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[2].lockingBytecode = concat(hexToBin('6a08'), num8(AMOUNT * RATE + 1n)); // wrong result
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(inputZeroVerifyFailure);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 
@@ -164,7 +171,8 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     const valid = rawOf(await build(s));
     const forged = decodeTransactionUnsafe(hexToBin(valid));
     forged.outputs[3].valueSatoshis = 2000n + AMOUNT * RATE + 1n; // over-credits the settlement
-    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(inputZeroVerifyFailure);
     await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
   });
 });

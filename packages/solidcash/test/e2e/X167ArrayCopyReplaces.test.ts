@@ -246,28 +246,25 @@ describe('X167 - a whole-array copy must replace the destination, not append to 
     expect((await notTaken.sc.getState()).d).toEqual([b8(0x11), b8(0x22)]);
   }, 300_000);
 
-  it('X167-W OPEN DEFECT: a whole-array ASSIGN before a loop push still appends', async () => {
-    // THE SIBLING OF THE DELETE, LEFT OPEN DELIBERATELY - AND IT SETTLES WITH WRONG STATE.
-    // `this.d = [a]; while (i < n) d.push(b);` reaches the identical neutralization: the cache read is
-    // prepended at function top and the flush appended, so the state-level ASSIGN between them is overwritten
-    // by the flush of the PRE-assign contents. Over d = [0x11, 0x22] it settles as [0x11, 0x22, 0xbb] - the
-    // assigned 0xaa is dropped AND the old contents are kept.
+  it('X167-W CLOSED (X171): a whole-array ASSIGN before a loop push now REPLACES', async () => {
+    // THE SIBLING OF THE DELETE. It used to settle [0x11, 0x22, 0xbb] - the assigned 0xaa dropped AND the
+    // old contents kept - reaching the identical neutralization: the cache read is prepended at function top
+    // and the flush appended, so the state-level ASSIGN between them was overwritten by the flush of the
+    // PRE-assign contents.
     //
-    // NOT FIXED HERE, AND THE REASON IS MEASURED. The symmetric repair (convert StateAssignNode to a local
-    // AssignNode alongside the DeleteStateNode case) compiles but does NOT run: the array-literal value
-    // assigned into the cached local is not framed the way the following local push expects, and the VM
-    // aborts at input index 0 with
-    //   "Program called an OP_SPLIT operation with an invalid index. stack item length: 0; requested split
-    //    index: 1"
-    // So it needs value-framing work in the local-array assign path, not another case in convertWrites. This
-    // asserts the CURRENT behaviour so closing it later is a deliberate change with a visible before.
+    // CLOSED BY X171 IN TWO HALVES. (1) CacheDynamicArrayInLoop.convertWrites gained the StateAssignNode
+    // case, symmetric with the DeleteStateNode one. (2) That alone compiled and aborted the VM at input 0
+    // with "OP_SPLIT ... stack item length: 0; requested split index: 1", because
+    // TypeCheckTraversal.visitAssign never marked an ArrayNode RHS blobEncoded the way
+    // visitVariableDefinition and visitStateAssign do - so the local slot received the element COUNT instead
+    // of the blob. Full four-destination-shape coverage plus the guard negative controls lives in
+    // X171ArrayAssignReplaces.test.ts; this stays as the before/after anchor on the copy's own file.
     const { sc } = await deploy(ASSIGN_THEN_PUSH, { d: [] });
     await sc.push(b8(0x11)).send();
     await sc.push(b8(0x22)).send();
     expect((await sc.getState()).d.length).toBe(2);
     await sc.resetTo(b8(0xaa), b8(0xbb), 1n).send();
-    // CORRECT would be [0xaa, 0xbb]. This is the defect, pinned.
-    expect((await sc.getState()).d).toEqual([b8(0x11), b8(0x22), b8(0xbb)]);
+    expect((await sc.getState()).d).toEqual([b8(0xaa), b8(0xbb)]);
   }, 300_000);
 
   it('X167-R X151-R RE-RUN: the second copy is still refused at input 0 by X151', async () => {

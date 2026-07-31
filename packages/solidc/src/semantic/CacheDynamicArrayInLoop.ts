@@ -28,6 +28,7 @@ import {
   StateAssignNode,
   StateVariableNode,
   ReturnNode,
+  AssignNode,
 } from '../ast/AST.js';
 import { ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -216,6 +217,14 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
         const ident = new IdentifierNode(local);
         ident.location = stmt.location;
         return this.copyLoc(new DeleteLocalNode(ident), stmt);
+      }
+      // X171. WHOLE-array ASSIGN `this.arr = <expr>`, the delete's sibling. Same neutralization: the flush of
+      // the PRE-assign cache overwrites it, so the assigned value is dropped and the old contents kept.
+      // Assign the local instead, which the flush then writes back.
+      if (stmt instanceof StateAssignNode && stmt.name === name) {
+        const ident = new IdentifierNode(local);
+        ident.location = stmt.location;
+        return this.copyLoc(new AssignNode(ident, stmt.expression), stmt);
       }
       if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
         stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local);

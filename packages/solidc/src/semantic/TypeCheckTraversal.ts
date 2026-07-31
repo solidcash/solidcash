@@ -988,6 +988,18 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAssign(node: AssignNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
+    // X171. An array-typed local REASSIGNED an array literal must blob-encode exactly as its DECLARATION does
+    // (visitVariableDefinition) - one stack item, pushdata(count) ++ tight elements. Without the flag
+    // visitArray takes the standard (checkMultiSig) path and leaves N separate items plus a count, so the
+    // slot receives the COUNT and the next local array op decodes a 1-byte item with an empty payload
+    // (OP_BIN2NUM OP_SPLIT aborts: "stack item length: 0; requested split index: 1"). State assigns
+    // (visitStateAssign) and declarations already set it; this is the third member of that set.
+    if (node.identifier.type instanceof ArrayType && node.expression instanceof ArrayNode) {
+      node.expression.blobEncoded = true;
+      if (node.expression.elements.length === 0) {
+        node.expression.type = node.identifier.type;
+      }
+    }
     // Propagate FixedType to decimal literals before visiting
     if (node.identifier.type instanceof FixedType && node.expression instanceof DecimalLiteralNode) {
       node.expression.type = node.identifier.type;
@@ -998,6 +1010,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
+    // Pack a non-empty literal at the DECLARED element width, not the literals' inferred width - same reason
+    // as visitVariableDefinition. After expectAssignable so a real type mismatch still throws.
+    if (node.identifier.type instanceof ArrayType && node.expression instanceof ArrayNode
+      && node.expression.elements.length > 0) {
+      coerceArrayLiteralType(node.expression, node.identifier.type);
+    }
     return node;
   }
 

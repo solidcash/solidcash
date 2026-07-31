@@ -12,6 +12,13 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { aliceAddress, alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const invalidSenderSplitAt = (input: number, length: number): RegExp => new RegExp(
+  '^mandatory-script-verify-flag-failed '
+  + `\\(Unable to verify transaction: error in evaluating input index ${input}: `
+  + 'Program called an OP_SPLIT operation with an invalid index\\. '
+  + `stack item length: ${length}; requested split index: 83\\.\\)$`,
+);
+
 // Round-13 independent hostile review of E4 (Worker B's). I implemented none of it.
 //
 // THE FIXTURE. One THREE-participant chain ROOT -> MID -> LEAF, so all three positions a graph handler can
@@ -249,7 +256,8 @@ describe('A13 review of E4: the open row, reproduced independently', () => {
     expect(results[CHAIN.root]).toMatch(/stack item length: 25/);
     // Only the root's own route refuses. Nothing else on the transaction objects to the caller frame.
     expect(results.filter((_result, index) => index !== CHAIN.root)).toEqual(new Array(7).fill(null));
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(invalidSenderSplitAt(CHAIN.root, 25));
   }, 120_000);
 });
 
@@ -278,7 +286,8 @@ describe('A13 review of E4: the row C did not determine - a NON-ROOT EMISSION ha
       // is past its end. Same defect class as the root's "stack item length: 25".
       expect(results[CHAIN.mid]).toMatch(/stack item length: 35/);
       expect(results.filter((_result, index) => index !== CHAIN.mid)).toEqual(new Array(7).fill(null));
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(invalidSenderSplitAt(CHAIN.mid, 35));
     }, 120_000);
 
   it('A13-4c: and the comparison spelling does not resolve to ANY participant either', async () => {

@@ -689,6 +689,17 @@ export function assertFinalizedTransactionBytes(
  *
  * NEVER THROWS, and that is load-bearing: it annotates a refusal that is already decided, so a harness that
  * cannot supply source outputs must leave the byte refusal exactly as it was rather than replace it.
+ *
+ * X186. IT ASKS `stateSuccess`, NOT `state.error`, AND THE DIFFERENCE IS A WHOLE FAILURE CLASS. `evaluate`
+ * reports only errors raised BY an operation; a script that runs to completion and leaves a FALSY item on top
+ * has no `error` at all, so reading the field alone declared a broken covenant clean and let its refusal report
+ * bytes only - the absorption shape this whole mechanism exists to remove, surviving inside the instrument
+ * meant to close it. Measured on a one-byte `OP_0` locking script paying dust: `state.error` undefined,
+ * `stateSuccess` `Unsuccessful evaluation: completed with a non-truthy value on top of the stack. Top stack
+ * item: ""`, which is the SAME sentence the provider's own `verify` produces for those bytes. libauth's
+ * `success` returns `state.error` when there is one and checks truthiness otherwise, so this is a strict
+ * widening that cannot lose a message it used to report - and it can only ever annotate a refusal that has
+ * already been decided, never create one.
  */
 export function covenantObjectionOf(
   builder: TransactionBuilder, transaction: Transaction,
@@ -697,8 +708,8 @@ export function covenantObjectionOf(
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const vm = createVirtualMachineBch2026ForProvider(builder.provider);
     for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
-      const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
-      if (state.error !== undefined) return `input ${inputIndex}: ${state.error}`;
+      const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+      if (objection !== true) return `input ${inputIndex}: ${objection}`;
     }
     return undefined;
   } catch {

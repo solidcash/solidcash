@@ -60,6 +60,7 @@ import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
+const MISTSWAP = process.env.MISTSWAP_ROOT ?? '/Code/mistswap/mistswap/contracts';
 
 const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
@@ -88,6 +89,12 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'app/airdrop/Token.sol::Token': [
     'totalSupply', 'name', 'symbol', 'decimals', 'balanceOf', 'allowance', 'authorized',
   ],
+  'uniswapv2/UniswapV2ERC20.sol::UniswapV2ERC20': [
+    'totalSupply', 'DOMAIN_SEPARATOR', 'balanceOf', 'allowance', 'nonces',
+  ],
+  'uniswapv2/UniswapV2Pair.sol::UniswapV2ERC20': [
+    'totalSupply', 'DOMAIN_SEPARATOR', 'balanceOf', 'allowance', 'nonces',
+  ],
 };
 
 interface Subject {
@@ -96,6 +103,7 @@ interface Subject {
 }
 
 interface Row {
+  root?: string;
   rel: string;
   contract: string;
   subjects: readonly Subject[];
@@ -115,6 +123,30 @@ interface Row {
 const TRAILING = Array.from({ length: 64 }, () => 'trailing');
 
 const ROWS: readonly Row[] = [
+  ...['uniswapv2/UniswapV2ERC20.sol', 'uniswapv2/UniswapV2Pair.sol'].map((rel): Row => ({
+    root: MISTSWAP,
+    rel,
+    contract: 'UniswapV2ERC20',
+    subjects: [
+      { handler: 'totalSupply' }, { handler: 'DOMAIN_SEPARATOR' },
+      { handler: 'balanceOf', args: [addr('55')] },
+      { handler: 'allowance', args: [addr('55'), addr('66')] },
+      { handler: 'nonces', args: [addr('77')] },
+    ],
+    hostileSubject: 'nonces',
+    presentEntries: {
+      balanceOf: { key: addr('55'), value: 42n, valueType: 'uint256' },
+      nonces: { key: addr('77'), value: 3n, valueType: 'uint256' },
+    },
+    state: {
+      totalSupply: 1_000_000n,
+      DOMAIN_SEPARATOR: new Uint8Array(32).fill(0x44),
+      __block_timestamp: 900n,
+      __blockOracleOwner: alicePub,
+    },
+    stateTamper: { totalSupply: 1_000_001n },
+    slots: ['master', 'dataNft', 'dataNft', 'entry', 'entry', 'entry', 'returnEvent'],
+  })),
   {
     rel: 'app/airdrop/Token.sol',
     contract: 'Token',
@@ -199,7 +231,7 @@ function compileRow(row: Row, controllerLbc: string, controllerCategory: string)
     experimentalMessageBusController: controllerLbc,
     experimentalMessageBusControllerCategory: controllerCategory,
   } as never;
-  const path = `${SBE}/${row.rel}`;
+  const path = `${row.root ?? SBE}/${row.rel}`;
   try {
     const map = compileFileMulti(path, options) as any;
     if (map[row.contract]) return map[row.contract];
@@ -247,7 +279,7 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
           + `entry=${JSON.stringify(artifact.hiddenBatch!.route.entryAccesses?.map((e: any) => e.collection))}`);
         expect(layout.slots.map((slot: any) => slot.kind), `${key(row)} block shape moved`).toEqual(row.slots);
         expect(bytes, `${key(row)} exceeds the input-script limit`).toBeLessThanOrEqual(10_000);
-        const path = `${SBE}/${row.rel}`;
+        const path = `${row.root ?? SBE}/${row.rel}`;
         let direct: any;
         try { direct = (compileFileMulti(path, DIRECT as never) as any)[row.contract]; } catch { direct = undefined; }
         if (!direct) direct = compileFile(path, DIRECT as never) as any;
@@ -572,6 +604,6 @@ describe('X177/X180 breadth: recovered collection, array and multi-data-NFT read
     console.log(`[V2C] ${settled.length} gained handlers settle in this file; `
       + `${ROWS.reduce((n, row) => n + (row.unproven?.length ?? 0), 0)} more are run and recorded unproven`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(24);
+    expect(settled.length).toBe(34);
   });
 });

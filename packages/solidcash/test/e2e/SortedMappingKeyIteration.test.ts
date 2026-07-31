@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-shadow */
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import { compileString } from 'solidc';
@@ -62,7 +63,10 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
-  async function seed(art: ReturnType<typeof compileString>, entries: { slot: Uint8Array; next: Uint8Array; value: Uint8Array }[]): Promise<{ contract: Contract; categoryId: string }> {
+  async function seed(
+    art: ReturnType<typeof compileString>,
+    entries: { slot: Uint8Array; next: Uint8Array; value: Uint8Array }[],
+  ): Promise<{ contract: Contract; categoryId: string }> {
     const contract = new Contract(art, [], { provider });
     const result = await provider.addTokenUtxosDynamic((cat: string) => {
       const pinned = contract.category ? contract : contract.withCategory(hexToBin(cat));
@@ -113,7 +117,8 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
     // keyToSlot(k)==slot EQUALVERIFY, not an SDK pre-check (the raw-blob hook bypasses the SDK's slot-matching).
     const sc = StatefulContract.withCategory(contract, categoryId);
     sc._setRawIterationKeysBlob('bal', tampered);
-    await expect(sc.checkKeys(3n, lastKey, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.checkKeys(3n, lastKey, alicePub, sig).send())
+      .rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('VARIABLE-WIDTH KEYS: int-keyed mapping iterates (length-prefixed blob)', async () => {
@@ -134,7 +139,11 @@ describe('sorted mapping KEYS/ENTRIES iteration (caller-supplied keys, covenant-
       { slot: ZERO, next: items[0].slot, value: new Uint8Array() },
     ];
     for (let i = 0; i < items.length; i++) {
-      entries.push({ slot: items[i].slot, next: i + 1 < items.length ? items[i + 1].slot : ZERO, value: bigIntToVmNumber(1n) });
+      entries.push({
+        slot: items[i].slot,
+        next: i + 1 < items.length ? items[i + 1].slot : ZERO,
+        value: bigIntToVmNumber(1n),
+      });
     }
     const { contract, categoryId } = await seed(art, entries);
     const sc = StatefulContract.withCategory(contract, categoryId);

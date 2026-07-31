@@ -218,69 +218,74 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             `layer3: callsite ${call.callsiteId} is not a singular statically resolvable worklist edge`,
           );
         }
-        // A low-level edge carries no per-occurrence row identity: its calldata, target and opaque result are
-        // proven once against ONE decoded payload. An iterated or conditional raw callsite would therefore be
-        // expanded as exactly one row whatever its runtime count is, so require the singular class explicitly
-        // instead of silently truncating.
-        if ((call.occurrence ?? 'once') !== 'once') {
+        const occurrence = call.occurrence ?? 'once';
+        const boundedLiteralLoop = occurrence === 'loop'
+          && call.occurrenceBoundSource === 'literal'
+          && call.minimumOccurrences !== undefined
+          && call.minimumOccurrences === call.maximumOccurrences
+          && call.minimumOccurrences >= 1 && call.minimumOccurrences <= 24;
+        if (occurrence !== 'once' && !boundedLiteralLoop) {
           throw new Error(
             `layer3: raw callsite ${call.callsiteId} is ${call.occurrence} and has no bounded occurrence proof; `
             + 'iterated low-level calls are not an admitted graph edge',
           );
         }
-        const resolved = options.dynamicCall?.({
-          participant,
-          function: functionName,
-          callsiteId: call.callsiteId!,
-          occurrence: 0,
-          kind: 'low-level',
-        });
-        if (!resolved?.args) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} lacks a decoded calldata proof`);
-        }
-        const targetFunction = functionAbi(resolved.participant, resolved.function);
-        if (!targetFunction.selector) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} resolved to a selectorless function`);
-        }
-        const payload = resolveArguments(
-          participant, args, call, functionName, 0, options.expressionArgument,
-        )[0];
-        if (!(payload instanceof Uint8Array)) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} calldata is not bytes`);
-        }
-        const structs = resolved.participant.artifact.structs
+        const count = boundedLiteralLoop ? call.minimumOccurrences! : 1;
+        for (let reached = 0; reached < count; reached += 1) {
+          const resolved = options.dynamicCall?.({
+            participant,
+            function: functionName,
+            callsiteId: call.callsiteId!,
+            occurrence: reached,
+            kind: 'low-level',
+          });
+          if (!resolved?.args) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} lacks decoded calldata proof ${reached}`);
+          }
+          const targetFunction = functionAbi(resolved.participant, resolved.function);
+          if (!targetFunction.selector) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} resolved to a selectorless function`);
+          }
+          const payload = resolveArguments(
+            participant, args, call, functionName, reached, options.expressionArgument,
+          )[0];
+          if (!(payload instanceof Uint8Array)) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} calldata is not bytes`);
+          }
+          const structs = resolved.participant.artifact.structs
           ?? resolved.participant.artifact.stateLayout?.structs;
-        if (resolved.args.length !== targetFunction.inputs.filter((input) =>
-          !input.name.startsWith('__internal__')).length) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} decoded argument count is wrong`);
-        }
-        const encoded = resolved.args.map((argument, index) =>
-          encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
-        if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} contains a transaction signature`);
-        }
-        const canonicalPayload = new Uint8Array([
-          ...hexToBin(targetFunction.selector),
-          ...scriptToBytecode(encoded as Uint8Array[]),
-        ]);
-        if (binToHex(canonicalPayload) !== binToHex(payload)) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
-        }
-        const targetInput = fn.inputs.findIndex((input) => input.name === call.addressParam);
-        const targetValue = targetInput >= 0 ? args[targetInput] : undefined;
-        const encodedTarget = targetValue === undefined
-          ? undefined : encodeFunctionArgument(targetValue, 'address', structs);
-        if (!(encodedTarget instanceof Uint8Array)
+          if (resolved.args.length !== targetFunction.inputs.filter((input) =>
+            !input.name.startsWith('__internal__')).length) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} decoded argument count is wrong`);
+          }
+          const encoded = resolved.args.map((argument, index) =>
+            encodeFunctionArgument(argument, targetFunction.inputs[index].type, structs));
+          if (encoded.some((argument) => !(argument instanceof Uint8Array))) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} contains a transaction signature`);
+          }
+          const canonicalPayload = new Uint8Array([
+            ...hexToBin(targetFunction.selector),
+            ...scriptToBytecode(encoded as Uint8Array[]),
+          ]);
+          if (binToHex(canonicalPayload) !== binToHex(payload)) {
+            throw new Error(`layer3: raw callsite ${call.callsiteId} decoded calldata is not canonical`);
+          }
+          const targetInput = fn.inputs.findIndex((input) => input.name === call.addressParam);
+          const targetValue = targetInput >= 0 ? args[targetInput] : undefined;
+          const encodedTarget = targetValue === undefined
+            ? undefined : encodeFunctionArgument(targetValue, 'address', structs);
+          if (!(encodedTarget instanceof Uint8Array)
           || binToHex(encodedTarget) !== resolved.participant.lockingBytecode.toLowerCase()) {
-          throw new Error(`layer3: raw callsite ${call.callsiteId} target proof disagrees with calldata owner`);
+            throw new Error(`layer3: raw callsite ${call.callsiteId} target proof disagrees with calldata owner`);
+          }
+          expand(
+            resolved.participant,
+            resolved.function,
+            resolved.args,
+            invocation,
+            edgeCallMode(call),
+          );
         }
-        expand(
-          resolved.participant,
-          resolved.function,
-          resolved.args,
-          invocation,
-          edgeCallMode(call),
-        );
         continue;
       }
       if (call.batchInvocations) {

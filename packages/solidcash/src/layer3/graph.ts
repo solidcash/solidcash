@@ -1813,7 +1813,14 @@ export function planCompiledGraph(
       }
       resultDependencies[parent].push(child);
     });
-    assertSingleConsumedResult(parent, resultDependencies[parent]);
+    const exactRawLoop = parentFunction?.externalCalls?.length === 1
+      && parentFunction.externalCalls[0].interfaceName === '__raw__'
+      && parentFunction.externalCalls[0].functionName === '__raw__'
+      && parentFunction.externalCalls[0].occurrence === 'loop'
+      && parentFunction.externalCalls[0].occurrenceBoundSource === 'literal'
+      && parentFunction.externalCalls[0].minimumOccurrences === children.length
+      && parentFunction.externalCalls[0].maximumOccurrences === children.length;
+    if (!exactRawLoop) assertSingleConsumedResult(parent, resultDependencies[parent]);
   }
   assertResolvableResultDependencies(invocations.length, resultDependencies);
   const planned = plannedBase.map((invocation, index) => Object.freeze({

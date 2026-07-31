@@ -903,16 +903,16 @@ contract ${name}() {
   }
 }`;
 
-  it('fails closed on the legacy low-level value-option spelling', () => {
+  it('admits the legacy low-level value-option spelling in the bounded raw value class', () => {
     expect(() => compileString(c11ValueSource('C11LegacyValue', 'call'), busOnly)).not.toThrow();
     expect(() => compileString(c11ValueSource('C11LegacyValue', 'call.value(amount)'), busOnly))
-      .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
+      .not.toThrow();
   });
 
-  it('fails closed on the modern low-level value-option spelling', () => {
+  it('admits the modern low-level value-option spelling in the bounded raw value class', () => {
     expect(() => compileString(c11ValueSource('C11ModernValue', 'call'), busOnly)).not.toThrow();
     expect(() => compileString(c11ValueSource('C11ModernValue', 'call{value: amount}'), busOnly))
-      .toThrow(/low-level 'call' carrying the call option\(s\) 'value'/);
+      .not.toThrow();
   });
 
   // A value option written in only ONE arm of a branch still publishes the transfer, so the branch spelling
@@ -987,9 +987,31 @@ contract C11RawTarget() {
         .toThrow(/has no bounded occurrence proof; iterated low-level calls are not an admitted graph edge/);
     });
 
-    // A raw callsite genuinely written inside a loop never reaches the planner at all.
-    it('fails closed at compile time on a source-level looped low-level call', () => {
-      expect(() => compileString(`pragma solidcash >=0.8.0;
+    it('expands an exact compiler-literal raw loop once per authenticated occurrence', () => {
+      const plan = planRaw((call) => {
+        call.occurrence = 'loop';
+        call.maximumOccurrences = 3;
+        call.minimumOccurrences = 3;
+        call.occurrenceBoundSource = 'literal';
+      }) as any;
+      expect(plan.invocations).toHaveLength(4);
+      expect(plan.invocations.slice(1).map((row: any) => row.parent)).toEqual([0, 0, 0]);
+    });
+
+    it.each([
+      ['mismatched floor', 2, 3, 'literal'],
+      ['non-literal provenance', 3, 3, 'guard'],
+    ])('keeps raw fan-in fail-closed for %s', (_label, minimum, maximum, source) => {
+      expect(() => planRaw((call) => {
+        call.occurrence = 'loop';
+        call.minimumOccurrences = minimum;
+        call.maximumOccurrences = maximum;
+        call.occurrenceBoundSource = source;
+      })).toThrow(/has no bounded occurrence proof/);
+    });
+
+    it('publishes the exact bound for a source-level literal raw loop', () => {
+      const artifact = compileString(`pragma solidcash >=0.8.0;
 contract C11RawLoop() {
   function run(address target, bytes payload) public {
     for (int i = 0; i < 2; i = i + 1) {
@@ -998,7 +1020,11 @@ contract C11RawLoop() {
     }
     require(payload.length > 0);
   }
-}`, busOnly)).toThrow(/low-level 'call' inside a loop/);
+}`, busOnly);
+      expect(artifact.abi.find((fn) => fn.name === 'run')!.externalCalls![0]).toMatchObject({
+        occurrence: 'loop', minimumOccurrences: 2, maximumOccurrences: 2,
+        occurrenceBoundSource: 'literal',
+      });
     });
 
     // SCOPE. The guard reads `occurrence` alone. `maximumOccurrences`, `loopArrayVar`, `selectorArrayVar`

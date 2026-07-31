@@ -1959,15 +1959,20 @@ export default class SymbolTableTraversal extends AstTraversal {
               `Graph handler '${node.name}' requires call/staticcall edges and at most one returning call`,
             );
           }
+          const admittedRuntimeRawReturn = logicalCallSlots.length === 1
+            && logicalCallSlots[0].interfaceName === '__raw__'
+            && logicalCallSlots[0].functionName === '__raw__'
+            && logicalCallSlots[0].opaqueReturn === true;
           if (node.graphRuntimeEmissionHandler
-            && logicalCallSlots.some((slot) => slot.hasReturnValues
+            && logicalCallSlots.some((slot) => (slot.hasReturnValues && !admittedRuntimeRawReturn)
               || (!slot.sourceCallNode
                 && !slot.fnPtrCall
                 && !slot.selectorArrayVar
                 && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
             throw new GraphHandlerShapeError(
               node,
-              `Runtime graph handler '${node.name}' requires void calls with parameter- or state-pinned targets`,
+              `Runtime graph handler '${node.name}' requires void calls or one compiler-bounded raw return `
+              + 'with parameter- or state-pinned targets',
             );
           }
           for (const slot of logicalCallSlots) {

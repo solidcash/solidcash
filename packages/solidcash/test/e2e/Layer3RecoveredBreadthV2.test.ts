@@ -9,7 +9,9 @@ import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
+} from '../../src/stateful/covenant-helpers.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
@@ -98,6 +100,9 @@ const GAINED_BY_THE_REPAIR: Readonly<Record<string, readonly string[]>> = {
   'app/create2/Create2.sol::TestContract': ['getBalance', 'owner', 'foo'],
   'app/ether-wallet/EtherWallet.sol::EtherWallet': ['getBalance', 'owner'],
   'hacks/contract-size/ContractSize.sol::Hack': ['isContract', 'addr'],
+  'app/english-auction/EnglishAuction.sol::EnglishAuction': [
+    'ended', 'highestBidder', 'nft', 'nftId', 'seller',
+  ],
   'hacks/denial-of-service/DenialOfService.sol::Attack': ['kingOfEther'],
   'hacks/overflow/Overflow.sol::Attack': ['timeLock'],
   'hacks/self-destruct/ForceEther.sol::Attack': ['etherGame'],
@@ -133,6 +138,21 @@ interface Row {
 }
 
 const ROWS: readonly Row[] = [
+  {
+    rel: 'app/english-auction/EnglishAuction.sol',
+    contract: 'EnglishAuction',
+    subjects: [
+      { handler: 'ended' }, { handler: 'highestBidder' }, { handler: 'nft' },
+      { handler: 'nftId' }, { handler: 'seller' },
+    ],
+    hostileSubject: 'nftId',
+    state: {
+      nft: addr('55'), nftId: 7n, seller: addr('66'), endAt: 1_000n, started: true, ended: false,
+      highestBidder: addr('77'), highestBid: 50n, __block_timestamp: 900n, __blockOracleOwner: alicePub,
+    },
+    stateTamper: { nftId: 8n },
+    slots: ['master', 'dataNft', 'dataNft', 'dataNft', 'entry', 'returnEvent'],
+  },
   {
     root: EACC,
     rel: 'TreasurySplit.sol',
@@ -648,6 +668,25 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
             },
           });
           break;
+        case 'entry': {
+          const collection = (artifact.hiddenBatch!.route.entryAccesses as any[])[slot.slotIndex ?? 0]
+            ?.collection as string;
+          if (collection === undefined) throw new Error(`${key(row)}: the route names no entry collection`);
+          const entryAddress = getEntryNftAddress(participant, setup.categoryId, collection);
+          const entryUtxo = (await provider.getUtxos(entryAddress))[0];
+          if (entryUtxo === undefined) throw new Error(`${key(row)}: the ${collection} entry NFT is unstaged`);
+          tx.addInput(entryUtxo, createEntryNftUnlocker(participant, 0, setup.categoryId, collection));
+          tx.addOutput({
+            to: entryAddress,
+            amount: entryUtxo.satoshis,
+            token: {
+              category: setup.categoryId,
+              amount: 0n,
+              nft: { capability: 'mutable', commitment: entryUtxo.token!.nft!.commitment },
+            },
+          });
+          break;
+        }
         default:
           throw new Error(`${key(row)}: this harness does not stage a '${slot.kind}' slot`);
       }
@@ -789,6 +828,6 @@ describe('X177/X180 breadth: recovered handlers that reach a settled transaction
     console.log(`[V2B] ${settled.length} gained handlers settle in this file; ${unproved.length} more are `
       + `run and recorded as unproven; ${206 - settled.length} of the 206 are NOT proved here.`);
     expect(settled.length).toBe(ROWS.reduce((total, row) => total + row.subjects.length, 0));
-    expect(settled.length).toBe(42);
+    expect(settled.length).toBe(47);
   });
 });

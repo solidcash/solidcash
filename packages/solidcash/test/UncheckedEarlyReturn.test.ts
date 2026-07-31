@@ -37,6 +37,8 @@ describe('unchecked-block early return (OZ Math.tryAdd) produces correct values 
     await call('checkOk', [3n, 4n, 7n]); // c = 7 >= 3, so return (true, 7)
   });
   it('rejects a wrong expected sum (the returned local c is exact)', async () => {
-    await expect(call('checkOk', [3n, 4n, 8n])).rejects.toThrow();
+    await expect(call('checkOk', [3n, 4n, 8n])).rejects.toThrow(
+      /mandatory-script-verify-flag-failed .*input index 0: Program failed an OP_VERIFY operation/,
+    );
   });
 });

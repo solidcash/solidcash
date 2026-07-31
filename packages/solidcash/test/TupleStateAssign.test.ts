@@ -63,7 +63,9 @@ describe('tuple assignment onto state variables (VM-verified)', () => {
 
   it('persists the state-var writes across calls', async () => {
     const sc = await getContractFactory(compileString(MIXED_SOURCE), await fundedSigner()).deploy();
-    await expect(sc.g()).rejects.toThrow(); // pre-f state: y == 0
+    await expect(sc.g()).rejects.toThrow(
+      /mandatory-script-verify-flag-failed .*input index 0: Program failed an OP_VERIFY operation/,
+    ); // pre-f state: y == 0
     await sc.f();
     await expect(sc.g()).resolves.toBeDefined(); // y == 3, z == 4 persisted
   });

@@ -50,6 +50,8 @@ describe('library function with return-in-loop (VM-verified)', () => {
       compileString(SOURCE, { solidityImportCompat: true }), await fundedSigner(),
     ).deploy();
     await sc.seed();
-    await expect(sc.checkWrong()).rejects.toThrow();
+    await expect(sc.checkWrong()).rejects.toThrow(
+      /mandatory-script-verify-flag-failed .*input index 0: Program failed an OP_VERIFY operation/,
+    );
   });
 });

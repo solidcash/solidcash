@@ -6,6 +6,8 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress 
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // End-to-end: a COMPILED sorted-set mapping. `require(!claimed[k])` compiles to the sorted read covenant; the SDK
 // co-spends the exact entry if k is present, else the bracketing predecessor. So the guard passes for an absent
 // key and reverts for a present (claimed) key - and there is no default-on-absent branch to omit (C2 closed).
@@ -45,6 +47,6 @@ describe('sorted mapping compiled read (C2 end-to-end)', () => {
 
     // Present key 5 -> !claimed[5] is false -> guard reverts (already claimed). Cannot be bypassed by omission.
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(5n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 });

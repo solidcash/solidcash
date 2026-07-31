@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+
 // 2D (nested) memory arrays: `new uint256[][](n)`, inner alloc `b[i]=new uint256[](m)`, and the nested element
 // write `b[i][j]=v`. The write desugars to a read-modify-write (`tmp=b[i]; tmp[j]=v; b[i]=tmp;`). VM-verifies
 // the write round-trips, sibling elements stay at their default, and the outer/inner structure is preserved.
@@ -34,6 +36,6 @@ describe('nested (2D) memory array element write b[i][j]=v', () => {
 
   it('a wrong expected sum fails (the nested writes + reads actually ran)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.verify(10n, 20n, 999n)).rejects.toThrow();
+    await expect(sc.verify(10n, 20n, 999n)).rejects.toThrow(verifyFailure);
   });
 });

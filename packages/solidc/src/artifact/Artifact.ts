@@ -16,6 +16,7 @@ import {
 } from '../ast/AST.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
+import { fixedForMaximum } from '../semantic/FixedForLoop.js';
 import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
@@ -38,32 +39,6 @@ function abiTypeString(type: Type | undefined): string {
 const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
 ];
-
-const fixedForMaximum = (
-  initializer: Node | undefined, loop: WhileNode,
-): number | undefined => {
-  if (!(initializer instanceof VariableDefinitionNode) || !initializer.isLoopVariable
-    || !(initializer.expression instanceof IntLiteralNode)
-    || !(loop.condition instanceof BinaryOpNode)
-    || !(loop.condition.left instanceof IdentifierNode)
-    || loop.condition.left.name !== initializer.name
-    || !(loop.condition.right instanceof IntLiteralNode)
-    || ![BinaryOperator.LT, BinaryOperator.LE].includes(loop.condition.operator)
-    || loop.forLoopUpdateCount !== 1) return undefined;
-  const update = loop.block.statements?.[loop.block.statements.length - 1];
-  if (!(update instanceof AssignNode) || update.identifier.name !== initializer.name
-    || !(update.expression instanceof BinaryOpNode)
-    || update.expression.operator !== BinaryOperator.PLUS
-    || !(update.expression.left instanceof IdentifierNode)
-    || update.expression.left.name !== initializer.name
-    || !(update.expression.right instanceof IntLiteralNode)
-    || update.expression.right.value !== 1n) return undefined;
-  const start = initializer.expression.value;
-  const end = loop.condition.right.value;
-  const count = end - start + (loop.condition.operator === BinaryOperator.LE ? 1n : 0n);
-  if (count < 0n || count > BigInt(Number.MAX_SAFE_INTEGER)) return undefined;
-  return Number(count);
-};
 
 /** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
 const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>

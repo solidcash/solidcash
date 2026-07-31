@@ -1,9 +1,10 @@
 import {
-  BranchNode, CollectionIterationNode, ContractNode, DoWhileNode, FunctionDefinitionNode,
+  BlockNode, BranchNode, CollectionIterationNode, ContractNode, DoWhileNode, FunctionDefinitionNode,
   FunctionCallNode, LowLevelCallNode, LowLevelCallStatementNode, MethodCallNode, MethodCallStatementNode, Node,
   SwitchNode, TernaryOpNode, TryCatchNode, WhileNode,
 } from '../ast/AST.js';
 import { SolidCashError } from '../Errors.js';
+import { fixedForMaximum } from './FixedForLoop.js';
 
 /**
  * X6 - stable diagnostics for unadmitted low-level call shapes.
@@ -51,6 +52,9 @@ interface Callsite {
   callMode: string;
   options: string[];
   context: CallsiteContext;
+  returnsResult: boolean;
+  fixedLoopOccurrences?: number;
+  conditionalWithinLoop: boolean;
 }
 
 const LOW_LEVEL_METHOD_NAMES = new Set(['call', 'staticcall', 'delegatecall']);
@@ -81,21 +85,33 @@ const declaredOptions = (options: { value?: unknown; gas?: unknown; salt?: unkno
  * diagnosing the source construct instead of a lowered artefact, and it can only produce a rejection for a
  * shape that already fails to compile.
  */
-function asCallsite(node: Node, context: CallsiteContext): Callsite | undefined {
+function asCallsite(
+  node: Node, context: CallsiteContext, fixedLoopOccurrences: number | undefined,
+  conditionalWithinLoop: boolean,
+): Callsite | undefined {
   if (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode) {
-    return { node, callMode: node.callMode, options: declaredOptions(node.callOptions), context };
+    return {
+      node, callMode: node.callMode, options: declaredOptions(node.callOptions), context,
+      returnsResult: node instanceof LowLevelCallNode, fixedLoopOccurrences, conditionalWithinLoop,
+    };
   }
   if (node instanceof MethodCallNode || node instanceof MethodCallStatementNode) {
     const call = node instanceof MethodCallStatementNode ? node.call : node;
     if (!(call instanceof MethodCallNode)) return undefined;
     if (!LOW_LEVEL_METHOD_NAMES.has(call.methodName) || call.parameters.length !== 1) return undefined;
-    return { node, callMode: call.methodName, options: declaredOptions(call.callOptions), context };
+    return {
+      node, callMode: call.methodName, options: declaredOptions(call.callOptions), context,
+      returnsResult: node instanceof MethodCallNode, fixedLoopOccurrences, conditionalWithinLoop,
+    };
   }
   if (node instanceof FunctionCallNode && node.parameters.length === 1) {
     const dot = node.identifier.name.lastIndexOf('.');
     const method = dot < 0 ? '' : node.identifier.name.slice(dot + 1);
     if (!LOW_LEVEL_METHOD_NAMES.has(method)) return undefined;
-    return { node, callMode: method, options: [], context };
+    return {
+      node, callMode: method, options: [], context, returnsResult: true,
+      fixedLoopOccurrences, conditionalWithinLoop,
+    };
   }
   return undefined;
 }
@@ -109,6 +125,8 @@ function collectLowLevelCalls(
   context: CallsiteContext,
   found: Callsite[],
   seen: Set<object> = new Set(),
+  fixedLoopOccurrences?: number,
+  conditionalWithinLoop = false,
 ): void {
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
@@ -117,13 +135,39 @@ function collectLowLevelCalls(
   if (isInstanceOfAny(value, LOOP_NODES)) inner = 'loop';
   else if (context !== 'loop' && isInstanceOfAny(value, CONDITIONAL_NODES)) inner = 'conditional';
 
-  const callsite = asCallsite(value, context);
+  const callsite = asCallsite(value, context, fixedLoopOccurrences, conditionalWithinLoop);
   if (callsite) found.push(callsite);
 
+  // A source `for` is represented as adjacent initializer + WhileNode. Pair them here so only this canonical
+  // literal form can carry an exact occurrence count into the shape decision.
+  if (value instanceof BlockNode) {
+    const statements = value.statements ?? [];
+    for (let index = 0; index < statements.length; index += 1) {
+      const statement = statements[index];
+      if (statement instanceof WhileNode) {
+        const exact = fixedForMaximum(statements[index - 1], statement);
+        collectLowLevelCalls(
+          statement, 'loop', found, seen, exact,
+          conditionalWithinLoop || context === 'conditional',
+        );
+      } else {
+        collectLowLevelCalls(
+          statement, context, found, seen, fixedLoopOccurrences, conditionalWithinLoop,
+        );
+      }
+    }
+    return;
+  }
+
   for (const child of Object.values(value)) {
-    if (child instanceof Node) collectLowLevelCalls(child, inner, found, seen);
-    else if (Array.isArray(child)) {
-      for (const item of child) collectLowLevelCalls(item, inner, found, seen);
+    const nestedConditional = conditionalWithinLoop
+      || (context === 'loop' && isInstanceOfAny(value, CONDITIONAL_NODES));
+    if (child instanceof Node) {
+      collectLowLevelCalls(child, inner, found, seen, fixedLoopOccurrences, nestedConditional);
+    } else if (Array.isArray(child)) {
+      for (const item of child) {
+        collectLowLevelCalls(item, inner, found, seen, fixedLoopOccurrences, nestedConditional);
+      }
     }
   }
 }
@@ -140,7 +184,9 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
   const rows = found.filter((entry) => entry.callMode !== 'delegatecall');
   if (rows.length === 0) return;
 
-  for (const { node, callMode, options, context } of rows) {
+  for (const {
+    node, callMode, options, context, returnsResult, fixedLoopOccurrences, conditionalWithinLoop,
+  } of rows) {
     const admittedValue = node instanceof MethodCallNode
       && callMode === 'call' && options.length === 1 && options[0] === 'value';
     if (options.length > 0 && !admittedValue) {
@@ -153,6 +199,22 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
       );
     }
     if (context === 'loop') {
+      if (fixedLoopOccurrences === 0) {
+        throw new LowLevelCallShapeError(
+          node, `function '${fn.name}' issues a low-level '${callMode}' inside a literal loop with zero `
+          + 'occurrences. A graph edge must publish at least one reached row',
+        );
+      }
+      if (fixedLoopOccurrences !== undefined && fixedLoopOccurrences > 24) {
+        throw new LowLevelCallShapeError(
+          node, `function '${fn.name}' issues a low-level '${callMode}' inside a literal loop with `
+          + `${fixedLoopOccurrences} occurrences, exceeding the transcript v1 limit of 24`,
+        );
+      }
+      const admittedLiteralLoop = returnsResult && options.length === 0
+        && fixedLoopOccurrences !== undefined && fixedLoopOccurrences > 0
+        && !conditionalWithinLoop && (callMode === 'call' || callMode === 'staticcall');
+      if (admittedLiteralLoop) continue;
       throw new LowLevelCallShapeError(
         node,
         `function '${fn.name}' issues a low-level '${callMode}' inside a loop. A low-level row proves ONE `

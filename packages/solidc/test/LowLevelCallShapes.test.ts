@@ -131,12 +131,15 @@ describe('X6 low-level call shape diagnostics', () => {
       + '    while (i < 2) { target.call(payload); i = i + 1; }',
     );
 
-    it('replaces the leaked runtime-graph-handler error for a returning loop callsite', () => {
-      expect(compilerMessage(returningLoop)).not.toBe(WAS_RUNTIME_GRAPH_HANDLER);
-      expect(compilerMessage(returningLoop))
-        .toContain("function 'run' issues a low-level 'call' inside a loop");
-      expect(namedDiagnostic(returningLoop))
-        .toContain("function 'run' issues a low-level 'call' inside a loop");
+    it('admits an exact two-occurrence returning literal loop and publishes its exact bound', () => {
+      expect(namedDiagnostic(returningLoop)).toBe('ADMITTED');
+      const artifact = compileString(returningLoop, busOptions);
+      expect(artifact.abi.find((fn) => fn.name === 'run')!.externalCalls).toEqual([
+        expect.objectContaining({
+          occurrence: 'loop', maximumOccurrences: 2, minimumOccurrences: 2,
+          occurrenceBoundSource: 'literal', opaqueReturn: true,
+        }),
+      ]);
     });
 
     it('replaces the leaked block-slot error for a void loop callsite', () => {
@@ -151,6 +154,44 @@ describe('X6 low-level call shape diagnostics', () => {
 
     it('names the missing occurrence bound as the reason', () => {
       expect(namedDiagnostic(voidLoop)).toContain('publishes no occurrence bound');
+    });
+
+    it.each([
+      ['zero', 0, 'zero occurrences'],
+      ['over the transcript ceiling', 25, 'transcript v1 limit of 24'],
+    ])('refuses a %s literal bound by name', (_label, count, message) => {
+      const candidate = returningLoop.replace('i < 2', `i < ${count}`);
+      expect(namedDiagnostic(candidate)).toContain(message);
+    });
+
+    it('refuses a noncanonical/unbounded returning loop by name', () => {
+      const candidate = source(
+        '    int i = 0;\n'
+        + '    while (i < payload.length) {\n'
+        + '      (bool ok, bytes result) = target.call(payload);\n'
+        + '      require(ok && result.length >= 0);\n'
+        + '      i = i + 1;\n'
+        + '    }',
+      );
+      expect(namedDiagnostic(candidate)).toContain('publishes no occurrence bound');
+    });
+
+    it('refuses a returning call nested in a conditional inside the literal loop', () => {
+      const candidate = source(
+        '    for (int i = 0; i < 2; i = i + 1) {\n'
+        + '      if (payload.length > 0) {\n'
+        + '        (bool ok, bytes result) = target.call(payload);\n'
+        + '        require(ok && result.length >= 0);\n'
+        + '      }\n'
+        + '    }',
+      );
+      expect(namedDiagnostic(candidate)).toContain('inside a loop');
+    });
+
+    it('refuses options and void calls inside the otherwise canonical literal loop', () => {
+      const optioned = returningLoop.replace('target.call(payload)', 'target.call{gas: 1}(payload)');
+      expect(namedDiagnostic(optioned)).toContain('call option(s) \'gas\'');
+      expect(namedDiagnostic(voidLoop)).toContain('inside a loop');
     });
   });
 

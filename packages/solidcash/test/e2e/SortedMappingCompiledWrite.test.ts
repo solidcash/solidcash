@@ -46,7 +46,7 @@ describe('sorted mapping compiled write / claim-once (C2 end-to-end)', () => {
 
     // Re-claim 30: require(!claimed[30]) reverts (already claimed).
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.claim(30n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.claim(30n, alicePub, sig).send()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
 
     // A different key still claims.
     sc = StatefulContract.withCategory(contract, categoryId);

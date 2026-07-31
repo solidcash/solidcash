@@ -115,6 +115,6 @@ describe('R5: runtime argument/result binding + callee-authenticated result', ()
 
   it('HOSTILE: a wrong result (14 != 5*3) is rejected (callee computation + root both fail)', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(await run(s, 5n, 14n, 3n))).rejects.toThrow();
+    await expect(s.provider.sendRawTransaction(await run(s, 5n, 14n, 3n))).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 1: Program failed an OP_VERIFY operation.)');
   });
 });

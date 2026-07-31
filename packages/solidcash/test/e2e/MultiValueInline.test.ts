@@ -31,6 +31,6 @@ describe('multi-value state-reading helper inlining', () => {
 
   it('a wrong expected value fails (the inlined body + state read actually ran)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.checkAssign(0n, 1n, 3n)).rejects.toThrow();
+    await expect(sc.checkAssign(0n, 1n, 3n)).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

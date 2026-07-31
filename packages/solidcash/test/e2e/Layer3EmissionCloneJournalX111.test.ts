@@ -519,15 +519,14 @@ contract CycleHub() {
   }
 }`;
 
-/** A RESOURCE-shaped clone (a mapping is present) whose stale read is on a chunk-backed dynamic array. */
+/** A RESOURCE-shaped clone (a mapping is present) whose stale read is on chunk-backed bytes. */
 const DYNAMIC_RESOURCE = `pragma solidcash >=0.8.0;
 contract Vault() {
-  bigint[] notes;
+  bytes notes;
   mapping(address => bigint) ledger;
-  function append(bigint n, address who) public {
-    require(this.ledger[who] >= 0);
-    this.notes.push(n);
-    require(n >= 0);
+  function append(bytes n, address who) public {
+    this.notes = n;
+    require(who.length == 20);
   }
   function assertCount(bigint atMost, address who, address other) public {
     require(this.ledger[who] >= 0);
@@ -560,11 +559,10 @@ describe('X111 residual - the dynamic half, and what is left in front of it', ()
     expect(planAnswer(hub, [rows[1], rows[0]], signatures)).toBe('ADMITTED');
   }, 180_000);
 
-  it('R2 L2-F1b is STILL REACHABLE, narrowed to the dynamic half', () => {
-    // The prefix blind spot no longer matters for a scalar read - the covenant refuses that itself now. It
-    // still matters here: a `__scb_resource_` clone reading a chunk-backed array is journalled by neither the
-    // compiler nor seen by the gate, and the planner admits the hostile order with nothing behind it.
-    // PLANNER LEVEL ONLY - no settlement is claimed for this composition.
+  it('R2 L2-F1b remains a metadata blind spot, but no longer admits the dynamic composition', () => {
+    // Preserve the original `__scb_resource_` subject with a non-returning bytes writer. The clone spelling
+    // remains invisible to the stale-read diagnostic, but X94's mixed scalar/collection boundary now refuses
+    // the writer before graph planning. This is a diagnostic blind spot, not an admission or consensus gap.
     const vault = compileString(DYNAMIC_RESOURCE, BUS_OPTIONS);
     const names = vault.invocationAnalysis!.functions.map((entry) => entry.name);
     expect(names).toContain('__scb_resource_assertCount');
@@ -575,11 +573,11 @@ describe('X111 residual - the dynamic half, and what is left in front of it', ()
     expect(clone!.writes).toEqual([]);
 
     const signatures = {
-      append: 'function append(bigint n, address w);',
+      append: 'function append(bytes n, address w);',
       assertCount: 'function assertCount(bigint m, address w, address o);',
     };
     const rows = [
-      { fn: 'append', types: ['bigint', 'address'], args: [1n, hexToBin(ROUTER_LBC)] },
+      { fn: 'append', types: ['bytes', 'address'], args: [new Uint8Array([1]), hexToBin(ROUTER_LBC)] },
       {
         fn: 'assertCount',
         types: ['bigint', 'address', 'address'],
@@ -587,15 +585,26 @@ describe('X111 residual - the dynamic half, and what is left in front of it', ()
       },
     ];
     const witnesses = { __scb_key_ledger_0_row_r0: hexToBin(ROUTER_LBC) };
-    expect(planAnswer(vault, rows, signatures, witnesses)).toBe('ADMITTED');
+    expect(planAnswer(vault, rows, signatures, witnesses))
+      .toMatch(/mixed-scalar-and-collection-route-not-enabled/);
 
-    // GUARD on the ATTACKED FIELD: the only thing changed is the clone's published NAME. Same reads, same
-    // writes, same rows, same order. The gate fires, which isolates the PREFIX rather than this footprint.
+    // Changing only the clone name cannot widen past the earlier handler-eligibility boundary.
     const renamed = copyArtifact(vault);
     renamed.invocationAnalysis.functions
       .find((entry: any) => entry.name === '__scb_resource_assertCount').name = '__scb_graph_assertCount';
-    expect(planAnswer(renamed, rows, signatures, witnesses)).toMatch(STALE);
+    expect(planAnswer(renamed, rows, signatures, witnesses))
+      .toMatch(/mixed-scalar-and-collection-route-not-enabled/);
   }, 180_000);
+
+  it('R2/J4 refuses the former returning dynamic-array writer by its named compile boundary', () => {
+    const arrayWriter = DYNAMIC_RESOURCE
+      .replace('bytes notes;', 'bigint[] notes;')
+      .replace('function append(bytes n, address who)', 'function append(bigint n, address who)')
+      .replace('this.notes = n;', 'require(this.ledger[who] >= 0); this.notes.push(n);');
+    expect(() => compileString(arrayWriter, BUS_OPTIONS)).toThrow(
+      /Returning dynamic-array state helper '__scb_handler_append' must have one tail return so it can be inlined/,
+    );
+  });
 
   it('R3 L2-F1c can no longer ADMIT on a dynamic slot, which is where it was load-bearing', () => {
     // INVERTED BY X138. The published write is the SPENDER's data, not the compiler's `writerIds`, so

@@ -306,7 +306,8 @@ describe('A13 review of C3: injection', () => {
     const built = await buildGraph({ injection: 'appended' });
     expect(built.builder.inputs).toHaveLength(10);
     expect(refusingInputs(built.builder)).toEqual([built.controllerInput]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed[\s\S]*evaluating input index 6/);
   }, 180_000);
 
   it('A13-6c: FINDING - the pair RELOCATED inside the transaction defeats that rule, and is refused by a '
@@ -325,7 +326,8 @@ describe('A13 review of C3: injection', () => {
     // and `this.activeInputIndex == expectedInput + participantCount` (8, not 6). This case does not
     // separate the two; it establishes that the input-count rule is NOT what refuses this placement.
     expect(refusingInputs(built.builder)).toEqual([built.controllerInput]);
-    await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+    await expect(built.provider.sendRawTransaction(built.transaction))
+      .rejects.toThrow(/mandatory-script-verify-flag-failed[\s\S]*evaluating input index 8/);
   }, 180_000);
 
   it('A13-6d: SCOPE - no PROJECTION proof refuses either injection, on either placement', async () => {
@@ -357,7 +359,8 @@ describe('A13 review of C3: disjoint-root', () => {
         },
       });
       expect(refusingInputs(built.builder)).toEqual([3, 4, 5, 6]);
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed[\s\S]*evaluating input index 3/);
     }, 180_000);
 
   it('A13-7b: FINDING - re-rooting by the PARENT FIELD ALONE leaves every projection proof satisfied',
@@ -375,7 +378,8 @@ describe('A13 review of C3: disjoint-root', () => {
         },
       });
       expect(refusingInputs(built.builder)).toEqual([built.controllerInput]);
-      await expect(built.provider.sendRawTransaction(built.transaction)).rejects.toThrow();
+      await expect(built.provider.sendRawTransaction(built.transaction))
+        .rejects.toThrow(/mandatory-script-verify-flag-failed[\s\S]*evaluating input index 6/);
     }, 180_000);
 
   it('A13-7c: and a FORWARD parent, and a self-parent, are refused the same way', async () => {

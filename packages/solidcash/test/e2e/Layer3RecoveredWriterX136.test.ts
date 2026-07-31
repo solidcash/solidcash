@@ -47,7 +47,9 @@ import type { Utxo } from '../../src/interfaces.js';
  * completion in `Layer3RecoveredWriterSettlesX160.test.ts`.
  *
  * SO THE ANSWER TO THE ROW IS NEGATIVE, AND IT IS THE SAFE NEGATIVE. A recovered handler that mutates state
- * does not settle; it is a published-but-dead admission, which is the X115 hazard shape and not an exploit -
+ * WAS recorded as not settling - a published-but-dead admission, the X115 hazard shape. X177 falsified that:
+ * the refusal was this file's own return-event staging, not a covenant property, and with the slot corrected
+ * `attack` SETTLES. What survives is narrower and stranger: the bus accepts a transaction asserting it ran -
  * no witness path opened, nothing accepted that should not have been. What is NOT established is that a
  * recovered writer WOULD settle if one existed whose counterparty were admissible: the recovered population
  * contains exactly one writer, and its counterparty is inadmissible, so the positive case has no subject in
@@ -248,15 +250,26 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
         },
       },
     });
-    tx.addOutput(returns ? {
+    // X177. This branch WAS `returns ? <NFT> : <plain output>`, and the plain output is what produced this
+    // file's recorded negative - not the inadmissible counterparty it was attributed to. A void handler's
+    // result vector is EMPTY, so the return-event slot must still carry an NFT committing to the empty
+    // vector's single push; a plain output is refused at input 0 by the slot check. The control that settles
+    // it: `Lib.doSomething` - void, no external call, no counterparty, no msg.sender - is refused IDENTICALLY
+    // under the same substitution, so nothing about the counterparty was doing the work.
+    tx.addOutput({
       to: hexToBin('51'),
       amount: 1000n,
       token: {
         category: setup.categoryId,
         amount: 0n,
-        nft: { capability: 'none', commitment: binToHex(scriptToBytecode([resultVector])) },
+        nft: {
+          capability: 'none',
+          commitment: binToHex(returns
+            ? scriptToBytecode([resultVector])
+            : scriptToBytecode([new Uint8Array(0)])),
+        },
       },
-    } : { to: p2pkh.address, amount: 1000n });
+    });
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
     tx.addOutput({ to: p2pkh.address, amount: 100_000n });
@@ -289,14 +302,28 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    * handler the recovered route publishes as admitted. If the published admission means anything, this is the
    * transaction it means - and the VM refuses it at the participant's own input.
    */
-  it('MEASURED: the recovered WRITER is REFUSED at the participant input, while its readers settle', async () => {
+  /**
+   * X177 INVERTED THIS, AND THE OLD VERDICT WAS THIS FILE'S OWN STAGING. It asserted the recovered writer was
+   * REFUSED and attributed that to the bus-inadmissible counterparty. The refusal was the return-event slot:
+   * this file used to give a non-returning handler a PLAIN OUTPUT there, and a void handler's result vector is
+   * empty rather than absent, so the slot must still carry an NFT committing to the empty vector's push.
+   *
+   * The control that settles it: `Lib.doSomething` - void, NO external call, NO counterparty, NO msg.sender -
+   * is refused IDENTICALLY under the same substitution. Nothing about the counterparty was doing the work.
+   * Both guard rows this file relies on (`owner`, `wallet`) RETURN, so they took the other branch and
+   * controlled for nothing.
+   *
+   * What it means, stated no wider than it was measured: the bus ACCEPTS a transaction asserting `attack()`
+   * executed while its only statement - a call into a contract the bus refuses - cannot have. The plan is 1
+   * participant, 1 invocation, emissions ['']. This is NOT a demonstrated theft primitive; nothing here shows
+   * value or authority moving. See `Layer3RecoveredVoidWriterX177.test.ts` for the full pair.
+   */
+  it('X177: the recovered writer SETTLES once its return-event slot is staged correctly', async () => {
     const result = await attempt('attack', 'none');
     console.log(`[X136W] attack: ${result.sent ?? result.refusal?.split('\n')[0]}`);
-    expect(result.sent, 'the recovered writer was ACCEPTED; re-read this whole file if so').toBeUndefined();
-    expect(result.refusal).toBeDefined();
-    expect(result.refusal).toMatch(/Program failed an OP_VERIFY operation|mandatory-script-verify-flag-failed/);
-    // The refusal is at the participant's own block master, input 0 - not "some input somewhere".
-    expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
+    expect(result.refusal, 'attack is refused again - the return-event staging may have regressed')
+      .toBeUndefined();
+    expect(result.sent, 'attack did not settle').toBeDefined();
   }, 600_000);
 
   /**

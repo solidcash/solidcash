@@ -59,7 +59,8 @@ import type { Utxo } from '../../src/interfaces.js';
  *  - THREE of the 206 gained handlers are run here - `inc`, `get`, `count`, all on `Counter`. This file
  *    does not speak for the other 203.
  *  - ONE of the ELEVEN gained writers. `Attack.attack` remains proved NOT to settle - fail-closed, a
- *    published-but-dead admission, not an exploit - and the other nine are unproven either way.
+ *    published-but-dead admission - WHICH X177 FALSIFIED: that refusal was the harness's return-event
+ *    staging, and with the slot corrected `attack` settles. The other nine remain unproven either way.
  *  - `Counter` writes ONE uint256 scalar into one data NFT. A recovered writer over a mapping, a sorted
  *    collection, a dynamic string or several data NFTs is a different covenant and is not evidence here.
  */

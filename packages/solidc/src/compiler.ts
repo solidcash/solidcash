@@ -8,6 +8,7 @@ import {
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
+  FunctionCallStatementNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
@@ -780,9 +781,35 @@ function synthesizeHiddenBatchRoute(
       });
       return containsCall;
     });
+    // X201. THE BARE FORWARDING BODY - one statement-level call, no trailing require.
+    //
+    // `graphTailStatement` needs two statements AND a trailing `require(true)`, so a body ending in the call
+    // itself has it false unconditionally - which means this shape lands in `graphRuntimeHandlers` below, the
+    // form that authenticates the emission row AT THE CALL SITE where the callee address is in scope. That is
+    // the only form it may reach: the wrapper epilogue names a synthesized `__extaddr_*` LOCAL of the handler
+    // on the ROUTE stack and throws instead of refusing. So `graphRuntimeHandlers` membership is made a
+    // PRECONDITION here (`!graphResultStatement && !graphHasDelegatecall`) rather than a consequence.
+    // MEASURED BOUNDARIES, both kept deliberately narrow.
+    //
+    // LOW-LEVEL forms are excluded. Admitting `callee.call(payload);` here routes it to the raw-calldata graph
+    // lowering, which aborts with the INTERNAL `Graph handler '__scb_graph_*' requires one forwarded raw
+    // calldata argument` - a throw where the handler previously got the named refusal
+    // `batched-handler-forward-call-not-enabled`. Widening must not trade a named refusal for a crash.
+    //
+    // MULTI-EDGE bare bodies are excluded (`methodCallCount === 1`). Two bare calls DO compile and publish two
+    // edges, but the covenant binding is only VM-proved here for the single-edge shape, and admitting an
+    // unproven emission shape is the exact failure X187 closed. They keep the named refusal until proved.
+    const lastStatement = bodyStatements[bodyStatements.length - 1];
+    const graphBareTailStatement = bodyStatements.length >= 1
+      && fn.returnTypes.length === 0
+      && methodCallCount === 1
+      && !graphResultStatement && !graphHasDelegatecall
+      && (lastStatement instanceof MethodCallStatementNode
+        || (lastStatement instanceof FunctionCallStatementNode
+          && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
     const graphTailCallEligible = graphControllerLbc !== undefined
       && methodCallCount >= 1
-      && (graphTailStatement || graphResultStatement
+      && (graphTailStatement || graphResultStatement || graphBareTailStatement
         || (fn.returnTypes.length === 0
           && bodyStatements[bodyStatements.length - 1] instanceof RequireNode));
     // X22. A physical effect written directly in the handler body - an event NFT, a satoshi transfer or a token
@@ -1367,7 +1394,17 @@ function synthesizeHiddenBatchRoute(
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
   ): string => `__scb_sig_${handlerIndex}_${parameterIndex}_r${row}`;
-  const logicalValueMode = graphMsgValueHandlers.size > 0;
+  // X199. THE ROUTE'S ROW FORMAT IS DECIDED OVER THE HANDLERS THE ROUTE CAN DISPATCH.
+  //
+  // `graphMsgValueHandlers` is filled during the FIRST per-handler pass and never revised, while `eligible`
+  // is afterwards narrowed by `applyRouteUniformity` - so the raw set is a THIRD population, neither the
+  // published handlers nor the final survivors, and a payable handler admitted by pass one and demoted by
+  // uniformity still widened every row from 12 to 21 bytes. Intersecting with the survivors is also what makes
+  // the flag REPRODUCIBLE off the artifact: `handlers[].eligible && handlers[].usesMsgValue` is the same
+  // predicate, and it is the one the SDK encoder now computes (`layer3/hidden-batch.ts`). Counting every
+  // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
+  // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
+  const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
   let resourceHandlerInvokeName: string | undefined;
   const graphHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();
   const siblingHandlerInvokeNames = new Map<FunctionDefinitionNode, string>();

@@ -103,7 +103,12 @@ export function encodeHiddenBatch(
   }
 
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
-  const valueMode = capability.handlers.some((handler) => handler.usesMsgValue);
+  // X199. Over the handlers the route can DISPATCH, not every published one. A REFUSED handler still publishes
+  // `usesMsgValue` - `EnglishAuction.bid` is payable, uses msg.value and is refused by route synthesis - and
+  // counting it wrote `01` into a header the compiled route demands to be `00`, aborting in the route preamble
+  // before any row was parsed, and widened every row from 12 to 21 bytes on the way. The compiler decides the
+  // same flag over the same predicate (`compiler.ts`, `logicalValueMode`).
+  const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
   const keyWitnessValues = new Map<string, { value: FunctionArgument; encoded: Uint8Array }>();
   const signatureWitnessValues = new Map<string, FunctionArgument>();
   const results: { row: number; types: readonly string[] }[] = [];

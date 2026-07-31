@@ -110,6 +110,6 @@ describe('P8/P9: transitive native chain A->B->C under balanced bases', () => {
 
   it('HOSTILE: B pointed off the real C (nested callee-base = 1) is rejected', async () => {
     const { provider, rawTx } = await run(1n);
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 0: Program failed an OP_VERIFY operation.)');
   });
 });

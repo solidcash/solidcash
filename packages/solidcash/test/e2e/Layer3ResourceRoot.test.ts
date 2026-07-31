@@ -74,6 +74,6 @@ describe('P5: resources folded into the framed execution root (owner-verified)',
 
   it('HOSTILE: a co-spent resource of the WRONG category is rejected by the owner', async () => {
     const { provider, rawTx } = await run('ab'.repeat(32)); // not RES_CAT
-    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow();
+    await expect(provider.sendRawTransaction(rawTx)).rejects.toThrow('mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 1: Program failed an OP_VERIFY operation.)');
   });
 });

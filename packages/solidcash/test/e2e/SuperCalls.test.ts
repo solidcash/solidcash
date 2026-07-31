@@ -76,6 +76,6 @@ describe('super.f() / Base.f() parent calls', () => {
       importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
     }), await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.viaSuper(2n, 30n)).rejects.toThrow();
+    await expect(sc.viaSuper(2n, 30n)).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

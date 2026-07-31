@@ -31,6 +31,6 @@ describe('local-memory nested struct-field array write (runtime)', () => {
   });
   it('a wrong post-write expectation reverts', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.wrong()).rejects.toThrow();
+    await expect(sc.wrong()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

@@ -53,11 +53,17 @@ import type { Utxo } from '../../src/interfaces.js';
  * consists of did not happen. That is the X115 published-but-dead admission shape with the "dead" removed.
  *
  * X179 ANSWERED THE QUESTION THIS FILE LEFT OPEN, AND THE ANSWER IS THAT DROPPING IS NOT AN OUTCOME.
- * `Layer3DroppedEdgeX179.test.ts` builds the same shape with an ADMISSIBLE counterparty: the co-spent graph
- * settles, and removing only the child invocation is refused at the caller's own master input with the
- * emission vector exhausted. `Layer3OccurrenceExhaustion.test.ts` and C2's `omits the return edge` row record
- * the same signature. So the caller covenant DOES require the co-spend for the ordinary shape, and what this
- * file measures is `Attack.attack` ESCAPING that requirement - not the requirement's intended shape.
+ * `Layer3DroppedEdgeX179.test.ts` builds an INTERFACE-CAST caller with an admissible counterparty: the
+ * co-spent graph settles, and removing only the child invocation is refused at the caller's own master input
+ * with the emission vector exhausted. `Layer3OccurrenceExhaustion.test.ts` and C2's `omits the return edge`
+ * row record the same signature. So the caller covenant DOES require the co-spend, and what this file
+ * measures is `Attack.attack` ESCAPING that requirement - not the requirement's intended shape.
+ *
+ * AND THE ESCAPE IS NOT ABOUT `Wallet`. The same X179 file reproduces it on a clean pair whose counterparty
+ * the bus ADMITS, from the same source shape as `attack`: a method call on a CONTRACT-TYPED state variable
+ * (`X179SolBar bar; ... bar.log();`). It settles with an empty emission vector, with its own honest co-spend
+ * settling in the same harness. Adding a trailing `require(true)` does not change it, so the receiver
+ * spelling is the variable that survives - stated as the shape that reproduces, not as a mechanism.
  *
  * TWO CONSEQUENCES FOR THIS FILE.
  *
@@ -160,9 +166,9 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   async function attempt(subject: Subject, slot: ReturnSlot, post?: Record<string, unknown>, plan?: {
     bypass?: boolean;
   }): Promise<{
-    sent?: string; refusal?: string; failingInput?: number; participants: number; invocations: number;
-    emissions: readonly string[]; callers: readonly string[];
-  }> {
+      sent?: string; refusal?: string; failingInput?: number; participants: number; invocations: number;
+      emissions: readonly string[]; callers: readonly string[];
+    }> {
     const provider = createLayer3SemanticTestProvider();
     const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

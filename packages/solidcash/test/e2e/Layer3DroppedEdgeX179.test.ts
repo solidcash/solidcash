@@ -19,7 +19,7 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * `Wallet` is refused from the bus by `LowLevelCallShapeError` and so no correct co-spend exists to compare
  * against.
  *
- * THIS FILE ANSWERS IT WITH SUBJECTS WHOSE COUNTERPARTY IS ADMITTED. Three caller shapes, all minimal, all
+ * THIS FILE ANSWERS IT WITH SUBJECTS WHOSE COUNTERPARTY IS ADMITTED. Four caller shapes, all minimal, all
  * compiled in bus mode against the same callee, all staged by the same harness. Each settles its honest
  * co-spend first, so every negative below discriminates against a positive; then the ONLY field that moves is
  * whether the child invocation is planned.
@@ -31,25 +31,30 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
  * nothing to split - the `VECTOR_EXHAUSTED` signature `Layer3OccurrenceExhaustion.test.ts` records for a
  * transcript that omits a reached occurrence, and C2 for a graph that omits its return edge.
  *
- * ANSWER 2: AND THE COVENANT DOES ENFORCE IT - for two of the three shapes. Both interface-cast callers,
- * forwarded argument and expression argument, are refused at input 0 with the vector exhausted.
+ * ANSWER 2: AND THE COVENANT DOES ENFORCE IT - for the two INTERFACE-CAST callers, `IX179Callee(addr).tick()`
+ * with a forwarded argument and with an expression argument. Both are refused at input 0 with the vector
+ * exhausted.
  *
- * ANSWER 3: THE THIRD SHAPE ESCAPES, AND IT IS `Attack.attack`'s SHAPE. A method call on a CONTRACT-TYPED
- * STATE VARIABLE with no interface cast - `X179SolBar bar; ... bar.log();` - settles with an EMPTY emission
- * vector, no co-spent counterparty and one participant. Its honest co-spend settles in the same harness, and
- * its two siblings are refused by the same harness, so this is a property of the compiled caller and not of
- * the staging. `Attack.attack` is therefore not a curiosity of a bus-inadmissible counterparty: the escape
+ * ANSWER 3: THE OTHER TWO ESCAPE, AND THEY ARE `Attack.attack`'s SHAPE. A method call on a CONTRACT-TYPED
+ * STATE VARIABLE - `X179SolBar bar; ... bar.log();` - settles with an EMPTY emission vector, no co-spent
+ * counterparty and one participant. Each escaping shape settles its own honest co-spend in this harness, and
+ * the interface-cast shapes are refused by this harness, so this is a property of the compiled caller and not
+ * of the staging. `Attack.attack` is therefore not a curiosity of a bus-inadmissible counterparty: the escape
  * reproduces on a clean pair where the counterparty is admitted.
  *
- * WHAT CLOSED, AND WHAT DID NOT. The SDK now refuses all three dropped plans by name at plan time
+ * THE DISCRIMINATING VARIABLE IS THE RECEIVER SPELLING, NOT THE TAIL STATEMENT. Adding a trailing
+ * `require(true)` to the escaping body - the one thing that separates it from the eligible interface-cast
+ * bodies - changes nothing: it escapes identically. See `SOLIDITY_PAIR_REQUIRE`.
+ *
+ * WHAT CLOSED, AND WHAT DID NOT. The SDK now refuses all four dropped plans by name at plan time
  * (`assertHandlerRowFloor`), which is the same statement `deriveCompiledGraphPlan` already made. That is a
  * diagnostic, NOT a boundary - the SDK is an untrusted witness constructor, and `dropped-bypass` below shows
- * exactly how a composer walks past it. For the escaping shape the caller covenant does not bind its own
- * outgoing edge at all, so nothing on chain refuses it. Closing that is compiler-side.
+ * exactly how a composer walks past it. For the escaping shapes the caller covenant does not bind its own
+ * outgoing edge at all, so nothing on chain refuses them. Closing that is compiler-side.
  *
  * NOT CLAIMED. No value or authority is shown moving, on any shape. The escaping caller's callee is simply
  * absent from the transaction; nothing here demonstrates a theft primitive, and no mechanism inside the
- * compiler is named - only the source shape that reproduces it.
+ * compiler is named - only the source shape that reproduces it and the one variable that does not.
  */
 
 const CALLEE = `pragma solidcash >=0.8.0;
@@ -95,6 +100,23 @@ contract X179SolFoo {
     function callBar() public { bar.log(); }
 }`;
 
+/**
+ * THE ONE-VARIABLE ISOLATION, and it eliminated the candidate it was written to test. Byte-for-byte the pair
+ * above with a trailing `require(true)` added - the shape of the tail statement is one of the things the
+ * route's handler eligibility reads. It escapes IDENTICALLY, so the missing tail require is not what makes
+ * the pair above escape; the CONTRACT-TYPED receiver is the variable that survives.
+ *
+ * The interface-cast spelling cannot be varied the other way to complete the square: without a trailing
+ * require it is not an eligible handler at all, and with an `address` state variable under
+ * `solidityImportCompat` it fails to compile with an internal
+ * `Expected variable '__extaddr_bar_IBar' does not exist on the stack`. Both are recorded, neither is a
+ * claim about the mechanism.
+ */
+const SOLIDITY_PAIR_REQUIRE = SOLIDITY_PAIR.replace(
+  'function callBar() public { bar.log(); }',
+  'function callBar() public { bar.log(); require(true); }',
+);
+
 const KNOB = 3n;
 const FORWARD_VALUE = 4n;
 /** A void handler's return-event slot carries the empty result vector's single push. */
@@ -105,7 +127,7 @@ const raw = (builder: TransactionBuilder): string =>
 const signature = (): SignatureTemplate => new SignatureTemplate(alicePriv);
 
 /** Which caller shape is under test. */
-type Shape = 'forward' | 'expression' | 'solidity';
+type Shape = 'forward' | 'expression' | 'solidity' | 'solidity-require';
 /**
  * The ONE field that moves: whether the callsite's child invocation is planned and co-spent. `dropped-bypass`
  * additionally strips the published callsite from the artifact copy the PLANNER reads, which is how an
@@ -142,8 +164,11 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const solidity = shape === 'solidity'
-    ? compileStringMulti(SOLIDITY_PAIR, { ...options, solidityImportCompat: true, ecrecover: 'p2pkh' } as never)
+  const solidity = shape === 'solidity' || shape === 'solidity-require'
+    ? compileStringMulti(
+      shape === 'solidity' ? SOLIDITY_PAIR : SOLIDITY_PAIR_REQUIRE,
+      { ...options, solidityImportCompat: true, ecrecover: 'p2pkh' } as never,
+    )
     : undefined;
   const calleeArtifact: any = solidity ? (solidity as any).X179SolBar : compileString(CALLEE, options);
   const calleeBase = new Contract(calleeArtifact, solidity ? [] : [7n], { provider });
@@ -153,14 +178,14 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   const callerArtifact: any = solidity ? (solidity as any).X179SolFoo : compileString(
     shape === 'forward' ? FORWARD_CALLER : EXPRESSION_CALLER, options,
   );
-  const handler = shape === 'solidity' ? 'callBar' : 'ping';
+  const handler = solidity ? 'callBar' : 'ping';
   // The callsite publishes `addressStateVar: 'callee_IX179Callee'` - the external-call lowering's internal
   // name - while the STATE LAYOUT still calls the slot `callee`. Seeding by the ABI name silently leaves the
   // slot empty and the covenant then recomputes an empty emission target, so the layout is the authority here.
   const targetVariable = callerArtifact.stateLayout!.variables
     .find((variable: any) => variable.type === 'address')?.name;
   const callerState = shape === 'forward' ? {}
-    : shape === 'solidity' ? { [targetVariable!]: hexToBin(callee.lockingBytecode) as never }
+    : solidity ? { [targetVariable!]: hexToBin(callee.lockingBytecode) as never }
       : { [targetVariable!]: hexToBin(callee.lockingBytecode) as never, knob: KNOB };
   const callerBase = new Contract(
     callerArtifact, shape === 'forward' ? [callee.lockingBytecode] : [], { provider },
@@ -184,10 +209,10 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
     { artifact: plannedCallerArtifact, lockingBytecode: caller.lockingBytecode },
     { artifact: calleeArtifact, lockingBytecode: callee.lockingBytecode },
   ];
-  const callArgs = shape === 'forward' ? [FORWARD_VALUE] : shape === 'solidity' ? [] : [KNOB + 1n];
+  const callArgs = shape === 'forward' ? [FORWARD_VALUE] : solidity ? [] : [KNOB + 1n];
   const invocations = [
     { parent: null, callee: 0, function: handler, args: shape === 'forward' ? [FORWARD_VALUE] : [] },
-    { parent: 0, callee: 1, function: shape === 'solidity' ? 'log' : 'tick', args: callArgs },
+    { parent: 0, callee: 1, function: solidity ? 'log' : 'tick', args: callArgs },
   ];
   const plan = layer3.planCompiledGraph(
     edge === 'co-spent' ? participants : [participants[0]],
@@ -329,7 +354,8 @@ const VECTOR_EXHAUSTED = 'Program called an OP_SPLIT operation with an invalid i
 const SUBJECTS = [
   { shape: 'forward', label: 'interface cast, forwarded argument', covenantBinds: true },
   { shape: 'expression', label: 'interface cast, expression argument, state-var target', covenantBinds: true },
-  { shape: 'solidity', label: 'CONTRACT-TYPED state variable, no interface cast', covenantBinds: false },
+  { shape: 'solidity', label: 'CONTRACT-TYPED state variable, bare call body', covenantBinds: false },
+  { shape: 'solidity-require', label: 'CONTRACT-TYPED state variable, trailing require', covenantBinds: false },
 ] as const;
 
 describe('X179: does a straight-line `once` external call require its counterparty to be co-spent?', () => {

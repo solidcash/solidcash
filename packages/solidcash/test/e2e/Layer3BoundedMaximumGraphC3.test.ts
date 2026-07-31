@@ -1346,7 +1346,9 @@ describe('C3 hostile cases', () => {
     expect(attacked.layout.participantInputs[7]).toBe(79);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 79');
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow(
+      /error in evaluating input index 79: Program failed an OP_VERIFY operation/,
+    );
 
     // CONTROL (A1 finding C3-R2), reproduced here at eight-participant width. The same field of the same row,
     // the same 35 bytes, rewritten to a p2sh32 that belongs to NO participant - so every owner in the table
@@ -1368,7 +1370,9 @@ describe('C3 hostile cases', () => {
     expect(strangerDiffering.every((index) =>
       index >= forged.lbcStart && index < forged.lbcStart + forged.lbcLength)).toBe(true);
     expect(preflightOutcome(stranger)).toContain('layer3: BCH-2026 preflight failed at input 79');
-    await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow();
+    await expect(stranger.provider.sendRawTransaction(stranger.transaction)).rejects.toThrow(
+      /error in evaluating input index 79: Program failed an OP_VERIFY operation/,
+    );
 
     // Neither generated covenant ever compares two participant rows to each other. This guard went VACUOUS
     // TWICE: it first hunted `participantLbcN == participantLbcM`, and X65 replaced the 8-way dispatch with an
@@ -1507,7 +1511,9 @@ describe('C3 hostile cases', () => {
     expect(attacked.layout.projectionInputs[0]).toBe(98);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 98');
-    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow();
+    await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow(
+      /error in evaluating input index 98: Program failed an OP_VERIFY operation/,
+    );
 
     // The SDK planner refuses the same construction before any transcript exists.
     const rows = attacked.plan.participants.map((participant, index) => ({

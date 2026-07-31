@@ -446,7 +446,7 @@ task-specific report, not in this table.
 | X54 | `BatchCostRegression` ERC-20 footprint budget has no margin | B6 | — | **INTEGRATED** | the overrides were HALVING a later package-wide fix; removing them restores 30,000 ms |
 | X52 | C2's capacity block is stale in the same way as C1's and C3's | B6 | X38 | **INTEGRATED** | ALL SIX rows wrong; B6 did not copy the figures it was handed, and half had moved - see 4.67 |
 | X53 | The PLAN's own copies of the stale C1/C3 figures still need correcting | B6 | X38 | **INTEGRATED** | full table delivered and applied to this document; 2,131,662 base confirmed |
-| X41 | Container `min(reached site transfers)` bound is BLOCKED, not open | — | X29 | **BLOCKED** | the only shape exercising it is unreachable: two outgoing-edge rows never settle |
+| X41 | Aggregate container accounting across repeated reached transfer sites | — | X29 | **INTEGRATED** | two `fireAll` rows now settle distinct transfer windows and one exact aggregate drain; keeping back one transfer, preserving the full container, and draining one extra satoshi all refuse at the hub input |
 | X42 | `new Child(..)` and `blockhash(n)` in a handler crash instead of diagnosing | B5 | SEC-6 | **INTEGRATED** | the two crashes are at DIFFERENT sites, so the gate sits ahead of both; +0 bytes |
 | X26 | A bare `m[k]` READ contributes nothing to the function footprint | C5 | X19 | **INTEGRATED** | SILENT under-reservation: blockSize 2 while the covenant addresses slot +2, so the next block lands on it - see 4.76 |
 | X20 | Widen the assembly model to describe entry/aux inputs | C5 | — | **AUX HALF INTEGRATED; entry half refused** | keyed a POSITION off a WIDTH; one padding slot re-opened the fail-open. Entry half is not a modelling gap |

@@ -77,20 +77,20 @@ import { readEventsFromChain } from '../../src/stateful/StateReader.js';
  * commitment - inside the per-emit `OP_ELSE` where the route has a pending emit of its own, and standalone
  * (emitGraphFrameEventSlotBinding) where it has none, which is the last row's shape.
  *
- * RESULT 3 - a limit that is NOT X29's. Two rows that BOTH dispatch a handler with an OUTGOING EDGE never
- * settle, whatever the handler carries:
+ * RESULT 3 - CLOSED by occurrence aggregation. Two rows can dispatch the same handler with an outgoing edge,
+ * and every reached occurrence owns its own effect window:
  *
  *   hub local rows      handler carries            verdict
  *   [note, note]        nothing, no edge           ACCEPTED
  *   [note, fireAll]     emit + transfer + edge     ACCEPTED
- *   [fireAll, fireAll]  nothing but an edge        REJECTS @ input 0
- *   [fireAll, fireAll]  emit + edge (no container) REJECTS @ input 0
- *   [fireAll, fireAll]  transfer + edge            REJECTS @ input 0 at every container output value
+ *   [fireAll, fireAll]  nothing but an edge        ACCEPTED
+ *   [fireAll, fireAll]  emit + edge (no container) ACCEPTED
+ *   [fireAll, fireAll]  transfer + edge            ACCEPTED at the exact aggregate drain
  *
- * The effect frames are not the discriminator - the edge-free control rejects identically. Consequence: the
- * subroutine's `containerIn - containerOut <= min(reached site transfers)` bound STAYS UNMEASURED, because the
- * only shape that would exercise it (two reached transfer sites in one batch) is unreachable for this
- * independent reason.
+ * The route accumulates the authenticated value of each reached transfer window and requires exact shared
+ * container accounting once: `containerIn == containerOut + sum(reached transfers)`. Keeping back one
+ * transfer, preserving the full container while publishing both outputs, or draining one satoshi extra all
+ * reject at the hub input. This is the two-site measurement the earlier review said was unreachable.
  *
  * SEMANTIC evidence only, on the named layer3-bch2026-semantic-relaxed-v1 profile.
  */
@@ -785,13 +785,7 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     expect(verdict).toContain('input index 0');
   }, 900_000);
 
-  /**
-   * The container conservation rule the subroutine emits is evaluated once per REACHED dispatch site, so the
-   * effective bound is `containerIn - containerOut <= min(reached site transfers)` rather than the flattened
-   * form's `<= sum`. Two rows that BOTH reach `fireAll` drain 2 x TRANSFER_SATS, which the min-form bound
-   * cannot authorize. Measured here rather than argued, with a transfer-FREE control that isolates the
-   * container from the rest of the two-reached-site machinery.
-   */
+  /** Two reached handler occurrences authenticate distinct windows and settle one exact aggregate drain. */
   it('TWO reached sites settle occurrence bindings and aggregate container conservation', async () => {
     const effectFree = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [], emitting: false, transferring: false,

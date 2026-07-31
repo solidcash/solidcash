@@ -7,6 +7,10 @@ import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test
 import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
+const inputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
+
 // Re-audit R6: a TYPED transition operation whose fail-closed invariants are generated UNCONDITIONALLY by the
 // module - not dependent on the caller supplying correct raw appBody. TypedTransition {offset,width,total,delta}
 // adds delta to a committed field and preserves every other byte; the module generates the full output-commitment
@@ -76,7 +80,8 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
     const so = layer3.transcriptLayout(spec).stateOutput(0);
     const forged = decodeTransactionUnsafe(hexToBin(rawOf(builder)));
     forged.outputs[so].token!.nft!.commitment = concat(num8(16n), num8(20n)); // field0 = 16, not 15
-    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged)))).rejects.toThrow();
+    await expect(provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
+      .rejects.toThrow(inputZeroVerifyFailure);
   });
 
   /**

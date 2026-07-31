@@ -809,6 +809,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // helper against that ordering and thread the caller's fixed + runtime-sized trailing base through its frame.
   private outlinedDynamicReadBasisByFunctionId: Map<number, FunctionDefinitionNode> = new Map();
 
+  private outlinedDynamicReadThreadedFunctionIds: Set<number> = new Set();
+
   private outlinedDynamicReadBasis?: FunctionDefinitionNode;
 
   private static readonly OUTLINED_TRAILING_BASE = '__internal__outlinedTrailingBase';
@@ -2124,12 +2126,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitFunctionDefinesAndDispatch(node: ContractNode): void {
     this.computeScalarJournalClosures(node);
     this.outlinedDynamicReadBasisByFunctionId = new Map();
+    this.outlinedDynamicReadThreadedFunctionIds = new Set();
     const indirect = this.functionReferenceIds(node);
     const functionsById = new Map((node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions)
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn]));
     for (const [functionId, entries] of this.entryPointsReaching(node)) {
       const target = functionsById.get(functionId);
-      if (!target || (!target.graphEmissionHandler && !this.functionReadsDynamicState(target))) continue;
+      if (!target || !this.functionReadsDynamicState(target)) continue;
+      // Graph handlers already carry their route's runtime pointer-table frame. Re-basing that shared frame as
+      // an ordinary helper changes the authenticated row indices; X170's verifier remains their boundary.
+      if (target.graphEmissionHandler) continue;
       // Indirect calls have no statically known callee-specific hidden frame. Keep their existing fail-closed
       // basis verification until the function-value ABI can carry this context explicitly.
       if (indirect.has(functionId)) continue;
@@ -2140,7 +2146,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return [...reads].every((name) =>
           this.dynamicReadPriorRuns(first, name).join(',') === this.dynamicReadPriorRuns(entry, name).join(','));
       });
-      if (uniform) this.outlinedDynamicReadBasisByFunctionId.set(functionId, first);
+      if (uniform) {
+        this.outlinedDynamicReadBasisByFunctionId.set(functionId, first);
+        const firstBase = first.blockLayout?.trailingBase ?? first.blockLayout?.blockSize ?? 1;
+        const firstIterations = first.collectionIterations?.length ?? 0;
+        if (entries.some((entry) =>
+          (entry.blockLayout?.trailingBase ?? entry.blockLayout?.blockSize ?? 1) !== firstBase
+          || (entry.collectionIterations?.length ?? 0) !== firstIterations)) {
+          this.outlinedDynamicReadThreadedFunctionIds.add(functionId);
+        }
+      }
     }
     // OP_DEFINE internal/private functions (subroutine-only) + entry points actually invoked internally (via
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
@@ -2558,6 +2573,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.contractParameters = this.contractParameters;
     subTraversal.contractFunctionKeys = this.contractFunctionKeys;
     subTraversal.outlinedDynamicReadBasisByFunctionId = this.outlinedDynamicReadBasisByFunctionId;
+    subTraversal.outlinedDynamicReadThreadedFunctionIds = this.outlinedDynamicReadThreadedFunctionIds;
     subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
       ? undefined : this.outlinedDynamicReadBasisByFunctionId.get(func.functionId);
 
@@ -3295,7 +3311,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.visit(p);
       }
       for (const param of this.constructorCaptures(node)) this.pushToStack(param.name, true);
-      if (node.functionId !== undefined && this.outlinedDynamicReadBasisByFunctionId.has(node.functionId)) {
+      if (node.functionId !== undefined && this.outlinedDynamicReadThreadedFunctionIds.has(node.functionId)) {
         this.pushToStack(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
       }
     } else {
@@ -6945,7 +6961,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Thread the caller's actual trailing base through the call frame instead of baking the helper's synthetic
     // one-slot layout into its bytecode. Nested helpers forward the basis they received.
     if (targetFunc.functionId !== undefined
-      && this.outlinedDynamicReadBasisByFunctionId.has(targetFunc.functionId)) {
+      && this.outlinedDynamicReadThreadedFunctionIds.has(targetFunc.functionId)) {
       const inherited = this.getStackIndex(GenerateTargetTraversalWithLocation.OUTLINED_TRAILING_BASE, true);
       if (inherited >= 0) {
         this.emit(encodeInt(BigInt(inherited)), locationData);

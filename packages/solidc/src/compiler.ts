@@ -3126,12 +3126,39 @@ function compileResolvedAst(
               && candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined))?.id;
             const summary = handlerId === undefined ? undefined
               : artifact.invocationAnalysis?.functions.find((candidate) => candidate.id === handlerId);
-            const callChain = summary?.closure.map((id) =>
-              artifact.invocationAnalysis!.functions.find((candidate) => candidate.id === id)?.name)
-              .filter((name): name is string => name !== undefined);
+            const rejectionCode = classifyHiddenBatchRejection(reason);
+            const analysisFunctions = artifact.invocationAnalysis?.functions ?? [];
+            const target = (candidate: typeof analysisFunctions[number]): boolean => {
+              if (rejectionCode === 'SCB_EFFECT_UNSUMMARIZABLE') {
+                return candidate.effects.length > 0 || candidate.unknown;
+              }
+              if (rejectionCode === 'SCB_EXTERNAL_RECURSION_UNBOUNDED') return candidate.recursive;
+              if (rejectionCode === 'SCB_FOREIGN_INTERMEDIATE_STATE_READ') {
+                return (candidate.externalOutStateReads?.length ?? 0) > 0;
+              }
+              if (rejectionCode === 'SCB_UNSUPPORTED_CONSTRUCT') return candidate.unknown;
+              return candidate.id === handlerId;
+            };
+            let callChain: string[] | undefined;
+            if (summary) {
+              const queue: number[][] = [[summary.id]];
+              const seen = new Set<number>();
+              while (queue.length > 0 && !callChain) {
+                const path = queue.shift()!;
+                const tail = analysisFunctions.find((candidate) => candidate.id === path[path.length - 1]);
+                if (!tail || seen.has(tail.id)) continue;
+                seen.add(tail.id);
+                if (target(tail)) {
+                  callChain = path.map((id) => analysisFunctions.find((candidate) => candidate.id === id)!.name);
+                } else {
+                  tail.calls.forEach((id) => queue.push([...path, id]));
+                }
+              }
+              callChain ??= [summary.name];
+            }
             return {
               rejectionReason: reason,
-              rejectionCode: classifyHiddenBatchRejection(reason),
+              rejectionCode,
               rejectionContext: {
                 ...(handlerId !== undefined && { handlerId }),
                 functionName: fn.name,

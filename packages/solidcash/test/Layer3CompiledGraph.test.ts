@@ -420,6 +420,20 @@ describe('layer3.planCompiledGraph', () => {
       },
     });
     expect(repeated.participants.map((owner) => owner.invocations)).toEqual([[0], [1, 2]]);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: loopParticipant,
+      function: 'repeat',
+      args: [new Uint8Array([0x53]), false, 2n],
+      targets: { IPeer: [leafParticipant] },
+      occurrence: ({ kind }) => kind === 'loop' ? 2 : 0,
+    })).toThrow(expect.objectContaining({
+      code: 'L3_TARGET_EXHAUSTED',
+      context: expect.objectContaining({
+        invocationIds: [0],
+        callChain: ['0:LoopGraph.repeat'],
+        callsiteId: 0,
+      }),
+    }));
 
     const literalLoop = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function run(address peer, bool take); }

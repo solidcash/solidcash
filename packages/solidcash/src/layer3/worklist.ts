@@ -164,10 +164,13 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
   }
   const participants: WorklistParticipant[] = [];
   const invocations: CompiledGraphInvocation[] = [];
+  const activeInvocations: number[] = [];
   const diagnosticContext = (call?: ExternalCallAbi): Layer3DiagnosticContext => ({
-    invocationIds: invocations.map((_row, index) => index),
-    callChain: invocations.map((row, index) =>
-      `${index}:${participants[row.callee]?.artifact.contractName ?? '?owner'}.${row.function}`),
+    invocationIds: [...activeInvocations],
+    callChain: activeInvocations.map((index) => {
+      const row = invocations[index];
+      return `${index}:${participants[row.callee]?.artifact.contractName ?? '?owner'}.${row.function}`;
+    }),
     ...(call?.callsiteId !== undefined && { callsiteId: call.callsiteId }),
     ...(call?.sourceLocation !== undefined && { callsiteLocation: call.sourceLocation }),
     ...(call !== undefined && { interfaceName: call.interfaceName }),
@@ -281,6 +284,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     const owner = intern(participant);
     const invocation = invocations.length;
     invocations.push({ parent, callee: owner, function: functionName, args, ...(callMode && { callMode }) });
+    activeInvocations.push(invocation);
     const fn = functionAbi(participant, functionName);
     assertNoUnboundCallOptions(
       participant.lockingBytecode, participant.artifact, fn, functionName,
@@ -488,6 +492,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       }
     }
     active.delete(key);
+    activeInvocations.pop();
   };
 
   expand(options.root, options.function, options.args ?? [], null);

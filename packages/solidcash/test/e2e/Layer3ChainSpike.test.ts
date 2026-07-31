@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  bigIntToVmNumber, binToHex, createVirtualMachineBch2026, decodeTransactionUnsafe, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { Contract, TransactionBuilder } from '../../src/index.js';
@@ -18,6 +18,8 @@ const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const RATE = 3n;
 const X = 4n; // quote input
+const verifyFailure = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
+  + 'error in evaluating input index 0: Program failed an OP_VERIFY operation.)';
 
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
@@ -126,7 +128,10 @@ async function build(s: any, opts: { rClaimed?: bigint; settlement?: bigint } = 
     token: { category: s.parts[1].setup.categoryId, amount: 0n, nft: { capability: 'minting', commitment: rateHex } },
   });
   builder.addOutput({ to: concat(hexToBin('6a08'), num8(X)), amount: 0n }); // inv1 quote record
-  builder.addOutput({ to: s.parts[0].contract.address, amount: (opts.settlement ?? (2000n + rClaimed)) }); // inv2 consume settlement
+  builder.addOutput({
+    to: s.parts[0].contract.address,
+    amount: (opts.settlement ?? (2000n + rClaimed)),
+  }); // inv2 consume settlement
   return builder;
 }
 
@@ -144,7 +149,10 @@ describe('layer-3 multi-invocation result-dependency chain (E2E)', () => {
       const rr = vm.evaluate({ inputIndex, sourceOutputs, transaction });
       if (!('metrics' in rr) || (rr as { error?: string }).error) throw new Error(`input ${inputIndex} failed`);
       const m = (rr as any).metrics;
-      return { instr: m.evaluatedInstructionCount, ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10 };
+      return {
+        instr: m.evaluatedInstructionCount,
+        ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
+      };
     });
     // Two invocations (quote -> consume) with the result dependency bound, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
@@ -153,13 +161,15 @@ describe('layer-3 multi-invocation result-dependency chain (E2E)', () => {
 
   it('HOSTILE: consuming a value the callee did not quote (forged dependency) is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { rClaimed: X * RATE + 1n })))).rejects.toThrow();
+    const hostile = rawOf(await build(s, { rClaimed: X * RATE + 1n }));
+    await expect(s.provider.sendRawTransaction(hostile)).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 
   it('HOSTILE: an inv2 settlement that does not reflect the consumed result is rejected', async () => {
     const s = await setup();
-    await expect(s.provider.sendRawTransaction(rawOf(await build(s, { settlement: 2000n + X * RATE + 5n })))).rejects.toThrow();
+    const hostile = rawOf(await build(s, { settlement: 2000n + X * RATE + 5n }));
+    await expect(s.provider.sendRawTransaction(hostile)).rejects.toThrow(verifyFailure);
     await expect(s.provider.sendRawTransaction(rawOf(await build(s)))).resolves.toBeTypeOf('string');
   });
 });

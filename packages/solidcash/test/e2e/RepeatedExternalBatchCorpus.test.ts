@@ -226,7 +226,8 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
       aliased.inputs[firstRecipient].outpointTransactionHash.slice();
     aliased.inputs[secondRecipient].outpointIndex =
       aliased.inputs[firstRecipient].outpointIndex;
-    await expect(sendRaw(binToHex(encodeTransaction(aliased)))).rejects.toThrow();
+    await expect(sendRaw(binToHex(encodeTransaction(aliased))))
+      .rejects.toThrow(/transaction attempts to spend the same outpoint in multiple inputs/);
 
     const forgedLateEntry = decodeTransactionUnsafe(hexToBin(captured));
     const mutableOutputs = forgedLateEntry.outputs.filter((output) =>
@@ -234,7 +235,8 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
       && binToHex(output.token.category) === tokenCategory);
     expect(mutableOutputs.length).toBeGreaterThanOrEqual(4);
     mutableOutputs.at(-1)!.token!.nft!.commitment[0] ^= 1;
-    await expect(sendRaw(binToHex(encodeTransaction(forgedLateEntry)))).rejects.toThrow();
+    await expect(sendRaw(binToHex(encodeTransaction(forgedLateEntry))))
+      .rejects.toThrow(/error in evaluating input index 2: Program failed an OP_VERIFY operation/);
 
     await expect(sendRaw(captured)).resolves.toBeTypeOf('string');
 

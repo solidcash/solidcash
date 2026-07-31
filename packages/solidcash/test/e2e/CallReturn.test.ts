@@ -112,7 +112,9 @@ describe('low-level call with integrity-bound return ((bool,bytes) = addr.call(p
       caller.sc.go(caller.addr, payloadFor(echoArt, 'setAndReturn'), alicePub, sig())
         .withExternalCall(echo.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });
 

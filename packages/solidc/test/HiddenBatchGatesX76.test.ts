@@ -312,10 +312,10 @@ contract X76Scalar() {
   int count;
   function add(int n) public { this.count = this.count + n; require(n >= 0); }
 }`;
-    // Pickup baseline 050194fc already emits 3417/3247 here (the former pins were stale before this work began).
-    // Keep the actual inherited baseline pinned so later changes cannot silently widen either path again.
-    expect(compileString(selfReached, graph).bytecode.length).toBe(3417);
-    expect(compileString(scalar, graph).bytecode.length).toBe(3247);
+    // The graph-global settlement-table commitment removes the repeated per-participant frame bytes.
+    // Keep the normalized baseline pinned so later changes cannot silently widen either path again.
+    expect(compileString(selfReached, graph).bytecode.length).toBe(3405);
+    expect(compileString(scalar, graph).bytecode.length).toBe(3235);
     expect(verdicts(selfReached).get('credit')).toBe('ELIGIBLE');
     expect(verdicts(scalar).get('add')).toBe('ELIGIBLE');
   });

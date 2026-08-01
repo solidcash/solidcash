@@ -7229,7 +7229,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(graph_transfer_total)');
       const frame = targetFunc.graphEffectFrame!;
-      for (let slot = 0; slot < frame.transferWidth; slot += 1) {
+      // A heterogeneous frame's suffix is reserved capacity, not a transfer made by this handler.
+      for (let slot = 0; slot < (targetFunc.transferInfos?.length ?? 0); slot += 1) {
         const ordinal = node.graphEffectSite! * frame.transferWidth + slot;
         this.emitBlockSlotIndex('transfer', ordinal, locationData);
         this.emit(Op.OP_OUTPUTVALUE, locationData);
@@ -22174,8 +22175,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // Graph handlers authenticate each transfer output inside their occurrence-specific subroutine frame. Sum
-    // those reached outputs above, then conserve the shared container once here. Zero reached transfers reduces
-    // naturally to preservation; repeated occurrences authorize exactly their aggregate.
+    // those reached outputs above, then conserve the shared container once here. The container may retain more
+    // than the authenticated transfers require; it may not lose more. Zero reached transfers reduces naturally
+    // to preservation, while repeated occurrences authorize at most their aggregate.
     if (this.graphTransferFlagActive && this.stack.includes(GRAPH_TRANSFER_REACHED)) {
       this.emitSatoshiContainerIdentity(locationData);
       this.emitBlockSlotIndex('satoshiContainer', undefined, locationData);
@@ -22185,7 +22187,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_TRANSFER_REACHED) + 2)), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.emit(Op.OP_ADD, locationData);
-      this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+      this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+      this.emit(Op.OP_VERIFY, locationData);
     }
   }
 

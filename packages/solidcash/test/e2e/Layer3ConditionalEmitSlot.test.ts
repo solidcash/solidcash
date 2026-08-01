@@ -834,7 +834,8 @@ const verifyAtCaller =
   /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
 
 describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies (SEMANTIC)', () => {
-  const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
+  const at = (input: number): string =>
+    `layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input ${input}`;
   it('settles a consumed result together with its state write and event', async () => {
     const built = await buildConditionalEmitBatch({ value: 40n, resultEffect: true });
     expect(outcomeOf(built.builder)).toBe('ACCEPTED');
@@ -1033,7 +1034,7 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
    * both emit counts 3 direct statements (so `eventWidths` in the gate agrees with the 3-emit sibling) while
    * `emitInfos` records only the longer arm, 2.
    */
-  it('SEC-9 credit: refuses a branch-arm divergence the eligibility gate admits', () => {
+  it('supports heterogeneous graph event frames while the ambiguous flattened route remains fail-closed', () => {
     const source = `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); }
 contract ArmHub() {
@@ -1054,12 +1055,17 @@ contract ArmHub() {
     require(credited > 0);
   }
 }`;
-    expect(() => compileString(source, {
+    const graph = compileString(source, {
       forceStateful: true,
       experimentalHiddenBatch: true,
       experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
       experimentalMessageBusControllerCategory: 'cd'.repeat(32),
-    })).toThrow(/emits 2 event\(s\) while a sibling handler on the same route emits 3/);
+    });
+    expect(graph.hiddenBatch!.handlers.map((handler: any) => handler.emits.length)).toEqual([2, 3]);
+    expect(graph.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot: any) => slot.kind === 'event')).toHaveLength(24);
+    const flattened = compileString(source, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(flattened.hiddenBatch).toBeUndefined();
   }, 60_000);
 
   // SEC-9 on the transfer axis: the refusal compares emitInfos only, so this compiles.

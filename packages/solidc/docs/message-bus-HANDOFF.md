@@ -240,7 +240,7 @@ merged worktrees are removed but their branches retain the commits.
 `/Code/cashscript/.worktrees/layer3-binding-spike/packages/solidcash`.
 
 ```bash
-# 1. The capstones - the fastest real signal. Expect 52 passed / 6 skipped.
+# 1. The capstones - the fastest real signal. Expect 53 passed / 6 skipped.
 npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
   test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 

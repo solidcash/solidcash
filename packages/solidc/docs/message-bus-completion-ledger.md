@@ -12,8 +12,8 @@ implementation target. Wire bytes remain revisable until the measurement and rev
 
 Current pickup instructions, code anchors, invariants, and the definition of done are maintained in
 `message-bus-HANDOFF.md`. `message-bus-opus-completion-handoff.md` remains the historical execution record.
-External review and product-demand evidence are graduation gates, not reasons
-to stop the remaining technical implementation.
+External review remains a graduation gate, not a reason to stop technical implementation. Product demand is
+closed by explicit project direction: this branch is required to ship the admitted surface default-on.
 
 Evidence labels:
 
@@ -128,9 +128,9 @@ Evidence labels:
 **A verifier byte is worth N transaction bytes** (F4). `generateGraphProjectionVerifier` is one covenant instantiated once per participant, and each proof slot pushes the whole redeem script - so F4's -129 B per projection cut C3 by 1,032 and A13/C2/C1 by 387/516/645, confirmed as exactly N on all four. That multiplier is the correct frame for every future size question on this system. |
 | Corpus-wide composed transaction and operation-density measurements | **MEASURED (F1, F3) - and the finding inverts the question** | Capacity is multi-dimensional: per-input script size, operation density and relay size must all be measured. Current C2 and C3 both fit their measured ordinary envelopes; C3 no longer exceeds the relay ceiling. The historical corpus census at `8685ae91` remains evidence about route demand at that revision, not a current-byte capstone measurement: 712 contracts / 586 files, 635 compiled, 512 in bus mode, 428 reached the bus, and 12 of 44 MistSwap/EACC contracts reached it. Route-scope gates, not composed capacity, dominated that corpus result. Re-run the corpus before publishing a current denominator; do not infer current demand from the capstone fit. |
 | Participant-count contention/retry behavior measured | PROVEN as reproducible engineering model | `simulateLayer3Contention` measures the multiplicative N-owner stale-outpoint probability with deterministic Monte Carlo evidence, exact theoretical comparison, and bounded retry-window backoff. CI pins N=2/N=8 degradation and retry improvement. Production telemetry remains a graduation input, not an implementation dependency. |
-| Corpus demand justifies freezing the general protocol | MISSING/PROCESS | Requires product evidence, not only tests. |
+| Product demand / adoption decision | **DECIDED by project direction** | The user explicitly requires this branch to ship default-on and states that demand is evident; no external demand URL is asserted or required by this repository. |
 | Independent covenant review | PROCESS | Review package exists; independent sign-off is absent. |
-| Feature default-on | MISSING by design | Must remain experimental until every applicable gate above is closed. |
+| Feature default-on | **DECIDED; IMPLEMENTATION/FINAL VERIFICATION REQUIRED** | Project direction requires default-on. Credit completion only when the exact default-on implementation commit and its full regression evidence are recorded; independent review remains a separate graduation gate. |
 
 ## 8. Open-work classification and task mapping
 
@@ -155,12 +155,13 @@ implementable or measurable claim has one owner and prevents process gates from 
 | Hostile integration review | A1 | completed in-repository adversarial review | Independent reproduction and field-by-field adversarial cases; external sign-off remains R3 process |
 | Ordinary-limit measurements | F1 | proven reproducible measurement | Exact consensus/policy metrics and node controls for 2/4/8 participant shapes |
 | Conservative estimator | F2 | proven for its recorded calibration | Conservative predictions, built controls and recorded error margins |
-| Corpus fit | F3 | proven measurement; product demand remains process | Corpus report separating measured demand from synthetic capacity; graduation evidence remains R3 |
+| Corpus fit | F3 | proven historical measurement | Corpus report separates measured demand from synthetic capacity; the adoption decision is project direction rather than a claim derived from this census. |
 | Bytecode minimization | F4 | proven measured optimization | Measured savings with unchanged stack/authentication contract |
-| External review and demand | R3 | process | Independent sign-off and product evidence; not code-closable |
+| External review and adoption | R3 | review remains process; adoption decided | Independent sign-off is absent. Product demand/default-on direction is recorded above; default-on implementation evidence remains code-closable. |
 
 No stale varying-selector investigation remains: its two-element persisted dispatch milestone is committed at
-`d941b139`. Process rows do not block semantic implementation completion, but they continue to block graduation.
+`d941b139`. Independent review does not block semantic implementation completion, but it continues to block
+graduation. The project adoption decision is closed; default-on implementation is tracked separately above.
 
 ## 8.5 Rows promoted to PROVEN by the parallel-work effort
 

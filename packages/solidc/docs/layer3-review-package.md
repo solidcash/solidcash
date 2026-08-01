@@ -1,156 +1,134 @@
-# Layer-3 execution-transcript bus - independent-review package
+# Layer-3 message bus: independent covenant-review package
 
-This package is for the external covenant review the specification requires (gate 5). It consolidates the
-covenants, the canonical encoding, the threat model, the trust assumptions, and the hostile test matrix, and
-gives an HONEST per-finding status. Independent review itself remains outstanding.
+Status: **READY FOR INDEPENDENT REVIEW; SIGN-OFF PENDING**.
 
-## Status after the required-path audit (`layer3-required-path-audit.md`, 0d7b065b)
+Audit target: `codex/layer3-binding-spike` branch HEAD. The integration owner must replace this sentence with
+the exact immutable commit after the default-on implementation and final verification are integrated. A review
+of any other commit does not close the ledger's independent-review gate.
 
-That audit (Decision 3) is ACCEPTED, and its findings have since been worked through. The authoritative,
-per-finding status is `layer3-required-path-resolution.md`; the summary for the reviewer:
+## 1. Project decisions and review boundary
 
-- The load-bearing objection - invocation edges/selectors were LABELS hashed into the commitment, not bound to
-  execution - is closed by the CALLEE STATE JOURNAL (`generateBalancedParticipant({journal})`): a callee reads
-  its co-spent state, EXECUTES every incoming edge in order (committed selector -> op, applied with the edge's
-  args), and flushes once; a designated outgoing edge carries its authentic post-state (A->B->A). This makes
-  P2 (repeated callee / A->B->A), P3 (selector dispatch), P6 (ordering), P7 (row exhaustiveness) real state
-  transitions, VM-proven (`Layer3Journal`, `Layer3Cycle`).
-- BALANCED BLOCK LAYOUTS (P9) and EVENT-NFT SLOTS (P10) are implemented: `balancedLayout` /
-  `balancedMemberBody` / `generateBalancedParticipant` give every participant a contiguous block addressed by
-  BLOCK BASE, with the balanced closure rejecting inserted/omitted slots, event NFTs inside block bounds, and
-  all 10 acceptance criteria of `balanced-block-layout-composability.md` VM-proven.
-- NATIVE CALLS (P8): a generated participant makes real `IContract(addr).method()` calls (single + transitive
-  A->B->C), and the SDK auto-derives the co-spend index from the layout (`balancedCaller` /
-  `buildBalancedTranscriptTx`).
-- Earlier fixes stand: P1 framed/versioned/collision-free encoder; P4 args/results in the root; P5 resources;
-  P11 typed-transition length; P12 set-once controller.
+- The project has decided that this branch must ship the admitted Layer-3 message-bus surface **default-on**.
+- Product demand is a project decision and is not an evidence task for this implementation or its reviewer.
+- Independent covenant review remains mandatory. Default-on implementation and its regression proof do not
+  substitute for external sign-off.
+- Consensus target: BCH May 2026 (`BCH_2026_05`). Sharded/faceted contracts remain excluded.
+- The SDK and every transaction builder are adversarial witness constructors. Acceptance must be justified by
+  the covenant bytes and BCH consensus, never by planner metadata or an SDK preflight alone.
+- Unsupported source and transaction shapes must fail closed with a named diagnostic.
 
-What this review must still independently confirm: that the journal's bounded op-model, the balanced-layout
-covenants, and the native-call composition are SOUND as claimed. The per-component notes below are the
-covenants to review. Keep the feature experimental and default-off until this external review is complete.
+Current claim/status authority: `message-bus-completion-ledger.md`. Operational evidence and commands:
+`message-bus-HANDOFF.md`. The long execution plan and older audit files are provenance, not current status.
 
-## Components under review (SDK: `packages/solidcash/src/layer3/covenant.ts`)
+## 2. Exact source surface to review
 
-1. `generateControllerCovenant()` - the controller (R7). Category-agnostic covenant; `setRoot` (deployer sig)
-   sets the transcript root once; `attest` preserves locking bytecode, category, value, and commitment.
-   Genesised MINT-ONCE (one mutable NFT, no minting NFT) so the CashToken category is fixed-supply.
-2. `executionMemberBody(n, selfPos, invocations, controllerCategory, controllerLbc)` - the reusable snippet a
-   HETEROGENEOUS participant embeds (R3). Reads each participant lbc at its fixed position, recomputes the
-   execution root, requires the co-spent controller (exact category + lbc) to commit it and be preserved,
-   and pins its own position.
-3. `generateExecutionBoundCovenant / bindingFrameworkBodyControllerBound` - the homogeneous-clone forms (R2
-   participant-set + execution roots) used by the earlier N-party tests.
-4. `generateOneShotControllerCovenant()` - REPLAY policy. Its `attest` scans all outputs and rejects any
-   recreation of its category, so the mint-once controller is consumed and the root authorizes exactly one
-   execution. Pairs with `executionMemberBody(..., oneShot: true)` (skips controller preservation).
-5. `generateExecutionParticipant(spec)` - AUTO-WIRING. Generates a full participant covenant, injecting the
-   transcript verification from a spec so the developer supplies only their appBody (+ optional `nativeCalls`
-   for native IContract calls whose edge comes from the same declaration).
-6. `framedRootExpr` / `executionRoot` - the ONE authoritative framed/versioned/length-counted encoder
-   (covenant + SDK, byte-identical): `domain||version||n||(len||lbc)*||invCount||(caller||callee||sel[4]||
-   len||args||len||result)*||evCount||(emitter||len||topic)*||resCount||(owner||category[32])*`. Review for
-   preimage-collision resistance (audit P1).
-7. `generateExecutionParticipant({journal})` / `generateBalancedParticipant({journal})` - the CALLEE STATE
-   JOURNAL. Review that: incoming edges are applied in list order to the co-spent state; the flush is exactly
-   once; `emits` binds an outgoing edge's args to the flushed post-state; the op-map dispatch is sound.
-8. `balancedLayout` / `balancedMemberBody` / `generateBalancedParticipant` - BALANCED BLOCK LAYOUTS (P8/P9/P10).
-   Review that: every slot is addressed by block base; the balanced closure (`inputs.length ==
-   outputs.length == totalSlots`) forbids insertion/omission; state NFTs and event NFTs are pinned + preserved
-   in-block; a `regular` external call's caller self-preservation is respected; native-call callee slots do
-   not collide with the controller/fee tail.
-9. `balancedCaller` / `buildBalancedTranscriptTx` (SDK `transcript.ts`) - native-call co-spend auto-derivation.
-   Review that the derived `__internal__externalCallInputBase` witness always equals the actual co-spent
-   callee's physical index.
+The reviewer must follow each invariant through compiler admission, generated covenant bytes, SDK assembly,
+and the hostile VM/node control. At minimum inspect:
 
-## Canonical execution root (R2)
+- compiler route admission and lowering: `packages/solidc/src/compiler.ts` and the semantic passes it invokes;
+- artifact metadata and balanced layout: `packages/solidc/src/artifact/Artifact.ts`;
+- generated route/controller/projection covenants: compiler generation plus
+  `packages/solidcash/src/layer3/graph.ts`;
+- canonical transcript/framing helpers: `packages/solidcash/src/layer3/transcript.ts`;
+- hidden-batch and stateful SDK assembly: `packages/solidcash/src/layer3/hidden-batch.ts` and
+  `packages/solidcash/src/stateful/StatefulContract.ts`;
+- production capacity checks: `packages/solidcash/src/layer3/preflight.ts`;
+- exact default-on wiring at the audit-target commit, including an explicit opt-out only if the public API
+  intentionally retains one.
 
-```
-root = sha256( EXEC_DOMAIN(4c33455845433100)
-             || lbc_0 || lbc_1 || ... || lbc_{n-1}
-             || (lbc_caller || lbc_callee || selector)  for each invocation, in list order )
-```
+Canonical semantic references:
 
-- Participant lbcs are read from the co-spent inputs at their fixed positions, so the root binds each
-  participant to its position (no substitution/permutation).
-- Off-chain: `executionRoot(orderedLbcs, invocations)` (SDK `transcript.ts`) - the deployer sets the
-  controller commitment to exactly this.
+- `compiler-hidden-batch-v1.md`;
+- `invocation-transcript-v1.md`;
+- `balanced-block-layout-composability.md`;
+- `layer3-production-envelope.md`;
+- `delegatecall-security.md` and `mapping-omission-security.md`.
 
-## Threat model + trust assumptions
+## 3. Threat model and invariants checklist
 
-- TRUSTED: the deployer, who sets the controller root (defines the protocol - analogous to a constructor).
-- TRUSTED (with a REAL proof): the controller is unique. Proof = mint-once genesis: the genesis creates one
-  NFT and NO minting NFT, so by the CashToken rule the category can never mint another token. Participants
-  bake the controller's exact category + locking bytecode.
-- ADVERSARIAL: the transaction builder (may reorder, inject, substitute inputs/outputs, tamper commitments).
-- Guarantees: an injected/permuted participant fails position/root; a controller committing the wrong root
-  (set-only, wrong call graph) is rejected; a forged controller (wrong lbc) is rejected; the controller's
-  value/commitment/category/lbc are preserved across the spend.
+For each item, record PASS, FAIL, or SCOPED, the exact source anchor, the honest control, the one-field hostile,
+and the rejecting input index/diagnostic.
 
-## Hostile test matrix (all real BCH-2026 VM; regtest where noted)
+- [ ] **Canonical encoding:** domain/version/framing are total and collision-resistant; every participant,
+  occurrence, selector, argument, option, result, resource, effect, and row count is exhausted exactly once.
+- [ ] **Physical identity:** every logical owner maps to the intended physical master input/output; duplicate,
+  omitted, reordered, injected, or substituted participants reject.
+- [ ] **Controller/carrier authority:** category, locking bytecode, commitment, signer, and preservation/one-shot
+  policy cannot be forged or replayed outside the declared model.
+- [ ] **State authority:** scalar, mapping, sorted insertion/deletion, struct field, chunk, dynamic-array, and
+  packed-array paths have one authority and one final flush per owner; omission and stale-state attacks reject.
+- [ ] **Calls and results:** direct, transitive, cyclic, repeated-owner, raw, bounded-loop, and returning calls
+  bind mode, target, calldata, options, producer, schema, order, and consumption count for every admitted class.
+- [ ] **Effects:** satoshi transfers, token containers, event NFTs, and return outputs preserve exact authority,
+  value, category, capability, destination, and ordering.
+- [ ] **Static and output state:** `staticcall` cannot mutate any direct or transitive state/effect surface;
+  scalar, collection, and chunk-backed `outState` reads authenticate the intended post-state.
+- [ ] **Context:** `msg.sender`, `msg.value`, `msg.sig`, and `msg.data` match direct semantics where claimed;
+  authenticated graph `tx.origin` uses its documented logical carrier signer; unsupported `activeBytecode`
+  and divergent contexts fail closed.
+- [ ] **Delegate execution:** code identity, state owner, resource owner, result producer, and output authority are
+  independently bound for each admitted delegate class.
+- [ ] **Balanced layout:** independently compiled blocks relocate without global indices; slot ranges are unique
+  and complete; funding/change and malformed-layout attacks reject before or in the named covenant input.
+- [ ] **Default-on boundary:** ordinary compilation exposes exactly the reviewed admitted surface; unsupported
+  contracts retain deterministic refusal; explicit opt-out behavior, if retained, cannot weaken contracts
+  compiled in the default mode.
+- [ ] **Capacity/policy:** every accepted production shape passes the selected preflight profile without turning
+  a semantic-only VM result into a consensus or relay-policy claim.
 
-| Property | Test | Result |
-|---|---|---|
-| Controller value siphon rejected (R1) | Layer3NPartyMutual | rejected |
-| Wrong participant-set root rejected | Layer3NPartyMutual | rejected |
-| Injected extra participant rejected | Layer3NPartyMutual | rejected |
-| Forged controller (wrong lbc) rejected (R7) | Layer3ControllerGenesis | rejected (mock; impossible on real node) |
-| Set-only root (no execution) rejected (R2) | Layer3ExecutionRoot | rejected |
-| Wrong call graph (selector) rejected (R2) | Layer3ExecutionRoot | rejected |
-| Position swap of heterogeneous participants rejected (R3) | Layer3Heterogeneous | rejected |
-| Full lifecycle on live BCHN (R8) | 3 files, TESTS_USE_REGTEST | accepted |
+## 4. Required evidence to reproduce
 
-## Honest per-finding status (vs re-audit)
+Run from `packages/solidcash` after `yarn build`. Do not use a stale `dist`.
 
-- R1 controller value preservation: CLOSED.
-- R7 real mint-once genesis + exact identity: CLOSED (genesis flow + exact-lbc + uniqueness via no-minting-NFT).
-- R2 execution root (call graph + selectors + order): CLOSED for STRUCTURE. Runtime argument/result VALUES in
-  the edges are NOT yet bound (that is R5 depth).
-- R3 heterogeneous participants: CLOSED (two different compiled contracts mutually authenticate).
-- R8 N-party live-node lifecycle: CLOSED. Passes on live BCHN regtest, AND under mainnet STANDARD policy -
-  re-ran the lifecycle against a BCHN node started with `-acceptnonstdtxn=0` (non-standard acceptance
-  disabled); the p2sh32 + CashTokens + OP_RETURN transcript txs are accepted as standard.
-  **SCOPE (R2, `1591e87f`).** This row is about the N-party mutual lifecycle in this package, not about the
-  `L3GRAPH1` graph capstones, and it is **not** a `POLICY_FIT` result on the board's ladder. **No
-  `POLICY_FIT` is claimed anywhere.** The capstones that a node has executed - A13, C2 and C3 - were mined
-  under regtest **default** policy, which is `CONSENSUS_FIT`; no capstone has been run under
-  `-acceptnonstdtxn=0`. What has been measured under that flag is individual output shapes (X64). Read this
-  row as evidence about the shapes it names and no further.
-- R5: CLOSED for soundness. Runtime args/results are bound into the edge and the callee AUTHENTICATES the
-  result against its state (`Layer3RuntimeArgs.test.ts`: amount*rate; wrong result rejected).
-- R6 typed transition: CLOSED for the common case. `TypedTransition {offset,width,total,delta}` generates the
-  fail-closed output-commitment binding unconditionally and the module computes it (`Layer3TypedTransition`);
-  raw `transition:true`/`appBody` remains a documented escape hatch for complex math.
-- R5 cycles (A->B->A, repeated one-callee): CLOSED. Structural, not reentrant: a cycle is the edge list
-  [A->B, B->A] in the root, each participant runs once and verifies its edges (`Layer3Cycles.test.ts`).
-  REMAINING: ordering ENFORCEMENT between edges (that B->A observes A->B's effect).
-- R4 exhaustiveness: CLOSED. Emitter exhaustiveness (`Layer3Exhaustiveness.test.ts`: exactly the committed
-  OP_RETURN records - extra rejected, omitted rejected); callee exhaustiveness inherent (edges bind to
-  participant positions); unique ownership + transition authority = scaffold F1.
+1. Capstones: the three C1/C2/C3 files in `message-bus-HANDOFF.md`; expected **53 passed / 6 skipped**.
+2. Full bus-mode regression: the documented 115-file command; expected **1,321 passed / 11 skipped**.
+3. Settlement union: the committed X235 manifest/probe/consumer; expected **1,564 records / 806 settlements /
+   167 contained routes / 157 resolved collisions**, with **145 of 213** eligible handlers proved and 68
+   unproved. The 68 are an evidence-breadth limit, not themselves proof of a vulnerability.
+4. Compiler suite: **2,807/2,807**.
+5. SDK suite: **5,188 passed / 49 skipped / 9 todo**. The only expected failures are the two pre-existing POW
+   operation-density cases named in the handoff; they are outside this review and must not mask another failure.
+6. Repository `yarn build` and `yarn lint`: green.
+7. Current-byte node capstones: BCHN v29.0.0 accepts and mines A13, C2, C1, and C3 and refuses every paired
+   hostile transcript; recorded gate is **4 files / 69 tests**. Record node configuration and exact commit.
+8. Covenant size guard: `Layer3EnvelopeDocR2.test.ts`; production generator figures are projection **5,820 B**,
+   controller **2,810 B** with a 1-byte target and **2,844 B** with p2sh32.
 
-## Refinements (production readiness)
+The reviewer should also run or inspect the current regressions for SEC-18/X111 emission-clone bypasses,
+transcript carrier authentication, result fan-in, delegate authority, staticcall purity, mapping/chunk omission,
+event/effect settlement, and graph context. The completion ledger links the current evidence for each family.
 
-- REPLAY policy: `generateOneShotControllerCovenant` (`Layer3Replay.test.ts`) - one execution then the
-  mint-once controller is consumed forever; reusable-vs-one-shot is an explicit deployer choice. Also, a
-  state-changing transcript is inherently non-replayable (input state NFTs are consumed).
-- AUTO-WIRING: `generateExecutionParticipant` (`Layer3AutoWire.test.ts`) - the transcript verification is
-  generated from a spec; the developer supplies only appBody (+ `nativeCalls`). MODULE-level; full
-  COMPILER-side derivation from `IContract(addr).method()` syntax is a further ergonomic step.
+## 5. Priority hostile attacks
 
-## Still outstanding (external / further ergonomics, not soundness)
+1. Construct valid-looking bytes without `planCompiledGraph`; prove planner metadata is never the boundary.
+2. Reuse one owner, result, resource, event, or effect in two logical positions.
+3. Omit or reorder a reached row while preserving all unrelated transcript bytes.
+4. Substitute controller/carrier signer, category, locking bytecode, or commitment independently.
+5. Exercise journalled callees through aliases, function pointers, helpers, loops, and emission clones.
+6. Cross static/delegate/ordinary modes while preserving selector and arguments.
+7. Move balanced blocks and insert malformed trailing slots, funding inputs, or outputs.
+8. Compile without the former experimental opt-in and compare artifact/covenant identity with the reviewed mode.
 
-- The external covenant review itself (this package is the deliverable).
-- Compiler-side auto-derivation of transcript edges from native `IContract` syntax (module-level auto-wiring
-  is delivered; soundness already proven with explicit edges).
-- Cross-edge ORDERING enforcement (that a later edge observes an earlier edge's on-chain effect).
+## 6. Reviewer deliverable and sign-off
 
-## What a reviewer should attack first
+Every finding must include: ID, severity, violated invariant, selected production-profile impact, exact source and
+test anchors, reproduction bytes or fixture, honest control, hostile mutation, VM/node result, and disposition.
+The final report must state the exact git commit, compiler/SDK build identity, BCHN version/configuration, and
+whether any required command was skipped.
 
-1. The mint-once uniqueness argument (does any genesis path leave a minting NFT of the controller category?).
-2. The position-bound root (can two different transcripts share a controller, or a participant be replayed
-   across transcripts, given the controller commitment is fixed?).
-3. The runtime arg/result binding (R5, now enforced): confirm the callee's authentication of
-   `result == f(args, state)` and the edge's arg/result commitment cannot be desynchronised.
-4. The one-shot controller's output scan (`generateOneShotControllerCovenant.attest`): confirm no output
-   shape (multi-category, mixed) lets the controller category slip past `oc.length >= 32 && slice(0,32)`.
-5. The reusable controller (default): two different transcripts cannot share one controller commitment (each
-   root is distinct); confirm a participant cannot be replayed across roots given the fixed commitment.
+Sign-off closes only the independent-review PROCESS row. Any finding that changes covenant bytes, admission,
+layout, default behavior, or settlement requires a new integration commit, the relevant full regressions, and
+review of the changed bytes before sign-off can be credited.
+
+## 7. Historical audit provenance
+
+Use these to retest prior failure classes, not as current status:
+
+- `layer3-production-audit.md` and `layer3-production-reaudit.md`;
+- `layer3-required-path-audit.md` and `layer3-required-path-resolution.md`;
+- `layer3-review-fixes-audit.md`;
+- `message-bus-security-review-l2.md`;
+- `message-bus-external-review-guide.md` (commit-scoped evidence-method audit).
+
+Where historical prose conflicts with the completion ledger or the audit-target bytes, the ledger and a fresh
+reproduction at the exact audit commit control.

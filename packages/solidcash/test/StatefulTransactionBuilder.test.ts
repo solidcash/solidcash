@@ -107,7 +107,9 @@ describe('StatefulTransactionBuilder', () => {
       builder.addTransfer(dummyLockingBytecode, 2500n);
       builder.addTransfer(dummyLockingBytecode, 2500n); // total: 5000 == 5000
 
-      expect(() => builder.build()).not.toThrow();
+      const transaction = builder.build();
+      expect(transaction.outputs.filter((output) => output.amount === 2500n)).toHaveLength(2);
+      expect(transaction.inputs.some((input) => input.txid === satoshiContainerUtxo.txid)).toBe(true);
     });
 
     it('should succeed when total transfer amount is less than satoshi container balance', () => {
@@ -119,7 +121,9 @@ describe('StatefulTransactionBuilder', () => {
       }));
       builder.addTransfer(dummyLockingBytecode, 3000n);
 
-      expect(() => builder.build()).not.toThrow();
+      const transaction = builder.build();
+      expect(transaction.outputs.some((output) => output.amount === 3000n)).toBe(true);
+      expect(transaction.outputs.some((output) => output.amount === 7000n)).toBe(true);
     });
   });
 
@@ -180,7 +184,10 @@ describe('StatefulTransactionBuilder', () => {
       }));
       builder.addTokenContainerTransfer(tokenContainerCategoryId, dummyLockingBytecode, 1000n);
 
-      expect(() => builder.build()).not.toThrow();
+      const transaction = builder.build();
+      const tokenOutputs = transaction.outputs.filter((output) => output.token?.category === tokenContainerCategoryId);
+      expect(tokenOutputs.some((output) => output.token?.amount === 1000n)).toBe(true);
+      expect(tokenOutputs.reduce((sum, output) => sum + (output.token?.amount ?? 0n), 0n)).toBe(1000n);
     });
 
     it('should succeed when FT transfer amount is less than token container balance', () => {
@@ -198,7 +205,10 @@ describe('StatefulTransactionBuilder', () => {
       }));
       builder.addTokenContainerTransfer(tokenContainerCategoryId, dummyLockingBytecode, 300n);
 
-      expect(() => builder.build()).not.toThrow();
+      const transaction = builder.build();
+      const tokenOutputs = transaction.outputs.filter((output) => output.token?.category === tokenContainerCategoryId);
+      expect(tokenOutputs.some((output) => output.token?.amount === 300n)).toBe(true);
+      expect(tokenOutputs.some((output) => output.token?.amount === 700n)).toBe(true);
     });
   });
 
@@ -232,7 +242,16 @@ describe('StatefulTransactionBuilder', () => {
 
       builder.emitEvent('Transfer', 'aabbccdd');
 
-      expect(() => builder.build()).not.toThrow();
+      const transaction = builder.build();
+      const events = transaction.outputs.filter((output) => output.to === dummyLockingBytecode);
+      expect(events.length).toBeGreaterThan(0);
+      expect(events.some((output) => output.token?.nft?.commitment === '04aabbccdd')).toBe(true);
+      const malformed = new StatefulTransactionBuilder(makeBaseOptions({
+        eventDefinitions: [eventDef], eventNftLockingBytecodes: eventLockingBytecodes,
+        allowImplicitNftBurn: true,
+      }));
+      malformed.emitEvent('Transfer', 'not-valid-hex');
+      expect(() => malformed.build()).toThrow('Invalid event argument at index 0');
     });
   });
 });

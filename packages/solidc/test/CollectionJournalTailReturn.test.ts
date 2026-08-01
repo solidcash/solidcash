@@ -10,8 +10,8 @@ import { compileString } from '../src/index.js';
  *
  * A TAIL return is not an early return. The write-backs are placed immediately before it, exactly as the
  * final `require` guard is already placed after them, so no path leaves the wrapper before the flush. The
- * three refusals below are the boundary: a second return, a return that is not last, and a return whose
- * expression reads an entry whose write-back now precedes it.
+ * lowering now applies the same rule to every earlier or nested return: it wraps that exit with cloned
+ * write-backs, while a return expression continues to read the pending journal value.
  */
 const TOKEN = (wrapper: string): string => `pragma solidcash >=0.8.0;
 contract TailToken() {
@@ -22,8 +22,6 @@ contract TailToken() {
   }
   ${wrapper}
 }`;
-
-const EARLY_RETURN = /cannot be used by .* because the wrapper contains an early return/;
 
 describe('collection-journal wrapper with a tail return', () => {
   it('admits the Solidity ERC-20 wrapper shape', () => {
@@ -48,30 +46,33 @@ describe('collection-journal wrapper with a tail return', () => {
     expect(entries.filter((entry) => entry.collection === 'balances').length).toBe(2);
   });
 
-  it('still refuses a return that is not the wrapper\'s last statement', () => {
-    expect(() => compileString(TOKEN(`
+  it('flushes before a return that is not the wrapper\'s last statement', () => {
+    const artifact = compileString(TOKEN(`
       function transfer(bytes20 from, bytes20 to, bigint value) public returns (bool) {
         _transfer(from, to, value);
         return true;
         require(value >= 0);
-      }`), { forceStateful: true })).toThrow(EARLY_RETURN);
+      }`), { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'transfer')?.entryAccesses).toHaveLength(2);
   });
 
-  it('still refuses a genuinely early return inside a branch', () => {
-    expect(() => compileString(TOKEN(`
+  it('flushes every journalled entry before a genuinely early branch return', () => {
+    const artifact = compileString(TOKEN(`
       function transfer(bytes20 from, bytes20 to, bigint value) public returns (bool) {
         if (value == 0) { return false; }
         _transfer(from, to, value);
         return true;
-      }`), { forceStateful: true })).toThrow(EARLY_RETURN);
+      }`), { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'transfer')?.entryAccesses).toHaveLength(2);
   });
 
-  it('still refuses a tail return whose expression reads a journalled entry', () => {
-    expect(() => compileString(TOKEN(`
+  it('keeps a journal read available to a tail return expression', () => {
+    const artifact = compileString(TOKEN(`
       function transfer(bytes20 from, bytes20 to, bigint value) public returns (bigint) {
         _transfer(from, to, value);
         return this.balances[to];
-      }`), { forceStateful: true })).toThrow(EARLY_RETURN);
+      }`), { forceStateful: true });
+    expect(artifact.abi.find((entry) => entry.name === 'transfer')?.entryAccesses).toHaveLength(2);
   });
 
   it('leaves a wrapper with no return byte-identical', () => {

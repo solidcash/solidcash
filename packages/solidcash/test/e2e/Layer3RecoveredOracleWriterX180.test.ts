@@ -14,6 +14,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
 } from '../../src/stateful/covenant-helpers.js';
+import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
@@ -61,7 +62,8 @@ import type { Utxo } from '../../src/interfaces.js';
  * WHAT THIS FILE ESTABLISHES.
  *
  *  1. `StakingRewards.setRewardsDuration(uint256)` SETTLES - `onlyOwner`, behind `finishAt < block.timestamp`,
- *     with FOUR data NFTs co-spent and rebuilt and THREE sorted-mapping ENTRY NFTs riding the same block.
+ *     with FOUR data NFTs co-spent and rebuilt and FIVE published sorted-mapping ENTRY identities riding the
+ *     same block (three collections, with two additional getter identities).
  *  2. `UniswapV2Pair.initialize(address,address)` SETTLES - TWO fields written, four data NFTs, a
  *     three-mapping layout, behind `msg.sender == factory`.
  *  3. `CrowdFund.count()` SETTLES - the row recorded as refused at input 2.
@@ -73,7 +75,7 @@ import type { Utxo } from '../../src/interfaces.js';
  *     NFT. Here a data NFT the handler does NOT write is moved one bit and the route refuses at input 0, so
  *     the covenant pins EVERY data NFT in its block and not only the slot it writes.
  *  6. THE ENTRY SLOTS ARE AUTHENTICATED. A co-spent sorted-collection entry NFT moved one bit is refused at
- *     input 0, so the three mapping entry NFTs are checked rather than merely present.
+ *     input 0, so the five mapping entry identities are checked rather than merely present.
  *
  * WHAT IS NOT ESTABLISHED, and it bounds every sentence above.
  *
@@ -226,7 +228,7 @@ const TOKEN1 = hexToBin(`76a914${'b1'.repeat(20)}88ac`);
 const ROWS: readonly Row[] = [
   {
     key: 'defi/staking-rewards/StakingRewards.sol::StakingRewards.setRewardsDuration',
-    shape: 'FOUR data NFTs plus THREE co-spent sorted-mapping ENTRY slots, behind a block-oracle guard',
+    shape: 'FOUR data NFTs plus FIVE co-spent sorted-mapping ENTRY identities, behind a block-oracle guard',
     file: `${SBE}/defi/staking-rewards/StakingRewards.sol`,
     contract: 'StakingRewards',
     writer: 'setRewardsDuration',
@@ -260,8 +262,11 @@ const ROWS: readonly Row[] = [
       totalSupply: 0n,
     },
     post: { duration: 86_400n },
-    blockSize: 9,
-    slots: ['master', 'dataNft', 'dataNft', 'dataNft', 'dataNft', 'entry', 'entry', 'entry', 'returnEvent'],
+    blockSize: 11,
+    slots: [
+      'master', 'dataNft', 'dataNft', 'dataNft', 'dataNft',
+      'entry', 'entry', 'entry', 'entry', 'entry', 'returnEvent',
+    ],
   },
   {
     key: 'app/crowd-fund/CrowdFund.sol::CrowdFund.count',
@@ -583,7 +588,14 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
       const declaredType = (artifact.hiddenBatch!.route.inputs as any[])
         .find((input) => input.name === name)?.type;
       if (declaredType === undefined) throw new Error(`${row.key}: the route declares no witness '${name}'`);
-      return /^(u?int|bigint)/.test(declaredType) ? 0n : new Uint8Array(32);
+      if (/^(u?int|bigint)/.test(declaredType)) return 0n;
+      // Keep the handler's shared rewards/msg.sender identity at the historical zero witness, but give every
+      // otherwise-unbound getter identity a stable distinct key. Two physical slots for one collection must
+      // never be funded by co-spending the same sentinel outpoint twice.
+      if (name === '__scb_key_rewards_0') return new Uint8Array(32);
+      const witness = new Uint8Array(32);
+      for (let i = 0; i < name.length; i++) witness[i % witness.length] ^= name.charCodeAt(i);
+      return witness;
     };
     let plan: any;
     for (let index = 0; ; index += 1) {
@@ -642,6 +654,28 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     // rather than listed in this file: slot i is `route.entryAccesses[i].collection` by construction.
     const entryCollections = ((artifact.hiddenBatch!.route.entryAccesses ?? []) as any[])
       .map((access) => access.collection as string);
+    const entryUtxos: Utxo[] = [];
+    for (const [index, access] of ((artifact.hiddenBatch!.route.entryAccesses ?? []) as any[]).entries()) {
+      const keyName = String(access.keyParams?.[0] ?? '').replace(/^id:/, '');
+      const key = unboundRouteWitnesses[keyName];
+      if (!(key instanceof Uint8Array)) {
+        throw new Error(`${row.key}: entry slot ${index} has no byte identity witness '${keyName}'`);
+      }
+      const address = getEntryNftAddress(participant, setup.categoryId, access.collection);
+      entryUtxos.push(await (provider as any).addUtxo(address, {
+        ...randomUtxo({ satoshis: 10_000n }),
+        token: {
+          category: setup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: binToHex(encodeEntryCommitment(
+              keyToSlot(key), new Uint8Array(32), new Uint8Array(0),
+            )),
+          },
+        },
+      }));
+    }
 
     const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
     let dataNftCursor = 0;
@@ -689,8 +723,8 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
           const collection = entryCollections[index];
           if (collection === undefined) throw new Error(`${row.key}: the route names no entry slot ${index}`);
           const address = getEntryNftAddress(participant, setup.categoryId, collection);
-          const utxo = (await provider.getUtxos(address))[0];
-          if (utxo === undefined) throw new Error(`${row.key}: the ${collection} entry NFT was not staged`);
+          const utxo = entryUtxos[index];
+          if (utxo === undefined) throw new Error(`${row.key}: entry slot ${index} was not staged`);
           tx.addInput(utxo, createEntryNftUnlocker(participant, 0, setup.categoryId, collection));
           tx.addOutput({
             to: address,

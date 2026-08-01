@@ -38,7 +38,8 @@ describe('chunk-array write after an early-return guard', () => {
     await sc.valChk(2n, 9n).send();         // last element intact
     await sc.popIf(true).send();           // taken: pop
     await sc.lenChk(2n).send();             // shrank to 2
-    await expect(sc.valChk(1n, 8n).send()).resolves.toBeDefined();
+    expect(await sc.valChk(1n, 8n).send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+    await expect(sc.lenChk(3n).send()).rejects.toThrow(/BCH-2026 preflight failed at input 0/);
   });
 
   it('element write: not-taken preserves, taken updates', async () => {
@@ -54,7 +55,7 @@ describe('chunk-array write after an early-return guard', () => {
     await sc.valChk(0n, 7n).send();
     await sc.writeIf(99n, true).send();    // taken: nums[0] = 99
     await sc.lenChk(3n).send();             // length unchanged
-    await expect(sc.valChk(0n, 99n).send()).resolves.toBeDefined();
+    expect(await sc.valChk(0n, 99n).send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('switch case: unmatched preserves, matched shrinks', async () => {
@@ -69,6 +70,6 @@ describe('chunk-array write after an early-return guard', () => {
     await sc.popSw(2n).send();             // no case matches: unchanged
     await sc.lenChk(3n).send();
     await sc.popSw(1n).send();             // case 1: pop
-    await expect(sc.lenChk(2n).send()).resolves.toBeDefined();
+    expect(await sc.lenChk(2n).send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

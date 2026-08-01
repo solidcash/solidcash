@@ -22,9 +22,10 @@ describe('conditional delete taken-path (if-converted)', () => {
     const sc = await getContractFactory(art, await fundedSigner()).deploy();
     await sc.put(2n, 9n).send();
     await sc.delIf(2n, false).send();            // not taken
-    await expect(sc.chk(2n, 9n)).resolves.toBeDefined();   // preserved
+    expect(await sc.chk(2n, 9n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await sc.delIf(2n, true).send();             // taken: delete
-    await expect(sc.chk(2n, 0n)).resolves.toBeDefined();   // deleted -> default 0
+    expect(await sc.chk(2n, 0n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+    await expect(sc.chk(2n, 9n)).rejects.toThrow(/BCH-2026 preflight failed at input 0/);
   });
 
   it('a second key is independent', async () => {
@@ -32,8 +33,8 @@ describe('conditional delete taken-path (if-converted)', () => {
     await sc.put(1n, 4n).send();
     await sc.put(2n, 9n).send();
     await sc.delIf(1n, true).send();             // delete only key 1
-    await expect(sc.chk(1n, 0n)).resolves.toBeDefined();   // key 1 gone
-    await expect(sc.chk(2n, 9n)).resolves.toBeDefined();   // key 2 intact
+    expect(await sc.chk(1n, 0n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+    expect(await sc.chk(2n, 9n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   // A bool-valued mapping: delete -> false. Exercises a non-int scalar default in the if-conversion.
@@ -50,9 +51,9 @@ describe('conditional delete taken-path (if-converted)', () => {
     const sc = await getContractFactory(boolMap, await fundedSigner()).deploy();
     await sc.set(1n).send();
     await sc.clearIf(1n, false).send();                    // not taken
-    await expect(sc.chk(1n, true).send()).resolves.toBeDefined();   // still true
+    expect(await sc.chk(1n, true).send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await sc.clearIf(1n, true).send();                     // taken
-    await expect(sc.chk(1n, false).send()).resolves.toBeDefined();  // now false
+    expect(await sc.chk(1n, false).send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   // Two deletes in one branch to DIFFERENT mappings: the condition is cloned into both predicated writes.
@@ -70,8 +71,8 @@ describe('conditional delete taken-path (if-converted)', () => {
     const sc = await getContractFactory(multi, await fundedSigner()).deploy();
     await sc.put(1n, 3n, 4n).send();
     await sc.delBoth(1n, false).send();                        // not taken
-    await expect(sc.chk(1n, 3n, 4n)).resolves.toBeDefined();   // both preserved
+    expect(await sc.chk(1n, 3n, 4n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await sc.delBoth(1n, true).send();                         // taken
-    await expect(sc.chk(1n, 0n, 0n)).resolves.toBeDefined();   // both deleted
+    expect(await sc.chk(1n, 0n, 0n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

@@ -35,13 +35,14 @@ describe('chunk-backed string reassign inside a loop', () => {
     await sc.fillLoop('world', 0n).send();          // loop body never runs
     await sc.chkS('hello').send();                   // preserved
     await sc.fillLoop('world', 3n).send();          // runs 3x, each sets s = 'world'
-    await expect(sc.chkS('world').send()).resolves.toBeDefined();
+    expect(await sc.chkS('world').send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
+    await expect(sc.chkS('hello').send()).rejects.toThrow(/BCH-2026 preflight failed at input 0/);
   });
 
   it('read-modify-write in a loop accumulates', async () => {
     const sc = await setup();
     await sc.setS('a').send();
     await sc.growLoop('b', 3n).send();               // s = a + b + b + b
-    await expect(sc.chkS('abbb').send()).resolves.toBeDefined();
+    expect(await sc.chkS('abbb').send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

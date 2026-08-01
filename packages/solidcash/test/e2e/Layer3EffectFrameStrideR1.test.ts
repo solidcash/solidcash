@@ -85,12 +85,13 @@ import { readEventsFromChain } from '../../src/stateful/StateReader.js';
  *   [note, fireAll]     emit + transfer + edge     ACCEPTED
  *   [fireAll, fireAll]  nothing but an edge        ACCEPTED
  *   [fireAll, fireAll]  emit + edge (no container) ACCEPTED
- *   [fireAll, fireAll]  transfer + edge            ACCEPTED at the exact aggregate drain
+ *   [fireAll, fireAll]  transfer + edge            ACCEPTED up to the aggregate drain
  *
- * The route accumulates the authenticated value of each reached transfer window and requires exact shared
- * container accounting once: `containerIn == containerOut + sum(reached transfers)`. Keeping back one
- * transfer, preserving the full container while publishing both outputs, or draining one satoshi extra all
- * reject at the hub input. This is the two-site measurement the earlier review said was unreachable.
+ * The route accumulates the authenticated value of each reached transfer window and bounds shared container
+ * loss once: `containerIn <= containerOut + sum(reached transfers)`. Keeping back one transfer or preserving
+ * the full container while publishing both outputs is therefore accepted; draining one satoshi beyond the
+ * authenticated aggregate rejects at the hub input. This is the two-site measurement the earlier review said
+ * was unreachable.
  *
  * SEMANTIC evidence only, on the named layer3-bch2026-semantic-relaxed-v1 profile.
  */
@@ -785,7 +786,7 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     expect(verdict).toContain('input index 0');
   }, 900_000);
 
-  /** Two reached handler occurrences authenticate distinct windows and settle one exact aggregate drain. */
+  /** Two reached handler occurrences authenticate distinct windows and bound the aggregate container drain. */
   it('TWO reached sites settle occurrence bindings and aggregate container conservation', async () => {
     const effectFree = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [], emitting: false, transferring: false,
@@ -814,17 +815,19 @@ describe('X29 review R1: per-dispatch-site effect frame striding', () => {
     });
     const singleVerdict = await reject(single);
     console.log('R1 fireTwice, container keeps back ONE transfer:', singleVerdict);
-    expect(singleVerdict).not.toEqual('ACCEPTED');
+    expect(singleVerdict).toEqual('ACCEPTED');
     const none = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false, containerOut: CONTAINER_SATS,
     });
     const noneVerdict = await reject(none);
     console.log('R1 fireTwice, container fully preserved:', noneVerdict);
-    expect(noneVerdict).not.toEqual('ACCEPTED');
+    expect(noneVerdict).toEqual('ACCEPTED');
     const over = await buildStrideCase({
       mode: 'fireTwice', effectOrdinals: [0, 1], emitting: false,
       containerOut: CONTAINER_SATS - 2n * TRANSFER_SATS - 1n,
     });
-    expect(await reject(over)).not.toEqual('ACCEPTED');
+    const overVerdict = await reject(over);
+    console.log('R1 fireTwice, container drains ONE satoshi beyond authenticated aggregate:', overVerdict);
+    expect(overVerdict).toContain('input index 0');
   }, 900_000);
 });

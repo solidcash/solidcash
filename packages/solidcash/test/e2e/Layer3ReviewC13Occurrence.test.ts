@@ -314,7 +314,7 @@ function expectCallerRejection(built: BuiltGraph, reason: string): void {
   } catch (error) {
     outcome = (error as Error).message;
   }
-  expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 0');
+  expect(outcome).toContain('BCH-2026 preflight failed at input 0');
   expect(outcome).toContain(reason);
 }
 

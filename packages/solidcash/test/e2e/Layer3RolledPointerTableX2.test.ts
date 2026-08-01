@@ -209,6 +209,7 @@ async function buildRolledGraph(
     function: 'fireAll',
     args: [4n],
     targets: { IVaryingHandler: participants.slice(1) } as any,
+    target: ({ occurrence }) => participants[occurrence + 1],
     occurrence: ({ kind }) => kind === 'loop' ? rows : 0,
     dynamicCall: () => {
       const reached = dynamicCallIndex++;
@@ -480,13 +481,17 @@ describe('Layer-3 rolled pointer-table loop (X2, SEMANTIC)', () => {
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   }, 300_000);
 
-  it.each([
-    ['a flipped ternary discriminant', 'selector'],
-    ['a substituted ternary target', 'target'],
-  ] as const)('rejects %s at input 0', async (_name, tamper) => {
+  it('rejects a flipped ternary discriminant at input 0', async () => {
+    const tamper = 'selector';
     const { provider, transaction } = await buildTernaryGraph(tamper);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(
       /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+    );
+  }, 300_000);
+
+  it('rejects a substituted ternary target before constructing a transaction', async () => {
+    await expect(buildTernaryGraph('target')).rejects.toThrow(
+      'layer3: callsite 0 target proof disagrees with registered owner',
     );
   }, 300_000);
 });

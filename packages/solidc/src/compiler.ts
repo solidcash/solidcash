@@ -706,6 +706,7 @@ function synthesizeHiddenBatchRoute(
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
   const fixedIterationCollections = new Set<string>();
+  const fixedArrayRouteHandlers = new Set<FunctionDefinitionNode>();
   // X76(E1). A bare `m[k]` on a PACKED or DYNAMIC state array does not resolve to a mapping entry at all:
   // `SymbolTableTraversal.visitArrayAssign` sends it to `StateArrayAssignNode`, a different physical form with
   // no entry NFT. Normalizing one of those to a Mapping* node would silently retarget the write, so the bare
@@ -1126,6 +1127,10 @@ function synthesizeHiddenBatchRoute(
         }));
       const hasFixedCollectionHelper = [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => fixedArrayIdentityShape(candidate)));
+      if (fixedIterationShape
+        || (directKeys.size === 0 && hasFixedCollectionHelper && fixedCollectionHelperClosure)) {
+        fixedArrayRouteHandlers.add(fn);
+      }
       // X88/X89. Refuse the ITERATION first and unconditionally. Recovering the read (above) is not by itself
       // enough: an iteration contributes no KEY, so `directKeys` stays empty and the handler's footprint has no
       // `collection:` resource either, which makes `nonEntryCollectionOnly` vacuously TRUE and lets the chain
@@ -1946,12 +1951,26 @@ function synthesizeHiddenBatchRoute(
       || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     let touchesEntry = false;
+    let touchesFixedArray = false;
     const bound = locallyBoundNames(sourceHandler);
     walkInvocationAst(sourceHandler.body, (node) => {
-      if ((isMappingNode(node) && collectionByName.has(node.name))
-        || bareEntryAccessOf(node, bound) !== undefined) touchesEntry = true;
+      if (isMappingNode(node) && collectionByName.has(node.name)) {
+        touchesEntry = true;
+        if (fixedArrayCollections.has(node.name)) touchesFixedArray = true;
+      }
+      const bare = bareEntryAccessOf(node, bound);
+      if (bare !== undefined) {
+        touchesEntry = true;
+        if (fixedArrayCollections.has(bare.name)) touchesFixedArray = true;
+      }
     });
     if (!touchesEntry) continue;
+    // Fixed-array handlers are cloned by the dedicated pass below. Letting the generic entry clone claim one
+    // first rewrites its compiler-owned literal identities (the unrolled 0..N-1 indices) to spender-facing
+    // synthetic key parameters. The collection journal then correctly rejects those parameters as unstable.
+    // Deferring the whole handler preserves the literal identity set and does not widen the journal's stable-key
+    // rule; dynamically-cardinal collection iteration remains ineligible before clone selection reaches here.
+    if (touchesFixedArray || fixedArrayRouteHandlers.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
     handler.name = `__scb_entry_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
@@ -2078,7 +2097,7 @@ function synthesizeHiddenBatchRoute(
       const bare = bareEntryAccessOf(node, bound);
       if (bare && fixedArrayCollections.has(bare.name)) touchesFixedArray = true;
     });
-    if (!touchesFixedArray) continue;
+    if (!touchesFixedArray && !fixedArrayRouteHandlers.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
     handler.name = `__scb_array_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];

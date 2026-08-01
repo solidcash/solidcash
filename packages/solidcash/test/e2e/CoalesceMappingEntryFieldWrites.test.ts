@@ -53,14 +53,16 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
     await c.fund(); await c.seed(1n, 10n, 20n, 30n, 40n, alicePub, sig).send();      // m[1] = {10,20,30,40}
     await c.fund(); await c.updTwo(1n, 111n, 222n, alicePub, sig).send();            // coalesced a=111,b=222
     await c.fund();
-    await expect(c.chk(1n, 111n, 222n, 30n, 40n, alicePub, sig).send()).resolves.toBeDefined(); // c,d preserved
+    expect(await c.chk(1n, 111n, 222n, 30n, 40n, alicePub, sig).send())
+      .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('partial write to a fresh entry zero-fills the untouched fields', async () => {
     const c = await setup();
     await c.fund(); await c.updTwo(7n, 5n, 6n, alicePub, sig).send();                // fresh key -> {5,6,0,0}
     await c.fund();
-    await expect(c.chk(7n, 5n, 6n, 0n, 0n, alicePub, sig).send()).resolves.toBeDefined();
+    expect(await c.chk(7n, 5n, 6n, 0n, 0n, alicePub, sig).send())
+      .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('whole-struct cover writes every field in one go', async () => {
@@ -68,7 +70,8 @@ describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
     await c.fund(); await c.seed(2n, 1n, 1n, 1n, 1n, alicePub, sig).send();
     await c.fund(); await c.updAll(2n, 8n, 9n, 10n, 11n, alicePub, sig).send();      // all 4 fields (full cover)
     await c.fund();
-    await expect(c.chk(2n, 8n, 9n, 10n, 11n, alicePub, sig).send()).resolves.toBeDefined();
+    expect(await c.chk(2n, 8n, 9n, 10n, 11n, alicePub, sig).send())
+      .toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   // The gate leaves a same-entry self-read (`m[k].b = m[k].a`) uncoalesced (it would need the progressively-updated

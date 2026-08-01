@@ -45,18 +45,18 @@ describe('whole-struct <-> mapping-entry copies (runtime)', () => {
   it('writes a struct-constructor value (named args) into a mapping entry', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
-    await expect(sc.checkEntry().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('writes a struct-constructor value (positional args) into a mapping entry', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorPositional().send();
-    await expect(sc.checkEntry().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('reads a whole mapping entry into a struct state variable', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.readIntoStateVar().send();
-    await expect(sc.checkStateVar().send()).resolves.toBeDefined();
+    expect(await sc.checkStateVar().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('a wrong post-read expectation reverts (the read really wrote the entry values)', async () => {
     const sc = await mk(SRC);
@@ -68,6 +68,6 @@ describe('whole-struct <-> mapping-entry copies (runtime)', () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.copyEntryToEntry().send();
-    await expect(sc.checkEntry2().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry2().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

@@ -107,7 +107,7 @@ describe('layer-3 participant-binding scaling', () => {
     // hard consensus rule), so this is the right trade - but density is what to watch as scripts shrink.
     expect(results.every((r) => r.ratioPct < 50)).toBe(true);
     expect(results.map((r) => ({ n: r.n, instr: r.instr }))).toEqual([
-      { n: 2, instr: 1434 }, { n: 4, instr: 2014 }, { n: 8, instr: 3148 },
+      { n: 2, instr: 1549 }, { n: 4, instr: 2129 }, { n: 8, instr: 3263 },
     ]);
   });
 });

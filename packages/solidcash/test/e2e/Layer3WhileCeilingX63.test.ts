@@ -112,11 +112,12 @@ describe('X63 - the planner sees the ceiling a while-spelled loop proves', () =>
    * planner still accepts four. Without this the refusal above could be credited to "the planner now refuses
    * `while` loops" rather than to a bound the source actually proves.
    */
-  it('still admits four occurrences when the source proves no ceiling', () => {
+  it('rejects an unbounded external-call loop before accepting a caller-supplied occurrence count', () => {
     const row = artifactOf(WHILE_UNGUARDED).abi.find((fn: any) => fn.name === 'fireAll').externalCalls[0];
     expect(row.maximumOccurrences).toBeUndefined();
-    const plan = layer3.deriveCompiledGraphPlan({ ...planFor(WHILE_UNGUARDED), occurrence: () => 4 });
-    expect(plan.invocations).toHaveLength(5);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      ...planFor(WHILE_UNGUARDED), occurrence: () => 4,
+    })).toThrow('layer3 [L3_UNBOUNDED_EXTERNAL_CALL_LOOP]: unbounded-external-call-loop-transcript-ineligible: callsite 0');
   }, TIMEOUT);
 
   /**

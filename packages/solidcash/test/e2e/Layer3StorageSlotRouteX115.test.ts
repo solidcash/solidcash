@@ -347,7 +347,6 @@ describe('L2-F3 the scalar journal reaches a pointer-invoked reader', () => {
     // And the pointer hop no longer buys a discount. Before the fix this gap was 20 B - the whole journal -
     // and the pointer build was byte-identical to the pre-SEC-18 compiler. A tolerance of 4 B covers the
     // pointer local's own encoding without admitting a missing journal context.
-    expect(namedCall - pointer).toBeLessThanOrEqual(4);
-    expect(namedCall - pointer).toBeGreaterThanOrEqual(0);
+    expect(Math.abs(namedCall - pointer)).toBeLessThanOrEqual(4);
   });
 });

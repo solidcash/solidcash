@@ -436,7 +436,8 @@ describe('X198 row 4: the two readers in preflight.ts, side by side', () => {
     const decider = source.slice(source.indexOf('const evaluateEveryInput'));
     expect(decider).toMatch(/vm\.stateSuccess\(vm\.evaluate\(\{ inputIndex, sourceOutputs, transaction \}\)\)/);
     expect(decider).not.toMatch(/state\.error/);
-    expect(decider).toMatch(/throw new Error\(`layer3: BCH-2026 preflight failed at input \$\{inputIndex\}/);
+    expect(decider).toMatch(/throw mapLayer3VmFailure\(builder, transaction, inputIndex, String\(objection\)\)/);
+    expect(source).toMatch(/return new Error\(`layer3: BCH-2026 preflight failed at input \$\{inputIndex\}/);
   });
 
   it('4b. the census population is exactly two call sites, both inside preflight.ts', () => {

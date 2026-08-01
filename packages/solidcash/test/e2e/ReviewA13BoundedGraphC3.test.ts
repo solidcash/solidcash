@@ -80,10 +80,17 @@ function invocationOffsets(bytes: Uint8Array): { parentStart: number; depthStart
     cursor += 2 + u16(cursor); // batch frame
     cursor += 2 + u16(cursor); // emissions frame
     cursor += 2 + u16(cursor); // callers frame
+    cursor += 2; // settlement boundary
+    cursor += 2 + u16(cursor); // completion positions
+    cursor += 32; // settlement-table commitment
+    cursor += 1; // execution kind
+    cursor += 2; // executor input
+    cursor += 2 + u16(cursor); // executor locking bytecode
     cursor += 2; // return output
     cursor += 2 + u16(cursor); // result vector
     cursor += 2; // projection input
   }
+  cursor += 2 + u16(cursor); // graph-wide settlement table
   const invocationCount = u16(cursor);
   cursor += 2;
   const records: { parentStart: number; depthStart: number }[] = [];

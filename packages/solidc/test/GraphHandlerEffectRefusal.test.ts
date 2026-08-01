@@ -112,8 +112,10 @@ describe('graph handler effect refusal (X42)', () => {
     expect(artifact.abi.some((fn) => fn.name === 'run')).toBe(true);
   }, COMPILE_TIMEOUT_MS);
 
-  it('still compiles a route-eligible handler that deploys but makes no external call', () => {
-    const artifact = compileString(DEPLOY_WITHOUT_CALL, busOptions);
-    expect(artifact.hiddenBatch?.handlers?.map((handler) => handler.name)).toEqual(['run']);
+  it('fails a deploy closed when the handler is selected for the graph route, even without an external call', () => {
+    expect(() => compileString(DEPLOY_WITHOUT_CALL, busOptions)).toThrowError(expect.objectContaining({
+      reason: 'graph-handler-deploy-not-enabled',
+      message: expect.stringMatching(/block layout reserves owner slots only.* at Line \d+, Column \d+$/),
+    }));
   }, COMPILE_TIMEOUT_MS);
 });

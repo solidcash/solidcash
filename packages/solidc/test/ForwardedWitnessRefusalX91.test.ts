@@ -19,9 +19,9 @@ import { ForwardedWitnessError } from '../src/generation/GenerateTargetTraversal
  *
  * Two callers can be in that position, with DIFFERENT remedies, so they are named apart:
  *
- *   route-cannot-carry-blockhash-oracle-index      the generated `__scb1` route. It can NEVER carry the
- *                                                  witness: the route is stripped from the ABI, so the SDK has
- *                                                  nowhere to fill it.
+ *   route-cannot-carry-blockhash-oracle-index      a generated `__scb1` route without an authenticated graph
+ *                                                  controller. A controller-backed route now reserves a
+ *                                                  compiler-planned row-local oracle band instead.
  *   caller-cannot-forward-blockhash-oracle-index   an ordinary function that does not read blockhash itself.
  *                                                  It simply was not given one - and reading blockhash there
  *                                                  fixes the call. Reached on the plain DIRECT route, with no
@@ -140,11 +140,12 @@ const expectRefusal = (src: string, options: object, reason: string): Error => {
 };
 
 describe('X91: a forwarded synthetic witness the caller cannot supply is refused by name', () => {
-  it('a route-eligible blockhash handler with NO external call is refused (escaped X42 entirely)', () => {
-    for (const [label, options] of [['+hb', HB], ['+hb+ctrl', HB_CTRL]] as const) {
-      const error = expectRefusal(BH_ROUTED, options, 'route-cannot-carry-blockhash-oracle-index');
-      expect(error.message, label).toContain('hidden-batch route');
-    }
+  it('a routed blockhash handler requires, then uses, the authenticated graph oracle band', () => {
+    const error = expectRefusal(BH_ROUTED, HB, 'route-cannot-carry-blockhash-oracle-index');
+    expect(error.message).toContain('hidden-batch route');
+    const artifact = compileString(BH_ROUTED, HB_CTRL);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'record')?.eligible).toBe(true);
+    expect(artifact.hiddenBatch?.route.graphBlockhashOracle?.readWidth).toBe(1);
   });
 
   it('two blockhash reads in one routed handler are refused the same way', () => {
@@ -173,21 +174,20 @@ describe('X91: a forwarded synthetic witness the caller cannot supply is refused
   });
 
   it('CONTROL: the same effects on shapes that compiled still compile, byte-identical', () => {
-    // Byte counts measured at 6183cf12 with the guard disabled; any drift here is a behaviour change.
+    // Re-measured at b27dc1c4 after the centralized transcript carrier; any drift is a behaviour change.
     const table: [string, string, object, number][] = [
       ['blockhash, unroutable + routed', BH_UNROUTABLE, DIRECT, 2495],
-      ['blockhash, unroutable + routed', BH_UNROUTABLE, HB, 3719],
+      ['blockhash, unroutable + routed', BH_UNROUTABLE, HB, 3873],
       ['blockhash, routed handler', BH_ROUTED, DIRECT, 3737],
       ['blockhash twice', BH_TWICE, DIRECT, 2823],
       ['msg.sender only', MSG_SENDER, DIRECT, 6061],
       ['msg.sender only', MSG_SENDER, HB, 6061],
-      ['msg.sender only', MSG_SENDER, HB_CTRL, 3645],
+      ['msg.sender only', MSG_SENDER, HB_CTRL, 4265],
       ['deploy in routed handler', DEPLOY_ROUTED, DIRECT, 5276],
-      ['deploy in routed handler', DEPLOY_ROUTED, HB, 4169],
-      ['deploy in routed handler', DEPLOY_ROUTED, HB_CTRL, 4837],
+      ['deploy in routed handler', DEPLOY_ROUTED, HB, 4327],
       ['baseline', BASELINE, DIRECT, 3540],
-      ['baseline', BASELINE, HB, 2293],
-      ['baseline', BASELINE, HB_CTRL, 2941],
+      ['baseline', BASELINE, HB, 2447],
+      ['baseline', BASELINE, HB_CTRL, 3613],
     ];
     for (const [label, src, options, bytes] of table) {
       const result = compile(src, options);

@@ -1807,7 +1807,9 @@ describe('external call on the current contract type (self-type)', () => {
    * base list is only resolved when the interface is not the compilation root.
    */
   it('rejects an interface whose base does not resolve as an interface', () => {
-    expect(() => cc('contract C {} interface I is C {}')).toThrow(/Undefined interface 'C'/);
+    expect(() => cc('contract C {} interface I is C {}')).toThrow(
+      /solidc \[INTERFACE_CONTRACT_BASE\]: interface 'I' cannot inherit contract 'C'; interfaces can only inherit interfaces/,
+    );
     expect(() => cc('contract C {} interface I is Zzz {}')).toThrow(/Undefined interface 'Zzz'/);
     // The positive half: a base that DOES resolve as an interface is accepted, directly and transitively.
     expect(cc('interface B { function m() external; } contract C is B { function m() external { require(true); } }'))

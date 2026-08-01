@@ -679,12 +679,12 @@ This is not generic dynamic resource planning. Existing-entry distinct-recipient
 supported; repeated recipient, sender-equals-recipient, and cold recipient shapes fail before
 construction. Supporting aliases requires a separately advertised shape which collapses them into
 one journal, while cold insertion requires authenticated predecessor planning. The compiled
-fixture is 4,814 bytes, leaving 5,186 bytes below the covenant limit; the resource classification
+fixture is 4,900 bytes, leaving 5,100 bytes below the covenant limit; the resource classification
 remains an explicit independent-review target.
 
 X125 re-pin, superseding the 9,775 bytes and 225 bytes of headroom this paragraph carried. The
 consequence is re-derived, not refreshed: the margin was the second of the two named review targets
-here, and at 5,186 bytes it is no longer narrow and is struck from the list. The resource
+here, and at 5,100 bytes it is no longer narrow and is struck from the list. The resource
 classification survives untouched, because nothing about it was ever a size argument. Authority:
 `compiler-hidden-batch-v1.md`'s Release 0 table, pinned by `BatchCostRegression.test.ts:112-117`.
 

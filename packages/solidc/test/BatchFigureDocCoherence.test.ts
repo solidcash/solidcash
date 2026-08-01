@@ -112,16 +112,22 @@ const pins = (batchCostText: string, compiledGraphText: string): Pins => {
  * context: bare "225" is an ordinary number and banning it outright would be a guard nobody could satisfy.
  */
 const RETIRED: readonly { pattern: RegExp; was: string; now: string }[] = [
-  { pattern: /9,775/, was: '9,775', now: '4,814' },
+  { pattern: /9,775/, was: '9,775', now: '4,900' },
   { pattern: /10,600/, was: '10,600', now: '6,032' },
-  { pattern: /6,532/, was: '6,532', now: '1,554' },
+  { pattern: /6,532/, was: '6,532', now: '1,562' },
   { pattern: /1,477/, was: '1,477', now: '1,037' },
   { pattern: /3,047/, was: '3,047', now: '3,157' },
   { pattern: /1,020/, was: '1,020', now: '325' },
-  { pattern: /6,728/, was: '+6,728', now: '+1,657' },
+  { pattern: /6,728/, was: '+6,728', now: '+1,743' },
   { pattern: /1,108/, was: '+1,108', now: '+668' },
-  { pattern: /4,098/, was: '4,098', now: '4,121' },
-  { pattern: /225[- ]byte|225 bytes|\| 225 \|/, was: '225', now: '5,186' },
+  { pattern: /4,098/, was: '4,098', now: '5,820' },
+  { pattern: /4,814/, was: '4,814', now: '4,900' },
+  { pattern: /1,554/, was: '1,554', now: '1,562' },
+  { pattern: /1,657/, was: '+1,657', now: '+1,743' },
+  { pattern: /4,121/, was: '4,121', now: '5,820' },
+  { pattern: /1,459/, was: '1,459', now: '2,810' },
+  { pattern: /5,186/, was: '5,186', now: '5,100' },
+  { pattern: /225[- ]byte|225 bytes|\| 225 \|/, was: '225', now: '5,100' },
 ];
 
 /** Every stale-figure discrepancy across the downstream documents, as one flat list. */
@@ -241,14 +247,14 @@ const findings = (docs: Map<string, string>, pin: Pins): string[] => {
     'journal-bus-implementation-status.md', 'graph root controller placeholder size',
   );
   eq('status controller placeholder bytes', statusPlaceholder, pin.controller);
-  const [margin, marginBatch, marginVerifier] = prose(
+  const [margin, marginVerifier, marginBatch] = prose(
     status, /by \*\*([\d,]+) bytes\*\* \(([\d,]+) - ([\d,]+)\)/,
     'journal-bus-implementation-status.md', 'graph-versus-route margin',
   );
   eq('status margin batch operand', marginBatch, pin.batch);
   eq('status margin verifier operand', marginVerifier, pin.verifier);
-  if (margin !== marginBatch - marginVerifier) {
-    out.push(`status margin not re-derived: doc ${margin}, derived ${marginBatch - marginVerifier}`);
+  if (margin !== marginVerifier - marginBatch) {
+    out.push(`status margin not re-derived: doc ${margin}, derived ${marginVerifier - marginBatch}`);
   }
 
   // --- state-journal-audit.md
@@ -334,23 +340,23 @@ describe('the Release 0 figures copied out of compiler-hidden-batch-v1.md agree 
    */
   it.each([
     ['a stale route byte count', 'compiler-hidden-batch-v1-review-handoff.md',
-      'fixture compiles to 4,814 bytes', 'fixture compiles to 4,815 bytes',
-      /handoff route bytes: doc 4815, pinned 4814/],
+      'fixture compiles to 4,900 bytes', 'fixture compiles to 4,901 bytes',
+      /handoff route bytes: doc 4901, pinned 4900/],
     ['a stale projection verifier', 'journal-bus-implementation-status.md',
-      'verifier compiles to **4,121 bytes**', 'verifier compiles to **4,098 bytes**',
-      /status projection verifier bytes: doc 4098, pinned 4121/],
+      'verifier compiles to **5,820 bytes**', 'verifier compiles to **4,098 bytes**',
+      /status projection verifier bytes: doc 4098, pinned 5820/],
     ['a stale reviewer checklist', 'compiler-hidden-batch-v1-review-handoff.md',
-      'reproduces at 3,157/4,814 bytes', 'reproduces at 3,047/4,814 bytes',
+      'reproduces at 3,157/4,900 bytes', 'reproduces at 3,047/4,900 bytes',
       /handoff checklist direct bytes: doc 3047, pinned 3157/],
     ['a headroom left un-re-derived', 'buffered-state-and-message-bus-research.md',
-      'leaving 5,186 bytes below', 'leaving 5,286 bytes below',
-      /research route headroom not re-derived: doc 5286, derived 5186/],
+      'leaving 5,100 bytes below', 'leaving 5,200 bytes below',
+      /research route headroom not re-derived: doc 5200, derived 5100/],
     ['a growth multiple left un-re-derived', 'compiler-hidden-batch-v1-audit.md',
-      'it is 4,814/3,157 = 1.52x', 'it is 4,814/3,157 = 1.62x',
-      /audit F4 growth multiple not re-derived: doc 1.62, derived 1.52/],
+      'it is 4,900/3,157 = 1.55x', 'it is 4,900/3,157 = 1.65x',
+      /audit F4 growth multiple not re-derived: doc 1.65, derived 1.55/],
     ['a margin left un-re-derived', 'journal-bus-implementation-status.md',
-      'by **693 bytes** (4,814 - 4,121)', 'by **793 bytes** (4,814 - 4,121)',
-      /status margin not re-derived: doc 793, derived 693/],
+      'by **920 bytes** (5,820 - 4,900)', 'by **1,020 bytes** (5,820 - 4,900)',
+      /status margin not re-derived: doc 1020, derived 920/],
   ])('detects %s', (_name, doc, from, to, expected) => {
     const mutated = new Map(docs);
     const before = docs.get(doc)!;
@@ -366,7 +372,7 @@ describe('the Release 0 figures copied out of compiler-hidden-batch-v1.md agree 
     mutated.set('state-journal-audit.md', `${docs.get('state-journal-audit.md')!}\n\nThe stripped route `
       + 'fixture is 9,775 bytes and that is the ceiling for this shape.\n');
     expect(retiredLeaks(mutated)).toContainEqual(
-      expect.stringMatching(/state-journal-audit\.md: retired figure 9,775 \(now 4,814\)/),
+      expect.stringMatching(/state-journal-audit\.md: retired figure 9,775 \(now 4,900\)/),
     );
   });
 
@@ -377,7 +383,7 @@ describe('the Release 0 figures copied out of compiler-hidden-batch-v1.md agree 
   it('permits a retired figure in a paragraph that states what replaced it', () => {
     const mutated = new Map(docs);
     mutated.set('state-journal-audit.md', `${docs.get('state-journal-audit.md')!}\n\nThe stripped route `
-      + 'fixture was 9,775 bytes and is 4,814 bytes.\n');
+      + 'fixture was 9,775 bytes and is 4,900 bytes.\n');
     expect(retiredLeaks(mutated)).toEqual([]);
   });
 
@@ -404,7 +410,7 @@ describe('the Release 0 figures copied out of compiler-hidden-batch-v1.md agree 
   });
 
   it('refuses by name when a pin it must read changes shape', () => {
-    const renamed = read(BATCH_COST).replace(/routeBodyBytes: 1554/, 'routeBodySize: 1554');
+    const renamed = read(BATCH_COST).replace(/routeBodyBytes: 1562/, 'routeBodySize: 1562');
     expect(renamed).not.toBe(read(BATCH_COST));
     expect(() => pins(renamed, read(COMPILED_GRAPH)))
       .toThrow(/no longer exposes the two-row ERC-20 footprint pin/);

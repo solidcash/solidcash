@@ -39,7 +39,7 @@ physical entry UTXOs. Compiler and SDK tests require:
 
 Standard ERC-20 `transferFrom`, whose allowance is keyed by authenticated `msg.sender`, remains
 batch-ineligible. Alias-collapsed and cold-insert routes require new capabilities and are not implied by this one.
-The stripped route-cost fixture compiles to 4,814 bytes, leaving 5,186 bytes below the covenant limit.
+The stripped route-cost fixture compiles to 4,900 bytes, leaving 5,100 bytes below the covenant limit.
 The executable corpus token with mint, approve, and check helpers is 6,032 bytes, carries no
 `contract-size-limit` diagnostic, and has 3,968 bytes of headroom. Default enablement remains outside
 this handoff.
@@ -90,7 +90,7 @@ Confirm from compiler output, SDK construction, and BCH 2026 VM execution:
 - only exact version 1 capability matching is accepted, with no translation or inferred fallback;
 - frozen scalar 2/3/8-row byte, operation, stack, unlocking, and transaction measurements reproduce
   under `BCH_2026_05`;
-- the parameter-authorized transfer direct/batch size regression reproduces at 3,157/4,814 bytes
+- the parameter-authorized transfer direct/batch size regression reproduces at 3,157/4,900 bytes
   (X125: superseding the 3,047/9,775 this checklist item used to ask a reviewer to confirm; a reviewer
   who reproduced the current figures against the old ones would have reported a false discrepancy).
 

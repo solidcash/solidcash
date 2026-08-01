@@ -8,6 +8,13 @@ const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<t
 // model, which would reintroduce C2. See docs/sorted-mapping-c2.md.
 describe('sorted mapping opt-in (C2)', () => {
   const SET = 'contract C() { mapping(int => bool) claimed;';
+  const assertSortedCompile = (source: string, mapping: string): ReturnType<typeof compileString> => {
+    const artifact = compileString(source, { sortedMappings: [mapping], forceStateful: true });
+    expect(artifact.debug.bytecode).not.toBe('');
+    expect(artifact.stateLayout?.collections?.find((row) => row.name === mapping)?.sorted).toBe(true);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.length).toBeGreaterThan(0);
+    return artifact;
+  };
 
   it('marks the named mapping sorted in the artifact metadata', () => {
     const art = compileString(`${SET} function f() { require(true); } }`, { sortedMappings: ['claimed'], forceStateful: true });
@@ -28,88 +35,93 @@ describe('sorted mapping opt-in (C2)', () => {
   it('compiles a source-level read of a sorted mapping (emits the C2 read covenant)', () => {
     // The read codegen is implemented + VM-verified (SortedMappingCompiledRead.test.ts); it emits the proven
     // membership/bracket covenant instead of the omittable entry-model read.
-    expect(() => compileString(`${SET} function f(int k) { require(!claimed[k]); } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${SET} function f(int k) { require(!claimed[k]); } }`, 'claimed');
   });
 
   it('compiles a source-level WRITE of a sorted set (emits the C2 insert covenant)', () => {
     // The write codegen is implemented + VM-verified (SortedMappingCompiledWrite.test.ts); `claimed[k]=true`
     // emits the proven sorted-list insert (bracket + splice), not the omittable entry-model write.
-    expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${SET} function f(int k) { claimed[k] = true; } }`, 'claimed');
   });
 
   it('compiles a value-typed sorted mapping upsert (mapping(int=>int) bal[k]=v)', () => {
     // The value upsert (update if present, insert if absent) is implemented + VM-verified
     // (SortedMappingValueWrite.test.ts): present -> k'[link|v], absent -> P' + NEW[k|next|v].
     const MAP = 'contract C() { mapping(int => int) bal;';
-    expect(() => compileString(`${MAP} function f(int k, int v) { bal[k] = v; } }`, { sortedMappings: ['bal'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k, int v) { bal[k] = v; } }`, 'bal');
   });
 
   it('compiles address-keyed mappings (ERC20 balance/allowance shapes)', () => {
     // Address keys are hashed as their locking bytecode (VM-verified in SortedMappingAddressKey.test.ts).
     const B = 'contract C() { mapping(address => int) bal; function f(address a, int v) { bal[a] = v; } }';
-    expect(() => compileString(B, { sortedMappings: ['bal'], forceStateful: true })).not.toThrow();
+    assertSortedCompile(B, 'bal');
     const A = 'contract C() { mapping(address => mapping(address => int)) allow; function f(address o, address s, int v) { allow[o][s] = v; } }';
-    expect(() => compileString(A, { sortedMappings: ['allow'], forceStateful: true })).not.toThrow();
+    assertSortedCompile(A, 'allow');
   });
 
   it('compiles a nested / composite-key mapping (mapping(A=>mapping(B=>V)))', () => {
     // slot = sha256(sha256(a)++sha256(b)) high-bit-masked (keyToSlotMulti); each key hashed independently so any
     // key type works. VM-verified in SortedMappingNested.test.ts (ERC20-allowance shape).
     const MAP = 'contract C() { mapping(int => mapping(int => int)) allow;';
-    expect(() => compileString(`${MAP} function f(int a, int b, int v) { allow[a][b] = v; } }`, { sortedMappings: ['allow'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int a, int b, int v) { allow[a][b] = v; } }`, 'allow');
   });
 
   it('compiles a fixed-width bytesN value type (raw commitment tail)', () => {
     const MAP = 'contract C() { mapping(int => bytes4) meta;';
-    expect(() => compileString(`${MAP} function f(int k) { meta[k] = 0x11223344; } }`, { sortedMappings: ['meta'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k) { meta[k] = 0x11223344; } }`, 'meta');
   });
 
   it('compiles an address value type (stored verbatim as the locking-bytecode tail)', () => {
     // address is stored verbatim in the (last) value tail; variable width is unambiguous there. VM-verified in
     // SortedMappingAddressValue.test.ts.
     const MAP = 'contract C() { mapping(int => address) owner;';
-    expect(() => compileString(`${MAP} function f(int k, address a) { owner[k] = a; } }`, { sortedMappings: ['owner'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k, address a) { owner[k] = a; } }`, 'owner');
   });
 
   it('compiles a (encodable) struct value type (stored verbatim as the blob tail)', () => {
     // A struct is stored verbatim in the value tail; a field read decodes it. VM-verified in
     // SortedMappingStructValue.test.ts.
     const MAP = 'contract C() { struct P { int x; int y; } mapping(int => P) pos;';
-    expect(() => compileString(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, { sortedMappings: ['pos'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k) { pos[k] = P(1, 2); } }`, 'pos');
   });
 
   it('compiles an unbounded bytes value type (P5a: value in the 64 B tail; >64 B fails closed at the VM)', () => {
     const MAP = 'contract C() { mapping(int => bytes) blob;';
-    expect(() => compileString(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, { sortedMappings: ['blob'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k, bytes b) { blob[k] = b; } }`, 'blob');
   });
 
   it('compiles delete of a sorted VALUE mapping (== set to default, via the upsert)', () => {
     // `delete bal[k]` on mapping(int=>int) is Solidity `bal[k]=0`, so it routes through the value upsert.
     const MAP = 'contract C() { mapping(int => int) bal;';
-    expect(() => compileString(`${MAP} function f(int k) { require(true); delete bal[k]; } }`, { sortedMappings: ['bal'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${MAP} function f(int k) { require(true); delete bal[k]; } }`, 'bal');
   });
 
   it('compiles delete of a sorted bool set (NULLIFY == set false, Solidity delete parity)', () => {
     // Solidity `delete m[k]` == assign the default (false), not a physical removal, so a bool set is a value
     // mapping (true=0x01, false/delete=empty tail) and delete routes through the upsert-to-default. VM-verified in
     // SortedMappingBoolNullify.test.ts. So `claimed[k]=false` and `delete claimed[k]` both compile now.
-    expect(() => compileString(`${SET} function f(int k) { require(true); delete claimed[k]; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .not.toThrow();
-    expect(() => compileString(`${SET} function g(int k) { claimed[k] = false; } }`, { sortedMappings: ['claimed'], forceStateful: true }))
-      .not.toThrow();
+    assertSortedCompile(`${SET} function f(int k) { require(true); delete claimed[k]; } }`, 'claimed');
+    const assigned = compileString(`${SET} function g(int k) { claimed[k] = false; } }`, {
+      sortedMappings: ['claimed'], forceStateful: true,
+    });
+    expect(assigned.abi.find((fn) => fn.name === 'g')?.entryAccesses?.length).toBeGreaterThan(0);
   });
 
-  it('without the opt-in, the same mapping compiles on the default entry model', () => {
-    expect(() => compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { forceStateful: true })).not.toThrow();
+  it('without a named opt-in, the mandatory C2 model still marks and binds the mapping', () => {
+    const artifact = compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { forceStateful: true });
+    expect(artifact.debug.bytecode).not.toBe('');
+    expect(artifact.stateLayout?.collections?.find((row) => row.name === 'claimed')?.sorted).toBe(true);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.length).toBeGreaterThan(0);
+  });
+
+  it('necessity controls: removing the access removes the metadata this slice asserts', () => {
+    const noRead = compileString(`${SET} function f(int k) { require(k >= 0); } }`, {
+      sortedMappings: ['claimed'], forceStateful: true,
+    });
+    expect(noRead.abi.find((fn) => fn.name === 'f')?.entryAccesses ?? []).toEqual([]);
+    const noWrite = compileString('contract C() { mapping(int => int) bal; function f(int k, int v) '
+      + '{ require(k + v >= 0); } }', { sortedMappings: ['bal'], forceStateful: true });
+    expect(noWrite.abi.find((fn) => fn.name === 'f')?.entryAccesses ?? []).toEqual([]);
   });
 });
 
@@ -135,11 +147,14 @@ describe('sorted mapping keyed by msg.sender / tx.origin compiles (msgSender key
     expect(ks).toMatchObject({ kind: 'msgSender', senderOp: 'tx.origin' });
   });
   it('a PARAMETER address key stays a param keySource', () => {
-    expect(() => compileString(`${M} function f(address a, int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[a] = v; } }`, opt))
-      .not.toThrow();
+    const artifact = compileString(`${M} function f(address a, int v, pubkey pk, sig s) { require(checkSig(s,pk)); bal[a] = v; } }`, opt);
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0])
+      .toMatchObject({ collection: 'bal', keyParams: ['a'], operations: ['write'] });
   });
   it('msg.sender used AS A VALUE (not a key) still compiles', () => {
-    expect(() => compileString('contract C() { mapping(int => address) owner; function f(int k, pubkey pk, sig s) { require(checkSig(s,pk)); owner[k] = msg.sender; } }', { sortedMappings: ['owner'], forceStateful: true }))
-      .not.toThrow();
+    const artifact = compileString('contract C() { mapping(int => address) owner; function f(int k, pubkey pk, sig s) { require(checkSig(s,pk)); owner[k] = msg.sender; } }', { sortedMappings: ['owner'], forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0])
+      .toMatchObject({ collection: 'owner', keyParams: ['k'], operations: ['write'] });
+    expect(artifact.debug.bytecode).not.toBe('');
   });
 });

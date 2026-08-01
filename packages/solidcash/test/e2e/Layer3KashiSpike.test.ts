@@ -179,7 +179,7 @@ describe('layer-3 Kashi acceptance capstone (E2E)', () => {
     // Full Kashi deposit: 3 owners + share + two state writes + token record, one covenant. Under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
     expect(metrics).toEqual([
-      { instr: 3074, ratioPct: 22.9 }, { instr: 3074, ratioPct: 22.9 }, { instr: 3074, ratioPct: 22.9 },
+      { instr: 3189, ratioPct: 22.9 }, { instr: 3189, ratioPct: 22.9 }, { instr: 3189, ratioPct: 22.9 },
     ]);
   });
 

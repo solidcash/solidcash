@@ -144,7 +144,7 @@ describe('layer-3 caller intent-binding spike (E2E)', () => {
     });
     // Compact binding + msg.sender + preserved-commitment intent gate, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2013, ratioPct: 19.8 }, { instr: 2013, ratioPct: 19.8 }]);
+    expect(metrics).toEqual([{ instr: 2127, ratioPct: 20 }, { instr: 2127, ratioPct: 20 }]);
   });
 
   it('HOSTILE: an invocation to a callee the caller did NOT authorize is rejected', async () => {

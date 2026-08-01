@@ -142,7 +142,7 @@ describe('layer-3 authenticated invocation spike (E2E)', () => {
     });
     // Compact binding + one authenticated invocation, both endpoints validating. Well under budget.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 1988, ratioPct: 20.1 }, { instr: 1988, ratioPct: 20.1 }]);
+    expect(metrics).toEqual([{ instr: 2102, ratioPct: 20.3 }, { instr: 2102, ratioPct: 20.3 }]);
   });
 
   it('HOSTILE: a forged msg.sender (OP_RETURN names a different identity) is rejected', async () => {

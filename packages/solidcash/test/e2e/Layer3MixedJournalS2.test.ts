@@ -200,14 +200,20 @@ async function buildMixedJournalGraph(variant: Variant, tamper: Tamper = 'none')
   const tokenRoute = token.createCompilerRouteUnlocker(
     tokenArtifact.hiddenBatch!.route, hexToBin(tokenArtifact.hiddenBatch!.selector),
   );
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
+  const tokenInternalRouteWitnesses: Record<string, FunctionArgument> = {};
   entries.forEach((entry, slotIndex) => {
     const decoded = decodeEntryCommitment(hexToBin(entry.token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(slotIndex + 2), decoded.nextKey, -1n);
+    tokenInternalRouteWitnesses[`__internal__c2BatchSlot_${slotIndex}`] = decoded.slot;
+    tokenInternalRouteWitnesses[`__internal__c2BatchProof_${slotIndex}`] = BigInt(slotIndex + 2);
+    tokenInternalRouteWitnesses[`__internal__c2BatchNext_${slotIndex}`] = decoded.nextKey;
+    tokenInternalRouteWitnesses[`__internal__c2BatchPredOut_${slotIndex}`] = -1n;
   });
-  tokenRouteArgs.push(0n);
+  tokenInternalRouteWitnesses.__internal__c2BatchTrailingCount = 0n;
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(
+      transcript, 1, layout.controllerInput, tokenInternalRouteWitnesses,
+    ),
+  ] as FunctionArgument[];
   // Two rows: the loop body advances `moves` twice per row, the revert body once per row.
   const movesPerRow = variant === 'loop' ? 2n : 1n;
   const movesAfter = movesPerRow * 2n;

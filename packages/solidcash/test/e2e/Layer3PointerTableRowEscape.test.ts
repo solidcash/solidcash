@@ -408,7 +408,8 @@ const verifyAtCaller =
   /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
 
 describe('Layer-3 pointer-table emission binding vs a declared returning handler (SEMANTIC)', () => {
-  const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
+  const at = (input: number): string =>
+    `layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input ${input}`;
 
   // The honest control for every cell below. Without it, an "ACCEPTED" forgery could not be distinguished
   // from a fixture that simply never rejects, and a "REJECTS" could not be distinguished from a broken build.

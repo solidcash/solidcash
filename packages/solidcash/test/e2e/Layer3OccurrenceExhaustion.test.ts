@@ -302,7 +302,7 @@ function expectCallerRejection(built: BuiltGraph, reason: string): void {
   } catch (error) {
     outcome = (error as Error).message;
   }
-  expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 0');
+  expect(outcome).toContain('layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input 0');
   expect(outcome).toContain(reason);
 }
 
@@ -501,13 +501,10 @@ contract PlainTarget() {
   });
 
   /**
-   * REMAINING SCOPE, unchanged. A loop whose trip count the source never bounds publishes no ceiling, because
-   * there is none to prove, and the planner still validates the count as
-   * `maximumOccurrences === undefined || count <= maximumOccurrences` - so it accepts any count up to the
-   * global 24-invocation transcript ceiling, here six rows. The caller covenant still emits exactly the rows
-   * the source executes, so an inflated count is rejected on-chain; what is absent is a plan-time bound.
+   * An unbounded loop has no finite transcript row ceiling. Both planners reject it before constructing a
+   * graph, using the public structured diagnostic shared with the X36 unit matrix.
    */
-  it('SCOPED: plans an arbitrary loop occurrence count when no ceiling can be proven', () => {
+  it('rejects an unbounded external-call loop with the exact structured diagnostic', () => {
     const options = {
       forceStateful: true,
       experimentalHiddenBatch: true,
@@ -529,13 +526,16 @@ contract PlainTarget() {
 }`, options);
     expect(callerArtifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0].maximumOccurrences)
       .toBeUndefined();
-    const plan = layer3.deriveCompiledGraphPlan({
+    expect(() => layer3.deriveCompiledGraphPlan({
       root: { artifact: callerArtifact, lockingBytecode: '51' },
       function: 'fireAll',
       args: [CALL_VALUE, hexToBin('52')],
       targets: { IFoo: { artifact: calleeArtifact, lockingBytecode: '52' } },
       occurrence: () => 6,
-    });
-    expect(plan.invocations).toHaveLength(7);
+    })).toThrowError(expect.objectContaining({
+      code: 'L3_UNBOUNDED_EXTERNAL_CALL_LOOP',
+      message: 'layer3 [L3_UNBOUNDED_EXTERNAL_CALL_LOOP]: '
+        + 'unbounded-external-call-loop-transcript-ineligible: callsite 0',
+    }));
   });
 });

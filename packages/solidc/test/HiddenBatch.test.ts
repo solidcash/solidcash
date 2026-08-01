@@ -351,11 +351,14 @@ describe('Release 4 compiler-hidden local batch', () => {
     // Two key alternatives on one collection make this resource-shaped, and the forwarded call makes it a graph
     // tail. Dispatch only ever reaches the resource clone, so cloning it a second time as `__scb_graph_move` left
     // a whole dead journal-handler body in the artifact.
-    const cloneNames = (artifact.invocationAnalysis?.functions ?? [])
+    const functionNames = (artifact.invocationAnalysis?.functions ?? [])
       .map((fn) => fn.name)
-      .filter((name) => name.startsWith('__scb_resource_') || name.startsWith('__scb_graph_'));
+    const cloneNames = functionNames.filter((name) => name.startsWith('__scb_resource_'));
+    const transcriptCarriers = functionNames.filter((name) => name === '__scb_graph_transcript');
     // The exact-alias route has distinct stack arity and intentionally receives one compiler-owned clone.
     expect(cloneNames).toEqual(['__scb_resource_move', '__scb_resource_move_self_alias']);
+    // The centralized graph transcript carrier is route infrastructure, not a second graph-tail clone.
+    expect(transcriptCarriers).toEqual(['__scb_graph_transcript']);
   });
 
   it('keeps SCB1 row parsing exact once the parser is factored into helpers', () => {

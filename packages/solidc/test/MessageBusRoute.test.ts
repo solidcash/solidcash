@@ -22,7 +22,6 @@ describe('compiler-integrated message-bus SCB1 route', () => {
     expect(artifact.hiddenBatch?.graphControllerCategory).toBe('00'.repeat(32));
     expect(artifact.hiddenBatch?.route.inputs.map((input) => input.name)).toEqual([
       'batchBlob',
-      '__internal__graphTranscript',
       '__internal__graphControllerIdx',
       '__internal__graphParticipantOffset',
       '__internal__graphBlockSize',
@@ -32,6 +31,10 @@ describe('compiler-integrated message-bus SCB1 route', () => {
       '__internal__graphCompletionPositions',
       '__internal__graphSettlementTable',
     ]);
+    // The transcript is graph-global evidence, carried once by the compiler-owned helper rather than repeated
+    // as a participant input in every route block.
+    expect(artifact.invocationAnalysis?.functions.map((fn) => fn.name))
+      .toContain('__scb_graph_transcript');
     expect(artifact.bytecode.length).toBeGreaterThan(0);
   });
 

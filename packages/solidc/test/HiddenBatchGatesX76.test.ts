@@ -312,10 +312,10 @@ contract X76Scalar() {
   int count;
   function add(int n) public { this.count = this.count + n; require(n >= 0); }
 }`;
-    // The graph-global settlement-table commitment removes the repeated per-participant frame bytes.
-    // Keep the normalized baseline pinned so later changes cannot silently widen either path again.
-    expect(compileString(selfReached, graph).bytecode.length).toBe(3405);
-    expect(compileString(scalar, graph).bytecode.length).toBe(3235);
+    // The graph-global transcript carrier and settlement-table commitment are centralized route evidence.
+    // Keep the current exact baseline pinned so later changes cannot silently alter either spelling boundary.
+    expect(compileString(selfReached, graph).bytecode.length).toBe(3851);
+    expect(compileString(scalar, graph).bytecode.length).toBe(3629);
     expect(verdicts(selfReached).get('credit')).toBe('ELIGIBLE');
     expect(verdicts(scalar).get('add')).toBe('ELIGIBLE');
   });

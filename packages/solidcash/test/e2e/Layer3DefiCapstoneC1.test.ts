@@ -477,9 +477,15 @@ async function buildC1(
       transcript, 1, layout.controllerInput, tokenInternalRouteWitnesses,
     ),
   ] as FunctionArgument[];
-  // Route input 7 is `__scb_key_allowance_sender_1`: the spender key the route must tie to the authenticated
-  // graph caller. Substituting it is the caller forgery.
-  if (hostile === 'caller') tokenRouteArgs[7] = hexToBin(accrue.lockingBytecode);
+  // `__scb_key_allowance_sender_1` is the spender key the route must tie to the authenticated graph caller.
+  // Locate it by its compiler-published ABI name: internal graph fields can move as the transcript evolves.
+  if (hostile === 'caller') {
+    const callerArgument = transcript.plan.participants[1]!.routeInputs
+      .filter((input) => input.name !== '__internal__returnOutputIdx')
+      .findIndex((input) => input.name === '__scb_key_allowance_sender_1');
+    if (callerArgument < 0) throw new Error('C1 fixture: token route has no allowance sender witness');
+    tokenRouteArgs[callerArgument] = hexToBin(accrue.lockingBytecode);
+  }
   // ---- Inputs ----------------------------------------------------------------------------------------
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   // Router block: [master, dataNft]. No physical slot at all - that is the SEC-6 property.

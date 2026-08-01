@@ -68,13 +68,13 @@ describe('type(C).creationCode', () => {
   it('embeds the child contract bytecode (matches the child compilation)', async () => {
     const factory = getContractFactory(factoryArtifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(childBytecode)).resolves.toBeDefined();
+    expect(await sc.check(childBytecode)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('runtimeCode returns the same bytecode on BCH', async () => {
     const factory = getContractFactory(factoryArtifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkRuntime(childBytecode)).resolves.toBeDefined();
+    expect(await sc.checkRuntime(childBytecode)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('rejects a mismatched bytecode', async () => {

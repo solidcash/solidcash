@@ -47,11 +47,11 @@ describe('sorted struct-valued mapping', () => {
     // Insert pos[5] = P(11, 22); both fields read back.
     expect((await call('setP', 5n, 11n, 22n)).txid).toBeDefined();
     expect(await present(5n)).toBe(true);
-    await expect(call('checkXY', 5n, 11n, 22n)).resolves.toBeDefined();
+    expect(await call('checkXY', 5n, 11n, 22n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await expect(call('checkXY', 5n, 11n, 99n)).rejects.toThrow(verifyFailure);
 
     // Update pos[5] = P(33, 44) (present-key update of a struct value).
     expect((await call('setP', 5n, 33n, 44n)).txid).toBeDefined();
-    await expect(call('checkXY', 5n, 33n, 44n)).resolves.toBeDefined();
+    expect(await call('checkXY', 5n, 33n, 44n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

@@ -36,7 +36,7 @@ describe('Compound assignment operators', () => {
   it('arithmetic/shift compound ops on int compute the expected result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.arith(10n)).resolves.toBeDefined();
+    expect(await sc.arith(10n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('arithmetic compound ops fail when the result differs', async () => {
@@ -49,6 +49,6 @@ describe('Compound assignment operators', () => {
   it('bitwise compound ops on bytes compute the expected result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.bitwise(Uint8Array.from([0xff]))).resolves.toBeDefined();
+    expect(await sc.bitwise(Uint8Array.from([0xff]))).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

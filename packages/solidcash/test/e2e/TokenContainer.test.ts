@@ -1946,7 +1946,7 @@ contract C() {
       expect(/verify|script/i.test(msg)).toBe(true);
 
       // The honest, container-preserving tx (built before the mutation) IS accepted against the same utxos.
-      await expect(provider.sendRawTransaction(honestRaw)).resolves.toBeDefined();
+      await expect(provider.sendRawTransaction(honestRaw)).resolves.toMatch(/^[0-9a-f]{64}$/);
     });
   });
 });

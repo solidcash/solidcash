@@ -26,7 +26,7 @@ describe('multi-value state-reading helper inlining', () => {
 
   it('splits a tuple-returning helper into per-value temps (data[0]=0 -> x=1, y=2)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.checkAssign(0n, 1n, 2n)).resolves.toBeDefined();
+    expect(await sc.checkAssign(0n, 1n, 2n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('a wrong expected value fails (the inlined body + state read actually ran)', async () => {

@@ -48,12 +48,12 @@ describe('sorted address-valued mapping (NFT owner shape)', () => {
     // setOwner(5) = bob -> stored as bob's locking bytecode; read matches; wrong owner reverts.
     expect((await call('setOwner', 5n, bobAddress)).txid).toBeDefined();
     expect(await valOf(5n)).toBe(binToHex(addressToLockScript(bobAddress)));
-    await expect(call('check', 5n, bobAddress)).resolves.toBeDefined();
+    expect(await call('check', 5n, bobAddress)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     await expect(call('check', 5n, aliceAddress)).rejects.toThrow(inputZeroVerifyFailure);
 
     // Update owner[5] -> alice (present-key update of an address value).
     expect((await call('setOwner', 5n, aliceAddress)).txid).toBeDefined();
     expect(await valOf(5n)).toBe(binToHex(addressToLockScript(aliceAddress)));
-    await expect(call('check', 5n, aliceAddress)).resolves.toBeDefined();
+    expect(await call('check', 5n, aliceAddress)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

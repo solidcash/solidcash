@@ -13,6 +13,8 @@ Written for an incoming reviewer/implementer picking this up cold. Read this fil
   known tests in `test/conformance/arithmetic.conformance.test.ts` (POW op-cost density), proven pre-existing
   by re-running against a clean tree. Do not chase them.
 - Repository-wide `yarn build` and `yarn lint` are green at the same source state.
+- At `caac68e0`, BCHN v29.0.0 accepted and mined current-byte A13, C2, C1 and C3 on regtest, while
+  refusing each paired hostile transcript: 4 files / 69 tests green.
 
 ## 2. The single most important distinction on this project
 

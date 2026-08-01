@@ -12,8 +12,8 @@ documents, and record what was finished in this pass versus what is deferred by 
 > executed, accepted and **mined** by BCHN v29.0.0 (citation, X59/X60 as recorded in the completion ledger).
 > The tier-1 assessment below and the reasoning about *why* the bus was not a one-pass item are left intact:
 > they are the record of a decision, and the specific figures in them are corrected where measurable.
-> All current in-repository technical rows are complete; only the completion ledger's explicitly recorded
-> independent-review, product-demand/default-on, and current-byte node-mining graduation gates remain.
+> All current in-repository technical and node-verification rows are complete; only the completion ledger's
+> explicitly recorded independent-review and product-demand/default-on graduation gates remain.
 
 ## Verdict
 

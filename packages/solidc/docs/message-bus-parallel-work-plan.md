@@ -5083,8 +5083,8 @@ post-state.
 > **Historical acceptance templates.** Sections 5-12 preserve the original phase checklists and sequencing.
 > Unchecked boxes below are not current task state and must not be read as open implementation rows. Current
 > status is the board above plus `message-bus-completion-ledger.md`; semantic rows are proven or explicitly
-> scoped there. External review, product demand, default-on selection, and current-byte node mining remain
-> separately reported evidence/process gates.
+> scoped there. External review, product demand, and default-on selection remain separately reported
+> evidence/process gates.
 
 ### P0.1 — ledger reconciliation
 

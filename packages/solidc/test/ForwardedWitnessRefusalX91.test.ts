@@ -42,7 +42,8 @@ const CTRL = {
   experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
   experimentalMessageBusControllerCategory: '22'.repeat(32),
 };
-const DIRECT = { forceStateful: true };
+// These controls pin the physical direct-route witness behavior, independent of the compiler's default route.
+const DIRECT = { forceStateful: true, experimentalHiddenBatch: false };
 const HB = { experimentalHiddenBatch: true, forceStateful: true };
 const HB_CTRL = { ...HB, ...CTRL };
 

@@ -57,7 +57,9 @@ function run(): void {
   const compilerOptions: CompilerOptions = {
     enforceFunctionParameterTypes: !opts.skipEnforceFunctionParameterTypes,
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
-    experimentalHiddenBatch: opts.hiddenBatch,
+    // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
+    // CLI compilation retains the best-effort direct fallback; only the explicit opt-out needs publication.
+    experimentalHiddenBatch: opts.hiddenBatch === false ? false : undefined,
   };
 
   try {

@@ -255,6 +255,7 @@ function compileWithExternalAdmissionFallback(
   mergedCompilerOptions: CompilerOptions,
   errorListener?: SolidCashErrorListener,
   primaryContractName?: string,
+  requireHiddenRoute = false,
 ): Artifact {
   const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
@@ -369,6 +370,15 @@ function compileWithExternalAdmissionFallback(
   }
   if (refusedAll !== undefined) return refusedAll;
 
+  // A configured controller selects the security-critical graph protocol, not the best-effort owner-local
+  // default. Silently discarding that configuration would turn malformed authority, transcript, pointer-table,
+  // and effect checks into an ordinary direct artifact. Preserve the graph route's fail-closed diagnostic.
+  if (requireHiddenRoute
+      || mergedCompilerOptions.experimentalMessageBusController !== undefined
+      || mergedCompilerOptions.experimentalMessageBusControllerCategory !== undefined) {
+    throw firstError;
+  }
+
   // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
@@ -395,8 +405,9 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
+  const requireHiddenRoute = artifactCompilerOptions.experimentalHiddenBatch === true;
   const artifact = compileWithExternalAdmissionFallback(
-    code, mergedCompilerOptions, errorListener, primaryContractName,
+    code, mergedCompilerOptions, errorListener, primaryContractName, requireHiddenRoute,
   );
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
@@ -1810,11 +1821,11 @@ function synthesizeHiddenBatchRoute(
     base: string; perRow: boolean; collection: string;
   }[]>();
   const isMappingNode = (node: Node): node is MappingAccessNode | MappingAssignNode
-    | MappingDeleteNode | MappingFieldAssignNode =>
+  | MappingDeleteNode | MappingFieldAssignNode =>
     node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode
       || node instanceof MappingFieldAssignNode;
   const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
-    | MappingFieldAssignNode): string =>
+  | MappingFieldAssignNode): string =>
     node.keys.map((key) => {
       if (key instanceof IdentifierNode) return `p:${key.name}`;
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
@@ -3594,6 +3605,7 @@ function compileResolvedAst(
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
+  const requireHiddenRoute = artifactCompilerOptions.experimentalHiddenBatch === true;
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -3609,7 +3621,7 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     map[contract.name] = compileWithExternalAdmissionFallback(
-      code, mergedCompilerOptions, errorListener, contract.name,
+      code, mergedCompilerOptions, errorListener, contract.name, requireHiddenRoute,
     );
   }
 

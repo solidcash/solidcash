@@ -29,7 +29,7 @@ describe('Compiler', () => {
       });
     });
 
-    it('falls back to direct mode when every generated hidden route fails', () => {
+    it('keeps the default enabled while omitting a handler whose effects cannot be settled', () => {
       const artifact = compileString(`contract ConditionalTokenContainerSend() {
         int counter;
         function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
@@ -40,7 +40,7 @@ describe('Compiler', () => {
       }`);
 
       expect(artifact.hiddenBatch).toBeUndefined();
-      expect(artifact.compiler.options?.experimentalHiddenBatch).toBe(false);
+      expect(artifact.compiler.options?.experimentalHiddenBatch).toBe(true);
     });
   });
 

@@ -1508,3 +1508,20 @@ ordinary authenticated getter shape and the bound single-edge forwarding shape, 
 form. The authoritative partition now derives 135 rows / 215 gained / 0 lost / 56 moved contracts and 13
 conservatively classified writers. X235's 82-of-206 paragraph above remains historical evidence; a current
 settlement ratio requires the consumer to run against all 215.
+
+### 2026-08-01: X160 live partition correction - 213 gained, 15 lost
+
+The fresh X235 union invalidated the preceding lead figure before producing a publishable settlement ratio.
+The live X160 recompile found twelve Solidity-by-example rows whose recorded `after` sets predated the
+normative opaque-assembly, lifecycle, and transient-storage exclusions, plus X201's admission. Eight formerly
+route-present contracts now publish no eligible handler; `VerifySignature` and contract-size `Target` retain
+only their non-excluded siblings; `TestTransientStorage` leaves the moved population entirely; and
+denial-of-service `Attack.attack` is newly admitted beside `kingOfEther`.
+
+The authoritative partition now derives **135 recorded rows / 126 after-present rows / 213 gained / 15 lost /
+64 moved**, with **12** conservatively classified gained writers, nine publishing `writesState: true`. This is
+not the naive 198 implied by subtracting every removed current handler from 215: fifteen removed handlers were
+already present on the pre-repair side and therefore count as lost rather than reducing the gained numerator.
+Only `Target.isContract`, `Target.protected`, and `TestTransientStorage.val` leave the gained set, while
+`Attack.attack` enters it. The committed X235 consumer self-check is pinned to 135 / 213 / 15. Any settlement
+output produced while the partition still asserted 215 / 0 is non-authoritative and must be re-run.

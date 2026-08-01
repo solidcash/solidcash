@@ -3,7 +3,7 @@ import { compileFile, compileFileMulti } from 'solidc';
 import { verifyCorpusPins } from './layer3-corpus-pins.js';
 
 /**
- * X160. THE POPULATION COUNT WAS STALE, AND THE CURRENT PARTITION IS 215, NOT 112.
+ * X160. THE POPULATION COUNT WAS STALE, AND THE CURRENT PARTITION IS 213, NOT 215.
  *
  * The board carried "112 handlers gained, 0 lost" for the L2-F2 route-admission repair. Two things falsified
  * it. `StableSwap` had silently STOPPED COMPILING, so Set A's gained total measured 50 against the 53 claimed
@@ -28,24 +28,23 @@ import { verifyCorpusPins } from './layer3-corpus-pins.js';
  *   set      contracts   gained   lost
  *   A               13       60      0     Set A includes seven later, monotone getter admissions
  *   B                4       15      0     Airdrop, MyToken, VaultInflation.Token and now EACCToken
- *   NEW             39      140      0     includes two later, bound bare-forwarding admissions
- *   SAME            79        0      0     eligible on both sides, identical handler set
- *   TOTAL          135      215      0     56 contracts moved
+ *   NEW             39      138      0     includes three bound bare-forwarding admissions
+ *   SAME            79        0     15     nine rows changed under fail-closed exclusions
+ *   TOTAL          135      213     15     64 contracts moved (126 remain admitted)
  *
  * BOTH DIRECTIONS WERE CHECKED, because a lost row is not an error - it is a smaller number, and the census
  * records bus-compile failures as an anonymized histogram where one row's disappearance is invisible.
  *
- *  - Per contract: 0 handlers lost, on every one of the 135 rows.
- *  - Per contract, route reachability: 0 contracts went ROUTE-PRESENT -> anything else; 0 went from compiling
- *    to DIRECT-FAIL. The inverse of the StableSwap case does not occur anywhere in this population.
- *  - Whole-corpus gate counts moved only upward: bus-OK 2 -> 7 (mistswap), 8 -> 10 (EA), 101 -> 134 (SBE).
+ *  - Per contract: 15 handlers lost across nine formerly unchanged rows. These are the deterministic
+ *    opaque-assembly/lifecycle exclusions, not accidental demotions.
+ *  - Eight formerly route-present contracts now publish no eligible handler. Each disappearance is accounted
+ *    for by a named normative exclusion; none is hidden inside an aggregate compile-failure bucket.
  *
- * AND THE WRITER COUNT IS THIRTEEN, NOT ONE. Thirteen of the 215 gained handlers are state-changing under the
- * census's own classifier - `writesState` anything but false, where ABSENT reads as writing. Nine publish
- * `writesState: true` outright; the other four (`Bar.log`, `HashFunction.hash`, `HashFunction.collision`,
- * `TestTransientStorage.val`) publish it absent and are counted conservatively, not shown to mutate.
+ * AND THE WRITER COUNT MUST BE DERIVED FROM THE LIVE 213. The opaque-assembly and transient-storage exclusions
+ * remove two formerly counted writers; X201 adds `Attack.attack`, whose classification is checked below. The
+ * census's own classifier is `writesState` anything but false, where ABSENT reads as writing.
  * The recorded figure was one, and that one - `TxOrigin.sol`'s `Attack.attack` - is the only member proved
- * NOT to settle, fail-closed, its counterparty bus-inadmissible. The other twelve were never in the count, and
+ * NOT to settle, fail-closed, its counterparty bus-inadmissible. The other eleven were never in the count, and
  * `Layer3RecoveredWriterSettlesX160.test.ts` runs the cleanest of them, `Counter.inc`, to completion. The two
  * later additions, `Callback.test` and `MaliciousCallback.attack`, are the single typed, argument-target bare
  * forwarding shape whose honest co-spend and dropped-callee hostile are pinned by X201/typed-dispatch tests.
@@ -80,16 +79,16 @@ interface PartitionRow {
 const PRE_REPAIR_COMMIT = 'c988817e';
 
 /**
- * The nine gained handlers whose DIRECT artifact publishes `writesState: true` outright. The other four in
- * the thirteen publish it ABSENT, which the census reads as writing; counting them is conservative and is not a
+ * The gained handlers whose DIRECT artifact publishes `writesState: true` outright. Other handlers may
+ * publish it ABSENT, which the census reads as writing; counting them is conservative and is not a
  * claim that they mutate.
  */
 const EXPLICIT_WRITERS: ReadonlyArray<readonly [string, string, string]> = [
   ['uniswapv2/UniswapV2Factory.sol', 'UniswapV2Pair', 'initialize'],
   ['defi/staking-rewards/StakingRewards.sol', 'StakingRewards', 'setRewardsDuration'],
   ['fallback/FallbackInputOutput.sol', 'Counter', 'inc'],
-  ['hacks/contract-size/ContractSize.sol', 'Target', 'protected'],
   ['hacks/delegatecall/Delegatecall_2.sol', 'Lib', 'doSomething'],
+  ['hacks/denial-of-service/DenialOfService.sol', 'Attack', 'attack'],
   ['hacks/hiding-malicious-code-with-external-contract/ExternalContract.sol', 'Foo', 'callBar'],
   ['hacks/phishing-with-tx-origin/TxOrigin.sol', 'Attack', 'attack'],
   ['transient-storage/TransientStorage.sol', 'Callback', 'test'],
@@ -270,8 +269,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'app/assembly-bin-exp/AssemblyBinExp.sol', name: 'AssemblyBinExp',
     before: ['rpow'],
-    after: ['rpow'],
-    writes: ['rpow'],
+    after: [],
+    writes: [],
   },
   {
     set: 'NEW', corpus: 'sbe', rel: 'app/create2/Create2.sol', name: 'TestContract',
@@ -354,8 +353,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'app/minimal-proxy/MinimalProxy.sol', name: 'MinimalProxy',
     before: ['clone'],
-    after: ['clone'],
-    writes: ['clone'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'app/multi-call/TestMultiCall.sol', name: 'TestMultiCall',
@@ -378,8 +377,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'app/simple-bytecode-contract/Factory.sol', name: 'Factory',
     before: ['deploy'],
-    after: ['deploy'],
-    writes: ['deploy'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'array/Array.sol', name: 'Array',
@@ -408,26 +407,26 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'assembly-if/AssemblyIf.sol', name: 'AssemblyIf',
     before: ['yul_if', 'yul_switch'],
-    after: ['yul_if', 'yul_switch'],
-    writes: ['yul_if', 'yul_switch'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'assembly-loop/AssemblyLoop.sol', name: 'AssemblyLoop',
     before: ['yul_for_loop', 'yul_while_loop'],
-    after: ['yul_for_loop', 'yul_while_loop'],
-    writes: ['yul_for_loop', 'yul_while_loop'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'assembly-math/AssemblyMath.sol', name: 'AssemblyMath',
     before: ['yul_add', 'yul_mul', 'yul_fixed_point_round'],
-    after: ['yul_add', 'yul_mul', 'yul_fixed_point_round'],
-    writes: ['yul_add', 'yul_mul', 'yul_fixed_point_round'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'assembly-variable/AssemblyVariable.sol', name: 'AssemblyVariable',
     before: ['yul_let'],
-    after: ['yul_let'],
-    writes: ['yul_let'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'bitwise/Bitwise.sol', name: 'BitwiseOps',
@@ -447,8 +446,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'bitwise/MostSignificantBitAssembly.sol', name: 'MostSignificantBitAssembly',
     before: ['mostSignificantBit'],
-    after: ['mostSignificantBit'],
-    writes: ['mostSignificantBit'],
+    after: [],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'bitwise/MostSignificantBitFunction.sol', name: 'MostSignificantBitFunction',
@@ -649,8 +648,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'NEW', corpus: 'sbe', rel: 'hacks/contract-size/ContractSize.sol', name: 'Target',
     before: [],
-    after: ['isContract', 'protected', 'pwned'],
-    writes: ['protected'],
+    after: ['pwned'],
+    writes: [],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'hacks/delegatecall/Delegatecall_2.sol', name: 'Attack',
@@ -673,8 +672,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'NEW', corpus: 'sbe', rel: 'hacks/denial-of-service/DenialOfService.sol', name: 'Attack',
     before: [],
-    after: ['kingOfEther'],
-    writes: [],
+    after: ['kingOfEther', 'attack'],
+    writes: ['attack'],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'hacks/deploy-different-contracts-same-address/TornadoHack.sol', name: 'Deployer',
@@ -859,8 +858,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'SAME', corpus: 'sbe', rel: 'signature/Signature.sol', name: 'VerifySignature',
     before: ['getMessageHash', 'getEthSignedMessageHash', 'verify', 'recoverSigner', 'splitSignature'],
-    after: ['getMessageHash', 'getEthSignedMessageHash', 'verify', 'recoverSigner', 'splitSignature'],
-    writes: ['getMessageHash', 'getEthSignedMessageHash', 'verify', 'recoverSigner', 'splitSignature'],
+    after: ['getMessageHash', 'getEthSignedMessageHash'],
+    writes: ['getMessageHash', 'getEthSignedMessageHash'],
   },
   {
     set: 'SAME', corpus: 'sbe', rel: 'state-variables/SimpleStorage.sol', name: 'SimpleStorage',
@@ -919,8 +918,8 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'NEW', corpus: 'sbe', rel: 'transient-storage/TransientStorage.sol', name: 'TestTransientStorage',
     before: [],
-    after: ['val'],
-    writes: ['val'],
+    after: [],
+    writes: [],
   },
   {
     set: 'NEW', corpus: 'sbe', rel: 'try-catch/TryCatch.sol', name: 'Bar',
@@ -1058,7 +1057,7 @@ describe('X160: the re-taken L2-F2 partition', () => {
    * THE ARITHMETIC, recomputed from the recorded rows. This is what replaces "112 gained, 0 lost": it is the
    * count the board should carry, and it is derived here rather than restated.
    */
-  it('MEASURED: 215 gained, 0 lost, across 56 moved contracts', () => {
+  it('MEASURED: 213 gained, 15 lost, across 64 moved contracts', () => {
     const all = totals(PARTITION);
     console.log(`[X160P] pre-repair side RECORDED at ${PRE_REPAIR_COMMIT}; after side recompiled below`);
     console.log(`[X160P] rows=${all.contracts} gained=${all.gained} lost=${all.lost} moved=${all.moved}`);
@@ -1067,19 +1066,20 @@ describe('X160: the re-taken L2-F2 partition', () => {
       console.log(`[X160P]   set ${set.padEnd(4)} contracts=${String(gate.contracts).padStart(4)} `
         + `gained=${String(gate.gained).padStart(4)} lost=${gate.lost}`);
     }
-    expect(all.gained).toBe(215);
-    expect(all.lost).toBe(0);
-    expect(all.moved).toBe(56);
+    expect(all.gained).toBe(213);
+    expect(all.lost).toBe(15);
+    expect(all.moved).toBe(64);
     expect(totals(PARTITION.filter((row) => row.set === 'A')).gained).toBe(60);
     expect(totals(PARTITION.filter((row) => row.set === 'B')).gained).toBe(15);
-    expect(totals(PARTITION.filter((row) => row.set === 'NEW')).gained).toBe(140);
+    expect(totals(PARTITION.filter((row) => row.set === 'NEW')).gained).toBe(138);
+    expect(totals(PARTITION.filter((row) => row.set === 'SAME')).lost).toBe(15);
     expect(PARTITION.filter((row) => row.set === 'A')).toHaveLength(13);
     expect(PARTITION.filter((row) => row.set === 'B')).toHaveLength(4);
     expect(PARTITION.filter((row) => row.set === 'NEW')).toHaveLength(39);
-    // The population of contracts publishing at least one eligible handler grew and nothing left it.
+    // The current admitted population explicitly accounts for every route disappearance.
     expect(PARTITION.filter((row) => row.before.length > 0)).toHaveLength(96);
-    expect(PARTITION.filter((row) => row.after.length > 0)).toHaveLength(135);
-    expect(PARTITION.filter((row) => row.before.length > 0 && row.after.length === 0)).toEqual([]);
+    expect(PARTITION.filter((row) => row.after.length > 0)).toHaveLength(126);
+    expect(PARTITION.filter((row) => row.before.length > 0 && row.after.length === 0)).toHaveLength(8);
   });
 
   /**
@@ -1096,19 +1096,20 @@ describe('X160: the re-taken L2-F2 partition', () => {
   }, 900_000);
 
   /**
-   * THE WRITERS. Thirteen of the 215 gained handlers publish `writesState` other than false, measured from the
+   * THE WRITERS. Twelve of the 213 gained handlers publish `writesState` other than false, measured from the
    * DIRECT artifact - the same classifier the census uses, where absent reads as writing. The recorded count
    * was ONE, which is the figure that made the row's positive case look subject-less.
    */
-  it('MEASURED: thirteen gained handlers are state-changing, not one', () => {
+  it('MEASURED: twelve gained handlers require state machinery, not one', () => {
     const gainedWriters = PARTITION.flatMap((row) => row.after
       .filter((name) => !row.before.includes(name) && row.writes.includes(name))
       .map((name) => `${row.rel}::${row.name}.${name}`));
     for (const writer of gainedWriters) console.log(`[X160P] gained writer ${writer}`);
-    expect(gainedWriters).toHaveLength(13);
+    expect(gainedWriters).toHaveLength(12);
     expect(gainedWriters).toContain('fallback/FallbackInputOutput.sol::Counter.inc');
     expect(gainedWriters).toContain('hacks/phishing-with-tx-origin/TxOrigin.sol::Attack.attack');
-    // The split inside the thirteen, because "state-changing" here is two different statements. Recompiled.
+    // The explicit/absent split inside the twelve, because "requires state machinery" and mutates state are
+    // different statements. Recompiled.
     const explicit = EXPLICIT_WRITERS.filter(([rel, name, handler]) => {
       const direct = compileFileMulti(`${ROOTS[rel.startsWith('uniswapv2/') ? 'mistswap' : 'sbe']}/${rel}`,
         DIRECT as never) as any;

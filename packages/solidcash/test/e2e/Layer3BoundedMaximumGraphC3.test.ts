@@ -74,8 +74,8 @@ import { createX82CapacityReport, writeX82CapacityReport } from './layer3-capaci
  *
  * The last two tests measure capacity, and they establish two DIFFERENT things. On the CONSENSUS knobs C3
  * fits: all 108 inputs are inside ordinary BCH-2026 operation-cost density, the worst being the controller at
- * 0.9218 (measured at `3281ece9`). Under standard relay POLICY it NOW fits as well: the serialized
- * transaction is 96,302 bytes, 3,698 under the 100,000-byte ceiling. That reverses what this header used to
+ * 0.9780 after the executor-frame binding. Under standard relay POLICY it NOW fits as well: the serialized
+ * transaction is 96,461 bytes, 3,539 under the 100,000-byte ceiling. That reverses what this header used to
  * record - 100,354 bytes, 354 over - and the two claims still are not the same claim, which is why they are
  * still measured separately: the density result would survive a size change and the size result would not.
  */
@@ -408,6 +408,8 @@ function transcriptFieldOffsets(bytes: Uint8Array): TranscriptFieldOffsets {
     cursor += 2; // settlement boundary
     cursor += 2 + u16(cursor); // completion positions
     cursor += 32; // canonical settlement-table commitment
+    cursor += 3; // execution kind, executor input
+    cursor += 2 + u16(cursor); // executor locking bytecode
     cursor += 2; // return output
     cursor += 2 + u16(cursor); // result vector
     cursor += 2; // projection input
@@ -1031,7 +1033,7 @@ function preflightOutcome(built: BuiltC3): string {
 
 /**
  * X152. Which byte rules a hostile shape's finalized bytes break, if any. The two injection cases below run
- * 101,750 and 101,680 serialized bytes against the 100,000-byte relay ceiling, so the byte gate has an
+ * 101,506 and 101,436 serialized bytes against the 100,000-byte relay ceiling, so the byte gate has an
  * objection to them - and it is not the one either test asserts. Pinning both halves keeps a future reordering
  * of `preflightLayer3Transaction` from turning a hostile assertion into a size assertion silently.
  */
@@ -1283,10 +1285,11 @@ describe('C3 hostile cases', () => {
     // following test isolates the covenant refusal by removing the SDK gate's objection.
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('carries a token outside every participant block (region ends at 98)');
-    // X152. 101,750 serialized bytes is 1,750 over the relay ceiling, so these bytes ALSO break a byte rule.
+    // X152. 101,506 serialized bytes is 1,506 over the relay ceiling, so these bytes ALSO break a byte rule.
     // The structural block-assembly gate runs first in `preflightLayer3Transaction` and the byte rules run
     // last, so the refusal above is the SDK's structural one and not the gate's.
-    expect(byteRefusals(attacked.transaction)).toEqual([]);
+    expect(attacked.transaction.length / 2).toBe(101_506);
+    expect(byteRefusals(attacked.transaction)).toEqual(['relay-transaction-size']);
     expect(outcome, 'the byte gate spoke first').not.toMatch(/finalized transaction refused by/);
     // And the covenant refuses it independently, at input 106 - the graph-root controller, whose
     // `tx.inputs.length == this.activeInputIndex + 2` rule makes the participant table exhaustive over the
@@ -1309,10 +1312,11 @@ describe('C3 hostile cases', () => {
     expect(attacked.layout.controllerInput).toBe(106);
     const outcome = preflightOutcome(attacked);
     expect(outcome).toContain('BCH-2026 preflight failed at input 106');
-    // X152. 101,680 serialized bytes is 1,680 over the relay ceiling. The VM speaks first here (byte rules
+    // X152. 101,436 serialized bytes is 1,436 over the relay ceiling. The VM speaks first here (byte rules
     // are last), and the bare `rejects.toThrow()` this replaces would have absorbed a gate refusal without
     // going red if that order ever changed or this shape moved onto a gate-bearing send path.
-    expect(byteRefusals(attacked.transaction)).toEqual([]);
+    expect(attacked.transaction.length / 2).toBe(101_436);
+    expect(byteRefusals(attacked.transaction)).toEqual(['relay-transaction-size']);
     expect(outcome, 'the byte gate spoke first').not.toMatch(/finalized transaction refused by/);
     await expect(attacked.provider.sendRawTransaction(attacked.transaction))
       .rejects.toThrow(/evaluating input index 106/);
@@ -1643,7 +1647,7 @@ describe('C3 capacity measurement', () => {
       expect(size).toBeGreaterThan(1_000);
       expect(size).toBeLessThan(10_000);
     }
-    expect(built.transcript.bytes.length).toBeLessThan(2_000);
+    expect(built.transcript.bytes.length).toBeLessThan(2_050);
   }, 900_000);
 
   it('MEASURED: the same composition NOW FITS ordinary BCH-2026 capacity', async () => {
@@ -1820,7 +1824,7 @@ describe('C3 capacity measurement', () => {
     // was true when F4's cut was the last one; X65's -444 per projection took a further 3,552 off C3's eight,
     // and X81's +23 put 184 of it back. C1, at 60,617 bytes, clears both (X39).
     for (const projection of projections) {
-      expect(projection.bytes).toBe(5_418);
+      expect(projection.bytes).toBe(5_868);
       expect(projection.ratio).toBeGreaterThan(0.5);
       expect(projection.ratio).toBeLessThan(0.7);
     }
@@ -1837,7 +1841,7 @@ describe('C3 capacity measurement', () => {
     // invocations, +1.3%. ALL EIGHT ROWS STILL COST THE SAME, so the surcharge finding above is unaffected -
     // which is the property that mattered, not the absolute figure.
     expect(projections.map((row) => row.instructions))
-      .toEqual([22_848, 22_848, 22_848, 22_848, 22_814, 22_814, 22_814, 22_814]);
+      .toEqual([25_071, 25_071, 25_071, 25_071, 25_037, 25_037, 25_037, 25_037]);
     for (const input of built.layout.participantInputs) {
       expect(at(input).ratio).toBeLessThan(0.8);
     }
@@ -1939,7 +1943,7 @@ describe('C3 capacity measurement', () => {
     expect(built.plan.participants).toHaveLength(8);
     expect(built.plan.invocations).toHaveLength(8);
     expect(built.transcript.bytes.length).toBeGreaterThan(1_900);
-    expect(built.transcript.bytes.length).toBeLessThan(2_000);
+    expect(built.transcript.bytes.length).toBeLessThan(2_050);
   }, 900_000);
 });
 

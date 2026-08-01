@@ -454,6 +454,51 @@ describe('layer3.planCompiledGraph', () => {
       // also enforces, which is exactly the drift both are now routed away from.
     })).toThrow('layer3: callsite 0 was planned with 3 occurrences, above the 2 proven by a compile-time trip count');
 
+    const boundedRecursive = compileString(`pragma solidcash >=0.8.0;
+      interface IPeer { function again(address peer, bool take); }
+      contract BoundedRecursiveGraph() {
+        function again(address peer, bool take) public {
+          if (take) { IPeer(peer).again(peer, false); }
+          require(peer.length > 0);
+        }
+      }`, options);
+    const boundedParticipant = { artifact: boundedRecursive, lockingBytecode: '56' };
+    const boundedPlan = layer3.deriveCompiledGraphPlan({
+      root: boundedParticipant,
+      function: 'again',
+      args: [new Uint8Array([0x56]), true],
+      targets: { IPeer: boundedParticipant },
+      occurrence: ({ invocation }) => invocation === 0 ? 1 : 0,
+    });
+    expect(boundedPlan.invocations.map(({ parent, callee, function: name }) =>
+      ({ parent, callee, name }))).toEqual([
+      { parent: null, callee: 0, name: 'again' },
+      { parent: 0, callee: 0, name: 'again' },
+    ]);
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: boundedParticipant,
+      function: 'again',
+      args: [new Uint8Array([0x56]), true],
+      targets: { IPeer: boundedParticipant },
+      occurrence: () => 2,
+    })).toThrow('conditional callsite reached at most once, but 2 occurrences were planned');
+    try {
+      layer3.deriveCompiledGraphPlan({
+        root: boundedParticipant,
+        function: 'again',
+        args: [new Uint8Array([0x56]), true],
+        targets: { IPeer: boundedParticipant },
+        occurrence: () => 1,
+      });
+      throw new Error('expected bounded recursive depth diagnostic');
+    } catch (error) {
+      expect(error).toBeInstanceOf(layer3.Layer3DiagnosticError);
+      expect(error).toMatchObject({
+        code: 'L3_GRAPH_DEPTH_LIMIT',
+        context: expect.objectContaining({ measured: 8, limit: 7 }),
+      });
+    }
+
     const recursive = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function again(address peer); }
       contract RecursiveGraph() {

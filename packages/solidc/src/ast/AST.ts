@@ -400,6 +400,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   graphEmissionHandler?: boolean;
   /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
   graphRuntimeEmissionHandler?: boolean;
+  /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
+  graphRuntimeEmissionThreaded?: boolean;
   // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
   // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
   graphEffectFrame?: GraphEffectFrame;

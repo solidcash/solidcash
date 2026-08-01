@@ -6953,7 +6953,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const locationData = { location: node.location, positionHint: PositionHint.END };
     const targetJournalSlots = targetFunc.functionId === undefined
       ? [] : (this.journalSlotsByFunctionId.get(targetFunc.functionId) ?? []);
-    const targetJournalContextNames = targetJournalSlots.flatMap((sv) => this.journalContextNames(sv));
+    const targetJournalContextNames = [
+      ...(targetFunc.graphRuntimeEmissionThreaded ? ['__internal__graphEmissions'] : []),
+      ...targetJournalSlots.flatMap((sv) => this.journalContextNames(sv)),
+    ];
     // Pass copies of the context rather than moving the caller's slots. A moved
     // slot returns at the top of the stack and changes its position relative to
     // persistent loop variables, violating OP_BEGIN/OP_UNTIL's frame invariant.
@@ -6969,13 +6972,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const contextName = `(__journal_arg_${targetFunc.functionId}_${i})`;
       this.pushToStack(contextName);
     }
-    if (targetFunc.graphRuntimeEmissionHandler) {
+    if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
       const expected = '__internal__graphEmissions';
       this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_emissions_arg_${targetFunc.functionId})`);
     }
-
     let hiddenContextCount = 0;
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
@@ -7156,7 +7158,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Update stack tracking: pop the pushed arguments, push return values
     this.popFromStack(pushedArgs + hiddenContextCount);
-    if (targetFunc.graphRuntimeEmissionHandler) {
+    if (targetFunc.graphRuntimeEmissionHandler && !targetFunc.graphRuntimeEmissionThreaded) {
       this.emit(Op.OP_0, locationData);
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack();

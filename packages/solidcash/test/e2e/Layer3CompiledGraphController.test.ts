@@ -146,6 +146,22 @@ contract CompiledGraphA(int brand, address target) {
     require(true);
   }
 }`;
+const RECURSIVE_TARGET = `pragma solidcash >=0.8.0;
+interface IRecursiveTarget { function again(address self, bool take); }
+contract RecursiveTarget(int brand) {
+  function again(address self, bool take) public {
+    if (take) { IRecursiveTarget(self).again(self, false); }
+    require(self.length > 0);
+  }
+}`;
+const RECURSIVE_ROOT = `pragma solidcash >=0.8.0;
+interface IRecursiveTarget { function again(address self, bool take); }
+contract RecursiveRoot(int brand, address target) {
+  function start(address self) public {
+    IRecursiveTarget(target).again(self, true);
+    require(self.length > 0);
+  }
+}`;
 const RETURNING_B = `pragma solidcash >=0.8.0;
 contract CompiledReturningB(int brand) {
   function twice(int n) public pure returns (int, int) {
@@ -459,6 +475,7 @@ async function build(
   transformedChildArg?: bigint,
   oversizedParticipantCount = false,
   mixedStatic = false,
+  boundedRecursive: 'none' | 'honest' | 'forged-row' = 'none',
 ) {
   const provider = createTestProvider();
   const {
@@ -470,11 +487,13 @@ async function build(
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const artifactB = compileString(APP('CompiledGraphB'), options);
+  const artifactB = compileString(
+    boundedRecursive === 'none' ? APP('CompiledGraphB') : RECURSIVE_TARGET, options,
+  );
   const baseB = new Contract(artifactB, [2n], { provider });
   const setupB = await setupStatefulUtxos(provider, baseB, artifactB.stateLayout!, {});
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const callerSource = mixedStatic
+  const callerSource = boundedRecursive !== 'none' ? RECURSIVE_ROOT : mixedStatic
     ? CALLING_APP.replace('ICompiledGraphTarget(target).ping(first);',
       'ICompiledGraphTarget(target).viewPing.staticcall();')
     : CALLING_APP;
@@ -482,7 +501,11 @@ async function build(
   const baseA = new Contract(artifactA, [1n, b.lockingBytecode], { provider });
   const setupA = await setupStatefulUtxos(provider, baseA, artifactA.stateLayout!, {});
   const a = baseA.withCategory(hexToBin(setupA.categoryId));
-  const graphInvocations = transformedChildArg !== undefined ? [
+  const graphInvocations = boundedRecursive !== 'none' ? [
+    { parent: null, callee: 0, function: 'start', args: [b.lockingBytecode] },
+    { parent: 0, callee: 1, function: 'again', args: [b.lockingBytecode, true] },
+    { parent: 1, callee: 1, function: 'again', args: [b.lockingBytecode, false] },
+  ] : transformedChildArg !== undefined ? [
     { parent: null, callee: 0, function: 'transform', args: [b.lockingBytecode, 6n] },
     { parent: 0, callee: 1, function: 'ping', args: [transformedChildArg] },
   ] : staticAuth ? [
@@ -520,15 +543,24 @@ async function build(
     { parent: 0, callee: 1, function: 'ping', args: [2n],
       ...(mixedStatic && { callMode: 'call' as const }) },
   ];
-  const plan = layer3.planCompiledGraph([
+  const participants = [
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
-  ], graphInvocations);
+  ] as const;
+  const plan = boundedRecursive !== 'none'
+    ? layer3.deriveCompiledGraphPlan({
+      root: participants[0], function: 'start', args: [b.lockingBytecode],
+      targets: { IRecursiveTarget: participants[1] },
+      target: () => participants[1],
+      occurrence: ({ invocation }) => invocation === 1 ? 1 : 0,
+    })
+    : layer3.planCompiledGraph(participants, graphInvocations);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   let transcript = layer3.finalizeCompiledGraph(
     plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
   );
-  if (malformedGraph || aliasProjection || tamperBlockSize || oversizedParticipantCount) {
+  if (malformedGraph || aliasProjection || tamperBlockSize || oversizedParticipantCount
+    || boundedRecursive === 'forged-row') {
     const bytes = transcript.bytes.slice();
     if (oversizedParticipantCount) bytes[9] = 9;
     if (tamperBlockSize) bytes[12] += 1;
@@ -560,6 +592,17 @@ async function build(
     if (malformedGraph) {
       cursor += 2; // invocation count
       bytes[cursor + 4] = 1; // root invocation depth must be zero
+    }
+    if (boundedRecursive === 'forged-row') {
+      const u16 = (at: number) => bytes[at] | (bytes[at + 1] << 8);
+      cursor += 2; // invocation count
+      for (let row = 0; row < 2; row += 1) {
+        cursor += 12;
+        cursor += 2 + u16(cursor);
+        cursor += 2 + u16(cursor);
+      }
+      bytes[cursor] = 0; // forge the recursive row's parent from invocation 1 to invocation 0
+      bytes[cursor + 1] = 0;
     }
     transcript = {
       ...transcript,
@@ -639,6 +682,11 @@ async function build(
   tx.addOutput({ to: p2pkh.address, amount: 10000n });
   return { provider, transaction: raw(tx), builder: tx, transcript };
 }
+
+const buildBoundedRecursiveGraph = (mode: 'honest' | 'forged-row') => build(
+  false, false, false, false, false, false, 1n, undefined, undefined, undefined,
+  false, false, false, undefined, false, false, mode,
+);
 
 async function buildPointerGraph(
   tamper: 'none' | 'selector' | 'target' = 'none',
@@ -3477,6 +3525,18 @@ describe('Layer-3 compiled graph controller', () => {
     const injected = await build(false, false, false, false, false, false, 1n,
       { take: false, includeChild: true });
     await expect(injected.provider.sendRawTransaction(injected.transaction)).rejects.toThrow(scriptRefusalAt(0));
+  });
+
+  it('settles a bounded same-handler recursive closure', async () => {
+    const { provider, transaction } = await buildBoundedRecursiveGraph('honest');
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('rejects a forged parent on a bounded recursive row', async () => {
+    const { provider, transaction, transcript } = await buildBoundedRecursiveGraph('forged-row');
+    const layout = layer3.compiledGraphPhysicalLayout(transcript.plan);
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(scriptRefusalAt(layout.controllerInput));
   });
 
   it('consumes one authenticated child row per reached loop iteration', async () => {

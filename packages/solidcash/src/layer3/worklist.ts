@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   scriptToBytecode,
-  type AbiFunction, type ArgSource, type ExternalCallAbi,
+  occurrenceBoundOf, type AbiFunction, type ArgSource, type ExternalCallAbi,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, type FunctionArgument } from '../Argument.js';
 import {
@@ -9,6 +9,8 @@ import {
   type CompiledGraphInvocation, type CompiledGraphParticipant, type CompiledGraphPlan,
 } from './graph.js';
 import { Layer3DiagnosticError, type Layer3DiagnosticContext } from './diagnostics.js';
+
+const MAX_WORKLIST_DEPTH = 7;
 
 export interface WorklistParticipant extends CompiledGraphParticipant {
   /** Constructor values are needed only when an emitted call argument forwards a constructor parameter. */
@@ -32,6 +34,7 @@ export interface DeriveCompiledGraphOptions {
   target?: (context: {
     participant: WorklistParticipant;
     function: string;
+    invocation: number;
     callsiteId: number;
     occurrence: number;
     interfaceName: string;
@@ -45,6 +48,8 @@ export interface DeriveCompiledGraphOptions {
   occurrence?: (context: {
     participant: WorklistParticipant;
     function: string;
+    /** Stable parent invocation identity; recursive re-entry must not share a traversal-global cursor. */
+    invocation: number;
     callsiteId: number;
     kind: 'conditional' | 'loop';
   }) => number;
@@ -55,6 +60,7 @@ export interface DeriveCompiledGraphOptions {
   expressionArgument?: (context: {
     participant: WorklistParticipant;
     function: string;
+    invocation: number;
     callsiteId: number;
     argument: number;
     occurrence: number;
@@ -67,6 +73,7 @@ export interface DeriveCompiledGraphOptions {
   dynamicCall?: (context: {
     participant: WorklistParticipant;
     function: string;
+    invocation: number;
     callsiteId: number;
     occurrence: number;
     kind: 'function-pointer' | 'selector-table' | 'low-level';
@@ -111,6 +118,7 @@ const resolveArguments = (
   visibleArgs: readonly FunctionArgument[],
   call: ExternalCallAbi,
   functionName: string,
+  invocation: number,
   occurrence: number,
   expressionArgument: DeriveCompiledGraphOptions['expressionArgument'],
 ): FunctionArgument[] => (call.argSources ?? []).map((source, argument) => {
@@ -135,6 +143,7 @@ const resolveArguments = (
     const value = expressionArgument?.({
       participant: sourceParticipant,
       function: functionName,
+      invocation,
       callsiteId: call.callsiteId!,
       argument,
       occurrence,
@@ -202,10 +211,11 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     participant: WorklistParticipant,
     fn: AbiFunction,
     functionName: string,
+    invocation: number,
     occurrence: number,
   ): WorklistParticipant => {
     const resolved = options.target?.({
-      participant, function: functionName, callsiteId: call.callsiteId!, occurrence,
+      participant, function: functionName, invocation, callsiteId: call.callsiteId!, occurrence,
       interfaceName: call.interfaceName,
     });
     if (resolved) return resolved;
@@ -265,13 +275,14 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
   };
 
-  const active = new Set<string>();
+  const active = new Map<string, number>();
   const expand = (
     participant: WorklistParticipant,
     functionName: string,
     args: readonly FunctionArgument[],
     parent: number | null,
     callMode?: 'call' | 'staticcall',
+    boundedRecursiveEdge = false,
   ): void => {
     if (invocations.length >= maximum) {
       throw new Layer3DiagnosticError(
@@ -279,6 +290,16 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         `symbolic worklist would append invocation ${invocations.length}, exceeding its `
           + `${maximum}-invocation bound; call chain ${diagnosticContext().callChain?.join(' -> ')}`,
         { ...diagnosticContext(), measured: invocations.length + 1, limit: maximum },
+      );
+    }
+    if (activeInvocations.length > MAX_WORKLIST_DEPTH) {
+      throw new Layer3DiagnosticError(
+        'L3_GRAPH_DEPTH_LIMIT',
+        `symbolic worklist would append depth ${activeInvocations.length}, exceeding the deployed `
+          + `${MAX_WORKLIST_DEPTH}-depth bound; call chain ${diagnosticContext().callChain?.join(' -> ')}`,
+        {
+          ...diagnosticContext(), measured: activeInvocations.length, limit: MAX_WORKLIST_DEPTH,
+        },
       );
     }
     const owner = intern(participant);
@@ -290,7 +311,8 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
       participant.lockingBytecode, participant.artifact, fn, functionName,
     );
     const key = `${owner}:${functionName}`;
-    if (active.has(key)) {
+    const activeCount = active.get(key) ?? 0;
+    if (activeCount > 0 && !boundedRecursiveEdge) {
       throw new Layer3DiagnosticError(
         'L3_RECURSIVE_CLOSURE',
         `recursive call closure at invocation ${invocation} '${functionName}' needs an explicit bounded `
@@ -298,7 +320,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         diagnosticContext(),
       );
     }
-    active.add(key);
+    active.set(key, activeCount + 1);
     for (const call of fn.externalCalls ?? []) {
       // Recognize a raw edge by its compiler-authored identity, not by opaqueReturn. A VOID low-level call is
       // a raw edge that returns nothing, so it must not claim opaqueReturn - that flag means "opaque
@@ -328,6 +350,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           const resolved = options.dynamicCall?.({
             participant,
             function: functionName,
+            invocation,
             callsiteId: call.callsiteId!,
             occurrence: reached,
             kind: 'low-level',
@@ -340,7 +363,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
             throw new Error(`layer3: raw callsite ${call.callsiteId} resolved to a selectorless function`);
           }
           const payload = resolveArguments(
-            participant, args, call, functionName, reached, options.expressionArgument,
+            participant, args, call, functionName, invocation, reached, options.expressionArgument,
           )[0];
           if (!(payload instanceof Uint8Array)) {
             throw new Error(`layer3: raw callsite ${call.callsiteId} calldata is not bytes`);
@@ -388,7 +411,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         if ((call.occurrence ?? 'once') !== 'once') {
           throw new Error(`layer3: batched callsite ${call.callsiteId} must be straight-line`);
         }
-        const target = takeTarget(call, participant, fn, functionName, 0);
+        const target = takeTarget(call, participant, fn, functionName, invocation, 0);
         const rows = [...call.batchInvocations].sort((a, b) => a.logicalIndex - b.logicalIndex);
         rows.forEach((row, index) => {
           if (row.logicalIndex !== index) {
@@ -409,6 +432,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               args,
               { ...call, functionName: targetFunction.name, argSources: row.argSources },
               functionName,
+              invocation,
               row.logicalIndex,
               options.expressionArgument,
             ),
@@ -424,6 +448,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
         count = options.occurrence?.({
           participant,
           function: functionName,
+          invocation,
           callsiteId: call.callsiteId!,
           kind: occurrenceKind,
         }) ?? -1;
@@ -445,6 +470,7 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
           const resolved = options.dynamicCall?.({
             participant,
             function: functionName,
+            invocation,
             callsiteId: call.callsiteId!,
             occurrence: reached,
             kind: call.selectorArrayVar ? 'selector-table' : 'function-pointer',
@@ -468,30 +494,34 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
               args,
               { ...call, functionName: resolved.function },
               functionName,
+              invocation,
               reached,
               options.expressionArgument,
             ),
             invocation,
             edgeCallMode(call),
+            occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
           );
         }
         continue;
       }
       for (let reached = 0; reached < count; reached += 1) {
-        const target = takeTarget(call, participant, fn, functionName, reached);
+        const target = takeTarget(call, participant, fn, functionName, invocation, reached);
         assertForwardedTarget(participant, fn, args, call, target, reached);
         expand(
           target,
           call.functionName,
           resolveArguments(
-            participant, args, call, functionName, reached, options.expressionArgument,
+            participant, args, call, functionName, invocation, reached, options.expressionArgument,
           ),
           invocation,
           edgeCallMode(call),
+          occurrenceKind !== 'once' && occurrenceBoundOf(call).maximum !== undefined,
         );
       }
     }
-    active.delete(key);
+    if (activeCount === 0) active.delete(key);
+    else active.set(key, activeCount);
     activeInvocations.pop();
   };
 

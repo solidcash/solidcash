@@ -1704,6 +1704,8 @@ function synthesizeHiddenBatchRoute(
     handlerEntryKeys.set(source, ordered);
   };
   let resourceSelfAliasHandlerInvokeName: string | undefined;
+  const allGraphEmissionHandlersRuntime = graphTailHandlers.size > 0
+    && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
     handler.name = `__scb_resource_${resourceShapedHandler.name}`;
@@ -1716,6 +1718,8 @@ function synthesizeHiddenBatchRoute(
     if (graphTailHandlers.has(resourceShapedHandler)) {
       handler.graphEmissionHandler = true;
       handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
+      handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
+        && allGraphEmissionHandlersRuntime;
     }
     if (eligible.length > 1) handler.forceCollectionJournalPool = true;
     bindEntryKeyParameters(handler, resourceShapedHandler);
@@ -1854,6 +1858,8 @@ function synthesizeHiddenBatchRoute(
       && parameter.name !== '__internal__delegateInputIndex');
     handler.graphEmissionHandler = true;
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
+    handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
+      && allGraphEmissionHandlersRuntime;
     const delegateSlots: { slotIndex: number }[] = [];
     walkInvocationAst(sourceHandler.body, (node) => {
       if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') {
@@ -2356,7 +2362,9 @@ function synthesizeHiddenBatchRoute(
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${graphControllerLbc === undefined
     ? ''
-    : `require(__internal__graphEmissions == __internal__graphEmissions);
+    : `${allGraphEmissionHandlersRuntime
+    ? 'require(__internal__graphEmissions.length == 0);'
+    : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }

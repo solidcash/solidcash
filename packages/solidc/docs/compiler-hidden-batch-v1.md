@@ -1,10 +1,11 @@
 # Compiler-hidden batch protocol v1
 
-Status: EXPERIMENTAL IMPLEMENTATION, DEFAULT OFF. The scalar and parameter-keyed multi-entry
-journals, hidden owner-local route, and
-one-repeated-callee vertical slice are implemented and VM-tested against BCH 2026. The wire format
-remains versioned experimental covenant surface until the independent Release 4 and Release 5
-reviews and the remaining expansion gates below are complete.
+Status: RELEASE 4 IMPLEMENTED, DEFAULT ON; INDEPENDENT REVIEW PENDING. The scalar and
+parameter-keyed multi-entry journals and hidden owner-local route are emitted by default and are
+VM- and node-tested against BCH 2026. Pass `experimentalHiddenBatch: false` through the compiler API,
+or `--no-hidden-batch` through the CLI, to retain direct-route-only compilation. Release 5 remains a
+separately gated experimental surface. The exact audit target and remaining review gate are tracked in
+`layer3-review-package.md` and `message-bus-completion-ledger.md`.
 
 Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d36116aa`.
 
@@ -16,7 +17,8 @@ Implementation snapshot (2026-07-23):
   through one tuple; MasterChef-style dependent accumulators use the same reduction. A dynamic-array handler
   value-threads both its encoded length field and tight element blob, then the physical wrapper
   flushes its chunks once. Runtime-varying aliases and dynamic cold keys retain the conservative path.
-- Release 4 is enabled only by `experimentalHiddenBatch`. It advertises `hiddenBatch.version == 1`,
+- Release 4 is enabled by default; `experimentalHiddenBatch: false` is its explicit compatibility opt-out.
+  It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and admits either signature-free route-stable scalar
   handlers, handlers sharing one parameter-keyed mapping entry, or the exact two-row
   resource-shaped mapping route described below. The mapping routes bind every decoded row key to

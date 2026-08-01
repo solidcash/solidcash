@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../src/index.js';
 import type { FunctionArgument } from '../src/index.js';

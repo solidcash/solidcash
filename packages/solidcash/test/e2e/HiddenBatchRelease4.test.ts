@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';

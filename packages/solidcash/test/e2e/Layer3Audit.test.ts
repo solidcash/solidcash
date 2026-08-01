@@ -46,7 +46,7 @@ function makeCompact(n: number): string {
   for (let i = 0; i < n; i += 1) body.push(`require(u${i}.slice(rp + 3, rp + 13) == hex"${PREFIX10}");`);
   const members = Array.from({ length: n }, (_u, i) => `this.activeInputIndex == input${i}`);
   body.push(`require(${members.join(' || ')});`);
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 

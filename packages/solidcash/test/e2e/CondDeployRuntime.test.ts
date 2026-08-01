@@ -67,9 +67,6 @@ describe('conditional deploy runtime (if (c==1) new Child())', () => {
   });
 
   it('make(1) FIRES the deploy: a real Child genesis is co-spent and verified inline', async () => {
-    const makeAbi = factoryArtifact.abi.find((f) => f.name === 'make')!;
-    const fundingInputIndex = 1 + (makeAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount);
-
     const genesisFunding: Utxo = { txid: 'c111'.repeat(16), vout: 0, satoshis: 200000n };
     await provider.addUtxo(p2pkh.address, genesisFunding);
 

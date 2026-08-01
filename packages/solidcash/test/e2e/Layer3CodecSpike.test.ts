@@ -1,7 +1,8 @@
+/* eslint-disable max-len -- bytecode codec fixtures retain complete expressions */
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
-  bigIntToVmNumber, binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin,
+  binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { scriptToBytecode } from '@solidcash/utils';
 import { Contract, TransactionBuilder } from '../../src/index.js';

@@ -1,3 +1,4 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';

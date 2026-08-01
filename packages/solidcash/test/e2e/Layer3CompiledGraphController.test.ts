@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, sha256, utf8ToBin,
 } from '@bitauth/libauth';
@@ -966,7 +967,7 @@ async function buildVaryingSelectorGraph(
 async function buildCombinedGraph(
   tamper: 'none' | 'state' | 'event' | 'value' = 'none',
   variant: 'all' | 'no-transfer' | 'no-events' | 'no-state' | 'value-only' | 'same-value'
-    | 'conditional-untaken' = 'all',
+  | 'conditional-untaken' = 'all',
   staticInvocation: 'none' | 'start' | 'step' | 'step-chain' | 'finish' = 'none',
 ) {
   const provider = createTestProvider();
@@ -987,15 +988,15 @@ async function buildCombinedGraph(
       ? 'this.count = amount - amount;'
       : 'if (callback.length == 0) { this.count = this.count + amount; }')
     : variant === 'no-transfer'
-    ? COMBINED_A.replace('    this.transfer(recipient, amount);\n', '')
-    : variant === 'no-events' ? COMBINED_A
-      .replace('  event Seen(bigint amount);\n', '')
-      .replaceAll('    emit Seen(amount);\n', '')
-      : variant === 'no-state' || variant === 'value-only' ? COMBINED_A
-        .replace('  bigint count;\n', '')
-        .replaceAll('    this.count = this.count + amount;\n', '')
-        .replace(variant === 'value-only' ? '  event Seen(bigint amount);\n' : '', '')
-        .replaceAll(variant === 'value-only' ? '    emit Seen(amount);\n' : '', '') : COMBINED_A;
+      ? COMBINED_A.replace('    this.transfer(recipient, amount);\n', '')
+      : variant === 'no-events' ? COMBINED_A
+        .replace('  event Seen(bigint amount);\n', '')
+        .replaceAll('    emit Seen(amount);\n', '')
+        : variant === 'no-state' || variant === 'value-only' ? COMBINED_A
+          .replace('  bigint count;\n', '')
+          .replaceAll('    this.count = this.count + amount;\n', '')
+          .replace(variant === 'value-only' ? '  event Seen(bigint amount);\n' : '', '')
+          .replaceAll(variant === 'value-only' ? '    emit Seen(amount);\n' : '', '') : COMBINED_A;
   let sourceB = variant === 'same-value' || variant === 'conditional-untaken' ? COMBINED_B
     .replace('  event Stepped(bigint amount);\n', '')
     .replace('    emit Stepped(amount);\n', '')
@@ -1003,13 +1004,13 @@ async function buildCombinedGraph(
       ? 'this.count = amount - amount;'
       : 'if (callback.length == 0) { this.count = this.count + amount; }')
     : variant === 'no-events' ? COMBINED_B
-    .replace('  event Stepped(bigint amount);\n', '')
-    .replace('    emit Stepped(amount);\n', '')
-    : variant === 'no-state' || variant === 'value-only' ? COMBINED_B
-      .replace('  bigint count;\n', '')
-      .replace('    this.count = this.count + amount;\n', '')
-      .replace(variant === 'value-only' ? '  event Stepped(bigint amount);\n' : '', '')
-      .replace(variant === 'value-only' ? '    emit Stepped(amount);\n' : '', '') : COMBINED_B;
+      .replace('  event Stepped(bigint amount);\n', '')
+      .replace('    emit Stepped(amount);\n', '')
+      : variant === 'no-state' || variant === 'value-only' ? COMBINED_B
+        .replace('  bigint count;\n', '')
+        .replace('    this.count = this.count + amount;\n', '')
+        .replace(variant === 'value-only' ? '  event Stepped(bigint amount);\n' : '', '')
+        .replace(variant === 'value-only' ? '    emit Stepped(amount);\n' : '', '') : COMBINED_B;
   if (staticInvocation === 'step' || staticInvocation === 'step-chain') {
     sourceA = sourceA.replace('.step(callback, recipient, amount)', '.step.staticcall(callback, recipient, amount)');
   }
@@ -1142,7 +1143,7 @@ async function buildCombinedGraph(
   const aTransferSlots = blockA.slots.filter((slot) => slot.kind === 'transfer');
   const aEventSlots = blockA.slots.filter((slot) => slot.kind === 'event');
   const bEventSlots = blockB.slots.filter((slot) => slot.kind === 'event');
-  for (const slot of aTransferSlots.slice(1)) {
+  for (let index = 1; index < aTransferSlots.length; index += 1) {
     tx.addOutput({ to: p2pkh.address, amount: 1000n });
   }
   const eventCommitment = binToHex(scriptToBytecode([bigIntToVmNumber(transferSats)]));
@@ -1180,7 +1181,9 @@ async function buildCombinedGraph(
       },
     });
   }
-  for (const _slot of bEventSlots.slice(1)) tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  for (let index = 1; index < bEventSlots.length; index += 1) {
+    tx.addOutput({ to: p2pkh.address, amount: 1000n });
+  }
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -1812,15 +1815,15 @@ async function buildReturning(
   const invocationResultA = resultKind === 'bytes'
     ? scriptToBytecode([hexToBin('aabbff')])
     : resultKind === 'string' ? scriptToBytecode([correctStringValue])
-    : resultKind === 'struct' ? correctStructValue : packedResult(5n);
+      : resultKind === 'struct' ? correctStructValue : packedResult(5n);
   const invocationResultB = resultKind === 'bytes'
     ? scriptToBytecode([dynamicValue])
     : resultKind === 'string' ? scriptToBytecode([stringValue])
-    : resultKind === 'struct' ? structValue : packedPairResult(4n, 12n);
+      : resultKind === 'struct' ? structValue : packedPairResult(4n, 12n);
   const correctInvocationResultB = resultKind === 'bytes'
     ? scriptToBytecode([hexToBin('aabbff')])
     : resultKind === 'string' ? scriptToBytecode([correctStringValue])
-    : resultKind === 'struct' ? correctStructValue : packedPairResult(4n, 12n);
+      : resultKind === 'struct' ? correctStructValue : packedPairResult(4n, 12n);
   const transcript = layer3.finalizeCompiledGraph(plan, {
     0: binToHex(invocationResultA),
     1: binToHex(correctInvocationResultB),
@@ -2431,13 +2434,13 @@ async function buildCallerAuthorizedTransferGraph(
     },
   })]));
   const allowanceEntry = randomUtxo({
-        satoshis: 10000n,
-        token: {
-          category: tokenSetup.categoryId,
-          amount: 0n,
-          nft: { capability: 'mutable', commitment: binToHex(allowanceCommitment) },
-        },
-      });
+    satoshis: 10000n,
+    token: {
+      category: tokenSetup.categoryId,
+      amount: 0n,
+      nft: { capability: 'mutable', commitment: binToHex(allowanceCommitment) },
+    },
+  });
   // Logical journal order remains [from-balance, allowance, row0-recipient, row1-recipient]. Duplicate logical
   // identities occupy balanced funding slots; only their first occurrence co-spends the physical entry NFT.
   const logicalKeys = [from, undefined, first, second] as const;

@@ -1,6 +1,6 @@
 // Mapping-entry write behavior pins: read-after-write, writes in loops, chained struct-field and
 // array-element writes.
-import { describe, it, expect } from 'vitest';
+import { describe, it } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);

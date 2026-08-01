@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-shadow */
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from 'solidc';

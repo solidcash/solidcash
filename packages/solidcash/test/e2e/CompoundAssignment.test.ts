@@ -1,3 +1,4 @@
+/* eslint-disable max-len -- exact VM refusal evidence is intentionally kept on one line */
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';

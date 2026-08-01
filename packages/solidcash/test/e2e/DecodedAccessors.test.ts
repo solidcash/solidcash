@@ -1,3 +1,4 @@
+/* eslint-disable max-len -- decoded-access fixture remains readable as one source declaration */
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { Contract, StatefulContract } from '../../src/index.js';

@@ -1475,16 +1475,16 @@ describe('C3 hostile cases', () => {
         + 'running over a population that cannot contain a hit').not.toEqual([]);
       expect(scan.rowPairwise.filter((clause) =>
         !sameInvocationCallMode(clause) && !canonicalSettlementBinding(clause)),
-        `row-to-row comparison in:\n${scan.rowPairwise.join('\n')}`).toEqual([]);
+      `row-to-row comparison in:\n${scan.rowPairwise.join('\n')}`).toEqual([]);
       // MUTATION CONTROL ON THE REAL SOURCE, which a synthetic control cannot give: one row-to-row comparison
       // added to the GENERATED participant loop and nothing else. The injector throws when its anchor is
       // gone, so this control cannot outlive its subject the way the first two versions of this guard did.
       expect(scanComparisons(injectPairwiseComparison(source)).rowPairwise
         .filter((clause) => !sameInvocationCallMode(clause) && !canonicalSettlementBinding(clause)),
-        'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
+      'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
       expect(scanComparisons(injectScalarAliasPairwiseComparison(source)).rowPairwise
         .filter((clause) => !sameInvocationCallMode(clause) && !canonicalSettlementBinding(clause)),
-        'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
+      'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
       expect(/participantLbc\d/.test(source)).toBe(false);
     }
     // The ONE both-sides comparison in the tree, which the old line splitter could not see: the controller

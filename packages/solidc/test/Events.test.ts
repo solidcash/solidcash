@@ -147,7 +147,7 @@ describe('file-level event declarations', () => {
   it('accepts a file-level event with indexed params', () => {
     const a = compileString('event Transfer(address indexed from, uint value);'
       + ' contract C { function f(address a) external { emit Transfer(a, 5); require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(a.events?.some((e) => e.name === 'Transfer')).toBe(true);
   });
 });

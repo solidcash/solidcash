@@ -497,7 +497,7 @@ describe('external call on a struct-field target (s.field.m())', () => {
     );
     const manual = compileString(
       `${IF}struct S { IFoo target; uint x; } contract C { S s; function f() public returns (uint) `
-      + `{ IFoo __extaddr_s_target = s.target; return __extaddr_s_target.m(); } }`,
+      + '{ IFoo __extaddr_s_target = s.target; return __extaddr_s_target.m(); } }',
       opts,
     );
     expect(auto.bytecode).toBe(manual.bytecode);

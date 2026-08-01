@@ -711,6 +711,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     isLast: boolean;
     tagged: boolean;
   }>();
+
   private stateReadIds = new Map<string, bigint>();
   private stateReads = new Map<string, {
     offset: number;
@@ -722,6 +723,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       tagged: boolean;
     };
   }>();
+
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
@@ -820,6 +822,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     fn: FunctionDefinitionNode; variable: string; priorNames: string[];
     outlined: boolean; trailingBase: number; iterCount: number; threaded?: boolean;
   }[] = [];
+
   // X203. An outlined body's physical trailing run belongs to its invoking entry point, not to the helper's
   // synthetic one-slot layout. When every reaching entry publishes one uniform prior-run ordering, compile the
   // helper against that ordering and thread the caller's fixed + runtime-sized trailing base through its frame.
@@ -13989,7 +13992,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.isGenesisRead) {
       const gLoc = { location: node.location, positionHint: PositionHint.START };
       this.emitDefaultValue(gLoc, node.collection!.innermostValueType);
-      this.pushToStack("(value)");
+      this.pushToStack('(value)');
       return node;
     }
 
@@ -14002,7 +14005,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
       this.emitSortedSetRead(node);
       if (node.arrayIndex) {
-      this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
+        this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
       }
       return node;
     }
@@ -15883,137 +15886,137 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else {
       // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
       // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
-      for (const slot of [...targets].reverse()) {
-        arg(`__internal__c2BatchNext_${slot}`); bin(Op.OP_TOALTSTACK);
-        arg(`__internal__c2BatchSlot_${slot}`); bin(Op.OP_TOALTSTACK);
-      }
-      for (let i = 0; i < targets.length * 2; i++) {
-        bin(Op.OP_FROMALTSTACK);
-        if (i > 0) bin(Op.OP_CAT);
-      }
-      bin(Op.OP_TOALTSTACK);
-      const copyBatchBlob = (): void => {
-        // With a target frame active: alt=[blob,predOut,proof(top)]. Preserve the frame and leave blob on main.
-        bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK);
-        bin(Op.OP_DUP); bin(Op.OP_TOALTSTACK); // blob
-        bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // predOut
-        bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // proof
-      };
-      const batchField = (targetSlot: number, field: 'slot' | 'next'): void => {
-        copyBatchBlob();
-        const ordinal = targets.indexOf(targetSlot);
-        const offset = BigInt(ordinal * 64 + (field === 'next' ? 32 : 0));
-        if (offset > 0n) {
-          this.emit(encodeInt(offset), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+        for (const slot of [...targets].reverse()) {
+          arg(`__internal__c2BatchNext_${slot}`); bin(Op.OP_TOALTSTACK);
+          arg(`__internal__c2BatchSlot_${slot}`); bin(Op.OP_TOALTSTACK);
         }
-        this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
-      };
+        for (let i = 0; i < targets.length * 2; i++) {
+          bin(Op.OP_FROMALTSTACK);
+          if (i > 0) bin(Op.OP_CAT);
+        }
+        bin(Op.OP_TOALTSTACK);
+        const copyBatchBlob = (): void => {
+        // With a target frame active: alt=[blob,predOut,proof(top)]. Preserve the frame and leave blob on main.
+          bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK); bin(Op.OP_FROMALTSTACK);
+          bin(Op.OP_DUP); bin(Op.OP_TOALTSTACK); // blob
+          bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // predOut
+          bin(Op.OP_SWAP); bin(Op.OP_TOALTSTACK); // proof
+        };
+        const batchField = (targetSlot: number, field: 'slot' | 'next'): void => {
+          copyBatchBlob();
+          const ordinal = targets.indexOf(targetSlot);
+          const offset = BigInt(ordinal * 64 + (field === 'next' ? 32 : 0));
+          if (offset > 0n) {
+            this.emit(encodeInt(offset), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          }
+          this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
+        };
 
-      for (const slot of targets) {
+        for (const slot of targets) {
         // Runtime aliases have no proof input or target output. Their sentinel/hash equivalence was authenticated
         // above; all remaining topology checks operate on the canonical first occurrence.
-        arg(`__internal__c2BatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
-        bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
-        proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
-
-        // plannedNext is either oldNext or one of this batch's target slots.
-        batchField(slot, 'next'); proofField(slot, 'next', 1); bin(Op.OP_EQUAL);
-        for (const other of targets) {
-          if (other === slot) continue;
-          batchField(slot, 'next'); batchField(other, 'slot'); bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
-        }
-        bin(Op.OP_VERIFY);
-
-        // Non-tail links are strictly forward and cannot pass the authenticated old successor.
-        batchField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
-        bin(Op.OP_DROP);
-        bin(Op.OP_ELSE);
-        batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
-        bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
-        proofField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
-        bin(Op.OP_DROP);
-        bin(Op.OP_ELSE);
-        batchField(slot, 'next'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
-        bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_VERIFY);
-        bin(Op.OP_ENDIF); bin(Op.OP_ENDIF);
-
-        // Every target lying in this original proof gap is at or after plannedNext (so none can be skipped).
-        for (const other of targets) {
-          if (other === slot) continue;
-          arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+          arg(`__internal__c2BatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-          batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
-          bin(Op.OP_LESSTHAN); // h < other
-          proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
-          bin(Op.OP_DROP); bin(Op.OP_1);
+          arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
+          proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
+
+          // plannedNext is either oldNext or one of this batch's target slots.
+          batchField(slot, 'next'); proofField(slot, 'next', 1); bin(Op.OP_EQUAL);
+          for (const other of targets) {
+            if (other === slot) continue;
+            batchField(slot, 'next'); batchField(other, 'slot'); bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+          }
+          bin(Op.OP_VERIFY);
+
+          // Non-tail links are strictly forward and cannot pass the authenticated old successor.
+          batchField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
+          bin(Op.OP_DROP);
           bin(Op.OP_ELSE);
-          batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
-          bin(Op.OP_LESSTHANOREQUAL);
-          bin(Op.OP_ENDIF); bin(Op.OP_BOOLAND); bin(Op.OP_NOT);
-          batchField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_NOT);
-          bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
-          batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
-          bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
+          batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
+          bin(Op.OP_LESSTHAN); bin(Op.OP_VERIFY);
+          proofField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
+          bin(Op.OP_DROP);
+          bin(Op.OP_ELSE);
+          batchField(slot, 'next'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
+          bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_VERIFY);
+          bin(Op.OP_ENDIF); bin(Op.OP_ENDIF);
+
+          // Every target lying in this original proof gap is at or after plannedNext (so none can be skipped).
+          for (const other of targets) {
+            if (other === slot) continue;
+            arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+            bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+            batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHAN); // h < other
+            proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
+            bin(Op.OP_DROP); bin(Op.OP_1);
+            bin(Op.OP_ELSE);
+            batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHANOREQUAL);
+            bin(Op.OP_ENDIF); bin(Op.OP_BOOLAND); bin(Op.OP_NOT);
+            batchField(slot, 'next'); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_NOT);
+            bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
+            batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLAND); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
+            bin(Op.OP_ENDIF);
+          }
+
+          // proofIsTarget: existing targets are recreated at their fixed target output; absent targets additionally
+          // recreate their non-target predecessor at predOut.
+          proofField(slot, 'slot'); batchField(slot, 'slot'); bin(Op.OP_EQUAL);
+          for (const other of targets) {
+            if (other === slot) continue;
+            proofField(slot, 'slot', 1); batchField(other, 'slot');
+            bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+          }
+          bin(Op.OP_NOTIF);
+
+          // Recreated predecessor: preserve the authenticated proof input's locking bytecode. The per-target write
+          // path independently binds that proof input to this collection's covenant address, so re-synthesizing the
+          // address here is redundant and stack-fragile; input/output equality is both tighter and substantially leaner.
+          copyPredOut(); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+          proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE);
+          bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
+
+          copyPredOut(); bin(Op.OP_OUTPUTTOKENCATEGORY);
+          bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
+          this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
+          this.emitVerifyCatBaseEqMaster(loc);
+
+          outputField(slot, 'slot'); proofField(slot, 'slot', 1); bin(Op.OP_EQUALVERIFY);
+          outputField(slot, 'value'); proofField(slot, 'value', 1); bin(Op.OP_EQUALVERIFY);
+
+          // Predecessor next is a target and is the minimum target in its authenticated gap.
+          outputField(slot, 'next'); batchField(slot, 'slot'); bin(Op.OP_EQUAL);
+          for (const other of targets) {
+            if (other === slot) continue;
+            outputField(slot, 'next', 1); batchField(other, 'slot');
+            bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
+          }
+          bin(Op.OP_VERIFY);
+          for (const other of targets) {
+            arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+            bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
+            proofField(slot, 'slot'); bin(Op.OP_BIN2NUM);
+            batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
+            proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
+            bin(Op.OP_DROP); bin(Op.OP_1);
+            bin(Op.OP_ELSE);
+            batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHANOREQUAL);
+            bin(Op.OP_ENDIF); bin(Op.OP_BOOLAND); bin(Op.OP_NOT);
+            outputField(slot, 'next', 1); bin(Op.OP_BIN2NUM);
+            batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
+            bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
+            bin(Op.OP_ENDIF);
+          }
+          bin(Op.OP_ENDIF);
+
+          bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
+          bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
           bin(Op.OP_ENDIF);
         }
-
-        // proofIsTarget: existing targets are recreated at their fixed target output; absent targets additionally
-        // recreate their non-target predecessor at predOut.
-        proofField(slot, 'slot'); batchField(slot, 'slot'); bin(Op.OP_EQUAL);
-        for (const other of targets) {
-          if (other === slot) continue;
-          proofField(slot, 'slot', 1); batchField(other, 'slot');
-          bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
-        }
-        bin(Op.OP_NOTIF);
-
-        // Recreated predecessor: preserve the authenticated proof input's locking bytecode. The per-target write
-        // path independently binds that proof input to this collection's covenant address, so re-synthesizing the
-        // address here is redundant and stack-fragile; input/output equality is both tighter and substantially leaner.
-        copyPredOut(); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
-        proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE);
-        bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
-
-        copyPredOut(); bin(Op.OP_OUTPUTTOKENCATEGORY);
-        bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
-        this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
-        this.emitVerifyCatBaseEqMaster(loc);
-
-        outputField(slot, 'slot'); proofField(slot, 'slot', 1); bin(Op.OP_EQUALVERIFY);
-        outputField(slot, 'value'); proofField(slot, 'value', 1); bin(Op.OP_EQUALVERIFY);
-
-        // Predecessor next is a target and is the minimum target in its authenticated gap.
-        outputField(slot, 'next'); batchField(slot, 'slot'); bin(Op.OP_EQUAL);
-        for (const other of targets) {
-          if (other === slot) continue;
-          outputField(slot, 'next', 1); batchField(other, 'slot');
-          bin(Op.OP_EQUAL); bin(Op.OP_BOOLOR);
-        }
-        bin(Op.OP_VERIFY);
-        for (const other of targets) {
-          arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
-          bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-          proofField(slot, 'slot'); bin(Op.OP_BIN2NUM);
-          batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
-          proofField(slot, 'next', 1); bin(Op.OP_DUP); zero32(); bin(Op.OP_EQUAL); bin(Op.OP_IF);
-          bin(Op.OP_DROP); bin(Op.OP_1);
-          bin(Op.OP_ELSE);
-          batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_SWAP); bin(Op.OP_BIN2NUM);
-          bin(Op.OP_LESSTHANOREQUAL);
-          bin(Op.OP_ENDIF); bin(Op.OP_BOOLAND); bin(Op.OP_NOT);
-          outputField(slot, 'next', 1); bin(Op.OP_BIN2NUM);
-          batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
-          bin(Op.OP_LESSTHANOREQUAL); bin(Op.OP_BOOLOR); bin(Op.OP_VERIFY);
-          bin(Op.OP_ENDIF);
-        }
-        bin(Op.OP_ENDIF);
-
-        bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // proof commitment
-        bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // predecessor output index
-        bin(Op.OP_ENDIF);
-      }
-      bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
+        bin(Op.OP_FROMALTSTACK); bin(Op.OP_DROP); // packed batch slot/next blob
       }
 
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
@@ -17169,8 +17172,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
     } else {
       const a = node as MappingAssignNode;
-      if (op === 'set') { a.expression = this.visit(a.expression); }
-      else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
+      if (op === 'set') { a.expression = this.visit(a.expression); } else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
         // Wrap the whole-array/bytes value as the inline tail len4 ++ value; REVERT if size > 60 (chunked-in-loop is
@@ -17432,8 +17434,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private blockHasKeccakCall(node: Node): boolean {
     if (node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const value of Object.values(node)) {
-      if (value instanceof Node) { if (this.blockHasKeccakCall(value)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) { if (this.blockHasKeccakCall(value)) return true; } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.blockHasKeccakCall(item)) return true;
       }
     }
@@ -17471,8 +17472,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
       || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
     for (const value of Object.values(node)) {
-      if (value instanceof Node) { if (this.blockHasEcrecoverCall(value)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) { if (this.blockHasEcrecoverCall(value)) return true; } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.blockHasEcrecoverCall(item)) return true;
       }
     }

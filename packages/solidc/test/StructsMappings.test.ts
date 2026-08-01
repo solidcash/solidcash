@@ -188,7 +188,7 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('resolves a pointer reassigned to a conditional (both g() and h() call sites)', () => {
-    const a = compileString(`contract test { mapping(uint8 => uint8) a; mapping(uint8 => uint8) b;`
+    const a = compileString('contract test { mapping(uint8 => uint8) a; mapping(uint8 => uint8) b;'
       + ' function f() internal returns (mapping(uint8 => uint8) storage r) { r = a; r[1] = 42; r = b; r[1] = 84; }'
       + ' function g() public returns (uint8, uint8) { f()[2] = 21; return (a[1], b[2]); }'
       + ' function h() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = f(); m[2] = 17;'

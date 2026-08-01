@@ -303,6 +303,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedInsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
   }>;
+
   // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
   // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
   // commitment (value = oldValue op v, v for 'set', or the type default for 'delete') at output[master+blockSize+i].
@@ -314,6 +315,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     valueArrayOffset?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+
   // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
@@ -361,6 +363,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   hiddenBatchBlockhashReads?: {
     row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
   }[];
+
   hiddenBatchEligible?: boolean;
   hiddenBatchRejectionReason?: string;
   // Release 4 collection rows bind source argument positions to hidden
@@ -372,6 +375,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     source?: 'argument' | 'msgSender';
     perRow?: boolean;
   }[];
+
   isFreeFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
   /**
@@ -425,20 +429,20 @@ export class FunctionDefinitionNode extends Node implements Named {
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
-                                            // (SDK transparent co-spend); null = not a direct param
+  // (SDK transparent co-spend); null = not a direct param
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
-                                // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
-                                // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
+  // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
-                                // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
+  // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
-                                // auto-co-spends them and the contract reads the recovered pubkey from B's output
+  // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
-                                // param names feeding it (SDK transparent co-spend); null entry = not a direct param
+  // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
-                                // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
+  // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count

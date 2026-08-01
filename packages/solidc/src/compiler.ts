@@ -827,8 +827,7 @@ function synthesizeHiddenBatchRoute(
             else if (node.operator === NullaryOperator.MSG_VALUE) routeUsesMsgValue = true;
             else if (node.operator === NullaryOperator.INPUT_INDEX) {
               routeUsesStableOwnerIntrospection = true;
-            }
-            else if (node.operator === NullaryOperator.TX_ORIGIN) routeUsesTxOrigin = true;
+            } else if (node.operator === NullaryOperator.TX_ORIGIN) routeUsesTxOrigin = true;
             else routeUsesOtherIntrospection = true;
           }
           if (node instanceof ExternalFunctionCallNode) {
@@ -2137,148 +2136,148 @@ function synthesizeHiddenBatchRoute(
     captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
   ): string =>
     eligible.map((fn, handlerIndex) => {
-    const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
-    const invokeName = fn === resourceShapedHandler
-      ? resourceHandlerInvokeName!
-      : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
+      const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
+      const invokeName = fn === resourceShapedHandler
+        ? resourceHandlerInvokeName!
+        : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
-    const invoke = (args: string, selectedInvokeName = invokeName): string => {
-      if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
-      const names = fn.returnTypes.map((_type, index) =>
-        `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
-      const declarations = fn.returnTypes.map((type, index) =>
-        `${type.toString()} ${names[index]};`).join(' ');
-      const assignment = fn.returnTypes.length === 1
-        ? `${names[0]} = ${selectedInvokeName}(${args});`
-        : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
-      return `${declarations} ${assignment} __scb_results = bytes.concat(
+      const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
+        const names = fn.returnTypes.map((_type, index) =>
+          `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
+        const declarations = fn.returnTypes.map((type, index) =>
+          `${type.toString()} ${names[index]};`).join(' ');
+        const assignment = fn.returnTypes.length === 1
+          ? `${names[0]} = ${selectedInvokeName}(${args});`
+          : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
+        return `${declarations} ${assignment} __scb_results = bytes.concat(
         __scb_results, abi.encode(${names.join(', ')})
       );`;
-    };
-    const blockhashRowOffset = graphBlockhashReads.has(fn)
-      ? (rowIndex === undefined
-        ? `(${rowExpression}) * ${graphBlockhashReadWidth}`
-        : String(rowIndex * graphBlockhashReadWidth))
-      : undefined;
-    const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
-      binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
-    const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
-      (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
-        (perRow ? `${base}_r${rowIndex}` : base));
-    if (fn.parameters.length === 0) {
-      const entryOnly = [...entryKeyArguments(fn), ...(blockhashRowOffset
-        ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [])];
-      const senderChecks = (fn.hiddenBatchKeyWitnesses ?? [])
-        .filter((binding) => binding.source === 'msgSender')
-        .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
-      return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
-    }
-    const decodedParameters = fn.parameters
-      .map((parameter, index) => ({ parameter, index }))
-      .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString())
+      };
+      const blockhashRowOffset = graphBlockhashReads.has(fn)
+        ? (rowIndex === undefined
+          ? `(${rowExpression}) * ${graphBlockhashReadWidth}`
+          : String(rowIndex * graphBlockhashReadWidth))
+        : undefined;
+      const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
+        binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
+      const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
+        (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
+          (perRow ? `${base}_r${rowIndex}` : base));
+      if (fn.parameters.length === 0) {
+        const entryOnly = [...entryKeyArguments(fn), ...(blockhashRowOffset
+          ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [])];
+        const senderChecks = (fn.hiddenBatchKeyWitnesses ?? [])
+          .filter((binding) => binding.source === 'msgSender')
+          .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
+        return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
+      }
+      const decodedParameters = fn.parameters
+        .map((parameter, index) => ({ parameter, index }))
+        .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString())
         && !parameter.name.startsWith('__internal__'));
-    const declarations = decodedParameters.map(({ parameter, index }) =>
-      `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
-    const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
-    const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
-      binding.source === 'msgSender'
-        ? `require(${witnessName(binding)} == __scb_graph_caller);`
-        : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
-    // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
-    // checked, so the journal sees one identity per physical entry however the handler names its parameters.
-    //
-    // A handler with no batch clone has no entry-key parameters, and the journal hoists its entry reads to the
-    // top of the wrapper - above the dispatch branch where `__scb_arg_*` is declared. Those key positions must
-    // still be passed as route witnesses, which are wrapper parameters and therefore always in scope.
-    const substituteKeyWitnesses = !handlerEntryKeys.has(fn);
-    const witnessByInput = new Map(substituteKeyWitnesses
-      ? (fn.hiddenBatchKeyWitnesses ?? [])
-        .filter((binding) => binding.source !== 'msgSender')
-        .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
-      : []);
-    const sourceCallArgs = [
-      ...fn.parameters.map((parameter, i) =>
-        isTransactionSignatureType(parameter.type.toString())
-          ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
-          : parameter.name === '__internal__externalOutStateInputBase'
-          ? (() => {
-            const targetName = fn.externalOutStateReads?.find((read) => read.addressParam)?.addressParam;
-            const targetIndex = fn.parameters.findIndex((candidate) => candidate.name === targetName);
-            if (targetIndex < 0) throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
-            return `__scb_graph_owner_input(__internal__graphSettlementTable, `
+      const declarations = decodedParameters.map(({ parameter, index }) =>
+        `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
+      const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
+      const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
+        binding.source === 'msgSender'
+          ? `require(${witnessName(binding)} == __scb_graph_caller);`
+          : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
+      // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
+      // checked, so the journal sees one identity per physical entry however the handler names its parameters.
+      //
+      // A handler with no batch clone has no entry-key parameters, and the journal hoists its entry reads to the
+      // top of the wrapper - above the dispatch branch where `__scb_arg_*` is declared. Those key positions must
+      // still be passed as route witnesses, which are wrapper parameters and therefore always in scope.
+      const substituteKeyWitnesses = !handlerEntryKeys.has(fn);
+      const witnessByInput = new Map(substituteKeyWitnesses
+        ? (fn.hiddenBatchKeyWitnesses ?? [])
+          .filter((binding) => binding.source !== 'msgSender')
+          .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
+        : []);
+      const sourceCallArgs = [
+        ...fn.parameters.map((parameter, i) =>
+          isTransactionSignatureType(parameter.type.toString())
+            ? signatureWitnessName(handlerIndex, i, rowIndex ?? 0)
+            : parameter.name === '__internal__externalOutStateInputBase'
+              ? (() => {
+                const targetName = fn.externalOutStateReads?.find((read) => read.addressParam)?.addressParam;
+                const targetIndex = fn.parameters.findIndex((candidate) => candidate.name === targetName);
+                if (targetIndex < 0) throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
+                return '__scb_graph_owner_input(__internal__graphSettlementTable, '
               + `__scb_arg_${handlerIndex}_${targetIndex})`;
-          })()
-          : i === tokenCategoryInputByHandler.get(fn)
-          ? '__scb_token_category'
-          : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
-      ...(blockhashRowOffset ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []),
-    ];
-    const physicalEntryArgs = entryKeyArguments(fn);
-    const entryShape = handlerEntryKeys.get(fn);
-    const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow) ?? -1;
-    const varyingEntry = varyingEntryIndex >= 0 ? entryShape![varyingEntryIndex] : undefined;
-    const sharedEntryIndex = varyingEntry
-      ? entryShape!.findIndex((entry) =>
-        !entry.perRow && `${entry.base}_row` === varyingEntry.base)
-      : -1;
-    const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
-    const outStateBoundaryChecks = graphControllerLbc === undefined ? '' : (fn.externalOutStateReads ?? [])
-      .map((read) => {
-        const targetIndex = fn.parameters.findIndex((parameter) => parameter.name === read.addressParam);
-        if (targetIndex < 0) {
-          throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
-        }
-        return `require(__scb_graph_completion >= __scb_graph_settlement(`
+              })()
+              : i === tokenCategoryInputByHandler.get(fn)
+                ? '__scb_token_category'
+                : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
+        ...(blockhashRowOffset ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []),
+      ];
+      const physicalEntryArgs = entryKeyArguments(fn);
+      const entryShape = handlerEntryKeys.get(fn);
+      const varyingEntryIndex = entryShape?.findIndex((entry) => entry.perRow) ?? -1;
+      const varyingEntry = varyingEntryIndex >= 0 ? entryShape![varyingEntryIndex] : undefined;
+      const sharedEntryIndex = varyingEntry
+        ? entryShape!.findIndex((entry) =>
+          !entry.perRow && `${entry.base}_row` === varyingEntry.base)
+        : -1;
+      const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
+      const outStateBoundaryChecks = graphControllerLbc === undefined ? '' : (fn.externalOutStateReads ?? [])
+        .map((read) => {
+          const targetIndex = fn.parameters.findIndex((parameter) => parameter.name === read.addressParam);
+          if (targetIndex < 0) {
+            throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
+          }
+          return 'require(__scb_graph_completion >= __scb_graph_settlement('
           + `__internal__graphSettlementTable, __scb_arg_${handlerIndex}_${targetIndex}));`;
-      }).join(' ');
-    const decode = declarations.length === 0
-      ? 'require(rowArgs.length == 0);'
-      : declarations.length === 1
-      ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
-      // X71. PARENTHESISED, because the unparenthesised multi-declaration `T a, U b = ..` is
-      // `typeName Identifier (',' typeName Identifier)+` in the grammar and admits no array type, so a handler
-      // with an array parameter made this generator emit source the compiler's own parser rejects - reported at
-      // a line number in THIS generated text, which is not a position in anything the user wrote. The
-      // parenthesised form's `tupleSlot` already accepts `arrayType`, and AstBuilder builds the same
-      // TupleAssignmentNode either way (only the print-only `parenthesised` flag differs), so no emitted byte
-      // changes and no user program becomes newly valid.
-      : `(${declarations.join(', ')}) = abi.decode(rowArgs, (${schema}));`;
-    // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
-    // sees the callsite. A varying key which aliases the shared key or an earlier row is passed as that earlier
-    // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
-    // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
-    // off when one of these equality arms is taken.
-    if (fn === resourceShapedHandler && rowIndex !== undefined
+        }).join(' ');
+      const decode = declarations.length === 0
+        ? 'require(rowArgs.length == 0);'
+        : declarations.length === 1
+          ? `${declarations[0]} = abi.decode(rowArgs, (${schema}));`
+        // X71. PARENTHESISED, because the unparenthesised multi-declaration `T a, U b = ..` is
+        // `typeName Identifier (',' typeName Identifier)+` in the grammar and admits no array type, so a handler
+        // with an array parameter made this generator emit source the compiler's own parser rejects - reported at
+        // a line number in THIS generated text, which is not a position in anything the user wrote. The
+        // parenthesised form's `tupleSlot` already accepts `arrayType`, and AstBuilder builds the same
+        // TupleAssignmentNode either way (only the print-only `parenthesised` flag differs), so no emitted byte
+        // changes and no user program becomes newly valid.
+          : `(${declarations.join(', ')}) = abi.decode(rowArgs, (${schema}));`;
+      // Canonicalize the measured two-row, one-shared/one-varying resource shape before the collection journal
+      // sees the callsite. A varying key which aliases the shared key or an earlier row is passed as that earlier
+      // IDENTIFIER, so LowerCollectionJournalHelpers uses one cache and preserves Solidity's sequential lvalue
+      // semantics. The distinct arm retains its own physical entry slot. Later semantic metadata gates that slot
+      // off when one of these equality arms is taken.
+      if (fn === resourceShapedHandler && rowIndex !== undefined
       && entryShape && entryShape.filter((entry) => entry.perRow).length === 1
       && sharedEntryIndex >= 0 && varyingEntry) {
-      const shared = entryShape[sharedEntryIndex].base;
-      const varying = `${varyingEntry.base}_r${rowIndex}`;
-      // Shared-self aliasing is handled inside the clone so its call/return frame remains statically identical.
-      // Only an alias to a prior row needs wrapper-level cache redirection.
-      const prior = [
-        shared,
-        ...Array.from({ length: rowIndex }, (_unused, priorRow) =>
-          `${varyingEntry.base}_r${priorRow}`),
-      ];
-      let dispatch = invoke(callArgs);
-      for (let candidateIndex = prior.length - 1; candidateIndex >= 0; candidateIndex--) {
-        const candidate = prior[candidateIndex];
-        const aliasedEntryArgs = [...physicalEntryArgs];
-        aliasedEntryArgs[varyingEntryIndex] = candidate;
-        // Keep the shared-self case on two distinct wrapper cache locals. The handler's internal equality branch
-        // canonicalizes the actual lvalue, while the untouched varying cache occupies its own return/capture slot.
-        // Passing the shared IDENTIFIER twice would make the wrapper pool capture two return fields into one local,
-        // corrupting the surrounding stack frame. Cross-row aliases have no within-handler collision and may safely
-        // reuse the earlier row's cache directly.
-        const aliasedArgs = candidate === shared
-          ? callArgs : [...sourceCallArgs, ...aliasedEntryArgs].join(', ');
-        const selectedInvoke = candidate === shared && resourceSelfAliasHandlerInvokeName
-          ? resourceSelfAliasHandlerInvokeName : invokeName;
-        dispatch = `if (${varying} == ${candidate}) { ${invoke(aliasedArgs, selectedInvoke)} } else { ${dispatch} }`;
+        const shared = entryShape[sharedEntryIndex].base;
+        const varying = `${varyingEntry.base}_r${rowIndex}`;
+        // Shared-self aliasing is handled inside the clone so its call/return frame remains statically identical.
+        // Only an alias to a prior row needs wrapper-level cache redirection.
+        const prior = [
+          shared,
+          ...Array.from({ length: rowIndex }, (_unused, priorRow) =>
+            `${varyingEntry.base}_r${priorRow}`),
+        ];
+        let dispatch = invoke(callArgs);
+        for (let candidateIndex = prior.length - 1; candidateIndex >= 0; candidateIndex--) {
+          const candidate = prior[candidateIndex];
+          const aliasedEntryArgs = [...physicalEntryArgs];
+          aliasedEntryArgs[varyingEntryIndex] = candidate;
+          // Keep the shared-self case on two distinct wrapper cache locals. The handler's internal equality branch
+          // canonicalizes the actual lvalue, while the untouched varying cache occupies its own return/capture slot.
+          // Passing the shared IDENTIFIER twice would make the wrapper pool capture two return fields into one local,
+          // corrupting the surrounding stack frame. Cross-row aliases have no within-handler collision and may safely
+          // reuse the earlier row's cache directly.
+          const aliasedArgs = candidate === shared
+            ? callArgs : [...sourceCallArgs, ...aliasedEntryArgs].join(', ');
+          const selectedInvoke = candidate === shared && resourceSelfAliasHandlerInvokeName
+            ? resourceSelfAliasHandlerInvokeName : invokeName;
+          dispatch = `if (${varying} == ${candidate}) { ${invoke(aliasedArgs, selectedInvoke)} } else { ${dispatch} }`;
+        }
+        return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch} }`;
       }
-    return `${condition} { ${decode} ${keyChecks} ${outStateBoundaryChecks} ${dispatch} }`;
-    }
-    return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
+      return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
     }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
     (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
@@ -2353,7 +2352,7 @@ function synthesizeHiddenBatchRoute(
       || tokenContainerMode
       ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
         `if (rowCount > ${row}) { ${parseOneRow(String(row), resultMode, row)} }`).join(' ')
-    : `for (bigint row = 0; row < rowCount; row = row + 1) {
+      : `for (bigint row = 0; row < rowCount; row = row + 1) {
         ${parseOneRow('row')}
       }`;
   const resultDeclarations = resultMode ? 'bytes __scb_results = hex\"\";' : '';
@@ -2572,8 +2571,8 @@ function synthesizeHiddenBatchRoute(
         ${graphControllerLbc === undefined
     ? ''
     : `${allGraphEmissionHandlersRuntime
-    ? 'require(__internal__graphEmissions.length == 0);'
-    : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
+      ? 'require(__internal__graphEmissions.length == 0);'
+      : 'require(__internal__graphEmissions == __internal__graphEmissions);'}
         require(__internal__graphCallers == __internal__graphCallers);`}
         ${returnStatement}
       }
@@ -3289,46 +3288,46 @@ function compileResolvedAst(
         && externalCalls.every((call) =>
           call.occurrence === 'once' || call.maximumOccurrences !== undefined);
       return ({
-      id: summary.id,
-      name: summary.name,
-      arity: summary.arity + (invocationFunctionById.get(summary.id)?.journalContextArity ?? 0),
-      entryPoint: summary.entryPoint,
-      ...(selectorById.get(summary.id) && { selector: selectorById.get(summary.id) }),
-      calls: summary.calls,
-      closure: summary.closure,
-      component: summary.component,
-      recursive: summary.recursive,
-      reads: summary.footprint.reads,
-      writes: summary.footprint.writes,
-      effects: summary.footprint.effects,
-      unknown: summary.footprint.unknown,
-      ...(abi?.outputs?.length && { outputs: abi.outputs }),
-      ...(externalCalls.some((call) => call.hasReturnValues || call.opaqueReturn) && {
-        resultDependencies: externalCalls
-          .filter((call) => call.hasReturnValues || call.opaqueReturn)
-          .map((call) => ({
-            callsiteId: call.callsiteId!,
-            returnTypes: call.returnTypes ?? [],
-            opaque: !!call.opaqueReturn,
-          })),
-      }),
-      ...(abi?.resultConsumers?.length && { resultConsumers: abi.resultConsumers }),
-      bounded,
-      ...(bounded && {
-        maximumDirectInvocations: externalCalls.reduce(
-          (total, call) => total + (call.maximumOccurrences ?? 1), 0,
-        ),
-      }),
-      ...(externalCalls.length && { externalCalls }),
-      ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
-      ...(abi?.emits?.length && { emits: abi.emits }),
-      ...(abi?.transferCount !== undefined && { transferCount: abi.transferCount }),
-      ...(abi?.transfers?.length && { transfers: abi.transfers }),
-      ...(abi?.tokenContainerAccesses?.length && { tokenContainerAccesses: abi.tokenContainerAccesses }),
-      ...(abi?.dynamicReads?.length && { dynamicReads: abi.dynamicReads }),
-      ...(abi?.dynamicWrites?.length && { dynamicWrites: abi.dynamicWrites }),
-      ...(abi?.blockLayout && { blockLayout: abi.blockLayout }),
-    });
+        id: summary.id,
+        name: summary.name,
+        arity: summary.arity + (invocationFunctionById.get(summary.id)?.journalContextArity ?? 0),
+        entryPoint: summary.entryPoint,
+        ...(selectorById.get(summary.id) && { selector: selectorById.get(summary.id) }),
+        calls: summary.calls,
+        closure: summary.closure,
+        component: summary.component,
+        recursive: summary.recursive,
+        reads: summary.footprint.reads,
+        writes: summary.footprint.writes,
+        effects: summary.footprint.effects,
+        unknown: summary.footprint.unknown,
+        ...(abi?.outputs?.length && { outputs: abi.outputs }),
+        ...(externalCalls.some((call) => call.hasReturnValues || call.opaqueReturn) && {
+          resultDependencies: externalCalls
+            .filter((call) => call.hasReturnValues || call.opaqueReturn)
+            .map((call) => ({
+              callsiteId: call.callsiteId!,
+              returnTypes: call.returnTypes ?? [],
+              opaque: !!call.opaqueReturn,
+            })),
+        }),
+        ...(abi?.resultConsumers?.length && { resultConsumers: abi.resultConsumers }),
+        bounded,
+        ...(bounded && {
+          maximumDirectInvocations: externalCalls.reduce(
+            (total, call) => total + (call.maximumOccurrences ?? 1), 0,
+          ),
+        }),
+        ...(externalCalls.length && { externalCalls }),
+        ...(abi?.externalOutStateReads?.length && { externalOutStateReads: abi.externalOutStateReads }),
+        ...(abi?.emits?.length && { emits: abi.emits }),
+        ...(abi?.transferCount !== undefined && { transferCount: abi.transferCount }),
+        ...(abi?.transfers?.length && { transfers: abi.transfers }),
+        ...(abi?.tokenContainerAccesses?.length && { tokenContainerAccesses: abi.tokenContainerAccesses }),
+        ...(abi?.dynamicReads?.length && { dynamicReads: abi.dynamicReads }),
+        ...(abi?.dynamicWrites?.length && { dynamicWrites: abi.dynamicWrites }),
+        ...(abi?.blockLayout && { blockLayout: abi.blockLayout }),
+      });
     }),
     components: invocationAnalysis.components,
   };

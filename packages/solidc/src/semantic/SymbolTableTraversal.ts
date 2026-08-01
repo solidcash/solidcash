@@ -1963,7 +1963,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               || (slot.fnPtrCall && !slot.runtimeSelector)
               || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
                 .includes(slot.callMode ?? ExternalCallMode.REGULAR))
-            ) {
+          ) {
             throw new GraphHandlerShapeError(
               node,
               `Graph handler '${node.name}' requires a homogeneous void or returning call set; mixed `
@@ -2030,112 +2030,112 @@ export default class SymbolTableTraversal extends AstTraversal {
         } else {
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.
-        const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
-        inputBaseParam.location = node.location;
-        node.parameters.push(inputBaseParam);
-        this.symbolTables[0].set(Symbol.variable(inputBaseParam));
-        const inputBaseSymbol = this.symbolTables[0].get('__internal__externalCallInputBase');
-        if (inputBaseSymbol) {
-          inputBaseSymbol.references.push({ name: '__internal__externalCallInputBase' } as IdentifierNode);
-        }
-        this.pushToStack(inputBaseParam);
+          const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
+          inputBaseParam.location = node.location;
+          node.parameters.push(inputBaseParam);
+          this.symbolTables[0].set(Symbol.variable(inputBaseParam));
+          const inputBaseSymbol = this.symbolTables[0].get('__internal__externalCallInputBase');
+          if (inputBaseSymbol) {
+            inputBaseSymbol.references.push({ name: '__internal__externalCallInputBase' } as IdentifierNode);
+          }
+          this.pushToStack(inputBaseParam);
 
-        // Per-iteration COMPUTED external-call target loops (Router02 IFoo(pairFor(.., path[i], ..)).swap()) had
-        // their target rewritten to `__internal__loopTargets<n>[i]`; synthesize the matching address[] witness param
-        // so the typed inline-loop dispatch reads it and the SDK fills it from the loop array via the computed expr.
-        for (const slot of externalCallSlots) {
-          if (slot.loopArrayVar?.startsWith('__internal__loopTargets')
+          // Per-iteration COMPUTED external-call target loops (Router02 IFoo(pairFor(.., path[i], ..)).swap()) had
+          // their target rewritten to `__internal__loopTargets<n>[i]`; synthesize the matching address[] witness param
+          // so the typed inline-loop dispatch reads it and the SDK fills it from the loop array via the computed expr.
+          for (const slot of externalCallSlots) {
+            if (slot.loopArrayVar?.startsWith('__internal__loopTargets')
             && !node.parameters.some((p) => p.name === slot.loopArrayVar)) {
-            const witnessParam = new ParameterNode(new ArrayType(new AddressType(false)), slot.loopArrayVar);
-            witnessParam.location = node.location;
-            node.parameters.push(witnessParam);
-            this.symbolTables[0].set(Symbol.variable(witnessParam));
-            const wSym = this.symbolTables[0].get(slot.loopArrayVar);
-            if (wSym) {
-              wSym.references.push({ name: slot.loopArrayVar } as IdentifierNode);
-              // Back-link each rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
-              // symbol so TypeCheck (reads .definition.type) and codegen (locates the stack slot) resolve it.
-              for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
-            }
-            this.pushToStack(witnessParam);
-          }
-        }
-
-        // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
-        // array dispatch table (selectorArrayVar) verifies each element against its ON-CHAIN selector array, so
-        // it needs no witness param and no baked compile-time selector - exclude it here.
-        const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification && !s.selectorArrayVar);
-        const slotCount = node.externalCalls.length;
-        for (let i = 0; i < slotCount; i++) {
-          if (!externalCallSlots[i].needsSelectorVerification || externalCallSlots[i].selectorArrayVar) continue;
-          const slot = externalCallSlots[i];
-          // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
-          // so bake its selector as a constant the covenant checks against - a spender must not be able to point
-          // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
-          // selector (bound to `cond`).
-          if (!slot.runtimeSelector && !slot.batchInvocations) {
-            const iface = this.interfaceMap.get(slot.interfaceName);
-            const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
-            if (ifaceFunc) {
-              const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
-              slot.compileTimeSelector = computeFunctionSelector(sig);
+              const witnessParam = new ParameterNode(new ArrayType(new AddressType(false)), slot.loopArrayVar);
+              witnessParam.location = node.location;
+              node.parameters.push(witnessParam);
+              this.symbolTables[0].set(Symbol.variable(witnessParam));
+              const wSym = this.symbolTables[0].get(slot.loopArrayVar);
+              if (wSym) {
+                wSym.references.push({ name: slot.loopArrayVar } as IdentifierNode);
+                // Back-link each rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
+                // symbol so TypeCheck (reads .definition.type) and codegen (locates the stack slot) resolve it.
+                for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
+              }
+              this.pushToStack(witnessParam);
             }
           }
-          // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
-          const selectorName = slotsNeedingSelector.length === 1
-            ? '__internal__externalCallSelector'
-            : `__internal__externalCallSelector${i}`;
-          const selectorParam = new ParameterNode(new BytesType(4), selectorName);
-          selectorParam.location = node.location;
-          node.parameters.push(selectorParam);
-          this.symbolTables[0].set(Symbol.variable(selectorParam));
-          const selectorSymbol = this.symbolTables[0].get(selectorName);
-          if (selectorSymbol) {
-            selectorSymbol.references.push({ name: selectorName } as IdentifierNode);
-          }
-          this.pushToStack(selectorParam);
-        }
 
-        // Per-call absolute master-input-index param the SDK fills from the real callee layout it co-spends.
-        // Needed for: (a) foreign fn-ptr calls (callee data-NFT count unknown at compile time); (b) EVERY slot
-        // in a MULTI-call function - a prior call's callee data-NFT count (from a possibly under-declared
-        // interface) can shift this slot's fixed block offset, so the runtime index makes the covenant read the
-        // right co-spent callee regardless. Single-call functions keep the fixed offset (0, always correct).
-        // Loop slots (array-element dispatch) compute a per-iteration index and are excluded. A function that
-        // contains ANY loop slot keeps the fixed offset for its non-loop slots too (the SDK expands a loop slot
-        // into N co-spend groups, so a runtime per-slot fill cannot be aligned 1:1); the multi-call runtime
-        // index applies only to loop-free functions, counting non-loop slots.
-        const hasLoopSlot = externalCallSlots.some((s) => s.loopArrayVar || s.inlineLoopDispatch);
-        const nonLoopSlotCount = externalCallSlots
-          .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
-        for (let i = 0; i < slotCount; i++) {
-          const slot = externalCallSlots[i];
-          if (slot.loopArrayVar || slot.inlineLoopDispatch) {
+          // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
+          // array dispatch table (selectorArrayVar) verifies each element against its ON-CHAIN selector array, so
+          // it needs no witness param and no baked compile-time selector - exclude it here.
+          const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification && !s.selectorArrayVar);
+          const slotCount = node.externalCalls.length;
+          for (let i = 0; i < slotCount; i++) {
+            if (!externalCallSlots[i].needsSelectorVerification || externalCallSlots[i].selectorArrayVar) continue;
+            const slot = externalCallSlots[i];
+            // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
+            // so bake its selector as a constant the covenant checks against - a spender must not be able to point
+            // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
+            // selector (bound to `cond`).
+            if (!slot.runtimeSelector && !slot.batchInvocations) {
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
+              if (ifaceFunc) {
+                const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
+                slot.compileTimeSelector = computeFunctionSelector(sig);
+              }
+            }
+            // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
+            const selectorName = slotsNeedingSelector.length === 1
+              ? '__internal__externalCallSelector'
+              : `__internal__externalCallSelector${i}`;
+            const selectorParam = new ParameterNode(new BytesType(4), selectorName);
+            selectorParam.location = node.location;
+            node.parameters.push(selectorParam);
+            this.symbolTables[0].set(Symbol.variable(selectorParam));
+            const selectorSymbol = this.symbolTables[0].get(selectorName);
+            if (selectorSymbol) {
+              selectorSymbol.references.push({ name: selectorName } as IdentifierNode);
+            }
+            this.pushToStack(selectorParam);
+          }
+
+          // Per-call absolute master-input-index param the SDK fills from the real callee layout it co-spends.
+          // Needed for: (a) foreign fn-ptr calls (callee data-NFT count unknown at compile time); (b) EVERY slot
+          // in a MULTI-call function - a prior call's callee data-NFT count (from a possibly under-declared
+          // interface) can shift this slot's fixed block offset, so the runtime index makes the covenant read the
+          // right co-spent callee regardless. Single-call functions keep the fixed offset (0, always correct).
+          // Loop slots (array-element dispatch) compute a per-iteration index and are excluded. A function that
+          // contains ANY loop slot keeps the fixed offset for its non-loop slots too (the SDK expands a loop slot
+          // into N co-spend groups, so a runtime per-slot fill cannot be aligned 1:1); the multi-call runtime
+          // index applies only to loop-free functions, counting non-loop slots.
+          const hasLoopSlot = externalCallSlots.some((s) => s.loopArrayVar || s.inlineLoopDispatch);
+          const nonLoopSlotCount = externalCallSlots
+            .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
+          for (let i = 0; i < slotCount; i++) {
+            const slot = externalCallSlots[i];
+            if (slot.loopArrayVar || slot.inlineLoopDispatch) {
             // A received-value fn-ptr ARRAY loop (fnPtrCall): the callee layouts are unknown at compile time,
             // so the loop reads each element's callee master input index from ONE SDK-filled witness list
             // (framed ints), each identity-verified against arr[i] - the list analogue of extcallMasterIdx.
-            if (slot.loopArrayVar && slot.fnPtrCall) {
-              const listName = `__internal__extcallIdxList${slot.slotIndex}`;
-              const listParam = new ParameterNode(new BytesType(), listName);
-              listParam.location = node.location;
-              node.parameters.push(listParam);
-              this.symbolTables[0].set(Symbol.variable(listParam));
-              const listSymbol = this.symbolTables[0].get(listName);
-              if (listSymbol) listSymbol.references.push({ name: listName } as IdentifierNode);
-              this.pushToStack(listParam);
+              if (slot.loopArrayVar && slot.fnPtrCall) {
+                const listName = `__internal__extcallIdxList${slot.slotIndex}`;
+                const listParam = new ParameterNode(new BytesType(), listName);
+                listParam.location = node.location;
+                node.parameters.push(listParam);
+                this.symbolTables[0].set(Symbol.variable(listParam));
+                const listSymbol = this.symbolTables[0].get(listName);
+                if (listSymbol) listSymbol.references.push({ name: listName } as IdentifierNode);
+                this.pushToStack(listParam);
+              }
+              continue;
             }
-            continue;
+            if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
+            const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
+            const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
+            idxParam.location = node.location;
+            node.parameters.push(idxParam);
+            this.symbolTables[0].set(Symbol.variable(idxParam));
+            const idxSymbol = this.symbolTables[0].get(idxName);
+            if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
+            this.pushToStack(idxParam);
           }
-          if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
-          const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
-          const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
-          idxParam.location = node.location;
-          node.parameters.push(idxParam);
-          this.symbolTables[0].set(Symbol.variable(idxParam));
-          const idxSymbol = this.symbolTables[0].get(idxName);
-          if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
-          this.pushToStack(idxParam);
-        }
         }
       }
     }
@@ -3357,8 +3357,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) { if (this.ecrecoverCallInLoop(value, nowInLoop)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) { if (this.ecrecoverCallInLoop(value, nowInLoop)) return true; } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.ecrecoverCallInLoop(item, nowInLoop)) return true;
       }
     }
@@ -3370,8 +3369,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop)) return true;
       }
     }
@@ -4245,7 +4243,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // witness-param synthesis). `witnessName` lets a caller build a SECOND access on the SAME witness (a loop-body
   // local receiver reuses one witness for both the call target and its neutralized initializer).
   private buildLoopWitnessAccess(loopIdx: IdentifierNode, witnessName: string, loc: Node['location']):
-    { access: ArrayAccessNode; arrayId: IdentifierNode } {
+  { access: ArrayAccessNode; arrayId: IdentifierNode } {
     const arrayId = new IdentifierNode(witnessName);
     arrayId.location = loc;
     const idxCopy = new IdentifierNode(loopIdx.name); // fresh ref to the loop counter (i)
@@ -4281,8 +4279,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen.add(node);
     if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; }
-      else if (Array.isArray(v)) {
+      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node) { const r = this.findTupleAssignmentWithRhs(e, call, seen); if (r) return r; }
       }
     }
@@ -4436,8 +4433,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (idx >= 0 && node.tupleExpressions[idx]) return node.tupleExpressions[idx];
     }
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; }
-      else if (Array.isArray(v)) {
+      if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node) { const r = this.findTupleInit(e, name, seen); if (r) return r; }
       }
     }

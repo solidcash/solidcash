@@ -352,7 +352,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     // tail. Dispatch only ever reaches the resource clone, so cloning it a second time as `__scb_graph_move` left
     // a whole dead journal-handler body in the artifact.
     const functionNames = (artifact.invocationAnalysis?.functions ?? [])
-      .map((fn) => fn.name)
+      .map((fn) => fn.name);
     const cloneNames = functionNames.filter((name) => name.startsWith('__scb_resource_'));
     const transcriptCarriers = functionNames.filter((name) => name === '__scb_graph_transcript');
     // The exact-alias route has distinct stack arity and intentionally receives one compiler-owned clone.

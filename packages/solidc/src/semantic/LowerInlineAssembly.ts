@@ -2291,9 +2291,7 @@ function collectYulLets(block: YulBlockNode, out: string[]): void {
   for (const s of block.statements) {
     if (s instanceof YulVariableDeclarationNode) out.push(...s.names);
     else if (s instanceof YulIfNode) collectYulLets(s.body, out);
-    else if (s instanceof YulForLoopNode) { collectYulLets(s.pre, out); collectYulLets(s.post, out); collectYulLets(s.body, out); }
-    else if (s instanceof YulSwitchNode) { for (const c of s.cases) collectYulLets(c.body, out); if (s.defaultBody) collectYulLets(s.defaultBody, out); }
-    else if (s instanceof YulBlockNode) collectYulLets(s, out);
+    else if (s instanceof YulForLoopNode) { collectYulLets(s.pre, out); collectYulLets(s.post, out); collectYulLets(s.body, out); } else if (s instanceof YulSwitchNode) { for (const c of s.cases) collectYulLets(c.body, out); if (s.defaultBody) collectYulLets(s.defaultBody, out); } else if (s instanceof YulBlockNode) collectYulLets(s, out);
   }
 }
 

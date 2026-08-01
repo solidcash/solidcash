@@ -279,9 +279,9 @@ describe('return-site literal coercion (string / hex -> bytesN)', () => {
   // The same literal coercion applied at assignment sites also applies to a `return` value: a string or hex
   // literal returned where a wider bytesN is declared is right-padded to the return type.
   it('coerces a string / hex literal to the declared bytesN return type', () => {
-    expect(compileString(`contract C() { function f() returns (bytes32) { return "abc"; } }`,
+    expect(compileString('contract C() { function f() returns (bytes32) { return "abc"; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f() returns (bytes8) { return hex"0102"; } }`,
+    expect(compileString('contract C() { function f() returns (bytes8) { return hex"0102"; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
@@ -290,11 +290,11 @@ describe('bitwise op with an unbounded-int operand takes the bounded width', () 
   // `x | 1`, `x & 0xff`, `x | (c ? 1 : 2)` - a bounded int bitwise-combined with an int literal or a `?:` of
   // literals (an unbounded int) adopts the bounded operand's fixed width instead of failing as "unsupported".
   it('coerces an int literal / conditional operand to the bounded operand type', () => {
-    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a | 1; } }`,
+    expect(compileString('contract C() { function f(uint256 a) returns (uint256) { return a | 1; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a & 0xff; } }`,
+    expect(compileString('contract C() { function f(uint256 a) returns (uint256) { return a & 0xff; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f(bool b) returns (uint256 x) { x = 0; x |= b ? 1 : 2; } }`,
+    expect(compileString('contract C() { function f(bool b) returns (uint256 x) { x = 0; x |= b ? 1 : 2; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 
@@ -710,7 +710,7 @@ describe('bytes state-var element write (data[i] = v)', () => {
       { solidityImportCompat: true });
     const hand = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + v + data[i+1:data.length]; require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -905,7 +905,7 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
       { solidityImportCompat: true });
     const h = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + (data[i] | v) + data[i+1:data.length]; require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
@@ -2728,7 +2728,7 @@ describe('legacy 0.6.x low-level call-option syntax target.call.value(v)(data) /
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   };
   const mk = (call: string): string => 'pragma solidity ^0.6.0; contract T {'
-    + ` function exec(address target, uint256 v, bytes memory cd) public returns (bool) { (bool okk, bytes memory r)`
+    + ' function exec(address target, uint256 v, bytes memory cd) public returns (bool) { (bool okk, bytes memory r)'
     + ` = ${call}; return okk; } }`;
   it('accepts target.call.value(v)(data)', () => ok(mk('target.call.value(v)(cd)')));
   it('accepts target.call.gas(v)(data)', () => ok(mk('target.call.gas(v)(cd)')));
@@ -3139,7 +3139,7 @@ describe('using-for external-call library method on an interface-typed struct FI
     + ' require(token.transfer(to, v), "f"); } }';
   const ok = (body: string): void => {
     expect(() => compileString(`pragma solidity ^0.8.0; ${lib} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
-      + ` Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)`
+      + ' Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)'
       + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { solidityImportCompat: true })).not.toThrow();
   };
   it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));

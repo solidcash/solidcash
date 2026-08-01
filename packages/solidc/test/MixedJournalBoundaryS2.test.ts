@@ -37,7 +37,19 @@ const dynamicPlusCollection = (handler: string): string => `pragma solidcash >=0
     }`;
 
 describe('S2 dynamic-plus-collection journal boundary', () => {
-  it('rejects a resource-shaped handler that also writes unbounded string state', () => {
+  it('owner-local default keeps the direct entry and omits the unsettled route', () => {
+    const artifact = compileString(dynamicPlusCollection(`
+      function move(address from, address to, bigint amount, string tag) public {
+        this.note = tag;
+        this.balances[from] = this.balances[from] - amount;
+        this.balances[to] = this.balances[to] + amount;
+        require(amount >= 0);
+      }`), plainOptions);
+    expect(artifact.abi.find((entry) => entry.name === 'move')).toBeDefined();
+    expect(artifact.hiddenBatch).toBeUndefined();
+  }, COMPILE_TIMEOUT_MS);
+
+  it('configured controller rejects a resource-shaped handler that also writes unbounded string state', () => {
     expect(() => compileString(dynamicPlusCollection(`
       function move(address from, address to, bigint amount, string tag) public {
         this.note = tag;
@@ -49,7 +61,7 @@ describe('S2 dynamic-plus-collection journal boundary', () => {
     );
   }, COMPILE_TIMEOUT_MS);
 
-  it('rejects a single-entry handler that also writes unbounded string state', () => {
+  it('configured controller rejects a single-entry handler that also writes unbounded string state', () => {
     expect(() => compileString(dynamicPlusCollection(`
       function set(address who, bigint amount, string tag) public {
         this.note = tag;
@@ -58,7 +70,7 @@ describe('S2 dynamic-plus-collection journal boundary', () => {
       }`), busOptions)).toThrow(/Handler 'set' writes unbounded bytes\/string state/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('rejects the same combination when the collection access is only a READ', () => {
+  it('configured controller rejects the same combination when the collection access is only a READ', () => {
     // A read still leaves a raw C2 access whose witness parameters no call site forwards, so the boundary is
     // about sharing one exit, not about two writes racing.
     expect(() => compileString(dynamicPlusCollection(`
@@ -68,7 +80,7 @@ describe('S2 dynamic-plus-collection journal boundary', () => {
       }`), busOptions)).toThrow(/Handler 'tag' writes unbounded bytes\/string state/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('rejects the same combination for unbounded bytes as well as string', () => {
+  it('configured controller rejects the same combination for unbounded bytes as well as string', () => {
     expect(() => compileString(`pragma solidcash >=0.8.0;
     contract MixedBoundaryBytes() {
       bytes note;

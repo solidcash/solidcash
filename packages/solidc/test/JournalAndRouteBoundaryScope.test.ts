@@ -78,7 +78,7 @@ contract MixedBoundary() {
   // The companion half - that the BARE spelling of this same program IS admitted in bus mode - is already
   // pinned by `MixedJournalBoundaryReviewB11.test.ts`, and compiling it again here is the most expensive row in
   // the file (a bus route over chunk-backed storage), so this row asserts only the side that diverges.
-  it('BUS: the `this.` spelling reaches the dj conversion and is refused', () => {
+  it('CONFIGURED GRAPH: the `this.` spelling reaches the dj conversion and is refused', () => {
     expect(() => compileString(scash('this.note = tag;'), busOptions))
       .toThrow(/Handler 'set' writes unbounded bytes\/string state/);
   }, COMPILE_TIMEOUT_MS);

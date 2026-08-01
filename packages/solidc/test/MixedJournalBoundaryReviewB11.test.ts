@@ -158,7 +158,7 @@ contract IndirectReadBoundary() {
  * is over-strict only because the `this.` spelling reaches a code path (the dj-converted clone) that genuinely
  * cannot code-generate, not because the SHAPE is unsupportable.
  */
-describe('B/round-11 review of S2 (SETTLED): the boundary follows the SPELLING, not the dialect', () => {
+describe('B/round-11 review of S2: owner-local fallback and configured graph refusal', () => {
   const scash = (noteWrite: string): string => `pragma solidcash >=0.8.0;
 contract MixedBoundary() {
   string note;
@@ -180,7 +180,24 @@ contract MixedBoundarySol {
   }
 }`;
 
-  it('the .scash `this.` spelling is refused with and without solidityImportCompat', () => {
+  it('owner-local .scash and Solidity forms compile directly without publishing an unsettled route', () => {
+    const scashArtifact = compileString(scash('this.note = tag;'), plainOptions);
+    const solidityArtifact = compileString(
+      solidity('this.note = tag;\n    balances[who] = balances[who] + amount;'),
+      { ...plainOptions, solidityImportCompat: true },
+    );
+    expect(scashArtifact.hiddenBatch).toBeUndefined();
+    // Solidity compatibility synthesizes state getters, so their safe route
+    // may remain; only the unsettled mutating handler must be omitted.
+    expect(solidityArtifact.hiddenBatch?.handlers.find((entry: any) => entry.name === 'set')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'dynamic-and-collection-route-not-enabled',
+    });
+    expect(scashArtifact.abi.find((entry: any) => entry.name === 'set')).toBeDefined();
+    expect(solidityArtifact.abi.find((entry: any) => entry.name === 'set')).toBeDefined();
+  }, COMPILE_TIMEOUT_MS * 2);
+
+  it('configured graph: the .scash `this.` spelling is refused with and without solidityImportCompat', () => {
     expect(() => compileString(scash('this.note = tag;'), busOptions))
       .toThrow(/Handler 'set' writes unbounded bytes\/string state/);
     expect(() => compileString(scash('this.note = tag;'), solidityBusOptions))
@@ -197,7 +214,7 @@ contract MixedBoundarySol {
       .toContain('balances');
   }, COMPILE_TIMEOUT_MS);
 
-  it('the Solidity program with the `this.` spelling is REFUSED - the dialect is not the cause', () => {
+  it('configured graph: the Solidity program with the `this.` spelling is refused', () => {
     expect(() => compileString(
       solidity('this.note = tag;\n    balances[who] = balances[who] + amount;'), solidityBusOptions,
     )).toThrow(/Handler 'set' writes unbounded bytes\/string state/);

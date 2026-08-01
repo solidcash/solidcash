@@ -202,7 +202,7 @@ task-specific report, not in this table.
 | X93 | 13 diagnostics report a position in an IMPORTED file with no label | F4 | X76 | **INTEGRATED** | keyed on CLONE IDENTITY (clones share the `Location` instance): 3/17 -> 17/17; 478 labels, 0 impossible - see 4.91 |
 | X98 | Imported positions outside X93's lease | — | X93 | **CLOSED; BRIEF CORRECTED** | the preserved 839-file instrument measured 84 warnings across 8 sites, not 60: 68 imported positions now name their holding file and 16 root positions correctly remain bare. X107 subsequently stamped every parsed `Location`, covering hard errors through `Errors.ts`. `ImportedDiagnosticCensusX98` pins the 84 = 68 + 16 baseline and exercises all eight current sites in both imported and root contexts. |
 | X77 | `view` functions reported `writesState: true` | E3 | X71 | **DISPROVED - no defect** | fires on `externalCalls > 0`, not the array analysis; cannot refuse a handler; corpus delta ZERO - see 4.86 |
-| R2 | Final regression and documentation reconciliation | Main | R1 | **IN PROGRESS: documentation reconciled; final 115-file sweep uncredited** | Do not mark complete until the source-consistent full sweep finishes green on the exact integration commit |
+| R2 | Final regression and documentation reconciliation | Main | R1 | **COMPLETE: documentation reconciled; final sweep green (115 files / 1,321 passed / 11 skipped)** | Recorded at `b27dc1c4`; re-run after any future route-admission change |
 | R3 | External review and product-demand gates | External | R2 | TODO | Never simulated in-repository |
 | X1 | Repair delegate returnEvent/proxy-block slot collision | C | S2 | INTEGRATED | Needed BOTH a reserved layout slot and an SDK output swap |
 | X2 | Repair rolled (non-expanded) pointer-table loop in codegen | B5 | — | **INTEGRATED** | NOT about rolled loops: an expression selector was double-counted on the tracked stack; old hostiles were VACUOUS - see 4.71 |
@@ -5083,8 +5083,8 @@ post-state.
 > **Historical acceptance templates.** Sections 5-12 preserve the original phase checklists and sequencing.
 > Unchecked boxes below are not current task state and must not be read as open implementation rows. Current
 > status is the board above plus `message-bus-completion-ledger.md`; semantic rows are proven or explicitly
-> scoped there. External review, product demand, default-on selection, current-byte node mining, and the final
-> 115-file sweep remain separately reported evidence/process gates.
+> scoped there. External review, product demand, default-on selection, and current-byte node mining remain
+> separately reported evidence/process gates.
 
 ### P0.1 — ledger reconciliation
 
@@ -5135,7 +5135,8 @@ Checklist:
 - [ ] Iteration has a compiler-proven bound and exact row count.
 - [ ] Every delegate class proves code identity, state owner and output authority.
 - [ ] Supported context values have direct/transcript equivalence or explicitly documented logical semantics.
-- [ ] Divergent context, including current `tx.origin` and `activeBytecode`, fails closed.
+- [ ] Divergent context fails closed; controller-authenticated graph `tx.origin` has explicit logical semantics,
+      while `activeBytecode` remains refused.
 
 ### S1–S3 — state and journal semantics
 

@@ -8,7 +8,7 @@ Written for an incoming reviewer/implementer picking this up cold. Read this fil
 
 - Branch `codex/layer3-binding-spike`, worktree `/Code/cashscript/.worktrees/layer3-binding-spike`.
 - Baseline branch is `solidcash_v0.13.1`. This work has NOT been merged to it.
-- `solidc` 2,731/2,731 across 83 files. Capstones C1/C2/C3: 52 passed / 6 skipped.
+- `solidc` 2,807/2,807. Capstones C1/C2/C3: 53 passed / 6 skipped.
 - The SDK unit suite has 2 known-failing tests in `test/conformance/arithmetic.conformance.test.ts`
   (POW op-cost density). Proven pre-existing by re-running against a clean tree. Do not chase them.
 
@@ -113,8 +113,7 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   demoting existing route members. Uniformity compares the widened set with the pre-X201 set, and a
   code-generation failure retries the same ladder rung with only bare forwarding disabled. This preserves
   `ERC20Bank.token` and `balanceOf`. X226's write-then-call form settles and refuses its dropped callee at
-  input 0. The discovered bus-mode population is now 115 files. A final current-HEAD sweep is still required;
-  this document does not claim it green.
+  input 0. The final sweep at `b27dc1c4` is green: 115 files, 1,321 passed / 11 skipped.
 
 ### Tier 3: re-pins and residuals
 - **X159 is CLOSED on HEAD** - `StableSwap` compiles in bus mode with four eligible handlers, and the
@@ -242,15 +241,16 @@ npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
   test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 
 # 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
-#    115 files discovered on current HEAD. It is the only thing that has
-#    reliably caught the X229 class.
+#    115 files discovered; expect 1,321 passed / 11 skipped on the recorded
+#    final HEAD. It is the only thing that has reliably caught the X229 class.
 npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) \
   --maxWorkers=2 --reporter=dot
 
 # 3. The settlement count. The probe is inert unless L3_X204_OUT is set, and it is a pure
 #    observer: every patched method forwards to the original. Attribution is by CONTAINMENT of the
 #    batch blob in the settled raw transaction - never adjacency, which manufactures settlements.
-L3_X204_OUT=/tmp/x235 npx vitest run --config vitest.x204.config.ts \
+mkdir -p /tmp/x235
+L3_X204_OUT=/tmp/x235/records npx vitest run --config vitest.x204.config.ts \
   $(cat test/e2e/layer3-x235-union-manifest.txt) \
   --maxWorkers=2 --reporter=dot
 npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
@@ -269,8 +269,9 @@ npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:
 `ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` discovers 115 files on current HEAD.
-The final sweep has not yet been credited green. Run it at `--maxWorkers=2`; it is the only measurement
-that has reliably caught this class.
+The final recorded sweep is green at 115 files / 1,321 passed / 11 skipped. Re-run it at
+`--maxWorkers=2` after any route-admission change; it is the only measurement that has reliably caught
+this class.
 
 Do not start by adding capability. The bus admits more than it has been proven to bind, and the
 current verified ratio is 145 proved / 213 eligible, with 68 unproved; re-run the consumer after any

@@ -10,8 +10,8 @@ contracts as previously scoped. Although `invocation-transcript-v1.md` was origi
 deferred candidate, completing the full specification adopts its semantic requirements as the
 implementation target. Wire bytes remain revisable until the measurement and review gates pass.
 
-The implementation-grade continuation order, code anchors, invariants, and
-definition of done are maintained in `message-bus-opus-completion-handoff.md`.
+Current pickup instructions, code anchors, invariants, and the definition of done are maintained in
+`message-bus-HANDOFF.md`. `message-bus-opus-completion-handoff.md` remains the historical execution record.
 External review and product-demand evidence are graduation gates, not reasons
 to stop the remaining technical implementation.
 
@@ -1532,5 +1532,5 @@ The source-consistent containment run produced **1,564 observer records / 806 se
 routes / 157 resolved collisions**. Against the authoritative partition it proves **145 of 213 eligible
 handlers**, leaving **68 unproved**. Attribution is by batch-blob containment plus source/participant identity;
 adjacent setup or probe transactions receive no credit. The historical 82/206 and 112/206 measurements above
-remain valid only for their recorded populations. The discovered bus-mode population is now 115 files, but the
-final current-HEAD 115-file sweep has not yet been credited green.
+remain valid only for their recorded populations. The final current-HEAD bus-mode sweep is credited green at
+`b27dc1c4`: 115 files, 1,321 passed / 11 skipped.

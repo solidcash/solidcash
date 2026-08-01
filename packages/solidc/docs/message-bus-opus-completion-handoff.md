@@ -1,5 +1,11 @@
 # Message-bus full-spec completion handoff for Opus
 
+> **SUPERSEDED EXECUTION HANDOFF.** Releases A-J's technically implementable rows are complete. Current
+> readers should use `message-bus-HANDOFF.md` and `message-bus-completion-ledger.md`. Recorded final evidence:
+> bus sweep 115 files / 1,321 passed / 11 skipped; `solidc` 2,807/2,807; capstones 53 passed / 6 skipped;
+> union proof 145/213. Independent review, product-demand/default-on decisions, and current-byte node mining
+> remain explicit graduation gates. The instructions below are retained as the historical execution record.
+
 ## Mission
 
 Complete every technically implementable, non-process requirement in

@@ -27,14 +27,22 @@ refused at a NAMED INPUT INDEX.
 
 | figure | status |
 |---|---|
-| 215 recovered handlers | CURRENT. The same 135-row partition now records 215 gained / 0 lost: seven ordinary persisted-state getters and two single-edge, argument-target bare forwarders were monotone admissions after X160's 206 re-take. The live exact-set check names every drift. |
-| VM-proved numerator | RE-TAKE REQUIRED against 215. X235's historical union proved 82 of the then-current 206; the later all-handler run proved 112 of 206 before the nine admissions were incorporated. Do not quote either as a current ratio until the union consumer completes against 215. |
-| 13 gained writers | CURRENT classifier count: the previous eleven plus `Callback.test` and `MaliciousCallback.attack`, both single typed argument-target calls. Four publish `writesState` ABSENT and mutate nothing; settlement attribution must re-take the remaining split against 215. |
+| recovered-handler partition | CURRENT: 135 recorded rows / 126 admitted after-present rows / 213 gained / 15 lost / 64 moved. The live exact-set check names every drift. Historical 206- and 215-handler partitions remain useful only when explicitly labelled with their commit state. |
+| VM-proved numerator | CURRENT UNION: 1,564 records / 806 settlements / 167 routes / 157 collisions; 213 eligible handlers partition into 145 proved and 68 unproved. The consumer attributes only by batch-blob containment. Historical 82/206 and 112/206 runs are not current ratios. |
+| 12 gained writers | CURRENT conservative classifier count; nine explicitly publish `writesState: true`. Classification means the state machinery is required, not necessarily that the source body changes a state variable. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
-| "co-spent-callee graphs have no subject in the recovered population" | RETIRED. Four of 215 now publish an outgoing external call: the prior two plus `Callback.test` and `MaliciousCallback.attack`. The latter pair is the single typed, argument-target bare-forwarding shape covered by the X201/typed-dispatch covenant proofs. |
+| "co-spent-callee graphs have no subject in the recovered population" | RETIRED. The current 213-handler partition includes outgoing-call subjects, including the single typed, argument-target bare-forwarding shape covered by the X201/typed-dispatch covenant proofs. |
 
-`writesState: true` means **"needs the state machinery"**, NOT "changes a state variable". At least 2
-of the explicit writers write nothing. Always read the body.
+`writesState: true` means **"needs the state machinery"**, NOT "changes a state variable". Always read the body.
+
+Current capstone measurements are evidence, not estimates:
+
+- **C2:** 59,785 serialized bytes; 1,088-byte transcript; controller ratio 0.6250; projection
+  instruction counts `[15826, 15826, 15826, 15792]`.
+- **C3:** 96,461 serialized bytes; 2,006-byte transcript; controller ratio 0.9780; no over-budget input.
+- **Delegate v1:** the pinned one-hop participant is represented by a transcript-bound delegate execution
+  frame naming the distinct executor input and executor locking bytecode. Nested and general delegate graphs
+  remain outside this one-hop requirement.
 
 ## 4. Ranked open work
 
@@ -105,7 +113,8 @@ Focused current-HEAD evidence lives in `Layer3SecurityReviewL2X111`, `Layer3Emis
   demoting existing route members. Uniformity compares the widened set with the pre-X201 set, and a
   code-generation failure retries the same ladder rung with only bare forwarding disabled. This preserves
   `ERC20Bank.token` and `balanceOf`. X226's write-then-call form settles and refuses its dropped callee at
-  input 0. The full discovered sweep is now 109 files because X201 adds one bus-mode file.
+  input 0. The discovered bus-mode population is now 115 files. A final current-HEAD sweep is still required;
+  this document does not claim it green.
 
 ### Tier 3: re-pins and residuals
 - **X159 is CLOSED on HEAD** - `StableSwap` compiles in bus mode with four eligible handlers, and the
@@ -142,7 +151,8 @@ These were all learned by getting them wrong first.
    partition parser silently matched **15 of 135 rows and 68 of 206 gained handlers** because it
    required a rigid field order, then emitted a confident-looking count that was nearly published.
    The cure is cheap and non-negotiable: make the tool reproduce a number the source already publishes
-   (currently X160's own 135 rows / 215 gained) and fail loudly if it does not. Make any harness refuse to
+   (currently X160's own 135 recorded / 126 admitted / 213 gained / 15 lost / 64 moved) and fail loudly if it
+   does not. Make any harness refuse to
    call an empty run a result.
 6. **Attribute by containment, never by adjacency.** An adjacency-based settlement probe manufactured
    settlements: a probe attempt traces its route and never broadcasts, leaving the route pending for
@@ -160,10 +170,10 @@ These were all learned by getting them wrong first.
     files and found 9; the then-complete 108-file sweep found 12 across 6 files, and the 12th is the one that
     decided the row. **The handler a widening breaks need not appear in any file that mentions the
     changed feature** - here it was demoted by a uniformity pass, not by the widened predicate.
-11. **When judging a capability change, price it in PROVEN handlers, not in features.** X201 gained
-    two handlers that cannot settle and lost one that settles with a txid and two hostiles refused at
-    a named input. That is what made it a bad trade, and it is not visible from the feature
-    description.
+11. **When judging a capability change, price it in PROVEN handlers, not in features.** Historically,
+    the pre-X229 X201 attempt gained two handlers and lost one already-settling handler, which made that
+    intermediate state a bad trade. X229 retired the trade by preserving the existing route members while
+    landing X201. Keep the historical measurement as the reason for the monotonicity guard, not as HEAD state.
 
 ## 6. Security invariants that must not be traded away
 
@@ -173,10 +183,9 @@ These were all learned by getting them wrong first.
   witness-declared.
 - **A fail-closed boundary must never become an unchecked witness path.** When a capability is
   restored, prove the refusal MOVED (e.g. admission -> covenant) rather than disappeared. The worked
-  example is X201 while it was applied: `attack` became admissible again, and the VM refused it at
-  input index 0 with the vector-exhausted signature - the refusal moved, it did not vanish. X201 was
-  then reverted for an unrelated reason (X229), so on HEAD `attack` is refused at ADMISSION again.
-  Re-derive this before relying on it; do not quote it from here.
+  example is X201 on current HEAD: `attack` is admissible again, and the VM refuses it at input index 0
+  with the vector-exhausted signature - the refusal moved, it did not vanish. X229's uniformity interaction
+  was repaired without reverting the capability. Re-derive the exact VM wording before relying on it.
 - Never a bare `rejects.toThrow()` as sole hostile evidence.
 
 ## 7. Environment traps that have each cost a full run
@@ -219,10 +228,9 @@ These were all learned by getting them wrong first.
 **Nothing is lost to a revert.** Every worker branch is kept (139 of them, `worker-<id>-<round>`), and
 merged worktrees are removed but their branches retain the commits.
 
-- **X201's implementation is `worker-v1-i16` at `dd0d751b`** - a complete, VM-proved compiler change
-  plus its test file `Layer3BareForwardingBodyX201.test.ts`. It was reverted on the integration branch
-  for the uniformity interaction (X229), NOT because it was wrong on its own terms. Whoever retakes the
-  row should start from that commit rather than reimplement it, and only needs to solve X229.
+- **Historical X201 origin:** `worker-v1-i16` at `dd0d751b` contains the original complete, VM-proved
+  compiler change plus `Layer3BareForwardingBodyX201.test.ts`. It was once reverted while X229 was unresolved.
+  Current HEAD includes X201 with the X229 uniformity repair, so this commit is provenance, not pickup work.
 - V1-V4 of the last round are `worker-v{1,2,3,4}-i16`; earlier rounds follow the same pattern.
 
 **The three measurements worth re-running, with commands.** All from
@@ -234,7 +242,7 @@ npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
   test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 
 # 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
-#    109 files on current HEAD, ~36 minutes with --maxWorkers=2. It is the only thing that has
+#    115 files discovered on current HEAD. It is the only thing that has
 #    reliably caught the X229 class.
 npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) \
   --maxWorkers=2 --reporter=dot
@@ -246,7 +254,10 @@ L3_X204_OUT=/tmp/x235 npx vitest run --config vitest.x204.config.ts \
   $(cat test/e2e/layer3-x235-union-manifest.txt) \
   --maxWorkers=2 --reporter=dot
 npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
-# The committed consumer refuses empty observations and self-checks 135 rows / 215 gained / 0 lost.
+# The committed consumer refuses empty observations and self-checks
+# 135 recorded / 126 admitted / 213 gained / 15 lost / 64 moved.
+# Latest verified union: 1,564 records / 806 settlements / 167 routes / 157 collisions;
+# 213 eligible = 145 proved + 68 unproved.
 ```
 
 ## 10. What I would do first
@@ -257,9 +268,10 @@ npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
    surface and prior rounds show a real hit rate there.
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:
-`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` is 109 files on current HEAD; the
-final X201 verification took ~36 minutes at
-`--maxWorkers=2`. It is the only measurement that has reliably caught this class.
+`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` discovers 115 files on current HEAD.
+The final sweep has not yet been credited green. Run it at `--maxWorkers=2`; it is the only measurement
+that has reliably caught this class.
 
 Do not start by adding capability. The bus admits more than it has been proven to bind, and the
-ratio must come from a fresh consumer run against the current 215-handler population.
+current verified ratio is 145 proved / 213 eligible, with 68 unproved; re-run the consumer after any
+admission or settlement change rather than carrying this ratio forward.

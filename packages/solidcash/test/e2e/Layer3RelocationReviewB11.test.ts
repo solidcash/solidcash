@@ -455,7 +455,7 @@ describe('B/round-11 review of L1: relocation width and the region-pinning attri
  * output the controller has to walk.
  */
 describe('B/round-11 X28 input: the controller per-output term, re-fit at fixed P and N', () => {
-  it('MEASURED: attest costs a fixed number of instructions per transaction output', async () => {
+  it('MEASURED: attest keeps instruction count fixed while output bytes widen', async () => {
     const harness = await createHarness();
     const narrow = await assemble(harness, 'one', 'none');
     const narrowSlots = narrow.builder.inputs.length;
@@ -473,18 +473,15 @@ describe('B/round-11 X28 input: the controller per-output term, re-fit at fixed 
     expect(wideSlots).toBe(9);
     // Both drivers are p2sh32, so the two transcripts are the same length and the controller input has the
     // IDENTICAL density-control length in both. Transcript size is therefore held fixed too, not just P and N.
-    expect(narrowController.bytes).toBe(1844);
-    expect(wideController.bytes).toBe(1844);
-    expect(narrowController.instructions).toBe(4015);
-    expect(wideController.instructions).toBe(4079);
+    expect(narrowController.bytes).toBe(3366);
+    expect(wideController.bytes).toBe(3366);
+    expect(narrowController.instructions).toBe(8369);
+    expect(wideController.instructions).toBe(8369);
     const slope = (wideController.instructions - narrowController.instructions) / (wideSlots - narrowSlots);
-    expect(slope).toBe(32);
-    // The cost slope carries a SECOND per-output term the instruction count does not show: `attest` pushes
-    // each output's token category, so the two added outputs (both token-bearing data NFTs) also add 3,712
-    // pushed bytes. A reserved-but-unused trailing slot is an ordinary tokenless output and pays only the
-    // instruction term, so 32 x 100 is the conservative per-slot price of `BALANCED_TRAILING_CAPACITY`.
-    expect(wideController.pushedBytes - narrowController.pushedBytes).toBe(3712);
-    // 10,114 = 6,400 instruction term + 3,712 pushed bytes + a 2-unit arithmetic residue.
-    expect(wideController.cost - narrowController.cost).toBe(10_114);
+    expect(slope).toBe(0);
+    // The instruction walk is fixed, but the two token-bearing outputs still widen the bytes pushed while
+    // introspecting the transaction. This is the remaining output-count cost after the controller refactor.
+    expect(wideController.pushedBytes - narrowController.pushedBytes).toBe(4886);
+    expect(wideController.cost - narrowController.cost).toBe(4886);
   }, 240_000);
 });

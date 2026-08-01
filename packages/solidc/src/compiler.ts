@@ -2652,6 +2652,13 @@ function compileResolvedAst(
   // constant, and reserve a real entry slot when it is a parameter.
   ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
 
+  // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
+  // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
+  // handler can move synthesis ahead of the ordinary unroll pass and leave the iteration's stale blanket marker.
+  if (mergedCompilerOptions.experimentalHiddenBatch) {
+    ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, true)) as Ast;
+  }
+
   // The compiler-owned route must participate in the same helper/state
   // lowerings as source entry points. In particular, collection-bearing
   // handlers need their authenticated entry operations inlined into this
@@ -2735,9 +2742,7 @@ function compileResolvedAst(
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  ast = ast.accept(new UnrollFixedBoundEntryLoop(
-    false, undefined, mergedCompilerOptions.experimentalHiddenBatch === true,
-  )) as Ast;
+  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
   ast = ast.accept(new LowerC2CounterLoops()) as Ast;

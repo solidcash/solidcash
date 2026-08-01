@@ -34,19 +34,18 @@ import type { Artifact } from '@solidcash/utils';
 // | msg.data                | REJECTED                    | admitted at leaf          | LOGICAL    |
 // | msg.value               | admitted (alone only)       | admitted                  | LOGICAL    |
 // | msg.sender              | REJECTED                    | admitted at leaf          | LOGICAL    |
-// | tx.origin               | REJECTED                    | REJECTED                  | REJECTED   |
+// | tx.origin               | REJECTED                    | admitted                  | LOGICAL    |
 // | this.activeBytecode     | REJECTED                    | REJECTED                  | REJECTED   |
 // | IFoo(a).outState.f      | admitted                    | admitted                  | EQUIVALENT |
 //
-// Why the two REJECTED rows are rejected, and why they stay rejected:
+// Why tx.origin is graph-only, and why the remaining REJECTED row stays rejected:
 //
 //   tx.origin scans the transaction for the first spendable non-token P2PKH input. In a graph transaction
-//   that input is a funding slot chosen by whoever assembled the block layout, so the same handler would
-//   read a different principal depending on assembly rather than on the call. The graph does have an
-//   authenticated origin - the projection verifier pins the ROOT invocation's logical caller to `tx.origin`
-//   - but that is the root's caller, not an ambient value every nested handler may read. Admitting the bare
-//   ambient form would hand nested handlers a value no transcript field binds. `msg.sender` is the admitted
-//   replacement and it is authenticated per invocation.
+//   is the authenticated carrier signer: the projection verifier binds a non-empty ROOT logical-caller row to
+//   `tx.origin`, while the controller category and locking bytecode authenticate the carrier. Nested handlers
+//   may therefore read the same graph-global origin; `msg.sender` remains the per-invocation parent identity.
+//   Without the graph controller this binding does not exist, so direct hidden-batch mode still refuses it.
+//   The VM-positive and wrong-participant hostile proof are in `e2e/ReviewA13ContextE4.test.ts`.
 //
 //   this.activeBytecode is OP_ACTIVEBYTECODE: BCH returns the bytecode in the CURRENT evaluation frame, and
 //   OP_INVOKE temporarily makes its selected body that frame's active bytecode. Direct and SCB1 dispatch do
@@ -57,8 +56,8 @@ import type { Artifact } from '@solidcash/utils';
 // lower to fixed shims with no BCH analogue, which the compiler warns about. They are EQUIVALENT for the
 // trivial reason that a constant does not vary with the route.
 //
-// Both are fail-closed at compile time: the handler is marked ineligible and no route is generated for it,
-// so no SDK path and no covenant can reach the divergent value.
+// The remaining rejected value is fail-closed at compile time: the handler is marked ineligible and no route
+// is generated for it, so no SDK path and no covenant can reach the divergent value.
 const DIVERGENCE = 'direct-versus-batch-introspection-divergence';
 
 const graphOptions = {
@@ -122,7 +121,7 @@ const EXPECTED: Readonly<Record<string, { graph: boolean; direct: boolean }>> = 
   'msg.data': { graph: true, direct: false },
   'msg.value': { graph: true, direct: true },
   'msg.sender': { graph: true, direct: false },
-  'tx.origin': { graph: false, direct: false },
+  'tx.origin': { graph: true, direct: false },
   'this.activeBytecode': { graph: false, direct: false },
   '(no context value)': { graph: true, direct: true },
 };
@@ -166,17 +165,18 @@ describe('E4: context admission matrix', () => {
     expect([...reasons]).toEqual([DIVERGENCE]);
   }, 900_000);
 
-  it('fails tx.origin and this.activeBytecode closed in graph mode with no route to reach them', () => {
-    for (const name of ['tx.origin', 'this.activeBytecode']) {
-      const artifact = compileString(source(PROBES[name]), graphOptions);
-      expect(admission(artifact)).toEqual({ eligible: false, reason: DIVERGENCE });
-      // Fail-closed, not best-effort: the refused handler has no selector in the route's dispatch, so no
-      // batch blob can name it and no covenant path exists that could supply a substitute value.
-      expect(artifact.hiddenBatch!.handlers.filter((entry) => entry.eligible).map((entry) => entry.name))
-        .toEqual(['keepRoute']);
-      expect(artifact.hiddenBatch!.route.inputs.some((input) =>
-        input.name.includes('graphTranscript'))).toBe(true);
-    }
+  it('admits authenticated graph tx.origin and fails this.activeBytecode closed', () => {
+    const origin = compileString(source(PROBES['tx.origin']), graphOptions);
+    expect(admission(origin)).toEqual({ eligible: true, reason: undefined });
+    expect(origin.invocationAnalysis?.functions.map((fn) => fn.name))
+      .toContain('__scb_graph_transcript');
+
+    const activeBytecode = compileString(source(PROBES['this.activeBytecode']), graphOptions);
+    expect(admission(activeBytecode)).toEqual({ eligible: false, reason: DIVERGENCE });
+    // Fail-closed, not best-effort: the refused handler has no selector in the route's dispatch, so no
+    // batch blob can name it and no covenant path exists that could supply a substitute value.
+    expect(activeBytecode.hiddenBatch!.handlers.filter((entry) => entry.eligible).map((entry) => entry.name))
+      .toEqual(['keepRoute']);
   }, 300_000);
 
   it('admits msg.value alone but refuses it beside another logical context value', () => {

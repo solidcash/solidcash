@@ -32,7 +32,7 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  *  1. The recovered route admits `attack`, published `writesState: true`, alongside two read-only getters.
  *  2. `attack`'s whole body is one external call, `wallet.transfer(...)`, so its counterparty has to be a
- *     co-spent participant - and the counterparty `Wallet` is REFUSED from the bus by a named compiler gate.
+ *     co-spent participant - and `Wallet.transfer` is REFUSED by a named handler-admission gate.
  *  3. The SDK PLANS the graph anyway, and builds a complete balanced transaction for it.
  *  4. The VM REFUSES it, at the participant's own input index 0. Fail-closed.
  *  5. AND THE HARNESS IS NOT THE REASON. The same helper, the same staging, the same block, settles the
@@ -52,7 +52,7 @@ import type { Utxo } from '../../src/interfaces.js';
  * `attack` SETTLES. What survives is narrower and stranger: the bus accepts a transaction asserting it ran -
  * no witness path opened, nothing accepted that should not have been. What is NOT established is that a
  * recovered writer WOULD settle if one existed whose counterparty were admissible: the recovered population
- * contains exactly one writer, and its counterparty is inadmissible, so the positive case has no subject in
+ * contains exactly one writer, and its counterparty entry point is inadmissible, so the positive case has no subject in
  * this corpus at all.
  */
 
@@ -123,26 +123,26 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
   }, 300_000);
 
   /**
-   * AND THE COUNTERPARTY CANNOT BE A PARTICIPANT. `Wallet.transfer` is refused from the bus by a NAMED gate,
-   * so the only contract `attack` can call is not admissible. Matched on the refusal's text, not on the fact
-   * that something threw.
+   * AND THE COUNTERPARTY ENTRY POINT CANNOT PARTICIPATE. Bare payable-address calls now compile with an
+   * authenticated target pin, so whole-file compilation is no longer the gate. The live handler census is:
+   * `Wallet.owner` is admitted, while `Wallet.transfer` itself is refused because its tx-origin-dependent
+   * direct and batch meanings diverge. That named handler rejection still leaves `attack` with no callable
+   * counterparty, without pretending the sibling contract failed to compile.
    */
-  it('MEASURED: the counterparty `Wallet` is refused from the bus by a named gate', () => {
-    let refusal: Error | undefined;
-    try {
-      compileFileMulti(TX_ORIGIN, {
-        ...BUS,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
-      } as never);
-    } catch (error) {
-      refusal = error as Error;
-    }
-    expect(refusal, 'Wallet compiled in bus mode').toBeDefined();
-    console.log(`[X136W] Wallet refusal: ${refusal!.name}: ${refusal!.message.split(' at Line')[0]}`);
-    expect(refusal!.name).toBe('LowLevelCallShapeError');
-    expect(refusal!.message).toContain("function 'transfer' issues a low-level 'call'");
-    expect(refusal!.message).toContain("call option(s) 'value'");
+  it('MEASURED: `Wallet.transfer` is refused from the bus by a named handler gate', () => {
+    const map = compileFileMulti(TX_ORIGIN, {
+      ...BUS,
+      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+      experimentalMessageBusControllerCategory: '22'.repeat(32),
+    } as never) as any;
+    const wallet = map.Wallet;
+    expect(wallet, 'Wallet did not compile in bus mode').toBeDefined();
+    const handlers = wallet.hiddenBatch!.handlers as any[];
+    expect(handlers.find((handler) => handler.name === 'owner')?.eligible).toBe(true);
+    const transfer = handlers.find((handler) => handler.name === 'transfer');
+    console.log(`[X136W] Wallet.transfer eligible=${transfer?.eligible} reason=${transfer?.rejectionReason}`);
+    expect(transfer?.eligible).toBe(false);
+    expect(transfer?.rejectionReason).toBe('direct-versus-batch-introspection-divergence');
   }, 300_000);
 
   /**
@@ -323,7 +323,7 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
    */
   /**
    * X177 INVERTED THIS, AND THE OLD VERDICT WAS THIS FILE'S OWN STAGING. It asserted the recovered writer was
-   * REFUSED and attributed that to the bus-inadmissible counterparty. The refusal was the return-event slot:
+   * REFUSED and attributed that to the bus-inadmissible counterparty entry point. The refusal was the return-event slot:
    * this file used to give a non-returning handler a PLAIN OUTPUT there, and a void handler's result vector is
    * empty rather than absent, so the slot must still carry an NFT committing to the empty vector's push.
    *

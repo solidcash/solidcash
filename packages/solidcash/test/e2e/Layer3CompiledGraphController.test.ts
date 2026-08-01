@@ -230,6 +230,7 @@ contract CompiledStructReturningA(int brand, address target) {
 }`;
 const STATE_A = `pragma solidcash >=0.8.0;
 interface IStateB {
+  public int count;
   function step(address callback, int n);
 }
 contract CompiledStateA(int brand, address next, address middle) {
@@ -238,7 +239,8 @@ contract CompiledStateA(int brand, address next, address middle) {
     this.count = this.count + n;
     require(n >= 0);
     IStateB(next).step(callback, n);
-    require(next.length > 0);
+    int settledB = IStateB(next).outState.count;
+    require(settledB == n && next.length > 0);
   }
   function finish(address callback, int n) public {
     this.count = this.count + n;
@@ -1897,7 +1899,9 @@ async function buildReturning(
   };
 }
 
-async function buildStateCycle(tamperState = false, tamperCallbackTarget = false) {
+async function buildStateCycle(
+  tamperState = false, tamperCallbackTarget = false, tamperOutState = false,
+) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -1991,7 +1995,9 @@ async function buildStateCycle(tamperState = false, tamperCallbackTarget = false
   const nextA = buildInitialStateCommitments(
     artifactA.stateLayout!, { count: tamperState ? 3n : 2n },
   )[0];
-  const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 1n })[0];
+  const nextB = buildInitialStateCommitments(
+    artifactB.stateLayout!, { count: tamperOutState ? 2n : 1n },
+  )[0];
   const nextC = buildInitialStateCommitments(artifactC.stateLayout!, { count: 1n })[0];
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   tx.addInput(
@@ -3775,13 +3781,18 @@ describe('Layer-3 compiled graph controller', () => {
     await expect(boolean.provider.sendRawTransaction(boolean.transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
-  it('executes A -> B -> C -> A once per owner with one live journal', async () => {
+  it('executes A -> B -> C -> A once per owner and reads B outState after its settlement boundary', async () => {
     const { provider, transaction } = await buildStateCycle();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 
   it('rejects a multi-hop callback whose owner-A post-state differs from sequential execution', async () => {
     const { provider, transaction } = await buildStateCycle(true);
+    await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
+  });
+
+  it('rejects a one-field B outState forgery at the resumed reader input 0', async () => {
+    const { provider, transaction } = await buildStateCycle(false, false, true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
   });
 

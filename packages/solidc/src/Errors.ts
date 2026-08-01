@@ -1247,6 +1247,14 @@ export class UndefinedExternalStateVariableError extends SolidCashError {
   }
 }
 
+export class UnsupportedExternalOutStateCollectionError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, collectionName: string, type: Type) {
+    super(node, `External outState collection '${interfaceName}.${collectionName}' has unsupported type '${type}'. `
+      + 'Transcript v1 supports mapping entries; dynamic and fixed arrays require an authenticated '
+      + 'element/chunk reconstruction backend');
+  }
+}
+
 export class ExternalReadArgCountError extends SolidCashError {
   constructor(node: Node, interfaceName: string, got: number) {
     super(node, `Interface instantiation '${interfaceName}(...)' expects 1 or 2 arguments (category[, lbc]), got ${got}`);

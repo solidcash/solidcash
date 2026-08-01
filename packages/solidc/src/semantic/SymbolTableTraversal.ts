@@ -162,6 +162,7 @@ import {
   PrivateStateVariableAccessError,
   PrivateCollectionAccessError,
   UndefinedExternalStateVariableError,
+  UnsupportedExternalOutStateCollectionError,
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
@@ -7837,6 +7838,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!ifaceVar) {
         const ifaceColl = this.getAllInterfaceCollections(iface).find((c) => c.name === node.name);
         if (ifaceColl) {
+          if (!(ifaceColl.type instanceof MappingType)) {
+            throw new UnsupportedExternalOutStateCollectionError(
+              node, iface.name, node.name, ifaceColl.type,
+            );
+          }
           const extNode = new ExternalMappingAccessNode(
             iface.name, node.expression.addressExpression, node.name, [],
           );

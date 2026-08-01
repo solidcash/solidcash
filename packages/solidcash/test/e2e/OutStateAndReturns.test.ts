@@ -100,6 +100,15 @@ contract DynamicOutStateTarget() {
 }
 `;
 
+const BYTES_OUTSTATE_CALLER_CONTRACT = DYNAMIC_OUTSTATE_CALLER_CONTRACT
+  .replaceAll('string', 'bytes')
+  .replaceAll('IDynamicState', 'IBytesState')
+  .replaceAll('DynamicOutStateCaller', 'BytesOutStateCaller');
+
+const BYTES_OUTSTATE_TARGET_CONTRACT = DYNAMIC_OUTSTATE_TARGET_CONTRACT
+  .replaceAll('string', 'bytes')
+  .replaceAll('DynamicOutStateTarget', 'BytesOutStateTarget');
+
 const COLLECTION_OUTSTATE_READER_CONTRACT = `
 pragma solidcash >=0.8.0;
 
@@ -629,6 +638,48 @@ contract Reader(bytes32 counterCategory) {
       ).resolves.toBeDefined();
       await expect(targetStateful.getState()).resolves.toEqual(
         expect.objectContaining({ message: next }),
+      );
+    });
+
+    it('reads final multi-chunk bytes and rejects one forged chunk byte at caller input 0', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(BYTES_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, { message: new Uint8Array() },
+        { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(BYTES_OUTSTATE_CALLER_CONTRACT, { forceStateful: true });
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const next = new Uint8Array(241).fill(0x5a);
+
+      await expect(
+        caller.updateAndCheck(next).withExternalCall(targetStateful, 'set', [next]).send(),
+      ).resolves.toBeDefined();
+
+      const hostile = await caller.updateAndCheck(next)
+        .withExternalCall(targetStateful, 'set', [next])
+        .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      hostile.addInput(feeFunder.utxo, feeFunder.unlocker);
+      const chunk = hostile.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && (output.token.nft.commitment?.length ?? 0) > 200);
+      expect(chunk?.token?.nft?.commitment, 'bytes hostile found no final chunk output').toBeDefined();
+      const commitment = chunk!.token!.nft!.commitment!;
+      chunk!.token = {
+        ...chunk!.token!,
+        nft: { ...chunk!.token!.nft!, commitment: `${commitment.slice(0, -2)}5b` },
+      };
+      await expect(hostile.send()).rejects.toThrow(
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
       );
     });
   });

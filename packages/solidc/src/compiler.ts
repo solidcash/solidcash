@@ -1111,6 +1111,8 @@ function synthesizeHiddenBatchRoute(
             .some((resource) => resource.startsWith('collection:'));
           return !touchesCollection || fixedArrayIdentityShape(candidate);
         }));
+      const hasFixedCollectionHelper = [...closure].some((name) => name !== fn.name
+        && [...(byName.get(name) ?? [])].some((candidate) => fixedArrayIdentityShape(candidate)));
       // X88/X89. Refuse the ITERATION first and unconditionally. Recovering the read (above) is not by itself
       // enough: an iteration contributes no KEY, so `directKeys` stays empty and the handler's footprint has no
       // `collection:` resource either, which makes `nonEntryCollectionOnly` vacuously TRUE and lets the chain
@@ -1119,7 +1121,8 @@ function synthesizeHiddenBatchRoute(
       // writes one keyed entry has a non-empty key set while the iteration's reads are still unreserved.
       if (iteratesCollection) {
         reason = 'collection-iteration-handler-not-enabled';
-      } else if (fixedIterationShape || (directKeys.size === 0 && fixedCollectionHelperClosure)) {
+      } else if (fixedIterationShape
+        || (directKeys.size === 0 && hasFixedCollectionHelper && fixedCollectionHelperClosure)) {
         // The fixed-array clone retains the literal indices. Its block layout therefore owns one authenticated
         // entry slot per identity without accepting a key/count witness from the spender.
       } else if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
@@ -2663,7 +2666,17 @@ function compileResolvedAst(
   // A fixed-array collection iteration must expose its compiler-owned indexed accesses before deciding whether
   // the hidden route is synthesized at the early collection boundary. Otherwise an unrelated collection
   // handler can move synthesis ahead of the ordinary unroll pass and leave the iteration's stale blanket marker.
-  if (mergedCompilerOptions.experimentalHiddenBatch) {
+  const earlyFixedArrays = new Set(ast.contract.collections.filter((collection) =>
+    collection.type instanceof ArrayType && collection.type.bound !== undefined)
+    .map((collection) => collection.name));
+  const hasFixedCollectionIteration = ast.contract.functions.some((fn) => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof CollectionIterationNode && earlyFixedArrays.has(node.collectionName)) found = true;
+    });
+    return found;
+  });
+  if (mergedCompilerOptions.experimentalHiddenBatch && hasFixedCollectionIteration) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, true)) as Ast;
   }
 
@@ -2950,6 +2963,19 @@ function compileResolvedAst(
 
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+  // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
+  // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
+  // source ABI argument leaves the SDK trying to read an argument the user-visible handler does not have.
+  for (const fn of ast.contract.functions) {
+    if (!fn.hiddenBatchRoute || !fn.entryAccesses) continue;
+    for (const entry of fn.entryAccesses) {
+      entry.keySources = entry.keySources.map((source, index) => (
+        source.kind === 'param' && /_sender(?:_|$)/.test(entry.keyParams[index] ?? '')
+          ? { kind: 'msgSender', senderOp: 'msg.sender', canonical: 'nullop:msg.sender' }
+          : source
+      ));
+    }
+  }
   // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
   // block. Their external edges are transcript rows, not additional co-spent slots, so their independently
   // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still

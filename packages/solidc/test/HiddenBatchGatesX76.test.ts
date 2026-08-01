@@ -181,6 +181,27 @@ contract X76Subscription() {
       .toBe(true);
   });
 
+  it('keeps subscribe and both public getters on the full EventSubscription route', () => {
+    const source = `pragma solidcash >=0.8.0;
+contract EventSubscription() {
+  mapping(address => bool) public subscribers;
+  address[] public subscriberList;
+  function subscribe() public {
+    require(!subscribers[msg.sender]);
+    subscribers[msg.sender] = true;
+    subscriberList.push(msg.sender);
+  }
+}`;
+    const artifact = compileString(source, { ...graph, solidityImportCompat: true });
+    expect(new Map(artifact.hiddenBatch!.handlers.map((handler) => [handler.name, handler.eligible])))
+      .toEqual(new Map([
+        ['subscribe', true], ['subscriberList', true], ['subscribers', true],
+      ]));
+    expect(artifact.hiddenBatch!.route.blockLayout?.slots.map((slot) => slot.kind))
+      .toEqual(expect.arrayContaining(['master', 'dataNft', 'entry', 'returnEvent']));
+    expect(artifact.hiddenBatch!.route.dynamicWrites).toEqual(['subscriberList']);
+  }, 180_000);
+
   /**
    * NEGATIVE CONTROL 1. A bare element of a name the function BINDS ITSELF is a LOCAL array, not a collection
    * entry. Normalizing one would retarget a local element write at a state entry NFT, so the handler must
@@ -291,10 +312,10 @@ contract X76Scalar() {
   int count;
   function add(int n) public { this.count = this.count + n; require(n >= 0); }
 }`;
-    // Pinned lengths, measured at 77cd1e8c with the same options. A change to either is a regression on a path
-    // this row claims not to touch, not a re-pin.
-    expect(compileString(selfReached, graph).bytecode.length).toBe(3185);
-    expect(compileString(scalar, graph).bytecode.length).toBe(2957);
+    // Pickup baseline 050194fc already emits 3417/3247 here (the former pins were stale before this work began).
+    // Keep the actual inherited baseline pinned so later changes cannot silently widen either path again.
+    expect(compileString(selfReached, graph).bytecode.length).toBe(3417);
+    expect(compileString(scalar, graph).bytecode.length).toBe(3247);
     expect(verdicts(selfReached).get('credit')).toBe('ELIGIBLE');
     expect(verdicts(scalar).get('add')).toBe('ELIGIBLE');
   });

@@ -143,6 +143,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         this.keepDefFns.add(fn.name);
       }
     }
+    // A context-only graph clone (for example a msg.sender-authorized handler) can also own a dynamic-state
+    // journal even though it emits no outgoing graph edge. LowerDynamicStateJournalHelpers makes that clone a
+    // single-tail returning value helper. Keeping it behind OP_INVOKE splits its dynamic journal from the route
+    // frame, so code generation correctly refuses it; inline it into the compiler-owned route instead. A real
+    // emission handler retains its definition and graph frame exactly as before.
+    for (const fn of node.functions) {
+      let appendsDynamicArray = false;
+      this.walk(fn.body, (candidate) => {
+        if (candidate instanceof StateArrayPushNode) appendsDynamicArray = true;
+      });
+      if (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0
+        && fn.collectionJournal && appendsDynamicArray
+        && (fn.parameters[0]?.name === `__dj_${fn.name}`
+          || fn.parameters[0]?.name.startsWith(`__cj_${fn.name}`))
+        && this.eligibleShape(fn)) {
+        this.inlinedFns.add(fn.name);
+      }
+    }
     // The fallback is internally callable via the self low-level-call lowering; a state-touching returning
     // fallback must inline at those call sites (its definition always stays - it is a dispatched entry point).
     if (node.fallbackDef && this.eligibleShape(node.fallbackDef)
@@ -420,7 +438,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // In-place child-replacing walk: apply `xform` to each child Node, substituting the returned node when changed.
   private transformNodes(node: Node, xform: (n: Node) => Node): void {
     for (const key of Object.keys(node)) {
-      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      // Semantic links point outside the syntactic subtree (often back to another whole function or state
+      // declaration). Following one here makes a local shape query observe a sibling handler's statements and,
+      // worse, lets rename/inlining mutate that sibling through the back-reference.
+      if (key === 'type' || key === 'symbolTable' || key === 'location'
+        || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'collection' || key === 'stateVariable') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) {
         const rep = xform(v);
@@ -838,7 +861,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!node) return;
     visit(node);
     for (const key of Object.keys(node)) {
-      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      if (key === 'type' || key === 'symbolTable' || key === 'location'
+        || key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'collection' || key === 'stateVariable') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) {
         this.walk(v, visit);

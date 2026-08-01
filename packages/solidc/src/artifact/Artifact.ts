@@ -641,16 +641,21 @@ function buildFunctionAbiMetadata(
       entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop).map((ea) => ({
         collection: ea.collection,
         keyParams: ea.keyParams,
-        ...(ea.keySources && ea.keySources.some((ks) => ks.kind !== 'param') && {
-          keySources: ea.keySources.map((ks) => ({
-            kind: ks.kind,
-            ...(ks.paramName && { paramName: ks.paramName }),
-            ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
-            ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
-            ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
-            ...(ks.kind === 'msgSender' && { senderOp: ks.senderOp }),
-            ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
-          })),
+        ...(ea.keySources && (ea.keySources.some((ks) => ks.kind !== 'param')
+          || ea.keyParams.some((name) => /_sender(?:_|$)/.test(name))) && {
+          keySources: ea.keySources.map((ks, index) => {
+            const syntheticSender = ks.kind === 'param'
+              && /_sender(?:_|$)/.test(ea.keyParams[index] ?? '');
+            return {
+              kind: syntheticSender ? 'msgSender' : ks.kind,
+              ...(ks.paramName && { paramName: ks.paramName }),
+              ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
+              ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
+              ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
+              ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
+              ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
+            };
+          }),
         }),
         operations: ea.operations,
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),

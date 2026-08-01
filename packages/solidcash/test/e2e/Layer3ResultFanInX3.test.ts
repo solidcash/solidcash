@@ -16,24 +16,22 @@ import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 /**
- * X3 - where result fan-in actually stops.
+ * X3 - native-worklist result fan-in.
  *
  * One caller, two producers, both of which RETURN. The transcript that describes it is an honest fan-in
  * transcript: the caller owns two emission rows and each carries a framed producer result. Building it needs no
  * relaxation at all, because a row's result field comes from the PRODUCER's handler outputs, not from how many
  * of the consumer's callsites are annotated as consuming.
  *
- * The point of the fixture is which covenants accept that transcript and which cannot:
+ * The fixture derives its rows from compiler-authored callsites (including the VM-probed value forwarded from
+ * the first producer into the second), then proves which covenants accept or reject the finalized transcript:
  *
  *   accept   every producer's compiled SCB1 route, all three projection proofs, and the one-shot controller -
  *            i.e. the entire transcript machinery, which walks a caller's emission rows with a cursor and has
  *            no notion of "at most one result".
- *   reject   the CALLER's own compiled route, at input 0. Its two call slots are void, so it rebuilds two rows
- *            with empty result frames and compares them against the two result-bearing rows the transcript
- *            commits.
+ *   reject   result tampering, reordering, or omission at the caller's compiled route, input 0.
  *
- * That is the whole wall: the caller-side lowering. `Layer3ResultBinding` measures the three compiler sites,
- * and `graph.ts` refuses the shape by name at plan time so it cannot reach a transaction unnoticed.
+ * `Layer3ResultBinding` separately pins the compiler lowering and SDK dependency metadata.
  */
 
 const FAN_CALLER = `pragma solidcash >=0.8.0;
@@ -170,25 +168,30 @@ async function buildFanInGraph(
   const setupCaller = await setupStatefulUtxos(provider, baseCaller, artifactCaller.stateLayout!, {});
   const caller = baseCaller.withCategory(hexToBin(setupCaller.categoryId));
 
-  const plan = layer3.planCompiledGraph([
-    { artifact: artifactCaller, lockingBytecode: caller.lockingBytecode },
-    { artifact: artifactUp, lockingBytecode: up.lockingBytecode },
-    { artifact: artifactDown, lockingBytecode: down.lockingBytecode },
-  ], [
-    { parent: null, callee: 0, function: 'fan', args: [up.lockingBytecode, down.lockingBytecode, SEED] },
-    ...(mixed === 'void-first' ? [
-      { parent: 0, callee: 2, function: 'down', args: [SEED] },
-      { parent: 0, callee: 1, function: 'up', args: [SEED] },
-    ] : [
-      { parent: 0, callee: 1, function: 'up', args: [SEED] },
-      { parent: 0, callee: 2, function: 'down', args: [mixed ? SEED : SEED + 20n] },
-    ]),
-  ]);
+  const plan = layer3.deriveCompiledGraphPlan({
+    root: { artifact: artifactCaller, lockingBytecode: caller.lockingBytecode, constructorArgs: [0n] },
+    function: 'fan',
+    args: [up.lockingBytecode, down.lockingBytecode, SEED],
+    targets: {
+      IFanUp: { artifact: artifactUp, lockingBytecode: up.lockingBytecode, constructorArgs: [1n] },
+      IFanDown: { artifact: artifactDown, lockingBytecode: down.lockingBytecode, constructorArgs: [2n] },
+    },
+    ...(!mixed && {
+      expressionArgument: ({ callsiteId, argument, occurrence }) => {
+        if (callsiteId !== 1 || argument !== 0 || occurrence !== 0) {
+          throw new Error(`unexpected fan-in expression probe ${callsiteId}:${argument}:${occurrence}`);
+        }
+        return SEED + 20n;
+      },
+    }),
+  });
   const layout = layer3.compiledGraphPhysicalLayout(plan);
+  const upIndex = plan.participants.findIndex((participant) => participant.artifact === artifactUp);
+  const downIndex = plan.participants.findIndex((participant) => participant.artifact === artifactDown);
   const resultUp = packedScalar(SEED + 20n);
   const resultDown = packedScalar(SEED + 50n);
   const declaredResults: Record<number, string> = mixed === 'void-first'
-    ? { 2: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp) }
+    ? { [upIndex]: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp) }
     : mutation === 'reorder'
     ? { 1: binToHex(resultDown), 2: binToHex(resultUp) }
     : {
@@ -200,9 +203,7 @@ async function buildFanInGraph(
   const transcript = layer3.finalizeCompiledGraph(
     plan, declaredResults,
     layout.participantInputs, layout.returnOutputs,
-    mixed === 'void-first'
-      ? ['', declaredResults[2] ?? '', '']
-      : ['', declaredResults[1] ?? '', declaredResults[2] ?? ''], layout.projectionInputs,
+    plan.participants.map((_participant, index) => declaredResults[index] ?? ''), layout.projectionInputs,
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -224,16 +225,21 @@ async function buildFanInGraph(
   tx.addInput(setupCaller.masterUtxo, route(caller, artifactCaller)(
     ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput) as any,
   ));
-  tx.addInput(setupUp.masterUtxo, route(up, artifactUp)(
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput) as any,
-    BigInt(layout.returnOutputs![1]!),
-  ));
-  tx.addInput(funding[0], p2pkh.unlock.spend(alicePub, signature()));
-  tx.addInput(setupDown.masterUtxo, route(down, artifactDown)(
-    ...layer3.compiledGraphRouteArgs(transcript, 2, layout.controllerInput) as any,
-    ...(mixed ? [] : [BigInt(layout.returnOutputs![2]!)]),
-  ));
-  if (!mixed) tx.addInput(funding[1], p2pkh.unlock.spend(alicePub, signature()));
+  const addUpInput = () => {
+    tx.addInput(setupUp.masterUtxo, route(up, artifactUp)(
+      ...layer3.compiledGraphRouteArgs(transcript, upIndex, layout.controllerInput) as any,
+      BigInt(layout.returnOutputs![upIndex]!),
+    ));
+    tx.addInput(funding[0], p2pkh.unlock.spend(alicePub, signature()));
+  };
+  const addDownInput = () => {
+    tx.addInput(setupDown.masterUtxo, route(down, artifactDown)(
+      ...layer3.compiledGraphRouteArgs(transcript, downIndex, layout.controllerInput) as any,
+      ...(mixed ? [] : [BigInt(layout.returnOutputs![downIndex]!)]),
+    ));
+    if (!mixed) tx.addInput(funding[1], p2pkh.unlock.spend(alicePub, signature()));
+  };
+  if (upIndex < downIndex) { addUpInput(); addDownInput(); } else { addDownInput(); addUpInput(); }
   projectionUtxos.forEach((proof, participant) => tx.addInput(
     proof,
     projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), BigInt(participant)),
@@ -253,10 +259,15 @@ async function buildFanInGraph(
     },
   });
   tx.addOutput(master(caller, setupCaller));
-  tx.addOutput(master(up, setupUp));
-  tx.addOutput(returnEvent(setupUp, resultUp));
-  tx.addOutput(master(down, setupDown));
-  if (!mixed) tx.addOutput(returnEvent(setupDown, resultDown));
+  const addUpOutput = () => {
+    tx.addOutput(master(up, setupUp));
+    tx.addOutput(returnEvent(setupUp, resultUp));
+  };
+  const addDownOutput = () => {
+    tx.addOutput(master(down, setupDown));
+    if (!mixed) tx.addOutput(returnEvent(setupDown, resultDown));
+  };
+  if (upIndex < downIndex) { addUpOutput(); addDownOutput(); } else { addDownOutput(); addUpOutput(); }
   for (let slot = 0; slot < 3; slot += 1) tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 100_000n });

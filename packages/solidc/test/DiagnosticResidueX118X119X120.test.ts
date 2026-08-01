@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../src/index.js';
-import { EmittingStateHelperEventError } from '../src/Errors.js';
+import { EmittingStateHelperEventError, GraphHandlerShapeError } from '../src/Errors.js';
+import { Location, Point, withSourceFile } from '../src/ast/Location.js';
 
 // The three positions X107's construction-time file stamp could NOT reach, and what reaches them.
 //
@@ -189,14 +190,14 @@ describe('X119: a graph-handler abort carries a position and a name', () => {
     '}', ''].join('\n');
   const MESSAGE = "Graph handler '__scb_graph_sweep' requires call/staticcall edges and at most one returning call";
 
-  it('gains a Line/Column on the user function the synthesized handler was cloned from', () => {
+  it('the former refusal is retired, while its backstop remains named and positioned', () => {
     const { error } = compileCapturing(() => compileString(FLAT, BUS as never));
-    // Baseline threw a plain `Error`. The class name is part of the diagnostic: it is what tells a reader this
-    // is a refusal rather than an internal crash.
-    expect(error?.name).toBe('GraphHandlerShapeError');
-    expect(error?.name).not.toBe('Error');
-    // The message is UNCHANGED - the row is about the position, not about rewording the refusal.
-    expect(error?.message).toBe(`${MESSAGE} at Line 11, Column 4`);
+    expect(error).toBeUndefined();
+    const diagnostic = new GraphHandlerShapeError({
+      location: new Location(new Point(11, 4), new Point(11, 12)),
+    } as never, MESSAGE);
+    expect(diagnostic.name).toBe('GraphHandlerShapeError');
+    expect(diagnostic.message).toBe(`${MESSAGE} at Line 11, Column 4`);
     // ...and the cited position is verified against the source: line 11 declares the function, and column 4 is
     // where `function` starts. The handler is named `__scb_graph_sweep`; nothing in the file is.
     expect(FLAT.split('\n')[10]).toBe('    function sweep(address token, address to) public {');
@@ -222,7 +223,7 @@ describe('X119: a graph-handler abort carries a position and a name', () => {
     expect(error?.message ?? 'COMPILED').not.toContain('at most one returning call');
   });
 
-  it('an INHERITED handler names the file that declares it, not the one that re-exports it', () => {
+  it('the inherited former subject compiles, and its backstop names the holding file', () => {
     // THE BELIEVABLE HOSTILE. `sweep` is declared at line 12 of C.sol; the root file is 16 lines, so the
     // positionless baseline and a bare `at Line 12` are both wrong in ways nothing signals. B.sol only
     // re-exports C.sol, so a shallow attribution would claim B.sol - specific and false.
@@ -243,14 +244,17 @@ describe('X119: a graph-handler abort carries a position and a name', () => {
     const { error } = compileCapturing(() => compileString(root, {
       ...BUS, importResolver: resolver, rootFileId: '/main.sol',
     } as never));
-    expect(error?.name).toBe('GraphHandlerShapeError');
-    expect(error?.message).toBe(`${MESSAGE} at Line 12, Column 4 of imported "/C.sol"`);
-    expect(error?.message).not.toContain('"/B.sol"');
+    expect(error).toBeUndefined();
+    const location = withSourceFile('/C.sol', () =>
+      new Location(new Point(12, 4), new Point(12, 12)));
+    const diagnostic = new GraphHandlerShapeError({ location } as never, MESSAGE);
+    expect(diagnostic.message).toBe(`${MESSAGE} at Line 12, Column 4 of imported "/C.sol"`);
+    expect(diagnostic.message).not.toContain('"/B.sol"');
     // Verified against the file the label names.
     expect(C.split('\n')[11]).toBe('    function sweep(address token, address to) public {');
   });
 
-  it('GUARD: the ROOT file\'s own handler stays unlabelled in a compile with a resolved import', () => {
+  it('GUARD: the ROOT file\'s former subject also compiles', () => {
     // Discriminates "the label is attached to the right position" from "the label is attached to everything".
     const clean = ['pragma solidity ^0.8.20;', 'library Helper {',
       '    function twice(uint256 a) internal pure returns (uint256) { return a + a; }', '}', ''].join('\n');
@@ -260,10 +264,7 @@ describe('X119: a graph-handler abort carries a position and a name', () => {
     const { error } = compileCapturing(() => compileString(root, {
       ...BUS, importResolver: only, rootFileId: '/main.sol',
     } as never));
-    expect(error?.name).toBe('GraphHandlerShapeError');
-    expect(error?.message).toContain('at most one returning call');
-    expect(error?.message).toMatch(/at Line \d+, Column \d+$/);
-    expect(error?.message).not.toContain('of imported');
+    expect(error).toBeUndefined();
   });
 });
 

@@ -758,7 +758,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (expr instanceof IdentifierNode && this.singleAssignLocals.has(expr.name) && this.localInits.has(expr.name)) {
       return this.inlineStoragePtrBases(cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1);
     }
-    if (expr instanceof FieldAccessNode) { expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1); } else if (expr instanceof ArrayAccessNode) { expr.array = this.inlineStoragePtrBases(expr.array, depth + 1); }
+    if (expr instanceof FieldAccessNode) {
+      expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1);
+    } else if (expr instanceof ArrayAccessNode) {
+      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1);
+    }
     return expr;
   }
 

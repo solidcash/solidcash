@@ -3355,14 +3355,18 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Detect a recovery call inside a loop (dynamic-loop model: one PAIR read per iteration from the forward region).
   private ecrecoverCallInLoop(node: Node, inLoop = false): boolean {
     const nowInLoop = inLoop
-      || node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+      || node instanceof WhileNode
+      || node instanceof DoWhileNode
+      || node instanceof CollectionIterationNode;
     if (nowInLoop && node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
       || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
       || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) { if (this.ecrecoverCallInLoop(value, nowInLoop)) return true; } else if (Array.isArray(value)) {
+      if (value instanceof Node) {
+        if (this.ecrecoverCallInLoop(value, nowInLoop)) return true;
+      } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.ecrecoverCallInLoop(item, nowInLoop)) return true;
       }
     }
@@ -3374,7 +3378,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; } else if (Array.isArray(value)) {
+      if (value instanceof Node) {
+        if (this.keccakCallInLoop(value, nowInLoop)) return true;
+      } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop)) return true;
       }
     }
@@ -4286,8 +4292,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen.add(node);
     if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; }
-      else if (Array.isArray(v)) {
+      if (v instanceof Node) {
+        const result = this.findTupleAssignmentWithRhs(v, call, seen);
+        if (result) return result;
+      } else if (Array.isArray(v)) {
         for (const e of v) {
           if (!(e instanceof Node)) continue;
           const result = this.findTupleAssignmentWithRhs(e, call, seen);

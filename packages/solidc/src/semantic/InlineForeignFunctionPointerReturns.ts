@@ -32,8 +32,8 @@ import { cloneNode } from '../ast/clone.js';
 export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   // helper name -> { param names, external-fn-ptr param positions, the single returned expression, isPublic }
   private candidates = new Map<
-    string,
-    { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }
+  string,
+  { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }
   >();
 
   private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg

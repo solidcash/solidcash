@@ -28,6 +28,9 @@ describe('Release 3 collection journal lowering', () => {
       operations: expect.arrayContaining(['transfer']),
     });
     expect(wrapper?.blockLayout?.slots?.filter((slot) => slot.kind === 'tcTransfer')).toHaveLength(2);
+    // The optional route cannot settle a write-only token container effect,
+    // so default-on compilation keeps only the sound physical entry point.
+    expect(artifact.hiddenBatch).toBeUndefined();
     // Effectful helpers are deliberately inlined until a frozen effect
     // journal exists; otherwise their transfer slots would be invisible.
     expect(artifact.invocationAnalysis?.functions.find((fn) => fn.name === 'send')).toBeUndefined();

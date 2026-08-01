@@ -69,6 +69,10 @@ contract MixedBoundary() {
     const bareSpelling = once(scash('note = tag;'), plainOptions);
     expect(thisSpelling.bytecode).toBe(bareSpelling.bytecode);
     expect(thisSpelling.debug.bytecode).toBe(bareSpelling.debug.bytecode);
+    for (const artifact of [thisSpelling, bareSpelling]) {
+      // No unsafe partial-journal route is published; the direct entry remains.
+      expect(artifact.hiddenBatch).toBeUndefined();
+    }
   }, COMPILE_TIMEOUT_MS * 2);
 
   // The companion half - that the BARE spelling of this same program IS admitted in bus mode - is already

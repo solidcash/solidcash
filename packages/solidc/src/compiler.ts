@@ -9,7 +9,7 @@ import {
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
-  Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
+  Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode,
   FunctionCallNode, FunctionDefinitionNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
@@ -20,6 +20,7 @@ import {
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
+  TokenContainerMethodStatementNode,
   StateAssignNode, DeleteStateNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
@@ -1296,6 +1297,40 @@ function synthesizeHiddenBatchRoute(
     // container to the SOURCE parameter's stack identity, and a synthetic clone emits a second, context-free
     // covenant (the same reason `tokenCategoryInputByHandler` keeps that handler on its own name). Refuse it by
     // name rather than route it through a clone that would authenticate the wrong container.
+    // A plain SCB route is optional: when its current physical layout cannot
+    // settle a handler, exclude that handler and keep the source entry point.
+    // Previously these two shapes were cloned first and rejected only after
+    // lowering, turning default-on batching into a whole-contract compile
+    // failure (or, for token writes, discovering an omitted effect after the
+    // unsafe route had already been constructed). Graph/controller mode keeps
+    // the established hard refusal because its published graph promises that
+    // every admitted edge is represented.
+    let writesDynamicState = footprint.writes.some((resource) =>
+      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
+    const reachesCollection = [...footprint.reads, ...footprint.writes]
+      .some((resource) => resource.startsWith('collection:'));
+    let hasTokenContainerEffect = false;
+    for (const name of collectNamedFunctionClosure(fn, byName)) {
+      for (const candidate of byName.get(name) ?? []) {
+        const candidateLocals = locallyBoundNames(candidate);
+        // walkInvocationAst is synchronous; these accumulators do not escape this iteration.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
+        walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
+          // Before symbol resolution, Solidity-compatible bare state writes
+          // are still ordinary AssignNodes and are absent from the footprint.
+          if (node instanceof AssignNode && dynamicState.has(node.identifier.name)
+            && !candidateLocals.has(node.identifier.name)) writesDynamicState = true;
+        });
+      }
+    }
+    if (!reason && graphControllerLbc === undefined && writesDynamicState && reachesCollection) {
+      reason = 'dynamic-and-collection-route-not-enabled';
+    }
+    if (!reason && graphControllerLbc === undefined && hasTokenContainerEffect) {
+      reason = 'token-container-effect-route-not-enabled';
+    }
+
     const externalTokenContainer = fn.visibility === 'external'
       && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
     const visibilityRefusal = fn.visibility !== 'public' && fn.visibility !== 'external'

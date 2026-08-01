@@ -129,6 +129,63 @@ const DUMMY_FUNDER_LOCKING_BYTECODE = new Uint8Array([
 ]);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
+type GraphBlockhashSelection = {
+  readKey: string;
+  slotOrdinal: number;
+  rowArgs: FunctionArgument[];
+  handler: AbiFunction;
+};
+
+/** Decode only the rows selected by an SCB1 envelope and project the compiler-published blockhash descriptors.
+ * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
+function selectGraphBlockhashReads(
+  artifact: Artifact, blob: Uint8Array,
+): GraphBlockhashSelection[] {
+  const route = artifact.hiddenBatch?.route;
+  const plan = route?.graphBlockhashOracle;
+  if (!plan) return [];
+  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231' || blob[4] !== 1) {
+    throw new Error('SCB1 graph blockhash route requires a canonical version-1 envelope');
+  }
+  const rowCount = blob[6];
+  if (rowCount > plan.rowCount) throw new Error('SCB1 graph blockhash row count exceeds the oracle plan');
+  const valueMode = blob[5] === 1;
+  let cursor = 7;
+  const selected: GraphBlockhashSelection[] = [];
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  for (let row = 0; row < rowCount; row++) {
+    const header = valueMode ? 21 : 12;
+    if (cursor + header > blob.length) throw new Error(`SCB1 row ${row} is truncated`);
+    const selector = binToHex(blob.slice(cursor, cursor + 4));
+    const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
+      | (blob[cursor + 7] << 24);
+    if (logicalRow !== row) throw new Error('SCB1 graph rows must use canonical contiguous indices');
+    const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
+    const argsStart = cursor + header;
+    const argsEnd = argsStart + argsLength;
+    if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
+    const handlerInfo = artifact.hiddenBatch!.handlers.find((h) => h.selector === selector && h.eligible);
+    const handler = artifact.abi.find((f) => f.name === handlerInfo?.name);
+    if (!handlerInfo || !handler) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
+    const rowArgs: FunctionArgument[] = [];
+    let argCursor = argsStart;
+    for (const input of handlerInfo.inputs) {
+      const decoded = decodePushdataValue(blob, argCursor, input.type, structs);
+      rowArgs.push(decoded.value as FunctionArgument);
+      argCursor += decoded.bytesConsumed;
+    }
+    if (argCursor !== argsEnd) throw new Error(`SCB1 row ${row} argument vector is non-canonical`);
+    for (const descriptor of plan.reads) {
+      if (descriptor.row === row && descriptor.selector === selector) {
+        selected.push({ readKey: descriptor.readKey, slotOrdinal: descriptor.slotOffset, rowArgs, handler });
+      }
+    }
+    cursor = argsEnd;
+  }
+  if (cursor !== blob.length) throw new Error('SCB1 graph blockhash envelope has trailing bytes');
+  return selected.sort((a, b) => a.slotOrdinal - b.slotOrdinal);
+}
+
 /**
  * Compute the minimum relay fee for a built TransactionBuilder at 1 sat/byte.
  * Uses the serialized transaction size as the fee floor.
@@ -1522,6 +1579,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }),
       ...(effectiveTokenAccesses && { tokenContainerAccesses: effectiveTokenAccesses }),
     };
+    const graphBlockhashSelections = selectGraphBlockhashReads(this.inner.artifact, blob);
+    if (graphBlockhashSelections.length > 0) {
+      (effectiveRoute as AbiFunction & { graphBlockhashSelections: GraphBlockhashSelection[] })
+        .graphBlockhashSelections = graphBlockhashSelections;
+    }
     const routeSelector = hexToBin(capability.selector);
     return new StatefulFunctionCall(
       this._createBuilder('__scb1', routeArgs, {
@@ -4613,6 +4675,55 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return extractBlockhashReadsFromTrace(trace, base, slotCount);
   }
 
+  /** SCB1 graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding inactive
+   * positions are represented by inert inputs and prior active oracle co-spends are placed at their exact slots. */
+  private async _extractGraphBlockhashRead(
+    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+    prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
+    base: number, targetOrdinal: number, slotCount: number, masterInputIndex = 0,
+  ): Promise<bigint | null> {
+    const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
+    const b = new CovenantTransactionBuilder({ provider: this.inner.provider });
+    b.locktime = 499999999;
+    const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(this.inner, 0, this.categoryId));
+    const inertUnlocker: Unlocker = {
+      generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+      generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+    };
+    while (b.inputs.length < masterInputIndex) {
+      const i = b.inputs.length;
+      b.addInput({ txid: (0x8000 + i).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
+    }
+    b.addInput(masterUtxo, masterUnlocker);
+    dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
+    const priorByIndex = new Map(prior.map((p) => [base + p.slotOrdinal, p]));
+    while (b.inputs.length <= base + targetOrdinal) {
+      const inputIndex = b.inputs.length;
+      const p = priorByIndex.get(inputIndex);
+      if (p) b.addInput(p.utxo, p.unlocker);
+      else b.addInput({ txid: inputIndex.toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
+    }
+    while (b.outputs.length < masterInputIndex) {
+      b.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
+    }
+    b.addOutput({ to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    dataNftUtxos.forEach((u, i) => b.addOutput({
+      to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
+    }));
+    while (b.outputs.length < b.inputs.length) {
+      const inputIndex = b.outputs.length;
+      const p = priorByIndex.get(inputIndex);
+      b.addOutput(p?.recreate ?? { to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
+    }
+    const transaction = b.buildLibauthTransaction();
+    const trace = vm.debug({
+      inputIndex: masterInputIndex, sourceOutputs: generateLibauthSourceOutputs(b.inputs), transaction,
+    }) as AuthenticationProgramStateCommon[];
+    return extractBlockhashReadsFromTrace(trace, base, slotCount)
+      .find((read) => read.inputIndex === base + targetOrdinal)?.n ?? null;
+  }
+
   // Resolve every blockhash oracle co-spend for a call, ordered by slot (ordinal 0..slotCount-1). Reads are
   // resolved STRICTLY in slot order so the co-spend inputs stay contiguous from the bottom: a param read's n
   // is its call arg; a computed read's n is extracted from a probe that co-spends the already-resolved lower
@@ -7614,6 +7725,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // the consecutive blockhashOracle slots. Only consumed at builder construction, so resolving them late is
     // safe.
     let blockhashCoSpendUtxos: UnlockableUtxo[] = [];
+    let blockhashCoSpendSlotOrdinals: number[] | undefined;
     let maxBhLocktime = 0; // require(tx.time >= n) - the SDK sets the locktime so the derivation probe passes
     // keccak256 compute side-cars co-spent at the keccakSideCar slots; parallel commitments (R_i) drive the
     // recreation. Resolved late (needs the master unlocker's args) alongside blockhash.
@@ -7719,11 +7831,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const bLayout = bAbiFunc?.blockLayout;
           if (!bLayout) continue;
           const fullBlockKinds = new Set(
-            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'returnEvent'],
+            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'returnEvent',
+              'blockhashOracle'],
           );
           if (!bLayout.slots.some((s) => fullBlockKinds.has(s.kind))) continue;
           for (const s of bLayout.slots) {
             if (['transfer', 'tcTransfer', 'event', 'returnEvent'].includes(s.kind)) totalBFunders++;
+            if (s.kind === 'blockhashOracle') totalBFunders++;
             // entry/TC/SC funders also needed when UTXO doesn't exist, but we can't
             // cheaply check on-chain state here. Conservatively over-allocate:
             if (['entry', 'tokenContainer', 'satoshiContainer'].includes(s.kind)) totalBFunders++;
@@ -7757,6 +7871,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const compilerRoute = this._buildRepeatedExternalBatch(
           ec, args, callInfo.externalContract as StatefulContract,
         );
+        const bGraphBlockhashSelections = compilerRoute
+          ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
+          : [];
 
         // Get B's on-chain state
         const bState = await callInfo.externalContract.getFullState();
@@ -7813,7 +7930,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // returnEvent is included: its OUTPUT lives at B's own block offset, so B's block must carry a paired
           // funding INPUT there or B's input extent is shorter than its output extent (X13).
           const fullBlockKinds = new Set(
-            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'keccakSideCar'],
+            ['entry', 'satoshiContainer', 'tokenContainer', 'transfer', 'tcTransfer', 'event', 'keccakSideCar',
+              'blockhashOracle'],
           );
           const hadFullBlockKinds = bBlockLayout.slots.some((s) => fullBlockKinds.has(s.kind));
           // A loop-expanded slot shares ONE contiguous return-event band across its iterations, so its callees
@@ -8232,6 +8350,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }),
             },
           }),
+          ...(bGraphBlockhashSelections.length > 0 && {
+            graphBlockhashSelections: bGraphBlockhashSelections,
+          }),
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
           ...(bReturnEventInBlock && { returnEventInBlock: true }),
@@ -8374,6 +8495,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // chunk run sits right after the block (read at blockSize+i); the callees are appended
       // AFTER that chunk run, so the base advances by the chunk count.
       let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
+      // SCB1 reserves the complete oracle row band before its callees. Active reads are sparse; count the
+      // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
+      externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
       if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
       finalArgs = [...finalArgs, BigInt(externalCallInputBase)];
 
@@ -8546,6 +8670,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             bFinalArgs.push(BigInt(thisGroupEnd));
           } else if (paramName === '__internal__msgSenderCategory') {
             bFinalArgs.push(hexToBin(meta.callerCategoryId));
+          } else if (paramName === '__internal__blockhashInputIndex') {
+            const firstOracleOffset = group.blockLayout?.slots.find(
+              (slot) => slot.kind === 'blockhashOracle',
+            )?.offset;
+            if (firstOracleOffset === undefined) {
+              throw new Error('External SCB1 graph blockhash plan has no physical oracle band');
+            }
+            bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
           } else if (paramName === '__internal__returnOutputIdx') {
             const retIdx = returnEventIndexMap.get(groupIdx);
             if (retIdx !== undefined) {
@@ -8587,11 +8719,50 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         // Create master unlocker
-        const bMasterUnlocker = group.compilerRoute
+        let bMasterUnlocker = group.compilerRoute
           ? group.externalContract.inner.createCompilerRouteUnlocker(
             group.compilerRoute.abiFunction, group.compilerRoute.selector,
           )(...bFinalArgs)
           : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
+
+        // The external participant's absolute group base is known only here. Resolve its selected SCB1 rows now,
+        // place active oracle co-spends at their exact row-band offsets, and leave every inactive slot as the
+        // already-created funder. Computed n values are recovered from B's own covenant trace at B's real index.
+        if (group.graphBlockhashSelections?.length) {
+          if (!group.blockInputs || !group.blockLayout) {
+            throw new Error('External SCB1 graph blockhash route has no balanced participant block');
+          }
+          const firstOracleOffset = group.blockLayout.slots.find(
+            (slot) => slot.kind === 'blockhashOracle',
+          )?.offset;
+          const plan = group.compilerRoute?.abiFunction.graphBlockhashOracle;
+          if (firstOracleOffset === undefined || !plan) {
+            throw new Error('External SCB1 graph blockhash metadata/layout mismatch');
+          }
+          const absoluteBase = masterInputIndex + firstOracleOffset;
+          const bSc = group.externalContract as StatefulContract;
+          const prior: Array<{
+            slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
+          }> = [];
+          for (const selection of group.graphBlockhashSelections) {
+            const n = isComputedBlockhashKey(selection.readKey)
+              ? await bSc._extractGraphBlockhashRead(
+                group.masterUtxo as Utxo, bMasterUnlocker, group.dataNftUtxos,
+                prior, absoluteBase, selection.slotOrdinal, plan.slotCount, masterInputIndex,
+              )
+              : bSc.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
+            if (n === null) throw new Error(`blockhash: could not resolve external SCB1 read "${selection.readKey}"`);
+            const coSpend = await resolveBlockhashCoSpend(this.inner.provider, group.categoryId, n);
+            if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
+            const physicalOffset = firstOracleOffset + selection.slotOrdinal;
+            group.blockInputs[physicalOffset] = { ...coSpend.utxo, unlocker: coSpend.unlocker };
+            prior.push({
+              slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
+              recreate: coSpend.recreateOutput,
+            });
+            maxBhLocktime = Math.max(maxBhLocktime, coSpend.locktime);
+          }
+        }
         group.masterUtxo = { ...group.masterUtxo, unlocker: bMasterUnlocker } as UnlockableUtxo;
         // The block's master slot carries the SAME unlocker as group.masterUtxo: the input flattening serializes
         // blockInputs, so a stale block-build-time unlocker there would drop the hidden params resolved here.
@@ -9200,7 +9371,36 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // blockhash(n): resolve the oracle co-spends now that the complete master unlocker exists (the computed-n
     // extraction probe needs it - it carries the blockhash slot base index). Ordered by slot; the builder
     // places them at the consecutive blockhashOracle slots and setLocktime(maxBhLocktime) below.
-    if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
+    const graphSelections = (abiFunction as (AbiFunction & {
+      graphBlockhashSelections?: GraphBlockhashSelection[];
+    }) | undefined)?.graphBlockhashSelections;
+    if (graphSelections?.length && this.categoryId) {
+      const resolved: Array<NonNullable<Awaited<ReturnType<typeof resolveBlockhashCoSpend>>>> = [];
+      const graphPrior: Array<{
+        slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output;
+      }> = [];
+      const graphBase = this.blockhashSlotBase(abiFunction).base;
+      const graphSlotCount = abiFunction!.graphBlockhashOracle!.slotCount;
+      for (const selection of graphSelections) {
+        const n = isComputedBlockhashKey(selection.readKey)
+          ? await this._extractGraphBlockhashRead(
+            masterUtxo, masterUnlocker, filteredDataNftUtxos, graphPrior,
+            graphBase, selection.slotOrdinal, graphSlotCount,
+          )
+          : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
+        if (n === null) throw new Error(`blockhash: could not resolve SCB1 row read "${selection.readKey}"`);
+        const coSpend = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
+        if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
+        resolved.push(coSpend);
+        graphPrior.push({
+          slotOrdinal: selection.slotOrdinal, utxo: coSpend.utxo, unlocker: coSpend.unlocker,
+          recreate: coSpend.recreateOutput,
+        });
+      }
+      blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
+      blockhashCoSpendSlotOrdinals = graphSelections.map((selection) => selection.slotOrdinal);
+      maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
+    } else if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
       const { base, count } = this.blockhashSlotBase(abiFunction);
       const resolved = await this._resolveBlockhashCoSpends(
         abiFunction, args, base, count, masterUtxo, masterUnlocker, filteredDataNftUtxos,
@@ -9413,6 +9613,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(satoshiContainerUtxo && { satoshiContainerUtxo, satoshiContainerLockingBytecode }),
       ...(externalReadUtxos.length > 0 && { readOnlyDataNftUtxos: externalReadUtxos }),
       ...(blockhashCoSpendUtxos.length > 0 && { blockhashCoSpendUtxos }),
+      ...(blockhashCoSpendSlotOrdinals && { blockhashCoSpendSlotOrdinals }),
       ...(keccakComputeCoSpendUtxos.length > 0 && { keccakComputeCoSpendUtxos, keccakComputeCommitments }),
       ...(ecrecoverComputeCoSpendUtxos.length > 0 && { ecrecoverComputeCoSpendUtxos, ecrecoverComputeRecreates }),
       ...(keccakLoopSideCars.length > 0 && { keccakLoopSideCars, keccakLoopRecreates }),
@@ -9529,6 +9730,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'tokenContainer' && !tcInfos.some((c) => c.tokenContainerSlotIndex === s.slotIndex && c.exists),
       ).length;
+      if (blockhashCoSpendSlotOrdinals) {
+        const active = new Set(blockhashCoSpendSlotOrdinals);
+        let ordinal = 0;
+        for (const slot of effectiveBlockLayout.slots) {
+          if (slot.kind !== 'blockhashOracle') continue;
+          if (!active.has(ordinal)) neededFunders++;
+          ordinal++;
+        }
+      }
       const trailingCapacity = effectiveBlockLayout.trailingCapacity ?? 0;
       if (trailingCapacity > 0) {
         const existingTrailingInputs = iterationEntryInputs.length

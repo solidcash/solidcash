@@ -110,6 +110,10 @@ export interface ExternalCallUtxoGroup {
     args: any[];
     internalArgs?: Record<string, any>;
   };
+  /** Active SCB1 blockhash reads, retained until the group's absolute input base is known. */
+  graphBlockhashSelections?: Array<{
+    readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
+  }>;
   /** B's full block: entry NFTs, token containers, satoshi container, funders for output-only slots */
   blockInputs?: UnlockableUtxo[];
   /** B's function block layout (for full block ordering) */
@@ -143,6 +147,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   requiredNftIndices?: number[];  // if absent, use all indices
   readOnlyDataNftUtxos?: UnlockableUtxo[];  // read-only data NFTs from other contracts
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
+  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph SCB1
+   * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
+  blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
   keccakComputeCommitments?: string[];        // parallel: R_i = keccak256(preimage_i) hex, committed to recreation i
   ecrecoverComputeCoSpendUtxos?: UnlockableUtxo[]; // recovery A/B side-cars (2 per call, flat A0,B0,A1,B1..) at slots
@@ -243,6 +250,7 @@ export class StatefulTransactionBuilder {
   private tokenContainerTransferInsertionCounter = 0;
   private readOnlyDataNftUtxos: UnlockableUtxo[];
   private blockhashCoSpendUtxos: UnlockableUtxo[];
+  private blockhashCoSpendSlotOrdinals?: number[];
   private keccakComputeCoSpendUtxos: UnlockableUtxo[];
   private keccakComputeCommitments: string[];
   private ecrecoverComputeCoSpendUtxos: UnlockableUtxo[];
@@ -311,6 +319,7 @@ export class StatefulTransactionBuilder {
     this.categoryId = options.categoryId;
     this.readOnlyDataNftUtxos = options.readOnlyDataNftUtxos ?? [];
     this.blockhashCoSpendUtxos = options.blockhashCoSpendUtxos ?? [];
+    this.blockhashCoSpendSlotOrdinals = options.blockhashCoSpendSlotOrdinals;
     this.keccakComputeCoSpendUtxos = options.keccakComputeCoSpendUtxos ?? [];
     this.keccakComputeCommitments = options.keccakComputeCommitments ?? [];
     this.ecrecoverComputeCoSpendUtxos = options.ecrecoverComputeCoSpendUtxos ?? [];
@@ -420,13 +429,15 @@ export class StatefulTransactionBuilder {
     // With external calls, the gap between readOnly and entries breaks 1:1 correspondence,
     // so we fall through to the legacy path which both inputs and outputs follow.
     const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
-    if (this.blockLayout && this.funderUtxos.length > 0 && !hasExternalGroups) {
+    if (this.blockLayout && this.funderUtxos.length > 0
+      && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined)) {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
       const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
       let dataNftIdx = 0, readOnlyIdx = 0, tcIdx = 0;
       let llcIdx = 0; // low-level call input index
       let bhIdx = 0; // blockhash co-spend index
+      let bhOrdinal = 0;
       let kIdx = 0; // keccak256 compute side-car index
       let erIdx = 0; // ecrecover recovery-pair side-car index (flat A0,B0,A1,B1..)
       const trailingInputs = [
@@ -454,9 +465,14 @@ export class StatefulTransactionBuilder {
             }
             break;
           case 'blockhashOracle':
-            if (bhIdx < this.blockhashCoSpendUtxos.length) {
+            if ((this.blockhashCoSpendSlotOrdinals?.[bhIdx] ?? bhIdx) === bhOrdinal
+              && bhIdx < this.blockhashCoSpendUtxos.length) {
               positioned[slot.offset] = this.blockhashCoSpendUtxos[bhIdx++];
+            } else if (this.blockhashCoSpendSlotOrdinals) {
+              const f = funderPool.shift();
+              if (f) positioned[slot.offset] = f;
             }
+            bhOrdinal++;
             break;
           case 'keccakSideCar':
             if (kIdx < this.keccakComputeCoSpendUtxos.length) {
@@ -1153,6 +1169,13 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external call group.
    */
   getExternalCallMasterInputIndex(groupIdx: number): number {
+    // A sparse SCB1 oracle band makes the active co-spend count smaller than its physical width. Resolve the
+    // already-positioned callee master directly rather than reconstructing its base from dense resource counts.
+    if (this.blockhashCoSpendSlotOrdinals) {
+      const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
+      const found = master && this.allInputs.findIndex((input) => input.txid === master.txid && input.vout === master.vout);
+      if (found !== undefined && found >= 0) return found;
+    }
     let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs

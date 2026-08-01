@@ -15,7 +15,7 @@ import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/cov
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
- * X193. IS THERE A CHUNK-BACKED WRITER IN THE 206? NO - AND THE TWO SETS ARE DISJOINT, MEASURED BOTH WAYS.
+ * X193. IS THERE A CHUNK-BACKED WRITER IN THE 215? NO - AND THE TWO SETS ARE DISJOINT, MEASURED BOTH WAYS.
  *
  * The recovered population's open shape was "a writer over a DYNAMIC STRING or an unbounded chunk collection".
  * `Layer3RecoveredOracleWriterX180` recorded that no such writer is run "here or anywhere" and that none exists
@@ -39,7 +39,7 @@ import type { Utxo } from '../../src/interfaces.js';
  * settles `MyToken.name` and `MyToken.symbol` across the 64 trailing slots. The gap this file closes is the
  * question, not a subject: the shape has no member in this population, so no run can produce one.
  *
- * AND FOUR RECOVERED SHAPES WITH NO SUBJECT BEFORE, chosen to be unlike the eight X180 covered.
+ * AND TWO TRANSCRIPT-ELIGIBLE RECOVERED SHAPES WITH NO SUBJECT BEFORE, plus two fail-closed exclusions.
  *
  *  1. `DutchAuction` - four gained handlers on a THREE-data-NFT block-oracle contract, including `getPrice`,
  *     which COMPUTES from the injected `__block_timestamp` register rather than returning a stored field.
@@ -47,11 +47,9 @@ import type { Utxo } from '../../src/interfaces.js';
  *     `usesMsgValue` makes the SDK write an SCB1 header byte the compiled route refuses. The per-row control
  *     builds it both ways and asserts the participant script is the same in each.
  *  2. `ReEntrancy.Attack` - the same X192 class at one data NFT, with a CONTRACT-TYPED state variable.
- *  3. `ContractSize.Target` - `isContract` SETTLES, and its writer sibling `protected` is FAIL-CLOSED with the
- *     reason isolated. See below; this is the file's second finding.
- *  4. `TestTransientStorage.val` - the population's minimum: a TWO-slot block, master plus return event, with
- *     no data NFT at all. `Layer3RecoveredAbsentWritersX177` proved structurally that it cannot mutate and said
- *     plainly it is "not run to completion anywhere". It is now.
+ *  3. `ContractSize.Target` and 4. `TestTransientStorage.val` lower through opaque assembly and are therefore
+ *     deterministically transcript-ineligible under v1. Their historical VM probes remain documented below,
+ *     but the live security assertion is exclusion rather than re-admission.
  *
  * THE SECOND FINDING: `.code` HAS NO `false` ANSWER, AND IT CLOSES A RECOVERED WRITER.
  *
@@ -74,15 +72,15 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  * WHAT THIS FILE DOES NOT ESTABLISH.
  *
- *  - NINE gained handlers settle here. 197 of the 206 are NOT proved by this file, and most of them are not
+ *  - TEN gained handlers settle here. 205 of the 215 are NOT proved by this file, and most of them are not
  *    proved anywhere.
  *  - The X192 correction is applied as an SDK-side ENCODER input, by clearing `usesMsgValue` on handlers route
  *    synthesis REFUSED. It moves no compiled byte - each affected row asserts the two arms share the
  *    participant script - and it is not a compiler fix. Rows 1 and 2 settle only with it applied.
  *  - Nothing here says whether `.code`'s P2SH requirement is correct. It is measured, its consequence for one
  *    recovered writer is measured, and the disposition is left to the owner of that codegen.
- *  - All four subjects are WITHIN the 10,000-byte input-script limit, printed per row. Unlike X180's
- *    `UniswapV2Pair` and `StakingRewards`, none of these settlements depends on the relaxed profile for size.
+ *  - Both admitted subjects are WITHIN the 10,000-byte input-script limit, printed per row. Unlike X180's
+ *    `UniswapV2Pair` and `StakingRewards`, neither settlement depends on the relaxed profile for size.
  */
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -319,6 +317,10 @@ const ROWS: readonly Row[] = [
   },
 ];
 
+// `.code` and transient-storage lower through opaque assembly. Invocation transcript v1 deliberately
+// excludes both constructs; keep their census records, but never treat them as graph-admitted subjects.
+const TRANSCRIPT_ROWS = ROWS.filter((row) => row.contract !== 'Target' && row.contract !== 'TestTransientStorage');
+
 function withBlockOracle(
   layout: { variables: ReadonlyArray<{ name: string; type: string }> },
   pre: Record<string, unknown>,
@@ -401,7 +403,12 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
       // The handler really is published, so this row is about the contract it claims to be about.
       const names = ((artifact.hiddenBatch?.handlers ?? []) as any[]).map((handler) => handler.name);
       for (const handler of row.handlers) {
-        expect(names, `${row.contract}.${handler} is not a published handler`).toContain(handler);
+        if (row.contract === 'TestTransientStorage') {
+          expect(names, `${row.contract}.${handler} was unexpectedly admitted despite opaque assembly`)
+            .not.toContain(handler);
+        } else {
+          expect(names, `${row.contract}.${handler} is not a published handler`).toContain(handler);
+        }
       }
       if (dynamic.length > 0) carrying.push(`${row.contract}: ${dynamic.join(', ')}`);
     }
@@ -447,7 +454,7 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
 
   /** Every subject is a published, eligible handler on the block shape this file claims to exercise. */
   it('MEASURED: every subject is an eligible handler on the block shape named here', () => {
-    for (const row of ROWS) {
+    for (const row of TRANSCRIPT_ROWS) {
       const artifact = layoutArtifact(row);
       const handlers = artifact.hiddenBatch!.handlers as any[];
       const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
@@ -871,7 +878,7 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
     expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
   };
 
-  for (const row of ROWS) {
+  for (const row of TRANSCRIPT_ROWS) {
     if (row.x192) {
       it(`X199: ${row.key} settles with the PUBLISHED header too - the local correction is a no-op`,
         x192Control(row), 1_800_000);
@@ -908,7 +915,7 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
     };
   }
 
-  const targetRow = (): Row => ROWS.find((row) => row.contract === 'Target')!;
+  const targetArtifact = (): any => layoutArtifact(ROWS.find((row) => row.contract === 'Target')!);
 
   /**
    * THE DISCRIMINATING PAIR, and it moves ONE argument.
@@ -919,8 +926,8 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
    * the same block, the same pre state, one operand different - the route is refused at input 0. There is no
    * `false` answer available for a non-P2SH address; the accessor aborts instead of returning a zero size.
    */
-  it('MEASURED: Target.isContract answers for a P2SH address and is REFUSED for a P2PKH one', async () => {
-    const row = targetRow();
+  it.skip('HISTORICAL: Target.isContract answers for a P2SH address and is REFUSED for a P2PKH one', async () => {
+    const row = ROWS.find((candidate) => candidate.contract === 'Target')!;
     const settled = await routeResult(row, 'isContract', [P2SH32_ADDRESS]);
     console.log(`[X193] isContract(p2sh32) answered ${binToHex(settled)}`);
     const accepted = await attempt(row, 'isContract', [P2SH32_ADDRESS], 'none', { declaredResult: settled });
@@ -952,8 +959,8 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
    * This is a REFUSAL, not an exploit: nothing is accepted that should be refused. The pointer is read off the
    * trace and shown to be INSIDE the same accessor, five frames down, at the P2SH length VERIFY.
    */
-  it('MEASURED: the recovered writer Target.protected is fail-CLOSED, at the `.code` P2SH check', async () => {
-    const row = targetRow();
+  it.skip('HISTORICAL: the recovered writer Target.protected is fail-CLOSED at the `.code` P2SH check', async () => {
+    const row = ROWS.find((candidate) => candidate.contract === 'Target')!;
     const aborts: Array<{ what: string; ip: number; frames: number }> = [];
     for (const caller of ['pkh', 'none'] as const) {
       const probe = await attempt(row, 'protected', [], 'none', { probe: true, rootCaller: caller });
@@ -992,10 +999,20 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
     console.log(`[X193] control: the sibling Target.pwned SETTLED ${sibling.sent} through the same staging`);
   }, 1_800_000);
 
-  /** HOW MANY OF THE 206 this file settles, counted by name rather than by impression. */
+  it('SECURITY: `.code` and transient-storage assembly are deterministically transcript-ineligible', () => {
+    const target = targetArtifact();
+    expect(target.hiddenBatch!.handlers.find((handler: any) => handler.name === 'isContract').eligible).toBe(false);
+    expect(target.hiddenBatch!.handlers.find((handler: any) => handler.name === 'isContract').rejectionReason)
+      .toBe('opaque-assembly-effects-transcript-ineligible');
+    expect(target.hiddenBatch!.handlers.find((handler: any) => handler.name === 'protected').eligible).toBe(false);
+    const transient = layoutArtifact(ROWS.find((row) => row.contract === 'TestTransientStorage')!);
+    expect(transient.hiddenBatch).toBeUndefined();
+  }, 1_800_000);
+
+  /** HOW MANY OF THE 215 this file settles, counted by name rather than by impression. */
   it('MEASURED: how many gained handlers this file settles on the VM', () => {
     const settled: string[] = [];
-    for (const row of ROWS) {
+    for (const row of TRANSCRIPT_ROWS) {
       for (const handler of [row.writer, ...row.guards.map((g) => g.name)]) {
         // Every counted handler is asserted to be one the repair GAINED, against X160's own list.
         expect(GAINED_BY_THE_REPAIR[row.contract], `${row.contract}.${handler} is not a gained handler`)
@@ -1004,15 +1021,13 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
       }
     }
     for (const handler of settled) console.log(`[X193] SETTLED ON THE VM: ${handler}`);
-    console.log(`[X193] ${settled.length} gained handlers settle here; ${206 - settled.length} of the 206 `
+    console.log(`[X193] ${settled.length} gained handlers settle here; ${215 - settled.length} of the 215 `
       + 'are NOT proved by this file, and most of them are not proved anywhere.');
     expect(settled).toEqual([
       'DutchAuction.getPrice', 'DutchAuction.startingPrice', 'DutchAuction.discountRate', 'DutchAuction.startAt',
       'DutchAuction.expiresAt', 'DutchAuction.nft', 'DutchAuction.nftId', 'DutchAuction.seller',
       'Attack.etherStore', 'Attack.getBalance',
-      'Target.isContract', 'Target.pwned',
-      'TestTransientStorage.val',
     ]);
-    expect(settled).toHaveLength(13);
+    expect(settled).toHaveLength(10);
   }, 1_800_000);
 });

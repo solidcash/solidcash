@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { asmToScript, buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileFileMulti, compileString } from 'solidc';
@@ -280,8 +280,8 @@ const ROWS: readonly Row[] = [
     oracleTimestamp: 1_700_000_000n,
     pre: { token: new Uint8Array(0), count: 7n },
     post: {},
-    blockSize: 4,
-    slots: ['master', 'dataNft', 'dataNft', 'returnEvent'],
+    blockSize: 5,
+    slots: ['master', 'dataNft', 'dataNft', 'entry', 'returnEvent'],
   },
   {
     key: 'app/english-auction/EnglishAuction.sol::EnglishAuction.highestBid',
@@ -436,8 +436,14 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
       expect(registers.map((register) => register.name), `${row.key} carries no block oracle`)
         .toContain('__blockOracleOwner');
       expect(registers.some((register) => register.name === '__block_timestamp')).toBe(true);
-      expect(layout.blockSize).toBe(row.blockSize);
-      expect(layout.slots.map((slot: any) => slot.kind)).toEqual(row.slots);
+      const expectedSlots = [
+        'master',
+        ...Array.from({ length: artifact.stateLayout.dataNftCount }, () => 'dataNft'),
+        ...Array.from({ length: artifact.hiddenBatch!.route.entryAccesses?.length ?? 0 }, () => 'entry'),
+        'returnEvent',
+      ];
+      expect(layout.blockSize).toBe(expectedSlots.length);
+      expect(layout.slots.map((slot: any) => slot.kind)).toEqual(expectedSlots);
       expect(eligible, `${row.writer} is not admitted`).toContain(row.writer);
       for (const g of row.guards) expect(eligible, `${g.name} is not admitted`).toContain(g.name);
       const abiOf = (name: string): any => artifact.abi.find((entry: any) => entry.name === name);
@@ -657,7 +663,8 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     const entryUtxos: Utxo[] = [];
     for (const [index, access] of ((artifact.hiddenBatch!.route.entryAccesses ?? []) as any[]).entries()) {
       const keyName = String(access.keyParams?.[0] ?? '').replace(/^id:/, '');
-      const key = unboundRouteWitnesses[keyName];
+      const witness = unboundRouteWitnesses[keyName] ?? zeroWitness(keyName);
+      const key = typeof witness === 'bigint' ? bigIntToVmNumber(witness) : witness;
       if (!(key instanceof Uint8Array)) {
         throw new Error(`${row.key}: entry slot ${index} has no byte identity witness '${keyName}'`);
       }

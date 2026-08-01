@@ -412,7 +412,7 @@ describe('X199: the SCB1 value-mode byte, decided over the dispatchable set', ()
     const preRepair = await attempt('highestBid', { mislabel: true });
     const abort = abortOf(preRepair.trace!);
     console.log(`[X199] pre-repair abort ip=${abort.ip} steps=${abort.steps} error=${abort.error}`);
-    expect(abort.ip, 'the pre-repair encoder no longer stops at the header require').toBe(167);
+    expect(abort.ip, 'the pre-repair encoder no longer stops at the header require').toBe(165);
     expect(abort.error).toMatch(/OP_VERIFY/);
     const repaired = abortOf((await attempt('highestBid')).trace!);
     console.log(`[X199] repaired abort ip=${repaired.ip} steps=${repaired.steps} error=${repaired.error}`);

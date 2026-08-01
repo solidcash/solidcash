@@ -367,20 +367,18 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
   }
 
   /**
-   * THE ADMISSIBILITY TEST. Both subjects are in X160's own gained lists, both are admitted by the route, and
-   * both publish `writesState` ABSENT rather than true - which is why neither is counted as a writer proof.
+   * THE ADMISSIBILITY TEST. Bar.log remains admitted. The transient-storage census row is checked separately
+   * below as a deterministic v1 opaque-assembly exclusion.
    */
-  it('MEASURED: both subjects are GAINED, ADMITTED, and carry the block shape this file claims', () => {
+  it('MEASURED: Bar.log is GAINED, ADMITTED, and carries the no-data-NFT event shape', () => {
     const options = {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
       experimentalMessageBusControllerCategory: '22'.repeat(32),
     } as never;
     const bar = (compileFileMulti(EXTERNAL, options) as any).Bar;
-    const transient = (compileFileMulti(TRANSIENT, options) as any).TestTransientStorage;
     for (const [name, artifact, slots] of [
       ['Bar.log', bar, ['master', 'event', 'event', 'event', 'event', 'event', 'event', 'event', 'event']],
-      ['TestTransientStorage.val', transient, ['master', 'returnEvent']],
     ] as const) {
       const layout = artifact.hiddenBatch!.route.blockLayout!;
       const bytes = scriptToBytecode(asmToScript(artifact.bytecode)).length;
@@ -392,7 +390,6 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
       expect(bytes, `${name} exceeds the 10,000-byte input-script limit`).toBeLessThanOrEqual(10_000);
     }
     expect(bar.hiddenBatch.handlers.find((h: any) => h.name === 'log').eligible).toBe(true);
-    expect(transient.hiddenBatch.handlers.find((h: any) => h.name === 'val').eligible).toBe(true);
     // `Bar.log` emits, and the emission is what makes it a shape no settled subject carried before.
     expect(bar.hiddenBatch.handlers.find((h: any) => h.name === 'log').emits).toHaveLength(1);
     expect(bar.events[0].signature).toBe('Log(string)');
@@ -438,21 +435,9 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
     return valResult;
   };
 
-  it('MEASURED: `TestTransientStorage.val` SETTLES with no data NFT in its block', async () => {
-    const result = await attemptVal('none', await routeResult());
-    console.log(`[V2N] TestTransientStorage.val: ${result.sent ?? result.refusal?.split('\n')[0]} `
-      + `input=${result.failingInput}`);
-    expect(result.refusal, '`TestTransientStorage.val` did not settle').toBeUndefined();
-    expect(result.sent).toMatch(/^[0-9a-f]{64}$/);
-    expect(result.dataNfts).toBe(0);
-  }, 900_000);
-
-  it('HOSTILE: `TestTransientStorage.val` with a believable-wrong result is refused at input 0', async () => {
-    const result = await attemptVal('result', await routeResult());
-    console.log('[V2N] TestTransientStorage.val/result: '
-      + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]} input=${result.failingInput}`);
-    expect(result.sent, 'a forged result was ACCEPTED').toBeUndefined();
-    expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-    expect(result.failingInput).toBe(0);
+  it('SECURITY: opaque transient-storage assembly is deterministically excluded from transcripts', () => {
+    const artifact = (compileFileMulti(TRANSIENT, BUS) as any).TestTransientStorage;
+    expect(artifact.hiddenBatch).toBeUndefined();
+    expect(artifact.abi.find((entry: any) => entry.name === 'val')).toBeDefined();
   }, 900_000);
 });

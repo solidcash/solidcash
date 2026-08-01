@@ -739,20 +739,23 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     const marketplace = `${CORPUS_ROOTS.eacc}/MarketplaceV1.sol`;
     const marketplaceDirect = attempt(marketplace, directOptions);
     const marketplaceBus = attempt(marketplace, busOptions);
-    const multiBus = (() => {
-      try { compileFileMulti(marketplace, busOptions as never); return undefined; } catch (error) {
-        return headOf(error);
-      }
-    })();
+    const multiMap = compileFileMulti(marketplace, busOptions as never) as any;
     console.log(`[F3] X84 MarketplaceV1.sol primary direct: ${marketplaceDirect ?? 'OK'}`);
     console.log(`[F3] X84 MarketplaceV1.sol primary bus:    ${marketplaceBus ?? 'OK'}`);
-    console.log(`[F3] X84 MarketplaceV1.sol MULTI bus:      ${multiBus ?? 'OK'}`);
+    console.log(`[F3] X84 MarketplaceV1.sol MULTI bus:      ${Object.keys(multiMap).join(', ')}`);
     expect(marketplaceDirect, 'MarketplaceV1 no longer compiles directly').toBeUndefined();
     expect(marketplaceBus, 'MarketplaceV1 no longer compiles in bus mode either').toBeUndefined();
-    // The condition under which the fallback fires, and therefore under which a sibling can lose its cause.
-    expect(multiBus, 'the whole file now compiles in bus mode, so the fallback is never taken and this test '
-      + 'no longer has a subject - find another file whose multi-compile fails where its primary succeeds')
-      .toBeDefined();
+    // The old fallback subject is closed: multi-compile now returns every sibling. Oversized artifacts are
+    // represented by structured diagnostics rather than an exception that erases the map, so assert both
+    // the retained siblings and the exact diagnostic code instead of treating console output as a failure.
+    expect(Object.keys(multiMap)).toEqual(expect.arrayContaining(['MarketplaceV1', 'MarketplaceDataV1']));
+    const sizeDiagnostics = Object.values(multiMap).flatMap((artifact: any) => artifact.diagnostics ?? [])
+      .filter((diagnostic: any) => diagnostic.code === 'contract-size-limit');
+    expect(sizeDiagnostics.length, 'oversized Marketplace siblings carried no structured size diagnostic')
+      .toBeGreaterThan(0);
+    expect(sizeDiagnostics.every((diagnostic: any) => diagnostic.severity === 'error')).toBe(true);
+    expect(sizeDiagnostics.every((diagnostic: any) => /10000-byte input-script limit/.test(diagnostic.message)))
+      .toBe(true);
 
     // AND THE ATTRIBUTION IS NOW COMPLETE, WHICH IS WHY THIS ASSERTION IS INVERTED. X84 measured 15 of the
     // recorded census's 96 bus-failure rows carrying `Error: contract absent from the bus-mode artifact map`,
@@ -820,6 +823,8 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
         : [...rows.slice(0, 5), ...rows.slice(-5)];
       for (const row of shown) detailed.add(`${row.corpus}/${row.rel}/${row.contractName}`);
     }
+    let staleUnderLive = 0;
+    let staleOverLive = 0;
     for (const row of eligible) {
       for (const participants of [1, 2, 4, 8]) {
         const fit = fitAt(row, participants, calibration, MEASURED_COVENANTS);
@@ -845,12 +850,9 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
         staleVerdicts[key] ??= { fits: 0, over: 0 };
         if (stale.prediction.verdict === 'FITS') staleVerdicts[key].fits += 1; else staleVerdicts[key].over += 1;
         if (stale.prediction.verdict === 'OVER' && fit.prediction.verdict === 'FITS') inflated += 1;
-        // Both covenants shrank, and every limit is monotone in the bytes an input pushes, so the stale
-        // default can only ever predict MORE utilization. A row where it predicted less would mean the two
-        // descriptors differ in something other than the covenant sizes.
-        expect(stale.prediction.worstRatio,
-          `${row.contractName} @ N=${participants}: the stale default predicts LESS than the live covenant`)
-          .toBeGreaterThanOrEqual(fit.prediction.worstRatio - 1e-12);
+        const delta = stale.prediction.worstRatio - fit.prediction.worstRatio;
+        if (delta < -1e-12) staleUnderLive += 1;
+        if (delta > 1e-12) staleOverLive += 1;
       }
     }
     console.log('[F3] predicted verdicts over EVERY bus-reachable contract:');
@@ -864,12 +866,15 @@ describe('F3 estimated landing: the bus-reachable corpus against all four limits
       + `${eligible.length * 4} rows that fit, at ${MEASURED_COVENANTS.projectionRedeemBytes} vs `
       + `${calibration.projectionRedeemBytes} B of projection and `
       + `${MEASURED_COVENANTS.controllerRedeemBytes} vs ${calibration.controllerRedeemBytes} B of controller`);
-    // The control has to be doing something, or the fix is untested: the PROJECTION has moved away from the
-    // calibration at this commit and that is the whole of the effect. The controller has NOT - its deployed
-    // length is the calibration's 1,514 exactly - and that is asserted rather than left implicit, because
-    // reading 1,493 off its compile instead of its deployment is how a 21-byte saving got invented once.
+    // Both live covenants are now larger than the calibration (4,773/2,499 vs 4,542/1,514 bytes), and the
+    // stale default consequently undercuts the live worst ratio on this corpus. Pin that direction and the
+    // absence of the formerly claimed conservative direction: callers must carry the live descriptors.
+    expect(staleUnderLive, 'the stale default unexpectedly remained conservative for every row').toBeGreaterThan(0);
+    expect(staleOverLive, 'the stale default unexpectedly over-predicted a live row').toBe(0);
+    // The control has to be doing something, or the fix is untested: both deployed covenants have moved away
+    // from the calibration, so both live descriptors must be supplied explicitly.
     expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
-    expect(MEASURED_COVENANTS.controllerRedeemBytes).toBe(calibration.controllerRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).not.toBe(calibration.controllerRedeemBytes);
     console.log('[F3] which limit is predicted to bind, counted:');
     for (const [key, count] of Object.entries(binding).sort((left, right) => right[1] - left[1])) {
       console.log(`[F3]   ${String(count).padStart(4)}  ${key}`);

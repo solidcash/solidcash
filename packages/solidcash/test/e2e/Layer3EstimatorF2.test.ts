@@ -1386,14 +1386,18 @@ describe('F2 estimator: X70 - the real corpus contracts that bind on script byte
     const unresolvedSizes = rows.map((row) => row.unresolved.length);
     console.log(`[F2/X70] unresolved set size ${Math.min(...unresolvedSizes)}..${Math.max(...unresolvedSizes)}`);
     expect(Math.max(...unresolvedSizes)).toBeLessThanOrEqual(2);
-    // AND IT HOLDS THE OTHER WAY TOO, which is the only reason the stale column was ever safe: defaulting the
-    // covenants only ever inflates, so it cannot have hidden an under-prediction.
-    expect(staleErrors.filter((error) => error < 0)).toEqual([]);
-    // The control is not vacuous, and it is not symmetric either: the PROJECTION has moved away from the
-    // calibration and the controller has not. Both directions are pinned, because the second one is what a
-    // reader would otherwise assume from the first.
+    // THE STALE COLUMN IS NOT A SAFETY BOUND. Resource leaders can change when covenant descriptors move;
+    // the current corpus contains an actual stale under-prediction even though the live descriptor remains
+    // conservative on every row above. Pin the existence of both directions rather than repeating the old
+    // (false) claim that defaulting can only inflate.
+    expect(staleErrors.some((error) => error < 0), 'the stale descriptor unexpectedly became a safe bound')
+      .toBe(true);
+    expect(staleErrors.some((error) => error > 0), 'the stale descriptor no longer exercises over-prediction')
+      .toBe(true);
+    // The control is not vacuous: both live covenants have moved away from the recorded calibration. Pin
+    // both descriptors so a caller cannot accidentally reintroduce either stale constant.
     expect(MEASURED_COVENANTS.projectionRedeemBytes).not.toBe(calibration.projectionRedeemBytes);
-    expect(MEASURED_COVENANTS.controllerRedeemBytes).toBe(calibration.controllerRedeemBytes);
+    expect(MEASURED_COVENANTS.controllerRedeemBytes).not.toBe(calibration.controllerRedeemBytes);
     // THE BEFORE COLUMN, AND WHY IT IS NO LONGER PINNED AT A COUNT. X70 asserted that the model it replaced
     // still under-predicts at least 44 of 45 rows here. At this commit it under-predicts 1 of 43, and that is
     // not the defect healing: the legacy line returns 4,441 bytes for the projection input, which was an

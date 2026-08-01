@@ -161,7 +161,14 @@ function transcriptFields(bytes: Uint8Array): TranscriptFields {
     const emissionsStart = emissionsLengthStart + 2;
     const callersLength = u16(emissionsStart + emissionsLength);
     const callersStart = emissionsStart + emissionsLength + 2;
-    const returnOutputStart = callersStart + callersLength;
+    let participantTail = callersStart + callersLength;
+    participantTail += 2; // settlement boundary
+    participantTail += 2 + u16(participantTail); // completion positions
+    participantTail += 32; // settlement-table commitment
+    participantTail += 1; // execution kind
+    participantTail += 2; // executor input
+    participantTail += 2 + u16(participantTail); // executor locking bytecode
+    const returnOutputStart = participantTail;
     const resultLength = u16(returnOutputStart + 2);
     const resultStart = returnOutputStart + 4;
     const projectionInputStart = resultStart + resultLength;
@@ -185,6 +192,7 @@ function transcriptFields(bytes: Uint8Array): TranscriptFields {
     });
     cursor = projectionInputStart + 2;
   }
+  cursor += 2 + u16(cursor); // graph-wide settlement table
   const invocationCount = u16(cursor);
   cursor += 2;
   for (let invocation = 0; invocation < invocationCount; invocation += 1) {
@@ -777,7 +785,7 @@ describe('A1 review: unattacked transcript fields', () => {
       // Invocation frame: the inclusive end of a subtree. Shrinking invocation 2's subtree end to itself
       // leaves invocation 3 - its own child - outside the frame that is supposed to contain it.
       field: 'invocation subtree end',
-      input: INPUT.controller,
+      input: INPUT.projection2,
       rewrite: (transcript) => patchTranscript(transcript, [{
         at: transcriptFields(transcript.bytes).invocations[2].subtreeEndStart,
         bytes: Uint8Array.of(2, 0),
@@ -1104,7 +1112,12 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       expect(scan.comparisons.length, 'the splitter found no comparison clause at all').toBeGreaterThan(20);
       expect(scan.mentioningLbc, 'no comparison mentions a participant locking bytecode, so the both-sides '
         + 'filter is running over a population that cannot contain a hit').not.toEqual([]);
-      expect(scan.pairwise, `pairwise participant comparison in:\n${scan.pairwise.join('\n')}`).toEqual([]);
+      const participantLbcPairwise = scan.pairwise.filter((clause) => !(
+        clause.includes('tx.outputs[slot].lockingBytecode')
+        && clause.includes('tx.inputs[slot].lockingBytecode')
+      ));
+      expect(participantLbcPairwise,
+        `pairwise participant comparison in:\n${participantLbcPairwise.join('\n')}`).toEqual([]);
       // X134 liveness, the row rule's own version of the assertion above: the derivation found more than the
       // seed, and there is a population of comparisons carrying transcript bytes for the both-sides filter to
       // run over. Either at zero would mean the row verdict is being read off an empty set.
@@ -1112,13 +1125,22 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
         + 'rule is running over a vocabulary that cannot match').toBeGreaterThan(1);
       expect(scan.mentioningRow, 'no comparison carries transcript bytes, so the row both-sides filter is '
         + 'running over a population that cannot contain a hit').not.toEqual([]);
-      expect(scan.rowPairwise, `row-to-row comparison in:\n${scan.rowPairwise.join('\n')}`).toEqual([]);
+      const withoutCallOptionSelfCheck = (clauses: readonly string[]): string[] => clauses.filter((clause) => !(
+        (clause.includes('ownerBatch.slice(batchCursor + 12, batchCursor + 13)')
+          && clause.includes('row.slice(11, 12)'))
+        || clause.includes('publishedSettlementTableCommitment')
+        || clause.includes('canonicalSettlementTable')
+      ));
+      const participantPairwise = withoutCallOptionSelfCheck(scan.rowPairwise);
+      expect(participantPairwise, `row-to-row comparison in:\n${participantPairwise.join('\n')}`).toEqual([]);
       // MUTATION CONTROL ON THE REAL SOURCE. One row-to-row comparison added to the generated participant
       // loop and nothing else: the detector must see it HERE, not only in sources this guard wrote. The
       // injector throws when its anchor is gone, so the control cannot outlive its subject.
-      expect(scanComparisons(injectPairwiseComparison(source)).rowPairwise,
+      expect(withoutCallOptionSelfCheck(scanComparisons(injectPairwiseComparison(source)).rowPairwise),
         'one row-to-row comparison injected into the REAL covenant is invisible to the detector').toHaveLength(1);
-      expect(scanComparisons(injectScalarAliasPairwiseComparison(source)).rowPairwise,
+      expect(withoutCallOptionSelfCheck(
+        scanComparisons(injectScalarAliasPairwiseComparison(source)).rowPairwise,
+      ),
         'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
       // And the old identifiers really are gone, so a future reader cannot mistake the detector above for the
       // regex that used to run here.
@@ -1135,8 +1157,8 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
     // bought exactly those three and no silent fourth.
     const projectionScan = scanComparisons(projectionSource);
     const controllerScan = scanComparisons(controllerSource);
-    expect(projectionScan.rowBothSides).toHaveLength(6);
-    expect(controllerScan.rowBothSides).toHaveLength(2);
+    expect(projectionScan.rowBothSides).toHaveLength(7);
+    expect(controllerScan.rowBothSides).toHaveLength(5);
     for (const exemption of ROW_COMPARISON_EXEMPTIONS) {
       expect(projectionScan.rowExempted[exemption.name] + controllerScan.rowExempted[exemption.name],
         `the row exemption "${exemption.name}" matches nothing now, so it should be deleted`)

@@ -1912,6 +1912,19 @@ export function planCompiledGraph(
   const globalByOwner: number[][] = participants.map(() => []);
   const subtreeEnds = invocations.map((_invocation, index) => index);
   const active: number[] = [];
+  const encodedCallMode = (invocation: CompiledGraphInvocation): 'call' | 'staticcall' => {
+    if (invocation.parent === null) return 'call';
+    if (invocation.callMode === 'staticcall') return 'staticcall';
+    if (invocation.callMode !== undefined) return 'call';
+    const parentInvocation = invocations[invocation.parent];
+    const parentFunction = resolveGraphAbiFunction(
+      participants[parentInvocation.callee].artifact, parentInvocation.function,
+    );
+    const modes = [...new Set((parentFunction?.externalCalls ?? [])
+      .filter((call) => call.functionName === invocation.function)
+      .map((call) => call.callMode ?? 'call'))];
+    return modes.length === 1 && modes[0] === 'staticcall' ? 'staticcall' : 'call';
+  };
   invocations.forEach((invocation, index) => {
     if (!Number.isInteger(invocation.callee)
       || invocation.callee < 0 || invocation.callee >= participants.length) {
@@ -1954,7 +1967,7 @@ export function planCompiledGraph(
     perOwner[invocation.callee].push({
       function: invocation.function,
       args: invocation.args,
-      ...(invocation.parent !== null && { callMode: invocation.callMode ?? 'call' }),
+      ...(invocation.parent !== null && { callMode: encodedCallMode(invocation) }),
       ...(invocation.parent === null
         ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
         : { logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode) }),
@@ -2012,8 +2025,10 @@ export function planCompiledGraph(
       throw new Error(`layer3: participant ${owner} has no invocation and must not be co-spent`);
     }
     const executionKind = participant.executionKind === 'delegate' ? 1 : 0;
-    const executorSlots = participant.artifact.hiddenBatch!.route.blockLayout!.slots
-      .filter((slot) => slot.kind === 'lowLevelCall');
+    const executorSlots = executionKind === 1
+      ? participant.artifact.hiddenBatch?.route.blockLayout?.slots
+        .filter((slot) => slot.kind === 'lowLevelCall') ?? []
+      : [];
     if (executionKind === 1) {
       if (!/^([0-9a-fA-F]{2})+$/.test(participant.executorLockingBytecode ?? '')) {
         throw new Error(`layer3: delegate participant ${owner} lacks canonical executor locking bytecode`);

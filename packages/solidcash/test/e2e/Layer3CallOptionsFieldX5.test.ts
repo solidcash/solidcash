@@ -74,8 +74,15 @@ function locateCallOptions(bytes: Uint8Array): {
     cursor += 2 + u16(cursor);
     cursor += 2;
     cursor += 2 + u16(cursor);
+    cursor += 32;
+    cursor += 1;
+    cursor += 2;
+    cursor += 2 + u16(cursor);
+    cursor += 2;
+    cursor += 2 + u16(cursor);
     cursor += 2;
   }
+  cursor += 2 + u16(cursor);
   const invocationCount = u16(cursor);
   cursor += 2;
   const rows: number[] = [];

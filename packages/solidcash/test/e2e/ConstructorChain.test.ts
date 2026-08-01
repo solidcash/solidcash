@@ -70,7 +70,9 @@ describe('constructor chains and linearization order (VM)', () => {
   it('grandparent ctor invocation initializes state through an abstract link', async () => {
     const artifact = compileString(GRANDPARENT_CTOR, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy(5n);
-    await expect(sc.check(6n)).resolves.toBeDefined();
+    expect(await sc.check(6n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('grandparent ctor invocation rejects a wrong expectation', async () => {
@@ -82,7 +84,9 @@ describe('constructor chains and linearization order (VM)', () => {
   it('most-base-first sibling lists linearize and run the ctor chain', async () => {
     const artifact = compileString(SIBLING_CHAIN, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.check(4n)).resolves.toBeDefined();
+    expect(await sc.check(4n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('super in a multi-base contract resolves to the rightmost base first', async () => {

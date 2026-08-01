@@ -782,6 +782,14 @@ function synthesizeHiddenBatchRoute(
     return parts.length === 2 && receivers.has(parts[0])
       && !['call', 'staticcall', 'delegatecall'].includes(parts[1]);
   };
+  // Pre-semantic namespace calls like `abi.encodePacked(..)` parse as MethodCallNode, but they are pure
+  // compiler intrinsics rather than outgoing contract edges. Counting one here turns a single real forward
+  // call into a false multi-edge handler and also misclassifies the intrinsic's local initializer as a
+  // call-result statement. Keep this list to namespaces the compiler owns; value receivers remain conservative.
+  const intrinsicNamespaceMethodCall = (node: Node): boolean =>
+    node instanceof MethodCallNode
+      && node.object instanceof IdentifierNode
+      && ['abi', 'bytes', 'string'].includes(node.object.name);
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -838,7 +846,7 @@ function synthesizeHiddenBatchRoute(
           // during the following semantic pass. The initial frozen route does
           // not attempt to predict that resolution: reject them conservatively
           // so no later synthetic callee parameters can invalidate this call.
-          if (node instanceof MethodCallNode) {
+          if (node instanceof MethodCallNode && !intrinsicNamespaceMethodCall(node)) {
             statefulExternalCall = true;
             methodCallCount += 1;
             if (node.methodName === 'delegatecall') graphHasDelegatecall = true;
@@ -894,7 +902,7 @@ function synthesizeHiddenBatchRoute(
       if (!(statement instanceof VariableDefinitionNode || statement instanceof TupleAssignmentNode)) return false;
       let containsCall = false;
       walkInvocationAst(statement, (candidate) => {
-        if (candidate instanceof MethodCallNode
+        if ((candidate instanceof MethodCallNode && !intrinsicNamespaceMethodCall(candidate))
           || (candidate instanceof FunctionCallNode
             && /\.(call|staticcall|delegatecall)$/.test(candidate.identifier.name))) {
           containsCall = true;

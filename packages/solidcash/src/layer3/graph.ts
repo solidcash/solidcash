@@ -29,6 +29,13 @@ export interface CompiledGraphInvocation {
   callee: number;
   function: string;
   args?: readonly FunctionArgument[];
+  /**
+   * Transaction-origin caller for the root row. This is required when the root handler derives a collection
+   * key from `msg.sender`; nested callers remain compiler-derived from the authenticated parent participant.
+   * The plan carries the same locking bytecode into finalization, where the projection covenant binds it to
+   * `tx.origin`.
+   */
+  logicalCaller?: FunctionArgument;
   /** Compiler-authored mode of the parent edge. Omitted only for the root or legacy direct planners. */
   callMode?: 'call' | 'staticcall';
 }
@@ -88,6 +95,8 @@ export interface CompiledParticipantExecution {
 export interface CompiledGraphPlan {
   participants: readonly CompiledParticipantExecution[];
   invocations: readonly PlannedGraphInvocation[];
+  /** Root `msg.sender`, carried from planning into finalization so collection-key and caller frames agree. */
+  rootCallerLockingBytecode?: string;
 }
 
 /**
@@ -472,7 +481,7 @@ export function finalizeCompiledGraph(
   projectionInputs: readonly number[] = plan.participants.map(
     (_participant, index) => plan.participants.length + index,
   ),
-  rootCallerLockingBytecode = '',
+  rootCallerLockingBytecode = plan.rootCallerLockingBytecode ?? '',
 ): FinalizedCompiledGraph {
   if (participantInputs.length !== plan.participants.length
     || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
@@ -1791,6 +1800,11 @@ export function planCompiledGraph(
     if (index === 0) {
       active.push(0);
     } else {
+      if (invocation.logicalCaller !== undefined) {
+        throw new Error(
+          `layer3: invocation ${index} cannot override its compiler-derived parent caller`,
+        );
+      }
       if (!Number.isInteger(invocation.parent)
         || invocation.parent! < 0 || invocation.parent! >= index) {
         throw new Error(`layer3: invocation ${index} parent must be a preceding invocation`);
@@ -1821,9 +1835,9 @@ export function planCompiledGraph(
       function: invocation.function,
       args: invocation.args,
       ...(invocation.parent !== null && { callMode: invocation.callMode ?? 'call' }),
-      ...(invocation.parent !== null && {
-        logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode),
-      }),
+      ...(invocation.parent === null
+        ? (invocation.logicalCaller === undefined ? {} : { logicalCaller: invocation.logicalCaller })
+        : { logicalCaller: hexToBin(participants[invocations[invocation.parent].callee].lockingBytecode) }),
     });
     globalByOwner[invocation.callee].push(index);
   });
@@ -2049,10 +2063,16 @@ export function planCompiledGraph(
     ...(consumerCallsites[index] !== undefined && { consumerCallsiteId: consumerCallsites[index] }),
     resultDependencies: Object.freeze(resultDependencies[index]),
   }));
+  const rootLogicalCaller = invocations[0].logicalCaller;
+  if (rootLogicalCaller !== undefined && !(rootLogicalCaller instanceof Uint8Array)) {
+    throw new Error('layer3: root logical caller must be locking bytecode bytes');
+  }
 
   return Object.freeze({
     participants: Object.freeze(executions),
     invocations: Object.freeze(planned),
+    ...(rootLogicalCaller === undefined
+      ? {} : { rootCallerLockingBytecode: binToHex(rootLogicalCaller) }),
   });
 }
 import {

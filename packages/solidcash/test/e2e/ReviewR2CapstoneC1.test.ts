@@ -342,26 +342,40 @@ async function buildC1(
   const vaultRoute = routeUnlocker(vault, vaultArtifact);
   const notifierRoute = routeUnlocker(notifier, notifierArtifact);
 
-  const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
-  ] as FunctionArgument[];
-  if (variant === 'spender-with-matching-entry') tokenRouteArgs[7] = hexToBin(accrue.lockingBytecode);
   const journalOrder = [1, 0, 2, 3];
-  for (const routeSlot of journalOrder) {
+  const tokenInternalRouteWitnesses: Record<string, FunctionArgument> = {};
+  for (const [routeSlot, entryIndex] of journalOrder.map((slot, index) => [slot, index] as const)) {
     const decoded = decodeEntryCommitment(hexToBin(entries[routeSlot].token!.nft!.commitment));
-    tokenRouteArgs.push(decoded.slot, BigInt(journalOrder.indexOf(routeSlot) + 1), decoded.nextKey, -1n);
+    tokenInternalRouteWitnesses[`__internal__c2BatchSlot_${entryIndex}`] = decoded.slot;
+    tokenInternalRouteWitnesses[`__internal__c2BatchProof_${entryIndex}`] = BigInt(entryIndex + 1);
+    tokenInternalRouteWitnesses[`__internal__c2BatchNext_${entryIndex}`] = decoded.nextKey;
+    tokenInternalRouteWitnesses[`__internal__c2BatchPredOut_${entryIndex}`] = -1n;
   }
-  tokenRouteArgs.push(0n);
+  tokenInternalRouteWitnesses.__internal__c2BatchTrailingCount = 0n;
+  const tokenRouteArgs = [
+    ...layer3.compiledGraphRouteArgs(
+      transcript, 1, layout.controllerInput, tokenInternalRouteWitnesses,
+    ),
+  ] as FunctionArgument[];
+  if (variant === 'spender-with-matching-entry') {
+    const spenderWitness = tokenArtifact.hiddenBatch!.route.inputs
+      .findIndex((input: any) => input.name === '__scb_key_allowance_sender_1');
+    if (spenderWitness < 0) throw new Error('C1 review: allowance sender witness not found');
+    tokenRouteArgs[spenderWitness] = hexToBin(accrue.lockingBytecode);
+  }
 
   const routerRouteArgs = [
     ...layer3.compiledGraphRouteArgs(transcript, 0, layout.controllerInput),
   ] as FunctionArgument[];
   if (variant === 'router-emission-target-swap') {
     // Length-preserving: every participant is a 35-byte p2sh32, and only the notify row names the Notifier.
-    const emissions = binToHex(routerRouteArgs[5] as Uint8Array);
+    const emissionsIndex = routerArtifact.hiddenBatch!.route.inputs
+      .findIndex((input: any) => input.name === '__internal__graphEmissions');
+    if (emissionsIndex < 0) throw new Error('C1 review: graph emissions witness not found');
+    const emissions = binToHex(routerRouteArgs[emissionsIndex] as Uint8Array);
     const swapped = emissions.replace(notifier.lockingBytecode, vault.lockingBytecode);
     if (swapped === emissions) throw new Error('C1 review: notify target not found in the emission witness');
-    routerRouteArgs[5] = hexToBin(swapped);
+    routerRouteArgs[emissionsIndex] = hexToBin(swapped);
   }
 
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
@@ -777,7 +791,7 @@ describe('R2 review: C1 reshape, single-build one-variable mutations', () => {
 
     // The witness index the fixture substitutes really is the allowance sender key.
     const routeAbi = (control.artifacts.token.hiddenBatch!.route as any).inputs;
-    expect(routeAbi[7].name).toBe('__scb_key_allowance_sender_1');
+    expect(routeAbi.some((input: any) => input.name === '__scb_key_allowance_sender_1')).toBe(true);
 
     const attacked = await buildC1('spender-with-matching-entry');
     const outcome = preflightOutcome(attacked);

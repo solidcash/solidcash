@@ -82,20 +82,27 @@ function emissionsOffset(transcript: layer3.FinalizedCompiledGraph, participant:
 function transcriptLayout(transcript: layer3.FinalizedCompiledGraph): {
   invocationRegion: number; rowOffsets: number[];
 } {
-  const last = transcript.plan.participants.length - 1;
-  const execution = transcript.plan.participants[last];
-  const frameLength = 2 + 2 + 2 + execution.lockingBytecode.length / 2
-    + 2 + execution.batch.blob.length
-    + 2 + transcript.participantEmissionsHex[last].length / 2
-    + 2 + transcript.participantCallersHex[last].length / 2
-    + 2 + 2 + transcript.participantResultVectorsHex[last].length / 2
-    + 2;
-  const invocationRegion = transcript.participantOffsets[last] + frameLength;
+  const bytes = transcript.bytes;
+  const u16 = (at: number): number => bytes[at] | (bytes[at + 1] << 8);
+  let cursor = 10;
+  for (let participant = 0; participant < transcript.plan.participants.length; participant += 1) {
+    cursor += 4; // participant input, block size
+    for (let frame = 0; frame < 4; frame += 1) cursor += 2 + u16(cursor); // lbc, batch, emissions, callers
+    cursor += 2; // settlement boundary
+    cursor += 2 + u16(cursor); // completion positions
+    cursor += 32 + 1 + 2; // settlement commitment, execution kind, executor input
+    cursor += 2 + u16(cursor); // executor locking bytecode
+    cursor += 2; // return output
+    cursor += 2 + u16(cursor); // result vector
+    cursor += 2; // projection input
+  }
+  cursor += 2 + u16(cursor); // graph-wide settlement table
+  const invocationRegion = cursor;
   const rowOffsets: number[] = [];
-  let cursor = invocationRegion + 2;
+  let rowCursor = invocationRegion + 2;
   transcript.plan.invocations.forEach((invocation, index) => {
-    rowOffsets.push(cursor);
-    cursor += 16 + invocation.argsHex.length / 2 + transcript.resultsHex[index].length / 2;
+    rowOffsets.push(rowCursor);
+    rowCursor += 16 + invocation.argsHex.length / 2 + transcript.resultsHex[index].length / 2;
   });
   return { invocationRegion, rowOffsets };
 }
@@ -617,6 +624,18 @@ contract C11CtxRoot(int brand, address peer) {
 const CTX_ROOT_READS_SENDER = CTX_ROOT_PLAIN
   .replace('require(expectedSender.length >= 0);', 'require(msg.sender.length >= 0);');
 
+const planSenderReadingRoot = (caller: string): unknown => {
+  const root = compileString(CTX_ROOT_READS_SENDER, busOnly);
+  const child = compileString(CTX_CHILD, busOnly);
+  return layer3.planCompiledGraph([
+    { artifact: root, lockingBytecode: `aa20${'cd'.repeat(32)}87` },
+    { artifact: child, lockingBytecode: `aa20${'ab'.repeat(32)}87` },
+  ], [
+    { parent: null, callee: 0, function: 'go', args: [3n, hexToBin(caller)] },
+    { parent: 0, callee: 1, function: 'observe', args: [3n] },
+  ]);
+};
+
 describe('C-R11 / E4: the open row - a ROOT caller frame and tx.origin', () => {
   // E4 attributes the open row to the repository's P2PKH fixture being a P2SH contract. That obstacle is a
   // fixture choice and it is removable: `SignatureTemplate.unlockP2PKH()` spends a real 25-byte P2PKH script,
@@ -662,41 +681,25 @@ describe('C-R11 / E4: the open row - a ROOT caller frame and tx.origin', () => {
       .rejects.toThrow(scriptRefusalAt(PAIR.projectionRoot));
   }, 120_000);
 
-  // FINDING. Removing the P2PKH obstacle does not open the row, because a second obstacle E4 does not record
-  // sits in front of it: a ROOT graph row whose handler READS msg.sender cannot execute at all. The
-  // predicate here is a tautology over msg.sender, so no VALUE can be the reason, and the control above is
-  // the same source with that one token replaced by a parameter. The refusal is at the root's own master
-  // route (input 0) and it is a malformed-script failure, not a designed refusal:
-  //   "Program called an OP_SPLIT operation with an invalid index. stack item length: 25;
-  //    requested split index: 73."
-  // measured on the honest 25-byte caller. It is caller-shape independent - every frame below refuses.
+  // A root handler reading msg.sender is transcript-ineligible and therefore publishes no SCB1 route. Planning
+  // must refuse before finalization or signing; the caller bytes cannot turn a missing compiler route into one.
   it.each([
     { shape: 'the honest 25-byte origin', caller: bareP2pkhLbc(alicePkh) },
     { shape: 'a 35-byte p2sh32 participant', caller: `aa20${'ab'.repeat(32)}87` },
     { shape: 'a 20-byte payload', caller: 'ab'.repeat(20) },
     { shape: 'an empty frame', caller: '' },
-  ])('a ROOT handler reading msg.sender is refused at its own route with $shape', async ({ caller }) => {
-    const built = await buildPairGraph(CTX_ROOT_READS_SENDER, CTX_CHILD, 'observe', {
-      origin: 'bare', rootCaller: caller, rootArgs: [3n, hexToBin(bareP2pkhLbc(alicePkh))], childArgs: [3n],
-    });
-    expect(evaluateEachInput(built.builder)[PAIR.masterRoot]).not.toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction))
-      .rejects.toThrow(scriptRefusalAt(PAIR.masterRoot));
+  ])('a ROOT handler reading msg.sender is planning-ineligible with $shape', ({ caller }) => {
+    expect(() => planSenderReadingRoot(caller))
+      .toThrow('This artifact does not advertise the compiler-hidden SCB1 batch route');
   }, 120_000);
 
-  // The exact failing operation, so the refusal is not read as a covenant decision.
-  it('names the failure: an OP_SPLIT index taken against the authenticated caller', async () => {
+  // Pin both the compiler disposition and exact SDK refusal so this cannot regress to an incidental dereference.
+  it('names the deterministic missing-route planning refusal', () => {
     const origin = bareP2pkhLbc(alicePkh);
-    const built = await buildPairGraph(CTX_ROOT_READS_SENDER, CTX_CHILD, 'observe', {
-      origin: 'bare', rootCaller: origin, rootArgs: [3n, hexToBin(origin)], childArgs: [3n],
-    });
-    const transaction = built.builder.buildLibauthTransaction();
-    const sourceOutputs = generateLibauthSourceOutputs(built.builder.inputs as never);
-    const vm = createVirtualMachineBch2026ForProvider(built.builder.provider);
-    const trace = (vm as any).debug({ inputIndex: PAIR.masterRoot, sourceOutputs, transaction });
-    const failure = trace.find((state: any) => state.error !== undefined);
-    expect(failure.error).toMatch(/OP_SPLIT operation with an invalid index/);
-    expect(failure.error).toMatch(/stack item length: 25/);
+    const artifact = compileString(CTX_ROOT_READS_SENDER, busOnly);
+    expect(artifact.hiddenBatch).toBeUndefined();
+    expect(() => planSenderReadingRoot(origin))
+      .toThrow(/^This artifact does not advertise the compiler-hidden SCB1 batch route$/);
   }, 120_000);
 });
 
@@ -819,6 +822,7 @@ contract C11Payer(bytes payee, address peer) {
     expect(() => layer3.deriveCompiledGraphPlan({
       root: { artifact: payer, lockingBytecode: rootLbc },
       function: 'go', args: [5n], targets: { IC11Sink: { artifact: sink, lockingBytecode: sinkLbc } },
+      target: () => ({ artifact: sink, lockingBytecode: sinkLbc }),
     } as any)).not.toThrow();
   });
 

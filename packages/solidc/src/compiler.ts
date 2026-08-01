@@ -891,6 +891,10 @@ function synthesizeHiddenBatchRoute(
     // call site itself, where that local is in scope.
     const directMethodCallCount = bodyStatements.filter((statement) =>
       statement instanceof MethodCallStatementNode).length;
+    const directTypedCallCount = bodyStatements.filter((statement) =>
+      statement instanceof MethodCallStatementNode
+      || (statement instanceof FunctionCallStatementNode
+        && contractTypedReceiverCall(statement.call, interfaceTypedReceivers(fn)))).length;
     const graphTailStatement = bodyStatements.length >= 2
       && directMethodCallCount === methodCallCount
       && bodyStatements[bodyStatements.length - 1] instanceof RequireNode
@@ -925,13 +929,18 @@ function synthesizeHiddenBatchRoute(
     // calldata argument` - a throw where the handler previously got the named refusal
     // `batched-handler-forward-call-not-enabled`. Widening must not trade a named refusal for a crash.
     //
-    // MULTI-EDGE bare bodies are excluded (`methodCallCount === 1`). Two bare calls DO compile and publish two
-    // edges, but the covenant binding is only VM-proved here for the single-edge shape, and admitting an
-    // unproven emission shape is the exact failure X187 closed. They keep the named refusal until proved.
+    // A straight-line multi-edge body is the one wider form admitted here: every source statement must be one
+    // of the counted typed calls. Its runtime clone consumes one authenticated emission row at each callsite,
+    // in source order, and requires the vector to be empty at return. Any statement before/between/after those
+    // calls leaves the named refusal in place; proving that control-flow shape needs a separate reachability
+    // argument rather than inheriting this straight-line proof.
     const lastStatement = bodyStatements[bodyStatements.length - 1];
     const graphBareTailStatement = bodyStatements.length >= 1
       && fn.returnTypes.length === 0
-      && methodCallCount === 1
+      && (methodCallCount === 1
+        || (methodCallCount > 1
+          && directTypedCallCount === methodCallCount
+          && bodyStatements.length === directTypedCallCount))
       && !graphResultStatement && !graphHasDelegatecall
       && (lastStatement instanceof MethodCallStatementNode
         || (lastStatement instanceof FunctionCallStatementNode

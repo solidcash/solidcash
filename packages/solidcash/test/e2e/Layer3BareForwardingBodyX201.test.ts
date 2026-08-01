@@ -300,14 +300,14 @@ contract X201Trail() {
   function peek() public { require(knob >= 0); }
 }`;
     expect(verdict(trailing).rejectionReason).toBe('batched-handler-forward-call-not-enabled');
-    // Two bare edges: compiles, publishes two callsites, still refused pending a VM proof of the shape.
+    // Two edges plus a non-call statement remain outside the straight-line multi-edge proof.
     const multi = `pragma solidcash >=0.8.0;
 interface IX201Callee { function tick(int value); }
 contract X201Two() {
   address a;
   address b;
   int knob;
-  function ping() { IX201Callee(a).tick(knob + 1); IX201Callee(b).tick(knob + 2); }
+  function ping() { IX201Callee(a).tick(knob + 1); IX201Callee(b).tick(knob + 2); knob = knob + 1; }
   function peek() public { require(knob >= 0); }
 }`;
     expect(verdict(multi).rejectionReason).toBe('batched-handler-forward-call-not-enabled');

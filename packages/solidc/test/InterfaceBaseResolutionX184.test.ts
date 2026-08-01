@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
-import { CircularInterfaceInheritanceError, UndefinedInterfaceError } from '../src/Errors.js';
+import {
+  CircularInterfaceInheritanceError, InterfaceContractBaseError, SolidcDiagnosticError,
+  UndefinedInterfaceError,
+} from '../src/Errors.js';
 
 /**
  * X184. AN UNDEFINED INTERFACE BASE IS SILENTLY ACCEPTED WHEN THE INTERFACE IS THE COMPILATION ROOT.
@@ -18,12 +21,10 @@ import { CircularInterfaceInheritanceError, UndefinedInterfaceError } from '../s
  *
  * Cause was the early declaration-artifact return in `compileResolvedAst`; semantic analysis now precedes it.
  *
- * FACT 2 (the mis-attribution). `contract C {} interface I is C {}`, where `C` IS defined as a contract,
- * reports `Undefined interface 'C'`. The control that removes the suspected cause - the base being a CONTRACT -
- * while holding every other field raises the IDENTICAL refusal for a base that declares nothing at all. So a
- * solc-parity guard named for "interfaces can only inherit interfaces" cannot assert that rule here: the
- * compiler never reads the field. What would restore the stronger claim is a diagnostic that names `C` as a
- * contract; there is no such diagnostic at this commit.
+ * FACT 2 (the repaired residual). A defined contract base now raises the structured
+ * `INTERFACE_CONTRACT_BASE` diagnostic, distinct from `UndefinedInterfaceError`, and carries the declaration's
+ * real root/imported source location. Mutating the base into an interface accepts; deleting it retains the
+ * undefined-interface refusal, so the diagnostic cannot pass without reading the declaration kind.
  */
 
 const compat = { solidityImportCompat: true } as const;
@@ -76,29 +77,56 @@ describe('X184 interface base resolution also runs on the declaration-artifact p
     });
   });
 
-  // FACT 2. The refusal that a solc-parity guard would want to attribute to "the base is a contract" does not
-  // read that field. Asserted as the weaker fact the compiler actually proves, with the gap recorded.
-  describe('FACT 2 (MIS-ATTRIBUTION): the contract-base refusal does not discriminate contract from undefined', () => {
-    it('raises the same error class for a defined contract base and a base that declares nothing', () => {
+  describe('FACT 2 (REPAIRED): a contract base is distinguished from an undefined interface', () => {
+    it('publishes a stable contract-specific diagnostic at the root declaration', () => {
       const contractBase = (): unknown => compileString('contract C {} interface I is C {}', compat);
       const undefinedBase = (): unknown => compileString('contract C {} interface I is Zzz {}', compat);
-      expect(contractBase).toThrow(UndefinedInterfaceError);
+      expect(contractBase).toThrow(InterfaceContractBaseError);
       expect(undefinedBase).toThrow(UndefinedInterfaceError);
-      // Same phrasing on both, differing only in the echoed name: the message asserts non-resolution, and the
-      // base being a contract is never named. This is the assertion a "interfaces may only inherit interfaces"
-      // guard would need to invert, and it cannot at this commit.
-      expect(contractBase).toThrow(/^Undefined interface 'C'/);
+      expect(contractBase).toThrow(/interface 'I' cannot inherit contract 'C'/);
       expect(undefinedBase).toThrow(/^Undefined interface 'Zzz'/);
+      try {
+        contractBase();
+        throw new Error('expected contract-base refusal');
+      } catch (error) {
+        expect(error).toBeInstanceOf(SolidcDiagnosticError);
+        expect(error).toMatchObject({
+          code: 'INTERFACE_CONTRACT_BASE',
+          context: {
+            interfaceName: 'I', baseName: 'C', baseKind: 'contract',
+            sourceLocation: { line: 1, column: 14 },
+          },
+        });
+        expect((error as SolidcDiagnosticError).context).not.toHaveProperty('sourceFile');
+      }
     });
 
-    it('has no diagnostic anywhere that names the base as a contract', () => {
-      let message = '';
-      try { compileString('contract C {} interface I is C {}', compat); } catch (e) { message = (e as Error).message; }
-      expect(message).not.toBe('');
-      // Vocabulary check against the message the subject ACTUALLY produces, not a guessed phrasing. If any of
-      // these begins to match, the stronger solc-parity claim has become assertable and FACT 2 should be
-      // rewritten to assert it.
-      expect(message).not.toMatch(/only inherit|not an interface|is a contract|contract base/i);
+    it('attributes an imported invalid declaration to the file that contains it', () => {
+      const imported = 'contract C {}\ninterface I is C {}';
+      const resolver = (path: string): { source: string; id: string } | undefined => (
+        path === './bad.sol' ? { source: imported, id: '/deps/bad.sol' } : undefined
+      );
+      try {
+        compileString('import "./bad.sol"; contract Root {}', {
+          ...compat, rootFileId: '/root.sol', importResolver: resolver,
+        });
+        throw new Error('expected imported contract-base refusal');
+      } catch (error) {
+        expect(error).toMatchObject({
+          code: 'INTERFACE_CONTRACT_BASE',
+          context: {
+            interfaceName: 'I', baseName: 'C', sourceFile: '/deps/bad.sol',
+            sourceLocation: { line: 2, column: 0 },
+          },
+        });
+      }
+    });
+
+    it('fails loudly if the subject is mutated away from a contract base', () => {
+      const subject = 'contract C {} interface I is C {}';
+      expect(() => compileString(subject, compat)).toThrow(InterfaceContractBaseError);
+      expect(() => compileString(subject.replace('contract C', 'interface C'), compat)).not.toThrow();
+      expect(() => compileString(subject.replace('is C', 'is Zzz'), compat)).toThrow(UndefinedInterfaceError);
     });
   });
 

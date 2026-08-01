@@ -157,6 +157,7 @@ import {
   ContractNoArgsRequiredError,
   InterfaceRedefinitionError,
   UndefinedInterfaceError,
+  InterfaceContractBaseError,
   InterfaceComplianceError,
   CircularInterfaceInheritanceError,
   PrivateStateVariableAccessError,
@@ -598,7 +599,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (contractDerivedIface.has(iface.name)) continue; // a synthesized contract stub, not a user interface
       for (const parentName of iface.parents) {
         // An interface may only inherit interfaces - a contract-derived stub is not a valid parent (solc TypeError).
-        if (!this.interfaceMap.has(parentName) || contractDerivedIface.has(parentName)) {
+        if (contractDerivedIface.has(parentName)) {
+          throw new InterfaceContractBaseError(iface, parentName);
+        }
+        if (!this.interfaceMap.has(parentName)) {
           throw new UndefinedInterfaceError(iface, parentName);
         }
       }

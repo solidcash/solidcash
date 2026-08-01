@@ -53,6 +53,7 @@ import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
   | 'SCB_RESERVED_SELECTOR_COLLISION'
+  | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'
   | 'SPLIT_LAYOUT_CONFLICT';
@@ -1110,6 +1111,23 @@ export class InterfaceRedefinitionError extends RedefinitionError {
 export class UndefinedInterfaceError extends SolidCashError {
   constructor(public node: Node, interfaceName: string) {
     super(node, `Undefined interface '${interfaceName}'`);
+  }
+}
+
+export class InterfaceContractBaseError extends SolidcDiagnosticError {
+  constructor(public readonly node: InterfaceNode, baseName: string) {
+    const sourceFile = sourceFileOf(node.location);
+    super(
+      'INTERFACE_CONTRACT_BASE',
+      `interface '${node.name}' cannot inherit contract '${baseName}'; interfaces can only inherit interfaces`,
+      {
+        interfaceName: node.name,
+        baseName,
+        baseKind: 'contract',
+        sourceLocation: { line: node.location.start.line, column: node.location.start.column },
+        ...(sourceFile ? { sourceFile } : {}),
+      },
+    );
   }
 }
 

@@ -868,4 +868,34 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(slots.filter((slot) => slot.kind === 'event')).toHaveLength(8);
     expect(slots.find((slot) => slot.kind === 'satoshiContainer')).toBeDefined();
   });
+
+  it('preserves enum, contract, and UDVT types while parsing generated route arguments', () => {
+    const artifact = compileString(`interface Peer {}
+      contract NamedRouteTypes() {
+      enum Status { Pending, Done }
+      type Amount is uint256;
+      mapping(Status => Amount) values;
+      function set(Status status, Peer peer, Amount amount) public {
+        require(address(peer) == address(peer));
+        values[status] = amount;
+      }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'set')?.eligible).toBe(true);
+  });
+
+  it('routes a handler whose name matches the contract without generating a constructor call', () => {
+    const artifact = compileString(`contract SameName() {
+      function SameName() public { require(true); }
+    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'SameName')?.eligible).toBe(true);
+  });
+
+  it('keeps mapping-field journal keys in wrapper scope', () => {
+    const artifact = compileString(`struct Item { bigint amount; }
+      contract MappingFieldRoute() {
+        mapping(bigint => Item) items;
+        function add(bigint key, bigint delta) public { items[key].amount += delta; }
+      }`, { forceStateful: true, experimentalHiddenBatch: true });
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'add')?.eligible).toBe(true);
+  });
 });

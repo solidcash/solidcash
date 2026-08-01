@@ -16,7 +16,7 @@ import {
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   FunctionCallStatementNode,
-  LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
+  LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
@@ -1809,9 +1809,12 @@ function synthesizeHiddenBatchRoute(
   const handlerEntryKeys = new Map<FunctionDefinitionNode, {
     base: string; perRow: boolean; collection: string;
   }[]>();
-  const isMappingNode = (node: Node): node is MappingAccessNode | MappingAssignNode | MappingDeleteNode =>
-    node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode;
-  const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode): string =>
+  const isMappingNode = (node: Node): node is MappingAccessNode | MappingAssignNode
+    | MappingDeleteNode | MappingFieldAssignNode =>
+    node instanceof MappingAccessNode || node instanceof MappingAssignNode || node instanceof MappingDeleteNode
+      || node instanceof MappingFieldAssignNode;
+  const keySignature = (node: MappingAccessNode | MappingAssignNode | MappingDeleteNode
+    | MappingFieldAssignNode): string =>
     node.keys.map((key) => {
       if (key instanceof IdentifierNode) return `p:${key.name}`;
       if (key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER) return 'sender';
@@ -2031,7 +2034,11 @@ function synthesizeHiddenBatchRoute(
     if (sourceHandler === resourceShapedHandler
       || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
-    let touchesEntry = false;
+    // The pre-semantic AST has dedicated compound/field lvalue shapes which are not all Mapping* nodes yet.
+    // Admission has already proven and recorded their collection key witnesses, so use that authoritative
+    // result too; otherwise the route calls the public handler directly and later inlining substitutes a
+    // branch-local __scb_arg_* into a journal initializer hoisted above the branch.
+    let touchesEntry = (sourceHandler.hiddenBatchKeyWitnesses?.length ?? 0) > 0;
     let touchesFixedArray = false;
     const bound = locallyBoundNames(sourceHandler);
     walkInvocationAst(sourceHandler.body, (node) => {
@@ -2190,6 +2197,25 @@ function synthesizeHiddenBatchRoute(
     handler.forceCollectionJournalPool = true;
     normalizeBareEntryAccesses(handler);
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
+  // A function may legally have the same name as its containing contract (notably the tiny
+  // expression contracts used by the location/source-map suite). In generated source, `C()` is
+  // then resolved as the contract-type constructor rather than an internal call. Give that one
+  // spelling an unambiguous internal target, just as we already do for external handlers.
+  for (const sourceHandler of eligible) {
+    if (sourceHandler.name !== contract.name || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__scb_handler_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.hiddenBatchEligible = undefined;
+    handler.hiddenBatchRejectionReason = undefined;
+    handler.hiddenBatchKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
   // X73. An `external` handler is dispatched through an internal clone, because the wrapper's `handler(args)`
@@ -2519,7 +2545,26 @@ function synthesizeHiddenBatchRoute(
       definition.fields.map((field) => `${field.type.toString()} ${field.name};`).join(' ')
     } }`)
     .join('\n');
+  // The route is parsed as a stand-alone source file before its functions are attached to the
+  // user's AST. Preserve the named scalar declarations which occur in handler signatures and
+  // route-key witnesses; otherwise the route parser guesses every unknown capitalized name is a
+  // contract handle. That turns enum/UDVT decoding into address decoding and only fails later,
+  // after the generated functions have been merged, with a misleading generated-source error.
+  const routeEnums = [...ast.enumDefinitions, ...contract.enumDefinitions]
+    .filter((definition, index, all) =>
+      all.findIndex((candidate) => candidate.name === definition.name) === index)
+    .map((definition) => `enum ${definition.name} { ${
+      definition.members.map((member) => member.name).join(', ')
+    } }`)
+    .join('\n');
+  const routeTypes = [...ast.typeDefinitions, ...contract.typeDefinitions]
+    .filter((definition, index, all) =>
+      all.findIndex((candidate) => candidate.name === definition.name) === index)
+    .map((definition) => `type ${definition.name} is ${definition.valueType.underlyingType.toString()};`)
+    .join('\n');
   const source = `pragma solidcash >=0.8.0;
+    ${routeEnums}
+    ${routeTypes}
     ${routeStructs}
     contract __HiddenBatchHost() {
       ${graphTranscriptLoader}

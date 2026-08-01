@@ -14,6 +14,7 @@ import {
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TokenContainerMethodStatementNode, TransferStatementNode, TypeIntrospectionNode,
   StateAssignNode, DeleteStateNode,
+  CastNode, IntLiteralNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -704,6 +705,7 @@ function synthesizeHiddenBatchRoute(
   let resourceShapedHandler: FunctionDefinitionNode | undefined;
   const collectionByName = new Map(contract.collections.map((collection) => [collection.name, collection]));
   const routeKeyWitnesses = new Map<string, { name: string; type: Type }[]>();
+  const fixedIterationCollections = new Set<string>();
   // X76(E1). A bare `m[k]` on a PACKED or DYNAMIC state array does not resolve to a mapping entry at all:
   // `SymbolTableTraversal.visitArrayAssign` sends it to `StateArrayAssignNode`, a different physical form with
   // no entry NFT. Normalizing one of those to a Mapping* node would silently retarget the write, so the bare
@@ -1045,6 +1047,62 @@ function synthesizeHiddenBatchRoute(
             const name = resource.split(':')[1];
             return dynamicState.has(name) || name === 'tokens';
           });
+      // A fixed-array collection iteration is expanded before semantic analysis into one literal-index read per
+      // element. Admit that shape only when the compiler can re-derive the COMPLETE identity set 0..N-1 here.
+      // This is intentionally not a general literal-key widening: a partial set, a duplicate/out-of-range index,
+      // another collection in the same handler, or any enumerable mapping keeps the existing named refusal.
+      const literalIdentity = (expression: ExpressionNode): bigint | undefined => {
+        if (expression instanceof IntLiteralNode) return expression.value;
+        if (expression instanceof CastNode) return literalIdentity(expression.expression);
+        return undefined;
+      };
+      const fixedArrayIdentityShape = (candidate: FunctionDefinitionNode): boolean => {
+        const identitiesByCollection = new Map<string, Set<bigint>>();
+        let sawAccess = false;
+        let valid = true;
+        const candidateBound = locallyBoundNames(candidate);
+        walkInvocationAst(candidate.body, (node) => {
+          const bare = bareEntryAccessOf(node, candidateBound);
+          const access = node instanceof MappingAccessNode || node instanceof MappingAssignNode
+            || node instanceof MappingDeleteNode
+            ? { name: node.name, keys: node.keys as ExpressionNode[] }
+            : bare;
+          if (!access) return;
+          sawAccess = true;
+          const identity = access.keys.length === 1 ? literalIdentity(access.keys[0]) : undefined;
+          if (!fixedArrayCollections.has(access.name) || identity === undefined) {
+            valid = false;
+            return;
+          }
+          const identities = identitiesByCollection.get(access.name) ?? new Set<bigint>();
+          identities.add(identity);
+          identitiesByCollection.set(access.name, identities);
+        });
+        if (!sawAccess || !valid) return false;
+        return [...identitiesByCollection].every(([name, identities]) => {
+          const collection = collectionByName.get(name)!;
+          const bound = collection.type instanceof ArrayType ? collection.type.bound : undefined;
+          return bound !== undefined && bound <= 64 && identities.size === bound
+            && Array.from({ length: bound }, (_unused, index) => BigInt(index))
+              .every((identity) => identities.has(identity));
+        });
+      };
+      const fixedIterationShape = fixedArrayIdentityShape(fn);
+      if (fixedIterationShape) {
+        walkInvocationAst(fn.body, (node) => {
+          const bare = bareEntryAccessOf(node, locallyBound);
+          const name = node instanceof MappingAccessNode || node instanceof MappingAssignNode
+            || node instanceof MappingDeleteNode ? node.name : bare?.name;
+          if (name && fixedArrayCollections.has(name)) fixedIterationCollections.add(name);
+        });
+      }
+      const fixedCollectionHelperClosure = [...closure].every((name) => name === fn.name
+        || [...(byName.get(name) ?? [])].every((candidate) => {
+          const helperFootprint = analyseFunctionFootprint(candidate, byName);
+          const touchesCollection = [...helperFootprint.reads, ...helperFootprint.writes]
+            .some((resource) => resource.startsWith('collection:'));
+          return !touchesCollection || fixedArrayIdentityShape(candidate);
+        }));
       // X88/X89. Refuse the ITERATION first and unconditionally. Recovering the read (above) is not by itself
       // enough: an iteration contributes no KEY, so `directKeys` stays empty and the handler's footprint has no
       // `collection:` resource either, which makes `nonEntryCollectionOnly` vacuously TRUE and lets the chain
@@ -1053,6 +1111,9 @@ function synthesizeHiddenBatchRoute(
       // writes one keyed entry has a non-empty key set while the iteration's reads are still unreserved.
       if (iteratesCollection) {
         reason = 'collection-iteration-handler-not-enabled';
+      } else if (fixedIterationShape || (directKeys.size === 0 && fixedCollectionHelperClosure)) {
+        // The fixed-array clone retains the literal indices. Its block layout therefore owns one authenticated
+        // entry slot per identity without accepting a key/count witness from the spender.
       } else if ((!nonEntryCollectionOnly && directKeys.size === 0) || [...closure].some((name) => name !== fn.name
         && [...(byName.get(name) ?? [])].some((candidate) => {
           let touches = false;
@@ -1357,9 +1418,12 @@ function synthesizeHiddenBatchRoute(
     });
     const fixedArrayMode = survivors.some((fn) => {
       let found = false;
+      const bound = locallyBoundNames(fn);
       walkInvocationAst(fn.body, (node) => {
         if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
           || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) found = true;
+        const bare = bareEntryAccessOf(node, bound);
+        if (bare && fixedArrayCollections.has(bare.name)) found = true;
       });
       return found;
     });
@@ -1926,11 +1990,14 @@ function synthesizeHiddenBatchRoute(
     if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     let touchesFixedArray = false;
+    const bound = locallyBoundNames(sourceHandler);
     walkInvocationAst(sourceHandler.body, (node) => {
       if ((node instanceof MappingAccessNode || node instanceof MappingAssignNode
         || node instanceof MappingDeleteNode) && fixedArrayCollections.has(node.name)) {
         touchesFixedArray = true;
       }
+      const bare = bareEntryAccessOf(node, bound);
+      if (bare && fixedArrayCollections.has(bare.name)) touchesFixedArray = true;
     });
     if (!touchesFixedArray) continue;
     const handler = cloneNode(sourceHandler);
@@ -1942,6 +2009,7 @@ function synthesizeHiddenBatchRoute(
     handler.hiddenBatchRejectionReason = undefined;
     handler.hiddenBatchKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
+    normalizeBareEntryAccesses(handler);
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -2224,6 +2292,12 @@ function synthesizeHiddenBatchRoute(
           __internal__graphParticipantOffset + __graph_owner_frame.length
         ) == __graph_owner_frame);
   `;
+  const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {
+    const collection = collectionByName.get(name)!;
+    const bound = collection.type instanceof ArrayType ? collection.type.bound ?? 0 : 0;
+    return Array.from({ length: bound }, (_unused, index) =>
+      `require(this.${name}[${index}] == this.${name}[${index}]);`);
+  }).join('\n');
   const routeStructs = [...ast.structDefinitions, ...contract.structDefinitions]
     .filter((definition, index, all) =>
       all.findIndex((candidate) => candidate.name === definition.name) === index)
@@ -2323,6 +2397,7 @@ function synthesizeHiddenBatchRoute(
         revert("foreign outState owner absent");
       }`}
       function __scb1(${routeParameters}) external${returnDeclaration} {
+        ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
         bytes __scb_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
@@ -2660,7 +2735,9 @@ function compileResolvedAst(
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
   // handles - a mapping write in a RUNTIME loop is rejected by EntryWriteInLoopError). Before break/continue
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
-  ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
+  ast = ast.accept(new UnrollFixedBoundEntryLoop(
+    false, undefined, mergedCompilerOptions.experimentalHiddenBatch === true,
+  )) as Ast;
 
   // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
   ast = ast.accept(new LowerC2CounterLoops()) as Ast;
@@ -2869,7 +2946,9 @@ function compileResolvedAst(
   const hiddenBatchRoute = ast.contract.functions.find((fn) => fn.hiddenBatchRoute);
   if (hiddenBatchRoute?.blockLayout) {
     for (const fn of ast.contract.functions) {
-      if (fn.graphEmissionHandler) fn.blockLayout = hiddenBatchRoute.blockLayout;
+      if (fn.graphEmissionHandler || fn.name.startsWith('__scb_array_')) {
+        fn.blockLayout = hiddenBatchRoute.blockLayout;
+      }
     }
   }
   // The bounded resource route canonicalizes a row-local mapping identity to the first equal earlier identity.

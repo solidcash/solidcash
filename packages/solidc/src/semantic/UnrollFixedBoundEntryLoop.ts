@@ -27,6 +27,9 @@ import {
   IndirectCallNode,
   MethodCallNode,
   NewArrayNode,
+  CollectionIterationNode,
+  CollectionIterationMode,
+  ArrayAccessNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -56,6 +59,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
   private varTypes = new Map<string, Type>();
   private stateVarTypes = new Map<string, Type>();
+  private collectionTypes = new Map<string, Type>();
   // Locals initialized to a `new T[](N)` literal (N compile-time), for folding `local.length`. Populated
   // post-inline: `_updateJobWhitelist(id, allowed, new address[](0))` binds the arg to an inline local
   // `__inlN_disallowed_ = new address[](0)`, so the loop's `disallowed_.length` bound is constant. Only names
@@ -69,6 +73,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   constructor(
     private readonly indirectCallsOnly = false,
     private readonly expansions?: PointerTableExpansionMap,
+    private readonly fixedCollectionIterations = false,
   ) {
     super();
   }
@@ -89,11 +94,60 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     ]);
     const prevState = this.stateVarTypes;
     this.stateVarTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
+    const prevCollections = this.collectionTypes;
+    this.collectionTypes = new Map(node.collections.map((collection) => [collection.name, collection.type]));
     node.functions = node.functions.map((f) => this.visit(f) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     this.mappingNames = prev;
     this.stateVarTypes = prevState;
+    this.collectionTypes = prevCollections;
     return node;
+  }
+
+  /**
+   * A native entry-backed fixed array has a compiler-owned cardinality and identities: `T[N]` is exactly the
+   * entry set 0..N-1. In hidden-batch mode, expand its collection iteration to the same static indexed reads a
+   * user could write by hand. The ordinary entry-slot machinery then authenticates the exact count, source
+   * order, and every index identity. Enumerable mappings and dynamic arrays deliberately retain their runtime
+   * CollectionIterationNode and the route's named fail-closed refusal.
+   *
+   * MAX_UNROLL is also the existing fixed-resource expansion ceiling. Leaving a larger fixed array rolled makes
+   * it hit `collection-iteration-handler-not-enabled`, rather than manufacturing a route beyond that ceiling.
+   */
+  visitCollectionIteration(node: CollectionIterationNode): Node {
+    if (!this.fixedCollectionIterations) return super.visitCollectionIteration(node);
+    const type = this.collectionTypes.get(node.collectionName);
+    if (!(type instanceof ArrayType) || type.bound === undefined || type.bound > MAX_UNROLL) {
+      return super.visitCollectionIteration(node);
+    }
+
+    const iterations: StatementNode[] = [];
+    for (let index = 0; index < type.bound; index++) {
+      const statements: StatementNode[] = [];
+      if (node.keyName && node.keyType) {
+        const key = new VariableDefinitionNode(
+          node.keyType, [], node.keyName, new IntLiteralNode(BigInt(index)),
+        );
+        key.location = node.location;
+        statements.push(key);
+      }
+      if (node.valueName && node.valueType) {
+        const access = new ArrayAccessNode(
+          new IdentifierNode(node.collectionName), new IntLiteralNode(BigInt(index)),
+        );
+        access.location = node.location;
+        const value = new VariableDefinitionNode(node.valueType, [], node.valueName, access);
+        value.location = node.location;
+        statements.push(value);
+      }
+      statements.push(...(cloneNode(node.body).statements ?? []));
+      const block = new BlockNode(statements);
+      block.location = node.body.location;
+      iterations.push(this.visit(block) as StatementNode);
+    }
+    const expanded = new BlockNode(iterations);
+    expanded.location = node.location;
+    return expanded;
   }
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {

@@ -1923,24 +1923,11 @@ export function planCompiledGraph(
         }
         callMode = modes[0] === 'staticcall' ? 'staticcall' : 'call';
       }
-      if (callMode === 'staticcall') {
-        const calleeFunction = resolveGraphAbiFunction(
-          participants[invocation.callee].artifact, invocation.function,
-        );
-        if (!calleeFunction || calleeFunction.writesState
-          || (calleeFunction.emits?.length ?? 0) > 0) {
-          throw new Error(`layer3: staticcall target '${invocation.function}' is not compiler-proven read-only`);
-        }
-      }
       // X5: the remaining half of the round-15 divergence. Refusing only `delegatecall` left the two ordinary
       // modes free to disagree: a caller-supplied `call` on a callsite the compiler published as `staticcall`
       // was committed as `call`, which also skipped the read-only proof above. The compiled caller route
       // rebuilds this byte from its own slot and rejects the mismatch, so the transaction never settled - but it
       // failed as an unnamed script error at the caller's input rather than as a planning refusal.
-      //
-      // Ordered AFTER the read-only proof on purpose: when a supplied `staticcall` disagrees with a published
-      // `call` AND names a state-writing callee, both would fire, and "target is not compiler-proven read-only"
-      // is the more specific answer.
       //
       // A name-matched candidate set is the only place a published mode exists to compare against. When it is
       // empty the callsite resolves its method at runtime - a raw `__raw__` edge, a function pointer, a selector

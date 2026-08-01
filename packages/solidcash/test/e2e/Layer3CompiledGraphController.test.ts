@@ -902,7 +902,9 @@ async function buildVaryingSelectorGraph(
 
 async function buildCombinedGraph(
   tamper: 'none' | 'state' | 'event' | 'value' = 'none',
-  variant: 'all' | 'no-transfer' | 'no-events' | 'no-state' | 'value-only' = 'all',
+  variant: 'all' | 'no-transfer' | 'no-events' | 'no-state' | 'value-only' | 'same-value'
+    | 'conditional-untaken' = 'all',
+  staticInvocation: 'none' | 'start' | 'step' | 'step-chain' | 'finish' = 'none',
 ) {
   const provider = createTestProvider();
   const {
@@ -914,7 +916,14 @@ async function buildCombinedGraph(
     experimentalMessageBusController: controller.lockingBytecode,
     experimentalMessageBusControllerCategory: controllerCategory,
   };
-  const sourceA = variant === 'no-transfer'
+  let sourceA = variant === 'same-value' || variant === 'conditional-untaken' ? COMBINED_A
+    .replace('    this.transfer(recipient, amount);\n', '')
+    .replace('  event Seen(bigint amount);\n', '')
+    .replaceAll('    emit Seen(amount);\n', '')
+    .replaceAll('this.count = this.count + amount;', variant === 'same-value'
+      ? 'this.count = amount - amount;'
+      : 'if (callback.length == 0) { this.count = this.count + amount; }')
+    : variant === 'no-transfer'
     ? COMBINED_A.replace('    this.transfer(recipient, amount);\n', '')
     : variant === 'no-events' ? COMBINED_A
       .replace('  event Seen(bigint amount);\n', '')
@@ -924,7 +933,13 @@ async function buildCombinedGraph(
         .replaceAll('    this.count = this.count + amount;\n', '')
         .replace(variant === 'value-only' ? '  event Seen(bigint amount);\n' : '', '')
         .replaceAll(variant === 'value-only' ? '    emit Seen(amount);\n' : '', '') : COMBINED_A;
-  const sourceB = variant === 'no-events' ? COMBINED_B
+  let sourceB = variant === 'same-value' || variant === 'conditional-untaken' ? COMBINED_B
+    .replace('  event Stepped(bigint amount);\n', '')
+    .replace('    emit Stepped(amount);\n', '')
+    .replace('this.count = this.count + amount;', variant === 'same-value'
+      ? 'this.count = amount - amount;'
+      : 'if (callback.length == 0) { this.count = this.count + amount; }')
+    : variant === 'no-events' ? COMBINED_B
     .replace('  event Stepped(bigint amount);\n', '')
     .replace('    emit Stepped(amount);\n', '')
     : variant === 'no-state' || variant === 'value-only' ? COMBINED_B
@@ -932,6 +947,15 @@ async function buildCombinedGraph(
       .replace('    this.count = this.count + amount;\n', '')
       .replace(variant === 'value-only' ? '  event Stepped(bigint amount);\n' : '', '')
       .replace(variant === 'value-only' ? '    emit Stepped(amount);\n' : '', '') : COMBINED_B;
+  if (staticInvocation === 'step' || staticInvocation === 'step-chain') {
+    sourceA = sourceA.replace('.step(callback, recipient, amount)', '.step.staticcall(callback, recipient, amount)');
+  }
+  if (staticInvocation === 'step-chain') {
+    sourceB = sourceB.replace('.finish(callback, recipient, amount)', '.finish.staticcall(callback, recipient, amount)');
+  }
+  if (staticInvocation === 'finish') {
+    sourceB = sourceB.replace('.finish(callback, recipient, amount)', '.finish.staticcall(callback, recipient, amount)');
+  }
   const artifactA = compileString(sourceA, options);
   const artifactB = compileString(sourceB, options);
   const baseA = new Contract(artifactA, [], { provider });
@@ -956,9 +980,14 @@ async function buildCombinedGraph(
     { artifact: artifactA, lockingBytecode: a.lockingBytecode },
     { artifact: artifactB, lockingBytecode: b.lockingBytecode },
   ], [
-    { parent: null, callee: 0, function: 'start', args },
-    { parent: 0, callee: 1, function: 'step', args: callbackArgs },
-    { parent: 1, callee: 0, function: 'finish', args: callbackArgs },
+    { parent: null, callee: 0, function: 'start', args,
+      ...(staticInvocation === 'start' && { callMode: 'staticcall' as const }) },
+    { parent: 0, callee: 1, function: 'step', args: callbackArgs,
+      ...((staticInvocation === 'step' || staticInvocation === 'step-chain')
+        && { callMode: 'staticcall' as const }) },
+    { parent: 1, callee: 0, function: 'finish', args: callbackArgs,
+      ...((staticInvocation === 'finish' || staticInvocation === 'step-chain')
+        && { callMode: 'staticcall' as const }) },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const blockA = plan.participants[0].blockLayout!;
@@ -1025,10 +1054,13 @@ async function buildCombinedGraph(
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
   // A accrues the amount twice (start + finish), B once. The forged-state attack is still an off-by-one.
   const nextA = hasDataA ? buildInitialStateCommitments(
-    artifactA.stateLayout!, { count: tamper === 'state' ? transferSats * 2n + 1n : transferSats * 2n },
+    artifactA.stateLayout!, { count: variant === 'same-value' || variant === 'conditional-untaken' ? 0n
+      : tamper === 'state' ? transferSats * 2n + 1n : transferSats * 2n },
   )[0] : '';
   const nextB = hasDataB
-    ? buildInitialStateCommitments(artifactB.stateLayout!, { count: transferSats })[0] : '';
+    ? buildInitialStateCommitments(artifactB.stateLayout!, {
+      count: variant === 'same-value' || variant === 'conditional-untaken' ? 0n : transferSats,
+    })[0] : '';
   tx.addOutput({
     to: a.tokenAddress, amount: setupA.masterUtxo.satoshis,
     token: { category: setupA.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
@@ -2231,7 +2263,7 @@ async function buildCallerAuthorizedTransferGraph(
     provider, tokenBase, tokenArtifact.stateLayout!, {},
   );
   const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
-  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+  const callerSource = `pragma solidcash >=0.8.0;
     interface IGraphAllowanceToken {
       function transferFrom(bytes20 from, bytes20 to, bigint amount);
     }
@@ -2243,7 +2275,8 @@ async function buildCallerAuthorizedTransferGraph(
         IGraphAllowanceToken(token).transferFrom(from, second, secondAmount);
         require(true);
       }
-    }`, options);
+    }`;
+  const callerArtifact = compileString(callerSource, options);
   const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
   const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
   const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
@@ -2448,7 +2481,7 @@ async function buildCallerAuthorizedTransferGraph(
   };
 }
 
-async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
+async function buildCallerKeyedTransferGraph(forgeCallerWitness = false, staticFirst = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -2473,7 +2506,7 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
   const tokenBase = new Contract(tokenArtifact, [], { provider });
   const tokenSetup = await setupStatefulUtxos(provider, tokenBase, tokenArtifact.stateLayout!, {});
   const token = tokenBase.withCategory(hexToBin(tokenSetup.categoryId));
-  const callerArtifact = compileString(`pragma solidcash >=0.8.0;
+  let callerSource = `pragma solidcash >=0.8.0;
     interface IGraphTransferToken {
       function transfer(address to, bigint amount);
     }
@@ -2483,7 +2516,12 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
         IGraphTransferToken(token).transfer(second, secondAmount);
         require(true);
       }
-    }`, options);
+    }`;
+  if (staticFirst) callerSource = callerSource.replace(
+    'IGraphTransferToken(token).transfer(first, firstAmount);',
+    'IGraphTransferToken(token).transfer.staticcall(first, firstAmount);',
+  );
+  const callerArtifact = compileString(callerSource, options);
   const callerBase = new Contract(callerArtifact, [1n, token.lockingBytecode], { provider });
   const callerSetup = await setupStatefulUtxos(provider, callerBase, callerArtifact.stateLayout!, {});
   const caller = callerBase.withCategory(hexToBin(callerSetup.categoryId));
@@ -2521,8 +2559,10 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false) {
     { artifact: tokenArtifact, lockingBytecode: token.lockingBytecode },
   ], [
     { parent: null, callee: 0, function: 'route', args: [first, second, 10n, 20n] },
-    { parent: 0, callee: 1, function: 'transfer', args: [first, 10n] },
-    { parent: 0, callee: 1, function: 'transfer', args: [second, 20n] },
+    { parent: 0, callee: 1, function: 'transfer', args: [first, 10n],
+      ...(staticFirst && { callMode: 'staticcall' as const }) },
+    { parent: 0, callee: 1, function: 'transfer', args: [second, 20n],
+      ...(staticFirst && { callMode: 'call' as const }) },
   ]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
@@ -3262,6 +3302,29 @@ describe('Layer-3 compiled graph controller', () => {
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 
+  it.each([
+    ['state and event', 'no-transfer', 'finish', 'controller'],
+    ['event', 'no-state', 'step-chain', 1],
+    ['value transfer', 'value-only', 'finish', 'controller'],
+    ['same-value state write', 'same-value', 'finish', 0],
+  ] as const)('runtime staticcall rejects a reached %s mutation', async (
+    _label, variant, invocation, enforcingParticipant,
+  ) => {
+    const { provider, transaction, plan } = await buildCombinedGraph('none', variant, invocation);
+    const layout = layer3.compiledGraphPhysicalLayout(plan);
+    const enforcingInput = enforcingParticipant === 'controller'
+      ? layout.controllerInput : layout.participantInputs[enforcingParticipant];
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(scriptRefusalAt(enforcingInput));
+  });
+
+  it('runtime staticcall permits an untaken conditional mutation branch', async () => {
+    const { provider, transaction } = await buildCombinedGraph(
+      'none', 'conditional-untaken', 'finish',
+    );
+    await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
   it.each(['state', 'event', 'value'] as const)(
     'rejects a combined callback graph with a forged %s effect',
     async (tamper) => {
@@ -3704,6 +3767,12 @@ describe('Layer-3 compiled graph controller', () => {
     const { provider, transaction, tokenInputBytes } = await buildCallerKeyedTransferGraph();
     expect(tokenInputBytes).toBeLessThanOrEqual(MAXIMUM_INPUT_BYTES - INPUT_HEADROOM_BYTES);
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
+  });
+
+  it('runtime staticcall rejects a reached caller-keyed token transfer', async () => {
+    const { provider, transaction, layout } = await buildCallerKeyedTransferGraph(false, true);
+    await expect(provider.sendRawTransaction(transaction))
+      .rejects.toThrow(scriptRefusalAt(layout.controllerInput));
   });
 
   it('rejects substituting the holder key for the authenticated caller in a transfer', async () => {

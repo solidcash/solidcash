@@ -13,6 +13,7 @@ import {
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TokenContainerMethodStatementNode, TransferStatementNode, TypeIntrospectionNode,
+  StateAssignNode, DeleteStateNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -1244,9 +1245,14 @@ function synthesizeHiddenBatchRoute(
     fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
+    let hasScalarStateWrite = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof StateAssignNode || node instanceof DeleteStateNode) hasScalarStateWrite = true;
+    });
     if (!reason && (graphTailCallEligible
       || (graphControllerLbc !== undefined
         && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
+      || (graphControllerLbc !== undefined && hasScalarStateWrite)
       || routeUsesMsgValue)) {
       graphTailHandlers.add(fn);
     }
@@ -1963,11 +1969,7 @@ function synthesizeHiddenBatchRoute(
       : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
     const invoke = (args: string, selectedInvokeName = invokeName): string => {
-      const footprint = analyseFunctionFootprint(fn, byName);
-      const staticGuard = footprint.writes.length > 0
-        || footprint.effects.some((effect) => effect !== 'external-call')
-        ? 'require(__scb_call_options % 2 == 0); ' : '';
-      if (!captureResults || fn.returnTypes.length === 0) return `${staticGuard}${selectedInvokeName}(${args});`;
+      if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
       const names = fn.returnTypes.map((_type, index) =>
         `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
       const declarations = fn.returnTypes.map((type, index) =>
@@ -1975,7 +1977,7 @@ function synthesizeHiddenBatchRoute(
       const assignment = fn.returnTypes.length === 1
         ? `${names[0]} = ${selectedInvokeName}(${args});`
         : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
-      return `${staticGuard}${declarations} ${assignment} __scb_results = bytes.concat(
+      return `${declarations} ${assignment} __scb_results = bytes.concat(
         __scb_results, abi.encode(${names.join(', ')})
       );`;
     };

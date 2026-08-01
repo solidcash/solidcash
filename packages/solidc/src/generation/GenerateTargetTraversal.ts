@@ -208,6 +208,10 @@ const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 // X29. Hidden context an SCB1 route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
+// Authenticated SCB2 call mode and one runtime mutation bit. Every reached state/resource/effect operation in
+// an invoked graph handler raises DIRTY; the handler verifies it stayed clear when the row selected staticcall.
+const GRAPH_STATIC_MODE = '__internal__handlerStaticMode';
+const GRAPH_STATIC_DIRTY = '__internal__handlerStaticDirty';
 // X29. Route-local flag: did ANY dispatch site reach a transfer-carrying graph emission handler? The satoshi
 // container's identity and conservation are settled inside that subroutine, so a batch whose rows all select a
 // transfer-free sibling would otherwise co-spend the container with nothing verifying its output at all.
@@ -1030,6 +1034,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       this.stack.unshift(value);
     }
+  }
+
+  /** Mark a reached graph-handler mutation. Emitted at the operation site, so untaken branches stay clean. */
+  private emitGraphStaticDirty(node: Node): void {
+    if (!this.isDefineSubTraversal || !this.currentFunction.graphEmissionHandler
+      || !this.stack.includes(GRAPH_STATIC_DIRTY)) return;
+    const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emit(Op.OP_1, locationData);
+    this.pushToStack('(graph_static_dirty)');
+    this.emitReplace(this.getStackIndex(GRAPH_STATIC_DIRTY), node);
+    this.popFromStack();
   }
 
   private popFromStack(count: number = 1): void {
@@ -3324,6 +3339,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.isDefineSubTraversal && node.graphEmissionHandler && node.graphEffectFrame) {
       this.pushToStack(GRAPH_EFFECT_SITE, true);
     }
+    if (this.isDefineSubTraversal && node.graphEmissionHandler) {
+      // Reverse of the caller's push order: DIRTY is pushed after MODE and is therefore shallower in the
+      // OP_INVOKE frame. Both are handler-local and are discarded rather than returned with journal context.
+      this.pushToStack(GRAPH_STATIC_DIRTY, true);
+      this.pushToStack(GRAPH_STATIC_MODE, true);
+    }
     if (this.isDefineSubTraversal && node.graphRuntimeEmissionHandler) {
       this.pushToStack('__internal__graphEmissions', true);
     }
@@ -3587,6 +3608,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Void handlers drop ordinary locals/params but return hidden journal slots in canonical order.
     if (this.isDefineSubTraversal) {
+      if (node.graphEmissionHandler) {
+        const loc = { location: node.body.location, positionHint: PositionHint.END };
+        this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_MODE))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_2, loc);
+        this.emit(Op.OP_MOD, loc);
+        this.emit(Op.OP_1, loc);
+        this.emit(Op.OP_NUMEQUAL, loc);
+        this.emit(Op.OP_IF, loc);
+        this.emit(encodeInt(BigInt(this.getStackIndex(GRAPH_STATIC_DIRTY))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_0, loc);
+        this.emit(Op.OP_NUMEQUALVERIFY, loc);
+        this.emit(Op.OP_ENDIF, loc);
+      }
       // X29. Settle the handler's OWN physical effects here, before the frame is torn down. The route cannot do
       // it: the emit blob and the transfer's recipient/amount only exist inside this frame. The output indices
       // come from the per-dispatch-site frame the route reserved (emitGraphEffectSlotIndex), so N invocations
@@ -7013,6 +7049,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // discarding its temporary construction names, or later declared-argument OP_PICKs are one slot shallow.
       for (const result of emissionResults) this.pushToStack(result);
     }
+    if (targetFunc.graphEmissionHandler) {
+      if (!this.stack.includes('__scb_call_options')) {
+        throw new Error(`Missing authenticated call mode while invoking '${targetFunc.name}'`);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_call_options'))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.pushToStack(`(__graph_static_mode_${targetFunc.functionId})`);
+      this.emit(Op.OP_0, locationData);
+      this.pushToStack(`(__graph_static_dirty_${targetFunc.functionId})`);
+      hiddenContextCount += 2;
+    }
     // X29. Which owner-local effect frame this invocation owns. OP_DEFINE declares this context before its
     // graph-result contexts, so it is pushed after the authenticated results and therefore sits above them.
     if (targetFunc.graphEmissionHandler && targetFunc.graphEffectFrame) {
@@ -9052,6 +9099,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
     const elemType = arrType.elementType;
@@ -9098,6 +9146,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateArrayPop(node: StateArrayPopNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
     const elemType = arrType.elementType;
@@ -9184,6 +9233,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateArrayAssign(node: StateArrayAssignNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
     const elemType = arrType.elementType;
@@ -9289,6 +9339,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitStateArrayDelete(node: StateArrayDeleteNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.END };
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const arrType = sv.type as ArrayType;
     const elemType = arrType.elementType;
@@ -9635,6 +9686,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitEmitStatement(node: EmitStatementNode): Node {
+    this.emitGraphStaticDirty(node);
     const eventDef = node.eventDefinition!;
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
@@ -9762,6 +9814,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitTransferStatement(node: TransferStatementNode): Node {
+    this.emitGraphStaticDirty(node);
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       // Pre-allocated path: use emitReplace to update the dummy slots
       const lbName = `__internal__transfer_lb_${node.transferIndex}`;
@@ -9799,6 +9852,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitAddressTransferStatement(node: AddressTransferStatementNode): Node {
+    this.emitGraphStaticDirty(node);
     // The address value IS the locking bytecode to send to.
     if (this.preAllocatedTransfers.has(node.transferIndex)) {
       // Pre-allocated path: use emitReplace to update the dummy slots
@@ -9837,6 +9891,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitAddressSendExpression(node: AddressSendExpressionNode): Node {
+    this.emitGraphStaticDirty(node);
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
     // Same as AddressTransferStatement but push OP_1 (true) as the expression result.
@@ -9929,6 +9984,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitTokenContainerMethodStatement(node: TokenContainerMethodStatementNode): Node {
+    this.emitGraphStaticDirty(node);
     const transferIndex = node.transferIndex; // Pre-assigned by SymbolTableTraversal
 
     if (this.preAllocatedTokenContainerTransfers.has(transferIndex)) {
@@ -12206,6 +12262,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitStateAssign(node: StateAssignNode): Node {
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -12248,6 +12305,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitDeleteState(node: DeleteStateNode): Node {
+    this.emitGraphStaticDirty(node);
     const sv = node.stateVariable!;
     const key = `${sv.nftIndex}:${sv.fieldIndex}`;
     const locationData = { location: node.location, positionHint: PositionHint.END };
@@ -14506,6 +14564,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingAssign(node: MappingAssignNode): Node {
+    this.emitGraphStaticDirty(node);
     // A C2 (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
     // sorted INSERT: each iteration co-spends the bracketing predecessor and mints one NEW node (emitSortedInsertLoop
     // Body), the SDK derives the evolving list. Fixed-bound loops are unrolled before codegen and reach here at
@@ -15072,6 +15131,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingFieldAssign(node: MappingFieldAssignNode): Node {
+    this.emitGraphStaticDirty(node);
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
     }
@@ -15388,6 +15448,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitMappingDelete(node: MappingDeleteNode): Node {
+    this.emitGraphStaticDirty(node);
     // A sorted (C2) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
     // never a physical removal - libsolidity storageSetToZero). Route it through the upsert with value = default:
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets

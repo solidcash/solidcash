@@ -859,6 +859,46 @@ describe('layer3.planCompiledGraph', () => {
       transcriptWithInternalWitness, 0, 6, { [internalWitnessName]: new Uint8Array(32) },
     );
     expect(routeArgs).toHaveLength(participantWithInternalWitness.routeInputs.length - 1);
+    const blockhashBaseName = '__internal__blockhashInputIndex';
+    const participantWithBlockhashBand = {
+      ...first.plan.participants[0],
+      routeInputs: [
+        ...first.plan.participants[0].routeInputs,
+        { name: blockhashBaseName, type: 'bigint' },
+      ],
+      artifact: {
+        ...first.plan.participants[0].artifact,
+        hiddenBatch: {
+          ...first.plan.participants[0].artifact.hiddenBatch!,
+          route: {
+            ...first.plan.participants[0].artifact.hiddenBatch!.route,
+            graphBlockhashOracle: {
+              inputBaseParameter: blockhashBaseName,
+              rowCount: 1,
+              readWidth: 1,
+              slotCount: 1,
+              reads: [],
+            },
+          },
+        },
+      },
+      blockLayout: {
+        ...first.plan.participants[0].blockLayout,
+        slots: [
+          ...first.plan.participants[0].blockLayout.slots,
+          { kind: 'blockhashOracle' as const, offset: 2 },
+        ],
+      },
+    };
+    const transcriptWithBlockhashBand = {
+      ...first,
+      plan: {
+        ...first.plan,
+        participants: [participantWithBlockhashBand, ...first.plan.participants.slice(1)],
+      },
+    };
+    const blockhashArgs = layer3.compiledGraphRouteArgs(transcriptWithBlockhashBand, 0, 6);
+    expect(blockhashArgs.at(-1)).toBe(2n);
     expect(() => layer3.finalizeCompiledGraph(
       plan, { 0: '51' }, [0, 1], [2, 3], ['5100000000000000', '5200000000000000'], [4, 5],
     )).toThrow(/lacks canonical result/);

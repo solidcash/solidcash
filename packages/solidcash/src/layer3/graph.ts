@@ -687,6 +687,17 @@ export function compiledGraphRouteArgs(
       hexToBin(transcript.participantCompletionPositionsHex[participant])],
     ['__internal__graphSettlementTable', hexToBin(transcript.settlementTableHex)],
   ]);
+  const graphBlockhashOracle = execution.artifact.hiddenBatch?.route.graphBlockhashOracle;
+  if (graphBlockhashOracle) {
+    const firstOracleSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
+    if (!firstOracleSlot) {
+      throw new Error('layer3: graph blockhash oracle plan has no physical blockhashOracle slot');
+    }
+    fixed.set(
+      graphBlockhashOracle.inputBaseParameter,
+      BigInt(transcript.participantInputs[participant] + firstOracleSlot.offset),
+    );
+  }
   let visibleCursor = 0;
   const args = execution.routeInputs
     .filter((input) => input.name !== '__internal__returnOutputIdx')

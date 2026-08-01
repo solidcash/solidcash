@@ -9110,10 +9110,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one
     // dispatch, which is the same reason branchOps takes the max of two arms rather than their sum. Sharing is
     // what makes the block byte-identical to the flattened form the SDK and the capstone fixtures expect.
+    const directEventCount = (fn: FunctionDefinitionNode): number => {
+      let count = 0;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof EmitStatementNode) count += 1;
+      });
+      return count;
+    };
     const frame = {
       sites,
       eventBase: 0,
-      eventWidth: Math.max(0, ...handlers.map((fn) => fn.emitInfos?.length ?? 0)),
+      // Context-only graph clones can carry repeated uses of one event definition while semantic `emitInfos`
+      // retains only the definition-width view. The frame is per EMISSION SITE, so size it from the larger of
+      // the declared metadata and the executable direct emit count; otherwise the second emit in row 4 asks
+      // for event[8] while an eight-slot block only publishes event[0..7].
+      eventWidth: Math.max(0, ...handlers.map((fn) =>
+        Math.max(fn.emitInfos?.length ?? 0, directEventCount(fn)))),
       transferBase: 0,
       transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
     };

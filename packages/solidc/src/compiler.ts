@@ -1491,6 +1491,14 @@ function synthesizeHiddenBatchRoute(
       }
     }
     if (eventMode) {
+      const directEventWidths = new Set<number>();
+      for (const fn of survivors) {
+        let width = 0;
+        walkInvocationAst(fn.body, (node) => {
+          if (node instanceof EmitStatementNode) width += 1;
+        });
+        if (width > 0) directEventWidths.add(width);
+      }
       for (const fn of survivors) {
         let directEmits = 0;
         let directTransfers = 0;
@@ -1500,7 +1508,7 @@ function synthesizeHiddenBatchRoute(
         });
         const effects = eligibleFootprint(fn).effects;
         const hasValue = effects.includes('value');
-        if (directEmits < 1 || effects.length === 0
+        if (directEventWidths.size !== 1 || directEmits < 1 || effects.length === 0
           || effects.some((effect) => !['events', 'value'].includes(effect))
           || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
           fn.hiddenBatchEligible = false;

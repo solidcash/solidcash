@@ -3883,7 +3883,10 @@ describe('Layer-3 compiled graph controller', () => {
 
   it('preflights every input of the final compiled graph transaction', async () => {
     const { builder } = await buildCallerAuthorizedTransferGraph(false, 'shared-first');
-    expect(() => layer3.preflightLayer3Transaction(builder)).not.toThrow();
+    layer3.preflightLayer3Transaction(builder);
+    expect(builder.inputs.length).toBeGreaterThan(1);
+    expect(builder.outputs).toHaveLength(builder.inputs.length);
+    expect(builder.buildLibauthTransaction().inputs.every((input) => input.unlockingBytecode.length > 0)).toBe(true);
   });
 
   it('reports the exact failing input from the final graph preflight gate', async () => {

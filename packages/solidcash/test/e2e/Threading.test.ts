@@ -254,7 +254,10 @@ describe('Threading', () => {
         );
 
         // incrementX requires NFT index 0, which IS in this thread's partition
-        expect(() => handle.call('incrementX')).not.toThrow();
+        const call = handle.call('incrementX');
+        expect(typeof call.send).toBe('function');
+        expect(handle.masterUtxo.txid).toBe('ffcd'.repeat(16));
+        expect(handle.dataNftIndices).toEqual([0]);
       });
 
       it('should throw for unknown function name', async () => {
@@ -363,7 +366,7 @@ describe('Threading', () => {
         const builder = await sc.functions.incrementX();
 
         // Should NOT throw - different category
-        expect(() => builder.addOutput({
+        const returned = builder.addOutput({
           to: sc.tokenAddress,
           amount: 1200n,
           token: {
@@ -371,7 +374,11 @@ describe('Threading', () => {
             category: otherCid,
             nft: { capability: 'minting', commitment: '' },
           },
-        })).not.toThrow();
+        });
+        expect(returned).toBe(builder);
+        expect(builder.build().outputs.at(-1)?.token).toMatchObject({
+          category: otherCid, amount: 0n, nft: { capability: 'minting', commitment: '' },
+        });
       });
     });
 

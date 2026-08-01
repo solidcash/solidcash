@@ -16,10 +16,17 @@ const claim = (overrides: Partial<layer3.Layer3AuthorityClaim> = {}): layer3.Lay
 
 describe('layer3.assertLayer3AuthorityClaims', () => {
   it('accepts one canonical owner plus independently identified resource inputs', () => {
-    expect(() => layer3.assertLayer3AuthorityClaims([
+    const claims = [
       claim(),
       claim({ inputIdentity: 'entry-a', outpoint: 'tx-b:1', resourceIdentity: 'balances:key-a' }),
-    ])).not.toThrow();
+    ];
+    layer3.assertLayer3AuthorityClaims(claims);
+    expect(claims.map((row) => [row.ownerIdentity, row.inputIdentity, row.outpoint])).toEqual([
+      ['owner-a', 'input-a', 'tx-a:0'], ['owner-a', 'entry-a', 'tx-b:1'],
+    ]);
+    expect(() => layer3.assertLayer3AuthorityClaims([
+      ...claims, claim({ inputIdentity: 'input-b', outpoint: 'tx-c:0' }),
+    ])).toThrow(expect.objectContaining({ code: 'L3_INPUT_AUTHORITY_CONFLICT' }));
   });
 
   it.each([

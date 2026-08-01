@@ -826,12 +826,15 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
     // Honest control: same source, option removed.
     it('plans the option-free typed edge', () => {
       const target = { artifact: sink, lockingBytecode: `aa20${'ab'.repeat(32)}87` };
-      expect(() => layer3.deriveCompiledGraphPlan({
+      const plan = layer3.deriveCompiledGraphPlan({
         root: { artifact: optionFree, lockingBytecode: `aa20${'cd'.repeat(32)}87` },
         function: 'run',
         args: [target.lockingBytecode, 5n],
         targets: { IE2Sink: target },
-      })).not.toThrow();
+      });
+      expect(plan.participants).toHaveLength(2);
+      expect(plan.invocations.map((row) => [row.parent, row.callee, row.function]))
+        .toEqual([[null, 0, 'run'], [0, 1, 'take']]);
     });
 
     // Attacks the OPTIONS field: the transcript row has no place for it, so the row would execute as if the

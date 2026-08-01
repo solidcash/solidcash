@@ -29,9 +29,12 @@ async function builderFor(lockingBytecode: Uint8Array): Promise<TransactionBuild
 describe('X210 - the ordinary stateful submit path verifies finalized covenants by default', () => {
   it('accepts an honest finalized transaction', async () => {
     const builder = await builderFor(Uint8Array.of(0x51));
-    expect(() => layer3.assertFinalizedTransactionCovenants(
-      builder, builder.buildLibauthTransaction(true),
-    )).not.toThrow();
+    const transaction = builder.buildLibauthTransaction(true);
+    layer3.assertFinalizedTransactionCovenants(builder, transaction);
+    expect(transaction.inputs).toHaveLength(1);
+    expect(transaction.outputs).toHaveLength(1);
+    expect([...transaction.inputs[0].unlockingBytecode]).toEqual([]);
+    expect([...transaction.outputs[0].lockingBytecode]).toEqual([0x51]);
   });
 
   it('refuses a raised VM failure at its input index', async () => {

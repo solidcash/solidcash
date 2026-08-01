@@ -20,9 +20,6 @@ const concat = (...parts: Uint8Array[]): Uint8Array => {
 };
 const le = (value: number, width: number): Uint8Array =>
   Uint8Array.from({ length: width }, (_, i) => (value >>> (8 * i)) & 0xff);
-const catCap = (categoryId: string): Uint8Array =>
-  concat(hexToBin(categoryId).slice().reverse(), Uint8Array.from([0x02]));
-
 // Compact fixture for the OP-COST scaling trend only: the blob carries just index pairs, and each
 // participant's identity is read from its actual co-spent input (so N=2/4/8 fit under the 223-byte
 // SCB1 blob cap). It still performs the O(N) introspection - output preservation + one ~4 KB
@@ -37,7 +34,7 @@ function makeParticipant(n: number): string {
     body.push(`require(tx.inputs[input${i}].unlockingBytecode.slice(0, 5) == hex"0453434231");`);
   }
   body.push('require(input0 >= 0);');
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 

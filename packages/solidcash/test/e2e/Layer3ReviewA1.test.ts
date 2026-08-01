@@ -1141,7 +1141,7 @@ describe('A1 review: C3 duplicate-owner - what the refusal is actually caused by
       expect(withoutCallOptionSelfCheck(
         scanComparisons(injectScalarAliasPairwiseComparison(source)).rowPairwise,
       ),
-        'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
+      'a decoded row scalar lost provenance through a neutral alias in the REAL covenant').toHaveLength(1);
       // And the old identifiers really are gone, so a future reader cannot mistake the detector above for the
       // regex that used to run here.
       expect(/participantLbc\d/.test(source)).toBe(false);

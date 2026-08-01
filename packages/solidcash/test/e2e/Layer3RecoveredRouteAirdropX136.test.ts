@@ -182,11 +182,11 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
       return { plan, layout, transcript, resultVector };
     };
 
-    const buildOnce = (preimage: Uint8Array, resultHash: Uint8Array, sidecarResult: Uint8Array): {
+    const buildOnce = (sidecarPreimage: Uint8Array, resultHash: Uint8Array, sidecarResult: Uint8Array): {
       tx: TransactionBuilder; transcriptRoot: string;
     } => {
       const { layout, transcript, resultVector } = planFor(resultHash);
-      const sidecar = buildKeccakComputeSidecar(preimage, sidecarSalt, sidecarUtxo, true);
+      const sidecar = buildKeccakComputeSidecar(sidecarPreimage, sidecarSalt, sidecarUtxo, true);
       const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
       // Participant block, in published slot order: master, data NFT, side-car, mapping sentinel, return.
       tx.addInput(setup.masterUtxo, participant.createCompilerRouteUnlocker(

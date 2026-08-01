@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
 import {
   binToHex, createVirtualMachineBch2026, decodeAuthenticationInstructions,

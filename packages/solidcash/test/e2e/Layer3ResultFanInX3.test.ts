@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import {
   bigIntToVmNumber, binToHex, encodeTransaction, hexToBin,
   type AuthenticationProgramStateCommon,
@@ -193,13 +194,13 @@ async function buildFanInGraph(
   const declaredResults: Record<number, string> = mixed === 'void-first'
     ? { [upIndex]: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp) }
     : mutation === 'reorder'
-    ? { 1: binToHex(resultDown), 2: binToHex(resultUp) }
-    : {
-      1: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp),
-      ...(!mixed && mutation !== 'omit-second' && {
-        2: binToHex(mutation === 'tamper-second' ? packedScalar(SEED + 51n) : resultDown),
-      }),
-    };
+      ? { 1: binToHex(resultDown), 2: binToHex(resultUp) }
+      : {
+        1: binToHex(mutation === 'tamper-first' ? packedScalar(SEED + 21n) : resultUp),
+        ...(!mixed && mutation !== 'omit-second' && {
+          2: binToHex(mutation === 'tamper-second' ? packedScalar(SEED + 51n) : resultDown),
+        }),
+      };
   const transcript = layer3.finalizeCompiledGraph(
     plan, declaredResults,
     layout.participantInputs, layout.returnOutputs,

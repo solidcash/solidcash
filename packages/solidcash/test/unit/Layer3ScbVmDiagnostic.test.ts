@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { describe, expect, it } from 'vitest';
 import { layer3 } from '../../src/index.js';
 

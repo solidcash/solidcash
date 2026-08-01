@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
@@ -20,8 +21,6 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const E = 10n; const B = 8n; const M = 6n; // S = floor(6*8/10) = 4; post-state E'=16, B'=12
-const STATE_CAT = 'ab'.repeat(32);
-
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   let c = 0;

@@ -1,9 +1,10 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin, binToHex, encodeTransaction } from '@bitauth/libauth';
 import {
   Op, buildEntryNftCovenantScript, computeCollectionHash, computeCollectionSignature, scriptToBytecode,
 } from '@solidcash/utils';
-import { SortedList, slotValueToBytes, encodeEntryCommitment, bytesToSlotValue, decodeEntryCommitment } from '../../src/index.js';
+import { SortedList, slotValueToBytes, encodeEntryCommitment, bytesToSlotValue } from '../../src/index.js';
 import { MockNetworkProvider } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 

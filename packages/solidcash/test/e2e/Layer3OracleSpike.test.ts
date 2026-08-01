@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, expect, it } from 'vitest';
 import { compileString } from 'solidc';
 import {
@@ -17,10 +18,6 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 const brand = hexToBin('4c3342314354524c');
 const PREFIX10 = '084c3342314354524c75';
 const E = 12n; const B = 9n; const U = 5n; const X = 100n; const Y = 50n; const M = 8n; // S = 6
-const BENTO_CAT = 'ab'.repeat(32);
-const KASHI_CAT = 'cd'.repeat(32);
-const TOKEN_CAT = 'ef'.repeat(32);
-
 const concat = (...parts: Uint8Array[]): Uint8Array => {
   const out = new Uint8Array(parts.reduce((s, p) => s + p.length, 0));
   let c = 0;
@@ -91,7 +88,7 @@ function makeOracle(): string {
   body.push('require(tx.outputs[tokenIdx].lockingBytecode == tx.inputs[tokenIdx].lockingBytecode);');
   body.push('require(tx.outputs[tokenIdx].tokenCategory == tx.inputs[tokenIdx].tokenCategory);');
   body.push('require(tx.outputs[tokenIdx].nftCommitment == bytes.concat(bytes4(bx - amount), bytes4(by + amount)));');
-  return `pragma solidcash >=0.8.0;\ncontract Participant() {\n`
+  return 'pragma solidcash >=0.8.0;\ncontract Participant() {\n'
     + `  function __layer3_bind(${params.join(', ')}) public {\n    ${body.join('\n    ')}\n  }\n}`;
 }
 

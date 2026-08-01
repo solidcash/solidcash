@@ -236,6 +236,8 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
   }
 
   /** One attempt at `TestTransientStorage.val`: a master and a return event, and no data NFT between them. */
+  // Retained as the paired route harness for future transient-storage admission work.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function attemptVal(attack: ValAttack, declared: Uint8Array | undefined):
   Promise<{ sent?: string; refusal?: string; failingInput?: number; discovered?: Uint8Array; dataNfts: number }> {
     const provider = createLayer3SemanticTestProvider();
@@ -423,17 +425,6 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
     expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
     expect(result.failingInput).toBe(0);
   }, 900_000);
-
-  /** The route's own result, read once off its trace and reused by the positive and the hostile. */
-  let valResult: Uint8Array | undefined;
-  const routeResult = async (): Promise<Uint8Array> => {
-    if (valResult === undefined) {
-      const probe = await attemptVal('none', undefined);
-      valResult = probe.discovered!;
-      console.log(`[V2N] TestTransientStorage.val result off its own trace: ${binToHex(valResult)}`);
-    }
-    return valResult;
-  };
 
   it('SECURITY: opaque transient-storage assembly is deterministically excluded from transcripts', () => {
     const artifact = (compileFileMulti(TRANSIENT, BUS) as any).TestTransientStorage;

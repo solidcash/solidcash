@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { compileString } from 'solidc';
 import { hexToBin } from '@bitauth/libauth';

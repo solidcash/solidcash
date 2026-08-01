@@ -1,5 +1,5 @@
 import { readFileSync } from 'fs';
-import { describe, expect, it } from 'vitest';
+import { describe, it } from 'vitest';
 import { compileFileSplit } from 'solidc';
 import {
   reportSplitCase, validateX168Manifest, writeSplitCorpusReport,

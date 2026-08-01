@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, it, expect, beforeAll } from 'vitest';
 import { compileString } from 'solidc';
 import { vmNumberToBigInt } from '@bitauth/libauth';

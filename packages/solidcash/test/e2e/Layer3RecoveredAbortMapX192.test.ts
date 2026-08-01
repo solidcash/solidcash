@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
-import { buildInitialStateCommitments, scriptToBytecode, sourceMapToLocationData } from '@solidcash/utils';
+import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileFileMulti, compileString } from 'solidc';
 import { Contract, SignatureTemplate, TransactionBuilder, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -84,9 +84,6 @@ const CONTRACT = 'EnglishAuction';
 const GAINED_BY_THE_REPAIR: readonly string[] = [
   'nft', 'nftId', 'seller', 'endAt', 'started', 'ended', 'highestBidder', 'highestBid',
 ];
-
-/** The route body's OP_INVOKE selector: "SCB1" in ASCII, which is what makes it findable in `functionDebug`. */
-const ROUTE_SELECTOR = '53434231';
 
 /**
  * The value the ROUTE ITSELF computed, read off its own execution, or `undefined` when it never compared the

@@ -170,8 +170,8 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
       .withExternalCall(scBento, 'deposit', [5n])
       .withExternalCall(scToken, 'debit', [5n])
       .send()).rejects.toThrow(
-        /layer3: BCH-2026 preflight failed at input 5: Program failed an OP_VERIFY operation\./,
-      );
+      /layer3: BCH-2026 preflight failed at input 5: Program failed an OP_VERIFY operation\./,
+    );
     const honest = await setup3({ elastic: 10n, base: 8n }, { balance: 100n });
     await expect(honest.scKashi.borrow(5n)
       .withExternalCall(honest.scBento, 'deposit', [5n])

@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { bigIntToVmNumber, binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { buildInitialStateCommitments } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';

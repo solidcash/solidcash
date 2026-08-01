@@ -296,7 +296,7 @@ describe('X7: the projection verifier exhausts its owner result vector', () => {
   it('honest control: a returning root plus a returning leaf settles', async () => {
     const built = await buildRootReturningGraph();
     expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toMatch(/^[0-9a-f]{64}$/);
   }, 120_000);
 
   it('rejects a root whose transcript result is declared void while its NFT commits to a value', async () => {

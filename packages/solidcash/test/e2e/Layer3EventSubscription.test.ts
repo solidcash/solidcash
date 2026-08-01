@@ -40,7 +40,10 @@ describe('EventSubscription mixed collection journal', () => {
 
   it('settles subscribe under BCH-2026', async () => {
     const { call } = await build();
-    expect((await call.send()).txid).toBeDefined();
+    await expect(call.send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
   }, 180_000);
 
   it('refuses a forged array post-state slot at input 0', async () => {

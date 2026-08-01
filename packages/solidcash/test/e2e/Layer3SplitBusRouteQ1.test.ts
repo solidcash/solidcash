@@ -129,7 +129,10 @@ contract Kashi(bytes bentoAddr) {
     const scKashi = StatefulContract.withCategory(kashi, catKashi) as ConnectedStatefulContract;
     const scBento = StatefulContract.withCategory(bento, catBento) as ConnectedStatefulContract;
     const tx = await scKashi.borrow(5n).withExternalCall(scBento, 'deposit', [5n]).send();
-    expect(tx.txid).toBeDefined();
+    expect(tx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
     expect((await scBento.getState()).base).toBe(12n);
     expect((await scKashi.getState()).collateral).toBe(4n);
   });
@@ -241,6 +244,10 @@ contract Plain(bytes owner) {
       `${index}:${ownOwners.get(`${(input as any).txid}:${(input as any).vout}`) ?? 'other'}`);
     console.log(`[Q1-A2] leg 1 inputs ${ownRows.join(' ')}`);
     const ownTx = await own.call.deposit(5n).send();
+    expect(ownTx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
     console.log(`[Q1-A2] leg 1 split CALLEE own delegate route: SETTLED ${ownTx.txid}`);
     expect((await own.root.getState()).base).toBe(12n);
     // The settling route carries the facet. That is the input the bus route below never builds.

@@ -51,9 +51,12 @@ describe('bounded fixed-array collection iteration on the Layer-3 route', () => 
   it('settles the compiler-fixed two-entry iteration under BCH-2026', async () => {
     const { call, inner, categoryId } = await build();
     const settled = await call.send();
-    expect(settled.txid).toBeDefined();
+    expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
     const contract = StatefulContract.withCategory(inner, categoryId);
-    expect((await contract.check(42n).send()).txid).toBeDefined();
+    await expect(contract.check(42n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
   }, 180_000);
 
   it('refuses reordered fixed entry identities at input 0', async () => {

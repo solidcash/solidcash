@@ -430,7 +430,7 @@ describe('E1 hostile review: producer result-cursor exhaustion (worker C)', () =
   it('honest control: the rebuilt six-participant chain still settles', async () => {
     const built = await buildReviewGraph();
     expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
   // Attacks: producer C's honest return-event NFT commits to `01480116` - occurrence 0 = 72, occurrence
@@ -471,7 +471,7 @@ describe('E1 hostile review: sliding window with a consumer that discards its re
   it('honest control: the discarding variant settles with D consuming occurrence 1', async () => {
     const built = await buildReviewGraph({ unusedInA: true });
     expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects D consuming producer occurrence 0 while the transcript voids occurrence 0', async () => {

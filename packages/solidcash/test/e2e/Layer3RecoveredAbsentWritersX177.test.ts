@@ -123,6 +123,21 @@ describe('X177: the four ABSENT-flag recovered handlers', () => {
   const doesNotMutate = (row: AbsentRow) => (): void => {
     const artifact = busMap(row.file)[row.contract];
     const layout = artifact.stateLayout!;
+    if (row.contract === 'TestTransientStorage') {
+      // Both entry points use transient-storage Yul. SCB1 cannot summarize those effects, so the contract is
+      // deliberately route-less rather than publishing a misleading `val` row. Its ordinary state layout
+      // still proves the narrower fact this census records: there is no persistent data NFT to mutate.
+      expect(artifact.hiddenBatch).toBeUndefined();
+      const absence = (artifact.diagnostics ?? [])
+        .filter((entry: any) => entry.code === 'hidden-batch-route-not-synthesized');
+      expect(absence).toHaveLength(1);
+      expect(absence[0]).toMatchObject({ severity: 'error' });
+      expect(absence[0].message).toContain("'val': opaque-assembly-effects-transcript-ineligible");
+      expect(layout.dataNftCount, `${row.key} has persistent state`).toBe(0);
+      expect(layout.variables ?? []).toEqual([]);
+      expect(layout.collections ?? []).toEqual([]);
+      return;
+    }
     const block = (artifact.hiddenBatch!.route.blockLayout!.slots as any[]).map((slot) => slot.kind);
     console.log(`[X177A] ${row.key} dataNftCount=${layout.dataNftCount} `
       + `variables=${JSON.stringify((layout.variables ?? []).map((v: any) => v.name))} `

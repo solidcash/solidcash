@@ -32,7 +32,7 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  *  1. The recovered route admits `attack`, published `writesState: true`, alongside two read-only getters.
  *  2. `attack`'s whole body is one external call, `wallet.transfer(...)`, so its counterparty has to be a
- *     co-spent participant - and `Wallet.transfer` is REFUSED by a named handler-admission gate.
+ *     co-spent participant - and `Wallet` publishes no bus route, with a named fail-closed diagnostic.
  *  3. The SDK PLANS the graph anyway, and builds a complete balanced transaction for it.
  *  4. The VM REFUSES it, at the participant's own input index 0. Fail-closed.
  *  5. AND THE HARNESS IS NOT THE REASON. The same helper, the same staging, the same block, settles the
@@ -123,13 +123,11 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
   }, 300_000);
 
   /**
-   * AND THE COUNTERPARTY ENTRY POINT CANNOT PARTICIPATE. Bare payable-address calls now compile with an
-   * authenticated target pin, so whole-file compilation is no longer the gate. The live handler census is:
-   * `Wallet.owner` is admitted, while `Wallet.transfer` itself is refused because its tx-origin-dependent
-   * direct and batch meanings diverge. That named handler rejection still leaves `attack` with no callable
-   * counterparty, without pretending the sibling contract failed to compile.
+   * AND THE COUNTERPARTY CANNOT PARTICIPATE. The ordinary `Wallet` artifact compiles, but every SCB1
+   * candidate is rejected by the value-route cardinality gate, so it deliberately publishes no hiddenBatch.
+   * The route-absence diagnostic is the evidence; dereferencing a nonexistent handlers list is not.
    */
-  it('MEASURED: `Wallet.transfer` is refused from the bus by a named handler gate', () => {
+  it('MEASURED: `Wallet` is excluded from the bus with a named fail-closed diagnostic', () => {
     const map = compileFileMulti(TX_ORIGIN, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
@@ -137,12 +135,14 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
     } as never) as any;
     const wallet = map.Wallet;
     expect(wallet, 'Wallet did not compile in bus mode').toBeDefined();
-    const handlers = wallet.hiddenBatch!.handlers as any[];
-    expect(handlers.find((handler) => handler.name === 'owner')?.eligible).toBe(true);
-    const transfer = handlers.find((handler) => handler.name === 'transfer');
-    console.log(`[X136W] Wallet.transfer eligible=${transfer?.eligible} reason=${transfer?.rejectionReason}`);
-    expect(transfer?.eligible).toBe(false);
-    expect(transfer?.rejectionReason).toBe('direct-versus-batch-introspection-divergence');
+    expect(wallet.hiddenBatch).toBeUndefined();
+    const absence = (wallet.diagnostics ?? [])
+      .filter((entry: any) => entry.code === 'hidden-batch-route-not-synthesized');
+    expect(absence).toHaveLength(1);
+    expect(absence[0]).toMatchObject({ severity: 'error' });
+    expect(absence[0].message)
+      .toContain("'transfer': value-route-requires-at-most-one-direct-transfer-per-handler");
+    expect(absence[0].message).toContain('cannot participate in a message bus');
   }, 300_000);
 
   /**

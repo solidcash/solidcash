@@ -406,12 +406,11 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   }, 900_000);
 
   /**
-   * AND THE COUNTERPARTY ENTRY POINT IS STILL INADMISSIBLE, re-measured rather than quoted. The sibling
-   * contract now compiles because bare payable-address calls have an authenticated target pin, but the live
-   * bus census rejects `Wallet.transfer` itself for direct-versus-batch introspection divergence. Thus the
-   * external call `attack` consists of still has no constructible callee row.
+   * AND THE COUNTERPARTY IS STILL INADMISSIBLE, re-measured rather than quoted. The ordinary `Wallet`
+   * artifact compiles, but every SCB1 candidate is rejected by the value-route cardinality gate. The compiler
+   * therefore publishes no hiddenBatch and states the exact reason through its route-absence diagnostic.
    */
-  it('MEASURED: `Wallet.transfer` is still refused from the bus by a named handler gate', () => {
+  it('MEASURED: `Wallet` is still excluded from the bus by a named fail-closed diagnostic', () => {
     const map = compileFileMulti(TX_ORIGIN, {
       ...BUS,
       experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
@@ -419,12 +418,14 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
     } as never) as any;
     const wallet = map.Wallet;
     expect(wallet, 'Wallet did not compile in bus mode').toBeDefined();
-    const handlers = wallet.hiddenBatch!.handlers as any[];
-    expect(handlers.find((handler) => handler.name === 'owner')?.eligible).toBe(true);
-    const transfer = handlers.find((handler) => handler.name === 'transfer');
-    console.log(`[X177V] Wallet.transfer eligible=${transfer?.eligible} reason=${transfer?.rejectionReason}`);
-    expect(transfer?.eligible).toBe(false);
-    expect(transfer?.rejectionReason).toBe('direct-versus-batch-introspection-divergence');
+    expect(wallet.hiddenBatch).toBeUndefined();
+    const absence = (wallet.diagnostics ?? [])
+      .filter((entry: any) => entry.code === 'hidden-batch-route-not-synthesized');
+    expect(absence).toHaveLength(1);
+    expect(absence[0]).toMatchObject({ severity: 'error' });
+    expect(absence[0].message)
+      .toContain("'transfer': value-route-requires-at-most-one-direct-transfer-per-handler");
+    expect(absence[0].message).toContain('cannot participate in a message bus');
   }, 300_000);
 
   /**

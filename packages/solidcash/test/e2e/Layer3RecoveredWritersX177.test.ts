@@ -31,7 +31,7 @@ import type { Utxo } from '../../src/interfaces.js';
  *
  *   subject                                 shape                                verdict
  *   Lib.doSomething(uint256)                scalar written from an ARGUMENT      SETTLES
- *   Target.protected()                      bool behind a msg.sender guard       REFUSED, fail-closed
+ *   Target.protected()                      opaque assembly in its call graph    EXCLUDED, fail-closed
  *   UniswapV2Pair.initialize(addr,addr)     2 fields / 4 data NFTs / 3 entries   BLOCKED by this harness
  *   StakingRewards.setRewardsDuration(u256) 4 data NFTs + 5 entry identities    BLOCKED by this harness
  *
@@ -55,11 +55,11 @@ import type { Utxo } from '../../src/interfaces.js';
  *     believable-wrong result is refused at input 0 - which is where the return-event check is shown to be
  *     LIVE, since the writer itself is void and publishes no result.
  *
- * WHAT THE `REFUSED` ROW ESTABLISHES, and it is fail-CLOSED rather than an exploit. `Target.protected` is
- * `require(!isContract(msg.sender)); pwned = true;`. The bus's `msg.sender` is a locking bytecode, and the
- * route's own caller binding accepts only the p2sh32 shape - which `isContract` reads as a contract. Both
- * shapes are run: a p2sh32 caller passes the binding and fails `!isContract`, a P2PKH caller fails the
- * binding itself. There is no caller this handler can be called by, and nothing is accepted.
+ * WHAT THE `EXCLUDED` ROW ESTABLISHES, and it is fail-CLOSED rather than an exploit. `Target.protected`
+ * transitively calls `isContract`, whose `extcodesize` Yul has opaque effects under SCB1. The compiler
+ * publishes `opaque-assembly-effects-transcript-ineligible` with the structured
+ * `SCB_EFFECT_UNSUMMARIZABLE` class, while the read-only `pwned` sibling keeps the route and diagnostic
+ * channel alive. No graph planner can stage the excluded handler.
  *
  * WHAT IS NOT ESTABLISHED.
  *
@@ -148,11 +148,11 @@ interface Row {
    * What this row is evidence FOR.
    *
    *  - `settles`   the writer runs to completion and the post state is read off the covenant.
-   *  - `refuses`   the writer is UNSATISFIABLE on the bus and every caller shape is refused. Fail-closed, and
-   *                not an exploit: nothing is accepted that should not be.
+   *  - `excluded`  the compiler deterministically refuses the handler before planning because its transitive
+   *                body contains opaque assembly effects. Fail-closed, and not an exploit.
    *  - `blocked`   the harness cannot stage this route. NOT evidence either way, and named as such.
    */
-  verdict: 'settles' | 'refuses' | 'blocked';
+  verdict: 'settles' | 'excluded' | 'blocked';
   /** Why a `blocked` row is not run. Empty for every other row. */
   blockedBy?: string;
 }
@@ -199,7 +199,7 @@ const ROWS: readonly Row[] = [
     writer: 'protected',
     writerArgs: [],
     guards: [{ name: 'pwned', args: [] }],
-    verdict: 'refuses',
+    verdict: 'excluded',
     rootCaller: 'contract',
     pre: { pwned: false },
     post: { pwned: true },
@@ -274,7 +274,18 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
         + `slots=${JSON.stringify(layout.slots.map((slot: any) => slot.kind))}`);
       console.log(`[X177]   dataNftCount=${artifact.stateLayout.dataNftCount} `
         + `collections=${JSON.stringify((artifact.stateLayout.collections ?? []).map((c: any) => c.name))}`);
-      expect(eligible, `${row.writer} is not admitted`).toContain(row.writer);
+      const writerHandler = (artifact.hiddenBatch!.handlers as any[])
+        .find((handler) => handler.name === row.writer);
+      if (row.verdict === 'excluded') {
+        expect(eligible, `${row.writer} was re-admitted despite opaque assembly`).not.toContain(row.writer);
+        expect(writerHandler).toMatchObject({
+          eligible: false,
+          rejectionReason: 'opaque-assembly-effects-transcript-ineligible',
+          rejectionCode: 'SCB_EFFECT_UNSUMMARIZABLE',
+        });
+      } else {
+        expect(eligible, `${row.writer} is not admitted`).toContain(row.writer);
+      }
       for (const guard of row.guards) expect(eligible, `${guard.name} is not admitted`).toContain(guard.name);
       expect(layout.blockSize).toBe(row.blockSize);
       expect(layout.slots.map((slot: any) => slot.kind)).toEqual(row.slots);
@@ -707,33 +718,6 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
   };
 
-  /**
-   * THE NEGATIVE, and it is fail-CLOSED. `Target.protected` is `require(!isContract(msg.sender)); pwned = true;`
-   * and the bus's `msg.sender` is a LOCKING BYTECODE that the route's own caller binding accepts only in the
-   * p2sh32 shape - which `isContract` reads as a contract. Both shapes are run:
-   *
-   *   caller shape   what happens
-   *   p2sh32         the caller binding passes and `!isContract(msg.sender)` fails
-   *   P2PKH          the caller binding itself fails, on the 25-vs-35 length comparison
-   *
-   * So there is no caller this handler can be called by, and NOTHING IS ACCEPTED. This is the X115 shape - a
-   * published-but-dead admission - and it is not an exploit: the covenant refuses.
-   */
-  const unsatisfiable = (row: Row, caller: 'contract' | 'pkh') => async (): Promise<void> => {
-    const shaped: Row = { ...row, rootCaller: caller };
-    for (const publishedState of [
-      preCommitmentsOf(row),
-      preCommitmentsOf(row).map((_value, index) => (index === 0 ? SENTINEL(0) : _value)),
-    ]) {
-      const result = await attempt(shaped, row.writer, row.writerArgs, 'none', { publishedState });
-      console.log(`[X177] ${row.key} caller=${caller} published=${JSON.stringify(publishedState)}: `
-        + `${(result.refusal ?? `ACCEPTED ${result.sent}`).split('\n')[0]}`);
-      expect(result.sent, `${row.key} was ACCEPTED with a ${caller} caller`).toBeUndefined();
-      expect(result.refusal).toMatch(/OP_VERIFY|mandatory-script-verify-flag-failed|non-truthy/);
-      expect(result.failingInput, 'the refusal did not name the participant input').toBe(0);
-    }
-  };
-
   /** A BLOCKED row is named, not run, and not counted as evidence in either direction. */
   const blocked = (row: Row) => (): void => {
     console.log(`[X177] BLOCKED ${row.key}: ${row.blockedBy}`);
@@ -745,17 +729,19 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
       it(`BLOCKED: ${row.key} is not run - ${row.blockedBy}`, blocked(row));
       continue;
     }
-    if (row.verdict === 'refuses') {
-      for (const caller of ['contract', 'pkh'] as const) {
-        it(`MEASURED: ${row.key} is REFUSED with a ${caller} msg.sender - fail-closed, not an exploit`,
-          unsatisfiable(row, caller), 1_800_000);
-      }
-      for (const g of row.guards) {
-        it(`GUARD: the read-only sibling '${g.name}' of ${row.contract} settles through the same staging`,
-          guard(row, g.name, g.args), 1_800_000);
-      }
-      it(`GUARD: ${row.contract}'s return event carrying a believable-wrong result is refused`,
-        guardResult(row, row.guards[0].name, row.guards[0].args), 1_800_000);
+    if (row.verdict === 'excluded') {
+      it(`MEASURED: ${row.key} is deterministically EXCLUDED - fail-closed, not an exploit`, () => {
+        const artifact = compileFileMulti(row.file, {
+          ...BUS,
+          experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
+          experimentalMessageBusControllerCategory: '22'.repeat(32),
+        } as never)[row.contract] as any;
+        expect(artifact.hiddenBatch.handlers.find((handler: any) => handler.name === row.writer)).toMatchObject({
+          eligible: false,
+          rejectionReason: 'opaque-assembly-effects-transcript-ineligible',
+          rejectionCode: 'SCB_EFFECT_UNSUMMARIZABLE',
+        });
+      }, 1_800_000);
       continue;
     }
     it(`MEASURED: ${row.key} MUTATES - its own trace hands back the post state`, mutates(row), 1_800_000);

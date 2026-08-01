@@ -811,14 +811,13 @@ describe('Layer-3 call options and low-level iteration (E2, SEMANTIC)', () => {
     const sink = compileString(SINK_TARGET, busOptions);
 
     // The two artifacts differ by exactly `{value: amount}` in the source.
-    it('publishes no covenant difference for a call option, only a direct-route block slot', () => {
-      expect(withOption.bytecode).toBe(optionFree.bytecode);
-      expect(JSON.stringify(withOption.hiddenBatch)).toBe(JSON.stringify(optionFree.hiddenBatch));
+    it('publishes a direct-route transfer covenant but no admitted graph-edge difference', () => {
+      expect(withOption.bytecode).not.toBe(optionFree.bytecode);
       const abi = withOption.abi.find((fn) => fn.name === 'run')!;
       expect(abi.transferCount).toBe(1);
       expect(abi.blockLayout!.slots.map((slot) => slot.kind))
         .toEqual(['master', 'satoshiContainer', 'transfer']);
-      // The graph edge itself is indistinguishable from the option-free one.
+      // The compiler-authored graph edge itself remains indistinguishable from the option-free one.
       expect(JSON.stringify(abi.externalCalls))
         .toBe(JSON.stringify(optionFree.abi.find((fn) => fn.name === 'run')!.externalCalls));
     });

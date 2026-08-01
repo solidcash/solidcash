@@ -109,10 +109,18 @@ function handAssemblePlan(
   });
   const executions = participants.map((participant, owner) => ({
     participant: owner,
+    artifact: participant.artifact,
     lockingBytecode: participant.lockingBytecode.toLowerCase(),
+    executionKind: 0 as const,
+    executorOffset: null,
+    executorInputIndex: 0xffff,
+    executorLockingBytecode: '',
     batch: layer3.encodeHiddenBatch(participant.artifact, perOwner[owner]),
     invocations: globalByOwner[owner],
     blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
+    routeInputs: participant.artifact.hiddenBatch!.route.inputs,
+    settlementBoundary: 0,
+    completionPositions: [] as number[],
   }));
   const subtreeEnds = invocations.map((_invocation, index) => index);
   const active: number[] = [];
@@ -123,6 +131,10 @@ function handAssemblePlan(
       for (const ancestor of active) subtreeEnds[ancestor] = index;
       active.push(index);
     }
+  });
+  executions.forEach((execution, owner) => {
+    execution.completionPositions = globalByOwner[owner].map((index) => subtreeEnds[index] + 1);
+    execution.settlementBoundary = Math.max(...execution.completionPositions);
   });
   const localCursor = participants.map(() => 0);
   const depths = invocations.map(() => 0);

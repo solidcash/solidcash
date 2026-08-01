@@ -10,9 +10,11 @@ import {
 import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
 import { oracle, oraclePub } from '../fixture/vars.js';
 
-const verifyPreflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
-const dataSignatureNullFail = 'layer3: BCH-2026 preflight failed at input 0: Program failed a signature '
-  + 'verification with a non-null signature (violating the "NULLFAIL" rule).';
+const verifyPreflight = 'layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input 0: '
+  + 'malformed SCB1 envelope; VM: Program failed an OP_VERIFY operation.';
+const dataSignatureNullFail = 'layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input 0: '
+  + 'malformed SCB1 envelope; VM: Program failed a signature verification with a non-null signature '
+  + '(violating the "NULLFAIL" rule).';
 const verifyAtFinalProvider =
   /mandatory-script-verify-flag-failed .*error in evaluating input index 0: Program failed an OP_VERIFY operation/;
 

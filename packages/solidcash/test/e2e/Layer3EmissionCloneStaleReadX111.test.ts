@@ -369,9 +369,12 @@ describe('X111 - a read-only graph emission clone must not read the pre-state', 
     expect(clone).toBeDefined();
     expect(clone!.reads.filter((resource) => resource.startsWith('state:'))).toEqual(['state:balance']);
     expect(clone!.writes.filter((resource) => resource.startsWith('state:'))).toEqual([]);
-    // The control: the writer of that slot is an ordinary handler, so it publishes no clone of its own.
-    expect(artifact.invocationAnalysis!.functions
-      .some((entry) => entry.name === '__scb_graph_withdraw')).toBe(false);
+    // The control: the ordinary writer's generated graph clone retains the write, rather than acquiring
+    // the reader clone's journal read or becoming a second read-only guard.
+    const writerClone = artifact.invocationAnalysis!.functions
+      .find((entry) => entry.name === '__scb_graph_withdraw');
+    expect(writerClone).toBeDefined();
+    expect(writerClone!.writes.filter((resource) => resource.startsWith('state:'))).toEqual(['state:balance']);
   });
 
   it('N3 liveness: the admitted reader-first guard is still refused on a false expectation', async () => {

@@ -173,7 +173,7 @@ describe('layer-3 data-NFT-integrated state (task 1)', () => {
     });
     // Real data-NFT write (data-NFT covenant authenticates via the master) + transcript transition.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2486, ratioPct: 21.4 }, { instr: 2486, ratioPct: 21.4 }]);
+    expect(metrics).toEqual([{ instr: 2601, ratioPct: 21.5 }, { instr: 2601, ratioPct: 21.5 }]);
   });
 
   it('SAFE: a foreign-category state stand-in (not the data NFT) is rejected by the category bind', async () => {

@@ -518,17 +518,17 @@ describe('S3 chunk-backed state across graph handlers - honest settlement', () =
     // ONE input is over, and it is the dynamic master. Naming it is what makes the refusal attributable.
     expect(over.map((row) => row.input)).toEqual([INPUT.dynamic]);
     const worst = over[0];
-    expect(worst.densityBytes).toBe(3617);
-    expect(worst.densityBytes * ORDINARY_BUDGET_PER_BYTE).toBe(2_893_600);
-    expect(worst.ratio).toBeGreaterThan(1.15);
-    expect(worst.ratio).toBeLessThan(1.25);
+    expect(worst.densityBytes).toBe(2776);
+    expect(worst.densityBytes * ORDINARY_BUDGET_PER_BYTE).toBe(2_220_800);
+    expect(worst.ratio).toBeGreaterThan(1.55);
+    expect(worst.ratio).toBeLessThan(1.65);
 
     for (const standard of [true, false]) {
       // The refusal, verbatim, at the SAME input the report named.
       const refused = vmAt(ORDINARY_BUDGET_PER_BYTE, standard)
         .evaluate({ inputIndex: INPUT.dynamic, sourceOutputs, transaction });
       expect(refused.error).toMatch(
-        /exceed the operation cost density limit\. Maximum operation cost: 2893600 \(density control length: 3617\)/,
+        /exceed the operation cost density limit\. Maximum operation cost: 2220800 \(density control length: 2776\)/,
       );
       // NEGATIVE CONTROL: identical bytes, identical input, identical regime, ONLY the budget relaxed. This is
       // what says the refusal is the budget and not the shape having become invalid.
@@ -626,10 +626,10 @@ describe('S3 bounds', () => {
       { parent: null, callee: 0, function: 'route', args: [bytes(length, 0x41)] },
       { parent: 0, callee: 1, function: 'setNote', args: [bytes(length, 0x41)] },
     ]);
-    expect(() => plan(202)).not.toThrow();
-    expect(() => plan(203)).toThrow(/SCB1 blob is 224 bytes; maximum is 223/);
-    // 202 bytes is two chunks. The region reserves 64, so the envelope binds 32x earlier than the region.
-    expect(Math.ceil(202 / CHUNK)).toBe(2);
+    expect(() => plan(201)).not.toThrow();
+    expect(() => plan(202)).toThrow(/SCB1 blob is 224 bytes; maximum is 223/);
+    // 201 bytes is two chunks. The region reserves 64, so the envelope binds 32x earlier than the region.
+    expect(Math.ceil(201 / CHUNK)).toBe(2);
   }, 300_000);
 
   it('refuses a chunk run past the declared capacity before anything is signed', async () => {

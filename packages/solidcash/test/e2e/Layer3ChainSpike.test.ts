@@ -156,7 +156,7 @@ describe('layer-3 multi-invocation result-dependency chain (E2E)', () => {
     });
     // Two invocations (quote -> consume) with the result dependency bound, both endpoints validating.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2207, ratioPct: 20.7 }, { instr: 2207, ratioPct: 20.7 }]);
+    expect(metrics).toEqual([{ instr: 2322, ratioPct: 20.8 }, { instr: 2322, ratioPct: 20.8 }]);
   });
 
   it('HOSTILE: consuming a value the callee did not quote (forged dependency) is rejected', async () => {

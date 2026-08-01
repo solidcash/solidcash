@@ -1052,7 +1052,8 @@ const BUS_OPTIONS = {
 const SCRIPT_REFUSAL = /mandatory-script-verify-flag-failed/;
 
 describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', () => {
-  const at = (input: number): string => `layer3: BCH-2026 preflight failed at input ${input}`;
+  const at = (input: number): string =>
+    `layer3 [L3_SCB_ENVELOPE_MALFORMED]: BCH-2026 preflight failed at input ${input}`;
 
   it('settles the honest graph with the effect-free caller', async () => {
     const built = await buildEffectSubstitution({ emitting: false, tamper: 'none' });
@@ -1289,14 +1290,16 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 600_000);
 
-  /**
-   * SEC-9's repair, failing closed. The divergent shape reserved a slot no reached handler settles; it is now
-   * refused at compile time. The uniform shape one line away still compiles and still reserves both slots, so
-   * the refusal is not a blanket ban on emits reached through an internal call.
-   */
-  it('refuses a route whose sibling handlers do not settle the same number of events', () => {
-    expect(() => compileString(sec9HubSource(false), BUS_OPTIONS))
-      .toThrow(/emits 1 event\(s\) while a sibling handler on the same route emits 2/);
+  /** Graph framing carries each handler's event width, while the legacy flattened route remains fail-closed. */
+  it('supports heterogeneous graph event frames but refuses the ambiguous flattened route', () => {
+    const heterogeneous = compileString(sec9HubSource(false), BUS_OPTIONS);
+    expect(heterogeneous.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);
+    const flattened = compileString(sec9HubSource(false), {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+    expect(flattened.hiddenBatch).toBeUndefined();
     const uniform = compileString(sec9HubSource(true), BUS_OPTIONS);
     expect(uniform.hiddenBatch!.route.blockLayout!.slots
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);

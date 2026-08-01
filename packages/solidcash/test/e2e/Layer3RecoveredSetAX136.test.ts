@@ -14,10 +14,11 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import {
   createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
 } from '../../src/stateful/covenant-helpers.js';
+import { encodeEntryCommitment, keyToSlot, keyToSlotMulti } from '../../src/stateful/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
 /**
- * X136 CONTINUED. RUNNING THE RECOVERED HANDLERS - SET A, AND MyToken'S 68-SLOT ROUTE.
+ * X136 CONTINUED. RUNNING THE RECOVERED HANDLERS - SET A, AND MyToken'S 69-SLOT ROUTE.
  *
  * The L2-F2 repair made 112 handlers newly buildable across three sets. Before this file FOUR of them had ever
  * been executed: `Airdrop.getLeafHash` settles (Set B, keccak side-car), `Attack.owner` and `Attack.wallet`
@@ -47,12 +48,10 @@ import type { Utxo } from '../../src/interfaces.js';
  * Every subject below is from the GAINED column, so a settling row is a RECOVERED handler settling and not a
  * handler that always worked. `MyToken`'s four are its entire gained set.
  *
- * MyToken IS THE SLOT-LOSS ROW, AND THE ANSWER IS THAT IT SETTLES. The repair took `MyToken` from blockSize 69
- * to 68 by removing one of two `entry` slots, and `Layer3RecoveredCapacityX136.test.ts` argued that removal
- * sound on COMPILE-time evidence while saying plainly in its own docblock that "MyToken's route was not run".
- * A slot disappearing from a covenant is the shape most likely to be wrong. The 68-slot route is run here to
- * completion on all four of its gained handlers, with a live head-sentinel `balanceOf` entry NFT co-spent in
- * the surviving entry slot and the 64-slot trailing region materialized.
+ * MyToken WAS REPORTED AS THE SLOT-LOSS ROW, BUT THAT CLAIM IS NO LONGER TRUE. The function-wide transfer
+ * frame repair re-derived blockSize 69 with both `balanceOf` and `allowance` identities. This file runs that
+ * current shape to completion on all four gained handlers, with one authenticated entry NFT per published
+ * identity and the 64-slot trailing region materialized.
  *
  * THE RESULT IS NEVER RE-DERIVED HERE. Each row's declared return value is read off the ROUTE'S OWN VM TRACE by
  * `routeResultFromTrace`, exactly as the Airdrop proof reads its keccak preimage off the trace rather than
@@ -143,8 +142,6 @@ interface Row {
   stateTamper: Record<string, unknown>;
   blockSize: number;
   slots: readonly string[];
-  /** The sorted collection whose head-sentinel entry NFT fills the block's `entry` slot, when it has one. */
-  entryCollection?: string;
 }
 
 const ROWS: readonly Row[] = [
@@ -157,8 +154,8 @@ const ROWS: readonly Row[] = [
     hostileSubject: 'token',
     state: { token: hexToBin(`aa20${'55'.repeat(32)}87`) },
     stateTamper: { token: hexToBin(`aa20${'55'.repeat(31)}5687`) },
-    blockSize: 3,
-    slots: ['master', 'dataNft', 'returnEvent'],
+    blockSize: 4,
+    slots: ['master', 'dataNft', 'entry', 'returnEvent'],
   },
   {
     name: 'Vault',
@@ -171,13 +168,12 @@ const ROWS: readonly Row[] = [
     stateTamper: { totalSupply: 4_243n },
     blockSize: 4,
     slots: ['master', 'dataNft', 'entry', 'returnEvent'],
-    entryCollection: 'balanceOf',
   },
   {
     // SET B, and the one row in this file that is not Set A. `MyToken` LOST a covenant slot in the repair
-    // (blockSize 69 -> 68, one of two `entry` slots removed), and that removal was established on COMPILE-time
-    // evidence alone - `Layer3RecoveredCapacityX136.test.ts` says so in its own docblock: "MyToken's route was
-    // not run". A slot DISAPPEARING is the shape most likely to be wrong, so this runs the 68-slot route.
+    // was once reported as losing an entry slot. The function-wide transfer-frame repair re-derived the live
+    // route as 69 slots with BOTH `balanceOf` and `allowance` identities; this runs that current shape rather
+    // than retaining the reverted X201-era 68-slot claim.
     //
     // Its block is also the only one here with a TRAILING REGION: 64 reserved slots, materialized as ordinary
     // funding in and dust out, because `blockSize` includes them and both the projection verifier and the root
@@ -191,13 +187,15 @@ const ROWS: readonly Row[] = [
     hostileSubject: 'totalSupply',
     state: { totalSupply: 1_000_000n, name: '', symbol: '', decimals: 18n },
     stateTamper: { totalSupply: 1_000_001n },
-    blockSize: 68,
-    slots: ['master', 'dataNft', 'entry', 'returnEvent', ...Array.from({ length: 64 }, () => 'trailing')],
-    entryCollection: 'balanceOf',
+    blockSize: 69,
+    slots: [
+      'master', 'dataNft', 'entry', 'entry', 'returnEvent',
+      ...Array.from({ length: 64 }, () => 'trailing'),
+    ],
   },
 ];
 
-describe('X136: recovered routes run to completion - Set A, and MyToken after its slot loss', () => {
+describe('X136: recovered routes run to completion - Set A, and MyToken after transfer-frame re-derivation', () => {
   /**
    * THE PARTITION TEST, from this run's own compiles. It states that each subject really is a handler the
    * repair ADDED and that the block shape is the one this file claims to be exercising, so the rows below are
@@ -293,9 +291,8 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after it
 
     // THE UNBOUND ROUTE WITNESSES, taken from the SDK rather than guessed. A route declares the shared entry
     // key of every collection handler it admits, and a getter that binds none leaves those keys for the
-    // caller - the documented `unboundRouteWitnesses` case, and not a hole: the block carries no entry slot
-    // for them, so nothing is read through them on this transaction. The SDK names each missing key exactly,
-    // so this supplies precisely the named set and never a guessed one.
+    // caller - the documented `unboundRouteWitnesses` case. The compiler now publishes those identities as
+    // entry slots, so the SDK names each missing key exactly and the staging below funds each named identity.
     const unboundRouteWitnesses: Record<string, Uint8Array | bigint> = {};
     // The zero value of the type the ROUTE declares for that witness, read from the route's own inputs. An
     // integer-keyed collection wants a number and a byte-keyed one wants bytes; neither is guessed here.
@@ -359,16 +356,40 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after it
       ? buildInitialStateCommitments(artifact.stateLayout!, { ...row.state, ...row.stateTamper })
       : commitments;
 
-    const entryAddress = row.entryCollection === undefined ? undefined
-      : getEntryNftAddress(participant, setup.categoryId, row.entryCollection);
-    const entryUtxo = entryAddress === undefined ? undefined
-      : (await provider.getUtxos(entryAddress))[0];
-    if (row.entryCollection !== undefined && entryUtxo === undefined) {
-      throw new Error(`${row.name}: the ${row.entryCollection} entry NFT was not staged`);
+    // Stage one authenticated membership NFT per compiler-published entry identity. The route surface can
+    // gain getter identities independently of this file's subjects (ERC20Bank gained balanceOf; MyToken now
+    // carries both balanceOf and allowance), so a row-level single collection pin is necessarily stale.
+    const entryAccesses = (artifact.hiddenBatch!.route.entryAccesses ?? []) as any[];
+    const entryUtxos: Array<{ collection: string; address: string; utxo: Utxo }> = [];
+    for (const [index, access] of entryAccesses.entries()) {
+      const keys = (access.keyParams ?? []).map((param: string) => {
+        const name = String(param).replace(/^id:/, '');
+        const value = unboundRouteWitnesses[name];
+        if (!(value instanceof Uint8Array)) {
+          throw new Error(`${row.name}: entry slot ${index} has no byte identity witness '${name}'`);
+        }
+        return value;
+      });
+      if (keys.length === 0) throw new Error(`${row.name}: entry slot ${index} publishes no key identity`);
+      const slot = keys.length === 1 ? keyToSlot(keys[0]) : keyToSlotMulti(keys);
+      const address = getEntryNftAddress(participant, setup.categoryId, access.collection);
+      const utxo = await (provider as any).addUtxo(address, {
+        ...randomUtxo({ satoshis: 10_000n }),
+        token: {
+          category: setup.categoryId,
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: binToHex(encodeEntryCommitment(slot, new Uint8Array(32), new Uint8Array(0))),
+          },
+        },
+      });
+      entryUtxos.push({ collection: access.collection, address, utxo });
     }
 
     const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
     let dataNftCursor = 0;
+    let entryCursor = 0;
     for (const slot of artifact.hiddenBatch!.route.blockLayout!.slots as any[]) {
       switch (slot.kind) {
         case 'master':
@@ -403,20 +424,23 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after it
           });
           break;
         }
-        case 'entry':
-          tx.addInput(entryUtxo!, createEntryNftUnlocker(
-            participant, 0, setup.categoryId, row.entryCollection!,
+        case 'entry': {
+          const entry = entryUtxos[entryCursor++];
+          if (entry === undefined) throw new Error(`${row.name}: route entry slot was not staged`);
+          tx.addInput(entry.utxo, createEntryNftUnlocker(
+            participant, 0, setup.categoryId, entry.collection,
           ));
           tx.addOutput({
-            to: entryAddress!,
-            amount: entryUtxo!.satoshis,
+            to: entry.address,
+            amount: entry.utxo.satoshis,
             token: {
               category: setup.categoryId,
               amount: 0n,
-              nft: { capability: 'mutable', commitment: entryUtxo!.token!.nft!.commitment },
+              nft: { capability: 'mutable', commitment: entry.utxo.token!.nft!.commitment },
             },
           });
           break;
+        }
         case 'returnEvent':
           tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
           tx.addOutput({

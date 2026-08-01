@@ -54,7 +54,8 @@ export class SplitContract {
       if (stateItem.name in this) continue;
       Object.defineProperty(this, stateItem.name, {
         enumerable: true,
-        value: (...args: FunctionArgument[]) => (this.root as unknown as Record<string, (...a: any[]) => any>)[stateItem.name](...args),
+        value: (...args: FunctionArgument[]) =>
+          (this.root as unknown as Record<string, (...a: any[]) => any>)[stateItem.name](...args),
       });
     }
   }

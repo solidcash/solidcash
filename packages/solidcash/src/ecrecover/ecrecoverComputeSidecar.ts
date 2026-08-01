@@ -6,21 +6,13 @@
 import { binToHex, hash256, hexToBin, createVirtualMachineBch2026 } from '@bitauth/libauth';
 import {
   buildEcrecoverComputeRedeem, ecrecoverComputeLockingBytecode, ecrecoverComputeResultCommitment,
-  ECRECOVER_COMPUTE_PAD_LENGTH, SHARED_LIBRARY_SALT,
+  SHARED_LIBRARY_SALT,
 } from '@solidcash/utils';
 import { computeEcrecoverWitness, type EcrecoverWitness } from './ecrecoverRecovery.js';
 import { pushDataBytes } from '../keccak/keccakComputeSidecar.js';
 import type { Unlocker, Utxo, Output } from '../interfaces.js';
 
 const numByte = (n: number): Uint8Array => Uint8Array.from([n]);
-// Minimal VM-number encoding of a small non-negative int (side-car indices / chunkA are tiny).
-const vmNum = (n: number): Uint8Array => {
-  if (n === 0) return new Uint8Array(0);
-  const bytes: number[] = []; let x = n; while (x > 0) { bytes.push(x & 0xff); x >>= 8; }
-  if (bytes[bytes.length - 1] & 0x80) bytes.push(0);
-  return Uint8Array.from(bytes);
-};
-
 /**
  * Build the A and B recovery side-cars for one call. `chunkA` is the split point (how many ladder steps A runs); the
  * caller VM-probes it via `ecrecoverSidecarCosts`. Returns the two input unlockers, the two recreation outputs (A
@@ -31,7 +23,12 @@ export function buildEcrecoverComputeSidecars(
 ): { unlockerA: Unlocker; recreateA: Output; unlockerB: Unlocker; recreateB: Output; compressedQ: Uint8Array } {
   const redeemA = buildEcrecoverComputeRedeem(salt, 'A'), redeemB = buildEcrecoverComputeRedeem(salt, 'B');
   const lockA = ecrecoverComputeLockingBytecode(salt, 'A'), lockB = ecrecoverComputeLockingBytecode(salt, 'B');
-  const to33 = (v: bigint): Uint8Array => { const b = new Uint8Array(33); let x = v; for (let i = 0; x > 0n; i++, x >>= 8n) b[i] = Number(x & 0xffn); return b; };
+  const to33 = (v: bigint): Uint8Array => {
+    const b = new Uint8Array(33);
+    let x = v;
+    for (let i = 0; x > 0n; i++, x >>= 8n) b[i] = Number(x & 0xffn);
+    return b;
+  };
   const Cblob = wit.checkpoints[chunkA];                          // checkpoint after chunkA ladder steps (99 B)
   // shared blob both A and B hash-bind on = masks || table || start || chunkA (the ladder inputs)
   const shared = Uint8Array.from([...wit.masks, ...wit.table, ...numByte(wit.start), ...numByte(chunkA)]);
@@ -62,14 +59,18 @@ export function buildEcrecoverComputeSidecars(
   };
   const nft = (lock: Uint8Array, commitment: Uint8Array, u: Utxo): Output => ({
     to: lock, amount: u.satoshis,
-    token: { category: u.token!.category, amount: u.token?.amount ?? 0n, nft: { capability: 'mutable', commitment: binToHex(commitment) } },
+    token: {
+      category: u.token!.category, amount: u.token?.amount ?? 0n,
+      nft: { capability: 'mutable', commitment: binToHex(commitment) },
+    },
   });
   // A commits H_A = hash256(argBlob || shared || checkpoint) - the binding hash B verifies against its own checkpoint
   // copy (so B ladders from the same C without A re-publishing the raw 99-byte checkpoint).
   const HA = hash256(Uint8Array.from([...wit.argBlob, ...shared, ...Cblob]));
   return {
     unlockerA: unlockA, recreateA: nft(lockA, HA, sidecarA),                       // A commits the A->B binding hash
-    unlockerB: unlockB, recreateB: nft(lockB, ecrecoverComputeResultCommitment(wit.compressedQ), sidecarB), // B commits Q
+    unlockerB: unlockB,
+    recreateB: nft(lockB, ecrecoverComputeResultCommitment(wit.compressedQ), sidecarB), // B commits Q
     compressedQ: wit.compressedQ,
   };
 }
@@ -101,11 +102,17 @@ export function probeEcrecoverSplit(wit: EcrecoverWitness, _salt: Uint8Array, sc
       unlockingBytecode: (k === 0 ? unlockerA : unlockerB).generateUnlockingBytecode({} as never),
     }));
     const sourceOutputs = [scA, scB].map((u, k) => ({
-      lockingBytecode: (k === 0 ? unlockerA : unlockerB).generateLockingBytecode(), valueSatoshis: u.satoshis, token: toTok(u.token),
+      lockingBytecode: (k === 0 ? unlockerA : unlockerB).generateLockingBytecode(),
+      valueSatoshis: u.satoshis,
+      token: toTok(u.token),
     }));
     const transaction = { version: 2, locktime: 0, inputs, outputs: [laOut(recreateA), laOut(recreateB)] };
-    const rA = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
-    const rB = vm.evaluate({ inputIndex: 1, sourceOutputs, transaction } as never) as { error?: string; metrics: { operationCost: number } };
+    const rA = vm.evaluate({ inputIndex: 0, sourceOutputs, transaction } as never) as {
+      error?: string; metrics: { operationCost: number };
+    };
+    const rB = vm.evaluate({ inputIndex: 1, sourceOutputs, transaction } as never) as {
+      error?: string; metrics: { operationCost: number };
+    };
     return {
       a: rA.error ? Infinity : rA.metrics.operationCost,
       b: rB.error ? Infinity : rB.metrics.operationCost,

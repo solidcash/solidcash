@@ -351,7 +351,8 @@ export function createDynamicChunkUnlocker(
 // master. Used to GC the OLD chunks of a long sorted-mapping value when it is overwritten (the value chunks
 // reuse the entry NFT covenant, keyed by the collection's value-chunk signature).
 export function createValueChunkUnlocker(
-  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
+  contract: Contract<any, any>, masterInputIndex: number, categoryId: string, collection: string,
+  slot: Uint8Array, root: Uint8Array,
 ): ContractUnlocker {
   validateMasterInputIndex(masterInputIndex);
   validateCategoryId(categoryId);

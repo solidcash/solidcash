@@ -521,8 +521,7 @@ export class StatefulTransactionBuilder {
                   positioned[off++] = lowLevelCallInputs[llcIdx++];
                 }
               }
-            }
-            else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
+            } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent':
           case 'deploy': {
@@ -545,7 +544,7 @@ export class StatefulTransactionBuilder {
       if (this.blockLayout.trailingCapacity !== undefined
         && trailingIdx !== trailingInputs.length) {
         throw new Error(
-          `Runtime resource inputs exceed balanced trailing capacity `
+          'Runtime resource inputs exceed balanced trailing capacity '
           + `(${trailingInputs.length} > ${this.blockLayout.trailingCapacity ?? 0})`,
         );
       }
@@ -1586,7 +1585,7 @@ export class StatefulTransactionBuilder {
       if (group.blockInputs && group.blockLayout) {
         if (externalDynamicChunks.length > (group.blockLayout.trailingCapacity ?? 0)) {
           throw new Error(
-            `External dynamic state exceeds balanced trailing capacity `
+            'External dynamic state exceeds balanced trailing capacity '
             + `(${externalDynamicChunks.length} > ${group.blockLayout.trailingCapacity ?? 0})`,
           );
         }
@@ -2265,7 +2264,7 @@ export class StatefulTransactionBuilder {
         );
       if (trailingOutputCount > trailingCapacity) {
         throw new Error(
-          `Runtime resource outputs exceed balanced trailing capacity `
+          'Runtime resource outputs exceed balanced trailing capacity '
           + `(${trailingOutputCount} > ${trailingCapacity})`,
         );
       }
@@ -3028,7 +3027,10 @@ export class StatefulTransactionBuilder {
       } catch {
         continue; // commitment did not match this event's ABI - skip (should not happen for a real event NFT)
       }
-      events.push({ event: eventDef.name, eventSignature: eventDef.signature, args: buildReceiptEventArgs(eventDef, named) });
+      events.push({
+        event: eventDef.name, eventSignature: eventDef.signature,
+        args: buildReceiptEventArgs(eventDef, named),
+      });
     }
     for (const detached of this.detachedEventReceipts) {
       const eventDef = this.eventDefinitions.find((event) => event.signature === detached.eventSignature);

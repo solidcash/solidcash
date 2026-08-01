@@ -67,7 +67,9 @@ export function createVirtualMachineBch2026ForProvider(
   type State = Parameters<(typeof instructionSet.operations)[number]>[0];
   if (limits !== undefined) {
     const maximumStackItemLength = limits.maximumStackItemBytes;
-    const pushCommitment = (state: State, output: { token?: { nft?: { commitment: Uint8Array } } }) => (
+    const pushCommitment = (
+      state: State, output: { token?: { nft?: { commitment: Uint8Array } } },
+    ): State => (
       output.token?.nft === undefined
         ? pushToStackVmNumber(state, 0n)
         : pushToStackChecked(state, output.token.nft.commitment, { maximumStackItemLength })

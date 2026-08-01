@@ -827,9 +827,13 @@ const firstPush = (bytecode: Uint8Array): Uint8Array | undefined => {
   const opcode = bytecode[0];
   let width = 0;
   let length = 0;
-  if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
-  else if (opcode === 76 && bytecode.length >= 2) { width = 2; length = bytecode[1]; }
-  else if (opcode === 77 && bytecode.length >= 3) {
+  if (opcode >= 1 && opcode <= 75) {
+    width = 1;
+    length = opcode;
+  } else if (opcode === 76 && bytecode.length >= 2) {
+    width = 2;
+    length = bytecode[1];
+  } else if (opcode === 77 && bytecode.length >= 3) {
     width = 3; length = bytecode[1] | (bytecode[2] << 8);
   }
   if (width === 0 || width + length > bytecode.length) return undefined;

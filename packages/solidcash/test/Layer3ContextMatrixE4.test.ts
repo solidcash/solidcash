@@ -48,8 +48,10 @@ import type { Artifact } from '@solidcash/utils';
 //   ambient form would hand nested handlers a value no transcript field binds. `msg.sender` is the admitted
 //   replacement and it is authenticated per invocation.
 //
-//   this.activeBytecode is OP_ACTIVEBYTECODE, which inside a route evaluates to the ROUTE's script, not the
-//   handler's. There is no reading under which the two agree, so there is nothing to redefine it to.
+//   this.activeBytecode is OP_ACTIVEBYTECODE: BCH returns the bytecode in the CURRENT evaluation frame, and
+//   OP_INVOKE temporarily makes its selected body that frame's active bytecode. Direct and SCB1 dispatch do
+//   not have a consensus requirement to traverse identical frames. Capturing the entry redeem script would
+//   define a different logical value, so transcript v1 requires rejection rather than emulation.
 //
 // Several EVM-compatibility block values (block.gaslimit, block.basefee, block.blobbasefee, tx.gasprice)
 // lower to fixed shims with no BCH analogue, which the compiler warns about. They are EQUIVALENT for the

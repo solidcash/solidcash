@@ -111,7 +111,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     });
   });
 
-  it('admits owner input index while rejecting active bytecode and requiring a controller for tx.origin', () => {
+  it('admits owner input index while conformingly rejecting active bytecode and unauthenticated tx.origin', () => {
     const artifact = compileString(`
       contract StableOwnerContext() {
         function stable(int expectedInput) public {
@@ -132,6 +132,8 @@ describe('Release 4 compiler-hidden local batch', () => {
         eligible: false,
         rejectionReason: 'direct-versus-batch-introspection-divergence',
       });
+    expect(artifact.hiddenBatch?.handlers.filter((handler) => handler.eligible)
+      .map((handler) => handler.name)).not.toContain('bytecodeBound');
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'originBound'))
       .toMatchObject({
         eligible: false,

@@ -783,7 +783,7 @@ After projected replay, the settlement controller:
 | `msg.data` | selector plus canonical invocation arguments |
 | `msg.value` | current invocation row's authenticated `valueDelta` |
 | `this.activeInputIndex` | physical owner input index |
-| `this.activeBytecode` | physical executing covenant bytecode |
+| `this.activeBytecode` | physical bytecode in the current BCH evaluation frame; transcript-ineligible in v1 |
 | `tx.origin` | authenticated carrier signer's P2PKH locking bytecode |
 | other `tx.*` | actual final transaction introspection |
 | state `outState` of self | current owner journal value |
@@ -803,11 +803,18 @@ an imagined per-call transaction. This is the unavoidable BCH meaning and MUST b
 language compatibility diagnostics.
 
 In v1, an SCB1 handler that reads `this.activeBytecode` MUST be rejected before route publication.
-On the direct route `OP_ACTIVEBYTECODE` observes the participant redeem script; inside the SCB1
-`OP_INVOKE` it observes the active invoked body. The participant locking bytecode, the public
-function body published in `artifact.functionBodies`, and the invoked value are distinct and MUST
-NOT be substituted for one another. Admission requires a future route to capture and thread the
-entry-time redeem script with positive and divergent BCH-2026 proofs.
+BCH defines `OP_ACTIVEBYTECODE` as the serialized bytecode in the current evaluation frame, beginning
+after the last executed `OP_CODESEPARATOR`. `OP_INVOKE` saves that frame, evaluates the selected
+function body *as the active bytecode*, then restores the caller's frame. SolidCash direct dispatch and
+the compiler-generated SCB1 route do not have a consensus requirement to enter the same sequence of
+frames, so byte-for-byte direct/batch equivalence cannot be specified for this physical value.
+
+The participant locking bytecode, P2SH redeem bytecode, `artifact.functionBodies` entry, and current
+invoked body are distinct values and MUST NOT be substituted for one another. Capturing an entry-time
+redeem script and returning it from `this.activeBytecode` would be a new logical context value, not an
+implementation of BCH `OP_ACTIVEBYTECODE`; transcript v1 deliberately does not define that emulation.
+Conformance is the deterministic `direct-versus-batch-introspection-divergence` refusal with no selector
+published for the handler, while ordinary non-transcript compilation continues to emit the native opcode.
 
 A foreign ordinary state read always means authenticated transaction pre-state. For a foreign
 `outState` read, the reader MUST verify on-chain that its current logical position is not earlier

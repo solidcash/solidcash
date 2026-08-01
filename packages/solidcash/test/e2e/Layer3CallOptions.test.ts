@@ -379,7 +379,7 @@ async function buildRawLoopGraph(graphOptions: { tamperProducerAt?: 1 | 2 } = {}
 
 interface RawValueGraphOptions {
   tamperAmount?: boolean;
-  tamperContainer?: boolean;
+  tamperContainerLoss?: boolean;
   tamperRecipient?: boolean;
   tamperOption?: 0 | 4;
   tamperResult?: boolean;
@@ -475,7 +475,7 @@ async function buildRawValueGraph(
   tx.addOutput({
     to: getSatoshiContainerAddress(a, setupA.categoryId),
     amount: container.satoshis - (hostile.tamperAmount ? amount + 1n : amount)
-      + (hostile.tamperContainer ? 1n : 0n),
+      - (hostile.tamperContainerLoss ? 1n : 0n),
   });
   tx.addOutput({
     to: hostile.tamperRecipient ? p2pkh.address : hexToBin(b.lockingBytecode),
@@ -883,7 +883,7 @@ contract E2RawValueCaller() {
 
     it.each([
       ['amount', { tamperAmount: true }, 0],
-      ['container settlement', { tamperContainer: true }, 0],
+      ['container overdraw', { tamperContainerLoss: true }, 0],
       ['recipient', { tamperRecipient: true }, 0],
       ['missing option bit', { tamperOption: 0 as const }, 0],
       ['unsupported option bit', { tamperOption: 4 as const }, 0],

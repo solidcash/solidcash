@@ -170,7 +170,7 @@ const ROWS: readonly Row[] = [
       __block_timestamp: 900n, __blockOracleOwner: alicePub,
     },
     stateTamper: { unicrowArbitrator: addr('78') },
-    slots: ['master', 'dataNft', 'dataNft', 'entry', 'entry', 'entry', 'returnEvent'],
+    slots: ['master', 'dataNft', 'dataNft', 'entry', 'entry', 'returnEvent'],
   },
   {
     root: EACC,

@@ -277,21 +277,21 @@ describe('compiler-hidden-batch-v1.md resource tables agree with the tests they 
    * that checked only the primary figures would have stayed green through it.
    */
   it.each([
-    ['Release 0 batch bytes', '| B parser/dispatcher | 369 | 1,037 |', '| B parser/dispatcher | 369 | 1,038 |',
-      /B parser\/dispatcher batch bytes: doc 1038, pinned 1037/],
+    ['Release 0 batch bytes', '| B parser/dispatcher | 369 | 1,111 |', '| B parser/dispatcher | 369 | 1,112 |',
+      /B parser\/dispatcher batch bytes: doc 1112, pinned 1111/],
     ['Release 0 A row', '| A, 3 rows | 426 | 542 | +116 |', '| A, 3 rows | 426 | 543 | +116 |',
       /A, 3 rows batch bytes: doc 543, pinned 542/],
-    ['Release 5 B instructions', '| 2,492 | 273,265', '| 2,493 | 273,265',
-      /2-row B instructions: doc 2493, measured 2492/],
-    ['Release 5 unlock', '| 22 / 2,970 | 1,450 |', '| 22 / 2,970 | 1,451 |',
-      /2-row B unlock: doc 1451, measured 1450/],
-    ['scalar route body prose', 'the 325-byte scalar', 'the 326-byte scalar',
-      /scalar route body: doc 326, pinned 325/],
-    ['a delta left un-re-derived', '| B parser/dispatcher | 369 | 1,037 | +668 |',
-      '| B parser/dispatcher | 369 | 1,337 | +668 |',
-      /delta is not batch minus direct: 668 vs 968/],
-    ['a headroom left un-re-derived', 'it now has 5,186 bytes', 'it now has 5,286 bytes',
-      /route headroom not re-derived: doc 5286, derived 5186/],
+    ['Release 5 B instructions', '| 2,729 | 298,290', '| 2,730 | 298,290',
+      /2-row B instructions: doc 2730, measured 2729/],
+    ['Release 5 unlock', '| 24 / 3,132 | 1,531 |', '| 24 / 3,132 | 1,532 |',
+      /2-row B unlock: doc 1532, measured 1531/],
+    ['scalar route body prose', 'the 357-byte scalar', 'the 358-byte scalar',
+      /scalar route body: doc 358, pinned 357/],
+    ['a delta left un-re-derived', '| B parser/dispatcher | 369 | 1,111 | +742 |',
+      '| B parser/dispatcher | 369 | 1,411 | +742 |',
+      /delta is not batch minus direct: 742 vs 1042/],
+    ['a headroom left un-re-derived', 'it now has 5,100 bytes', 'it now has 5,200 bytes',
+      /route headroom not re-derived: doc 5200, derived 5100/],
   ])('detects %s', (_name, from, to, expected) => {
     // A literal string replaces the first literal occurrence, so each control edits exactly one field.
     const mutated = docText.replace(from, to);
@@ -311,13 +311,13 @@ describe('compiler-hidden-batch-v1.md resource tables agree with the tests they 
   });
 
   it('refuses by name when a prose figure it must check cannot be located', () => {
-    const withoutProse = docText.replace(/the 325-byte scalar\s+hidden route body/, 'the scalar route body');
+    const withoutProse = docText.replace(/the 357-byte scalar\s+hidden route body/, 'the scalar route body');
     expect(() => findings(withoutProse, batchCostText, release5Text))
       .toThrow(/doc-coherence refusal: could not read "scalar hidden route body"/);
   });
 
   it('refuses by name rather than checking a subset when the pinned transactions change shape', () => {
-    const halved = release5Text.replace(/transactionBytes:\s*3715/, 'transactionBytesRenamed: 3715');
+    const halved = release5Text.replace(/transactionBytes:\s*3796/, 'transactionBytesRenamed: 3796');
     expect(() => findings(docText, batchCostText, halved))
       .toThrow(/expected exactly 3 pinned transactions .* read 2/s);
   });

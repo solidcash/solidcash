@@ -46,11 +46,11 @@ Release 0 compiler-size measurement (BCH 2026 code generation, zero-argument `pi
 
 | covenant | direct bytes | batch bytes | batch delta |
 |---|---:|---:|---:|
-| B parser/dispatcher | 369 | 1,037 | +668 |
+| B parser/dispatcher | 369 | 1,111 | +742 |
 | A, 2 rows | 407 | 518 | +111 |
 | A, 3 rows | 426 | 542 | +116 |
 | A, 8 rows | 518 | 662 | +144 |
-| parameter-authorized `transferFrom`, exact 2-row route | 3,157 | 4,814 | +1,657 |
+| parameter-authorized `transferFrom`, exact 2-row route | 3,157 | 4,900 | +1,743 |
 
 RE-PINNED AT X108 from `BatchCostRegression.test.ts` at HEAD, which is the authority for every figure
 in this table. It had been frozen at `99abfbe2` and never re-derived. Old -> new, with the three
@@ -58,20 +58,20 @@ unchanged A rows as the control that this is the same fixture and not a substitu
 
 | figure | was (99abfbe2) | is (HEAD) | moved by |
 |---|---:|---:|---|
-| B parser/dispatcher batch bytes | 1,477 | 1,037 | `67342f24` outlining, then `c355628d` |
-| B parser/dispatcher delta | +1,108 | +668 | consequence of the row above |
+| B parser/dispatcher batch bytes | 1,477 | 1,111 | `67342f24` outlining, then the centralized graph transcript carrier |
+| B parser/dispatcher delta | +1,108 | +742 | consequence of the row above |
 | `transferFrom` direct bytes | 3,047 | 3,157 | `c355628d`, then `373f4f10` (X19 spelling convergence) |
-| `transferFrom` batch bytes | 9,775 | 4,814 | `67342f24` outlining, then X19/X24 re-pins |
-| `transferFrom` delta | +6,728 | +1,657 | consequence of the two rows above |
-| scalar hidden route body | 1,020 | 325 | `67342f24`, `c355628d` |
-| multi-entry route body | 6,532 | 1,554 | `67342f24`, then `b6439ccf` (X24) |
+| `transferFrom` batch bytes | 9,775 | 4,900 | `67342f24` outlining, then X19/X24 and centralized-carrier re-pins |
+| `transferFrom` delta | +6,728 | +1,743 | consequence of the two rows above |
+| scalar hidden route body | 1,020 | 357 | `67342f24`, then the centralized graph transcript carrier |
+| multi-entry route body | 6,532 | 1,562 | `67342f24`, X24, then current journal/carrier framing |
 
-`BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 325-byte scalar
-hidden route body, and the 1,554-byte multi-entry route body.
+`BatchCostRegression.test.ts` freezes these deployed-byte measurements, the 357-byte scalar
+hidden route body, and the 1,562-byte multi-entry route body.
 
 The headroom consequence is re-derived, not merely refreshed. This fixture used to sit 225 bytes below
 the 10,000-byte P2SH limit, and that margin was the stated reason "any growth is release-significant"
-and a named attention item for the pre-enablement review. At 4,814 bytes it now has 5,186 bytes of
+and a named attention item for the pre-enablement review. At 4,900 bytes it now has 5,100 bytes of
 headroom, so that reasoning no longer holds and must not be cited: size is no longer this route's
 binding constraint. The 10,000-byte limit is still enforced, and `BatchCostRegression.test.ts` still
 proves the `contract-size-limit` diagnostic fires above it, but on a deliberately oversized fixture
@@ -87,9 +87,9 @@ same transaction; inputs 1 and 3 are the two entry/fee inputs and are identical 
 
 | rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | 3,575 | 1,118 | 128,876 / 910,400 | 12 / 1,590 | 1,097 | 2,492 | 273,265 / 1,192,800 | 22 / 2,970 | 1,450 |
-| 3 | 3,603 | 1,245 | 141,996 / 911,200 | 13 / 1,656 | 1,098 | 3,170 | 343,506 / 1,213,600 | 22 / 3,048 | 1,476 |
-| 8 | 3,715 | 995 | 118,474 / 908,800 | 10 / 1,942 | 1,095 | 4,884 | 533,636 / 1,306,400 | 22 / 3,395 | 1,592 |
+| 2 | 3,656 | 1,118 | 129,362 / 910,400 | 12 / 1,671 | 1,097 | 2,729 | 298,290 / 1,257,600 | 24 / 3,132 | 1,531 |
+| 3 | 3,684 | 1,245 | 142,482 / 911,200 | 13 / 1,737 | 1,098 | 3,504 | 378,354 / 1,278,400 | 24 / 3,210 | 1,557 |
+| 8 | 3,796 | 995 | 118,960 / 908,800 | 10 / 2,023 | 1,095 | 5,699 | 613,767 / 1,371,200 | 24 / 3,556 | 1,673 |
 
 RE-PINNED AT X108 to `RepeatedExternalBatchRelease5.test.ts` at HEAD, which measures every figure above
 from constructed transactions under `BCH_2026_05`.
@@ -435,7 +435,7 @@ could later be supported by separately advertised shapes which collapse the alia
 journal; cold inserts require authenticated predecessor planning. Neither may be inferred from the
 current route.
 
-The stripped resource-route fixture is 4,814 bytes. The corpus token with mint, approve, and check
+The stripped resource-route fixture is 4,900 bytes. The corpus token with mint, approve, and check
 helpers is 6,032 bytes and now compiles inside the limit; `RepeatedExternalBatchCorpus.test.ts` asserts
 it carries no `contract-size-limit` diagnostic. The library compiler
 emits a `contract-size-limit` error diagnostic for artifacts above 10,000 bytes. Independent review remains required before
@@ -449,7 +449,7 @@ evidence. Both figures were frozen at `99abfbe2` and moved when cross-function o
 `67342f24`. The corpus token's claim had inverted outright: the assertion in
 `RepeatedExternalBatchCorpus.test.ts` at HEAD is that the diagnostic is ABSENT and the artifact is under
 10,000 bytes, which is the opposite of what this section stated. Measured at HEAD the token has 3,968
-bytes of headroom and the stripped route has 5,186.
+bytes of headroom and the stripped route has 5,100.
 
 One figure here is weaker than the rest and is labelled so deliberately. The token's exact 6,032 bytes is
 a point measurement taken at X108; no test freezes it. `RepeatedExternalBatchCorpus.test.ts` asserts only

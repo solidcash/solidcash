@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString, compileStringMulti, compileStringSplit } from '../src/index.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract BatchCounter() {
@@ -74,14 +74,64 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(heterogeneous.hiddenBatch).toBeUndefined();
   });
 
-  it('leaves artifacts byte-identical when the experimental capability is disabled', () => {
-    const baseline = compileString(SOURCE, { forceStateful: true });
+  it('enables the hidden-batch capability by default, identically to explicit true', () => {
+    const defaultOn = compileString(SOURCE, { forceStateful: true });
+    const explicitUndefined = compileString(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: undefined,
+    });
+    const explicitOn = compileString(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+    expect(defaultOn.bytecode).toBe(explicitOn.bytecode);
+    expect(explicitUndefined.bytecode).toBe(explicitOn.bytecode);
+    expect(defaultOn.hiddenBatch).toEqual(explicitOn.hiddenBatch);
+    expect(explicitUndefined.hiddenBatch).toEqual(explicitOn.hiddenBatch);
+    expect(defaultOn.hiddenBatch?.version).toBe(1);
+    expect(defaultOn.compiler.options.experimentalHiddenBatch).toBe(true);
+    expect(explicitUndefined.compiler.options.experimentalHiddenBatch).toBe(true);
+  });
+
+  it('retains an explicit false legacy/off path with no hidden-batch route', () => {
+    const defaultOn = compileString(SOURCE, { forceStateful: true });
     const explicitOff = compileString(SOURCE, {
       forceStateful: true,
       experimentalHiddenBatch: false,
     });
-    expect(explicitOff.bytecode).toBe(baseline.bytecode);
+    expect(explicitOff.bytecode).not.toBe(defaultOn.bytecode);
     expect(explicitOff.hiddenBatch).toBeUndefined();
+    expect(explicitOff.compiler.options.experimentalHiddenBatch).toBe(false);
+    expect(explicitOff.diagnostics?.some((entry) => entry.code === 'hidden-batch-route-not-synthesized'))
+      .not.toBe(true);
+  });
+
+  it('normalizes default-on and explicit-off behavior through multi-contract and split entry points', () => {
+    const multiDefault = compileStringMulti(SOURCE, { forceStateful: true }).BatchCounter;
+    const multiOn = compileStringMulti(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    }).BatchCounter;
+    const multiOff = compileStringMulti(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: false,
+    }).BatchCounter;
+    expect(multiDefault.bytecode).toBe(multiOn.bytecode);
+    expect(multiDefault.hiddenBatch).toEqual(multiOn.hiddenBatch);
+    expect(multiOff.hiddenBatch).toBeUndefined();
+
+    const splitDefault = compileStringSplit(SOURCE, { forceStateful: true });
+    const splitOn = compileStringSplit(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: true,
+    });
+    const splitOff = compileStringSplit(SOURCE, {
+      forceStateful: true,
+      experimentalHiddenBatch: false,
+    });
+    expect(splitDefault.root.bytecode).toBe(splitOn.root.bytecode);
+    expect(splitDefault.root.hiddenBatch).toEqual(splitOn.root.hiddenBatch);
+    expect(splitOff.root.hiddenBatch).toBeUndefined();
   });
 
   it('fails closed on deferred caller context and forward-call semantics', () => {

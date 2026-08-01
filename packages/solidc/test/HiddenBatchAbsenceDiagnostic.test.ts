@@ -110,9 +110,16 @@ contract X15NoEntry() {
     expect(absenceDiagnostics(source, graph)).toHaveLength(0);
   });
 
-  it('stays quiet when no hidden batch was requested', () => {
-    expect(compileString(stateWriteAndCall, { forceStateful: true }).hiddenBatch).toBeUndefined();
-    expect(absenceDiagnostics(stateWriteAndCall, { forceStateful: true })).toHaveLength(0);
+  it('uses the default-on route request and publishes its refusal diagnostic', () => {
+    const options = { forceStateful: true };
+    expect(compileString(stateWriteAndCall, options).hiddenBatch).toBeUndefined();
+    expect(absenceDiagnostics(stateWriteAndCall, options)).toEqual(absenceDiagnostics(stateWriteAndCall, batchOnly));
+  });
+
+  it('stays quiet when hidden-batch synthesis is explicitly disabled', () => {
+    const options = { forceStateful: true, experimentalHiddenBatch: false };
+    expect(compileString(stateWriteAndCall, options).hiddenBatch).toBeUndefined();
+    expect(absenceDiagnostics(stateWriteAndCall, options)).toHaveLength(0);
   });
 
   /**

@@ -45,8 +45,8 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
   });
 
   it('struct-field keys allocate the same slot count as plain-param keys', () => {
-    const struct = compileString(structTwoKeys).bytecode.length;
-    const param = compileString(paramTwoKeys).bytecode.length;
+    const struct = compileString(structTwoKeys, { experimentalHiddenBatch: false }).bytecode.length;
+    const param = compileString(paramTwoKeys, { experimentalHiddenBatch: false }).bytecode.length;
     // Same two-slot covenant; struct-field key loads add only a little code over a bare param load.
     expect(struct / param).toBeGreaterThan(0.9);
     expect(struct / param).toBeLessThan(1.15);
@@ -581,7 +581,10 @@ describe('C3: own-category mutable-NFT conservation loop', () => {
   const SIG = 'OP_SPLIT OP_DROP OP_1 OP_CAT';
 
   it('emits the conservation loop for a plain data-NFT function', () => {
-    const bc = compileString('contract C { int n; function inc() external { this.n = this.n + 1; require(true); } }').bytecode;
+    const bc = compileString(
+      'contract C { int n; function inc() external { this.n = this.n + 1; require(true); } }',
+      { experimentalHiddenBatch: false },
+    ).bytecode;
     expect(bc).toContain(SIG);
   });
 

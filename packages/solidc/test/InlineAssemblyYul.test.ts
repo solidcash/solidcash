@@ -269,8 +269,10 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
     // The lowered block ends in a return; it must splice into the function body so the return sits at the tail
     // (a nested block would hide it from the terminal-return codegen and duplicate the trailing covenant).
     const yul = compileString('contract C() { function f(uint a) returns (uint) { assembly { mstore(0, a) return(0, 32) } } }',
-      { solidityImportCompat: true });
-    const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', { solidityImportCompat: true });
+      { solidityImportCompat: true, experimentalHiddenBatch: false });
+    const hand = compileString('contract C() { function f(uint a) returns (uint) { return a; } }', {
+      solidityImportCompat: true, experimentalHiddenBatch: false,
+    });
     expect(yul.bytecode).toBe(hand.bytecode);
   });
 
@@ -322,9 +324,9 @@ describe('Yul inline assembly (Phase 1: parse + diagnostics)', () => {
   it('lowers an empty `let x` and multi-var `let y, z` to zero-initialized words', () => {
     // `let x` == `let x := 0`; multi-var `let y, z` declares both, each 0. Byte-identical to explicit 0-inits.
     const asm = compileString('contract C() { function f() returns (uint a, uint b) { assembly { let x let y, z a := x b := z } } }',
-      { solidityImportCompat: true });
+      { solidityImportCompat: true, experimentalHiddenBatch: false });
     const hand = compileString('contract C() { function f() returns (uint a, uint b) { uint x = 0; uint y = 0; uint z = 0; a = x; b = z; } }',
-      { solidityImportCompat: true });
+      { solidityImportCompat: true, experimentalHiddenBatch: false });
     expect(asm.bytecode).toBe(hand.bytecode);
   });
 
@@ -468,12 +470,12 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'assembly{mstore(0,a) mstore(0x20,b) value:=keccak256(0,0x40)}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes32 a,bytes32 b)returns(bytes32 value){'
       + 'value=keccak256(bytes.concat(bytes32(a),bytes32(b)));}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -492,11 +494,11 @@ describe('Yul memory (constant-offset scratch)', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){'
       + 'assembly{r:=mload(add(buf,32)) s:=mload(add(buf,64))}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf[0:32]);s=bytes32(buf[32:64]);}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -513,11 +515,11 @@ describe('Yul memory (constant-offset scratch)', () => {
     // sig[64], so it must fold to a 1-byte slice, not a bytes32 read.
     const yul = compileString(
       'contract C(){function f(bytes65 sig)returns(uint8 v){assembly{v:=byte(0,mload(add(sig,96)))}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes65 sig)returns(uint8 v){v=uint8(sig[64:65]);}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -563,11 +565,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('mload(<bytes memory var>) == the value byte length', () => {
     const yul = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){assembly{n:=mload(buf)}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){function f(bytes buf)returns(uint256 n){n=uint256(buf.length);}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -575,11 +577,11 @@ describe('Yul revert / extcodesize / bytes-length mload (OZ Address/SafeERC20)',
   it('extcodesize(addr) == addr.code.length', () => {
     const yul = compileString(
       'contract C(){function f(address a)returns(uint256 s){assembly{s:=extcodesize(a)}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){function f(address a)returns(uint256 s){s=uint256(a.code.length);}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });
@@ -593,12 +595,12 @@ describe('Yul packed storage slots', () => {
   it('sload(0) combines packed sub-word vars (uint256(a) + uint256(b)*2^128 + ...)', () => {
     const yul = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){assembly{w:=sload(0)}}}',
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     const direct = compileString(
       'contract C(){uint128 a;uint64 b;uint32 c;uint32 d;function f()returns(uint256 w){'
       + `w=uint256(this.a)+uint256(this.b)*${POW(128)}+uint256(this.c)*${POW(192)}+uint256(this.d)*${POW(224)};}}`,
-      { solidityImportCompat: true },
+      { solidityImportCompat: true, experimentalHiddenBatch: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
   });

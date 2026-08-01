@@ -95,7 +95,9 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
   it('the synthesized no-op carries the state self-preservation covenant', () => {
     // private state var: a public one synthesizes a getter that pushes the contract over the subroutine-extraction
     // threshold, hex-encoding these opcodes (still present, just not as names). Visibility is irrelevant here.
-    const empty = compileString('contract C() { int private n; function f() {} }', { solidityImportCompat: true });
+    const empty = compileString('contract C() { int private n; function f() {} }', {
+      solidityImportCompat: true, experimentalHiddenBatch: false,
+    });
     expect(empty.bytecode).toContain('OP_UTXOBYTECODE');
     expect(empty.bytecode).toContain('OP_OUTPUTBYTECODE');
   });

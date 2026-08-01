@@ -1946,8 +1946,10 @@ function synthesizeHiddenBatchRoute(
       || graphTailHandlers.has(sourceHandler)
       || siblingHandlerInvokeNames.has(sourceHandler)) continue;
     let touchesEntry = false;
+    const bound = locallyBoundNames(sourceHandler);
     walkInvocationAst(sourceHandler.body, (node) => {
-      if (isMappingNode(node) && collectionByName.has(node.name)) touchesEntry = true;
+      if ((isMappingNode(node) && collectionByName.has(node.name))
+        || bareEntryAccessOf(node, bound) !== undefined) touchesEntry = true;
     });
     if (!touchesEntry) continue;
     const handler = cloneNode(sourceHandler);

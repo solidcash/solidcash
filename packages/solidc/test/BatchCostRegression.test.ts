@@ -79,10 +79,10 @@ describe('Release 0 SCB1 compiler cost regression', () => {
       routeBodyBytes: batch.functionBodies?.['53434231']!.length / 2,
     }).toEqual({
       directBytes: 369,
-      batchBytes: 1037,
-      covenantDeltaBytes: 668,
+      batchBytes: 1111,
+      covenantDeltaBytes: 742,
       expandedOpcodes: 24,
-      routeBodyBytes: 325,
+      routeBodyBytes: 357,
     });
   });
 
@@ -111,9 +111,9 @@ describe('Release 0 SCB1 compiler cost regression', () => {
     // `directBytes` is unchanged, which is the control: the direct route has no depth-14 write.
     }).toEqual({
       directBytes: 3157,
-      batchBytes: 4814,
-      covenantDeltaBytes: 1657,
-      routeBodyBytes: 1554,
+      batchBytes: 4900,
+      covenantDeltaBytes: 1743,
+      routeBodyBytes: 1562,
     });
   });
 

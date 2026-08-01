@@ -242,7 +242,7 @@ contract CtxOutState(int brand, address peer) {
   }, 300_000);
 
   it('refuses a shared foreign outState read that source-orders before its settling call', () => {
-    const source = `pragma solidcash >=0.8.0;
+    const earlySource = `pragma solidcash >=0.8.0;
 interface ICtxPeer {
   public int count;
   function bump(int n);
@@ -260,7 +260,7 @@ contract CtxEarlyOutState(int brand, address peer) {
     require(n >= 0);
   }
 }`;
-    expect(admission(compileString(source, graphOptions), 'observe')).toEqual({
+    expect(admission(compileString(earlySource, graphOptions), 'observe')).toEqual({
       eligible: false,
       reason: 'foreign-outstate-read-precedes-shared-call-settlement',
     });

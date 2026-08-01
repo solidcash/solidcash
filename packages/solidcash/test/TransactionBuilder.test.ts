@@ -259,10 +259,10 @@ describe('Transaction Builder', () => {
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
       const raw = new TransactionBuilder({ provider })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          // use the real (post-addUtxo) token so the preserved category matches on regtest
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftUtxo.token })
-          .build();
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+      // use the real (post-addUtxo) token so the preserved category matches on regtest
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftUtxo.token })
+        .build();
       const built = decodeTransactionUnsafe(hexToBin(raw));
       expect(built.inputs).toHaveLength(1);
       expect(built.outputs).toHaveLength(1);
@@ -281,9 +281,9 @@ describe('Transaction Builder', () => {
       };
 
       const raw = new TransactionBuilder({ provider })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: updatedToken })
-          .build();
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: updatedToken })
+        .build();
       const built = decodeTransactionUnsafe(hexToBin(raw));
       expect(binToHex(built.outputs[0].token?.nft?.commitment ?? new Uint8Array())).toBe('ccdd');
       expect(built.outputs[0].token?.nft?.capability).toBe('mutable');
@@ -295,9 +295,9 @@ describe('Transaction Builder', () => {
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
       const raw = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n })
-          .build();
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n })
+        .build();
       const built = decodeTransactionUnsafe(hexToBin(raw));
       expect(built.inputs).toHaveLength(1);
       expect(built.outputs).toHaveLength(1);

@@ -12,7 +12,7 @@ const READS = ['pre-state', 'outState'] as const;
 const BOUNDARIES = ['before-settlement', 'after-settlement'] as const;
 
 type Status = 'pre-state' | 'self-journal' | 'admitted-needs-vm' | 'proven'
-  | 'rejected-before-boundary' | 'not-expressible';
+| 'rejected-before-boundary' | 'not-expressible';
 
 const provenForeign = new Set([
   'scalar', 'chunk-bytes', 'mapping-existing', 'mapping-absent',

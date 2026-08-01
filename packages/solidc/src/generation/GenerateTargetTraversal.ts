@@ -553,7 +553,11 @@ function surveyFunctionDeploys(
       walk(value, childCond, childLoop);
     }
   };
-  walk(body, false, false);
+  walk(
+    body,
+    false,
+    false,
+  );
   return {
     count, hasConditional, hasLoopValue, contractNames,
   };

@@ -271,7 +271,7 @@ const ROWS: readonly Row[] = [
     hostileSubject: 'totalSupply',
     state: { totalSupply: 1_000_000n, decimals: 18n },
     stateTamper: { totalSupply: 1_000_001n },
-    slots: ['master', 'dataNft', 'entry', 'returnEvent'],
+    slots: ['master', 'dataNft', 'entry', 'entry', 'returnEvent'],
   },
   {
     rel: 'app/erc20/ERC20.sol',

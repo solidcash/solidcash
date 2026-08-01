@@ -143,17 +143,21 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         this.keepDefFns.add(fn.name);
       }
     }
-    // A context-only graph clone (for example a msg.sender-authorized handler) can also own a dynamic-state
-    // journal even though it emits no outgoing graph edge. LowerDynamicStateJournalHelpers makes that clone a
-    // single-tail returning value helper. Keeping it behind OP_INVOKE splits its dynamic journal from the route
-    // frame, so code generation correctly refuses it; inline it into the compiler-owned route instead. A real
-    // emission handler retains its definition and graph frame exactly as before.
+    // A compiler-owned batch clone can also own a dynamic-state journal. For example EventSubscription's
+    // `subscribe` writes both a mapping entry and `subscriberList.push(..)`: the ordinary `__scb_entry_` clone
+    // is selected for the entry journal, then LowerCollectionJournalHelpers makes it a single-tail returning
+    // value helper while retaining the array push. Keeping that helper behind OP_INVOKE splits its dynamic
+    // journal from the route frame, so
+    // code generation correctly refuses it. Inline it into the compiler-owned route just like a context-only
+    // graph clone. A real emission handler retains its definition and graph frame exactly as before.
     for (const fn of node.functions) {
       let appendsDynamicArray = false;
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof StateArrayPushNode) appendsDynamicArray = true;
       });
-      if (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0
+      const compilerOwnedRouteClone = fn.name.startsWith('__scb_entry_')
+        || (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0);
+      if (compilerOwnedRouteClone
         && fn.collectionJournal && appendsDynamicArray
         && (fn.parameters[0]?.name === `__dj_${fn.name}`
           || fn.parameters[0]?.name.startsWith(`__cj_${fn.name}`))

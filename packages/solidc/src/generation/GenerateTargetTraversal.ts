@@ -16460,8 +16460,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** First entry slot index written by a runtime loop (inLoop) reachable in `node`, or -1. */
   private findLoopEntryWriteSlot(node: Node): number {
     let found = -1;
+    // Resolved AST nodes contain back-references (for example a call's resolved
+    // definition). Recursive functions consequently form a cyclic object graph.
+    // This is a graph walk, not a syntax-only visitor, so guard every node rather
+    // than relying on the tree shape of the parsed source.
+    const seen = new WeakSet<Node>();
     const walk = (n: Node): void => {
-      if (found >= 0 || !n) return;
+      if (found >= 0 || !n || seen.has(n)) return;
+      seen.add(n);
       const idx = (n as unknown as { entrySlotIndex?: number }).entrySlotIndex;
       if (typeof idx === 'number' && idx >= 0 && this.entrySlots?.[idx]?.inLoop) {
         found = idx;

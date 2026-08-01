@@ -72,9 +72,12 @@ function compileCapturing(source: string, imported: boolean): string[] {
         path === './C.sol' ? { source, id: '/C.sol' } : undefined);
       compileString('pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract Root is C {}\n', {
         solidityImportCompat: true, rootFileId: '/main.sol', importResolver: resolver,
+        experimentalHiddenBatch: false,
       });
     } else {
-      compileString(source, { solidityImportCompat: true, rootFileId: '/main.sol' });
+      compileString(source, {
+        solidityImportCompat: true, rootFileId: '/main.sol', experimentalHiddenBatch: false,
+      });
     }
   } catch {
     // Some compatibility warnings precede an unrelated downstream refusal. The warning itself is the subject;

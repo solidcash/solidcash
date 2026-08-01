@@ -1146,7 +1146,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Hidden-batch routes are compiler-owned source. Their deliberately generic parser/context
       // locals vary by admitted handler shape, so reporting them as user warnings makes default-on
       // compilation noisy without identifying anything the user can fix.
-      if (generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -2524,7 +2525,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      if (generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -5585,7 +5587,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      if (generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
@@ -6977,7 +6980,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
-      if (generatedOriginOf(unused.definition?.location)) continue;
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
       const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);

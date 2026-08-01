@@ -140,7 +140,9 @@ describe('large-contract state-local splitting', () => {
           require(jobId_ >= 0, "neg");
         }
       }`;
-    const options = { solidityImportCompat: true, forceSplit: true };
+    // This test derives a shard limit from direct physical facet sizes; keep the default hidden route out of
+    // that ruler so it measures only call-closure partitioning.
+    const options = { solidityImportCompat: true, forceSplit: true, experimentalHiddenBatch: false };
     const union = compileStringSplit(source, options);
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
@@ -213,7 +215,9 @@ describe('large-contract state-local splitting', () => {
         function touchA(uint256 v) public { _setA(v); own = v + 1; require(v >= 0, "n"); }
         function touchB(uint256 v) public { _setB(v); own = v + 2; require(v >= 0, "n"); }
       }`;
-    const options = { solidityImportCompat: true, forceSplit: true };
+    // Storage-layout agreement is independent of the hidden route, while the historical 1,100-byte threshold
+    // is a direct-facet size fixture.
+    const options = { solidityImportCompat: true, forceSplit: true, experimentalHiddenBatch: false };
     const slots = (layout: any): string[] => (layout?.variables ?? [])
       .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
     // One facet holds every entry: the case that always agreed, so the divided case below is compared
@@ -228,7 +232,9 @@ describe('large-contract state-local splitting', () => {
     // baseline the manifest fingerprint is taken from - names the same variable at every slot.
     const divided = compileStringSplit(source, { ...options, maxShardBytes: 1100 });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
-    const expected = slots(compileString(source, { solidityImportCompat: true }).stateLayout);
+    const expected = slots(compileString(source, {
+      solidityImportCompat: true, experimentalHiddenBatch: false,
+    }).stateLayout);
     expect(expected).toEqual(slots(together.root.stateLayout));
     expect(slots(divided.root.stateLayout)).toEqual(expected);
     for (const info of divided.manifest.facets) {

@@ -125,7 +125,10 @@ function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
     experimentalHiddenBatch: options.experimentalHiddenBatch !== false,
-  };
+    // Internal-only presentation policy: default-on synthesis must not expose warnings for locals in source
+    // the user never wrote. Explicit route builds retain them for diagnostic-origin auditing.
+    __suppressGeneratedRouteWarnings: options.experimentalHiddenBatch !== true,
+  } as CompilerOptions;
 }
 
 export interface CompileOptions extends CompilerOptions {

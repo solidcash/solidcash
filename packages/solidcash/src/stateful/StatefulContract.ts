@@ -7347,8 +7347,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let scalarAmt: bigint | undefined;
       if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) {
         scalarAmt = toBig(argOf(info.valueScalarParam));
-      }
-      else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
+      } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       const perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
       if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {

@@ -65,7 +65,10 @@ contract Token() {
 
 describe('Release 0 SCB1 compiler cost regression', () => {
   it('pins the B parser/dispatcher covenant footprint', () => {
-    const direct = compileString(CALLEE, { forceStateful: true });
+    // This instrument measures the incremental SCB1 route cost against the
+    // physical/direct route, so its control must explicitly select that route
+    // now that hidden batching is the compiler default.
+    const direct = compileString(CALLEE, { forceStateful: true, experimentalHiddenBatch: false });
     const batch = compileString(CALLEE, {
       forceStateful: true,
       experimentalHiddenBatch: true,
@@ -87,7 +90,7 @@ describe('Release 0 SCB1 compiler cost regression', () => {
   });
 
   it('pins the exact two-row ERC20 resource route footprint', () => {
-    const direct = compileString(ERC20_CALLEE, { forceStateful: true });
+    const direct = compileString(ERC20_CALLEE, { forceStateful: true, experimentalHiddenBatch: false });
     const batch = compileString(ERC20_CALLEE, {
       forceStateful: true,
       experimentalHiddenBatch: true,

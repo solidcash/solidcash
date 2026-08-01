@@ -27,11 +27,11 @@ refused at a NAMED INPUT INDEX.
 
 | figure | status |
 |---|---|
-| 206 recovered handlers | SOLID. Re-taken with one shared probe binary across two worktrees, both directions checked (206 gained, 0 lost). |
-| **82 of 206 VM-proved on the file-set union** | X235 ran the exact 25-file union in `layer3-x235-union-manifest.txt`. Its AST consumer first reproduces X160's 135 rows / 206 gained / 0 lost, then attributes only contained batch blobs by source digest and deduplicates partition rows. It observed 1,255 records, 627 settlements and 108 contained routes: 82 exact gained rows, no unresolved digest and no digest/name mismatch. All 98 same-blob collisions carried resolution evidence and resolved at cardinality 1; the strict consumer refuses cardinality 0 or greater than 1. The prior inference that the union had to be larger was falsified by the current-HEAD run; agreement with the two historical 82s does not mean the memberships are identical. |
-| 11 gained writers | Exhausted: 4 proved, 1 fail-closed (`Target.protected`), 2 re-admitted by X201 but still without a settlement (`Attack.attack`, `Foo.callBar`; their missing-callee hostiles refuse at the covenant), 4 publish `writesState` ABSENT and mutate nothing. |
+| 215 recovered handlers | CURRENT. The same 135-row partition now records 215 gained / 0 lost: seven ordinary persisted-state getters and two single-edge, argument-target bare forwarders were monotone admissions after X160's 206 re-take. The live exact-set check names every drift. |
+| VM-proved numerator | RE-TAKE REQUIRED against 215. X235's historical union proved 82 of the then-current 206; the later all-handler run proved 112 of 206 before the nine admissions were incorporated. Do not quote either as a current ratio until the union consumer completes against 215. |
+| 13 gained writers | CURRENT classifier count: the previous eleven plus `Callback.test` and `MaliciousCallback.attack`, both single typed argument-target calls. Four publish `writesState` ABSENT and mutate nothing; settlement attribution must re-take the remaining split against 215. |
 | "no chunk-backed writer exists" | SOLID, measured both directions. Writer rows and dynamic-variable rows are DISJOINT sets. Do not hunt a subject for this shape. |
-| "co-spent-callee graphs have no subject in the 206" | SOLID. Exactly 2 of 206 publish an outgoing external call; the other 81 measured directly at 0. A boundary of the POPULATION, not the machinery. |
+| "co-spent-callee graphs have no subject in the recovered population" | RETIRED. Four of 215 now publish an outgoing external call: the prior two plus `Callback.test` and `MaliciousCallback.attack`. The latter pair is the single typed, argument-target bare-forwarding shape covered by the X201/typed-dispatch covenant proofs. |
 
 `writesState: true` means **"needs the state machinery"**, NOT "changes a state variable". At least 2
 of the explicit writers write nothing. Always read the body.
@@ -142,7 +142,7 @@ These were all learned by getting them wrong first.
    partition parser silently matched **15 of 135 rows and 68 of 206 gained handlers** because it
    required a rigid field order, then emitted a confident-looking count that was nearly published.
    The cure is cheap and non-negotiable: make the tool reproduce a number the source already publishes
-   (here, X160's own 135 rows / 206 gained) and fail loudly if it does not. Make any harness refuse to
+   (currently X160's own 135 rows / 215 gained) and fail loudly if it does not. Make any harness refuse to
    call an empty run a result.
 6. **Attribute by containment, never by adjacency.** An adjacency-based settlement probe manufactured
    settlements: a probe attempt traces its route and never broadcasts, leaving the route pending for
@@ -246,7 +246,7 @@ L3_X204_OUT=/tmp/x235 npx vitest run --config vitest.x204.config.ts \
   $(cat test/e2e/layer3-x235-union-manifest.txt) \
   --maxWorkers=2 --reporter=dot
 npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
-# The committed consumer refuses empty observations and self-checks 135 rows / 206 gained / 0 lost.
+# The committed consumer refuses empty observations and self-checks 135 rows / 215 gained / 0 lost.
 ```
 
 ## 10. What I would do first
@@ -262,4 +262,4 @@ final X201 verification took ~36 minutes at
 `--maxWorkers=2`. It is the only measurement that has reliably caught this class.
 
 Do not start by adding capability. The bus admits more than it has been proven to bind, and the
-ratio - 82 of 206 - is the honest summary of where this stands.
+ratio must come from a fresh consumer run against the current 215-handler population.

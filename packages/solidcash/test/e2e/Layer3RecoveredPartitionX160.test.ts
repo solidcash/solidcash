@@ -3,7 +3,7 @@ import { compileFile, compileFileMulti } from 'solidc';
 import { verifyCorpusPins } from './layer3-corpus-pins.js';
 
 /**
- * X160. THE POPULATION COUNT WAS STALE, AND THE RE-TAKEN PARTITION IS 206, NOT 112.
+ * X160. THE POPULATION COUNT WAS STALE, AND THE CURRENT PARTITION IS 215, NOT 112.
  *
  * The board carried "112 handlers gained, 0 lost" for the L2-F2 route-admission repair. Two things falsified
  * it. `StableSwap` had silently STOPPED COMPILING, so Set A's gained total measured 50 against the 53 claimed
@@ -26,11 +26,11 @@ import { verifyCorpusPins } from './layer3-corpus-pins.js';
  * and B means it did on both sides and the block size MOVED.
  *
  *   set      contracts   gained   lost
- *   A               11       53      0     Set A's 53 is restored - StableSwap's +3 is back
+ *   A               13       60      0     Set A includes seven later, monotone getter admissions
  *   B                4       15      0     Airdrop, MyToken, VaultInflation.Token and now EACCToken
- *   NEW             39      138      0
- *   SAME            81        0      0     eligible on both sides, identical handler set
- *   TOTAL          135      206      0     54 contracts moved
+ *   NEW             39      140      0     includes two later, bound bare-forwarding admissions
+ *   SAME            79        0      0     eligible on both sides, identical handler set
+ *   TOTAL          135      215      0     56 contracts moved
  *
  * BOTH DIRECTIONS WERE CHECKED, because a lost row is not an error - it is a smaller number, and the census
  * records bus-compile failures as an anonymized histogram where one row's disappearance is invisible.
@@ -40,13 +40,15 @@ import { verifyCorpusPins } from './layer3-corpus-pins.js';
  *    to DIRECT-FAIL. The inverse of the StableSwap case does not occur anywhere in this population.
  *  - Whole-corpus gate counts moved only upward: bus-OK 2 -> 7 (mistswap), 8 -> 10 (EA), 101 -> 134 (SBE).
  *
- * AND THE WRITER COUNT IS ELEVEN, NOT ONE. Eleven of the 206 gained handlers are state-changing under the
- * census's own classifier - `writesState` anything but false, where ABSENT reads as writing. Seven publish
+ * AND THE WRITER COUNT IS THIRTEEN, NOT ONE. Thirteen of the 215 gained handlers are state-changing under the
+ * census's own classifier - `writesState` anything but false, where ABSENT reads as writing. Nine publish
  * `writesState: true` outright; the other four (`Bar.log`, `HashFunction.hash`, `HashFunction.collision`,
  * `TestTransientStorage.val`) publish it absent and are counted conservatively, not shown to mutate.
  * The recorded figure was one, and that one - `TxOrigin.sol`'s `Attack.attack` - is the only member proved
- * NOT to settle, fail-closed, its counterparty bus-inadmissible. The other ten were never in the count, and
- * `Layer3RecoveredWriterSettlesX160.test.ts` runs the cleanest of them, `Counter.inc`, to completion.
+ * NOT to settle, fail-closed, its counterparty bus-inadmissible. The other twelve were never in the count, and
+ * `Layer3RecoveredWriterSettlesX160.test.ts` runs the cleanest of them, `Counter.inc`, to completion. The two
+ * later additions, `Callback.test` and `MaliciousCallback.attack`, are the single typed, argument-target bare
+ * forwarding shape whose honest co-spend and dropped-callee hostile are pinned by X201/typed-dispatch tests.
  *
  * WHAT THIS FILE IS AND IS NOT.
  *
@@ -78,8 +80,8 @@ interface PartitionRow {
 const PRE_REPAIR_COMMIT = 'c988817e';
 
 /**
- * The seven gained handlers whose DIRECT artifact publishes `writesState: true` outright. The other four in
- * the eleven publish it ABSENT, which the census reads as writing; counting them is conservative and is not a
+ * The nine gained handlers whose DIRECT artifact publishes `writesState: true` outright. The other four in
+ * the thirteen publish it ABSENT, which the census reads as writing; counting them is conservative and is not a
  * claim that they mutate.
  */
 const EXPLICIT_WRITERS: ReadonlyArray<readonly [string, string, string]> = [
@@ -90,6 +92,8 @@ const EXPLICIT_WRITERS: ReadonlyArray<readonly [string, string, string]> = [
   ['hacks/delegatecall/Delegatecall_2.sol', 'Lib', 'doSomething'],
   ['hacks/hiding-malicious-code-with-external-contract/ExternalContract.sol', 'Foo', 'callBar'],
   ['hacks/phishing-with-tx-origin/TxOrigin.sol', 'Attack', 'attack'],
+  ['transient-storage/TransientStorage.sol', 'Callback', 'test'],
+  ['transient-storage/TransientStorage.sol', 'MaliciousCallback', 'attack'],
 ];
 
 const ROOTS: Record<PartitionRow['corpus'], string> = {
@@ -495,9 +499,9 @@ const PARTITION: readonly PartitionRow[] = [
     writes: [],
   },
   {
-    set: 'SAME', corpus: 'sbe', rel: 'defi/constant-product-amm/CPAMM.sol', name: 'CPAMM',
+    set: 'A', corpus: 'sbe', rel: 'defi/constant-product-amm/CPAMM.sol', name: 'CPAMM',
     before: ['balanceOf'],
-    after: ['balanceOf'],
+    after: ['token0', 'token1', 'reserve0', 'reserve1', 'totalSupply', 'balanceOf'],
     writes: [],
   },
   {
@@ -739,9 +743,9 @@ const PARTITION: readonly PartitionRow[] = [
     writes: [],
   },
   {
-    set: 'SAME', corpus: 'sbe', rel: 'hacks/vault-inflation/VaultInflation.sol', name: 'Vault',
+    set: 'A', corpus: 'sbe', rel: 'hacks/vault-inflation/VaultInflation.sol', name: 'Vault',
     before: ['balanceOf'],
-    after: ['balanceOf'],
+    after: ['token', 'totalSupply', 'balanceOf'],
     writes: [],
   },
   {
@@ -897,14 +901,14 @@ const PARTITION: readonly PartitionRow[] = [
   {
     set: 'NEW', corpus: 'sbe', rel: 'transient-storage/TransientStorage.sol', name: 'Callback',
     before: [],
-    after: ['val'],
-    writes: [],
+    after: ['test', 'val'],
+    writes: ['test'],
   },
   {
     set: 'NEW', corpus: 'sbe', rel: 'transient-storage/TransientStorage.sol', name: 'MaliciousCallback',
     before: [],
-    after: ['count'],
-    writes: [],
+    after: ['attack', 'count'],
+    writes: ['attack'],
   },
   {
     set: 'NEW', corpus: 'sbe', rel: 'transient-storage/TransientStorage.sol', name: 'TestStorage',
@@ -1054,7 +1058,7 @@ describe('X160: the re-taken L2-F2 partition', () => {
    * THE ARITHMETIC, recomputed from the recorded rows. This is what replaces "112 gained, 0 lost": it is the
    * count the board should carry, and it is derived here rather than restated.
    */
-  it('MEASURED: 206 gained, 0 lost, across 54 moved contracts', () => {
+  it('MEASURED: 215 gained, 0 lost, across 56 moved contracts', () => {
     const all = totals(PARTITION);
     console.log(`[X160P] pre-repair side RECORDED at ${PRE_REPAIR_COMMIT}; after side recompiled below`);
     console.log(`[X160P] rows=${all.contracts} gained=${all.gained} lost=${all.lost} moved=${all.moved}`);
@@ -1063,13 +1067,13 @@ describe('X160: the re-taken L2-F2 partition', () => {
       console.log(`[X160P]   set ${set.padEnd(4)} contracts=${String(gate.contracts).padStart(4)} `
         + `gained=${String(gate.gained).padStart(4)} lost=${gate.lost}`);
     }
-    expect(all.gained).toBe(206);
+    expect(all.gained).toBe(215);
     expect(all.lost).toBe(0);
-    expect(all.moved).toBe(54);
-    expect(totals(PARTITION.filter((row) => row.set === 'A')).gained).toBe(53);
+    expect(all.moved).toBe(56);
+    expect(totals(PARTITION.filter((row) => row.set === 'A')).gained).toBe(60);
     expect(totals(PARTITION.filter((row) => row.set === 'B')).gained).toBe(15);
-    expect(totals(PARTITION.filter((row) => row.set === 'NEW')).gained).toBe(138);
-    expect(PARTITION.filter((row) => row.set === 'A')).toHaveLength(11);
+    expect(totals(PARTITION.filter((row) => row.set === 'NEW')).gained).toBe(140);
+    expect(PARTITION.filter((row) => row.set === 'A')).toHaveLength(13);
     expect(PARTITION.filter((row) => row.set === 'B')).toHaveLength(4);
     expect(PARTITION.filter((row) => row.set === 'NEW')).toHaveLength(39);
     // The population of contracts publishing at least one eligible handler grew and nothing left it.
@@ -1092,19 +1096,19 @@ describe('X160: the re-taken L2-F2 partition', () => {
   }, 900_000);
 
   /**
-   * THE WRITERS. Eleven of the 206 gained handlers publish `writesState` other than false, measured from the
+   * THE WRITERS. Thirteen of the 215 gained handlers publish `writesState` other than false, measured from the
    * DIRECT artifact - the same classifier the census uses, where absent reads as writing. The recorded count
    * was ONE, which is the figure that made the row's positive case look subject-less.
    */
-  it('MEASURED: eleven gained handlers are state-changing, not one', () => {
+  it('MEASURED: thirteen gained handlers are state-changing, not one', () => {
     const gainedWriters = PARTITION.flatMap((row) => row.after
       .filter((name) => !row.before.includes(name) && row.writes.includes(name))
       .map((name) => `${row.rel}::${row.name}.${name}`));
     for (const writer of gainedWriters) console.log(`[X160P] gained writer ${writer}`);
-    expect(gainedWriters).toHaveLength(11);
+    expect(gainedWriters).toHaveLength(13);
     expect(gainedWriters).toContain('fallback/FallbackInputOutput.sol::Counter.inc');
     expect(gainedWriters).toContain('hacks/phishing-with-tx-origin/TxOrigin.sol::Attack.attack');
-    // The split inside the eleven, because "state-changing" here is two different statements. Recompiled.
+    // The split inside the thirteen, because "state-changing" here is two different statements. Recompiled.
     const explicit = EXPLICIT_WRITERS.filter(([rel, name, handler]) => {
       const direct = compileFileMulti(`${ROOTS[rel.startsWith('uniswapv2/') ? 'mistswap' : 'sbe']}/${rel}`,
         DIRECT as never) as any;
@@ -1112,10 +1116,10 @@ describe('X160: the re-taken L2-F2 partition', () => {
       console.log(`[X160P]   ${name}.${handler} writesState=${JSON.stringify(abi?.writesState)}`);
       return abi?.writesState === true;
     });
-    expect(explicit).toHaveLength(7);
+    expect(explicit).toHaveLength(9);
     // Recompiled for the two that carry VM evidence, so the classification is not only a record: `inc`
     // SETTLES (`Layer3RecoveredWriterSettlesX160.test.ts`) and `attack` is proved NOT to, fail-closed
-    // (`Layer3RecoveredWriterX136.test.ts`). Nine of the eleven are unproven either way.
+    // (`Layer3RecoveredWriterX136.test.ts`). The remainder is tracked by the settlement census.
     for (const [rel, name, handler] of [
       ['fallback/FallbackInputOutput.sol', 'Counter', 'inc'],
       ['hacks/phishing-with-tx-origin/TxOrigin.sol', 'Attack', 'attack'],

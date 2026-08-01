@@ -56,7 +56,7 @@ const gained = rows.flatMap((row) => row.after
   .filter((handler) => !row.before.includes(handler))
   .map((handler) => ({ ...row, handler })));
 const lost = rows.flatMap((row) => row.before.filter((handler) => !row.after.includes(handler)));
-if (rows.length !== 135 || gained.length !== 206 || lost.length !== 0) {
+if (rows.length !== 135 || gained.length !== 215 || lost.length !== 0) {
   throw new Error(`X235 partition self-check failed: rows=${rows.length} gained=${gained.length} lost=${lost.length}`);
 }
 

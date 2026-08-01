@@ -1497,3 +1497,13 @@ The vitest run completed 321 passed / 2 skipped with one known X203 failure: the
 `computeDomainSeparator` / `permit` chunk-base disagreement. Its partition arithmetic completed and
 printed 135 / 206 / 0 before that failure; the committed consumer independently re-parses and checks
 the same source literal.
+
+### 2026-08-01: X160 population re-pin - 215 gained, 0 lost
+
+The live exact-set guard found four positive-only row drifts after X160: `CPAMM` gained five persisted-state
+getters, vault-inflation `Vault` gained two, and transient-storage `Callback` and `MaliciousCallback` each
+gained their single typed, argument-target bare forwarder. No recorded handler disappeared. These are the
+ordinary authenticated getter shape and the bound single-edge forwarding shape, not a new unchecked route
+form. The authoritative partition now derives 135 rows / 215 gained / 0 lost / 56 moved contracts and 13
+conservatively classified writers. X235's 82-of-206 paragraph above remains historical evidence; a current
+settlement ratio requires the consumer to run against all 215.

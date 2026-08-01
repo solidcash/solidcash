@@ -474,7 +474,9 @@ describe('Transaction Builder', () => {
 
     expect(aliceUtxos.length).toBeGreaterThan(2);
 
-    const change = aliceUtxos[0].satoshis + aliceUtxos[1].satoshis - 1000n;
+    // Price the output from the inputs this transaction actually spends. Using aliceUtxos[1]
+    // made the fixture random: it could fail balance validation before reaching the bad signature.
+    const change = aliceUtxos[0].satoshis + p2pkhUtxos[0].satoshis - 1000n;
 
     const transaction = new TransactionBuilder({ provider })
       .addInput(aliceUtxos[0], incorrectSigTemplate.unlockP2PKH())

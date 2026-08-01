@@ -18,6 +18,12 @@ its number. **No F3 measurement is restated**: the census, the verdict counts, t
 the 45 built transactions are all still the `6a685f33` run and are not re-derived here - except section 3.2's
 write classification, which X73 invalidated outright and which is re-measured in place, in that section.
 
+**Current covenant-size re-pin at `8165caa7`.** Later transcript, executor, and security binding work moved the
+production generators again. The projection verifier now compiles and deploys at **5,820 bytes**. The graph root
+controller compiles to **2,810 bytes** with a 1-byte target and **2,844 bytes** with a 35-byte p2sh32 target.
+The older figures below remain measurements of their named revisions; they are not current production sizes and
+must not be used to re-price the historical F3 estimates without re-running the estimator and built controls.
+
 **X86 re-take at `b4d33fc1`: the census below is superseded, and this is what moved.** Every gate count,
 refusal histogram and eligible row in sections 2 to 4 is the `6a685f33` run. `layer3-corpus-census-f3.ts` now
 holds a re-take of ALL FOUR corpora at `b4d33fc1`, taken in one run against one compiler. The handoff that

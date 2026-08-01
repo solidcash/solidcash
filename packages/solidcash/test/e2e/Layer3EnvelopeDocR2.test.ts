@@ -139,7 +139,7 @@ describe('R2: the covenant sizes the documents quote are the covenant sizes that
   it('MEASURED: the projection verifier compiles to the size both documents publish', () => {
     const artifact = compileString(layer3.generateGraphProjectionVerifier());
     const bytes = artifact.debug.bytecode.length / 2;
-    expect(bytes).toBe(4_121);
+    expect(bytes).toBe(5_820);
     // NO DISJUNCTION HERE ANY MORE. This assertion used to read `envelopeDoc.includes(bytes) ||
     // corpusFitDoc.includes('4,542')`, and the second branch is satisfied by the stale literal itself: the
     // guard against a document quoting a superseded size could be discharged by the document quoting the
@@ -162,8 +162,8 @@ describe('R2: the covenant sizes the documents quote are the covenant sizes that
     const p2sh32 = compileString(layer3.generateGraphRootController(`aa20${'ab'.repeat(32)}87`));
     const placeholderBytes = placeholder.debug.bytecode.length / 2;
     const p2sh32Bytes = p2sh32.debug.bytecode.length / 2;
-    expect(placeholderBytes).toBe(1_459);
-    expect(p2sh32Bytes).toBe(1_493);
+    expect(placeholderBytes).toBe(2_810);
+    expect(p2sh32Bytes).toBe(2_844);
     // The whole difference is the 34 extra bytes of the p2sh32 locking bytecode over the 1-byte OP_1.
     expect(p2sh32Bytes - placeholderBytes).toBe(35 - 1);
     console.log(`[R2] graph root controller = ${placeholderBytes} B with a 1-byte OP_1 target, `

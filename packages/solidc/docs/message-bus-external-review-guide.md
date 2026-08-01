@@ -218,8 +218,8 @@ Mock-provider builds, at the real ordinary-capacity profile:
 | C3 projection instructions | **18,845** each, identical across all eight | same C3 command |
 | C3 controller | **2,891** B, 2,131,942 cost, 15,336 instructions, 0.9218x | same C3 command |
 | C3 inputs over budget | **none** | same C3 command |
-| projection verifier redeem | **4,121** B compiled, **4,121** B deployed (takes no constructor args) | `Layer3EnvelopeDocR2.test.ts` |
-| graph root controller | **1,493** B compiled, **1,514** B deployed with a `bytes20` initializer | see finding R3-3 |
+| projection verifier redeem | **5,820** B compiled, **5,820** B deployed (takes no constructor args) | `Layer3EnvelopeDocR2.test.ts` |
+| graph root controller | **2,810** B compiled with a 1-byte target; **2,844** B with a 35-byte p2sh32 target | `Layer3EnvelopeDocR2.test.ts` |
 
 ### 3.2 CITED, with provenance
 
@@ -347,6 +347,11 @@ chain in the same run. The ledger row is wrong on this point, and it is wrong in
 understates the result. It is outside this row's lease; the correction belongs to the integration owner.
 
 ### R3-3. The controller size everyone quotes is the anti-conservative one. MEDIUM.
+
+**Superseded at `8165caa7`.** The current production generator embeds the target locking bytecode and compiles
+to **2,810 bytes** with a 1-byte target or **2,844 bytes** with a 35-byte p2sh32 target. Both points are pinned
+by `Layer3EnvelopeDocR2.test.ts`. The paragraph below records the older constructor-initialized controller and
+must not be used as a current production measurement.
 
 X85's finding was that the covenant override fields mean the **deployed** redeem length, and that reading
 1,493 off the compile passed an input 21 bytes shorter than the script the transaction actually pushes -

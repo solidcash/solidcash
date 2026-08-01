@@ -578,8 +578,7 @@ async function build(
       cursor += 2; // settlement boundary
       const completionPositionsLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + completionPositionsLength;
-      const settlementTableLength = bytes[cursor] | (bytes[cursor + 1] << 8);
-      cursor += 2 + settlementTableLength;
+      cursor += 32; // graph-global settlement-table commitment
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;
@@ -589,6 +588,8 @@ async function build(
       }
       cursor += 2; // projection input
     }
+    const settlementTableLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+    cursor += 2 + settlementTableLength;
     if (malformedGraph) {
       cursor += 2; // invocation count
       bytes[cursor + 4] = 1; // root invocation depth must be zero

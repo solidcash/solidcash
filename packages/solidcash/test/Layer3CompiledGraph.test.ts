@@ -837,6 +837,16 @@ describe('layer3.planCompiledGraph', () => {
     expect(first.bytes.length).toBeGreaterThan(
       plan.participants.reduce((sum, participant) => sum + participant.batch.blob.length, 0),
     );
+    const settlementTable = hexToBin(first.settlementTableHex);
+    let settlementTableOccurrences = 0;
+    for (let offset = 0; offset + settlementTable.length <= first.bytes.length; offset += 1) {
+      if (settlementTable.every((byte, index) => first.bytes[offset + index] === byte)) {
+        settlementTableOccurrences += 1;
+      }
+    }
+    // The table is graph-global: participant growth adds one row to this single frame, not another copy of
+    // every existing row (which would make transcript framing quadratic in the participant count).
+    expect(settlementTableOccurrences).toBe(1);
     const internalWitnessName = '__internal__valueWitness_0';
     const participantWithInternalWitness = {
       ...first.plan.participants[0],
@@ -974,10 +984,11 @@ describe('layer3.planCompiledGraph', () => {
     // build, and the two figures the F1 and F2 tables disagreed with. The measurements are above.)
     // The settlement-boundary extension necessarily moves both rows: the controller authenticates the canonical
     // participant settlement table and re-derives every owner maximum, while each projection authenticates its
-    // owner's row-completion vector. Keep both exact sizes pinned so a later parser change is measured rather
-    // than silently consuming the relay margin documented above.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_731);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_073);
+    // owner's row-completion vector. The graph-global settlement-table normalization then moved the controller
+    // 2 bytes and the projection 27 bytes while removing one whole table copy per participant. Keep both exact
+    // sizes pinned so a later parser change is measured rather than silently consuming the relay margin above.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_729);
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_046);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

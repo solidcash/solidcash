@@ -2345,8 +2345,7 @@ function synthesizeHiddenBatchRoute(
           bytes2(__internal__graphSettlementBoundary),
           bytes2(__internal__graphCompletionPositions.length),
           __internal__graphCompletionPositions,
-          bytes2(__internal__graphSettlementTable.length),
-          __internal__graphSettlementTable
+          sha256(__internal__graphSettlementTable)
         );
         require(__internal__graphParticipantOffset >= 0
           && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);

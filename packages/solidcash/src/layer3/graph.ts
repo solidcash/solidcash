@@ -575,6 +575,7 @@ export function finalizeCompiledGraph(
     framed(hexToBin(participant.lockingBytecode)),
     uint(participantInputs[participant.participant], 2), uint(participant.settlementBoundary, 2),
   ]));
+  const settlementTableCommitment = sha256.hash(settlementTable);
   for (const key of Object.keys(results)) {
     const index = Number(key);
     if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
@@ -616,19 +617,24 @@ export function finalizeCompiledGraph(
     const callerFrame = framed(participantCallers[participantIndex]);
     const settlementBoundaryFrame = uint(participant.settlementBoundary, 2);
     const completionPositionsFrame = framed(participantCompletionPositions[participantIndex]);
-    const settlementTableFrame = framed(settlementTable);
+    // Each compiled route binds its supplied table through this constant-width commitment. The table itself is
+    // serialized once after the participant region.
+    const settlementTableCommitmentFrame = settlementTableCommitment;
     const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
     const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
     const projectionFrame = uint(projectionInputs[participantIndex], 2);
     parts.push(inputFrame, blockSizeFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
-      settlementBoundaryFrame, completionPositionsFrame, settlementTableFrame,
+      settlementBoundaryFrame, completionPositionsFrame, settlementTableCommitmentFrame,
       returnFrame, resultFrame, projectionFrame);
     encodedLength += inputFrame.length + blockSizeFrame.length + lbcFrame.length + batchFrame.length
       + emissionFrame.length + callerFrame.length + settlementBoundaryFrame.length
-      + completionPositionsFrame.length + settlementTableFrame.length
+      + completionPositionsFrame.length + settlementTableCommitmentFrame.length
       + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
-  parts.push(uint(plan.invocations.length, 2));
+  // The table describes the graph as a whole. Encoding it in every participant frame makes the transcript
+  // quadratic in participant count and repeats the same witness in every projection input. Keep one framed,
+  // root-authenticated copy between the participant region and the invocation region instead.
+  parts.push(framed(settlementTable), uint(plan.invocations.length, 2));
   plan.invocations.forEach((invocation, index) => {
     const args = hexToBin(invocation.argsHex);
     const result = hexToBin(resultHex[index]);
@@ -788,7 +794,7 @@ contract GraphRootController(bytes20 initializer) {
     // Six bytes per participant: physical block start, block size, and the optional return-event slot.
     // Keeping the transcript's original bytes avoids a NUM2BIN round trip in the invocation walk.
     bytes participantBlocks = hex"";
-    bytes publishedSettlementTable;
+    bytes publishedSettlementTableCommitment;
     bytes canonicalSettlementTable = hex"";
     ${publishedBoundaryDeclarations}
     ${computedBoundaryDeclarations}
@@ -839,18 +845,14 @@ contract GraphRootController(bytes20 initializer) {
       local = local + 2;
       bigint completionPositionsLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
       local = local + 2;
-      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 2 <= frame.length);
+      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 36 <= frame.length);
       local = local + completionPositionsLength;
-      bigint settlementTableLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
-      local = local + 2;
-      require(settlementTableLength > 0 && local + settlementTableLength + 4 <= frame.length);
-      bytes participantSettlementTable = frame.slice(local, local + settlementTableLength);
       if (participant == 0) {
-        publishedSettlementTable = participantSettlementTable;
+        publishedSettlementTableCommitment = frame.slice(local, local + 32);
       } else {
-        require(participantSettlementTable == publishedSettlementTable);
+        require(frame.slice(local, local + 32) == publishedSettlementTableCommitment);
       }
-      local = local + settlementTableLength;
+      local = local + 32;
       bigint returnOutput = int(bytes.concat(
         frame.slice(local, local + 2), hex"00"));
       bigint resultVectorLength = int(bytes.concat(
@@ -884,7 +886,13 @@ contract GraphRootController(bytes20 initializer) {
         frame.slice(local - resultVectorLength - 6, local - resultVectorLength - 4));
       cursor = cursor + local;
     }
-    require(publishedSettlementTable == canonicalSettlementTable);
+    require(cursor + 2 <= transcriptLength);
+    bigint settlementTableLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+    cursor = cursor + 2;
+    require(settlementTableLength > 0 && cursor + settlementTableLength + 2 <= transcriptLength);
+    require(transcript.slice(cursor, cursor + settlementTableLength) == canonicalSettlementTable);
+    require(publishedSettlementTableCommitment == sha256(canonicalSettlementTable));
+    cursor = cursor + settlementTableLength;
     // The proof slots are consecutive, so the last one names the first: the participant REGION ends
     // exactly where the projection region begins.
     require(previousProjectionInput + 1 - participantCount == expectedInput);
@@ -1124,15 +1132,12 @@ contract GraphProjectionVerifier() {
       local = local + 2;
       bigint completionPositionsLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
       local = local + 2;
-      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 2 <= frame.length);
+      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 36 <= frame.length);
       if (participant == participantIndex) {
         ownerCompletionPositions = frame.slice(local, local + completionPositionsLength);
       }
       local = local + completionPositionsLength;
-      bigint settlementTableLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
-      local = local + 2;
-      require(settlementTableLength > 0 && local + settlementTableLength + 4 <= frame.length);
-      local = local + settlementTableLength;
+      local = local + 32;
       bigint resultLength = int(bytes.concat(
         frame.slice(local + 2, local + 4), hex"00"));
       local = local + 4;
@@ -1149,6 +1154,10 @@ contract GraphProjectionVerifier() {
       cursor = cursor + local + resultLength + 2;
     }
     require(cursor + 2 <= transcript.length);
+    bigint settlementTableLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+    cursor = cursor + 2;
+    require(settlementTableLength > 0 && cursor + settlementTableLength + 2 <= transcript.length);
+    cursor = cursor + settlementTableLength;
     bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
     require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
     bigint valueSkip = int(bytes.concat(ownerBatch.slice(5, 6), hex"00"));

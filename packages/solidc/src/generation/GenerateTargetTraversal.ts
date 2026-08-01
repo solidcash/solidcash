@@ -604,6 +604,17 @@ class IdentifierUsageCollector extends AstTraversal {
   }
 }
 
+/**
+ * How a compiler-constructed graph emission row becomes authenticated.
+ *
+ * This is deliberately not a boolean. Every producer must name the verifier that owns its row, and the
+ * deferred whole-vector form is tracked until its enclosing handler emits the matching equality check.
+ */
+type GraphEmissionRowDisposition =
+  | 'verify-exact-vector'
+  | 'consume-vector-prefix'
+  | 'defer-whole-vector';
+
 class NftIndexCollector extends AstTraversal {
   indices = new Set<number>();
 
@@ -832,6 +843,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private externalCallSlots: ExternalCallSlot[] = [];
   private graphStraightRuntimeRows: string[] = [];
   private graphStraightRuntimeMode = false;
+  private deferredGraphEmissionRows = 0;
+  private pendingGraphEmissionRows = 0;
 
   // External outState tracking
   private externalOutStateSlots: ExternalOutStateSlot[] = [];
@@ -3057,6 +3070,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     this.graphStraightRuntimeRows = [];
+    this.deferredGraphEmissionRows = 0;
+    this.pendingGraphEmissionRows = 0;
     this.graphStraightRuntimeMode = this.isDefineSubTraversal
       && node.graphRuntimeEmissionHandler === true
       && (node.externalCalls?.length ?? 0) > 1
@@ -3686,11 +3701,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.popFromStack(2);
           this.pushToStack('(__graph_straight_vector)');
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
-        this.emit(Op.OP_PICK, loc);
-        this.pushToStack('(__graph_straight_expected)');
-        this.emit(Op.OP_EQUALVERIFY, loc);
-        this.popFromStack(2);
+        this.verifyDeferredGraphEmissionVector(loc);
+      }
+      if (this.deferredGraphEmissionRows !== 0) {
+        throw new Error(`Unverified graph emission rows: ${this.deferredGraphEmissionRows}`);
+      }
+      if (this.pendingGraphEmissionRows !== 0) {
+        throw new Error(`Unconsumed graph emission rows: ${this.pendingGraphEmissionRows}`);
       }
       const slots = node.functionId === undefined ? [] : (this.journalSlotsByFunctionId.get(node.functionId) ?? []);
       const journalNames = new Set(slots.flatMap((sv) => this.journalContextNames(sv)));
@@ -7058,9 +7075,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const emissionResults: string[] = [];
       this.scopeDepth += 1;
       if (slots.length === 1) {
-        const resultCount = this.verifyGraphEmissionRow(
-          slots[0], targetFunc, node.parameters, locationData, slots[0].hasReturnValues === true,
-        );
+        const resultCount = slots[0].hasReturnValues === true
+          ? this.verifyGraphEmissionRow(slots[0], targetFunc, node.parameters, locationData, {
+            disposition: 'verify-exact-vector',
+          })
+          : this.verifyGraphEmissionRow(slots[0], targetFunc, node.parameters, locationData, {
+            disposition: 'consume-vector-prefix',
+          });
         hiddenContextCount += resultCount;
         for (let field = 0; field < resultCount; field += 1) {
           emissionResults.push(this.graphResultName(slots[0], field));
@@ -7070,9 +7091,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       } else if (slots.length > 1) {
         for (const slot of slots) {
-          const resultCount = this.verifyGraphEmissionRow(
-            slot, targetFunc, node.parameters, locationData, false, false, slot.hasReturnValues === true,
-          );
+          const resultCount = this.verifyGraphEmissionRow(slot, targetFunc, node.parameters, locationData, {
+            disposition: 'consume-vector-prefix',
+          });
           hiddenContextCount += resultCount;
           for (let field = 0; field < resultCount; field += 1) {
             emissionResults.push(this.graphResultName(slot, field));
@@ -12679,7 +12700,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.currentFunction.graphRuntimeEmissionHandler) {
       if (!physicalSlot) throw new Error('Runtime graph call lacks compiler metadata');
       if (this.graphStraightRuntimeMode) {
-        this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, false, true);
+        this.verifyGraphEmissionRow(physicalSlot, this.currentFunction, node.parameters, locationData, {
+          disposition: 'defer-whole-vector', parametersAreCallArguments: true,
+        });
         const rowName = `(__graph_straight_row_${this.graphStraightRuntimeRows.length})`;
         this.stack[0] = rowName;
         this.graphStraightRuntimeRows.push(rowName);
@@ -12886,10 +12909,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     handler: FunctionDefinitionNode,
     parameters: ExpressionNode[],
     locationData: SingleLocationData,
-    compare = true,
-    parametersAreCallArguments = false,
-    consumeRuntimeReturn = false,
+    verification: {
+      disposition: GraphEmissionRowDisposition;
+      parametersAreCallArguments?: boolean;
+    },
   ): number {
+    const { disposition, parametersAreCallArguments = false } = verification;
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
     if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
       throw new Error('Graph emission call lacks an authenticated selector');
@@ -13063,13 +13088,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_CAT, locationData);
       this.popFromStack(2);
       this.pushToStack('(__graph_emission_row)');
-      if (!compare) return 0;
+      if (disposition === 'defer-whole-vector') {
+        this.deferredGraphEmissionRows += 1;
+        return 0;
+      }
+      if (disposition === 'consume-vector-prefix') {
+        this.pendingGraphEmissionRows += 1;
+        return 0;
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex(expected))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack('(__graph_expected_emissions)');
       this.emit(Op.OP_EQUALVERIFY, locationData);
       this.popFromStack(2);
       return 0;
+    }
+    if (disposition === 'defer-whole-vector') {
+      throw new Error('Returning graph emission rows cannot defer authentication');
     }
     const returnTypes = slot.returnTypes ?? [];
     if (returnTypes.length === 0) {
@@ -13091,7 +13126,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(3);
     this.pushToStack('(__graph_result_frame)');
 
-    if (consumeRuntimeReturn) {
+    if (disposition === 'consume-vector-prefix') {
       // The expected operand is a VECTOR here, not the single-row value used by the wrapper verifier above.
       // Peel exactly one `resultLength:u16le || result` frame, retain the suffix for the next loop iteration,
       // and leave the authenticated result on top for the source tuple assignment.
@@ -13165,9 +13200,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node: Node,
     locationData: SingleLocationData,
   ): void {
-    const returned = this.verifyGraphEmissionRow(
-      slot, this.currentFunction, parameters, locationData, false, true, slot.hasReturnValues === true,
-    );
+    const returned = this.verifyGraphEmissionRow(slot, this.currentFunction, parameters, locationData, {
+      disposition: 'consume-vector-prefix', parametersAreCallArguments: true,
+    });
     if (returned > 0) return;
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_SIZE, locationData);
@@ -13186,6 +13221,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_runtime_remainder)');
     this.emitReplace(this.getStackIndex(remainder), node);
     this.popFromStack();
+    this.dischargeGraphEmissionRow();
   }
 
   /** Consume the canonical row/vector on top from the authenticated emission stream in occurrence order. */
@@ -13207,6 +13243,28 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack('(__graph_emission_remainder)');
     this.emitReplace(this.getStackIndex(remainder), node);
     this.popFromStack();
+    this.dischargeGraphEmissionRow();
+  }
+
+  private dischargeGraphEmissionRow(): void {
+    if (this.pendingGraphEmissionRows === 0) {
+      throw new Error('Graph emission consumer has no constructed row to authenticate');
+    }
+    this.pendingGraphEmissionRows -= 1;
+  }
+
+  /** Discharge every row deliberately deferred by the straight-line runtime producer. */
+  private verifyDeferredGraphEmissionVector(locationData: SingleLocationData): void {
+    if (this.deferredGraphEmissionRows === 0
+      || this.deferredGraphEmissionRows !== this.graphStraightRuntimeRows.length) {
+      throw new Error('Graph emission vector comparison does not own every deferred row');
+    }
+    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(__graph_straight_expected)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+    this.deferredGraphEmissionRows = 0;
   }
 
   visitExternalOutputState(_node: ExternalOutputStateNode): Node {

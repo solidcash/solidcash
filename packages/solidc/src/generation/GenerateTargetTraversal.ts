@@ -468,7 +468,7 @@ function findBlockhashCall(body: Node | undefined): Node | undefined {
 
 /** The first effect kind a graph emission handler's body carries that the graph route cannot describe. */
 function graphHandlerUnsupportedEffect(
-  body: Node | undefined,
+  body: Node | undefined, blockhashRouteContext = false,
 ): { reason: string; node: Node } | undefined {
   if (!body) return undefined;
   let found: { reason: string; node: Node } | undefined;
@@ -482,7 +482,8 @@ function graphHandlerUnsupportedEffect(
       found = { reason: 'graph-handler-deploy-not-enabled', node: n };
       return;
     }
-    if (n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.BLOCKHASH) {
+    if (n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.BLOCKHASH
+      && !blockhashRouteContext) {
       found = { reason: 'graph-handler-blockhash-not-enabled', node: n };
       return;
     }
@@ -3047,7 +3048,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the block-slot lookup or the route's parameter forwarding. Scoped to an emission handler: the same
     // effects on the direct route, and in a route-eligible handler that makes no external call, are unchanged.
     if (node.graphEmissionHandler) {
-      const unsupported = graphHandlerUnsupportedEffect(node.body);
+      const unsupported = graphHandlerUnsupportedEffect(node.body,
+        node.parameters.some((parameter) => parameter.name === '__internal__blockhashRowOffset'));
       if (unsupported) {
         throw new GraphHandlerEffectError(
           unsupported.node, unsupported.reason, GRAPH_HANDLER_EFFECT_DETAIL[unsupported.reason],
@@ -6582,6 +6584,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         Op.OP_DUP, Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_DROP, // require(tx.time >= n), [n]
         encodeInt(BigInt(idxDepth)), Op.OP_PICK, // base co-spend input index (composition-safe), [n, base]
       ], loc);
+      if (this.currentFunction.parameters.some((parameter) =>
+        parameter.name === '__internal__blockhashRowOffset')) {
+        // The SCB1 route reserves `maximumRows * readWidth` slots. Its clone receives the row-local offset,
+        // keeping the ordinary direct ABI/base witness unchanged while selecting this row's authenticated band.
+        const offsetDepth = this.getStackIndex('__internal__blockhashRowOffset') + 1;
+        this.emit([encodeInt(BigInt(offsetDepth)), Op.OP_PICK, Op.OP_ADD], loc);
+      }
       if (readOrdinal > 0) this.emit([encodeInt(BigInt(readOrdinal)), Op.OP_ADD], loc); // base + ordinal -> [n, idx]
       this.emit([
         Op.OP_DUP, Op.OP_UTXOTOKENCATEGORY, // [n, idx, oracleCategory]

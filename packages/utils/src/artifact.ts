@@ -196,6 +196,16 @@ export interface AbiFunction {
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
+  /** Compiler-owned SCB1 graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
+  graphBlockhashOracle?: {
+    inputBaseParameter: '__internal__blockhashInputIndex';
+    rowCount: number;
+    readWidth: number;
+    slotCount: number;
+    reads: readonly {
+      row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
+    }[];
+  };
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];

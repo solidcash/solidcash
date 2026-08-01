@@ -1,6 +1,6 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
+import { Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
@@ -1632,6 +1632,24 @@ function synthesizeHiddenBatchRoute(
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
   const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  // SCB1 graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
+  // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
+  // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
+  const graphBlockhashReads = new Map<FunctionDefinitionNode, string[]>();
+  for (const fn of eligible.filter((candidate) => graphTailHandlers.has(candidate))) {
+    const reads: string[] = [];
+    let computed = 0;
+    walkInvocationAst(fn.body, (node) => {
+      if (!(node instanceof FunctionCallNode) || node.identifier.name !== 'blockhash') return;
+      const argument = node.parameters[0];
+      const key = argument instanceof IdentifierNode
+        ? argument.name : encodeComputedBlockhashKey(computed++);
+      if (!reads.includes(key)) reads.push(key);
+    });
+    if (reads.length > 0) graphBlockhashReads.set(fn, reads);
+  }
+  const graphBlockhashReadWidth = Math.max(0,
+    ...[...graphBlockhashReads.values()].map((reads) => reads.length));
   const isTransactionSignatureType = (type: string): boolean => type === 'sig' || type === 'sig[]';
   const signatureMode = eligible.some((fn) =>
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
@@ -1931,6 +1949,9 @@ function synthesizeHiddenBatchRoute(
       && !parameter.name.startsWith('__internal__externalCallInput')
       && !parameter.name.startsWith('__internal__externalReturnOutput')
       && parameter.name !== '__internal__delegateInputIndex');
+    if (graphBlockhashReads.has(sourceHandler)) {
+      handler.parameters.push(new ParameterNode(PrimitiveType.BIGINT, '__internal__blockhashRowOffset'));
+    }
     handler.graphEmissionHandler = true;
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
     handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
@@ -2046,7 +2067,9 @@ function synthesizeHiddenBatchRoute(
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
-  const buildDecodeAndCall = (captureResults = false, rowIndex?: number): string =>
+  const buildDecodeAndCall = (
+    captureResults = false, rowIndex?: number, rowExpression = String(rowIndex ?? 0),
+  ): string =>
     eligible.map((fn, handlerIndex) => {
     const condition = `${handlerIndex === 0 ? 'if' : 'else if'} (rowSelector == hex"${selector(fn)}")`;
     const invokeName = fn === resourceShapedHandler
@@ -2066,13 +2089,19 @@ function synthesizeHiddenBatchRoute(
         __scb_results, abi.encode(${names.join(', ')})
       );`;
     };
+    const blockhashRowOffset = graphBlockhashReads.has(fn)
+      ? (rowIndex === undefined
+        ? `(${rowExpression}) * ${graphBlockhashReadWidth}`
+        : String(rowIndex * graphBlockhashReadWidth))
+      : undefined;
     const witnessName = (binding: { routeInput: string; perRow?: boolean }): string =>
       binding.perRow ? `${binding.routeInput}_r${rowIndex}` : binding.routeInput;
     const entryKeyArguments = (handler: FunctionDefinitionNode): string[] =>
       (handlerEntryKeys.get(handler) ?? []).map(({ base, perRow }) =>
         (perRow ? `${base}_r${rowIndex}` : base));
     if (fn.parameters.length === 0) {
-      const entryOnly = entryKeyArguments(fn);
+      const entryOnly = [...entryKeyArguments(fn), ...(blockhashRowOffset
+        ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [])];
       const senderChecks = (fn.hiddenBatchKeyWitnesses ?? [])
         .filter((binding) => binding.source === 'msgSender')
         .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
@@ -2116,6 +2145,7 @@ function synthesizeHiddenBatchRoute(
           : i === tokenCategoryInputByHandler.get(fn)
           ? '__scb_token_category'
           : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
+      ...(blockhashRowOffset ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []),
     ];
     const physicalEntryArgs = entryKeyArguments(fn);
     const entryShape = handlerEntryKeys.get(fn);
@@ -2218,6 +2248,7 @@ function synthesizeHiddenBatchRoute(
     'bigint __internal__graphSettlementBoundary',
     'bytes __internal__graphCompletionPositions',
     'bytes __internal__graphSettlementTable',
+    ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
   const routeParameters = [
     'bytes batchBlob', ...graphRouteParameters, ...routeSignatureParameters, ...routeKeyParameters,
@@ -2247,7 +2278,7 @@ function synthesizeHiddenBatchRoute(
             __internal__graphCompletionPositions.slice(${rowExpression} * 2, (${rowExpression} + 1) * 2),
             hex"00"
           ));`}
-          ${buildDecodeAndCall(captureResults, rowIndex)}
+          ${buildDecodeAndCall(captureResults, rowIndex, rowExpression)}
           else { revert("unknown batch selector"); }
   `;
   const parser = resourceShapedHandler
@@ -2486,6 +2517,18 @@ function synthesizeHiddenBatchRoute(
     return Math.max(maximum, count);
   }, 0);
   route.hiddenBatchMaximumRows = routeMaximumRows;
+  if (graphBlockhashReadWidth > 0) {
+    route.hiddenBatchBlockhashReadWidth = graphBlockhashReadWidth;
+    route.blockhashSlotCount = routeMaximumRows * graphBlockhashReadWidth;
+    route.hiddenBatchBlockhashReads = Array.from({ length: routeMaximumRows }, (_unused, row) =>
+      eligible.flatMap((handler) => (graphBlockhashReads.get(handler) ?? []).map((readKey, readOrdinal) => ({
+        row,
+        selector: selector(handler),
+        readOrdinal,
+        readKey,
+        slotOffset: row * graphBlockhashReadWidth + readOrdinal,
+      })))).flat();
+  }
   route.location = contract.location;
   const helpers = routeAst.contract.functions.slice(0, -1);
   for (const helper of helpers) helper.location = contract.location;

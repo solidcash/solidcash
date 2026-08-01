@@ -1160,6 +1160,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphSettlementBoundary',
         '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable',
+        '__internal__blockhashInputIndex',
+        '__internal__blockhashRowOffset',
       ].includes(node.name);
     if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
@@ -9182,7 +9184,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // blockhash(n): each distinct identifier-arg read rides its OWN consecutive (n->hash) oracle co-spend -
     // a read-only, self-preserving 1:1 input/output slot. The SDK fills __internal__blockhashInputIndex with
     // the FIRST slot's absolute index (master input index + offset); codegen reads input[base + read-ordinal].
-    if (node.usesBlockhash) {
+    if (node.usesBlockhash || (node.hiddenBatchBlockhashReadWidth ?? 0) > 0) {
       const bhSlots = Math.max(1, node.blockhashSlotCount ?? 0);
       for (let i = 0; i < bhSlots; i++) slots.push({ kind: 'blockhashOracle', offset: offset++ });
     }

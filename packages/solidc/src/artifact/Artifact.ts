@@ -815,6 +815,15 @@ function buildFunctionAbiMetadata(
     ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && { sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo] }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
+    ...(func.hiddenBatchBlockhashReadWidth && func.hiddenBatchBlockhashReads && {
+      graphBlockhashOracle: {
+        inputBaseParameter: '__internal__blockhashInputIndex' as const,
+        rowCount: func.hiddenBatchMaximumRows!,
+        readWidth: func.hiddenBatchBlockhashReadWidth,
+        slotCount: func.hiddenBatchMaximumRows! * func.hiddenBatchBlockhashReadWidth,
+        reads: [...func.hiddenBatchBlockhashReads],
+      },
+    }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
 }

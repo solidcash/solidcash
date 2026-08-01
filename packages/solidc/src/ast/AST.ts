@@ -356,6 +356,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   // omitted from the source ABI.
   hiddenBatchRoute?: boolean;
   hiddenBatchMaximumRows?: number;
+  /** Compiler-owned SCB1 blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  hiddenBatchBlockhashReadWidth?: number;
+  hiddenBatchBlockhashReads?: {
+    row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
+  }[];
   hiddenBatchEligible?: boolean;
   hiddenBatchRejectionReason?: string;
   // Release 4 collection rows bind source argument positions to hidden

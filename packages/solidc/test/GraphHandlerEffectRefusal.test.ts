@@ -93,19 +93,10 @@ describe('graph handler effect refusal (X42)', () => {
     expect((error as Error).message).toMatch(/ at Line \d+, Column \d+$/);
   }, COMPILE_TIMEOUT_MS);
 
-  it('names the blockhash shape instead of failing on a missing stack variable', () => {
-    let error: unknown;
-    let artifact: unknown;
-    try {
-      artifact = compileString(BLOCKHASH_IN_HANDLER, busOptions);
-    } catch (thrown) {
-      error = thrown;
-    }
-    expect(artifact).toBeUndefined();
-    expect(error).toBeInstanceOf(GraphHandlerEffectError);
-    expect((error as GraphHandlerEffectError).reason).toBe('graph-handler-blockhash-not-enabled');
-    expect((error as Error).message).toContain('__internal__blockhashInputIndex');
-    expect((error as Error).message).toMatch(/ at Line \d+, Column \d+$/);
+  it('admits blockhash after the graph route reserves its row-local oracle band', () => {
+    const artifact = compileString(BLOCKHASH_IN_HANDLER, busOptions);
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'run')?.eligible).toBe(true);
+    expect(artifact.hiddenBatch?.route.graphBlockhashOracle?.readWidth).toBe(1);
   }, COMPILE_TIMEOUT_MS);
 
   it('leaves the same handler without either effect on the graph route', () => {

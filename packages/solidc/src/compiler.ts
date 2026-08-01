@@ -14,7 +14,7 @@ import {
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TokenContainerMethodStatementNode, TransferStatementNode, TypeIntrospectionNode,
   StateAssignNode, DeleteStateNode,
-  CastNode, IntLiteralNode,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
@@ -806,10 +806,14 @@ function synthesizeHiddenBatchRoute(
     let graphHasComputedCallArguments = false;
     let graphHasLocalCallArguments = false;
     let graphHasDelegatecall = false;
+    let routeUsesForeignTryCatch = false;
+    let routeUsesOpaqueAssembly = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const receivers = interfaceTypedReceivers(candidate);
         walkInvocationAst(candidate.body, (node) => {
+          if (node instanceof TryCatchNode) routeUsesForeignTryCatch = true;
+          if (node instanceof AssemblyStatementNode) routeUsesOpaqueAssembly = true;
           if (node instanceof NullaryOpNode && [
             NullaryOperator.INPUT_INDEX, NullaryOperator.BYTECODE,
             NullaryOperator.MSG_SENDER, NullaryOperator.TX_ORIGIN,
@@ -1311,6 +1315,10 @@ function synthesizeHiddenBatchRoute(
     } else if (!reason && graphTailCallEligible
       && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)) {
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
+    } else if (!reason && routeUsesForeignTryCatch) {
+      reason = 'foreign-try-catch-transcript-ineligible';
+    } else if (!reason && routeUsesOpaqueAssembly) {
+      reason = 'opaque-assembly-effects-transcript-ineligible';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's

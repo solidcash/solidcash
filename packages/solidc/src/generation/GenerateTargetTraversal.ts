@@ -524,32 +524,39 @@ function countInstantiationDeploySites(body: Node | undefined): number {
 // type + a uniform counter*stride) they must all deploy the SAME contract.
 function surveyFunctionDeploys(
   body: Node | undefined,
-): { count: number; hasConditional: boolean; contractNames: Set<string> } {
+): { count: number; hasConditional: boolean; hasLoopValue: boolean; contractNames: Set<string> } {
   const contractNames = new Set<string>();
   let count = 0;
   let hasConditional = false;
-  if (!body) return { count, hasConditional, contractNames };
+  let hasLoopValue = false;
+  if (!body) return {
+    count, hasConditional, hasLoopValue, contractNames,
+  };
   const seen = new WeakSet<object>();
-  const walk = (n: unknown, inCond: boolean): void => {
-    if (Array.isArray(n)) { for (const it of n) walk(it, inCond); return; }
+  const walk = (n: unknown, inCond: boolean, inLoop: boolean): void => {
+    if (Array.isArray(n)) { for (const it of n) walk(it, inCond, inLoop); return; }
     if (!(n instanceof Node) || seen.has(n)) return;
     seen.add(n);
     if (n instanceof InstantiationNode && n.referencedContract) {
       count += 1;
       contractNames.add(n.referencedContract.name);
       if (inCond) hasConditional = true;
+      if (inLoop && n.callOptions?.value) hasLoopValue = true;
     }
     // for-loops desugar to while before codegen, so ForNode never appears here.
     const childCond = inCond
       || n instanceof BranchNode || n instanceof SwitchNode
       || n instanceof WhileNode || n instanceof DoWhileNode;
+    const childLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
     for (const [key, value] of Object.entries(n)) {
       if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
-      walk(value, childCond);
+      walk(value, childCond, childLoop);
     }
   };
-  walk(body, false);
-  return { count, hasConditional, contractNames };
+  walk(body, false, false);
+  return {
+    count, hasConditional, hasLoopValue, contractNames,
+  };
 }
 
 class MsgDataUsageCollector extends AstTraversal {
@@ -3122,12 +3129,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pendingDynamicWrites = new Map();
     this.coSpendPreservedDynValues = new Set();
     this.pendingTransfers = [];
-    this.transferInfos = node.transferInfos ?? [];
     this.pendingEmits = [];
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
     const deploySurvey = surveyFunctionDeploys(node.body);
+    // A loop `new C{value: V}()` has transfer metadata because it spends the satoshi container, but it has no
+    // fixed transfer region: each runtime iteration verifies its value output inline in the child deploy group.
+    // Do not pre-allocate an ordinary transfer that the epilogue would try to settle at a nonexistent slot. The
+    // loop visitor owns both the interleaved output checks and aggregate container conservation for this shape.
+    this.transferInfos = deploySurvey.hasLoopValue ? [] : node.transferInfos ?? [];
     this.functionDeploySiteCount = deploySurvey.count;
     // Multi-site inline deploy: 2+ deploy sites with at least one conditional (a not-fired conditional shifts
     // the trailing output layout, so fixed slots break) AND all the same child contract (uniform counter*stride

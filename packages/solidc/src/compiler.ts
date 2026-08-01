@@ -257,14 +257,23 @@ function compileWithExternalAdmissionFallback(
   primaryContractName?: string,
 ): Artifact {
   const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
+  // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
+  // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
+  // listener notifications and can replace the user's first diagnostic with retry noise.
+  let initialAst: Ast | undefined = parseAndResolve(
+    code, mergedCompilerOptions, errorListener, primaryContractName,
+  );
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
     admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
-  ): Artifact => compileResolvedAst(
-    parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName),
-    code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
-    admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
-  );
+  ): Artifact => {
+    const ast = initialAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
+    initialAst = undefined;
+    return compileResolvedAst(
+      ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
+      admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
+    );
+  };
   if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
   // spelling makes the route TRY a handler its refusal used to hide, and the solc corpus turned up four files
@@ -359,7 +368,20 @@ function compileWithExternalAdmissionFallback(
     return attributed;
   }
   if (refusedAll !== undefined) return refusedAll;
-  throw firstError;
+
+  // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
+  // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
+  // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
+  // clone); if it succeeds, the resolved compiler options truthfully publish the fallback as direct-only.
+  const directOptions = { ...mergedCompilerOptions, experimentalHiddenBatch: false };
+  try {
+    return compileResolvedAst(
+      parseAndResolve(code, directOptions, errorListener, primaryContractName),
+      code, directOptions, false, true,
+    );
+  } catch (directError) {
+    throw directError ?? firstError;
+  }
 }
 
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {

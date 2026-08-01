@@ -28,6 +28,20 @@ describe('Compiler', () => {
         expect(() => compileString(file.contents)).not.toThrow();
       });
     });
+
+    it('falls back to direct mode when every generated hidden route fails', () => {
+      const artifact = compileString(`contract ConditionalTokenContainerSend() {
+        int counter;
+        function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
+          if (flag) this.tokens[category].transfer(a, amount);
+          else this.tokens[category].transfer(b, amount);
+          this.counter = this.counter + 1;
+        }
+      }`);
+
+      expect(artifact.hiddenBatch).toBeUndefined();
+      expect(artifact.compiler.options?.experimentalHiddenBatch).toBe(false);
+    });
   });
 
   describe('Compilation errors', () => {

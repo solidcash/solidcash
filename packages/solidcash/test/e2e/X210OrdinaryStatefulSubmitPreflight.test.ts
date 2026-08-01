@@ -82,3 +82,54 @@ describe('X210 - the ordinary stateful submit path verifies finalized covenants 
       expect(submit).not.toHaveBeenCalled();
     }, 180_000);
 });
+
+async function deployRecursiveGuard(network: MockNetworkProvider): Promise<StatefulContract> {
+  const artifact = compileString(`pragma solidcash >=0.8.0;
+    contract X211RecursiveGuard(int brand) {
+      int counter;
+      function setIf(int v) public unsafe {
+        if (v > brand) { setIf(v - 1); }
+        require(v == brand);
+        this.counter = v;
+        require(this.counter == v);
+      }
+    }`, { forceStateful: true });
+  expect(artifact.abi.find((fn) => fn.name === 'setIf')?.recursiveStateHandler).toBe(true);
+  const funder = new Contract(p2pkhArtifact, [alicePkh], { provider: network });
+  const fundingUtxo = { ...randomUtxo({ satoshis: 100_000n }), txid: '23'.repeat(32), vout: 0 };
+  await network.addUtxo(funder.address, fundingUtxo);
+  return (await StatefulContract.deploy(artifact, [77n], {
+    provider: network,
+    fundingUtxo,
+    funder: funder.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+    initialState: { counter: 0n },
+    changeAddress: funder.address,
+  })).contract;
+}
+
+describe('X211 - the recursive opt-in preflight has its own hostile proof', () => {
+  it('settles the honest recursive-opt-in invocation', async () => {
+    const network = provider();
+    const contract = await deployRecursiveGuard(network);
+    const submit = vi.spyOn(network, 'sendRawTransaction');
+    submit.mockClear();
+
+    await expect(contract.call.setIf(77n).send()).resolves.toHaveProperty('txid');
+    expect(submit).toHaveBeenCalledTimes(1);
+  }, 180_000);
+
+  it('refuses the one-field argument hostile at input 0 OP_VERIFY before submission', async () => {
+    const network = provider();
+    const contract = await deployRecursiveGuard(network);
+    const submit = vi.spyOn(network, 'sendRawTransaction');
+    submit.mockClear();
+
+    // This differs from the honest control only in `v`: 77 -> 76. It remains fee- and dust-valid, reaches the
+    // recursive ABI opt-in, and fails the first explicit require rather than a byte-policy gate.
+    await expect(contract.call.setIf(76n).send()).rejects.toThrow(
+      'Recursive state invocation failed concrete BCH VM preflight: input 0: '
+      + 'Program failed an OP_VERIFY operation.',
+    );
+    expect(submit).not.toHaveBeenCalled();
+  }, 180_000);
+});

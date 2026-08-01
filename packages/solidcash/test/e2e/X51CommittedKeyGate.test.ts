@@ -179,7 +179,7 @@ const outcome = async (send: Promise<unknown>): Promise<string> =>
 
 /** The input index a rejected transaction failed at, so a hostile case pins WHICH covenant refused it. */
 const failingInput = (message: string): number | null => {
-  const match = /error in evaluating input index (\d+)/.exec(message);
+  const match = /(?:error in evaluating input index|preflight failed at input) (\d+)/.exec(message);
   return match ? Number(match[1]) : null;
 };
 
@@ -259,7 +259,9 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
       const message = await outcome((await build({
         artifact: committedProxyArtifact, constructorArgs: [alicePkh], signer: 'stranger',
       })).send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
+      expect(message).toContain(
+        'BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.',
+      );
       expect(failingInput(message)).toBe(0);
     }, 120_000);
 

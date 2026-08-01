@@ -9,8 +9,10 @@ Written for an incoming reviewer/implementer picking this up cold. Read this fil
 - Branch `codex/layer3-binding-spike`, worktree `/Code/cashscript/.worktrees/layer3-binding-spike`.
 - Baseline branch is `solidcash_v0.13.1`. This work has NOT been merged to it.
 - `solidc` 2,807/2,807. Capstones C1/C2/C3: 53 passed / 6 skipped.
-- The SDK unit suite has 2 known-failing tests in `test/conformance/arithmetic.conformance.test.ts`
-  (POW op-cost density). Proven pre-existing by re-running against a clean tree. Do not chase them.
+- At `1b57f474`, the full SDK run has 5,188 passed / 49 skipped / 9 todo. Its only failures are the two
+  known tests in `test/conformance/arithmetic.conformance.test.ts` (POW op-cost density), proven pre-existing
+  by re-running against a clean tree. Do not chase them.
+- Repository-wide `yarn build` and `yarn lint` are green at the same source state.
 
 ## 2. The single most important distinction on this project
 

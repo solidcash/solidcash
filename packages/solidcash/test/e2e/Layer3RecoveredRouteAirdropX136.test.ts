@@ -10,7 +10,9 @@ import { setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
-import { createDataNftUnlocker, getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  createDataNftUnlocker, createEntryNftUnlocker, getDataNftAddress, getEntryNftAddress,
+} from '../../src/stateful/covenant-helpers.js';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../../src/keccak/keccakComputeSidecar.js';
 import type { Utxo } from '../../src/interfaces.js';
 
@@ -28,14 +30,14 @@ import type { Utxo } from '../../src/interfaces.js';
  * - became admissible, and admitting it put a `keccakSideCar` slot into the ROUTE's block:
  *
  *   before  blockSize 3  [master, dataNft, returnEvent]
- *   after   blockSize 4  [master, dataNft, keccakSideCar, returnEvent]
+ *   after   blockSize 5  [master, dataNft, keccakSideCar, entry, returnEvent]
  *
  * So "the recovery adds no covenant" is true on the scalar-vs-collection axis that X94 measured and NOT true
  * of the recovery in general. This file runs the after-shape to completion on mocknet.
  *
  * WHAT IS PROVED HERE, and it is one route out of the recovered population, not the population:
  *
- *  1. POSITIVE. The 4-slot recovered route settles: the graph controller attests, the projection verifies, the
+ *  1. POSITIVE. The 5-slot recovered route settles: the graph controller attests, the projection verifies, the
  *     route co-spends and recreates the branded keccak side-car, and the return-event NFT carries the leaf
  *     hash the SDK never computed - it is extracted from the VM's own trace and then re-asserted by the VM.
  *  2. HOSTILE. A side-car recreated with a believable-wrong result - the leaf hash of a DIFFERENT amount, same
@@ -91,9 +93,9 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
     const layout = artifact.hiddenBatch!.route.blockLayout!;
     console.log(`[X136] route blockSize=${layout.blockSize} slots=`
       + `${JSON.stringify(layout.slots.map((slot: any) => slot.kind))}`);
-    expect(layout.blockSize).toBe(4);
+    expect(layout.blockSize).toBe(5);
     expect(layout.slots.map((slot: any) => slot.kind))
-      .toEqual(['master', 'dataNft', 'keccakSideCar', 'returnEvent']);
+      .toEqual(['master', 'dataNft', 'keccakSideCar', 'entry', 'returnEvent']);
     // The whole admitted surface is read-only, which is what this file's evidence is and is not about.
     for (const name of eligible) {
       const entry = artifact.abi.find((abi: any) => abi.name === name);
@@ -137,6 +139,11 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
       token: hexToBin(`aa20${'55'.repeat(32)}87`), root: merkleRoot,
     });
     const participant = base.withCategory(hexToBin(setup.categoryId));
+    const entryAccess = artifact.hiddenBatch!.route.entryAccesses?.[0];
+    if (entryAccess?.collection === undefined) throw new Error('Airdrop route published no entry collection');
+    const entryAddress = getEntryNftAddress(participant, setup.categoryId, entryAccess.collection);
+    const entryUtxo = (await provider.getUtxos(entryAddress))[0];
+    if (entryUtxo === undefined) throw new Error('Airdrop claimed sentinel entry NFT was not staged');
 
     // The branded compute side-car, at the address salted with the participant's own category. The SAME salt
     // must build the redeem, or the input's P2SH hash does not match and nothing about keccak is reached.
@@ -159,10 +166,9 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
         [{
           artifact,
           lockingBytecode: participant.lockingBytecode,
-          // The route declares `claimed`'s shared entry key even when no row addresses it, because `claimed`
-          // is one of the handlers it admits. `getLeafHash` binds nothing, so the caller names it - the
-          // documented `unboundRouteWitnesses` case, not a hole: the route's block carries no entry slot, so
-          // nothing is read through this key on this transaction.
+          // The route declares `claimed`'s shared entry key because its public getter is also admitted.
+          // `getLeafHash` binds no mapping key, so the caller supplies the sentinel filling the shared
+          // route's published entry slot: the documented `unboundRouteWitnesses` case.
           unboundRouteWitnesses: { __scb_key_claimed_0: new Uint8Array(32) },
         }],
         [{ parent: null, callee: 0, function: 'getLeafHash', args: [claimant, amount] as never[] }],
@@ -182,7 +188,7 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
       const { layout, transcript, resultVector } = planFor(resultHash);
       const sidecar = buildKeccakComputeSidecar(preimage, sidecarSalt, sidecarUtxo, true);
       const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
-      // Participant block, in published slot order: master, dataNft, keccakSideCar, returnEvent.
+      // Participant block, in published slot order: master, data NFT, side-car, mapping sentinel, return.
       tx.addInput(setup.masterUtxo, participant.createCompilerRouteUnlocker(
         artifact.hiddenBatch!.route, hexToBin(artifact.hiddenBatch!.selector),
       )(
@@ -191,6 +197,9 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
       ));
       tx.addInput(setup.dataNftUtxos[0], createDataNftUnlocker(participant, 0, setup.categoryId));
       tx.addInput(sidecarUtxo, sidecar.unlocker);
+      tx.addInput(entryUtxo, createEntryNftUnlocker(
+        participant, 0, setup.categoryId, entryAccess.collection,
+      ));
       tx.addInput(returnFunding, p2pkh.unlock.spend(alicePub, signature()));
       tx.addInput(projectionUtxo, projection.unlock.verify(
         transcript.bytes, BigInt(layout.controllerInput), 0n,
@@ -228,6 +237,15 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
           category: KECCAK_SIDECAR_CATEGORY,
           amount: 0n,
           nft: { capability: 'mutable', commitment: binToHex(sidecarResult) },
+        },
+      });
+      tx.addOutput({
+        to: entryAddress,
+        amount: entryUtxo.satoshis,
+        token: {
+          category: setup.categoryId,
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: entryUtxo.token!.nft!.commitment },
         },
       });
       // THE RETURN-EVENT NFT. `resultVector` is the only thing the `return-commitment` hostile changes.
@@ -294,14 +312,17 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
     const built = buildOnce(preimage ?? new Uint8Array(0), declaredResult, sidecarResult);
     if (preimage === undefined) {
       // PROBE. Read the preimage off the route's own execution rather than re-deriving the ABI encoding here.
-      // Slot 2 is the route's keccakSideCar offset; one call, so the window is [2, 3).
+      // Read the offset from the artifact: shared entry slots may move the side-car as admission evolves.
       const vm = createVirtualMachineBch2026ForProvider(provider);
       const trace = vm.debug({
         inputIndex: 0,
         sourceOutputs: generateLibauthSourceOutputs(built.tx.inputs as never),
         transaction: built.tx.buildLibauthTransaction(),
       }) as unknown[];
-      const extracted = extractKeccakPreimageFromTrace(trace, 2, 1);
+      const sidecarIndex = (artifact.hiddenBatch!.route.blockLayout!.slots as any[])
+        .findIndex((slot) => slot.kind === 'keccakSideCar');
+      if (sidecarIndex < 0) throw new Error('Airdrop route published no keccak side-car slot');
+      const extracted = extractKeccakPreimageFromTrace(trace, sidecarIndex, 1);
       return { discovered: extracted.preimage, leafHash: zero, wrongHash: zero };
     }
     try {
@@ -332,7 +353,7 @@ describe('X136: the route L2-F2 recovered on Airdrop, run to completion', () => 
    * THE POSITIVE, and the guard negative control for both hostiles below: the same builder, the same
    * side-car, the same block - only the attacked field differs in the other two.
    */
-  it('MEASURED: the recovered 4-slot route SETTLES with the keccak side-car co-spent', async () => {
+  it('MEASURED: the recovered 5-slot route SETTLES with the keccak side-car co-spent', async () => {
     const result = await attempt('none', await leafPreimage());
     if (result.refusal) console.log(`[X136] positive refused: ${result.refusal.split('\n')[0]}`);
     expect(result.refusal, 'the recovered route did not settle').toBeUndefined();

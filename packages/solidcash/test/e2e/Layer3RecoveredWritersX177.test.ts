@@ -33,7 +33,7 @@ import type { Utxo } from '../../src/interfaces.js';
  *   Lib.doSomething(uint256)                scalar written from an ARGUMENT      SETTLES
  *   Target.protected()                      opaque assembly in its call graph    EXCLUDED, fail-closed
  *   UniswapV2Pair.initialize(addr,addr)     2 fields / 4 data NFTs / 3 entries   BLOCKED by this harness
- *   StakingRewards.setRewardsDuration(u256) 4 data NFTs + 5 entry identities    BLOCKED by this harness
+ *   StakingRewards.setRewardsDuration(u256) 4 data NFTs + 3 entry identities    BLOCKED by this harness
  *
  * EVERY WRITER HERE IS VOID, and `Counter.inc` is not - it returns `count`. A void row still fills its
  * return-event slot, with an NFT carrying the EMPTY result vector's single push. A PLAIN output there is
@@ -229,7 +229,7 @@ const ROWS: readonly Row[] = [
   },
   {
     key: 'defi/staking-rewards/StakingRewards.sol::StakingRewards.setRewardsDuration',
-    shape: 'FOUR data NFTs plus FIVE co-spent mapping ENTRY identities',
+    shape: 'FOUR data NFTs plus THREE co-spent mapping ENTRY identities',
     file: `${SBE}/defi/staking-rewards/StakingRewards.sol`,
     contract: 'StakingRewards',
     writer: 'setRewardsDuration',
@@ -237,17 +237,17 @@ const ROWS: readonly Row[] = [
     guards: [{ name: 'duration', args: [] }, { name: 'rewardRate', args: [] }],
     verdict: 'blocked',
     blockedBy: 'SUPERSEDED by Layer3RecoveredOracleWriterX180, which RUNS this handler: it SETTLES, with all '
-      + 'four data NFTs and all five published mapping entry identities co-spent. What it needed was the MASTER input index '
+      + 'four data NFTs and all three published mapping entry identities co-spent. What it needed was the MASTER input index '
       + 'in the data NFT unlocker, the oracle registers named in the pre-state, and a BARE P2PKH input so the '
       + "projection's tx.origin check has an origin to find. Kept BLOCKED here only to avoid duplicating X180.",
     pre: { duration: 3_600n },
     post: { duration: 86_400n },
-    blockSize: 11,
+    blockSize: 9,
     slots: [
       'master', 'dataNft', 'dataNft', 'dataNft', 'dataNft',
-      'entry', 'entry', 'entry', 'entry', 'entry', 'returnEvent',
+      'entry', 'entry', 'entry', 'returnEvent',
     ],
-    entryCollections: ['balanceOf', 'userRewardPerTokenPaid', 'rewards', 'userRewardPerTokenPaid', 'balanceOf'],
+    entryCollections: ['userRewardPerTokenPaid', 'rewards', 'balanceOf'],
   },
 ];
 

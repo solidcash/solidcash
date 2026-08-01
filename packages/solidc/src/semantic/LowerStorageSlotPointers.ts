@@ -1,5 +1,5 @@
 import {
-  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, PrimitiveType, Type,
+  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -165,7 +165,8 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       if (alias.slot) {
         this.used = true;
         const write = new MappingAssignNode(
-          EVM_STORAGE, [this.keyOf(alias)], this.toUint(this.visit(node.expression) as ExpressionNode, alias.struct.fields[0].type),
+          EVM_STORAGE, [this.keyOf(alias)],
+          this.toUint(this.visit(node.expression) as ExpressionNode, alias.struct.fields[0].type),
         );
         write.location = node.location;
         return write;
@@ -213,7 +214,9 @@ export default class LowerStorageSlotPointers extends AstTraversal {
           this.constStructsToPromote.set(factory.struct.name, factory.struct);
         } else if (factory.isSlotAlias) {
           // `S storage d = getXSlot(ref)` -> d aliases `ref` directly (no __evm_storage register).
-          this.aliases.set(node.name, { aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
+          this.aliases.set(node.name, {
+            aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct,
+          });
         } else {
           this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
           this.used = true;

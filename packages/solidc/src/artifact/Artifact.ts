@@ -10,7 +10,7 @@ import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
   StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
   ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
-  BinaryOpNode, IdentifierNode, IntLiteralNode, AssignNode, TupleAssignmentNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode,
   ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
   LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
 } from '../ast/AST.js';
@@ -811,8 +811,12 @@ function buildFunctionAbiMetadata(
       ),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
-    ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && { sortedInsertLoopInfo: [...func.sortedInsertLoopInfo] }),
-    ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && { sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo] }),
+    ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && {
+      sortedInsertLoopInfo: [...func.sortedInsertLoopInfo],
+    }),
+    ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
+      sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo],
+    }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
     ...(func.hiddenBatchBlockhashReadWidth && func.hiddenBatchBlockhashReads && {

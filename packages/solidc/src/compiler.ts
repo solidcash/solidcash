@@ -1,18 +1,25 @@
 import { CharStream, CommonTokenStream } from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
-import { Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions, computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature, encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, IntType, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES, optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType } from '@solidcash/utils';
+import {
+  Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
+  computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
+  encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES,
+  optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
+  scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType,
+} from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
   Ast, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode,
   FunctionCallNode, FunctionDefinitionNode,
-  ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode, InstantiationNode,
+  ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
+  InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   FunctionCallStatementNode,
   LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
-  SourceFileNode, TokenContainerMethodStatementNode, TransferStatementNode, TypeIntrospectionNode,
+  SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
   StateAssignNode, DeleteStateNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
@@ -478,6 +485,8 @@ function coalesceExpandedPointerTable(
   if (dispatch[count - 1] - dispatch[0] !== count - 1) return calls;
   // Every field but the physical offset carries over; the expanded rows are `once`/`conditional`, so neither a
   // floor nor a bound provenance can be present to carry over stale.
+  // The discarded field is deliberately named for destructuring; it must not survive into expanded rows.
+  // eslint-disable-next-line @typescript-eslint/naming-convention, @typescript-eslint/no-unused-vars
   const { computedOffset: _computedOffset, ...first } = calls[dispatch[0]];
   const { guarded } = groups[0];
   // A guarded expansion reaches 0..count rows, decided on-chain; an unguarded one comes from a compile-time
@@ -812,6 +821,8 @@ function synthesizeHiddenBatchRoute(
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const receivers = interfaceTypedReceivers(candidate);
+        // The walker invokes this callback synchronously; none of the captured route accumulators escape.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
           if (node instanceof TryCatchNode) routeUsesForeignTryCatch = true;
           if (node instanceof AssemblyStatementNode) routeUsesOpaqueAssembly = true;
@@ -1173,6 +1184,8 @@ function synthesizeHiddenBatchRoute(
             reason = 'row-local-msg-sender-collection-key-not-enabled';
             break;
           }
+          // Synchronous iteration; `reason` is the intended accumulator for this surrounding route loop.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
           alternatives[0].forEach((inputIndex, keyIndex) => {
             if (inputIndex === -2) {
               if (graphControllerLbc === undefined) {
@@ -1236,6 +1249,8 @@ function synthesizeHiddenBatchRoute(
             type,
           }));
           for (const witness of witnesses) routeKeyWitnesses.set(witness.name, [witness]);
+          // Synchronous iteration; `reason` is the intended accumulator for this surrounding route loop.
+          // eslint-disable-next-line @typescript-eslint/no-loop-func
           alternatives[0].forEach((inputIndex, keyIndex) => {
             if (inputIndex === -2) {
               if (graphControllerLbc === undefined) {
@@ -1284,9 +1299,8 @@ function synthesizeHiddenBatchRoute(
           : admitExternalHandlers && !(attribution?.refused.has(externalHandlerKey(fn)) ?? false)
             ? undefined : 'external-handler-route-generation-unsupported';
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
-    else if (!reason && foreignOutStatePrecedesSharedCall(fn)) {
+    else if (!reason && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
-    }
     // A transaction signature cannot be placed in the controller-rooted SCB1
     // argument vector: the signature commits the transaction containing the
     // controller commitment, while that commitment would in turn commit the
@@ -1363,7 +1377,8 @@ function synthesizeHiddenBatchRoute(
     }
   }
 
-  const eligibleFootprint = (fn: FunctionDefinitionNode) => analyseFunctionFootprint(fn, byName);
+  const eligibleFootprint = (fn: FunctionDefinitionNode): ReturnType<typeof analyseFunctionFootprint> =>
+    analyseFunctionFootprint(fn, byName);
   const consumesExternalResult = (fn: FunctionDefinitionNode): boolean => {
     let found = false;
     walkInvocationAst(fn.body, (node) => {

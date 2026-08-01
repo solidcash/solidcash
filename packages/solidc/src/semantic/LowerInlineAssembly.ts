@@ -169,7 +169,9 @@ function isLowLevelCall(v: YulExpressionNode | undefined): v is YulFunctionCallN
     && (v.name === 'call' || v.name === 'staticcall' || v.name === 'delegatecall');
 }
 
-function lowerLowLevelCall(call: YulFunctionCallNode, okVar: string, okIsNew: boolean, src: YulStatementNode): StatementNode {
+function lowerLowLevelCall(
+  call: YulFunctionCallNode, okVar: string, okIsNew: boolean, src: YulStatementNode,
+): StatementNode {
   const mode = call.name as 'call' | 'staticcall' | 'delegatecall';
   const addr = loc(new CastNode(new AddressType(false), lowerValue(call.args[1]), false), call);
   // The payload is supplied at build time via .withExternalCall (see docs/call-model.md s12); the compiler emits
@@ -2272,11 +2274,20 @@ function yulCloneRename<T extends YulNode>(n: T, rn: Map<string, string>): T {
   if (n instanceof YulLiteralNode) return at(new YulLiteralNode(n.kind, n.raw));
   if (n instanceof YulPathNode) return at(new YulPathNode(rn.get(n.base) ?? n.base, [...n.members]));
   if (n instanceof YulFunctionCallNode) return at(new YulFunctionCallNode(n.name, n.args.map(r)));
-  if (n instanceof YulVariableDeclarationNode) return at(new YulVariableDeclarationNode(n.names.map((x) => rn.get(x) ?? x), n.value ? r(n.value) : undefined));
+  if (n instanceof YulVariableDeclarationNode) {
+    return at(new YulVariableDeclarationNode(
+      n.names.map((x) => rn.get(x) ?? x), n.value ? r(n.value) : undefined,
+    ));
+  }
   if (n instanceof YulAssignmentNode) return at(new YulAssignmentNode(n.paths.map(r), r(n.value)));
   if (n instanceof YulExpressionStatementNode) return at(new YulExpressionStatementNode(r(n.expression)));
   if (n instanceof YulIfNode) return at(new YulIfNode(r(n.condition), r(n.body)));
-  if (n instanceof YulSwitchNode) return at(new YulSwitchNode(r(n.expression), n.cases.map((c) => new YulCaseNode(r(c.value), r(c.body))), n.defaultBody ? r(n.defaultBody) : undefined));
+  if (n instanceof YulSwitchNode) {
+    return at(new YulSwitchNode(
+      r(n.expression), n.cases.map((c) => new YulCaseNode(r(c.value), r(c.body))),
+      n.defaultBody ? r(n.defaultBody) : undefined,
+    ));
+  }
   if (n instanceof YulForLoopNode) return at(new YulForLoopNode(r(n.pre), r(n.condition), r(n.post), r(n.body)));
   if (n instanceof YulBlockNode) return at(new YulBlockNode(n.statements.map(r)));
   return n; // Break / Continue / Leave: no identifiers
@@ -2291,7 +2302,14 @@ function collectYulLets(block: YulBlockNode, out: string[]): void {
   for (const s of block.statements) {
     if (s instanceof YulVariableDeclarationNode) out.push(...s.names);
     else if (s instanceof YulIfNode) collectYulLets(s.body, out);
-    else if (s instanceof YulForLoopNode) { collectYulLets(s.pre, out); collectYulLets(s.post, out); collectYulLets(s.body, out); } else if (s instanceof YulSwitchNode) { for (const c of s.cases) collectYulLets(c.body, out); if (s.defaultBody) collectYulLets(s.defaultBody, out); } else if (s instanceof YulBlockNode) collectYulLets(s, out);
+    else if (s instanceof YulForLoopNode) {
+      collectYulLets(s.pre, out);
+      collectYulLets(s.post, out);
+      collectYulLets(s.body, out);
+    } else if (s instanceof YulSwitchNode) {
+      for (const c of s.cases) collectYulLets(c.body, out);
+      if (s.defaultBody) collectYulLets(s.defaultBody, out);
+    } else if (s instanceof YulBlockNode) collectYulLets(s, out);
   }
 }
 
@@ -2339,7 +2357,9 @@ function inlineYulCall(
 
 // Hoist local-function calls out of an expression: append each call's inlined body to `pre`, replace the call
 // with its return value.
-function hoistYulCalls(e: YulExpressionNode, defs: Map<string, YulFunctionDefinitionNode>, pre: YulStatementNode[]): YulExpressionNode {
+function hoistYulCalls(
+  e: YulExpressionNode, defs: Map<string, YulFunctionDefinitionNode>, pre: YulStatementNode[],
+): YulExpressionNode {
   if (e instanceof YulFunctionCallNode) {
     const args = e.args.map((a) => hoistYulCalls(a, defs, pre));
     const def = defs.get(e.name);

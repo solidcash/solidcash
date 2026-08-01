@@ -240,7 +240,6 @@ import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
 import { isBchAsmBlock } from './YulAST.js';
-import AstTraversal from './AstTraversal.js';
 import {
   Modifier,
   NumberUnit,
@@ -832,12 +831,12 @@ export default class AstBuilder
       if (seen.has(t)) return; // struct-field cycle (invalid Solidity) - refuse to expand infinitely
       this.mappingStructStateVars.set(prefix, t);
       for (const field of t.fields) {
-        const name = `${prefix}__${field.name}`;
+        const flattenedName = `${prefix}__${field.name}`;
         if (field.type instanceof StructType && this.structNeedsFieldFlattening(field.type)) {
-          flattenInto(name, field.type, location, new Set([...seen, t]));
+          flattenInto(flattenedName, field.type, location, new Set([...seen, t]));
           continue;
         }
-        const flat = this.buildFlattenedStructField(field.type, name, location);
+        const flat = this.buildFlattenedStructField(field.type, flattenedName, location);
         if (flat instanceof CollectionNode) collections.push(flat);
         else expandedStateVars.push(flat);
       }
@@ -2218,7 +2217,9 @@ export default class AstBuilder
     // be a scalar assignment/inc-dec or a tuple destructure `(x, y) = (a, b)`.
     let updateNode: StatementNode | undefined;
     if (updateCtx && updateCtx.tupleSlot_list().length > 0) {
-      updateNode = this.buildForTupleAssign(updateCtx.tupleSlot_list(), updateCtx.expression_list(), Location.fromCtx(updateCtx));
+      updateNode = this.buildForTupleAssign(
+        updateCtx.tupleSlot_list(), updateCtx.expression_list(), Location.fromCtx(updateCtx),
+      );
     } else if (updateCtx) {
       updateNode = this.buildCompoundAssign(
         updateCtx.Identifier().getText(),
@@ -3212,6 +3213,8 @@ export default class AstBuilder
     // one-level flattened-write paths below apply unchanged at any depth.
     if (!isThis) {
       while (segs.length > 1 && segs[0].member !== undefined && this.mappingStructStateVars.has(rawName)) {
+        // `segs` is replaced only after this synchronous lookup completes; the callback never escapes the loop.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
         const field = this.mappingStructStateVars.get(rawName)!.fields.find((f) => f.name === segs[0].member);
         if (!field || !(field.type instanceof StructType) || !this.structNeedsFieldFlattening(field.type)) break;
         rawName = `${rawName}__${segs[0].member}`;
@@ -5142,7 +5145,13 @@ export default class AstBuilder
         // literal token, so build a fresh IntLiteralNode for the key rather than re-visiting a context.
         const numTok = cur.NumberLiteral();
         const keyLoc = Location.fromToken(numTok.symbol);
-        segs.unshift({ key: () => { const n = new IntLiteralNode(BigInt(numTok.getText())); n.location = keyLoc; return n; } });
+        segs.unshift({
+          key: () => {
+            const n = new IntLiteralNode(BigInt(numTok.getText()));
+            n.location = keyLoc;
+            return n;
+          },
+        });
         cur = cur.expression();
       } else if (cur instanceof FieldAccessContext) {
         const mn = cur.memberName();
@@ -5151,10 +5160,17 @@ export default class AstBuilder
         segs.unshift({ member });
         cur = cur.expression();
       } else if (cur instanceof MappingAccessContext) {
-        cur.expression_list().slice().reverse().forEach((e) => segs.unshift({ key: () => this.visit(e) as ExpressionNode }));
-        return { rawName: cur.Identifier().getText(), isThis: true, nameLoc: Location.fromToken(cur.Identifier().symbol), segs };
+        cur.expression_list().slice().reverse()
+          .forEach((e) => segs.unshift({ key: () => this.visit(e) as ExpressionNode }));
+        return {
+          rawName: cur.Identifier().getText(), isThis: true,
+          nameLoc: Location.fromToken(cur.Identifier().symbol), segs,
+        };
       } else if (cur instanceof StateAccessContext) {
-        return { rawName: cur.Identifier().getText(), isThis: true, nameLoc: Location.fromToken(cur.Identifier().symbol), segs };
+        return {
+          rawName: cur.Identifier().getText(), isThis: true,
+          nameLoc: Location.fromToken(cur.Identifier().symbol), segs,
+        };
       } else if (cur instanceof IdentifierContext) {
         return { rawName: cur.anyIdentifier().getText(), isThis: false, nameLoc: Location.fromCtx(cur), segs };
       } else {
@@ -5744,7 +5760,9 @@ export default class AstBuilder
     // `++x;` / `--x;` at statement scope is exactly `x += 1` / `x -= 1`; reuse the lvalue reconstruction + builder.
     const lv = this.extractLvalue(ctx.expression());
     if (!lv) throw new ParseError('Invalid increment/decrement target', Location.fromCtx(ctx.expression()));
-    return this.buildLvalueAssign(lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, undefined, Location.fromCtx(ctx));
+    return this.buildLvalueAssign(
+      lv.rawName, lv.isThis, lv.nameLoc, lv.segs, ctx._op.text, undefined, Location.fromCtx(ctx),
+    );
   }
 
 
@@ -5852,22 +5870,3 @@ const parseNumberString = (numberString: string): bigint | undefined => {
   if (mantissa % divisor !== 0n) return undefined;
   return mantissa / divisor;
 };
-
-// Returns whether an AST subtree references a given identifier name. Used to lower `transient` state vars into
-// per-function locals only in the functions that actually use them (avoids dead locals / name collisions).
-class IdentifierReferenceFinder extends AstTraversal {
-  private found = false;
-
-  constructor(private targetName: string) { super(); }
-
-  has(node: Node): boolean {
-    this.found = false;
-    this.visit(node);
-    return this.found;
-  }
-
-  visitIdentifier(node: IdentifierNode): Node {
-    if (node.name === this.targetName) this.found = true;
-    return node;
-  }
-}

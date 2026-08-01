@@ -61,11 +61,11 @@ export interface SolidcashEthers {
     : ContractFactory<Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>;
   getContractAt<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value, addressOrCategory: string,
     runner?: ContractRunner): Promise<Value extends SplitArtifactBundle ? SplitContract : ConnectedStatefulContract<
-    Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
+  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
   deployContract<Value extends Artifact | SplitArtifactBundle | string>(artifactOrName: Value,
     args?: ConstructorArgument[], runner?: ContractRunner, overrides?: DeployContractOptions): Promise<
-    Value extends SplitArtifactBundle ? SplitContract : DeployedContract<
-    Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
+  Value extends SplitArtifactBundle ? SplitContract : DeployedContract<
+  Value extends Artifact ? Value : Value extends string ? ArtifactForName<Value> : Artifact>>;
   // classes (BCH-native)
   Contract: typeof StatefulContract;
   ContractFactory: typeof ContractFactory;
@@ -92,6 +92,7 @@ class HardhatSplitContractFactory {
   connect(runner: ContractRunner): HardhatSplitContractFactory {
     return new HardhatSplitContractFactory(SplitContractBundle.from(this.split.bundle, runner));
   }
+
   async deploy(...values: unknown[]): Promise<SplitContract> {
     let options: SplitDeployOptions = {};
     const last = values.at(-1);
@@ -100,6 +101,7 @@ class HardhatSplitContractFactory {
     }
     return this.split.deploy(values as ConstructorArgument[], options);
   }
+
   at(address: string, constructorArgs: ConstructorArgument[] = []): Promise<SplitContract> {
     return this.split.at(address, constructorArgs);
   }

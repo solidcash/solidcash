@@ -19,7 +19,6 @@ import {
   CircularInterfaceInheritanceError,
   MissingOverrideError,
   InheritanceNameCollisionError,
-  LibraryNotCompilableError,
   ParentInvocationArgCountError,
   UndefinedParentInvocationError,
   PrivateStateVariableAccessError,
@@ -30,7 +29,6 @@ import {
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   DiamondInheritanceError,
-  StatefulContractDeploymentError,
   DeployValueInNonStatefulError,
 } from '../../src/Errors.js';
 

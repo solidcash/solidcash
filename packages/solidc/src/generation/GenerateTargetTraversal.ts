@@ -1,3 +1,4 @@
+/* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   asmToScript,

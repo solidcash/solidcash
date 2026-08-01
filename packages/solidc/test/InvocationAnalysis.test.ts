@@ -106,7 +106,7 @@ describe('Release 0 shared invocation analysis', () => {
           require(count >= 0);
         }
       }`, { forceStateful: true });
-    const occurrence = (name: string) => artifact.invocationAnalysis!.functions
+    const occurrence = (name: string): string => artifact.invocationAnalysis!.functions
       .find((fn) => fn.name === name)!.externalCalls![0].occurrence;
     expect(occurrence('once')).toBe('once');
     expect(occurrence('maybe')).toBe('conditional');

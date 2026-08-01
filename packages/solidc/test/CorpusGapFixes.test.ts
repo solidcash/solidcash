@@ -511,12 +511,16 @@ describe('string / hex literal coercion at array & mapping element writes', () =
       'contract C() { mapping(uint256 => bytes4) m; function f(uint256 k) { m[k] = "abcd"; } }',
       'contract C() { bytes8[] a; function f(uint256 i) { a[i] = hex"0102"; } }',
     ];
-    for (const s of srcs) expect(compileString(s, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    for (const s of srcs) {
+      expect(compileString(s, { solidityImportCompat: true, forceStateful: true }).contractName).toBe('C');
+    }
   });
 
   it('right-pads to the element width (byte-identical to the padded literal)', () => {
-    const bc = (v) => compileString(`contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
-      { solidityImportCompat: true, forceStateful: true }).bytecode;
+    const bc = (v: string): string => compileString(
+      `contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
+      { solidityImportCompat: true, forceStateful: true },
+    ).bytecode;
     expect(bc('"abcd"')).toBe(bc('0x61626364'));
   });
 });
@@ -1807,9 +1811,10 @@ describe('external call on the current contract type (self-type)', () => {
    * base list is only resolved when the interface is not the compilation root.
    */
   it('rejects an interface whose base does not resolve as an interface', () => {
-    expect(() => cc('contract C {} interface I is C {}')).toThrow(
-      /solidc \[INTERFACE_CONTRACT_BASE\]: interface 'I' cannot inherit contract 'C'; interfaces can only inherit interfaces/,
-    );
+    expect(() => cc('contract C {} interface I is C {}')).toThrow(new RegExp(
+      'solidc \\[INTERFACE_CONTRACT_BASE\\]: interface \'I\' cannot inherit contract \'C\'; '
+        + 'interfaces can only inherit interfaces',
+    ));
     expect(() => cc('contract C {} interface I is Zzz {}')).toThrow(/Undefined interface 'Zzz'/);
     // The positive half: a base that DOES resolve as an interface is accepted, directly and transitively.
     expect(cc('interface B { function m() external; } contract C is B { function m() external { require(true); } }'))
@@ -1874,7 +1879,6 @@ describe('foreign external fn-ptr state var (fixed method on runtime address)', 
 });
 
 describe('foreign external fn-ptr parameter (per-call master index)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   // A called `function(..) external` PARAM lowers to an address param + a bytes4 selector param + a per-call
   // `__internal__extcallMasterIdx<i>` the SDK fills. VM-verified in ForeignFunctionPointerParam.test.ts
   // (single + multi-call binding).
@@ -2077,7 +2081,9 @@ describe('address(L) library-as-address (EVM library-linking parity, corpus libr
 });
 
 describe('prunes dead internal methods that read msg.data (inherited OZ Context._msgData)', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ok = (src: string): string => compileString(
+    src, { solidityImportCompat: true },
+  ).contractName;
   it('compiles when an UNREACHABLE internal method reads msg.data (dropped, not codegen-ed)', () => {
     // The dead `_msgData` never runs; msg.data is only reconstructible at an entry point, so keeping it would
     // fail the whole compile with MsgDataInSubroutineError. It is pruned by name-conservative reachability.
@@ -2268,7 +2274,9 @@ describe('synthesizes __extaddr for IFoo(<param-rooted field>).method() (caller-
 // `arbitratorFee` and the field `a.arbitratorFee` collide; the catch-all rename corrupted `a.arbitratorFee` ->
 // `a.__rh0_arbitratorFee` -> "Struct has no field __rh0_arbitratorFee". Fixed by skipping FieldAccessNode.name.
 describe('inlined value helper: local sharing a struct-field name does not corrupt the field access', () => {
-  const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const compileContract = (src: string): string => compileString(
+    src, { solidityImportCompat: true },
+  ).contractName;
   it('compiles a single-tail-return external-call helper with a field-name-colliding local (Unicrow calculateSplits)', () => {
     const src = 'interface IArb { function calc(uint16 x) external view returns (uint16); }'
       + ' struct Arb { bool consensus; uint16 arbitratorFee; }'
@@ -2278,7 +2286,7 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + '   uint16[2] memory s; s[0] = arb.calc(arbitratorFee); s[1] = a.arbitratorFee; return s; }'
       + ' function go(uint id) public view returns (uint16[2] memory) {'
       + '   uint16[2] memory r = _split(arbs[id]); return r; } }';
-    expect(ok(src)).toBe('C');
+    expect(compileContract(src)).toBe('C');
   });
   it('rebuilds the NESTED struct on a packed struct-array element write (Marketplace jobs[i].roles.creator)', () => {
     // `arr[i].roles.creator = v` (members [roles, creator]): the packed-array rebuild placed the raw `v` (address)
@@ -2312,7 +2320,7 @@ describe('inlined value helper: local sharing a struct-field name does not corru
       + '   uint x = bal[id]; return abi.encodeCall(token.approve, (s, v + x)); }'
       + ' function f(IERC20 tk, address s, uint256 v, uint id) public view returns (bytes memory) {'
       + '   bytes memory d = _enc(tk, s, v, id); return d; } }';
-    expect(ok(src)).toBe('C');
+    expect(compileContract(src)).toBe('C');
   });
 });
 

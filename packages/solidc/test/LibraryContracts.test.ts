@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
 import { parseCode, compileString } from '../src/compiler.js';
-import * as Errors from '../src/Errors.js';
 import type { SourceFileNode, FunctionDefinitionNode } from '../src/ast/AST.js';
 
 // Library-contract-class feature - docs/library-contracts.md.

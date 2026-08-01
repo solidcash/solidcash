@@ -66,8 +66,6 @@ const SCALAR_READ = 'require(this.balance >= floor);';
 const WRITES_BALANCE = 'this.balance = this.balance - amount;';
 const NO_WRITE = 'require(amount >= 0);';
 
-const MISSING_JOURNAL = /Missing journal context '__internal__state_write_balance' while invoking/;
-
 describe('L2 review of SEC-18 - the widened journal closure', () => {
   // BOTH INVERTED WHEN THE FIX LANDED. These recorded a real regression: SEC-18's widening turned an
   // honest contract into a bare `Missing journal context` error with no name, position or remedy, and it

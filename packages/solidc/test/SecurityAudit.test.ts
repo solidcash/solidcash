@@ -25,17 +25,6 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
       }
     }`;
 
-  const structOneKey = `
-    contract Vault {
-      mapping(address => uint256) balances;
-      struct Transfer { address from; address to; }
-      function move(Transfer t, uint256 amt) external {
-        this.balances[t.from] = this.balances[t.from] - amt;
-        this.balances[t.from] = this.balances[t.from] + amt;
-        require(true);
-      }
-    }`;
-
   const paramTwoKeys = `
     contract Vault {
       mapping(address => uint256) balances;

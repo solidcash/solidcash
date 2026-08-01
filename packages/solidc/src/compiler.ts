@@ -1493,13 +1493,6 @@ function synthesizeHiddenBatchRoute(
     if (eventMode) {
       const directEventWidths = new Set<number>();
       for (const fn of survivors) {
-        let width = 0;
-        walkInvocationAst(fn.body, (node) => {
-          if (node instanceof EmitStatementNode) width += 1;
-        });
-        if (width > 0) directEventWidths.add(width);
-      }
-      for (const fn of survivors) {
         let directEmits = 0;
         let directTransfers = 0;
         walkInvocationAst(fn.body, (node) => {
@@ -1508,15 +1501,26 @@ function synthesizeHiddenBatchRoute(
         });
         const effects = eligibleFootprint(fn).effects;
         const hasValue = effects.includes('value');
-        if (directEventWidths.size !== 1 || directEmits < 1 || effects.length === 0
+        if (directEmits < 1 || effects.length === 0
           || effects.some((effect) => !['events', 'value'].includes(effect))
           || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
           fn.hiddenBatchEligible = false;
           fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
         } else {
+          directEventWidths.add(directEmits);
         }
       }
       survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      // A graph clone binds the unused suffix of a route-wide maximum event frame at the authenticated call
+      // site. A wholly flattened route has no such call-site guard: different direct widths would make the
+      // unrolled conditional branches reuse incompatible event indices. Keep that older shape fail-closed.
+      if (directEventWidths.size > 1 && !survivors.some((fn) => graphTailHandlers.has(fn))) {
+        for (const fn of survivors) {
+          fn.hiddenBatchEligible = false;
+          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
+        }
+        survivors = [];
+      }
       if (survivors.length === 0) return { survivors, ...modes() };
     }
     if (valueEffectMode) {

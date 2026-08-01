@@ -48,7 +48,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     );
   });
 
-  it('admits a uniform multi-event row width and rejects ambiguous heterogeneous widths', () => {
+  it('admits a uniform multi-event row width and rejects ambiguous flattened heterogeneous widths', () => {
     const uniform = compileString(`contract Events() {
       event E(bytes payload);
       function publish(bytes payload) public {

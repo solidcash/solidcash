@@ -691,7 +691,6 @@ export function compiledGraphRouteArgs(
   if (!execution || offset === undefined) throw new Error('layer3: graph participant is out of range');
   const fixed = new Map<string, FunctionArgument>([
     ['batchBlob', execution.batch.blob],
-    ['__internal__graphTranscript', transcript.bytes],
     ['__internal__graphControllerIdx', BigInt(controllerInput)],
     ['__internal__graphParticipantOffset', BigInt(offset)],
     ['__internal__graphBlockSize', BigInt(execution.blockLayout!.blockSize)],
@@ -734,6 +733,23 @@ export function compiledGraphRouteArgs(
     throw new Error('layer3: compiler route witness cardinality does not match its published ABI');
   }
   return Object.freeze(args);
+}
+
+/**
+ * Canonical projection-verifier arguments. The transcript is carried once by the controller's `attest(bytes)`
+ * unlocking bytecode; the leading empty compatibility field tells the verifier to extract that exact minimally
+ * framed push with OP_INPUTBYTECODE instead of serializing another copy into every proof input.
+ */
+export function compiledGraphProjectionArgs(
+  controllerInput: number, participant: number,
+): readonly [Uint8Array, bigint, bigint] {
+  if (!Number.isSafeInteger(controllerInput) || controllerInput < 0) {
+    throw new Error('layer3: graph controller input must be a non-negative safe integer');
+  }
+  if (!Number.isSafeInteger(participant) || participant < 0 || participant >= MAX_GRAPH_PARTICIPANTS) {
+    throw new Error(`layer3: graph participant must be in [0, ${MAX_GRAPH_PARTICIPANTS})`);
+  }
+  return [new Uint8Array(), BigInt(controllerInput), BigInt(participant)];
 }
 
 /**
@@ -972,14 +988,6 @@ contract GraphRootController(bytes20 initializer) {
     }
     ${compareBoundaries}
     require(tail == transcriptLength);
-    require(tx.inputs[this.activeInputIndex].tokenCategory.length >= 32);
-    bytes controllerCategory = tx.inputs[this.activeInputIndex].tokenCategory.slice(0, 32);
-    for (bigint output = 0; output < tx.outputs.length; output = output + 1) {
-      bytes outputCategory = tx.outputs[output].tokenCategory;
-      if (outputCategory.length >= 32) {
-        require(outputCategory.slice(0, 32) != controllerCategory);
-      }
-    }
     require(this.activeInputIndex < tx.outputs.length);
     require(tx.outputs[this.activeInputIndex].value == 1000);
     require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
@@ -1067,8 +1075,35 @@ export function generateGraphProjectionVerifier(): string {
   const allUsed = `hex"${'01'.repeat(MAX_GRAPH_PARTICIPANTS)}"`;
   return `pragma solidcash >=0.8.0;
 contract GraphProjectionVerifier() {
-  function verify(bytes transcript, bigint controllerInput, bigint participantIndex) {
+  function __graph_controller_transcript(bigint controllerInput) internal view returns (bytes) {
+    bytes unlocking = tx.inputs[controllerInput].unlockingBytecode;
+    require(unlocking.length >= 7 && unlocking.slice(0, 1) == hex"04");
+    bigint opcode = int(bytes.concat(unlocking.slice(5, 6), hex"00"));
+    bigint length;
+    bigint at;
+    if (opcode <= 75) {
+      require(opcode > 0);
+      length = opcode;
+      at = 6;
+    } else if (opcode == 76) {
+      length = int(bytes.concat(unlocking.slice(6, 7), hex"00"));
+      require(length >= 76);
+      at = 7;
+    } else {
+      require(opcode == 77 && unlocking.length >= 8);
+      length = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
+      require(length >= 256);
+      at = 8;
+    }
+    require(length >= 10 && at + length <= unlocking.length);
+    return unlocking.slice(at, at + length);
+  }
+  function verify(bytes transcriptWitness, bigint controllerInput, bigint participantIndex) {
     require(controllerInput >= 0 && controllerInput < tx.inputs.length);
+    bytes transcript = transcriptWitness;
+    if (transcript.length == 0) {
+      transcript = __graph_controller_transcript(controllerInput);
+    }
     require(tx.inputs[controllerInput].nftCommitment == sha256(transcript));
     require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
     bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
@@ -1279,6 +1314,16 @@ contract GraphProjectionVerifier() {
     require(completionCursor == ownerCompletionPositions.length);
     // X7: every returned byte is claimed by exactly one row.
     require(resultCursor == resultVector.length);
+    // The mandatory projection set partitions every output by residue class. Together these scans prove
+    // that the rooted controller category is burned without charging the controller input for all outputs.
+    require(tx.inputs[controllerInput].tokenCategory.length >= 32);
+    bytes controllerCategory = tx.inputs[controllerInput].tokenCategory.slice(0, 32);
+    for (bigint output = participantIndex; output < tx.outputs.length; output = output + participantCount) {
+      bytes outputCategory = tx.outputs[output].tokenCategory;
+      if (outputCategory.length >= 32) {
+        require(outputCategory.slice(0, 32) != controllerCategory);
+      }
+    }
     require(this.activeInputIndex < tx.outputs.length);
     require(tx.outputs[this.activeInputIndex].value == 1000);
     require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);

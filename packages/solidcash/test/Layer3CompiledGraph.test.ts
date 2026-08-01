@@ -869,6 +869,11 @@ describe('layer3.planCompiledGraph', () => {
       transcriptWithInternalWitness, 0, 6, { [internalWitnessName]: new Uint8Array(32) },
     );
     expect(routeArgs).toHaveLength(participantWithInternalWitness.routeInputs.length - 1);
+    expect(participantWithInternalWitness.routeInputs.map((input) => input.name))
+      .not.toContain('__internal__graphTranscript');
+    expect(layer3.compiledGraphProjectionArgs(6, 1)).toEqual([new Uint8Array(), 6n, 1n]);
+    expect(() => layer3.compiledGraphProjectionArgs(-1, 0)).toThrow(/controller input/);
+    expect(() => layer3.compiledGraphProjectionArgs(6, 8)).toThrow(/participant/);
     const blockhashBaseName = '__internal__blockhashInputIndex';
     const participantWithBlockhashBand = {
       ...first.plan.participants[0],
@@ -936,9 +941,12 @@ describe('layer3.planCompiledGraph', () => {
     expect(controller).toContain('nftCommitment == sha256(transcript)');
     expect(controller).toContain('participantInput == expectedInput');
     expect(controller).toContain('unlocking.slice(0, 5) == hex"0453434231"');
-    expect(controller).toContain('outputCategory.slice(0, 32) != controllerCategory');
     expect(projection).toContain('projectionInput == this.activeInputIndex');
     expect(projection).toContain('resultCursor == resultVector.length');
+    expect(projection).toContain('transcript = __graph_controller_transcript(controllerInput)');
+    expect(projection).toContain('require(opcode == 77 && unlocking.length >= 8)');
+    expect(projection).toContain('output = participantIndex; output < tx.outputs.length; output = output + participantCount');
+    expect(projection).toContain('outputCategory.slice(0, 32) != controllerCategory');
     const controllerArtifact = compileString(controller);
     const projectionArtifact = compileString(projection);
     // Freeze the actual redeem-script cost of the variable-table parsers. `Artifact.bytecode` is ASM text;
@@ -987,8 +995,9 @@ describe('layer3.planCompiledGraph', () => {
     // owner's row-completion vector. The graph-global settlement-table normalization then moved the controller
     // 2 bytes and the projection 27 bytes while removing one whole table copy per participant. Keep both exact
     // sizes pinned so a later parser change is measured rather than silently consuming the relay margin above.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_729);
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_046);
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_678);
+    // The carrier parser and distributed controller-category burn partition make this 5,370 bytes.
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_370);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

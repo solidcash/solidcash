@@ -2260,7 +2260,6 @@ function synthesizeHiddenBatchRoute(
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
   const graphRouteParameters = graphControllerLbc === undefined ? [] : [
-    'bytes __internal__graphTranscript',
     'bigint __internal__graphControllerIdx',
     'bigint __internal__graphParticipantOffset',
     'bigint __internal__graphBlockSize',
@@ -2327,6 +2326,7 @@ function synthesizeHiddenBatchRoute(
         require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(0, 32)
           == hex"${graphControllerCategoryInternal}");
         require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(32, 33) == hex"01");
+        bytes __internal__graphTranscript = __scb_graph_transcript(__internal__graphControllerIdx);
         require(tx.inputs[__internal__graphControllerIdx].nftCommitment == sha256(__internal__graphTranscript));
         bytes __graph_owner_lbc = tx.inputs[this.activeInputIndex].lockingBytecode;
         bytes __graph_owner_frame = bytes.concat(
@@ -2354,6 +2354,32 @@ function synthesizeHiddenBatchRoute(
           __internal__graphParticipantOffset + __graph_owner_frame.length
         ) == __graph_owner_frame);
   `;
+  const graphTranscriptLoader = graphControllerLbc === undefined ? '' : `
+      function __scb_graph_transcript(bigint __scb_controller) internal view returns (bytes) {
+        bytes __scb_unlock = tx.inputs[__scb_controller].unlockingBytecode;
+        require(__scb_unlock.length >= 7 && __scb_unlock.slice(0, 1) == hex"04");
+        bigint __scb_opcode = int(bytes.concat(__scb_unlock.slice(5, 6), hex"00"));
+        bigint __scb_length;
+        bigint __scb_at;
+        if (__scb_opcode <= 75) {
+          require(__scb_opcode > 0);
+          __scb_length = __scb_opcode;
+          __scb_at = 6;
+        } else if (__scb_opcode == 76) {
+          require(__scb_unlock.length >= 7);
+          __scb_length = int(bytes.concat(__scb_unlock.slice(6, 7), hex"00"));
+          require(__scb_length >= 76);
+          __scb_at = 7;
+        } else {
+          require(__scb_opcode == 77 && __scb_unlock.length >= 8);
+          __scb_length = int(bytes.concat(__scb_unlock.slice(6, 8), hex"00"));
+          require(__scb_length >= 256);
+          __scb_at = 8;
+        }
+        require(__scb_length >= 10 && __scb_at + __scb_length <= __scb_unlock.length);
+        return __scb_unlock.slice(__scb_at, __scb_at + __scb_length);
+      }
+  `;
   const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {
     const collection = collectionByName.get(name)!;
     const bound = collection.type instanceof ArrayType ? collection.type.bound ?? 0 : 0;
@@ -2370,6 +2396,7 @@ function synthesizeHiddenBatchRoute(
   const source = `pragma solidcash >=0.8.0;
     ${routeStructs}
     contract __HiddenBatchHost() {
+      ${graphTranscriptLoader}
       function __scb_parse_row(
         bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite, bigint __scb_version
       ) internal pure returns (bytes4, bytes, bigint, bigint) {

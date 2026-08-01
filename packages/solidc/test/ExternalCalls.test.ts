@@ -197,9 +197,11 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   });
   it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
     const inlined = compileString(`${LIB} contract C() {`
-      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }').bytecode.split(' ');
+      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }',
+    { experimentalHiddenBatch: false }).bytecode.split(' ');
     const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
-      + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }').bytecode.split(' ');
+      + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }',
+    { experimentalHiddenBatch: false }).bytecode.split(' ');
     // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
     expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
   });

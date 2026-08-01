@@ -73,7 +73,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    * file is measuring something else.
    */
   it('MEASURED: debug.bytecode is the exact byte count and bytecode is a longer listing', () => {
-    const artifact = compileString(bulk(40), {}) as Compiled;
+    const artifact = compileString(bulk(40), { experimentalHiddenBatch: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes, 'debug.bytecode is not the same script as bytecode')
       .toBe(artifact.debug.bytecode.length / 2);
@@ -88,7 +88,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('REGRESSION: a contract whose listing is over and whose script is under is NOT diagnosed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(240), {}) as Compiled;
+    const artifact = compileString(bulk(240), { experimentalHiddenBatch: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
 
     expect(listingHalfChars, 'premise: the LISTING must be over the limit, or this is not the false-positive row')
@@ -106,7 +106,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('MEASURED: a contract over the limit in real bytes is diagnosed and announced', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(300), {}) as Compiled;
+    const artifact = compileString(bulk(300), { experimentalHiddenBatch: false }) as Compiled;
     const { scriptBytes } = lengths(artifact);
 
     expect(scriptBytes, 'premise: the SCRIPT must be over the limit').toBeGreaterThan(MAX_INPUT_BYTESIZE);
@@ -132,7 +132,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('CONTROL: a contract under the limit on both renderings is silent', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(150), {}) as Compiled;
+    const artifact = compileString(bulk(150), { experimentalHiddenBatch: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes).toBeLessThan(MAX_INPUT_BYTESIZE);
     expect(listingHalfChars, 'premise: this control must be under on the LISTING too')

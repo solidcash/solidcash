@@ -50,12 +50,18 @@ describe('SBE-2: bytesN -> bytesM cast (truncate / widen)', () => {
   });
 
   it('shrinking a bounded bytes truncates the leftmost bytes (OP_SPLIT OP_DROP)', () => {
-    const a = compileString('contract C() { function f() { bytes2 a = 0x1234; bytes1 b = bytes1(a); require(b.length == 1); } }');
+    const a = compileString(
+      'contract C() { function f() { bytes2 a = 0x1234; bytes1 b = bytes1(a); require(b.length == 1); } }',
+      { experimentalHiddenBatch: false },
+    );
     expect(a.bytecode).toContain('OP_SPLIT OP_DROP');
   });
 
   it('widening a bounded bytes right-pads with zero bytes (OP_CAT)', () => {
-    const a = compileString('contract C() { function f() { bytes1 a = 0x12; bytes4 b = bytes4(a); require(b.length == 4); } }');
+    const a = compileString(
+      'contract C() { function f() { bytes1 a = 0x12; bytes4 b = bytes4(a); require(b.length == 4); } }',
+      { experimentalHiddenBatch: false },
+    );
     expect(a.bytecode).toContain('OP_CAT');
   });
 });
@@ -64,7 +70,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
   it('bytes20(address) narrows to the embedded 20-byte hash (skips the P2PKH frame) and warns', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
-      'contract C() { function f(address a, bytes20 e) { require(bytes20(a) == e); } }').debug.bytecode));
+      'contract C() { function f(address a, bytes20 e) { require(bytes20(a) == e); } }',
+      { experimentalHiddenBatch: false }).debug.bytecode));
     expect(asm).toContain('OP_3 OP_SPLIT OP_NIP'); // skip the 0x76a914 prefix, then take 20 / drop 88ac
     expect(asm).not.toContain('OP_BIN2NUM');        // bytes20, not int
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(true);
@@ -74,7 +81,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
   it('uint160(address) narrows then OP_BIN2NUM to a non-negative int', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
-      'contract C() { function f(address a, int e) { require(uint160(a) == e); } }').debug.bytecode));
+      'contract C() { function f(address a, int e) { require(uint160(a) == e); } }',
+      { experimentalHiddenBatch: false }).debug.bytecode));
     expect(asm).toContain('OP_3 OP_SPLIT OP_NIP');
     expect(asm).toContain('OP_BIN2NUM');
     warn.mockRestore();
@@ -83,7 +91,8 @@ describe('uint160(address) / bytes20(address) Solidity-compat narrowing casts', 
   it('bytes(address) keeps the full locking bytecode (only bytes20/int narrow)', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const asm = bytecodeToAsm(hexToBin(compileString(
-      'contract C() { function f(address a, bytes e) { require(bytes(a) == e); } }').debug.bytecode));
+      'contract C() { function f(address a, bytes e) { require(bytes(a) == e); } }',
+      { experimentalHiddenBatch: false }).debug.bytecode));
     expect(asm).not.toContain('OP_3 OP_SPLIT OP_NIP');
     expect(warn.mock.calls.some((c) => String(c[0]).includes('narrows a variable-length BCH address'))).toBe(false);
     warn.mockRestore();

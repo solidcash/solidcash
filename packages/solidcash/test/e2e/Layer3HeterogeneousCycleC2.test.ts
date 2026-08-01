@@ -944,7 +944,7 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
     expect(String(tight.error)).toMatch(/density|operation cost/i);
   }, 600_000);
 
-  it('refuses a staticcall mode on a state-writing handler, before a transcript exists', async () => {
+  it('refuses a non-static descendant under staticcall, before a transcript exists', async () => {
     const built = await buildCycleGraph();
     const rows = built.transcript.plan.participants.map((participant, index) => ({
       artifact: built.artifacts[index], lockingBytecode: participant.lockingBytecode,
@@ -955,7 +955,7 @@ describe('A1 review of C2: fields the capstone authenticates but did not attack'
       { parent: 1, callee: 0, function: 'absorb', args: [CALL_VALUE], callMode: 'call' },
       { parent: 0, callee: 2, function: 'debit', args: [CALL_VALUE], callMode: 'staticcall' },
       { parent: 3, callee: 3, function: 'score', args: [CALL_VALUE], callMode: 'call' },
-    ] as any)).toThrow(/staticcall target 'debit' is not compiler-proven read-only/);
+    ] as any)).toThrow(/staticcall invocation 3 has non-static descendant 4/);
   }, 600_000);
 });
 

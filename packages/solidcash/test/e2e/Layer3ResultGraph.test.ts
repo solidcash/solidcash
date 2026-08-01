@@ -239,12 +239,18 @@ function locateTranscriptResults(bytes: Uint8Array): {
     }
     cursor = emissionsEnd;
     cursor += 2 + u16(cursor); // logical callers
+    cursor += 2; // settlement boundary
+    cursor += 2 + u16(cursor); // completion positions
+    cursor += 32; // graph-global settlement-table commitment
+    cursor += 1 + 2; // execution kind + executor input index
+    cursor += 2 + u16(cursor); // pinned executor locking bytecode (empty for owner execution)
     cursor += 2; // return output index
     const vectorLength = u16(cursor);
     participantVectors.push({ offset: cursor + 2, length: vectorLength });
     cursor += 2 + vectorLength;
     cursor += 2; // projection input index
   }
+  cursor += 2 + u16(cursor); // graph-global settlement table
   const invocationCount = u16(cursor);
   cursor += 2;
   const invocationResults: { offset: number; length: number }[] = [];
@@ -584,7 +590,7 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
     const built = await buildResultGraph('none', true);
     expect(built.plan.invocations.slice(1).every((row) => row.callMode === 'staticcall')).toBe(true);
     expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toMatch(/^[0-9a-f]{64}$/);
   }, 120_000);
 
   it('rejects a descendant row downgraded after static planning on the VM', async () => {
@@ -599,7 +605,7 @@ describe('Layer-3 nested and transitive heterogeneous result graph (E1)', () => 
   it('settles a six-participant transitive chain whose five result schemas all differ', async () => {
     const built = await buildResultGraph();
     expect(failingInput(built.builder)).toBe(null);
-    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
+    await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toMatch(/^[0-9a-f]{64}$/);
 
     // Each level's authenticated result is the input of the level above it, so the deepest scalar
     // determines every value up the chain.

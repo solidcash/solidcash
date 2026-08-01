@@ -138,7 +138,7 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
   it('POSITIVE: callee result is produced and consumed into the caller settlement', async () => {
     const s = await setup();
     const b = await build(s);
-    await expect(s.provider.sendRawTransaction(rawOf(b))).resolves.toBeTypeOf('string');
+    await expect(s.provider.sendRawTransaction(rawOf(b))).resolves.toMatch(/^[0-9a-f]{64}$/);
     const transaction = b.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(b.inputs);
     const vm = createVirtualMachineBch2026();
@@ -151,9 +151,12 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
         ratioPct: Math.round((m.operationCost / m.maximumOperationCost) * 1000) / 10,
       };
     });
-    // Compact binding + result production + settlement consumption, both endpoints validating.
+    // Compact binding + result production + settlement consumption, both endpoints validating. Rebuilding
+    // solidc after the delegate-participant verifier landed adds 115 evaluated instructions to this compiler
+    // route on each endpoint; the measured operation-cost ratio moves only 0.2 percentage points, and the
+    // result/settlement hostiles below still prove the same covenant boundary.
     expect(metrics.every((m) => m.ratioPct < 40)).toBe(true);
-    expect(metrics).toEqual([{ instr: 2140, ratioPct: 19.9 }, { instr: 2140, ratioPct: 19.9 }]);
+    expect(metrics).toEqual([{ instr: 2255, ratioPct: 20.1 }, { instr: 2255, ratioPct: 20.1 }]);
   });
 
   it('HOSTILE: a forged result (not amount*rate) is rejected', async () => {
@@ -163,7 +166,7 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     forged.outputs[2].lockingBytecode = concat(hexToBin('6a08'), num8(AMOUNT * RATE + 1n)); // wrong result
     await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
       .rejects.toThrow(inputZeroVerifyFailure);
-    await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
+    await expect(s.provider.sendRawTransaction(valid)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('HOSTILE: a caller settlement that does not reflect the result is rejected', async () => {
@@ -173,6 +176,6 @@ describe('layer-3 result/effect binding spike (E2E)', () => {
     forged.outputs[3].valueSatoshis = 2000n + AMOUNT * RATE + 1n; // over-credits the settlement
     await expect(s.provider.sendRawTransaction(binToHex(encodeTransaction(forged))))
       .rejects.toThrow(inputZeroVerifyFailure);
-    await expect(s.provider.sendRawTransaction(valid)).resolves.toBeTypeOf('string');
+    await expect(s.provider.sendRawTransaction(valid)).resolves.toMatch(/^[0-9a-f]{64}$/);
   });
 });

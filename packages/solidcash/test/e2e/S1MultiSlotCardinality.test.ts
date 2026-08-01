@@ -241,8 +241,9 @@ describe('S1 cardinality: the delegate suppressing condition, measured', () => {
     const outcome = await runDelegate(
       DELEGATE_C2_IMPL, DELEGATE_C2_PROXY, 'credit', [alicePkh, 7n], { counter: 0n },
     );
-    expect(outcome).toContain('mandatory-script-verify-flag-failed');
-    expect(outcome).toContain('error in evaluating input index 0');
+    expect(outcome).toBe(
+      'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.',
+    );
   }, 180_000);
 
   it('control: the same proxy shape settles a scalar delegate write', async () => {

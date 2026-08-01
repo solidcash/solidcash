@@ -178,8 +178,16 @@ const outcome = async (send: Promise<unknown>): Promise<string> =>
   send.then(() => 'ACCEPTED').catch((error: Error) => error.message);
 
 const failingInput = (message: string): number | null => {
-  const match = /error in evaluating input index (\d+)/.exec(message);
+  const match = /(?:BCH-2026 preflight failed at input|error in evaluating input index) (\d+)/.exec(message);
   return match ? Number(match[1]) : null;
+};
+
+const expectPreflightRefusal = (message: string, input: number, reason: string): void => {
+  expect([
+    `layer3: BCH-2026 preflight failed at input ${input}: ${reason}`,
+    `mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index ${input}: ${reason})`,
+  ]).toContain(message);
+  expect(failingInput(message)).toBe(input);
 };
 
 /** Every message the compiler prints while compiling one source, so a silent shape can be shown to be silent. */
@@ -280,8 +288,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
       })),
       externalCallUtxoGroups: [delegateGroup(foreignArtifact, foreign, 'increment', [0n], 2)],
     }).setState('counter', 999n).send());
-    expect(message).toContain('mandatory-script-verify-flag-failed');
-    expect(failingInput(message)).toBe(0);
+    expectPreflightRefusal(message, 0, 'Program failed an OP_VERIFY operation.');
   }, 240_000);
 });
 
@@ -371,8 +378,12 @@ describe('A13 review of E3: caller-authorized authority', () => {
       })),
       externalCallUtxoGroups: [delegateGroup(foreignArtifact, foreign, 'increment', [0n], 2)],
     }).setState('counter', 999n).send());
-    expect(message).toContain('mandatory-script-verify-flag-failed');
-    expect(failingInput(message)).toBe(0);
+    expectPreflightRefusal(
+      message,
+      0,
+      'Program failed a signature verification with a non-null signature (violating the "NULLFAIL" rule). '
+        + 'Algorithm used: Schnorr.',
+    );
   }, 240_000);
 });
 
@@ -468,8 +479,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
         })),
         externalCallUtxoGroups: [delegateGroup(foreignArtifact, foreign, 'increment', [0n], 2)],
       }).setState('counter', 999n).send());
-      expect(message).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(message)).toBe(0);
+      expectPreflightRefusal(message, 0, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
 });
 

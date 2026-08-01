@@ -208,7 +208,7 @@ describe('X11: delegate C2 sorted mapping write', () => {
     const outcome = await fixture.proxySc.call.__fallback()
       .withDelegatecall(fixture.libSc, 'setBal', [30n, 100n]).send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expect(outcome).toBe('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     expect(await valueOfKey30(fixture)).toBeUndefined();
   }, 300_000);
 });

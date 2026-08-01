@@ -38,7 +38,7 @@ describe('unchecked-block early return (OZ Math.tryAdd) produces correct values 
   });
   it('rejects a wrong expected sum (the returned local c is exact)', async () => {
     await expect(call('checkOk', [3n, 4n, 8n])).rejects.toThrow(
-      /mandatory-script-verify-flag-failed .*input index 0: Program failed an OP_VERIFY operation/,
+      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
   });
 });

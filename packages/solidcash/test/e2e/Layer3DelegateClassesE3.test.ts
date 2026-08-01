@@ -259,8 +259,16 @@ const outcome = async (send: Promise<unknown>): Promise<string> =>
 
 /** The input index a rejected transaction failed at, so a hostile case pins WHICH covenant refused it. */
 const failingInput = (message: string): number | null => {
-  const match = /error in evaluating input index (\d+)/.exec(message);
+  const match = /(?:BCH-2026 preflight failed at input|error in evaluating input index) (\d+)/.exec(message);
   return match ? Number(match[1]) : null;
+};
+
+const expectPreflightRefusal = (message: string, input: number, reason: string): void => {
+  expect([
+    `layer3: BCH-2026 preflight failed at input ${input}: ${reason}`,
+    `mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index ${input}: ${reason})`,
+  ]).toContain(message);
+  expect(failingInput(message)).toBe(input);
 };
 
 // ---------------------------------------------------------------------------
@@ -337,9 +345,8 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
      */
     it('rejects a co-spent implementation other than the one the proxy bytecode pins', async () => {
       const message = await outcome((await build({ coSpentImplementation: 'foreign' })).send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
+      expectPreflightRefusal(message, 0, 'Program failed an OP_VERIFY operation.');
       // The PROXY refuses, at its own input: `OP_UTXOBYTECODE[delegateIndex] == impl`.
-      expect(failingInput(message)).toBe(0);
     }, 120_000);
 
     /**
@@ -355,8 +362,7 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
       'rejects proxy-master witness %s, which is not the delegate block\'s adjacent master',
       async (witness) => {
         const message = await outcome((await build({ proxyMasterIndexWitness: witness })).send);
-        expect(message).toContain('mandatory-script-verify-flag-failed');
-        expect(failingInput(message)).toBe(2);
+        expectPreflightRefusal(message, 2, 'Program failed an OP_VERIFY operation.');
       }, 120_000,
     );
 
@@ -365,8 +371,7 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
      */
     it('rejects a forged proxy post-state the delegate covenant did not compute', async () => {
       const message = await outcome((await build({ settledCounter: 99n })).send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(message)).toBe(2);
+      expectPreflightRefusal(message, 2, 'Program failed an OP_VERIFY operation.');
     }, 120_000);
 
     it('is the class the SDK gate names for this pair', () => {
@@ -448,8 +453,12 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
      */
     it('rejects an unauthorized signer selecting the same honest implementation', async () => {
       const message = await outcome((await build({ signer: 'stranger' })).send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(message)).toBe(0);
+      expectPreflightRefusal(
+        message,
+        0,
+        'Program failed a signature verification with a non-null signature (violating the "NULLFAIL" rule). '
+          + 'Algorithm used: Schnorr.',
+      );
     }, 120_000);
 
     it('is the class the SDK gate names for this pair', () => {
@@ -595,15 +604,13 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
       const forged = await spendProxy(conditionalProxyArtifact, [false], 999n, {
         coSpendImplementation: false,
       });
-      expect(forged.result).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(forged.result)).toBe(0);
+      expectPreflightRefusal(forged.result, 0, 'Program failed an OP_VERIFY operation.');
 
       // Same shape, same absent implementation, only the branch condition differs: also refused at input 0.
       const control = await spendProxy(conditionalProxyArtifact, [true], 999n, {
         coSpendImplementation: false,
       });
-      expect(control.result).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(control.result)).toBe(0);
+      expectPreflightRefusal(control.result, 0, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
 
     /**
@@ -625,8 +632,7 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
       expect(noop.result).toBe('ACCEPTED counter=5');
 
       const wrote = await spendProxy(conditionalProxyArtifact, [false], 6n, { coSpendImplementation: true });
-      expect(wrote.result).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(wrote.result)).toBe(0);
+      expectPreflightRefusal(wrote.result, 0, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
 
     /**
@@ -688,8 +694,7 @@ describe('Layer-3 delegate participant classes (E3, SEMANTIC)', () => {
         .send();
 
       const message = await outcome(send);
-      expect(message).toContain('mandatory-script-verify-flag-failed');
-      expect(failingInput(message)).toBe(0);
+      expectPreflightRefusal(message, 0, 'Program failed an OP_VERIFY operation.');
     }, 240_000);
   });
 

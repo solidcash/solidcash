@@ -28,7 +28,6 @@ import {
   MethodCallNode,
   NewArrayNode,
   CollectionIterationNode,
-  CollectionIterationMode,
   ArrayAccessNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';

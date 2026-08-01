@@ -3,7 +3,6 @@ import {
   SourceFileNode,
   ContractNode,
   InterfaceNode,
-  StateVariableNode,
   FunctionDefinitionNode,
   VariableDefinitionNode,
   InstantiationNode,
@@ -70,6 +69,8 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
       let ok = true;
       let hasAssign = false;
       for (const fn of bodies) {
+        // The callback is invoked synchronously before this loop advances.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
         this.forEachAssignTo(fn.body!, sv.name, (rhs) => {
           hasAssign = true;
           const m = this.foreignMember(rhs);
@@ -149,8 +150,11 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
     const tgt = this.lowered.get(node.identifier.name);
     if (tgt) {
       const m = this.foreignMember(node.expression);
-      if (m) node.expression = cloneNode((node.expression as FieldAccessNode).expression instanceof FunctionCallNode
-        ? ((node.expression as FieldAccessNode).expression as FunctionCallNode).parameters[0] : node.expression) as ExpressionNode;
+      if (m) {
+        node.expression = cloneNode((node.expression as FieldAccessNode).expression instanceof FunctionCallNode
+          ? ((node.expression as FieldAccessNode).expression as FunctionCallNode).parameters[0]
+          : node.expression) as ExpressionNode;
+      }
     }
     node.expression = this.visit(node.expression) as ExpressionNode;
     return node;
@@ -159,7 +163,9 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
   visitStateAssign(node: StateAssignNode): Node {
     const tgt = this.lowered.get(node.name);
     if (tgt && this.foreignMember(node.expression)) {
-      node.expression = cloneNode(((node.expression as FieldAccessNode).expression as FunctionCallNode).parameters[0]) as ExpressionNode;
+      node.expression = cloneNode(
+        ((node.expression as FieldAccessNode).expression as FunctionCallNode).parameters[0],
+      ) as ExpressionNode;
     }
     node.expression = this.visit(node.expression) as ExpressionNode;
     return node;

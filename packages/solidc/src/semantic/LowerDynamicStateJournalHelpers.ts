@@ -15,7 +15,6 @@ import {
   SourceFileNode,
   StateAccessNode,
   StateAssignNode,
-  StatementNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';

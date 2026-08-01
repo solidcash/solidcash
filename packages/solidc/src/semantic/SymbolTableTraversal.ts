@@ -190,7 +190,6 @@ import {
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
   GraphHandlerShapeError,
-  SolidCashError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -1251,7 +1250,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Builtin-in-const: resolve the args' constant refs and stamp the builtin's return type (undefined
       // otherwise, which fails the const's assign type-check). Inlined at each use, so runtime codegen runs.
       // addmod/mulmod -> BIGINT (uint256); keccak256/sha256 -> bytes32.
-      expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode)) as ExpressionNode[];
+      expr.parameters = expr.parameters.map(
+        (e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode),
+      ) as ExpressionNode[];
       expr.type = expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
         ? PrimitiveType.BIGINT : new BytesType(32);
     } else if (expr instanceof FunctionCallNode && expr.parameters.length === 1
@@ -1475,7 +1476,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const subs = new Map<string, ExpressionNode>();
     const declared = ctor.parameters
       .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
-    declared.forEach((p, i) => { if (i < deployNode.parameters.length) subs.set(p.name, deployNode.parameters[i] as ExpressionNode); });
+    declared.forEach((p, i) => {
+      if (i < deployNode.parameters.length) {
+        subs.set(p.name, deployNode.parameters[i] as ExpressionNode);
+      }
+    });
     const fieldExprs = new Map<string, ExpressionNode>();
     const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
     if (!res) {
@@ -1690,12 +1695,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
         for (const batch of node.sortedBatchInfo) {
-          for (const slotIndex of batch.slotIndices) {
+          for (const batchSlotIndex of batch.slotIndices) {
             for (const param of [
-              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${slotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${slotIndex}`),
-              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${slotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${slotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${batchSlotIndex}`),
             ]) {
               param.location = node.location;
               node.parameters.push(param);
@@ -3479,6 +3484,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     let changed = true;
     while (changed) {
       changed = false;
+      // The callback completes synchronously within each fixed-point iteration.
+      // eslint-disable-next-line @typescript-eslint/no-loop-func
       const scanDefs = (n: Node): void => {
         if (!n) return;
         if (n instanceof VariableDefinitionNode && !out.has(n.name) && n.expression
@@ -4279,8 +4286,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen.add(node);
     if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node) { const r = this.findTupleAssignmentWithRhs(e, call, seen); if (r) return r; }
+      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; }
+      else if (Array.isArray(v)) {
+        for (const e of v) {
+          if (!(e instanceof Node)) continue;
+          const result = this.findTupleAssignmentWithRhs(e, call, seen);
+          if (result) return result;
+        }
       }
     }
     return undefined;
@@ -4352,7 +4364,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           const ta = this.findTupleAssignmentWithRhs(body, view)!;
           const accesses = rets.map((rt) => mkWitness(rt));
           ta.tupleExpressions = accesses;
-          ta.tuple = accesses[0]; // `.tuple` (the getReserves call) is walked by collect; replace it so it is not re-collected
+          // `.tuple` is walked by collect; replace it so the call is not re-collected.
+          ta.tuple = accesses[0];
         }
       }
     }
@@ -5656,7 +5669,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         && (tgt.bound !== src.bound || !sameElem) && (sameElem || bytesWiden)) {
         const srcName = node.expression.name;
         const stmts: StatementNode[] = [];
-        const lit = (i: number): IntLiteralNode => { const n = new IntLiteralNode(BigInt(i)); n.location = node.location; return n; };
+        const lit = (i: number): IntLiteralNode => {
+          const n = new IntLiteralNode(BigInt(i));
+          n.location = node.location;
+          return n;
+        };
         const copyN = Math.min(tgt.bound, src.bound);
         for (let i = 0; i < copyN; i++) {
           const srcId = new IdentifierNode(srcName); srcId.location = node.location;
@@ -7657,7 +7674,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
       let varType: Type | undefined;
-      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) varType = this.symbolTables[i]?.get(baseName)?.type;
+      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) {
+        varType = this.symbolTables[i]?.get(baseName)?.type;
+      }
       varType = varType ?? this.stateVariableMap.get(baseName)?.type;
       const varContract = varType instanceof AddressType ? varType.interfaceName : undefined;
       const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
@@ -8811,7 +8830,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.object instanceof TupleIndexOpNode || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
-      const ifaceFunc = calleeName ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName) : undefined;
+      const ifaceFunc = calleeName
+        ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName)
+        : undefined;
       if (calleeName && ifaceFunc) {
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(
@@ -8824,7 +8845,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
-        if (callNode.callOptions?.value) callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        if (callNode.callOptions?.value) {
+          callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        }
         if (callNode.callOptions?.gas) callNode.callOptions.gas = this.visit(callNode.callOptions.gas) as ExpressionNode;
         callNode.callInfo = { interfaceName: calleeName, functionName: node.methodName, externalCallSlotIndex: -1 };
         if (ifaceFunc.returnTypes.length > 0) {

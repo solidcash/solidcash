@@ -3,7 +3,6 @@ import {
   SourceFileNode,
   ContractNode,
   InterfaceNode,
-  FunctionDefinitionNode,
   VariableDefinitionNode,
   InstantiationNode,
   BlockNode,

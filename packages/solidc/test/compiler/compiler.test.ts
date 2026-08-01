@@ -88,6 +88,7 @@ describe('Compiler', () => {
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
         commitmentLimit: 128,
+        experimentalHiddenBatch: true,
       });
     });
   });

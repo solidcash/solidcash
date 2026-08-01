@@ -51,8 +51,8 @@ export interface CompilerOptions {
   // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
   // See docs/ecrecover.md.
   ecrecover?: 'p2pkh' | 'evm';
-  // Experimental Release 4 compiler-hidden owner-local batch route. The
-  // covenant surface remains opt-in until its adversarial review is complete.
+  // Compiler-hidden owner-local batch route and write-back journal. Enabled by
+  // default; set explicitly to false to retain direct-route-only compilation.
   experimentalHiddenBatch?: boolean;
   // Experimental Release 5 grouping of one repeated external callee.
   experimentalRepeatedExternalBatch?: boolean;

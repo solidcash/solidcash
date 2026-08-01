@@ -27,6 +27,7 @@ program
   .option('-c, --opcount', 'Display the number of opcodes in the compiled bytecode.')
   .option('-s, --size', 'Display the size in bytes of the compiled bytecode.')
   .option('--split', 'Emit a state-local one-hop root/facet bundle (explicit; never enabled silently).')
+  .option('--no-hidden-batch', 'Disable the compiler-hidden owner-local batch route and write-back journal.')
   .option('-S, --skip-enforce-function-parameter-types', 'Do not enforce function parameter types.')
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
   .addOption(
@@ -56,6 +57,7 @@ function run(): void {
   const compilerOptions: CompilerOptions = {
     enforceFunctionParameterTypes: !opts.skipEnforceFunctionParameterTypes,
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
+    experimentalHiddenBatch: opts.hiddenBatch,
   };
 
   try {

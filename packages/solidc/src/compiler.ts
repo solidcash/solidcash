@@ -115,7 +115,17 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
+  experimentalHiddenBatch: true,
 };
+
+/** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
+function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
+  return {
+    ...DEFAULT_COMPILER_OPTIONS,
+    ...options,
+    experimentalHiddenBatch: options.experimentalHiddenBatch !== false,
+  };
+}
 
 export interface CompileOptions extends CompilerOptions {
   errorListener?: SolidCashErrorListener;
@@ -361,7 +371,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     const hit = compileCache.get(cacheKey);
     if (hit) return structuredClone(hit);
   }
-  const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+  const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   const artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
@@ -3481,7 +3491,7 @@ function compileResolvedAst(
  */
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
-  const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
+  const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -3528,7 +3538,7 @@ const LIFECYCLE_MODIFIERS = new Set([
  */
 export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
   const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
-  const merged = { ...DEFAULT_COMPILER_OPTIONS, ...artifactOptions };
+  const merged = normalizeCompilerOptions(artifactOptions);
   const baseline = compileString(code, { ...artifactOptions, errorListener });
   const probe = prepareSplitAst(code, merged, errorListener);
   const logicalName = probe.contract.name;

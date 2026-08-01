@@ -21,13 +21,13 @@ contract Probe() {
   }
 }`;
 
-async function run(a: Uint8Array, b: Uint8Array): Promise<void> {
+async function run(a: Uint8Array, b: Uint8Array) {
   const provider = createTestProvider();
   const artifact = compileString(SRC, {});
   const c = new Contract(artifact, [], { provider });
   await provider.addUtxo(c.address, randomUtxo({ satoshis: 100000n }));
   const utxos = await c.getUtxos();
-  await new TransactionBuilder({ provider })
+  return new TransactionBuilder({ provider })
     .addInput(utxos[0], c.unlock.cmp(a, b))
     .addOutput({ to: c.address, amount: 99000n })
     .send();
@@ -40,13 +40,17 @@ describe('probe: byte-lex order at VM (normal function)', () => {
   const tieLo = hexToBin(`${'00'.repeat(16)}${'ff'.repeat(15)}80`); // equal high half, differ in low half
   const tieHi = hexToBin(`${'00'.repeat(16)}${'ff'.repeat(15)}81`);
   it('accepts a < b differing in the high half (high-bit values)', async () => {
-    await expect(run(lo, hi)).resolves.toBeUndefined();
+    const sent = await run(lo, hi);
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex.length).toBeGreaterThan(0);
   });
   it('rejects a > b (reversed)', async () => {
     await expect(run(hi, lo)).rejects.toThrow(REQUIRE_REFUSAL);
   });
   it('accepts a < b differing only in the low half (tiebreak)', async () => {
-    await expect(run(tieLo, tieHi)).resolves.toBeUndefined();
+    const sent = await run(tieLo, tieHi);
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex.length).toBeGreaterThan(0);
   });
   it('rejects equal a == b (not strictly less)', async () => {
     await expect(run(lo, lo)).rejects.toThrow(REQUIRE_REFUSAL);

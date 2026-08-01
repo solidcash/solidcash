@@ -17,7 +17,7 @@ const STATEFUL_OP_VERIFY_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 
 // IndirectCallNode that reads the field (functionId) then OP_INVOKEs it - the same value path as the proven
 // `function() fp = s.x; fp()` hoist. VM-verified here: a require passes only if the pointer dispatches right.
 
-const build = async (src: string, fn: 'ok' | 'wrong'): Promise<void> => {
+const build = async (src: string, fn: 'ok' | 'wrong'): Promise<TransactionBuilder> => {
   const provider = createTestProvider();
   const contract = new Contract(compileString(src, { solidityImportCompat: true }), [], { provider });
   await provider.addUtxo(contract.address, randomUtxo());
@@ -26,6 +26,7 @@ const build = async (src: string, fn: 'ok' | 'wrong'): Promise<void> => {
     .addInput(utxo, contract.unlock[fn]())
     .addOutput({ to: contract.address, amount: 10000n });
   verifyTransaction(tx);
+  return tx;
 };
 
 describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified', () => {
@@ -75,7 +76,11 @@ describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified'
 
   for (const [name, src] of cases) {
     it(`${name}: dispatches to the pointed-at function`, async () => {
-      await expect(build(src, 'ok')).resolves.toBeUndefined();
+      const tx = await build(src, 'ok');
+      expect(tx.inputs).toHaveLength(1);
+      expect(tx.outputs).toHaveLength(1);
+      expect(tx.outputs[0].amount).toBe(10000n);
+      expect(tx.inputs[0].unlocker.generateUnlockingBytecode).toBeTypeOf('function');
     });
     it(`${name}: wrong expected value fails (guard against vacuous pass)`, async () => {
       await expect(build(src, 'wrong')).rejects.toThrow(NON_TRUTHY_INPUT_0);

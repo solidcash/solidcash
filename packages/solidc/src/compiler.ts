@@ -1985,6 +1985,22 @@ function synthesizeHiddenBatchRoute(
     handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(sourceHandler);
     handler.graphRuntimeEmissionThreaded = handler.graphRuntimeEmissionHandler
       && allGraphEmissionHandlersRuntime;
+    // A typed `{value:}` option is deliberately absent from the v1 graph projection: unlike a direct owner
+    // transfer (and the one admitted raw-call option), no authenticated row field settles its recipient/amount.
+    // Keep the source entry point's direct covenant and ABI metadata intact, but remove the option from the
+    // synthetic graph clone. Retaining it here makes semantic analysis allocate a pending transfer which the
+    // route correctly reserved no frame for, ending in the internal `transfer[0]` block-slot crash instead of
+    // the SDK's named derived-block refusal.
+    walkInvocationAst(handler.body, (node) => {
+      if (node instanceof ExternalFunctionCallNode && node.interfaceName !== '__raw__'
+        && node.callOptions?.value) {
+        node.callOptions.value = undefined;
+      }
+      if (node instanceof MethodCallNode && !['call', 'staticcall', 'delegatecall'].includes(node.methodName)
+        && node.callOptions?.value) {
+        node.callOptions.value = undefined;
+      }
+    });
     const delegateSlots: { slotIndex: number }[] = [];
     walkInvocationAst(sourceHandler.body, (node) => {
       if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall') {

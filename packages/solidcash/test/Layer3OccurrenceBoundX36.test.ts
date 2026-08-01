@@ -13,7 +13,7 @@ import { layer3 } from '../src/index.js';
  * is guess-free, and refusing above it is the same refusal by the same words.
  *
  * The load-bearing many-to-one shapes are pinned first, because they are what a blanket arity rule breaks: a
- * loop callsite legitimately answers many rows, an unbounded loop answers any number, and a collapsed
+ * loop callsite legitimately answers many rows, an unbounded loop fails closed under v1, and a collapsed
  * repeated-call callsite answers exactly the rows it names.
  */
 const OPTIONS = {
@@ -137,9 +137,30 @@ describe('X36: planCompiledGraph enforces the published reached-row bound', () =
     expect(() => plan(caller, 'guarded', rows, [target, 4n])).not.toThrow();
   });
 
-  it('plans many rows against a loop the source never bounds', () => {
-    // No ceiling is proven, so the only limit is the global transcript one; five rows must still plan.
-    expect(() => plan(caller, 'unbounded', 5, [target, 4n])).not.toThrow();
+  it('refuses rows against a loop whose source publishes no finite v1 bound', () => {
+    expect(() => plan(caller, 'unbounded', 5, [target, 4n])).toThrow(expect.objectContaining({
+      code: 'L3_UNBOUNDED_EXTERNAL_CALL_LOOP',
+      message: expect.stringContaining('unbounded-external-call-loop-transcript-ineligible: callsite 0'),
+    }));
+  });
+
+  it('applies the same structured refusal in native worklist derivation', () => {
+    expect(() => layer3.deriveCompiledGraphPlan({
+      root: { artifact: caller, lockingBytecode: '51' },
+      function: 'unbounded', args: [target, 4n],
+      targets: { IX36: { artifact: callee, lockingBytecode: '52' } },
+      occurrence: () => 1,
+    })).toThrow(expect.objectContaining({ code: 'L3_UNBOUNDED_EXTERNAL_CALL_LOOP' }));
+  });
+
+  it('keeps a compiler-bounded loop derivable at its published ceiling', () => {
+    const derived = layer3.deriveCompiledGraphPlan({
+      root: { artifact: caller, lockingBytecode: '51' },
+      function: 'guarded', args: [target, 4n],
+      targets: { IX36: { artifact: callee, lockingBytecode: '52' } },
+      occurrence: () => 3,
+    });
+    expect(derived.invocations).toHaveLength(4);
   });
 
   it('plans both rows of a collapsed repeated-call callsite', () => {

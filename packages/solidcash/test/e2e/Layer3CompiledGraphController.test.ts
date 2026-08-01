@@ -124,6 +124,7 @@ contract CompiledGraphA(int brand, address target) {
     require(n >= 0);
   }
   function repeat(address next, int n, int times) public {
+    require(times <= 2);
     for (int i = 0; i < times; i = i + 1) {
       ICompiledGraphTarget(next).ping(n);
     }
@@ -589,6 +590,9 @@ async function build(
       const completionPositionsLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + completionPositionsLength;
       cursor += 32; // graph-global settlement-table commitment
+      cursor += 3; // execution kind + executor input
+      const executorLbcLength = bytes[cursor] | (bytes[cursor + 1] << 8);
+      cursor += 2 + executorLbcLength;
       cursor += 2; // return output
       const resultVectorLength = bytes[cursor] | (bytes[cursor + 1] << 8);
       cursor += 2 + resultVectorLength;

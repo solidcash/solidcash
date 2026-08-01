@@ -11,6 +11,10 @@ import { Layer3DiagnosticError } from './diagnostics.js';
 export interface CompiledGraphParticipant {
   artifact: Artifact;
   lockingBytecode: string;
+  /** V1 authority mode. Omitted preserves the legacy/direct-owner participant route. */
+  executionKind?: 'owner' | 'delegate';
+  /** Immutable executor identity for the pinned one-hop delegate class. */
+  executorLockingBytecode?: string;
   /**
    * Values for route key witnesses no invocation binds. An ordered mix of handlers produces these by
    * construction: a handler with a single mapping access binds only the shared entry, so another row's
@@ -79,6 +83,11 @@ export interface CompiledParticipantExecution {
   /** Exact artifact whose route and state layout this physical owner executes. */
   artifact: Artifact;
   lockingBytecode: string;
+  executionKind: 0 | 1;
+  /** Local balanced-block offset of the distinct delegate executor input. */
+  executorOffset: number | null;
+  executorInputIndex: number;
+  executorLockingBytecode: string;
   batch: EncodedHiddenBatch;
   /** Global invocation indices, in the exact order executed by this owner's SCB1 route. */
   invocations: readonly number[];
@@ -271,6 +280,15 @@ export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGr
       throw new Error(
         `layer3: participant ${participant.participant} local block is not a complete balanced span`,
       );
+    }
+    if (participant.executionKind === 1) {
+      const executors = layout.slots.filter((slot) => slot.kind === 'lowLevelCall');
+      if (executors.length !== 1 || participant.executorOffset !== executors[0].offset
+        || participant.executorOffset === 0 || participant.executorLockingBytecode.length === 0) {
+        throw new Error(
+          `layer3: delegate participant ${participant.participant} requires one distinct pinned executor slot`,
+        );
+      }
     }
     if (layout.trailingBase !== undefined) {
       const capacity = layout.trailingCapacity ?? -1;
@@ -612,6 +630,9 @@ export function finalizeCompiledGraph(
     const inputFrame = uint(participantInputs[participantIndex], 2);
     const blockSizeFrame = uint(participant.blockLayout!.blockSize, 2);
     const lbcFrame = framed(lbc);
+    const executionKindFrame = uint(participant.executionKind, 1);
+    const executorInputFrame = uint(participant.executorInputIndex, 2);
+    const executorLbcFrame = framed(hexToBin(participant.executorLockingBytecode));
     const batchFrame = framed(participant.batch.blob);
     const emissionFrame = framed(participantEmissions[participantIndex]);
     const callerFrame = framed(participantCallers[participantIndex]);
@@ -625,10 +646,12 @@ export function finalizeCompiledGraph(
     const projectionFrame = uint(projectionInputs[participantIndex], 2);
     parts.push(inputFrame, blockSizeFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
       settlementBoundaryFrame, completionPositionsFrame, settlementTableCommitmentFrame,
+      executionKindFrame, executorInputFrame, executorLbcFrame,
       returnFrame, resultFrame, projectionFrame);
     encodedLength += inputFrame.length + blockSizeFrame.length + lbcFrame.length + batchFrame.length
       + emissionFrame.length + callerFrame.length + settlementBoundaryFrame.length
       + completionPositionsFrame.length + settlementTableCommitmentFrame.length
+      + executionKindFrame.length + executorInputFrame.length + executorLbcFrame.length
       + returnFrame.length + resultFrame.length + projectionFrame.length;
   }
   // The table describes the graph as a whole. Encoding it in every participant frame makes the transcript
@@ -869,6 +892,21 @@ contract GraphRootController(bytes20 initializer) {
         require(frame.slice(local, local + 32) == publishedSettlementTableCommitment);
       }
       local = local + 32;
+      require(local + 5 <= frame.length);
+      bigint executionKind = int(bytes.concat(frame.slice(local, local + 1), hex"00"));
+      bigint executorInput = int(bytes.concat(frame.slice(local + 1, local + 3), hex"00"));
+      bigint executorLbcLength = int(bytes.concat(frame.slice(local + 3, local + 5), hex"00"));
+      local = local + 5;
+      require(local + executorLbcLength + 4 <= frame.length);
+      if (executionKind == 0) {
+        require(executorInput == 65535 && executorLbcLength == 0);
+      } else {
+        require(executionKind == 1 && executorLbcLength > 0);
+        require(executorInput > participantInput && executorInput < participantInput + blockSize);
+        require(tx.inputs[executorInput].lockingBytecode
+          == frame.slice(local, local + executorLbcLength));
+      }
+      local = local + executorLbcLength;
       bigint returnOutput = int(bytes.concat(
         frame.slice(local, local + 2), hex"00"));
       bigint resultVectorLength = int(bytes.concat(
@@ -1173,6 +1211,21 @@ contract GraphProjectionVerifier() {
       }
       local = local + completionPositionsLength;
       local = local + 32;
+      require(local + 5 <= frame.length);
+      bigint executionKind = int(bytes.concat(frame.slice(local, local + 1), hex"00"));
+      bigint executorInput = int(bytes.concat(frame.slice(local + 1, local + 3), hex"00"));
+      bigint executorLbcLength = int(bytes.concat(frame.slice(local + 3, local + 5), hex"00"));
+      local = local + 5;
+      require(local + executorLbcLength + 4 <= frame.length);
+      if (executionKind == 0) {
+        require(executorInput == 65535 && executorLbcLength == 0);
+      } else {
+        require(executionKind == 1 && executorLbcLength > 0);
+        require(executorInput > participantInput && executorInput < participantInput + blockSize);
+        require(tx.inputs[executorInput].lockingBytecode
+          == frame.slice(local, local + executorLbcLength));
+      }
+      local = local + executorLbcLength;
       bigint resultLength = int(bytes.concat(
         frame.slice(local + 2, local + 4), hex"00"));
       local = local + 4;
@@ -1417,6 +1470,14 @@ function bindConsumerCallsites(
  * or its own legs.
  */
 export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: number): void {
+  const bound = occurrenceBoundOf(call);
+  if (bound.kind === 'loop' && bound.maximum === undefined) {
+    throw new Layer3DiagnosticError(
+      'L3_UNBOUNDED_EXTERNAL_CALL_LOOP',
+      `unbounded-external-call-loop-transcript-ineligible: callsite ${call.callsiteId ?? '?'}`,
+      { callsiteId: call.callsiteId, measured: count },
+    );
+  }
   const violation = occurrenceCountViolation(call, count);
   if (violation !== undefined) throw new Error(`layer3: ${violation}`);
 }
@@ -1452,6 +1513,11 @@ const callsiteRowCapacity = (call: ExternalCallAbi): number => {
  * arity, is what separates them from rows a `once` callsite cannot have emitted.
  */
 function assertHandlerRowCapacity(callsites: readonly ExternalCallAbi[], rows: number): void {
+  const unbounded = callsites.find((callsite) => {
+    const bound = occurrenceBoundOf(callsite);
+    return bound.kind === 'loop' && bound.maximum === undefined;
+  });
+  if (unbounded) assertPlannedOccurrenceCount(unbounded, rows);
   if (callsites.length === 0 || rows === 0) return;
   const capacities = callsites.map(callsiteRowCapacity);
   const total = capacities.reduce((sum, capacity) => sum + capacity, 0);
@@ -1945,10 +2011,33 @@ export function planCompiledGraph(
     if (perOwner[owner].length === 0) {
       throw new Error(`layer3: participant ${owner} has no invocation and must not be co-spent`);
     }
+    const executionKind = participant.executionKind === 'delegate' ? 1 : 0;
+    const executorSlots = participant.artifact.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot) => slot.kind === 'lowLevelCall');
+    if (executionKind === 1) {
+      if (!/^([0-9a-fA-F]{2})+$/.test(participant.executorLockingBytecode ?? '')) {
+        throw new Error(`layer3: delegate participant ${owner} lacks canonical executor locking bytecode`);
+      }
+      if (executorSlots.length !== 1 || executorSlots[0].offset === 0) {
+        throw new Error(`layer3: delegate participant ${owner} requires exactly one executor slot`);
+      }
+    } else if (participant.executorLockingBytecode !== undefined) {
+      throw new Error(`layer3: owner participant ${owner} cannot declare a delegate executor`);
+    }
     return Object.freeze({
       participant: owner,
       artifact: participant.artifact,
       lockingBytecode: participant.lockingBytecode.toLowerCase(),
+      executionKind,
+      executorOffset: executionKind === 1 ? executorSlots[0].offset : null,
+      executorInputIndex: executionKind === 1
+        ? participants.slice(0, owner).reduce(
+          (base, candidate) => base + candidate.artifact.hiddenBatch!.route.blockLayout!.blockSize,
+          0,
+        ) + executorSlots[0].offset
+        : 0xffff,
+      executorLockingBytecode: executionKind === 1
+        ? participant.executorLockingBytecode!.toLowerCase() : '',
       batch: encodeHiddenBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
       invocations: Object.freeze(globalByOwner[owner]),
       blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,

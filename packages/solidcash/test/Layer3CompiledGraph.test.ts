@@ -401,6 +401,7 @@ describe('layer3.planCompiledGraph', () => {
       interface IPeer { function run(address peer, bool take); }
       contract LoopGraph() {
         function repeat(address peer, bool take, int times) public {
+          require(times <= 2);
           for (int i = 0; i < times; i = i + 1) { IPeer(peer).run(peer, take); }
           require(times >= 0);
         }
@@ -994,10 +995,12 @@ describe('layer3.planCompiledGraph', () => {
     // participant settlement table and re-derives every owner maximum, while each projection authenticates its
     // owner's row-completion vector. The graph-global settlement-table normalization then moved the controller
     // 2 bytes and the projection 27 bytes while removing one whole table copy per participant. Keep both exact
-    // sizes pinned so a later parser change is measured rather than silently consuming the relay margin above.
-    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_678);
-    // The carrier parser and distributed controller-category burn partition make this 5,370 bytes.
-    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_370);
+    // V1 delegate authority fields then add 132 controller bytes and 450 projection bytes: both parsers now
+    // bind executionKind, the distinct executor index, and its locking bytecode for every participant frame.
+    // Keep both exact sizes pinned so a later parser change is measured rather than silently consuming margin.
+    expect(controllerArtifact.debug.bytecode.length / 2).toBe(2_810);
+    // The carrier parser, delegate authority fields, and distributed burn partition make this 5,820 bytes.
+    expect(projectionArtifact.debug.bytecode.length / 2).toBe(5_820);
     expect(controllerArtifact.diagnostics ?? []).not.toContainEqual(
       expect.objectContaining({ code: 'contract-size-limit' }),
     );

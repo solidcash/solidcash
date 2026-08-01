@@ -426,7 +426,7 @@ async function buildC3(
   };
   for (const label of order) inputBlock[label]();
   projectionUtxos.forEach((proof, participant) => tx.addInput(proof, projection.unlock.verify(
-    transcript.bytes, BigInt(layout.controllerInput), BigInt(participant),
+    ...layer3.compiledGraphProjectionArgs(layout.controllerInput, participant),
   )));
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   funding(fee);

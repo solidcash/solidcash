@@ -289,46 +289,27 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
    * pure witness data - the source's own `n` is the only thing that decides how many rows the covenant
    * partitions. Every row below shares one honest control (n == planned) that settles and broadcasts.
    */
-  it.each([
-    { persistedN: 2n, plannedRows: 2, settles: true, reason: '' },
-    { persistedN: 2n, plannedRows: 3, settles: false, reason: 'Program failed an OP_VERIFY operation.' },
-    {
-      persistedN: 2n,
-      plannedRows: 1,
-      settles: false,
-      reason: 'Program called an OP_SPLIT operation with an invalid index',
-    },
-    { persistedN: 0n, plannedRows: 6, settles: false, reason: 'Program failed an OP_VERIFY operation.' },
-  ])(
-    'G3 SCOPED: an unbounded loop persisting n=$persistedN against $plannedRows planned rows',
-    async ({ persistedN, plannedRows, settles: expectSettle, reason }) => {
+  it.each([1, 2, 3, 6])(
+    'G3 CLOSED: an unbounded loop is transcript-ineligible even with %i caller-planned rows',
+    async (plannedRows) => {
       const artifact = compileString(UNBOUNDED_LOOP, {
         forceStateful: true,
         experimentalHiddenBatch: true,
         experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
         experimentalMessageBusControllerCategory: '22'.repeat(32),
       });
-      // The premise of the scope note: no ceiling is published, so the planner cannot refuse any of this.
+      // No finite ceiling is published, so neither planner may trust a caller-supplied row count.
       expect(artifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0].maximumOccurrences)
         .toBeUndefined();
-      const built = await buildTwoParty({
+      await expect(buildTwoParty({
         callerSource: UNBOUNDED_LOOP,
-        persistedN,
+        persistedN: 2n,
         plannedRows,
         settledHits: BigInt(plannedRows),
         entryPoint: 'derive',
-      });
-      expect(built.plan.invocations).toHaveLength(plannedRows + 1);
-      const outcome = preflight(built);
-      if (expectSettle) {
-        expect(outcome).toBe('ACCEPTED');
-        await expect(settles(built)).resolves.toBe(true);
-        return;
-      }
-      // The caller's own master input, which is the script that partitions the emission vector.
-      expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 0');
-      expect(outcome).toContain(reason);
-      await expect(settles(built)).resolves.toBe(false);
+      })).rejects.toThrow(
+        'layer3 [L3_UNBOUNDED_EXTERNAL_CALL_LOOP]: unbounded-external-call-loop-transcript-ineligible: callsite 0',
+      );
     },
     300_000,
   );
@@ -382,35 +363,18 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
    * occurrences. The honest settlement is `hits == n`; a collapse to a single execution is refused at input 2,
    * the callee's own master, with the caller's rows and the whole transcript honest.
    */
-  it.each([
-    { persistedN: 1n, hits: 1n, settles: true },
-    { persistedN: 2n, hits: 2n, settles: true },
-    { persistedN: 3n, hits: 3n, settles: true },
-    { persistedN: 2n, hits: 1n, settles: false },
-    { persistedN: 2n, hits: 0n, settles: false },
-    { persistedN: 3n, hits: 1n, settles: false },
-  ])(
-    'a callee reached $persistedN times settling $hits executions',
-    async ({ persistedN, hits, settles: expectSettle }) => {
-      const built = await buildTwoParty({
+  it.each([1n, 2n, 3n])(
+    'the low-level planner also refuses an unbounded caller with %s proposed occurrences',
+    async (persistedN) => {
+      await expect(buildTwoParty({
         callerSource: UNBOUNDED_LOOP,
         persistedN,
         plannedRows: Number(persistedN),
-        settledHits: hits,
-        entryPoint: 'derive',
-      });
-      // One physical participant block serves every occurrence; that is the shape under test.
-      expect(built.plan.participants).toHaveLength(2);
-      expect(built.plan.invocations).toHaveLength(Number(persistedN) + 1);
-      const outcome = preflight(built);
-      if (expectSettle) {
-        expect(outcome).toBe('ACCEPTED');
-        await expect(settles(built)).resolves.toBe(true);
-        return;
-      }
-      // The CALLEE master, not the caller: the caller's row vector is honest in every one of these.
-      expect(outcome).toContain('layer3: BCH-2026 preflight failed at input 2');
-      await expect(settles(built)).resolves.toBe(false);
+        settledHits: persistedN,
+        entryPoint: 'plan',
+      })).rejects.toThrow(
+        'layer3 [L3_UNBOUNDED_EXTERNAL_CALL_LOOP]: unbounded-external-call-loop-transcript-ineligible: callsite 0',
+      );
     },
     300_000,
   );
@@ -563,6 +527,7 @@ contract Leg() {
     ])).toThrow(refusal);
     expect(() => layer3.deriveCompiledGraphPlan({
       root: participants[0] as any, function: 'notify', args: [7n], targets: { IC1Leg: participants[1] as any },
+      target: () => participants[1] as any,
     })).toThrow(refusal);
   }, 120_000);
 

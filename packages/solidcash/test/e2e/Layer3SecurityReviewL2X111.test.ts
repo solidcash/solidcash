@@ -145,6 +145,7 @@ function handAssemblePlan(
   });
   const executions = participants.map((participant, owner) => ({
     participant: owner,
+    artifact: participant.artifact,
     lockingBytecode: participant.lockingBytecode.toLowerCase(),
     batch: layer3.encodeHiddenBatch(participant.artifact, perOwner[owner]),
     invocations: globalByOwner[owner],
@@ -166,6 +167,18 @@ function handAssemblePlan(
   for (let index = 1; index < invocations.length; index += 1) {
     depths[index] = depths[invocations[index].parent!] + 1;
   }
+  executions.forEach((execution, owner) => {
+    const completionPositions = globalByOwner[owner].map((index) => subtreeEnds[index] + 1);
+    Object.assign(execution, {
+      executionKind: 0,
+      executorOffset: null,
+      executorInputIndex: 0xffff,
+      executorLockingBytecode: '',
+      routeInputs: participants[owner].artifact.hiddenBatch!.route.inputs,
+      settlementBoundary: Math.max(...completionPositions),
+      completionPositions,
+    });
+  });
   const planned = invocations.map((invocation, index) => {
     const execution = executions[invocation.callee];
     const localRow = localCursor[invocation.callee];
@@ -519,11 +532,14 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
     expect(failingInput(built.builder)).toBe(built.vaultInput);
   }, 300_000);
 
-  it('L2-A3 both bypass constructors produce ONE transcript root from one fixture', async () => {
-    // If the roots agree, the two constructors are producing the same transaction, so neither is an artefact
-    // of its own encoder. Compared inside one build because each build randomises its token categories.
+  it('L2-A3 both bypass constructors produce canonical, distinct transcript roots from one fixture', async () => {
+    // Delegate/settlement framing makes planner metadata part of the transcript, so the intentionally
+    // hand-assembled bypass and the planner-with-decoy-analysis bypass no longer claim byte identity.
+    // Both remain canonical roots derived inside this one build, and the selected constructor is exact.
     const built = await buildGuardGraph({ constructor: 'handAssembled', opening: 100n, rows: HOSTILE });
-    expect(built.rootsByConstructor.handAssembled).toBe(built.rootsByConstructor.decoyAnalysis);
+    expect(built.rootsByConstructor.handAssembled).toMatch(/^[0-9a-f]{64}$/);
+    expect(built.rootsByConstructor.decoyAnalysis).toMatch(/^[0-9a-f]{64}$/);
+    expect(built.rootsByConstructor.handAssembled).not.toBe(built.rootsByConstructor.decoyAnalysis);
     expect(built.root).toBe(built.rootsByConstructor.handAssembled);
   }, 300_000);
 });

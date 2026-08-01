@@ -230,32 +230,40 @@ contract CompiledStructReturningA(int brand, address target) {
 }`;
 const STATE_A = `pragma solidcash >=0.8.0;
 interface IStateB {
-  public int count;
-  function step(address next, address callback, int n);
+  function step(address callback, int n);
 }
-contract CompiledStateA(int brand) {
+contract CompiledStateA(int brand, address next, address middle) {
   int count;
-  function start(address next, address callback, int n) public {
+  function start(address callback, int n) public {
     this.count = this.count + n;
     require(n >= 0);
-    IStateB(next).step(next, callback, n);
-    int settledB = IStateB(next).outState.count;
-    require(settledB == n);
+    IStateB(next).step(callback, n);
+    require(next.length > 0);
   }
-  function finish(address next, address callback, int n) public {
+  function finish(address callback, int n) public {
     this.count = this.count + n;
-    require(next.length > 0 && callback.length > 0 && n >= 0);
+    require(callback.length > 0 && n >= 0);
   }
 }`;
 const STATE_B = `pragma solidcash >=0.8.0;
-interface IStateA { function finish(address next, address callback, int n); }
-contract CompiledStateB(int brand) {
+interface IStateC { function relay(address callback, int n); }
+contract CompiledStateB(int brand, address middle) {
   int count;
-  function step(address next, address callback, int n) public {
+  function step(address callback, int n) public {
     this.count = this.count + n;
     require(n >= 0);
-    IStateA(callback).finish(next, callback, n);
+    IStateC(middle).relay(callback, n);
     require(true);
+  }
+}`;
+const STATE_C = `pragma solidcash >=0.8.0;
+interface IStateA { function finish(address callback, int n); }
+contract CompiledStateC(int brand) {
+  int count;
+  function relay(address callback, int n) public {
+    this.count = this.count + n;
+    IStateA(callback).finish(callback, n);
+    require(n >= 0);
   }
 }`;
 const POINTER_CALLER = `pragma solidcash >=0.8.0;
@@ -1889,7 +1897,7 @@ async function buildReturning(
   };
 }
 
-async function buildStateCycle(tamperState = false) {
+async function buildStateCycle(tamperState = false, tamperCallbackTarget = false) {
   const provider = createTestProvider();
   const {
     projection, controller, categoryId: controllerCategory, genesisUtxo,
@@ -1902,19 +1910,36 @@ async function buildStateCycle(tamperState = false) {
   };
   const artifactA = compileString(STATE_A, options);
   const artifactB = compileString(STATE_B, options);
-  const baseA = new Contract(artifactA, [1n], { provider });
-  const baseB = new Contract(artifactB, [2n], { provider });
-  const setupA = await setupStatefulUtxos(
-    provider, baseA, artifactA.stateLayout!, { count: 0n },
+  const artifactC = compileString(STATE_C, options);
+  const baseC = new Contract(artifactC, [3n], { provider });
+  const setupC = await setupStatefulUtxos(
+    provider, baseC, artifactC.stateLayout!, { count: 0n },
   );
+  const c = baseC.withCategory(hexToBin(setupC.categoryId));
+  const baseB = new Contract(artifactB, [2n, hexToBin(c.lockingBytecode)], { provider });
   const setupB = await setupStatefulUtxos(
     provider, baseB, artifactB.stateLayout!, { count: 0n },
   );
-  const a = baseA.withCategory(hexToBin(setupA.categoryId));
   const b = baseB.withCategory(hexToBin(setupB.categoryId));
-  const commonArgs = [b.lockingBytecode, a.lockingBytecode, 1n] as const;
-  const participantA = { artifact: artifactA, lockingBytecode: a.lockingBytecode };
-  const participantB = { artifact: artifactB, lockingBytecode: b.lockingBytecode };
+  const baseA = new Contract(artifactA, [
+    1n, hexToBin(b.lockingBytecode), hexToBin(c.lockingBytecode),
+  ], { provider });
+  const setupA = await setupStatefulUtxos(
+    provider, baseA, artifactA.stateLayout!, { count: 0n },
+  );
+  const a = baseA.withCategory(hexToBin(setupA.categoryId));
+  const commonArgs = [hexToBin(tamperCallbackTarget ? c.lockingBytecode : a.lockingBytecode), 1n] as const;
+  const participantA = {
+    artifact: artifactA, lockingBytecode: a.lockingBytecode,
+    constructorArgs: [1n, hexToBin(b.lockingBytecode), hexToBin(c.lockingBytecode)],
+  };
+  const participantB = {
+    artifact: artifactB, lockingBytecode: b.lockingBytecode,
+    constructorArgs: [2n, hexToBin(c.lockingBytecode)],
+  };
+  const participantC = {
+    artifact: artifactC, lockingBytecode: c.lockingBytecode, constructorArgs: [3n],
+  };
   // This is deliberately derived from compiler-authored callsites rather than restating transcript rows.
   // The worklist interns A by locking bytecode when B calls it back, producing three logical invocations but
   // only two physical owner blocks.
@@ -1926,6 +1951,7 @@ async function buildStateCycle(tamperState = false) {
     target: ({ interfaceName, occurrence }) => {
       expect(occurrence).toBe(0);
       if (interfaceName === 'IStateB') return participantB;
+      if (interfaceName === 'IStateC') return participantC;
       if (interfaceName === 'IStateA') return participantA;
       return undefined;
     },
@@ -1933,12 +1959,13 @@ async function buildStateCycle(tamperState = false) {
   expect(plan.invocations.map(({ parent, callee, function: name }) => ({ parent, callee, name }))).toEqual([
     { parent: null, callee: 0, name: 'start' },
     { parent: 0, callee: 1, name: 'step' },
-    { parent: 1, callee: 0, name: 'finish' },
+    { parent: 1, callee: 2, name: 'relay' },
+    { parent: 2, callee: 0, name: 'finish' },
   ]);
-  expect(plan.participants.map(({ invocations }) => invocations)).toEqual([[0, 2], [1]]);
+  expect(plan.participants.map(({ invocations }) => invocations)).toEqual([[0, 3], [1], [2]]);
   const layout = layer3.compiledGraphPhysicalLayout(plan);
   const transcript = layer3.finalizeCompiledGraph(
-    plan, {}, layout.participantInputs, layout.returnOutputs, ['', ''], layout.projectionInputs,
+    plan, {}, layout.participantInputs, layout.returnOutputs, ['', '', ''], layout.projectionInputs,
   );
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   const rootedController = await initializeGraphAuthority(
@@ -1947,19 +1974,25 @@ async function buildStateCycle(tamperState = false) {
   const fee = randomUtxo({ satoshis: 50000n });
   const projectionA = randomUtxo({ satoshis: 1000n });
   const projectionB = randomUtxo({ satoshis: 1000n });
+  const projectionC = randomUtxo({ satoshis: 1000n });
   await provider.addUtxo(p2pkh.address, fee);
   await provider.addUtxo(projection.address, projectionA);
   await provider.addUtxo(projection.address, projectionB);
+  await provider.addUtxo(projection.address, projectionC);
   const routeA = a.createCompilerRouteUnlocker(
     artifactA.hiddenBatch!.route, hexToBin(artifactA.hiddenBatch!.selector),
   );
   const routeB = b.createCompilerRouteUnlocker(
     artifactB.hiddenBatch!.route, hexToBin(artifactB.hiddenBatch!.selector),
   );
+  const routeC = c.createCompilerRouteUnlocker(
+    artifactC.hiddenBatch!.route, hexToBin(artifactC.hiddenBatch!.selector),
+  );
   const nextA = buildInitialStateCommitments(
     artifactA.stateLayout!, { count: tamperState ? 3n : 2n },
   )[0];
   const nextB = buildInitialStateCommitments(artifactB.stateLayout!, { count: 1n })[0];
+  const nextC = buildInitialStateCommitments(artifactC.stateLayout!, { count: 1n })[0];
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   tx.addInput(
     setupA.masterUtxo,
@@ -1978,12 +2011,24 @@ async function buildStateCycle(tamperState = false) {
     createDataNftUnlocker(b, layout.participantInputs[1], setupB.categoryId),
   );
   tx.addInput(
+    setupC.masterUtxo,
+    routeC(...layer3.compiledGraphRouteArgs(transcript, 2, layout.controllerInput) as any),
+  );
+  tx.addInput(
+    setupC.dataNftUtxos[0],
+    createDataNftUnlocker(c, layout.participantInputs[2], setupC.categoryId),
+  );
+  tx.addInput(
     projectionA,
     projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 0n),
   );
   tx.addInput(
     projectionB,
     projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 1n),
+  );
+  tx.addInput(
+    projectionC,
+    projection.unlock.verify(transcript.bytes, BigInt(layout.controllerInput), 2n),
   );
   tx.addInput(rootedController, controller.unlock.attest(transcript.bytes));
   tx.addInput(fee, p2pkh.unlock.spend(alicePub, signature()));
@@ -2009,6 +2054,18 @@ async function buildStateCycle(tamperState = false) {
       nft: { capability: 'mutable', commitment: nextB },
     },
   });
+  tx.addOutput({
+    to: c.tokenAddress, amount: setupC.masterUtxo.satoshis,
+    token: { category: setupC.categoryId, amount: 0n, nft: { capability: 'minting', commitment: '' } },
+  });
+  tx.addOutput({
+    to: getDataNftAddress(c, setupC.categoryId), amount: setupC.dataNftUtxos[0].satoshis,
+    token: {
+      category: setupC.categoryId, amount: 0n,
+      nft: { capability: 'mutable', commitment: nextC },
+    },
+  });
+  tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
   tx.addOutput({ to: p2pkh.address, amount: 1000n });
@@ -3718,14 +3775,19 @@ describe('Layer-3 compiled graph controller', () => {
     await expect(boolean.provider.sendRawTransaction(boolean.transaction)).rejects.toThrow(scriptRefusalAt(2));
   });
 
-  it('executes A -> B -> A once per owner and reads B outState at final settlement', async () => {
+  it('executes A -> B -> C -> A once per owner with one live journal', async () => {
     const { provider, transaction } = await buildStateCycle();
     await expect(provider.sendRawTransaction(transaction)).resolves.toBeTypeOf('string');
   });
 
-  it('rejects a graph settlement whose owner post-state differs from compiled sequential execution', async () => {
+  it('rejects a multi-hop callback whose owner-A post-state differs from sequential execution', async () => {
     const { provider, transaction } = await buildStateCycle(true);
     await expect(provider.sendRawTransaction(transaction)).rejects.toThrow(scriptRefusalAt(0));
+  });
+
+  it('rejects a one-field multi-hop callback target substitution before publication', async () => {
+    await expect(buildStateCycle(false, true))
+      .rejects.toThrow(/callsite 0 target proof disagrees with registered owner/);
   });
 
   it('composes an ordinary event NFT inside the compiler-derived balanced block', async () => {

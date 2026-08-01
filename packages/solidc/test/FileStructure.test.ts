@@ -78,7 +78,10 @@ describe('Solidity-compat features (from the minimal Sablier port)', () => {
   });
 
   it('compiles address(this) to OP_INPUTINDEX OP_UTXOBYTECODE (the spent UTXO locking script)', () => {
-    const a = compileString('contract C() { int n; function f(address r) { require(r != address(this)); this.n = 1; } }');
+    const a = compileString(
+      'contract C() { int n; function f(address r) { require(r != address(this)); this.n = 1; } }',
+      { experimentalHiddenBatch: false },
+    );
     expect(a.bytecode).toContain('OP_INPUTINDEX');
     expect(a.bytecode).toContain('OP_UTXOBYTECODE');
   });

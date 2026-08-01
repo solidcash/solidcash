@@ -457,24 +457,29 @@ async function buildC1(
   const vaultRoute = routeUnlocker(vault, vaultArtifact);
   const notifierRoute = routeUnlocker(notifier, notifierArtifact);
 
+  const tokenInternalRouteWitnesses: Record<string, FunctionArgument> = {};
+  // C2 batch groups follow the wrapper's journal order (allowance, balances[from], then balances[to] once per
+  // row). Entry inputs are addressed by an explicit block-local offset, but the write-backs are positional, so
+  // the settled outputs must be emitted in this same order. Supply these compiler-owned witnesses by their ABI
+  // names: compiledGraphRouteArgs deliberately refuses positional internal arguments so route ABI changes cannot
+  // silently shift a user-visible witness.
+  const journalOrder = [1, 0, 2, 3];
+  for (const [routeSlot, entryIndex] of journalOrder.map((slot, index) => [slot, index] as const)) {
+    const decoded = decodeEntryCommitment(hexToBin(entries[routeSlot].token!.nft!.commitment));
+    tokenInternalRouteWitnesses[`__internal__c2BatchSlot_${entryIndex}`] = decoded.slot;
+    tokenInternalRouteWitnesses[`__internal__c2BatchProof_${entryIndex}`] = BigInt(entryIndex + 1);
+    tokenInternalRouteWitnesses[`__internal__c2BatchNext_${entryIndex}`] = decoded.nextKey;
+    tokenInternalRouteWitnesses[`__internal__c2BatchPredOut_${entryIndex}`] = -1n;
+  }
+  tokenInternalRouteWitnesses.__internal__c2BatchTrailingCount = 0n;
   const tokenRouteArgs = [
-    ...layer3.compiledGraphRouteArgs(transcript, 1, layout.controllerInput),
+    ...layer3.compiledGraphRouteArgs(
+      transcript, 1, layout.controllerInput, tokenInternalRouteWitnesses,
+    ),
   ] as FunctionArgument[];
   // Route input 7 is `__scb_key_allowance_sender_1`: the spender key the route must tie to the authenticated
   // graph caller. Substituting it is the caller forgery.
   if (hostile === 'caller') tokenRouteArgs[7] = hexToBin(accrue.lockingBytecode);
-  // C2 batch groups follow the wrapper's journal order (allowance, balances[from], then balances[to] once per
-  // row). Entry inputs are addressed by an explicit block-local offset, but the write-backs are positional, so
-  // the settled outputs must be emitted in this same order.
-  const journalOrder = [1, 0, 2, 3];
-  for (const routeSlot of journalOrder) {
-    const decoded = decodeEntryCommitment(hexToBin(entries[routeSlot].token!.nft!.commitment));
-    tokenRouteArgs.push(
-      decoded.slot, BigInt(journalOrder.indexOf(routeSlot) + 1), decoded.nextKey, -1n,
-    );
-  }
-  tokenRouteArgs.push(0n);
-
   // ---- Inputs ----------------------------------------------------------------------------------------
   const tx = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
   // Router block: [master, dataNft]. No physical slot at all - that is the SEC-6 property.
@@ -846,7 +851,7 @@ describe('C1 DeFi integrated semantic capstone', () => {
       // categories per call), so this pins SHAPE, and the substitution itself is what pins the field.
       expect(attacked.transaction.length).toBe(control.transaction.length);
       const outcome = preflightOutcome(attacked);
-      expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${input}`);
+      expect(outcome).toContain(`BCH-2026 preflight failed at input ${input}`);
       await expect(attacked.provider.sendRawTransaction(attacked.transaction)).rejects.toThrow(
         `mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index ${input}: Program failed an OP_VERIFY operation.)`,
       );

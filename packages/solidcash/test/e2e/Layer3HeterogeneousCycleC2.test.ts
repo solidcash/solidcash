@@ -603,7 +603,7 @@ function expectRejectionAtInput(built: BuiltCycle, input: number): string {
   } catch (error) {
     outcome = (error as Error).message;
   }
-  expect(outcome).toContain(`layer3: BCH-2026 preflight failed at input ${input}`);
+  expect(outcome).toContain(`BCH-2026 preflight failed at input ${input}`);
   return outcome;
 }
 

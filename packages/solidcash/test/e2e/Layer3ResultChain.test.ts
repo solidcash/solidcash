@@ -76,7 +76,10 @@ describe('layer-3 real result-dependency chain (Kashi -> Bento -> Oracle, transi
     const { scKashi, scBento, scOracle } = await setupChain();
     // borrow(5): Oracle.price(5) = 5*2 = 10; Bento base 0->10, returns 10; Kashi collateral 0->10.
     const tx = await scKashi.borrow(5n).send();
-    expect(tx.txid).toBeDefined();
+    expect(tx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
     expect((await scOracle.getState()).rate).toBe(2n); // unchanged
     expect((await scBento.getState()).base).toBe(10n); // consumed Oracle's authenticated price
     expect((await scKashi.getState()).collateral).toBe(10n); // consumed Bento's authenticated result
@@ -93,7 +96,9 @@ describe('layer-3 real result-dependency chain (Kashi -> Bento -> Oracle, transi
   it('HOSTILE: a guard failure at the DEEPEST callee reverts the whole transitive settlement', async () => {
     const { scKashi } = await setupChain();
     // borrow(200): Oracle.price(200) trips its own require(x <= 100), aborting the entire Kashi->Bento->Oracle tx.
-    await expect(scKashi.borrow(200n).send()).rejects.toThrow(/mandatory-script-verify-flag-failed/);
+    await expect(scKashi.borrow(200n).send()).rejects.toThrow(
+      /layer3: BCH-2026 preflight failed at input 5: Program failed an OP_VERIFY operation\./,
+    );
     await expect(scKashi.borrow(5n).send()).resolves.toBeDefined();
   });
 });

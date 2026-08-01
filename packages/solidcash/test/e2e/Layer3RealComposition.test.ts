@@ -116,7 +116,10 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
     const { scKashi, scBento } = await setup({ elastic: 10n, base: 8n });
     // borrow(5): shareOut = 5*8/10 = 4. Bento -> elastic 15, base 12. Kashi -> collateral 4.
     const tx = await scKashi.borrow(5n).withExternalCall(scBento, 'deposit', [5n]).send();
-    expect(tx.txid).toBeDefined();
+    expect(tx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
 
     const bentoState = await scBento.getState();
     expect(bentoState.elastic).toBe(15n);
@@ -128,7 +131,10 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
     const { scKashi, scBento } = await setup({ elastic: 0n, base: 0n });
     // borrow(9): elastic==0 => shareOut = 9. Bento -> elastic 9, base 9. Kashi -> collateral 9.
     const tx = await scKashi.borrow(9n).withExternalCall(scBento, 'deposit', [9n]).send();
-    expect(tx.txid).toBeDefined();
+    expect(tx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
     expect((await scBento.getState()).base).toBe(9n);
     expect((await scKashi.getState()).collateral).toBe(9n);
   });
@@ -140,7 +146,10 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
       .withExternalCall(scBento, 'deposit', [5n])
       .withExternalCall(scToken, 'debit', [5n])
       .send();
-    expect(tx.txid).toBeDefined();
+    expect(tx).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      hex: expect.stringMatching(/.+/),
+    });
     expect((await scBento.getState()).base).toBe(12n);
     expect((await scToken.getState()).balance).toBe(95n);
     expect((await scKashi.getState()).collateral).toBe(4n);
@@ -160,7 +169,9 @@ describe('layer-3 real heterogeneous composition (Kashi <- Bento, two compiled c
     await expect(scKashi.borrow(5n)
       .withExternalCall(scBento, 'deposit', [5n])
       .withExternalCall(scToken, 'debit', [5n])
-      .send()).rejects.toThrow(/mandatory-script-verify-flag-failed/);
+      .send()).rejects.toThrow(
+        /layer3: BCH-2026 preflight failed at input 5: Program failed an OP_VERIFY operation\./,
+      );
     const honest = await setup3({ elastic: 10n, base: 8n }, { balance: 100n });
     await expect(honest.scKashi.borrow(5n)
       .withExternalCall(honest.scBento, 'deposit', [5n])

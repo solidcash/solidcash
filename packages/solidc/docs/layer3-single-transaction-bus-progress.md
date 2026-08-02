@@ -3,7 +3,7 @@
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
 Tracking baseline: working tree after `d81368a5` (`feat(layer3): compose controllerless blockhash oracles`)
-Overall verified progress: **71 / 100 points (71%)**
+Overall verified progress: **72 / 100 points (72%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -27,11 +27,11 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 1. Codec and layout | 10 | 10 | Complete |
 | 2. Compiler mutual verifier | 15 | 13 | In progress |
 | 3. One-transaction composer | 15 | 14 | In progress |
-| 4. Semantic completeness | 30 | 29 | In progress |
+| 4. Semantic completeness | 30 | 30 | Complete |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
 | 6. Removal and API stabilization | 7 | 0 | Not started |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **71** | **71%** |
+| **Total** | **100** | **72** | **72%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -73,7 +73,7 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
 - [ ] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
 
-## Phase 4 — semantic completeness (29/30)
+## Phase 4 — semantic completeness (30/30)
 
 ### Calls and execution graph (7/7)
 
@@ -111,13 +111,13 @@ settlement capstone supplies the physical `msg.value` binding.
 Evidence: commits `9915aa1d`, `5278ffab`, `19127a9c`, `7ec06606`, and `7798d441`, including
 positive capstones and hostile row/physical-output mutations.
 
-### Oracles, sidecars, and call modes (6/7)
+### Oracles, sidecars, and call modes (7/7)
 
 - [x] **2 points:** Blockhash oracle slots have positive, stale, omitted, substituted, and duplicate evidence.
 - [x] **2 points:** Keccak and ecrecover sidecars have exact-slot consumption and recreation evidence.
 - [x] **1 point:** `staticcall` enforces read-only semantics and authenticates its mode bit.
 - [x] **1 point:** Raw/low-level calls authenticate calldata, selector, results, and supported effects.
-- [ ] **1 point:** Sound delegate context is implemented and tested, or every delegate shape is explicitly refused.
+- [x] **1 point:** Sound delegate context is implemented and tested, or every delegate shape is explicitly refused.
 
 ## Phase 5 — capacity and optimization (0/8)
 
@@ -171,12 +171,13 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | working tree | 67% | The composer decodes singular low-level calls through a prepared callee proof; target, selector, calldata, and opaque result substitutions fail direct VM validation. |
 | 2026-08-02 | working tree | 69% | Controllerless composition positions and recreates blockhash oracle bands, propagates locktime, and rejects stale, substituted, omitted, and duplicate oracle inputs; the complete 17-case composition suite passes. |
 | 2026-08-02 | working tree | 71% | Keccak and ecrecover compute sidecars occupy authenticated exact slots, recreate exact commitments, broadcast canonically, and reject wrong, swapped, omitted, or duplicate physical endpoints; the complete 19-case composition suite passes. |
+| 2026-08-02 | working tree | 72% | Delegate execution is fail-closed: entry handlers publish a positioned stable refusal, internal delegate closures fail before synthetic arity lowering, and forged SDK delegate modes remain rejected. Phase 4 is complete. |
 
 ## Next percentage milestones
 
 - **62%:** logical context capstone is committed with canonical success and hostile caller/selector/args/origin failures.
 - **71%:** controllerless repeated/branch/loop, static/raw calls, and all oracle/sidecar families are directly proven.
-- **72%:** remaining delegate policy is implemented or soundly refused with tests.
+- **72%:** all Phase 4 semantic modes are implemented or soundly refused with tests.
 - **81%:** controllerless capacity measurements and enforced bounds are complete.
 - **88%:** controller/projection code and compatibility paths are removed; public API/docs are stable.
 - **100%:** all final repository gates, live-regtest capstones, residue review, and invariant audit pass.

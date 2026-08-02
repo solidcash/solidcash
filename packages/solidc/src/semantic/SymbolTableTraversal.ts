@@ -190,6 +190,7 @@ import {
   AbiEncodeCallArgCountError,
   GraphEmissionEffectError,
   GraphHandlerShapeError,
+  SolidcDiagnosticError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -2350,6 +2351,17 @@ export default class SymbolTableTraversal extends AstTraversal {
     // index; codegen verifies OP_UTXOBYTECODE[idx] == impl so the delegate is required, not optional. Emitted
     // only when impl is NOT the classic P2PKH-placeholder literal (a real delegate is a P2SH covenant); a P2PKH
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
+    if (this.hasExplicitDelegatecall(node.body) && !node.isEntryPoint) {
+      throw new SolidcDiagnosticError(
+        'SCB_DELEGATE_CONTEXT_UNPRESERVABLE',
+        `internal function '${node.name}' contains delegatecall, whose proxy input witness cannot be preserved `
+          + 'across an internal invocation',
+        {
+          functionName: node.name,
+          sourceLocation: { line: node.location.start.line, column: node.location.start.column },
+        },
+      );
+    }
     if (this.hasExplicitDelegatecall(node.body) && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
       node.pinsDelegateCoSpend = true;
       if (!node.graphEmissionHandler && !node.hiddenBatchRoute) {

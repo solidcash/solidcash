@@ -111,4 +111,40 @@ describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
     expect(artifact.hiddenBatch!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
       .toEqual(['control']);
   });
+
+  it('refuses delegate context in an entry point with a positioned stable diagnostic', () => {
+    const artifact = compileString(`contract C(address impl) {
+      function denied(bytes input) public {
+        impl.delegatecall(input);
+        require(true);
+      }
+      function control() public { require(true); }
+    }`, { forceStateful: true, hiddenBatch: true });
+    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'controllerless-delegate-context-unpreservable',
+      rejectionCode: 'SCB_STACK_CONTEXT_UNPRESERVABLE',
+      rejectionContext: {
+        functionName: 'denied',
+        reason: 'controllerless-delegate-context-unpreservable',
+        sourceLocation: { line: expect.any(Number), column: expect.any(Number) },
+      },
+    });
+    expect(artifact.hiddenBatch!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
+  it('refuses delegate context reached through an internal closure before synthetic arity lowering', () => {
+    expect(() => compileString(`contract C(address impl) {
+      function hop(bytes input) internal { impl.delegatecall(input); }
+      function denied(bytes input) public { hop(input); require(true); }
+      function control() public { require(true); }
+    }`, { forceStateful: true, hiddenBatch: true })).toThrowError(expect.objectContaining({
+      code: 'SCB_DELEGATE_CONTEXT_UNPRESERVABLE',
+      context: {
+        functionName: 'hop',
+        sourceLocation: { line: expect.any(Number), column: expect.any(Number) },
+      },
+    }));
+  });
 });

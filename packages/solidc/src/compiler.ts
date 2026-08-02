@@ -1425,6 +1425,12 @@ function synthesizeHiddenBatchRoute(
       reason = 'foreign-try-catch-transcript-ineligible';
     } else if (!reason && routeUsesOpaqueAssembly) {
       reason = 'opaque-assembly-effects-transcript-ineligible';
+    } else if (!reason && graphHasDelegatecall) {
+      // A delegate executor shares the proxy's state authority rather than owning an independent participant
+      // block. Until the controllerless transcript publishes and verifies that execution frame, advertising the
+      // proxy handler as an ordinary graph edge would authorize the wrong owner/output context. Refuse every
+      // surface spelling (including internal-closure calls) detected above instead of inheriting legacy slots.
+      reason = 'controllerless-delegate-context-unpreservable';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's

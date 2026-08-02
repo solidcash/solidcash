@@ -53,6 +53,7 @@ import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
   | 'SCB_RESERVED_SELECTOR_COLLISION'
+  | 'SCB_DELEGATE_CONTEXT_UNPRESERVABLE'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
   | 'SPLIT_ROOT_CAPACITY'

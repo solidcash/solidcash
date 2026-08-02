@@ -17,6 +17,8 @@ import {
 } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { generateLibauthSourceOutputs } from '../../src/utils.js';
+import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 
 const CALLEE = `contract ComposeCallee() {
   int counter;
@@ -44,7 +46,8 @@ const mutateInputZero = (
   | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject'
   | 'carrier-resource-create' | 'carrier-resource-delete' | 'carrier-value' | 'carrier-value-drop'
   | 'carrier-satoshi' | 'carrier-satoshi-drop' | 'carrier-token' | 'carrier-token-drop'
-  | 'carrier-token-container' | 'carrier-token-container-drop',
+  | 'carrier-token-container' | 'carrier-token-container-drop'
+  | 'carrier-context-caller' | 'carrier-context-selector' | 'carrier-context-args' | 'carrier-root-origin',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -60,6 +63,7 @@ const mutateInputZero = (
             || target.startsWith('carrier-resource') || target.startsWith('carrier-value')
             || target.startsWith('carrier-satoshi')
             || target.startsWith('carrier-token')
+            || target.startsWith('carrier-context-') || target === 'carrier-root-origin'
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
@@ -68,19 +72,46 @@ const mutateInputZero = (
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
         if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')
           || target.startsWith('carrier-value') || target.startsWith('carrier-satoshi')
-          || target.startsWith('carrier-token')) {
+          || target.startsWith('carrier-token') || target.startsWith('carrier-context-')
+          || target === 'carrier-root-origin') {
           const transcript = decodeSingleTxCarrier(instruction.data);
           const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
             ? row.resultHex.length > 0
-            : row.kind === (target.startsWith('carrier-resource') || target.startsWith('carrier-satoshi')
-              || target.startsWith('carrier-token-container')
-              ? 1 : target.startsWith('carrier-value') ? 3 : target.startsWith('carrier-token') ? 4 : 2)
+            : target === 'carrier-root-origin'
+              ? row.kind === 0 && row.parent === 0xffff
+              : target.startsWith('carrier-context-')
+                ? row.kind === 0 && row.parent !== 0xffff
+                : row.kind === (target.startsWith('carrier-resource') || target.startsWith('carrier-satoshi')
+                  || target.startsWith('carrier-token-container')
+                  ? 1 : target.startsWith('carrier-value') ? 3 : target.startsWith('carrier-token') ? 4 : 2)
               && (row.effectHex.length > 0 || target === 'carrier-resource-delete')
               && (target !== 'carrier-resource-create' || row.mode === 1)
               && (target !== 'carrier-resource-delete' || row.mode === 2)
               && (!target.startsWith('carrier-satoshi') || row.mode === 3)
               && (!target.startsWith('carrier-token-container') || row.mode === 4));
           if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
+          if (target.startsWith('carrier-context-') || target === 'carrier-root-origin') {
+            const rows = transcript.rows.map((row, index) => {
+              if (index !== rowIndex) return row;
+              if (target === 'carrier-context-selector') {
+                const selector = hexToBin(row.selectorHex);
+                selector[0] ^= 1;
+                return { ...row, selectorHex: binToHex(selector) };
+              }
+              if (target === 'carrier-context-args') {
+                const args = hexToBin(row.argsHex);
+                args[args.length - 1] ^= 1;
+                return { ...row, argsHex: binToHex(args) };
+              }
+              const subject = hexToBin(row.subjectHex);
+              subject[subject.length - 1] ^= 1;
+              return { ...row, subjectHex: binToHex(subject) };
+            });
+            instructions[instructionIndex] = {
+              ...instruction, data: encodeSingleTxCarrier({ ...transcript, rows }),
+            };
+            return encodeAuthenticationInstructions(instructions);
+          }
           if (target.endsWith('-drop')) {
             instructions[instructionIndex] = {
               ...instruction,
@@ -134,6 +165,69 @@ const mutateInputZero = (
 };
 
 describe('layer3.compose controllerless transaction', () => {
+  it('reconstructs and authenticates msg.sender, msg.sig, msg.data, and tx.origin', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeContextCallee() {
+      function check(address expectedSender, bytes4 expectedSig, address expectedOrigin) public {
+        require(msg.sender == expectedSender && msg.sig == expectedSig
+          && msg.data.length > 4 && tx.origin == expectedOrigin);
+      }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeContextCallee {
+        function check(address expectedSender, bytes4 expectedSig, address expectedOrigin);
+      }
+      contract ComposeContextCaller(address calleeAddress) {
+        function prepare(address expectedSender, bytes4 expectedSig, address expectedOrigin) public {
+          IComposeContextCallee(calleeAddress).check(expectedSender, expectedSig, expectedOrigin);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const callerInner = callerBase.withCategory(hexToBin(callerSetup.categoryId));
+    const caller = StatefulContract.withCategory(callerInner, callerSetup.categoryId);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const expectedSender = hexToBin(callerInner.lockingBytecode);
+    const expectedSig = hexToBin(calleeArtifact.abi.find((entry) => entry.name === 'check')!.selector!);
+    const expectedOrigin = fee.unlocker.generateLockingBytecode();
+    const composition = layer3.compose({
+      calls: [
+        caller.call.prepare(expectedSender, expectedSig, expectedOrigin),
+        callee.call.check(expectedSender, expectedSig, expectedOrigin),
+      ],
+      funder: fee,
+      changeAddress: expectedOrigin,
+    });
+    const canonical = await composition.build();
+    const vmRejects = (candidate: TransactionBuilder): boolean => {
+      const transaction = candidate.buildLibauthTransaction();
+      const sourceOutputs = generateLibauthSourceOutputs(candidate.inputs);
+      const vm = createVirtualMachineBch2026ForProvider(provider);
+      return transaction.inputs.some((_input, inputIndex) => (
+        vm.debug({ inputIndex, sourceOutputs, transaction }) as Array<{ error?: unknown }>
+      ).some((state) => state.error !== undefined));
+    };
+    expect(vmRejects(canonical)).toBe(false);
+    for (const mutation of [
+      'carrier-context-caller', 'carrier-context-selector', 'carrier-context-args', 'carrier-root-origin',
+    ] as const) {
+      const hostile = await composition.build();
+      mutateInputZero(hostile, '', mutation);
+      expect(vmRejects(hostile), mutation).toBe(true);
+    }
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
   it('builds and broadcasts one transaction for two existing participants without setup execution', async () => {
     const provider = createLayer3SemanticTestProvider();
     const calleeArtifact = compileString(CALLEE, { forceStateful: true });

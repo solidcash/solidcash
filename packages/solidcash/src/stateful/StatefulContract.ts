@@ -1585,8 +1585,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // materializes only the prefix reached by this canonical blob. The
     // compiler route bytecode and block offsets remain unchanged; the sliced
     // ABI metadata controls witness construction/derivation only.
+    const graphOwnedRoute = Object.keys(internalRouteWitnesses).length > 0;
     const effectiveRoute: AbiFunction = {
       ...capability.route,
+      // The controllerless composer has already expanded every logical edge into the authenticated
+      // carrier and laid out every participant block. Keeping the source handler's legacy external-call
+      // metadata here would make _createBuilder independently plan the same edge and append synthetic
+      // arguments which do not exist in the graph route ABI.
+      ...(graphOwnedRoute && {
+        externalCalls: undefined,
+        // msg.sender is reconstructed from __internal__graphCallers for each logical row. The legacy
+        // direct-call builder otherwise appends __internal__msgSenderCategory, which this route neither
+        // declares nor trusts.
+        usesMsgSender: false,
+      }),
       ...(capability.route.transferCount !== undefined && {
         transferCount: Math.min(capability.route.transferCount, rowCount),
       }),

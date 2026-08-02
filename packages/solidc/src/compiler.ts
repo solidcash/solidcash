@@ -1407,11 +1407,6 @@ function synthesizeHiddenBatchRoute(
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
       && !((!routeUsesOtherIntrospection
-          && (!routeUsesTxOrigin || graphControllerLbc !== undefined)
-          && (!(routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)
-            || graphControllerLbc !== undefined)
-          && (!routeUsesMsgValue || graphControllerLbc !== undefined
-            || (!routeUsesMsgSender && !routeUsesMsgData && !routeUsesMsgSig))
           && (routeUsesStableOwnerIntrospection || routeUsesTxOrigin
             || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
         || ((compilerOptions as CompilerOptions & { __testLayer3BindingSpike?: boolean })
@@ -1450,8 +1445,7 @@ function synthesizeHiddenBatchRoute(
       if (node instanceof StateAssignNode || node instanceof DeleteStateNode) hasScalarStateWrite = true;
     });
     if (!reason && (graphTailCallEligible
-      || (graphControllerLbc !== undefined
-        && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
+      || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue || routeUsesTxOrigin
       || (graphControllerLbc !== undefined && hasScalarStateWrite)
       || routeUsesMsgValue)) {
       graphTailHandlers.add(fn);

@@ -141,7 +141,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(splitOff.root.hiddenBatch).toBeUndefined();
   });
 
-  it('fails closed on deferred caller context and forward-call semantics', () => {
+  it('admits authenticated caller context and bounded forward-call semantics', () => {
     const artifact = compileString(`
       interface IDownstream { function ping(); }
       contract Guarded(address downstream) {
@@ -157,18 +157,16 @@ describe('Release 4 compiler-hidden local batch', () => {
     `, { forceStateful: true, hiddenBatch: true });
 
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'senderBound')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'direct-versus-batch-introspection-divergence',
+      eligible: true,
       inputs: [],
     });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'forward')).toMatchObject({
-      eligible: false,
-      rejectionReason: 'batched-handler-forward-call-not-enabled',
+      eligible: true,
       inputs: [],
     });
   });
 
-  it('admits owner input index while conformingly rejecting active bytecode and unauthenticated tx.origin', () => {
+  it('admits owner input index and authenticated tx.origin while rejecting active bytecode', () => {
     const artifact = compileString(`
       contract StableOwnerContext() {
         function stable(int expectedInput) public {
@@ -192,10 +190,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     expect(artifact.hiddenBatch?.handlers.filter((handler) => handler.eligible)
       .map((handler) => handler.name)).not.toContain('bytecodeBound');
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'originBound'))
-      .toMatchObject({
-        eligible: false,
-        rejectionReason: 'direct-versus-batch-introspection-divergence',
-      });
+      .toMatchObject({ eligible: true });
   });
 
   it('admits tx.origin when the graph controller authenticates the carrier signer', () => {

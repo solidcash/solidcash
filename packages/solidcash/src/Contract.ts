@@ -471,7 +471,11 @@ export class Contract<
           ...ordinary.slice(5),
         ]);
       };
-      return { ...unlocker, generateUnlockingBytecode };
+      // SCB1 is a compiler-owned covenant even when the source handler has no state slots. Mark the master
+      // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment
+      // as routes which happen to include a data/container covenant input; finalized-byte preflight remains the
+      // authoritative broadcast gate in both cases.
+      return { ...unlocker, generateUnlockingBytecode, covenantUnlocker: true };
     };
   }
 

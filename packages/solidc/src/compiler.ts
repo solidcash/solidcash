@@ -2996,6 +2996,7 @@ function synthesizeHiddenBatchRoute(
             physicalTokenOutputs = physicalTokenOutputs + 1;
           }
           if (slot != activeReturnOutput && tx.outputs[slot].tokenCategory == activeCategory
+            && tx.inputs[slot].tokenCategory != activeCategory
             && tx.outputs[slot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs + 1;
           }

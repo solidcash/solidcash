@@ -81,6 +81,8 @@ const graphRouteContext = (
     uint16(finalized.layout.participantInputs[owner.participant]),
     uint16(owner.settlementBoundary),
   ]);
+  const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
+  const blockhashParameter = execution.artifact.hiddenBatch?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
     __internal__returnOutputIdx: BigInt(
       finalized.transcript.participants[participant].returnOutput === 0xffff
@@ -92,6 +94,9 @@ const graphRouteContext = (
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),
     __internal__graphCompletionPositions: concat(...completions),
     __internal__graphSettlementTable: concat(...settlementTable),
+    ...(blockhashSlot !== undefined && blockhashParameter !== undefined ? {
+      [blockhashParameter]: BigInt(finalized.layout.participantInputs[participant] + blockhashSlot.offset),
+    } : {}),
   });
 };
 
@@ -140,6 +145,16 @@ export class SingleTxBusComposition {
         let count = 0;
         while (count < maximum && descriptors[next + count]?.functionName === callsite.functionName) count += 1;
         return count;
+      },
+      expressionArgument: ({ callsiteId, argument }) => {
+        const reached = descriptors[next - 1];
+        const value = reached?.args[argument];
+        if (value === undefined) {
+          throw new Error(
+            `layer3: prepared call omits derived argument ${argument} for callsite ${callsiteId}`,
+          );
+        }
+        return value;
       },
       dynamicCall: ({ kind }) => {
         if (kind !== 'low-level') {
@@ -264,6 +279,14 @@ export class SingleTxBusComposition {
             true,
           )
           .build();
+        aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
+        while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
+          const input = local.inputs[local.outputs.length];
+          local.addOutput({
+            to: Uint8Array.of(0x51),
+            amount: input.satoshis,
+          });
+        }
         if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
           throw new Error(
             `layer3: participant ${participant.participant} built ${local.inputs.length}/${local.outputs.length} `

@@ -3,7 +3,9 @@ import {
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
-import { buildChunkCommitment, scriptToBytecode } from '@solidcash/utils';
+import {
+  blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode,
+} from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
@@ -605,6 +607,90 @@ describe('layer3.compose controllerless transaction', () => {
     ] as const) {
       const hostile = await composition.build();
       mutateInputZero(hostile, '', mutation);
+      expect(vmRejects(hostile), mutation).toBe(true);
+    }
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('co-spends a compiler-positioned blockhash oracle in the controllerless participant block', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const before = await provider.getBlockHeight();
+    await provider.mine(1);
+    const height = before + 1;
+    const hash = hexToBin(await provider.getBlockHash(height));
+    const callerArtifact = compileString(`
+      interface IComposeBlockhashSink { function accept(bytes32 value); }
+      contract ComposeBlockhashCaller() {
+        function invoke(address target, int height) public {
+          bytes32 value = blockhash(height);
+          IComposeBlockhashSink(target).accept(value);
+          require(height > 0);
+        }
+      }
+    `, { forceStateful: true });
+    const sinkArtifact = compileString(`contract ComposeBlockhashSink() {
+      function accept(bytes32 value) public pure { require(value.length == 32); }
+    }`, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, {
+        saltContract: true,
+        extraOutputs: (category) => [{
+          address: binToHex(blockhashOracleLockingBytecode(hexToBin(category), BigInt(height))),
+          satoshis: 1000n,
+          token: {
+            amount: 0n,
+            nft: {
+              capability: 'none',
+              commitment: binToHex(buildBlockhashCommitment(BigInt(height), hash)),
+            },
+          },
+        }],
+      },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.invoke(sink.inner.lockingBytecode, BigInt(height)), sink.call.accept(hash)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    expect(vmRejects(canonical)).toBe(false);
+    for (const mutation of ['stale', 'substituted', 'omitted', 'duplicate'] as const) {
+      const hostile = await composition.build();
+      if (mutation === 'stale') {
+        hostile.inputs[1] = {
+          ...hostile.inputs[1],
+          token: { ...hostile.inputs[1].token!, nft: { ...hostile.inputs[1].token!.nft! } },
+        };
+        hostile.inputs[1].token!.nft!.commitment = binToHex(
+          buildBlockhashCommitment(BigInt(height - 1), hash),
+        );
+      } else if (mutation === 'substituted') {
+        hostile.inputs[1] = {
+          ...hostile.inputs[1],
+          token: { ...hostile.inputs[1].token!, nft: { ...hostile.inputs[1].token!.nft! } },
+        };
+        const wrongHash = hash.slice();
+        wrongHash[0] ^= 1;
+        hostile.inputs[1].token!.nft!.commitment = binToHex(
+          buildBlockhashCommitment(BigInt(height), wrongHash),
+        );
+      } else if (mutation === 'omitted') {
+        hostile.inputs[1] = { ...hostile.inputs[2] };
+      } else {
+        hostile.inputs[2] = { ...hostile.inputs[1] };
+      }
       expect(vmRejects(hostile), mutation).toBe(true);
     }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });

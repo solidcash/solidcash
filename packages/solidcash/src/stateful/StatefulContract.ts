@@ -6490,8 +6490,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // __internal__blockhashInputIndex: the (n->hash) co-spend's absolute input index = master(0) + the slot
     // offset (the SymbolTable injects this param right after msgSender, so it is pushed here in order).
     const bhSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'blockhashOracle');
-    if (bhSlot) {
-      finalArgs = [...finalArgs, BigInt(bhSlot.offset)];
+    if (bhSlot && finalArgs.length < (abiFunction?.inputs.length ?? 0)) {
+      finalArgs = [...finalArgs, BigInt((overrides?.blockBase ?? 0) + bhSlot.offset)];
     }
 
     // Handle entry NFT accesses

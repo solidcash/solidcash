@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
-Tracking baseline: working tree after `cfbf75e3` (`feat(layer3): enforce controllerless static calls`)
-Overall verified progress: **67 / 100 points (67%)**
+Tracking baseline: working tree after `d2f8dca6` (`feat(layer3): compose authenticated low-level calls`)
+Overall verified progress: **69 / 100 points (69%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -27,11 +27,11 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 1. Codec and layout | 10 | 10 | Complete |
 | 2. Compiler mutual verifier | 15 | 13 | In progress |
 | 3. One-transaction composer | 15 | 14 | In progress |
-| 4. Semantic completeness | 30 | 25 | In progress |
+| 4. Semantic completeness | 30 | 27 | In progress |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
 | 6. Removal and API stabilization | 7 | 0 | Not started |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **67** | **67%** |
+| **Total** | **100** | **69** | **69%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -73,7 +73,7 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
 - [ ] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
 
-## Phase 4 — semantic completeness (25/30)
+## Phase 4 — semantic completeness (27/30)
 
 ### Calls and execution graph (7/7)
 
@@ -111,9 +111,9 @@ settlement capstone supplies the physical `msg.value` binding.
 Evidence: commits `9915aa1d`, `5278ffab`, `19127a9c`, `7ec06606`, and `7798d441`, including
 positive capstones and hostile row/physical-output mutations.
 
-### Oracles, sidecars, and call modes (2/7)
+### Oracles, sidecars, and call modes (4/7)
 
-- [ ] **2 points:** Blockhash oracle slots have positive, stale, omitted, substituted, and duplicate evidence.
+- [x] **2 points:** Blockhash oracle slots have positive, stale, omitted, substituted, and duplicate evidence.
 - [ ] **2 points:** Keccak and ecrecover sidecars have exact-slot consumption and recreation evidence.
 - [x] **1 point:** `staticcall` enforces read-only semantics and authenticates its mode bit.
 - [x] **1 point:** Raw/low-level calls authenticate calldata, selector, results, and supported effects.
@@ -169,6 +169,7 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | working tree | 65% | Conditional reachability and compile-time-bounded loop occurrences consume exactly the authenticated invocation rows; omitted, duplicate, under-floor, and over-ceiling cases fail. |
 | 2026-08-02 | working tree | 66% | Each controllerless participant enforces static block preservation; canonical static execution broadcasts, while mode substitution and a reached event effect fail the BCH VM. |
 | 2026-08-02 | working tree | 67% | The composer decodes singular low-level calls through a prepared callee proof; target, selector, calldata, and opaque result substitutions fail direct VM validation. |
+| 2026-08-02 | working tree | 69% | Controllerless composition positions and recreates blockhash oracle bands, propagates locktime, and rejects stale, substituted, omitted, and duplicate oracle inputs; the complete 17-case composition suite passes. |
 
 ## Next percentage milestones
 

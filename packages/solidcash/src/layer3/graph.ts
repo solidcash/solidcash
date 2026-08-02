@@ -305,7 +305,7 @@ export function finalizeSingleTxInvocationGraph(
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
-      'transfer', 'tcTransfer', 'event', 'returnEvent', 'trailing',
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'trailing',
     ].includes(slot.kind));
   });
   if (unsupported) {

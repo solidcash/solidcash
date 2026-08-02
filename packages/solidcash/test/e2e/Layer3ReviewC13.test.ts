@@ -147,9 +147,9 @@ async function buildTwoParty(options: BuildOptions): Promise<any> {
   } = await createGraphAuthority(provider);
   const busOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const targetArtifact = compileString(COUNTING_TARGET, busOptions);
   const targetBase = new Contract(targetArtifact, [], { provider });
@@ -294,9 +294,9 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
     async (plannedRows) => {
       const artifact = compileString(UNBOUNDED_LOOP, {
         forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
+        hiddenBatch: true,
+        messageBusController: `aa20${'11'.repeat(32)}87`,
+        messageBusControllerCategory: '22'.repeat(32),
       });
       // No finite ceiling is published, so neither planner may trust a caller-supplied row count.
       expect(artifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0].maximumOccurrences)
@@ -331,9 +331,9 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
   ])('X36: $children children bound to one `once` callsite', async ({ children, settles: expectSettle }) => {
     const artifact = compileString(ONCE_CALLER, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const call = artifact.abi.find((fn) => fn.name === 'fire')!.externalCalls![0];
     expect(call.occurrence).toBe('once');
@@ -397,9 +397,9 @@ describe('Layer-3 round-13 review: G3 SCOPED and G2 against the X36 entry point 
 describe('C1 review: route.blockLayout is not equivalent to keepsGraphEmissionBinding', () => {
   const BUS_OPTIONS = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
   /** `verifyGraphEmissionRow`'s target||len||mode frame construction; 0 is the flattened, unbound form. */
   const MARK = '76827752807c7e';

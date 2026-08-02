@@ -22,9 +22,9 @@ import { compileString } from '../src/compiler.js';
 const graph = {
   solidityImportCompat: true,
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 interface PublishedHandler { name: string; eligible: boolean; rejectionReason?: string }

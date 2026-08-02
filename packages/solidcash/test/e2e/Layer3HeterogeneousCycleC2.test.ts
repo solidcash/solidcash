@@ -268,9 +268,9 @@ async function buildCycleGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(CYCLE_HUB, options);
   const legBArtifact = compileString(CYCLE_LEG_B, options);

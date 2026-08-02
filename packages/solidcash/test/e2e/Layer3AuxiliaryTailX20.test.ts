@@ -100,9 +100,9 @@ async function build(options: Options = {}): Promise<Built> {
   }]);
   const compilerOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: genesis.categoryId as string,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: genesis.categoryId as string,
   };
   const artifactB = compileString(RETURNING_B, compilerOptions);
   const baseB = new Contract(artifactB, [2n], { provider });

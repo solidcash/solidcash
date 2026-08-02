@@ -30,7 +30,7 @@ describe('R6: typed, module-generated fail-closed resource transition', () => {
       resources: [{ owner: 1, transition: { offset: 0, width: 8, total: 16, delta: 5 } }],
     };
     const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
-      forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+      forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
     });
     const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
     const participants: layer3.TranscriptParticipant[] = [];

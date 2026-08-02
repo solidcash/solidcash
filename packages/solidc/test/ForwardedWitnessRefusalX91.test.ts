@@ -39,12 +39,12 @@ import { ForwardedWitnessError } from '../src/generation/GenerateTargetTraversal
  */
 
 const CTRL = {
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 // These controls pin the physical direct-route witness behavior, independent of the compiler's default route.
-const DIRECT = { forceStateful: true, experimentalHiddenBatch: false };
-const HB = { experimentalHiddenBatch: true, forceStateful: true };
+const DIRECT = { forceStateful: true, hiddenBatch: false };
+const HB = { hiddenBatch: true, forceStateful: true };
 const HB_CTRL = { ...HB, ...CTRL };
 
 // A route-eligible handler that reads blockhash and makes NO external call: not a graph emission handler, so

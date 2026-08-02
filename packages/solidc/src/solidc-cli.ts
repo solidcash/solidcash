@@ -59,7 +59,7 @@ function run(): void {
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
     // CLI compilation retains the best-effort direct fallback; only the explicit opt-out needs publication.
-    experimentalHiddenBatch: opts.hiddenBatch === false ? false : undefined,
+    hiddenBatch: opts.hiddenBatch === false ? false : undefined,
   };
 
   try {

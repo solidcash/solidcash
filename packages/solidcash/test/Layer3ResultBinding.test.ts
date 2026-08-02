@@ -8,9 +8,9 @@ import { layer3 } from '../src/index.js';
 // guess rather than emitting a graph whose covenant would have to sort it out.
 const options = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 const TWO_CALLER = `pragma solidcash >=0.8.0;

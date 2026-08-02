@@ -70,7 +70,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 const DIRECT = { solidityImportCompat: true, ecrecover: 'p2pkh' };
 
@@ -395,8 +395,8 @@ const key = (row: Row): string => `${row.rel}::${row.contract}`;
 function compileRow(row: Row, controllerLbc: string, controllerCategory: string): any {
   const options = {
     ...BUS,
-    experimentalMessageBusController: controllerLbc,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    messageBusController: controllerLbc,
+    messageBusControllerCategory: controllerCategory,
   } as never;
   const path = `${row.root ?? SBE}/${row.rel}`;
   try {

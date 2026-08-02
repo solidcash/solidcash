@@ -102,9 +102,9 @@ async function buildGuardGraph(spec: Spec): Promise<Built> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const vaultArtifact = compileString(VAULT, options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
@@ -332,9 +332,9 @@ async function buildChunkReadGraph(spec: ChunkSpec): Promise<Built> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const noteArtifact = compileString(NOTEBOOK, options);
   const noteBase = new Contract(noteArtifact, [], { provider });

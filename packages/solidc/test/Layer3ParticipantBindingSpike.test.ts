@@ -40,7 +40,7 @@ describe('layer-3 participant-binding spike', () => {
   it('admits the owner-stable transaction projection on the production SCB1 surface', () => {
     const artifact = compileString(PARTICIPANT, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     expect(artifact.hiddenBatch?.handlers).toContainEqual(
       expect.objectContaining({ name: '__layer3_bind', eligible: true }),
@@ -50,8 +50,8 @@ describe('layer-3 participant-binding spike', () => {
   it('admits only the reserved spike handler without advertising layer-3 metadata', () => {
     const artifact = compileString(PARTICIPANT, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalLayer3BindingSpike: true,
+      hiddenBatch: true,
+      __testLayer3BindingSpike: true,
     });
     const handler = artifact.hiddenBatch?.handlers.find((candidate) =>
       candidate.name === '__layer3_bind');

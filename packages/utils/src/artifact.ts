@@ -53,25 +53,21 @@ export interface CompilerOptions {
   ecrecover?: 'p2pkh' | 'evm';
   // Compiler-hidden owner-local batch route and write-back journal. Enabled by
   // default; set explicitly to false to retain direct-route-only compilation.
-  experimentalHiddenBatch?: boolean;
-  // Experimental Release 5 grouping of one repeated external callee.
-  experimentalRepeatedExternalBatch?: boolean;
-  // Test-only layer-3 participation spike. This permits exactly the reserved
-  // `__layer3_bind` handler to introspect the transaction while executing
-  // through SCB1. It emits no layer-3 artifact capability and is not a
-  // production protocol switch.
-  experimentalLayer3BindingSpike?: boolean;
+  hiddenBatch?: boolean;
+  // Group one repeated external callee into the compiler-owned batch route. Enabled by default;
+  // set explicitly to false to retain one-call-per-owner lowering.
+  repeatedExternalBatch?: boolean;
   /**
-   * Experimental integrated message-bus route. The compiler-owned SCB1 wrapper requires a co-spent controller
+   * Integrated message-bus route. The compiler-owned SCB1 wrapper requires a co-spent controller
    * at this exact locking bytecode, authenticates its transcript-root commitment, and proves the local owner
    * batch is a framed member of that transcript.
    */
-  experimentalMessageBusController?: string;
+  messageBusController?: string;
   /**
    * Display-order category ID of the unique mint-once controller NFT. Required with
-   * `experimentalMessageBusController`; locking bytecode alone is cloneable and is not an authority.
+   * `messageBusController`; locking bytecode alone is cloneable and is not an authority.
    */
-  experimentalMessageBusControllerCategory?: string;
+  messageBusControllerCategory?: string;
 }
 
 export interface AbiInput {

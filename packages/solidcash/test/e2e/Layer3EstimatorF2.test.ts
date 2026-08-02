@@ -190,7 +190,7 @@ interface BuiltSweep {
 async function buildSweep(n: number): Promise<BuiltSweep> {
   const provider = createTestProvider();
   const artifact = compileString(makeParticipant(n), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const selector = hexToBin(artifact.hiddenBatch!.selector);
@@ -543,7 +543,7 @@ describe('F2 estimator: held out', () => {
     for (const n of [3, 6, 16]) {
       // A compile is all the estimator gets. No provider UTXO set, no builder, no VM, no transaction.
       const artifact = compileString(makeParticipant(n), {
-        forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+        forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
       });
       const redeem = new Contract(artifact, [], { provider: createTestProvider(), salt: brand })
         .bytecode.length;
@@ -1021,9 +1021,9 @@ async function measureCorpusSubject(subject: CensusRow): Promise<CorpusMeasureme
     solidityImportCompat: true,
     ecrecover: 'p2pkh',
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   } as never);
   // X86. THE SELECTION RULE IS ONE SLOT, AND IT IS RE-CHECKED AGAINST THE COMPILER RATHER THAN THE CENSUS.
   // A row the census recorded as one-slot can compile to a wider block now, and building it without seeding the

@@ -161,9 +161,9 @@ async function buildRawCallGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(RAW_TARGET, options);
   const baseB = new Contract(artifactB, [], { provider });
@@ -270,9 +270,9 @@ async function buildRawLoopGraph(graphOptions: { tamperProducerAt?: 1 | 2 } = {}
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactTarget = compileString(RAW_TARGET, options);
   const targetSetups = [];
@@ -394,9 +394,9 @@ async function buildRawValueGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(RAW_TARGET, options);
   const baseB = new Contract(artifactB, [], { provider });
@@ -525,9 +525,9 @@ async function buildVoidRawCallGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(RAW_VOID_TARGET, options);
   const baseB = new Contract(artifactB, [], { provider });
@@ -622,9 +622,9 @@ function failingInput(builder: TransactionBuilder): number | null {
 
 const busOptions = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 /** Deep clone so a forged-ABI case never leaks into another test's artifact. */

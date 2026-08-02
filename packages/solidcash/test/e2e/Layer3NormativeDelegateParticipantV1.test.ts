@@ -26,9 +26,9 @@ const CONTROLLER = `aa20${'11'.repeat(32)}87`;
 const CATEGORY = '22'.repeat(32);
 const OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: CONTROLLER,
-  experimentalMessageBusControllerCategory: CATEGORY,
+  hiddenBatch: true,
+  messageBusController: CONTROLLER,
+  messageBusControllerCategory: CATEGORY,
 };
 
 const IMPLEMENTATION = `pragma solidcash >=0.8.0;
@@ -88,8 +88,8 @@ async function initializeAuthority(
 const prepareNormativeTransaction = async (mode: 'honest' | 'foreign-executor' | 'forged-proxy-state') => {
   const provider = createTestProvider();
   const { projection, controller, categoryId: controllerCategory, genesisUtxo } = await createAuthority(provider);
-  const options = { ...OPTIONS, experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory };
+  const options = { ...OPTIONS, messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory };
   const implementationArtifact = compileString(IMPLEMENTATION, options);
   const foreignArtifact = compileString(FOREIGN_IMPLEMENTATION, options);
   const implementationBase = new Contract(implementationArtifact, [], { provider });

@@ -95,7 +95,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** The return-event slot staging under test. Exactly one field moves between the two. */
@@ -141,8 +141,8 @@ const CONTROL: Subject = {
 function compileSubject(subject: Subject, controllerLbc: never, controllerCategory: string): any {
   const options = {
     ...BUS,
-    experimentalMessageBusController: controllerLbc,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    messageBusController: controllerLbc,
+    messageBusControllerCategory: controllerCategory,
   } as never;
   try {
     const map = compileFileMulti(subject.file, options) as any;
@@ -413,8 +413,8 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   it('MEASURED: `Wallet` is still excluded from the bus by a named fail-closed diagnostic', () => {
     const map = compileFileMulti(TX_ORIGIN, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     const wallet = map.Wallet;
     expect(wallet, 'Wallet did not compile in bus mode').toBeDefined();
@@ -436,8 +436,8 @@ describe('X177: the recorded `Attack.attack` negative is a return-event staging 
   it('X201: `attack` is a published writer and is admitted again, with its edge bound', () => {
     const artifact = compileFile(TX_ORIGIN, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     const handlers = artifact.hiddenBatch!.handlers as any[];
     const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);

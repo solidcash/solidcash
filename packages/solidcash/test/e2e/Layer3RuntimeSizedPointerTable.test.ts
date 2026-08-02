@@ -110,9 +110,9 @@ async function buildRuntimeSizedGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   // 'overlong' registers one row MORE than the published bound admits while co-spending only the planned rows,
@@ -266,9 +266,9 @@ async function buildRuntimeSizedGraph(
 
 const compileTable = (): Artifact => compileString(RUNTIME_SIZED_TABLE, {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 });
 
 // SEMANTIC evidence only. The named layer3-bch2026-semantic-relaxed-v1 profile keeps BCH-2026 opcode,

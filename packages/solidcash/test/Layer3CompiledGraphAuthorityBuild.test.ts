@@ -7,7 +7,7 @@ const artifact = compileString(`pragma solidcash >=0.8.0;
   contract AuthorityBuild() {
     int counter;
     function set(int next) public { this.counter = next; require(next >= 0); }
-  }`, { forceStateful: true, experimentalHiddenBatch: true });
+  }`, { forceStateful: true, hiddenBatch: true });
 
 const plan = layer3.planCompiledGraph(
   [{ artifact, lockingBytecode: '51' }],

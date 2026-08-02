@@ -495,9 +495,9 @@ async function build(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(
     boundedRecursive === 'none' ? APP('CompiledGraphB') : RECURSIVE_TARGET, options,
@@ -714,9 +714,9 @@ async function buildPointerGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
     solidityImportCompat: true,
   };
   const artifactB = compileString(POINTER_TARGET, options);
@@ -817,9 +817,9 @@ async function buildVaryingSelectorGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   const handlerSetups = await Promise.all([2n, 3n].map(async (brand) => {
@@ -976,9 +976,9 @@ async function buildCombinedGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   let sourceA = variant === 'same-value' || variant === 'conditional-untaken' ? COMBINED_A
     .replace('    this.transfer(recipient, amount);\n', '')
@@ -1198,9 +1198,9 @@ async function buildIntrospectionGraph(tamper = false) {
   } = await createGraphAuthority(provider);
   const artifact = compileString(INTROSPECTION_APP, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
@@ -1261,9 +1261,9 @@ async function buildSignedGraph(tamper = false, multisig: boolean | 'array' = fa
   const artifact = compileString(multisig === 'array' ? SIGNATURE_ARRAY_APP
     : multisig ? MULTISIG_APP : SIGNED_APP, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
@@ -1346,9 +1346,9 @@ async function buildForwardedSignedGraph(tamper = false) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(SIGNED_APP, options);
   const baseB = new Contract(artifactB, [], { provider });
@@ -1430,9 +1430,9 @@ async function buildRawCallGraph(tamperResult = false, staticCall = false) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(RAW_TARGET, options);
   const baseB = new Contract(artifactB, [], { provider });
@@ -1531,9 +1531,9 @@ async function buildDelegateGraph(wrongSelector = false, tamperState = false) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const implementationArtifact = compileString(GRAPH_DELEGATE_IMPL, options);
   const implementationBase = new Contract(implementationArtifact, [], { provider });
@@ -1631,9 +1631,9 @@ async function buildRelocatedDelegateGraph(wrongProxyIndex = false) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const implementationArtifact = compileString(GRAPH_DELEGATE_IMPL, options);
   const implementationBase = new Contract(implementationArtifact, [], { provider });
@@ -1765,9 +1765,9 @@ async function buildReturning(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactB = compileString(
     resultKind === 'bytes' ? DYNAMIC_RETURNING_B : resultKind === 'string' ? STRING_RETURNING_B
@@ -1915,9 +1915,9 @@ async function buildStateCycle(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const artifactA = compileString(STATE_A, options);
   const artifactB = compileString(STATE_B, options);
@@ -2100,9 +2100,9 @@ async function buildEventGraph(tamperEvent = false) {
       }
     }`, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
@@ -2180,9 +2180,9 @@ async function buildValueEffectGraph(tamperAmount = false) {
       }
     }`, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, {});
@@ -2266,9 +2266,9 @@ async function buildMappingGraph(tamperValue = false) {
       }
     }`, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const initialSlot = keyToSlot(bigIntToVmNumber(1n));
@@ -2361,9 +2361,9 @@ async function buildCallerAuthorizedTransferGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const tokenArtifact = compileString(`pragma solidcash >=0.8.0;
     contract GraphAllowanceToken() {
@@ -2607,9 +2607,9 @@ async function buildCallerKeyedTransferGraph(forgeCallerWitness = false, staticF
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   // Standard ERC-20 `transfer`: the debited balance is keyed by the caller itself, with no spender parameter
   // anywhere in the signature. The shared key alternative is caller-keyed and the recipient is row-local.
@@ -2772,9 +2772,9 @@ async function buildCallerKeyedApproveGraph(forgeCallerWitness = false) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   // Standard ERC-20 `approve`: a write-only nested collection keyed by the caller. This shape used to fail code
   // generation outright, because the dynamic row parser cannot resolve a composite key against a runtime row.
@@ -2910,9 +2910,9 @@ async function buildMultiArgEventGraph(mode: 'honest' | 'swapped' | 'foreign-top
       }
     }`, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, { total: 0n });
@@ -3005,9 +3005,9 @@ async function buildMixedHandlerBatchGraph(mode: 'honest' | 'forge-second-row' =
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   // Two DIFFERENT handlers over one collection in one owner batch: the ordered mix Release B admits. `move` is
   // resource-shaped (shared `from`, row-local `to`); `bump` keys only the shared entry. Both must resolve onto
@@ -3180,9 +3180,9 @@ async function buildScalarPlusEntryBatchGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   // A resource-shaped handler that ALSO writes scalar state, so one batch drives both the scalar journal and
   // the collection journal. This is the shape `scalar-write-with-collection-delete-not-enabled` was suspected

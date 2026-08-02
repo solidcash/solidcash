@@ -1239,7 +1239,7 @@ export function generateArtifact(
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         commitmentLimit: compilerOptions.commitmentLimit,
-        experimentalHiddenBatch: compilerOptions.experimentalHiddenBatch,
+        hiddenBatch: compilerOptions.hiddenBatch,
       },
     },
     updatedAt: new Date().toISOString(),

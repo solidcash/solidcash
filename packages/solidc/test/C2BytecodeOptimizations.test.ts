@@ -4,7 +4,7 @@ import { compileString } from '../src/index.js';
 
 // These tests inspect the physical route's helper allocation and byte budget.
 // Hidden-batch route synthesis has its own cost and structure regression suite.
-const DIRECT_ROUTE = { forceStateful: true, experimentalHiddenBatch: false } as const;
+const DIRECT_ROUTE = { forceStateful: true, hiddenBatch: false } as const;
 
 const compactHelperDefinitions = (asm: string): string[] => (
   [...asm.matchAll(/(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})) OP_DEFINE(?: |$)/g)]

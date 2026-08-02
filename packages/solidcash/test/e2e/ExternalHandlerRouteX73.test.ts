@@ -19,7 +19,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * admitted; a route that appeared for some other reason would still leave these contracts with none.
  */
 
-const BATCH = { forceStateful: true, experimentalHiddenBatch: true };
+const BATCH = { forceStateful: true, hiddenBatch: true };
 
 const externalOnly = `pragma solidcash >=0.8.0;
 contract X73ExternalOnly() {
@@ -352,8 +352,8 @@ contract X73InternalOnly() {
 describe('X73 external entry points reach the authenticated graph route', () => {
   const graph = {
     ...BATCH,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
 
   it('admits an external handler as a bus participant', () => {

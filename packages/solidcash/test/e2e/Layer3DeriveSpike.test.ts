@@ -83,7 +83,7 @@ async function deriveTranscript(
 
 async function makeParticipants(provider: any, n: number): Promise<{ route: any; sel: Uint8Array; handler: any; parties: Party[] }> {
   const artifact = compileString(makeCompact(n), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

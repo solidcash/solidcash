@@ -17,9 +17,9 @@ describe('X236 hidden-batch physical entry union', () => {
   it('represents and authenticates balanceOf and allowance as distinct route entry slots', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
 
     expect(artifact.hiddenBatch?.handlers.filter((handler) => handler.eligible)

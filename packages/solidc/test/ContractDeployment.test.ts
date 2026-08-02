@@ -492,7 +492,7 @@ describe('type(X).creationCode constructor-args warning', () => {
   it('warns when the child has constructor parameters', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
     compileString(child('constructor(uint _x) { x = _x; }') + use, {
-      solidityImportCompat: true, experimentalHiddenBatch: false,
+      solidityImportCompat: true, hiddenBatch: false,
     });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
     spy.mockRestore();

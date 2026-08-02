@@ -42,9 +42,9 @@ contract FourPopulations {
 
 const OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `a914${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `a914${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 describe('X207/X227: msg.value populations', () => {

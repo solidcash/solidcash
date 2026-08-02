@@ -20,11 +20,11 @@ import { UnboundReturnCallError } from '../src/Errors.js';
  * Both controls differ from the case in exactly ONE field.
  */
 
-const batchOnly = { forceStateful: true, experimentalHiddenBatch: true };
+const batchOnly = { forceStateful: true, hiddenBatch: true };
 const graph = {
   ...batchOnly,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 /** A void helper that consumes a call result AND emits, reached from a batched handler. */

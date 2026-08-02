@@ -23,7 +23,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  *      route the bare form now reaches is the one the dotted form always reached.
  */
 
-const BATCH = { forceStateful: true, experimentalHiddenBatch: true };
+const BATCH = { forceStateful: true, hiddenBatch: true };
 
 const INTERFACE = `interface IMappingTokenX76 {
   function transferFrom(bytes20 from, bytes20 to, bytes20 spender, bigint amount);

@@ -100,9 +100,9 @@ async function buildScalarGraph(testCase: ScalarGraphCase) {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const targetArtifact = compileString(testCase.target, options);
   const targetBase = new Contract(targetArtifact, [], { provider });
@@ -452,13 +452,13 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
       const settled = buildInitialStateCommitments(directArtifact.stateLayout!, { total: 9n });
       const graphSettled = buildInitialStateCommitments(
         compileString(target, {
-          forceStateful: true, experimentalHiddenBatch: true,
+          forceStateful: true, hiddenBatch: true,
         }).stateLayout!,
         { total: 9n },
       );
       expect(settled).toEqual(graphSettled);
       expect(directContract.artifact.stateLayout).toEqual(
-        compileString(target, { forceStateful: true, experimentalHiddenBatch: true }).stateLayout,
+        compileString(target, { forceStateful: true, hiddenBatch: true }).stateLayout,
       );
     });
   });
@@ -586,7 +586,7 @@ describe('Release A: admitted handler semantics on BCH-2026', () => {
      * shape keeps its fail-closed no-route outcome; BatchCostRegression pins it.
      */
     it('compiles both spellings of the same mint to a byte-identical SCB1 route', () => {
-      const batch = { forceStateful: true, experimentalHiddenBatch: true };
+      const batch = { forceStateful: true, hiddenBatch: true };
       const dotted = compileString(MINT.replace('MintTarget', 'BareMintTarget'), batch);
       const bare = compileString(BARE_MINT, batch);
       expect(dotted.hiddenBatch).toBeDefined();

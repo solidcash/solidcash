@@ -150,9 +150,9 @@ async function buildDynamicGraph(spec: Spec, tamper: Tamper = 'none'): Promise<B
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const dynArtifact = compileString(spec.source ?? WRITE_ONLY, options);
   const initial = spec.initial ?? new Array(spec.dynCount).fill(new Uint8Array());
@@ -606,9 +606,9 @@ describe('S3 bounds', () => {
   it('caps an argument-carried value at the 223-byte SCB1 blob, not at the chunk region', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const dyn = compileString(WRITE_ONLY, options);
     const router = compileString(`pragma solidcash >=0.8.0;

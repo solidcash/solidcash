@@ -151,9 +151,9 @@ async function buildRootReturningGraph(overrides: CursorOverrides = {}): Promise
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const artifactLeaf = compileString(X7_LEAF, options);

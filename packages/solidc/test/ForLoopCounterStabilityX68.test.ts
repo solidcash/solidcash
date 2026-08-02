@@ -3,9 +3,9 @@ import { compileString } from '../src/index.js';
 
 const OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 } as const;
 
 const source = (body: string, pointer = true): string => `pragma solidcash >=0.8.0;

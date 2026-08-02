@@ -46,7 +46,7 @@ describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
     const artifact = compileString(`contract C() {
       function bound(bytes expected) public { require(this.activeBytecode == expected); }
       function control() public { require(true); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'bound')).toMatchObject({
       eligible: false,
       rejectionReason: 'direct-versus-batch-introspection-divergence',
@@ -69,7 +69,7 @@ describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
       function control() public { require(true); }
     }`, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
@@ -87,7 +87,7 @@ describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
           require(true);
         }
         function control() public { require(true); }
-      }`, { forceStateful: true, experimentalHiddenBatch: true });
+      }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'guarded')).toMatchObject({
       eligible: false,
       rejectionReason: 'foreign-try-catch-transcript-ineligible',
@@ -102,7 +102,7 @@ describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
       contract C() {
         function opaque() public { assembly { OP_1 OP_DROP } require(true); }
         function control() public { require(true); }
-      }`, { forceStateful: true, experimentalHiddenBatch: true });
+      }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'opaque')).toMatchObject({
       eligible: false,
       rejectionReason: 'opaque-assembly-effects-transcript-ineligible',

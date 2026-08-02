@@ -19,7 +19,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * scalar row flushes the entry unchanged rather than leaving its post-state unconstrained.
  */
 
-const BUS = { forceStateful: true, experimentalHiddenBatch: true };
+const BUS = { forceStateful: true, hiddenBatch: true };
 
 /** Scalar `bump` beside entry-writing `credit`: the shape the gate refused. */
 const MIXED = `pragma solidcash >=0.8.0;

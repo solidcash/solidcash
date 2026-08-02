@@ -65,7 +65,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** A distinctive placeholder result: the probe declares it, so the trace's OTHER operand is the real one. */
@@ -143,8 +143,8 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
     const controllerCategory = genesis.categoryId as string;
     const map = compileFileMulti(EXTERNAL, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never) as any;
     const artifact = map.Bar;
     const base = new Contract(artifact, [], { provider });
@@ -255,8 +255,8 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
     const controllerCategory = genesis.categoryId as string;
     const map = compileFileMulti(TRANSIENT, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never) as any;
     const artifact = map.TestTransientStorage;
     const base = new Contract(artifact, [], { provider });
@@ -375,8 +375,8 @@ describe('X177/X180 breadth: the recovered shapes with no data NFT', () => {
   it('MEASURED: Bar.log is GAINED, ADMITTED, and carries the no-data-NFT event shape', () => {
     const options = {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never;
     const bar = (compileFileMulti(EXTERNAL, options) as any).Bar;
     for (const [name, artifact, slots] of [

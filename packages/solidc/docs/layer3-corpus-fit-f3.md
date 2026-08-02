@@ -109,9 +109,9 @@ Four corpora, each compiled twice: once in ordinary direct mode, once in message
 
 ```
 direct : { solidityImportCompat: true, ecrecover: 'p2pkh' }
-bus    : direct + { forceStateful: true, experimentalHiddenBatch: true,
-                    experimentalMessageBusController: <p2sh32 lbc>,
-                    experimentalMessageBusControllerCategory: <32 bytes> }
+bus    : direct + { forceStateful: true, hiddenBatch: true,
+                    messageBusController: <p2sh32 lbc>,
+                    messageBusControllerCategory: <32 bytes> }
 ```
 
 Three method choices, stated because they change the denominators:
@@ -339,7 +339,7 @@ report the same error. The fallback exists; the real gap was what it discards, a
 
 **The `ParseError` was a bus-mode-only failure whose reported position was not in the user's file - AND IT IS
 GONE (X71).** As this report recorded it, `UniswapV2Router02.sol` compiled in direct mode and with
-`forceStateful` and failed the moment `experimentalHiddenBatch` was added, at `Line 68, Column 82` under
+`forceStateful` and failed the moment `hiddenBatch` was added, at `Line 68, Column 82` under
 `+hiddenBatch` and `Line 119, Column 82` under `+controller`. **Neither position exists in that file**, and the
 reported line moving by 51 when an unrelated option is added was the proof: it was a position in whatever the
 compiler assembled. A user handed that could not act on it.

@@ -94,9 +94,9 @@ const emissionAdmission = (source: string, name: string): { eligible: boolean; r
 }`);
   const artifact = compileString(withControl, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   });
   const handler = artifact.hiddenBatch!.handlers.find((candidate) => candidate.name === name)!;
   return { eligible: handler.eligible, reason: handler.rejectionReason };
@@ -138,9 +138,9 @@ async function buildChain(
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const leafArtifact = compileString(leafSource, options);

@@ -94,7 +94,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** The layout-only controller. Its bytes never reach a transaction; it exists to make a compile reproducible. */
@@ -370,8 +370,8 @@ describe('X193: the chunk-backed writer question, and four recovered shapes with
     if (!compiled.has(cacheKey)) {
       const map = busMap(file, {
         ...BUS,
-        experimentalMessageBusController: controller,
-        experimentalMessageBusControllerCategory: category,
+        messageBusController: controller,
+        messageBusControllerCategory: category,
       });
       const artifact = map[contract];
       if (artifact === undefined) throw new Error(`${contract} did not compile in bus mode from ${file}`);

@@ -130,9 +130,9 @@ async function buildMixedJournalGraph(variant: Variant, tamper: Tamper = 'none')
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const tokenArtifact = compileString(
     tokenSource(variant === 'loop' ? LOOP_HANDLER : REVERT_HANDLER), options,

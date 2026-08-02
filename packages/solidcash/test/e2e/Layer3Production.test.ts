@@ -23,7 +23,7 @@ const num8 = (n: bigint): Uint8Array => Uint8Array.from({ length: 8 }, (_, i) =>
 
 async function compileAndSetup(spec: layer3.TranscriptSpec, provider: any): Promise<any> {
   const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

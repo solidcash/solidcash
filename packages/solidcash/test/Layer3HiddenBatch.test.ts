@@ -20,7 +20,7 @@ contract Layer3ReturningBatch() {
 
 const artifact = compileString(SOURCE, {
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 });
 
 describe('layer3.encodeHiddenBatch', () => {
@@ -61,7 +61,7 @@ describe('layer3.encodeHiddenBatch', () => {
   it('carries the compiler-authored result schema for authenticated return-event decoding', () => {
     const returning = compileString(RETURN_SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     const encoded = layer3.encodeHiddenBatch(returning, [
       { function: 'twice', args: [3n] },

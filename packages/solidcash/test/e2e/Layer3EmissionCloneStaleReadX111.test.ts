@@ -130,9 +130,9 @@ async function buildGuardGraph(spec: Spec): Promise<Built> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const vaultArtifact = compileString(spec.guard === 'sender' ? VAULT_SENDER : VAULT_PLAIN, options);
   const vaultBase = new Contract(vaultArtifact, [], { provider });
@@ -360,9 +360,9 @@ describe('X111 - a read-only graph emission clone must not read the pre-state', 
         }
       }`, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const clone = artifact.invocationAnalysis!.functions
       .find((entry) => entry.name === '__scb_graph_assertFloor');

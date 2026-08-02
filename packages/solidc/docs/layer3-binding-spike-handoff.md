@@ -42,12 +42,12 @@ participant binding.
 Changed files:
 
 - `packages/utils/src/artifact.ts`
-  - adds `experimentalLayer3BindingSpike?: boolean`;
+  - adds `__testLayer3BindingSpike?: boolean`;
   - the comment states that it is test-only and emits no layer-3 capability.
 - `packages/solidc/src/compiler.ts`
   - the normal SCB1 eligibility analysis still rejects route-sensitive introspection;
   - only a public handler named exactly `__layer3_bind`, with both
-    `experimentalHiddenBatch` and `experimentalLayer3BindingSpike`, bypasses that one rejection;
+    `hiddenBatch` and `__testLayer3BindingSpike`, bypasses that one rejection;
   - signature checks, forward calls, dynamic state, unresolved effects, lifecycle routes, and all
     other SCB1 eligibility gates still apply.
 - `packages/solidc/test/Layer3ParticipantBindingSpike.test.ts`
@@ -157,8 +157,8 @@ Recommended path:
    ```ts
    {
      forceStateful: true,
-     experimentalHiddenBatch: true,
-     experimentalLayer3BindingSpike: true,
+     hiddenBatch: true,
+     __testLayer3BindingSpike: true,
    }
    ```
 

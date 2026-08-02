@@ -162,9 +162,9 @@ async function buildConditionalEmitBatch(cell: CondCell): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(
     cell.resultEffect ? resultEffectHubSource : cell.narrow ? narrowHubSource : condHubSource, options,
@@ -403,9 +403,9 @@ async function buildCondTransferBatch(value: bigint, drain: boolean): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(condTransferHubSource, options);
   const hubBase = new Contract(hubArtifact, [], { provider });
@@ -620,9 +620,9 @@ async function buildDivergentTransferBatch(forgeAt: 'none' | 'settled' | 'reserv
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(divergentTransferHubSource, options);
   const hubBase = new Contract(hubArtifact, [], { provider });
@@ -850,9 +850,9 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
   it('compiles: the conditional second emit counts toward the frame width SEC-9 compares', () => {
     const artifact = compileString(condHubSource, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-      experimentalMessageBusControllerCategory: 'cd'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `76a914${'11'.repeat(20)}88ac`,
+      messageBusControllerCategory: 'cd'.repeat(32),
     });
     // SEC-9's refusal did not fire: both handlers report 2 emits, and 8 sites x width 2 = 16 slots.
     expect(artifact.hiddenBatch!.handlers.map((h: any) => h.emits.length)).toEqual([2, 2]);
@@ -978,9 +978,9 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
   it('narrow shape compiles with a reserved slot for the one-armed emit', () => {
     const artifact = compileString(narrowHubSource, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-      experimentalMessageBusControllerCategory: 'cd'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `76a914${'11'.repeat(20)}88ac`,
+      messageBusControllerCategory: 'cd'.repeat(32),
     });
     expect(artifact.hiddenBatch!.handlers.map((h: any) => h.emits.length)).toEqual([1]);
     expect(artifact.hiddenBatch!.route.blockLayout!.slots
@@ -1057,14 +1057,14 @@ contract ArmHub() {
 }`;
     const graph = compileString(source, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-      experimentalMessageBusControllerCategory: 'cd'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `76a914${'11'.repeat(20)}88ac`,
+      messageBusControllerCategory: 'cd'.repeat(32),
     });
     expect(graph.hiddenBatch!.handlers.map((handler: any) => handler.emits.length)).toEqual([2, 3]);
     expect(graph.hiddenBatch!.route.blockLayout!.slots
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(24);
-    const flattened = compileString(source, { forceStateful: true, experimentalHiddenBatch: true });
+    const flattened = compileString(source, { forceStateful: true, hiddenBatch: true });
     expect(flattened.hiddenBatch).toBeUndefined();
   }, 60_000);
 
@@ -1072,9 +1072,9 @@ contract ArmHub() {
   it('SEC-9 gap: admits divergent TRANSFER widths on one route', () => {
     const artifact = compileString(divergentTransferHubSource, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-      experimentalMessageBusControllerCategory: 'cd'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `76a914${'11'.repeat(20)}88ac`,
+      messageBusControllerCategory: 'cd'.repeat(32),
     });
     // R3-10 class, found sideways: `every` over an empty handler list is `true`, so a route that published no
     // handler at all would satisfy "all admitted".

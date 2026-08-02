@@ -48,7 +48,7 @@ async function deployCorpus(callerSource: string, functionName: string, args: un
   const provider = createTestProvider();
   const tokenArtifact = compileString(TOKEN, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
+    hiddenBatch: true,
   });
   const tokenInner = new Contract(tokenArtifact, [], { provider });
   const { categoryId: tokenCategory } = await setupStatefulUtxos(
@@ -62,7 +62,7 @@ async function deployCorpus(callerSource: string, functionName: string, args: un
 
   const callerArtifact = compileString(callerSource, {
     forceStateful: true,
-    experimentalRepeatedExternalBatch: true,
+    repeatedExternalBatch: true,
   });
   const tokenAddress = tokenInner.withCategory(hexToBin(tokenCategory)).lockingBytecode;
   const callerInner = new Contract(callerArtifact, [tokenAddress], { provider });
@@ -119,7 +119,7 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
           require(this.allowances[owner][spender] == expected);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     // This five-function mapping ERC-20 used to compile past BCH's 10,000-byte input-script limit and carry a
     // `contract-size-limit` error. Sharing repeated spans across its OP_DEFINE'd bodies brings it well inside.
     expect(tokenArtifact.diagnostics?.some((entry) => entry.code === 'contract-size-limit') ?? false).toBe(false);
@@ -171,7 +171,7 @@ describe('Release 5 surveyed repeated-callee corpus', () => {
           require(firstAmount >= 0 && secondAmount >= 0);
         }
       }
-    `, { forceStateful: true, experimentalRepeatedExternalBatch: true });
+    `, { forceStateful: true, repeatedExternalBatch: true });
     const tokenAddress = tokenInner.withCategory(hexToBin(tokenCategory)).lockingBytecode;
     const callerInner = new Contract(callerArtifact, [tokenAddress], { provider });
     const { categoryId: callerCategory } = await setupStatefulUtxos(

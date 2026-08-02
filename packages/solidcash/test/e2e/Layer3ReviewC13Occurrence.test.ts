@@ -154,9 +154,9 @@ async function buildOccurrenceGraph(rows: number, tamper: Tamper = 'none'): Prom
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   const brands = Array.from({ length: rows }, (_, index) => BigInt(index + 2));

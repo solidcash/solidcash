@@ -183,9 +183,9 @@ async function buildC1(
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   // X60: a REAL P2PKH recipient, not a one-byte OP_1 placeholder that made this output relay dust.
@@ -871,9 +871,9 @@ describe('R2 review: C1 reshape, single-build one-variable mutations', () => {
     const MARK = '76827752807c7e';
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-      experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `76a914${'11'.repeat(20)}88ac`,
+      messageBusControllerCategory: 'ab'.repeat(32),
     };
     // C1's Router as it stood BEFORE the SEC-6 reshape: three outgoing calls plus the two physical effects.
     const preReshapeC1 = compileString(`pragma solidcash >=0.8.0;

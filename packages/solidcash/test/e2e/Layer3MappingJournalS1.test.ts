@@ -124,9 +124,9 @@ async function buildGraphEntryWrite(
   } = await createGraphAuthority(provider);
   const artifact = compileString(SOURCE, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   });
   const base = new Contract(artifact, [], { provider });
   const lowSlot = slotValueToBytes(LOW.s);

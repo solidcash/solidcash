@@ -274,9 +274,9 @@ export async function buildResultGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const source = (text: string): string => staticChain
     ? text.replace(/\.(tail|deep|note|mid|pair|step)\(/g, '.$1.staticcall(')

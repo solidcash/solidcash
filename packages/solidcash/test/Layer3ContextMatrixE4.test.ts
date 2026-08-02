@@ -62,11 +62,11 @@ const DIVERGENCE = 'direct-versus-batch-introspection-divergence';
 
 const graphOptions = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
-const directOptions = { forceStateful: true, experimentalHiddenBatch: true };
+const directOptions = { forceStateful: true, hiddenBatch: true };
 
 /** Each probe consumes its context value inside a `require`, so no pass can eliminate it. */
 const PROBES: Readonly<Record<string, string>> = {

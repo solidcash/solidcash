@@ -174,9 +174,9 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const solidity = shape === 'solidity' || shape === 'solidity-require'
     ? compileStringMulti(
@@ -468,9 +468,9 @@ contract X179BareCast() {
   function peek() returns (address) { return callee; }
 }`, {
         forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: 'aa'.repeat(35),
-        experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+        hiddenBatch: true,
+        messageBusController: 'aa'.repeat(35),
+        messageBusControllerCategory: 'ab'.repeat(32),
       } as never) as any;
       const handler = artifact.hiddenBatch!.handlers!.find((entry: any) => entry.name === 'ping');
       expect(handler.eligible).toBe(true);

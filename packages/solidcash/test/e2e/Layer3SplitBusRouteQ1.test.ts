@@ -193,9 +193,9 @@ contract Plain(bytes owner) {
   it('MEASURED: bus mode reaches the split root and not its facets', () => {
     const busOptions = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const direct = compileStringSplit(VAULT_SPLITTABLE, { forceSplit: true });
     const bus = compileStringSplit(VAULT_SPLITTABLE, { ...busOptions, forceSplit: true });

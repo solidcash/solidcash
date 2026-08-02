@@ -30,7 +30,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 const BUS = {
   solidityImportCompat: true,
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 const DIRECT = { solidityImportCompat: true, forceStateful: true };
 
@@ -331,9 +331,9 @@ const POINTER_HOP = 'function(bigint) internal probe = checkFloor;\n        prob
 describe('L2-F3 the scalar journal reaches a pointer-invoked reader', () => {
   const busOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
   const size = (text: string): number => asmToBytecode(compileQuiet(text, busOptions).bytecode).length;
 

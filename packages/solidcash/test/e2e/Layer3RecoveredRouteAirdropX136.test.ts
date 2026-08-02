@@ -66,9 +66,9 @@ function compileParticipant(controllerLbc: unknown, controllerCategory: string):
     solidityImportCompat: true,
     ecrecover: 'p2pkh',
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controllerLbc,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controllerLbc,
+    messageBusControllerCategory: controllerCategory,
   } as never);
 }
 

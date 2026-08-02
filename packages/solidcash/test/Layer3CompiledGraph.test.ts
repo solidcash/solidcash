@@ -12,16 +12,16 @@ contract ${name}() {
     require(n >= 0);
     return this.count;
   }
-}`, { forceStateful: true, experimentalHiddenBatch: true });
+}`, { forceStateful: true, hiddenBatch: true });
 
 describe('layer3.planCompiledGraph', () => {
   it('expands compiler-collapsed repeated calls into one owner-reusing worklist', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalRepeatedExternalBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      repeatedExternalBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
       interface ICounter { function add(int amount); }
@@ -104,9 +104,9 @@ describe('layer3.planCompiledGraph', () => {
   it('expands a compiler-authored worklist while acquiring each physical owner once', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const a = compileString(`pragma solidcash >=0.8.0;
       interface IB { function step(address c, int n); }
@@ -160,9 +160,9 @@ describe('layer3.planCompiledGraph', () => {
   it('expands a VM-resolved varying-selector table without trusting the SDK choice', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const table = compileString(`pragma solidcash >=0.8.0;
       interface IH { function inc(uint value); function dec(uint value); }
@@ -236,9 +236,9 @@ describe('layer3.planCompiledGraph', () => {
   it('expands a VM-resolved foreign function pointer and rejects an absent proof', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
       solidityImportCompat: true,
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
@@ -277,9 +277,9 @@ describe('layer3.planCompiledGraph', () => {
   it('expands a foreign function pointer returned through an internal helper', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
       solidityImportCompat: true,
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
@@ -317,9 +317,9 @@ describe('layer3.planCompiledGraph', () => {
   it('resolves canonical low-level calldata into one authenticated typed edge', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
       contract RawCaller() {
@@ -359,9 +359,9 @@ describe('layer3.planCompiledGraph', () => {
   it('fails the symbolic worklist closed on runtime occurrence and recursive expansion', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const conditional = compileString(`pragma solidcash >=0.8.0;
       interface IPeer { function run(address peer, bool take); }
@@ -533,9 +533,9 @@ describe('layer3.planCompiledGraph', () => {
   it('uses VM-probed expression values while leaving argument authentication on-chain', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
       interface ITarget { function finish(int n); }
@@ -573,9 +573,9 @@ describe('layer3.planCompiledGraph', () => {
   it('expands a fixed-method state-array target run from its authenticated runtime probe', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const caller = compileString(`pragma solidcash >=0.8.0;
       interface IFoo { function ping(uint value); }
@@ -639,9 +639,9 @@ describe('layer3.planCompiledGraph', () => {
   it('derives msg.sender-keyed collection witnesses from the authenticated parent owner', () => {
     const graphOptions = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const caller = compileString(`contract Caller() {
       function start() public { require(true); }
@@ -951,6 +951,8 @@ describe('layer3.planCompiledGraph', () => {
     expect(projection).toContain('outputCategory.slice(0, 32) != controllerCategory');
     const controllerArtifact = compileString(controller);
     const projectionArtifact = compileString(projection);
+    expect(controllerArtifact.hiddenBatch).toBeUndefined();
+    expect(projectionArtifact.hiddenBatch).toBeUndefined();
     // Freeze the actual redeem-script cost of the variable-table parsers. `Artifact.bytecode` is ASM text;
     // `debug.bytecode` is the hex-encoded script and is the consensus/deployment size.
     // X23 rewrote both walks to make fewer and shallower stack-variable writes - the dominant BCH-2026

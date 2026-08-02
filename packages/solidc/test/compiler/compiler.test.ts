@@ -40,7 +40,7 @@ describe('Compiler', () => {
       }`);
 
       expect(artifact.hiddenBatch).toBeUndefined();
-      expect(artifact.compiler.options?.experimentalHiddenBatch).toBe(true);
+      expect(artifact.compiler.options?.hiddenBatch).toBe(true);
     });
   });
 
@@ -102,7 +102,7 @@ describe('Compiler', () => {
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
         commitmentLimit: 128,
-        experimentalHiddenBatch: true,
+        hiddenBatch: true,
       });
     });
   });

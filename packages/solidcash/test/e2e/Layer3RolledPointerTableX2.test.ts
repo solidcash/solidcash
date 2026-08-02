@@ -162,9 +162,9 @@ async function buildRolledGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   // 'overlong' registers one row MORE than the published bound admits while co-spending only the planned rows,
@@ -340,9 +340,9 @@ async function buildTernaryGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const calleeArtifact = compileString(POINTER_TARGET, options);
   const calleeBase = new Contract(calleeArtifact, [2n], { provider });
@@ -419,9 +419,9 @@ describe('Layer-3 rolled pointer-table loop (X2, SEMANTIC)', () => {
   it('leaves the while-spelled loop rolled and unexpanded', () => {
     const artifact = compileString(ROLLED_VARYING_TABLE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const call = artifact.abi.find((fn) => fn.name === 'fireAll')!.externalCalls![0];
     // Rolled, not expanded: the callsite still names the array and its parallel selector array, and the

@@ -94,7 +94,7 @@ function makeKashi(): string {
 async function setup(): Promise<any> {
   const provider = createTestProvider();
   const artifact = compileString(makeKashi(), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

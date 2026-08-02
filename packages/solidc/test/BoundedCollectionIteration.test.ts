@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const options = { forceStateful: true, experimentalHiddenBatch: true };
+const options = { forceStateful: true, hiddenBatch: true };
 
 const fixed = (bound: number): string => `pragma solidcash >=0.8.0;
 contract FixedIteration() {

@@ -117,9 +117,9 @@ async function createHarness(): Promise<Harness> {
   })));
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: genesis.categoryId as string,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: genesis.categoryId as string,
   };
   const targetArtifact = compileString(TARGET, options);
   const targetBase = new Contract(targetArtifact, [], { provider });

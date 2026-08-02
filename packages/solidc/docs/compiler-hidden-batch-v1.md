@@ -2,9 +2,10 @@
 
 Status: RELEASE 4 IMPLEMENTED, DEFAULT ON; INDEPENDENT REVIEW PENDING. The scalar and
 parameter-keyed multi-entry journals and hidden owner-local route are emitted by default and are
-VM- and node-tested against BCH 2026. Pass `experimentalHiddenBatch: false` through the compiler API,
+VM- and node-tested against BCH 2026. Pass `hiddenBatch: false` through the compiler API,
 or `--no-hidden-batch` through the CLI, to retain direct-route-only compilation. Release 5 remains a
-separately gated experimental surface. The exact audit target and remaining review gate are tracked in
+default-on compiler path for supported repeated-owner chains; `repeatedExternalBatch: false` retains
+one-call-per-owner lowering. The exact audit target and remaining review gate are tracked in
 `layer3-review-package.md` and `message-bus-completion-ledger.md`.
 
 Baseline: `codex/state-bus-research`, forked from `codex/solidhat-init` at `d36116aa`.
@@ -17,7 +18,7 @@ Implementation snapshot (2026-07-23):
   through one tuple; MasterChef-style dependent accumulators use the same reduction. A dynamic-array handler
   value-threads both its encoded length field and tight element blob, then the physical wrapper
   flushes its chunks once. Runtime-varying aliases and dynamic cold keys retain the conservative path.
-- Release 4 is enabled by default; `experimentalHiddenBatch: false` is its explicit compatibility opt-out.
+- Release 4 is enabled by default; `hiddenBatch: false` is its explicit compatibility opt-out.
   It advertises `hiddenBatch.version == 1`,
   keeps `__scb1` out of the source ABI, and admits either signature-free route-stable scalar
   handlers, handlers sharing one parameter-keyed mapping entry, or the exact two-row
@@ -27,13 +28,15 @@ Implementation snapshot (2026-07-23):
   modes allocate one conditional effect slot per row and materialize only the reached prefix. Mixed
   route modes, dynamic state, heterogeneous/multiple returns or effects, caller-sensitive
   introspection, and forward calls remain explicitly rejected in capability metadata.
-- Release 5 is enabled only by `experimentalRepeatedExternalBatch`. It groups one straight-line
+- Release 5 is enabled by default. It groups one straight-line
   repeated callee, builds rows from the arguments actually evaluated by A, requires a compatible
   Release 4 capability from B, compares the exact positional second push byte-for-byte, and uses
   one physical B owner. The comparator accepts canonical direct pushes and `OP_PUSHDATA1`, and caps
   the complete blob at 223 bytes so the frozen eight-row maximum is constructible. Multiple
   repeated owners and repeated chains which are conditional or otherwise not exhaustively
-  resolvable fail during compilation rather than falling back to contending physical call slots.
+  resolvable retain ordinary physical call slots during default compilation. Explicit
+  `repeatedExternalBatch: true` requests strict admission and fails those shapes by name;
+  `repeatedExternalBatch: false` disables grouping.
 - Compiler and SDK tests cover opt-out compatibility, sequential state, malformed local blobs,
   omission, injection, argument reordering, unchecked suffixes, count substitution, the positional
   blob locator, target and output substitution, capability mismatch, duplicate physical inputs,
@@ -89,9 +92,9 @@ same transaction; inputs 1 and 3 are the two entry/fee inputs and are identical 
 
 | rows | tx bytes | A instructions | A op cost / budget | A peak items/bytes | A unlock | B instructions | B op cost / budget | B peak items/bytes | B unlock |
 |---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
-| 2 | 3,656 | 1,118 | 129,362 / 910,400 | 12 / 1,671 | 1,097 | 2,729 | 298,290 / 1,257,600 | 24 / 3,132 | 1,531 |
-| 3 | 3,684 | 1,245 | 142,482 / 911,200 | 13 / 1,737 | 1,098 | 3,504 | 378,354 / 1,278,400 | 24 / 3,210 | 1,557 |
-| 8 | 3,796 | 995 | 118,960 / 908,800 | 10 / 2,023 | 1,095 | 5,699 | 613,767 / 1,371,200 | 24 / 3,556 | 1,673 |
+| 2 | 4,291 | 1,136 | 134,141 / 1,418,400 | 12 / 1,727 | 1,732 | 2,729 | 298,290 / 1,257,600 | 24 / 3,132 | 1,531 |
+| 3 | 4,319 | 1,263 | 147,261 / 1,419,200 | 13 / 1,737 | 1,733 | 3,504 | 378,354 / 1,278,400 | 24 / 3,210 | 1,557 |
+| 8 | 4,431 | 1,013 | 123,739 / 1,416,800 | 10 / 2,023 | 1,730 | 5,699 | 613,767 / 1,371,200 | 24 / 3,556 | 1,673 |
 
 RE-PINNED AT X108 to `RepeatedExternalBatchRelease5.test.ts` at HEAD, which measures every figure above
 from constructed transactions under `BCH_2026_05`.

@@ -1,22 +1,21 @@
-# Layer-3 transcript - EXPERIMENTAL SDK module (`src/layer3`)
+# Legacy homogeneous Layer-3 transcript scaffold (`src/layer3`)
 
-> STATUS: EXPERIMENTAL research scaffold - NOT a production message bus. An independent audit
+> STATUS: RETIRED RESEARCH SCAFFOLD - NOT THE PRODUCTION MESSAGE BUS. An independent audit
 > (`layer3-production-audit.md`, Decision 3) found VM-accepted unsafe states and a scope gap versus the
 > research spec. L3-2 (resource commitment) and L3-3 (resource value) are now fail-closed; L3-1 (canonical
 > transcript) is partially closed (overlapping/divergent views rejected; disjoint-injection residual open);
 > L3-4..L3-9 (real heterogeneous-contract composition, complete invocation/intent/result, full resource
 > authority, exact controller identity, deployability, typed API) remain OPEN. This module generates a
 > HOMOGENEOUS participant covenant and instantiates N copies - it does NOT yet co-spend independently
-> compiled application contracts. Keep default-off; do not merge as a production bus. See the audit for the
-> graduation gates.
+> compiled application contracts. Do not use this legacy homogeneous generator for new integrations.
 >
 > **SCOPE UPDATE at `1591e87f`: this banner describes `covenant.ts`/`transcript.ts`, not `graph.ts`.**
 > `src/layer3` has since grown the `L3GRAPH1` graph path, and the sentence "does NOT yet co-spend
 > independently compiled application contracts" is false for that path: the C2 capstone is a heterogeneous
 > cycle over four independently compiled participants, executed, accepted and **mined** by BCHN v29.0.0 at
 > 52,733 bytes over 79 inputs (citation, X59/X60 as recorded in the completion ledger). The rest of the
-> banner stands - nothing here is a production bus, nothing is `POLICY_FIT`, and the graduation gates are
-> unchanged. Everything below documents the ORIGINAL homogeneous scaffold; for the graph path read
+> banner stands for the retired homogeneous path. Everything below documents the ORIGINAL scaffold; for the
+> stable default-on graph path read
 > `graph.ts`, the completion ledger, and `layer3-production-envelope.md`.
 
 The spike covenants are generalized into a reusable SDK module, exported from `solidcash` as
@@ -51,7 +50,7 @@ const spec = { ...shape, appBody: [
 
 // 2. Generate + compile the covenant; instantiate the participants branded with the controller salt.
 const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
-  forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+  forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
 });
 const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
 const participants = /* [{ contract: new Contract(artifact, [], { provider, salt }), master, categoryId }, ...] */;

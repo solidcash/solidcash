@@ -112,7 +112,7 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   `;
 
   it('collapses two straight-line calls to the same owner into one physical SCB1 slot', () => {
-    const artifact = compileString(SOURCE, { experimentalRepeatedExternalBatch: true });
+    const artifact = compileString(SOURCE, { repeatedExternalBatch: true });
     const run = artifact.abi.find((fn) => fn.name === 'run');
 
     expect(run?.externalCalls).toHaveLength(1);
@@ -136,8 +136,13 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
     expect(run?.externalCalls?.[0].batchInvocations?.every((row) => row.selector.length === 8)).toBe(true);
   });
 
-  it('preserves the two physical call slots unless explicitly enabled', () => {
+  it('collapses the supported repeated-owner shape by default', () => {
     const artifact = compileString(SOURCE);
+    expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
+  });
+
+  it('preserves the two physical call slots when explicitly disabled', () => {
+    const artifact = compileString(SOURCE, { repeatedExternalBatch: false });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(2);
   });
 
@@ -153,7 +158,7 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
           require(amount >= 0);
         }
       }
-    `, { experimentalRepeatedExternalBatch: true })).toThrow(
+    `, { repeatedExternalBatch: true })).toThrow(
       /repeats 2 external state owners.*exactly one repeated callee owner/,
     );
   });
@@ -168,7 +173,7 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
           require(amount >= 0);
         }
       }
-    `, { experimentalRepeatedExternalBatch: true })).toThrow(
+    `, { repeatedExternalBatch: true })).toThrow(
       /unresolvable repeated external call chain.*requires straight-line/,
     );
   });
@@ -176,8 +181,8 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   it('keeps a Release 5 root callable while excluding it from a Release 4 local route', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalRepeatedExternalBatch: true,
+      hiddenBatch: true,
+      repeatedExternalBatch: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
     expect(artifact.hiddenBatch).toBeUndefined();
@@ -198,10 +203,10 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
     const inlined = compileString(`${LIB} contract C() {`
       + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }',
-    { experimentalHiddenBatch: false }).bytecode.split(' ');
+    { hiddenBatch: false }).bytecode.split(' ');
     const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
       + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }',
-    { experimentalHiddenBatch: false }).bytecode.split(' ');
+    { hiddenBatch: false }).bytecode.split(' ');
     // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
     expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
   });

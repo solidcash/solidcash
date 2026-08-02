@@ -83,7 +83,7 @@ async function setup(brand = true): Promise<{
 }> {
   const provider = createTestProvider();
   const artifact = compileString(PARTICIPANT, {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

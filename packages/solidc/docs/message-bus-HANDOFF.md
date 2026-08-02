@@ -247,7 +247,7 @@ npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
 # 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
 #    115 files discovered; expect 1,321 passed / 11 skipped on the recorded
 #    final HEAD. It is the only thing that has reliably caught the X229 class.
-npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch) \
+npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l hiddenBatch) \
   --maxWorkers=2 --reporter=dot
 
 # 3. The settlement count. The probe is inert unless L3_X204_OUT is set, and it is a pure
@@ -272,7 +272,7 @@ npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
    surface and prior rounds show a real hit rate there.
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:
-`ls test/e2e/*.test.ts | xargs grep -l experimentalHiddenBatch` discovers 115 files on current HEAD.
+`ls test/e2e/*.test.ts | xargs grep -l hiddenBatch` discovers 115 files on current HEAD.
 The final recorded sweep is green at 115 files / 1,321 passed / 11 skipped. Re-run it at
 `--maxWorkers=2` after any route-admission change; it is the only measurement that has reliably caught
 this class.

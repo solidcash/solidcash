@@ -127,9 +127,9 @@ async function buildContextGraph(overrides: ContextOverrides = {}): Promise<{
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const artifactChild = compileString(CHILD, options);
@@ -287,9 +287,9 @@ describe('E4: admitted context values on the BCH-2026 VM', () => {
     // artifact, so a direct/graph selector disagreement would fail here.
     const graphSelector = compileString(CHILD, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     }).hiddenBatch!.handlers.find((handler) => handler.name === 'observe')!.selector;
     const built = await runDirect(CHILD_EQUIVALENCE_ONLY, (contract, origin) =>
       contract.unlock.observe(N, 0n, hexToBin(graphSelector), origin));

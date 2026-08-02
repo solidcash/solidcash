@@ -12,15 +12,15 @@ contract BatchCounter() {
 describe('Release 4 compiler-hidden local batch', () => {
   const graphOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
 
   it('advertises SCB1 without exposing a source ABI function', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     expect(artifact.hiddenBatch).toMatchObject({
       version: 1,
@@ -56,7 +56,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         emit E(payload);
         require(payload.length > 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(uniform.hiddenBatch?.handlers.find((handler) => handler.name === 'publish')).toMatchObject({
       eligible: true,
       emits: [{ emitIndex: 0 }, { emitIndex: 1 }],
@@ -70,7 +70,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         emit E(payload);
         require(payload.length > 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(heterogeneous.hiddenBatch).toBeUndefined();
   });
 
@@ -78,30 +78,30 @@ describe('Release 4 compiler-hidden local batch', () => {
     const defaultOn = compileString(SOURCE, { forceStateful: true });
     const explicitUndefined = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: undefined,
+      hiddenBatch: undefined,
     });
     const explicitOn = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     expect(defaultOn.bytecode).toBe(explicitOn.bytecode);
     expect(explicitUndefined.bytecode).toBe(explicitOn.bytecode);
     expect(defaultOn.hiddenBatch).toEqual(explicitOn.hiddenBatch);
     expect(explicitUndefined.hiddenBatch).toEqual(explicitOn.hiddenBatch);
     expect(defaultOn.hiddenBatch?.version).toBe(1);
-    expect(defaultOn.compiler.options.experimentalHiddenBatch).toBe(true);
-    expect(explicitUndefined.compiler.options.experimentalHiddenBatch).toBe(true);
+    expect(defaultOn.compiler.options.hiddenBatch).toBe(true);
+    expect(explicitUndefined.compiler.options.hiddenBatch).toBe(true);
   });
 
   it('retains an explicit false legacy/off path with no hidden-batch route', () => {
     const defaultOn = compileString(SOURCE, { forceStateful: true });
     const explicitOff = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: false,
+      hiddenBatch: false,
     });
     expect(explicitOff.bytecode).not.toBe(defaultOn.bytecode);
     expect(explicitOff.hiddenBatch).toBeUndefined();
-    expect(explicitOff.compiler.options.experimentalHiddenBatch).toBe(false);
+    expect(explicitOff.compiler.options.hiddenBatch).toBe(false);
     expect(explicitOff.diagnostics?.some((entry) => entry.code === 'hidden-batch-route-not-synthesized'))
       .not.toBe(true);
   });
@@ -110,11 +110,11 @@ describe('Release 4 compiler-hidden local batch', () => {
     const multiDefault = compileStringMulti(SOURCE, { forceStateful: true }).BatchCounter;
     const multiOn = compileStringMulti(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     }).BatchCounter;
     const multiOff = compileStringMulti(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: false,
+      hiddenBatch: false,
     }).BatchCounter;
     expect(multiDefault.bytecode).toBe(multiOn.bytecode);
     expect(multiDefault.hiddenBatch).toEqual(multiOn.hiddenBatch);
@@ -123,11 +123,11 @@ describe('Release 4 compiler-hidden local batch', () => {
     const splitDefault = compileStringSplit(SOURCE, { forceStateful: true });
     const splitOn = compileStringSplit(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     const splitOff = compileStringSplit(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: false,
+      hiddenBatch: false,
     });
     expect(splitDefault.root.bytecode).toBe(splitOn.root.bytecode);
     expect(splitDefault.root.hiddenBatch).toEqual(splitOn.root.hiddenBatch);
@@ -147,7 +147,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         }
         function plain(int n) public { this.counter = n; require(n >= 0); }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
 
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'senderBound')).toMatchObject({
       eligible: false,
@@ -174,7 +174,7 @@ describe('Release 4 compiler-hidden local batch', () => {
           require(tx.origin == expected);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'stable'))
       .toMatchObject({ eligible: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'bytecodeBound'))
@@ -198,9 +198,9 @@ describe('Release 4 compiler-hidden local batch', () => {
       }
     `, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'originBound'))
       .toMatchObject({ eligible: true });
@@ -241,7 +241,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       function check(bigint key, bigint expected) public {
         require(this.values[key] == expected);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
 
     expect(artifact.hiddenBatch?.route.inputs).toEqual([
       { name: 'batchBlob', type: 'bytes' },
@@ -263,7 +263,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.values[to] = this.values[to] + amount;
         require(amount >= 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch).toMatchObject({
       minimumRows: 2,
       maximumRows: 2,
@@ -298,7 +298,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     }`;
     const artifact = compileString(source, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
 
     expect(artifact.hiddenBatch).toMatchObject({
@@ -414,7 +414,7 @@ describe('Release 4 compiler-hidden local batch', () => {
   it('keeps SCB1 row parsing exact once the parser is factored into helpers', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     // Shared `__scb_parse_row` / `__scb_parse_graph_caller` helpers must not relax the frame checks: row count,
     // blob exhaustion, positional call-site binding and unknown-selector rejection all still have to be emitted.
@@ -443,7 +443,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         emit Changed(next);
         require(next >= 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'set')?.eligible)
       .toBe(true);
     expect(artifact.hiddenBatch?.route.emits).toHaveLength(8);
@@ -460,7 +460,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         require(amount >= 0);
         return this.total;
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'add'))
       .toMatchObject({ eligible: true, outputs: [{ type: 'bigint' }] });
     expect(artifact.hiddenBatch?.route.outputs).toEqual([{ type: 'bytes' }]);
@@ -475,7 +475,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       function flag(bool value) public pure returns (bool) { return !value; }
       function pair(bigint n) public pure returns (bigint, bool) { return (n, n > 0); }
       function touch() public pure { require(true); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.map((handler) => ({
       name: handler.name, eligible: handler.eligible, outputs: handler.outputs,
     }))).toEqual([
@@ -496,7 +496,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.transfer(recipient, amount);
         require(amount >= 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'pay')?.eligible)
       .toBe(true);
     expect(artifact.hiddenBatch?.route.transferCount).toBe(8);
@@ -513,9 +513,9 @@ describe('Release 4 compiler-hidden local batch', () => {
       }
     }`, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: 'aa',
-      experimentalMessageBusControllerCategory: '00'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: 'aa',
+      messageBusControllerCategory: '00'.repeat(32),
     });
     expect(artifact.hiddenBatch?.maximumRows).toBe(8);
     const handler = artifact.hiddenBatch?.handlers.find((candidate) => candidate.name === 'pay');
@@ -683,7 +683,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     const artifact = compileString(`contract DeleteEntry() {
       mapping(address => bigint) values;
       function clear(address key) public { delete this.values[key]; require(true); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'clear')?.eligible).toBe(true);
     expect(artifact.hiddenBatch?.route.entryAccesses).toHaveLength(1);
   });
@@ -697,7 +697,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         require(amount >= 0);
       }
       function clear(address key) public { delete this.values[key]; require(true); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
       .toEqual([['move', true], ['clear', true]]);
     // The delete resolves onto the shared entry `move` already owns rather than adding a fourth slot.
@@ -716,7 +716,7 @@ describe('Release 4 compiler-hidden local batch', () => {
         this.balances[who] = this.balances[who] + amount;
         require(amount >= 0);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
 
     // Both handlers are admitted, and `bump` resolves onto the entry `move` already owns rather than
     // allocating a second slot for it. Naming witnesses per handler is what used to force the duplicate.
@@ -761,7 +761,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       function checkAllowance(bytes20 owner, bytes20 spender, bigint expected) public {
         require(this.allowances[owner][spender] == expected);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
 
     expect(artifact.hiddenBatch?.handlers.every((handler) => handler.eligible)).toBe(true);
     expect(artifact.hiddenBatch?.handlers.map((handler) => handler.name))
@@ -783,7 +783,7 @@ describe('Release 4 compiler-hidden local batch', () => {
     const artifact = compileString(`contract ArrayState() {
       bigint[3] slots;
       function set(bigint index, bigint value) public { this.slots[index] = value; require(value >= 0); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'set')).toMatchObject({
       eligible: true,
       batchKeyWitnesses: [{ routeInput: '__scb_key_slots_0', inputIndex: 0 }],
@@ -825,9 +825,9 @@ describe('Release 4 compiler-hidden local batch', () => {
     }`;
   const BUS = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
 
   const effectSlots = (source: string): Record<string, number> => {
@@ -879,14 +879,14 @@ describe('Release 4 compiler-hidden local batch', () => {
         require(address(peer) == address(peer));
         values[status] = amount;
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'set')?.eligible).toBe(true);
   });
 
   it('routes a handler whose name matches the contract without generating a constructor call', () => {
     const artifact = compileString(`contract SameName() {
       function SameName() public { require(true); }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'SameName')?.eligible).toBe(true);
   });
 
@@ -895,7 +895,7 @@ describe('Release 4 compiler-hidden local batch', () => {
       contract MappingFieldRoute() {
         mapping(bigint => Item) items;
         function add(bigint key, bigint delta) public { items[key].amount += delta; }
-      }`, { forceStateful: true, experimentalHiddenBatch: true });
+      }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'add')?.eligible).toBe(true);
   });
 });

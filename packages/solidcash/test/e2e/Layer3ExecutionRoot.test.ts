@@ -26,7 +26,7 @@ async function setup(rootFor: (lbcs: string[]) => string): Promise<any> {
   ]);
   const ctrlCat: string = genesis.categoryId;
   const artifact = compileString(layer3.generateExecutionBoundCovenant(2, INVOCATIONS, ctrlCat, ctrlLbc), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

@@ -141,9 +141,9 @@ async function buildExactSizedGraph(
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   const brands = Array.from({ length: EXACT_TABLE_ROWS }, (_, index) => BigInt(index + 2));
@@ -293,9 +293,9 @@ async function buildExactSizedGraph(
 
 const compileExactTable = (): Artifact => compileString(EXACT_SIZED_TABLE, {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 });
 
 const fireAllRow = (artifact: Artifact): any =>
@@ -347,9 +347,9 @@ contract GuardedSizedTable() {
   }
 }`, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const row = fireAllRow(guarded);
     expect(row.maximumOccurrences).toBe(3);
@@ -441,9 +441,9 @@ contract GuardedSizedTable() {
     const artifact = compileExactTable();
     const handler = compileString(POINTER_TARGET, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const root = { artifact, lockingBytecode: '51' };
     const plan = (): unknown => layer3.deriveCompiledGraphPlan({

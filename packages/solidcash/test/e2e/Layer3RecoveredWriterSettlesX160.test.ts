@@ -82,7 +82,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** A distinctive placeholder result: the probe declares it, so the trace's OTHER operand is the real one. */
@@ -136,8 +136,8 @@ describe('X160: the recovered population has a WRITER that settles', () => {
     // The subject is a SIBLING declaration in the file, so the multi-contract map is what is read.
     const counter = compileFile(FALLBACK_IO, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
       primaryContractName: 'Counter',
     } as never) as any;
     const handlers = counter.hiddenBatch!.handlers as any[];
@@ -188,8 +188,8 @@ describe('X160: the recovered population has a WRITER that settles', () => {
     const controllerCategory = genesis.categoryId as string;
     const artifact = compileFile(FALLBACK_IO, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
       primaryContractName: 'Counter',
     } as never) as any;
     const base = new Contract(artifact, [], { provider });
@@ -385,8 +385,8 @@ describe('X160: the recovered population has a WRITER that settles', () => {
   it('MEASURED: the covenant computes a post state that is count+1, not the pre state', async () => {
     const counter = compileFile(FALLBACK_IO, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
       primaryContractName: 'Counter',
     } as never) as any;
     const layout = counter.stateLayout!;

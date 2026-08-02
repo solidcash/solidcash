@@ -201,8 +201,7 @@ merged, not adversarially reviewed.
    regtest, contention, compatibility, and independent-review gates.
 
 The specification is complete only when every non-process row is **PROVEN**, every process gate has
-its required external evidence, and the experimental/default-off marker can be removed without
-weakening any invariant.
+its required external evidence, and the stable default-on boundary is verified without weakening any invariant.
 
 ## 10. Implementation log
 

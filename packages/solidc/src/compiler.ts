@@ -116,7 +116,8 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
+  repeatedExternalBatch: true,
 };
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
@@ -124,10 +125,12 @@ function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
   return {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
-    experimentalHiddenBatch: options.experimentalHiddenBatch !== false,
+    hiddenBatch: options.hiddenBatch !== false,
+    repeatedExternalBatch: options.repeatedExternalBatch !== false,
+    __requireRepeatedExternalBatch: options.repeatedExternalBatch === true,
     // Internal-only presentation policy: default-on synthesis must not expose warnings for locals in source
     // the user never wrote. Explicit route builds retain them for diagnostic-origin auditing.
-    __suppressGeneratedRouteWarnings: options.experimentalHiddenBatch !== true,
+    __suppressGeneratedRouteWarnings: options.hiddenBatch !== true,
   } as CompilerOptions;
 }
 
@@ -278,7 +281,7 @@ function compileWithExternalAdmissionFallback(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   };
-  if (!mergedCompilerOptions.experimentalHiddenBatch) return compileOnce(true);
+  if (!mergedCompilerOptions.hiddenBatch) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
   // spelling makes the route TRY a handler its refusal used to hide, and the solc corpus turned up four files
   // where that reaches a pre-existing route-generation gap ('Block layout not available while compiling
@@ -377,8 +380,8 @@ function compileWithExternalAdmissionFallback(
   // default. Silently discarding that configuration would turn malformed authority, transcript, pointer-table,
   // and effect checks into an ordinary direct artifact. Preserve the graph route's fail-closed diagnostic.
   if (requireHiddenRoute
-      || mergedCompilerOptions.experimentalMessageBusController !== undefined
-      || mergedCompilerOptions.experimentalMessageBusControllerCategory !== undefined) {
+      || mergedCompilerOptions.messageBusController !== undefined
+      || mergedCompilerOptions.messageBusControllerCategory !== undefined) {
     throw firstError;
   }
 
@@ -386,7 +389,7 @@ function compileWithExternalAdmissionFallback(
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
   // clone); if it succeeds, the resolved compiler options truthfully publish the fallback as direct-only.
-  const directOptions = { ...mergedCompilerOptions, experimentalHiddenBatch: false };
+  const directOptions = { ...mergedCompilerOptions, hiddenBatch: false };
   try {
     return compileResolvedAst(
       parseAndResolve(code, directOptions, errorListener, primaryContractName),
@@ -408,7 +411,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  const requireHiddenRoute = artifactCompilerOptions.experimentalHiddenBatch === true;
+  const requireHiddenRoute = artifactCompilerOptions.hiddenBatch === true;
   const artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName, requireHiddenRoute,
   );
@@ -591,7 +594,7 @@ function applyRolledLoopCeilings(
 const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'batched-handler-forward-call-not-enabled':
     'a handler that makes an external call is batched only on the authenticated graph route, and only in void '
-    + 'tail form: supply experimentalMessageBusController with its experimentalMessageBusControllerCategory, '
+    + 'tail form: supply messageBusController with its messageBusControllerCategory, '
     + 'declare no return type, and end the body with a require - or move the call into its own handler',
   'unresolved-or-effectful-handler':
     'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
@@ -704,7 +707,7 @@ function foreignOutStatePrecedesSharedCall(fn: FunctionDefinitionNode): boolean 
   });
 }
 
-/** Add the experimental Release 4 physical dispatcher after source lowering
+/** Add the compiler-owned Release 4 physical dispatcher after source lowering
  * but before symbol/type analysis. Only signature-free scalar entry points
  * (`public` or `external`) enter the initial covenant surface; every other
  * source handler receives an explicit rejection reason in artifact metadata. */
@@ -714,17 +717,22 @@ function synthesizeHiddenBatchRoute(
   admitBareForwardingHandlers = true,
   attribution?: ExternalAdmissionAttribution,
 ): void {
-  if (!compilerOptions.experimentalHiddenBatch) return;
+  if (!compilerOptions.hiddenBatch) return;
   const contract = ast.contract;
-  const graphControllerLbc = compilerOptions.experimentalMessageBusController?.toLowerCase();
-  const graphControllerCategory = compilerOptions.experimentalMessageBusControllerCategory?.toLowerCase();
+  // Protocol infrastructure authenticates the graph itself; it is never an application participant and must
+  // not acquire a second SCB1 entry surface merely because application batching is default-on. Keeping these
+  // compiler-owned contracts on their direct covenant preserves the reviewed controller/projection byte
+  // envelope and prevents recursive graph participation. The names are reserved by the Layer-3 generators.
+  if (isMessageBusInfrastructureContract(contract.name)) return;
+  const graphControllerLbc = compilerOptions.messageBusController?.toLowerCase();
+  const graphControllerCategory = compilerOptions.messageBusControllerCategory?.toLowerCase();
   if (graphControllerLbc !== undefined && !/^([0-9a-f]{2})+$/.test(graphControllerLbc)) {
-    throw new Error('experimentalMessageBusController must be hex-encoded locking bytecode');
+    throw new Error('messageBusController must be hex-encoded locking bytecode');
   }
   if ((graphControllerLbc === undefined) !== (graphControllerCategory === undefined)
     || (graphControllerCategory !== undefined && !/^[0-9a-f]{64}$/.test(graphControllerCategory))) {
     throw new Error(
-      'experimentalMessageBusController requires a 32-byte experimentalMessageBusControllerCategory',
+      'messageBusController requires a 32-byte messageBusControllerCategory',
     );
   }
   const graphControllerCategoryInternal = graphControllerCategory === undefined
@@ -1403,7 +1411,8 @@ function synthesizeHiddenBatchRoute(
             || (!routeUsesMsgSender && !routeUsesMsgData && !routeUsesMsgSig))
           && (routeUsesStableOwnerIntrospection || routeUsesTxOrigin
             || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
-        || (compilerOptions.experimentalLayer3BindingSpike && fn.name === '__layer3_bind'))) {
+        || ((compilerOptions as CompilerOptions & { __testLayer3BindingSpike?: boolean })
+          .__testLayer3BindingSpike && fn.name === '__layer3_bind'))) {
       reason = 'direct-versus-batch-introspection-divergence';
     // E4. A leaf graph handler reconstructs these three values from its authenticated invocation row, but an
     // emission handler also needs that row while constructing its outgoing emission. The current lowering
@@ -2847,8 +2856,8 @@ function compileResolvedAst(
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
   // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
-  const messageBusGraphMode = !!mergedCompilerOptions.experimentalHiddenBatch
-    && !!mergedCompilerOptions.experimentalMessageBusController;
+  const messageBusGraphMode = !!mergedCompilerOptions.hiddenBatch
+    && !!mergedCompilerOptions.messageBusController;
   // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
   // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
   // or renames a handler. Without this the same sources reach the user as `Block slot not found: lowLevelCall[0]`
@@ -2919,7 +2928,7 @@ function compileResolvedAst(
   // SCB1 wrapper still calls the pre-lowering higher-order signature (and lacks the generated edge witnesses).
   // The normal later pass remains: this early application is intentionally idempotent and covers only candidates
   // already visible after modifier expansion.
-  if (mergedCompilerOptions.experimentalHiddenBatch) {
+  if (mergedCompilerOptions.hiddenBatch) {
     ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
   }
 
@@ -2951,7 +2960,7 @@ function compileResolvedAst(
     });
     return found;
   });
-  if (mergedCompilerOptions.experimentalHiddenBatch && hasFixedCollectionIteration) {
+  if (mergedCompilerOptions.hiddenBatch && hasFixedCollectionIteration) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, true)) as Ast;
   }
 
@@ -2992,7 +3001,7 @@ function compileResolvedAst(
       loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
     }
   }
-  const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.experimentalHiddenBatch
+  const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.hiddenBatch
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
@@ -3472,7 +3481,7 @@ function compileResolvedAst(
     }),
     components: invocationAnalysis.components,
   };
-  if (mergedCompilerOptions.experimentalHiddenBatch
+  if (mergedCompilerOptions.hiddenBatch
     && ast.contract.functions.some((fn) => fn.hiddenBatchRoute)) {
     const hiddenBatchMaximumRows = ast.contract.functions.find((fn) =>
       fn.hiddenBatchRoute)?.hiddenBatchMaximumRows ?? MAX_HIDDEN_BATCH_ROWS;
@@ -3483,9 +3492,9 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: hiddenBatchMaximumRows,
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
-      ...(mergedCompilerOptions.experimentalMessageBusController && {
-        graphControllerLockingBytecode: mergedCompilerOptions.experimentalMessageBusController.toLowerCase(),
-        graphControllerCategory: mergedCompilerOptions.experimentalMessageBusControllerCategory!.toLowerCase(),
+      ...(mergedCompilerOptions.messageBusController && {
+        graphControllerLockingBytecode: mergedCompilerOptions.messageBusController.toLowerCase(),
+        graphControllerCategory: mergedCompilerOptions.messageBusControllerCategory!.toLowerCase(),
       }),
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
@@ -3582,7 +3591,7 @@ function compileResolvedAst(
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),
     };
-  } else if (mergedCompilerOptions.experimentalHiddenBatch) {
+  } else if (mergedCompilerOptions.hiddenBatch && !isMessageBusInfrastructureContract(ast.contract.name)) {
     // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
     // those names is `hiddenBatch.handlers` - which is not built when no entry point survives. A contract whose
     // every handler is rejected therefore reached the user as an artifact with no `hiddenBatch` and no
@@ -3598,6 +3607,10 @@ function compileResolvedAst(
   return artifact;
 }
 
+function isMessageBusInfrastructureContract(name: string): boolean {
+  return name === 'GraphRootController' || name === 'GraphProjectionVerifier';
+}
+
 /**
  * Compile EVERY top-level declaration in `code` (and its imports) to its own Artifact, keyed by name -
  * solc's `contracts[name]` model. Each concrete contract / library is compiled with itself as the primary
@@ -3608,7 +3621,7 @@ function compileResolvedAst(
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  const requireHiddenRoute = artifactCompilerOptions.experimentalHiddenBatch === true;
+  const requireHiddenRoute = artifactCompilerOptions.hiddenBatch === true;
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -3971,7 +3984,7 @@ function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
  * refuses the divergent bundle rather than emitting it.
  */
 function splitPreLowersFnPtrArrays(options: CompilerOptions): boolean {
-  return !(options.experimentalHiddenBatch && options.experimentalMessageBusController);
+  return !(options.hiddenBatch && options.messageBusController);
 }
 
 /** Prepare the complete logical contract before deciding physical placement. The normal compiler repeats these

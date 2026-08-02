@@ -105,7 +105,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /**
@@ -392,8 +392,8 @@ describe('X180: the block-oracle staging, and the mapping / multi-data-NFT recov
     if (!compiled.has(cacheKey)) {
       const map = compileFileMulti(row.file, {
         ...BUS,
-        experimentalMessageBusController: controllerLockingBytecode,
-        experimentalMessageBusControllerCategory: controllerCategory,
+        messageBusController: controllerLockingBytecode,
+        messageBusControllerCategory: controllerCategory,
       } as never) as any;
       const artifact = map[row.contract];
       if (artifact === undefined) throw new Error(`${row.key}: ${row.contract} did not compile in bus mode`);

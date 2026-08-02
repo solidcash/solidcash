@@ -292,9 +292,9 @@ describe('bare `delete x` on a state variable routes to a state delete', () => {
   });
   it('is byte-identical to `delete this.y` (sound - actually deletes the state var)', () => {
     const explicit = 'contract C{uint16 y;uint8 x;function f()external returns(uint){this.y=2;if(x!=1)return 2;delete this.y;return 1;}}';
-    expect(compileString(bareSrc, { solidityImportCompat: true, experimentalHiddenBatch: false }).bytecode)
+    expect(compileString(bareSrc, { solidityImportCompat: true, hiddenBatch: false }).bytecode)
       .toBe(compileString(explicit, {
-        solidityImportCompat: true, experimentalHiddenBatch: false,
+        solidityImportCompat: true, hiddenBatch: false,
       }).bytecode);
   });
   it('leaves a genuine local delete alone', () => {

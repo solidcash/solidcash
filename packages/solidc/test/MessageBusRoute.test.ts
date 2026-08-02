@@ -14,9 +14,9 @@ describe('compiler-integrated message-bus SCB1 route', () => {
   it('adds the authenticated graph context only when a controller is pinned', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: '51',
-      experimentalMessageBusControllerCategory: '00'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: '51',
+      messageBusControllerCategory: '00'.repeat(32),
     });
     expect(artifact.hiddenBatch?.graphControllerLockingBytecode).toBe('51');
     expect(artifact.hiddenBatch?.graphControllerCategory).toBe('00'.repeat(32));
@@ -41,17 +41,17 @@ describe('compiler-integrated message-bus SCB1 route', () => {
   it('rejects malformed controller bytecode at compilation', () => {
     expect(() => compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: 'not-hex',
-      experimentalMessageBusControllerCategory: '00'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: 'not-hex',
+      messageBusControllerCategory: '00'.repeat(32),
     })).toThrow(/hex-encoded locking bytecode/);
   });
 
   it('requires the unique controller category together with its locking bytecode', () => {
     expect(() => compileString(SOURCE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: '51',
-    })).toThrow(/32-byte experimentalMessageBusControllerCategory/);
+      hiddenBatch: true,
+      messageBusController: '51',
+    })).toThrow(/32-byte messageBusControllerCategory/);
   });
 });

@@ -53,9 +53,9 @@ const DIRECT_OPTIONS = { solidityImportCompat: true, ecrecover: 'p2pkh' };
 const BUS_OPTIONS = {
   ...DIRECT_OPTIONS,
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: CONTROLLER_LBC,
-  experimentalMessageBusControllerCategory: CONTROLLER_CATEGORY,
+  hiddenBatch: true,
+  messageBusController: CONTROLLER_LBC,
+  messageBusControllerCategory: CONTROLLER_CATEGORY,
 };
 
 /* ---------------------------------------------------------------------------------------------------- */

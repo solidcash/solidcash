@@ -35,11 +35,11 @@ function warningsOf(fn: () => void): string[] {
 const CONTROLLER_LBC = `aa20${'11'.repeat(32)}87`;
 const CONTROLLER_CATEGORY = '22'.repeat(32);
 const DIRECT = { solidityImportCompat: true, ecrecover: 'p2pkh' as const };
-const HIDDEN_BATCH = { ...DIRECT, forceStateful: true, experimentalHiddenBatch: true };
+const HIDDEN_BATCH = { ...DIRECT, forceStateful: true, hiddenBatch: true };
 const CONTROLLER = {
   ...HIDDEN_BATCH,
-  experimentalMessageBusController: CONTROLLER_LBC,
-  experimentalMessageBusControllerCategory: CONTROLLER_CATEGORY,
+  messageBusController: CONTROLLER_LBC,
+  messageBusControllerCategory: CONTROLLER_CATEGORY,
 };
 
 /**

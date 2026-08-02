@@ -245,9 +245,9 @@ async function buildStrideCase(cell: Cell): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(
     hubSource(cell.emitting, cell.transferring !== false, cell.noteEmits !== false, cell.wideFire === true), options,

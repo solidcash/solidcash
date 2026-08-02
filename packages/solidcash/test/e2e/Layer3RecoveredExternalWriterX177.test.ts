@@ -73,7 +73,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 const PROBE_RESULT = '9e'.repeat(32);
@@ -123,8 +123,8 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
     const controllerCategory = genesis.categoryId as string;
     const map = compileFileMulti(EXTERNAL, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never) as any;
 
     const barBase = new Contract(map.Bar, [], { provider });
@@ -331,8 +331,8 @@ describe('X177: `Foo.callBar`, the recovered external-call writer with an admiss
   it('X201: `Foo.callBar` is admitted again, with its edge bound rather than unseen', () => {
     const map = compileFileMulti(EXTERNAL, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     const artifact = map.Foo;
     const handlers = artifact.hiddenBatch!.handlers as any[];

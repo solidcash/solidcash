@@ -142,9 +142,9 @@ async function buildOccurrenceGraph(rows: number, tamper: Tamper = 'none'): Prom
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const handlerArtifact = compileString(POINTER_TARGET, options);
   const brands = Array.from({ length: rows }, (_, index) => BigInt(index + 2));
@@ -434,9 +434,9 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
   it('refuses an occurrence count above the published ceiling with a stable diagnostic', () => {
     const artifact = compileString(RUNTIME_SIZED_TABLE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const root = { artifact, lockingBytecode: '51' };
     expect(() => layer3.deriveCompiledGraphPlan({
@@ -464,9 +464,9 @@ describe('Layer-3 occurrence ordering and exact exhaustion (SEMANTIC)', () => {
   it('refuses an over-count for a rolled loop whose source bounds the trip count', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
 interface IFoo { function bar(uint value); }
@@ -507,9 +507,9 @@ contract PlainTarget() {
   it('rejects an unbounded external-call loop with the exact structured diagnostic', () => {
     const options = {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
 interface IFoo { function bar(uint value); }

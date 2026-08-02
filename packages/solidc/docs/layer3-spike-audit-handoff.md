@@ -29,7 +29,7 @@ contract, NOT wired into the compiler/SDK beyond the one experimental seam.
 - Worktree `.worktrees/layer3-binding-spike`, branch `codex/layer3-binding-spike`, based on `3ead8954`.
 - 23 `spike(bus)` commits, `2e9db17e` .. `1143f340`. The only non-test source change is the pre-existing
   compiler seam (commit `645f91aa`): a public handler named exactly `__layer3_bind`, under BOTH
-  `experimentalHiddenBatch` and `experimentalLayer3BindingSpike`, bypasses ONE SCB1 eligibility rejection
+  `hiddenBatch` and `__testLayer3BindingSpike`, bypasses ONE SCB1 eligibility rejection
   (route-sensitive introspection). Every other SCB1 gate still applies. No default capability, selector,
   or metadata is emitted. VERIFY this seam is as narrow as claimed - it is the only production-surface
   change, and it must not be generalizable to arbitrary handler names or enabled by default.

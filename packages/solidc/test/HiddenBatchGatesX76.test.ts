@@ -17,11 +17,11 @@ import { compileString } from '../src/compiler.js';
  * Every case pairs the admitted shape with a control that differs in one field and is still refused.
  */
 
-const batch = { forceStateful: true, experimentalHiddenBatch: true };
+const batch = { forceStateful: true, hiddenBatch: true };
 const graph = {
   ...batch,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 const verdicts = (source: string, options: object = graph): Map<string, string> => {

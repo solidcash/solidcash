@@ -90,7 +90,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** A distinctive placeholder result: the probe run declares it, so the trace's OTHER operand is the real one. */
@@ -205,8 +205,8 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after tr
     for (const row of ROWS) {
       const artifact = compileFile(row.file, {
         ...BUS,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
+        messageBusController: `aa20${'11'.repeat(32)}87`,
+        messageBusControllerCategory: '22'.repeat(32),
       } as never) as any;
       const handlers = artifact.hiddenBatch!.handlers as any[];
       const eligible = handlers.filter((handler) => handler.eligible).map((handler) => handler.name);
@@ -253,8 +253,8 @@ describe('X136: recovered routes run to completion - Set A, and MyToken after tr
     const controllerCategory = genesis.categoryId as string;
     const artifact = compileFile(row.file, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never) as any;
     const base = new Contract(artifact, [], { provider });
     const setup = await setupStatefulUtxos(provider, base, artifact.stateLayout!, row.state);

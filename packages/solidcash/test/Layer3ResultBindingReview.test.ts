@@ -16,9 +16,9 @@ import { layer3 } from '../src/index.js';
 // for their expectation, which flipped from accepted to the exact diagnostic.
 const options = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 const MIS_CONSUMER = `pragma solidcash >=0.8.0;

@@ -68,10 +68,10 @@ describe('Release 0 SCB1 compiler cost regression', () => {
     // This instrument measures the incremental SCB1 route cost against the
     // physical/direct route, so its control must explicitly select that route
     // now that hidden batching is the compiler default.
-    const direct = compileString(CALLEE, { forceStateful: true, experimentalHiddenBatch: false });
+    const direct = compileString(CALLEE, { forceStateful: true, hiddenBatch: false });
     const batch = compileString(CALLEE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
 
     expect({
@@ -90,10 +90,10 @@ describe('Release 0 SCB1 compiler cost regression', () => {
   });
 
   it('pins the exact two-row ERC20 resource route footprint', () => {
-    const direct = compileString(ERC20_CALLEE, { forceStateful: true, experimentalHiddenBatch: false });
+    const direct = compileString(ERC20_CALLEE, { forceStateful: true, hiddenBatch: false });
     const batch = compileString(ERC20_CALLEE, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
 
     expect(batch.hiddenBatch).toMatchObject({ minimumRows: 2, maximumRows: 2 });
@@ -146,7 +146,7 @@ contract Ledger() {
    * the direct route compiles. Both spellings must now publish one route, byte for byte.
    */
   it('publishes the same SCB1 route for both spellings of a self-reached entry write', () => {
-    const options = { forceStateful: true, experimentalHiddenBatch: true };
+    const options = { forceStateful: true, hiddenBatch: true };
     const dotted = compileString(LEDGER, options);
     const bare = compileString(LEDGER.replace(/this\.balances\[/g, 'balances['), options);
     expect(dotted.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
@@ -171,7 +171,7 @@ contract Ledger() {
    * the one that goes red if the normalization ever produces a route by a different path.
    */
   it('publishes one identical SCB1 route for both spellings of a two-alternative entry write', () => {
-    const options = { forceStateful: true, experimentalHiddenBatch: true };
+    const options = { forceStateful: true, hiddenBatch: true };
     const move = `pragma solidcash >=0.8.0;
 contract Ledger() {
   mapping(bytes20 => bigint) balances;
@@ -215,10 +215,14 @@ contract Ledger() {
   ])(
     'pins A comparator growth for %i zero-argument rows',
     (rows, directBytes, batchBytes, covenantDeltaBytes, expandedOpcodes) => {
-      const direct = compileString(caller(rows), { forceStateful: true });
+      const direct = compileString(caller(rows), {
+        forceStateful: true,
+        hiddenBatch: false,
+        repeatedExternalBatch: false,
+      });
       const batch = compileString(caller(rows), {
         forceStateful: true,
-        experimentalRepeatedExternalBatch: true,
+        repeatedExternalBatch: true,
       });
 
       expect({

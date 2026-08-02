@@ -48,7 +48,7 @@ describe('transcript-v1 static refusal classes', () => {
       contract SignatureRefusal() {
         function signed(sig s, pubkey pk) public { require(checkSig(s, pk)); }
         function open() public { require(true); }
-      }`, { forceStateful: true, experimentalHiddenBatch: true });
+      }`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
       eligible: false,
       rejectionReason: 'transaction-signature-route-binding-required',

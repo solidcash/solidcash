@@ -92,7 +92,7 @@ async function deploy(options: { calleeBatch?: boolean } = {}) {
   const provider = createTestProvider();
   const calleeArtifact = compileString(CALLEE, {
     forceStateful: true,
-    experimentalHiddenBatch: options.calleeBatch ?? true,
+    hiddenBatch: options.calleeBatch ?? true,
   });
   const calleeInner = new Contract(calleeArtifact, [], { provider });
   const { categoryId: calleeCategory } = await setupStatefulUtxos(
@@ -102,7 +102,7 @@ async function deploy(options: { calleeBatch?: boolean } = {}) {
 
   const callerArtifact = compileString(CALLER, {
     forceStateful: true,
-    experimentalRepeatedExternalBatch: true,
+    repeatedExternalBatch: true,
   });
   const calleeAddress = calleeInner.withCategory(hexToBin(calleeCategory)).lockingBytecode;
   const callerInner = new Contract(callerArtifact, [calleeAddress], { provider });
@@ -129,7 +129,7 @@ async function deployFixedArray() {
       function check(bigint index, bigint expected) public {
         require(this.slots[index] == expected);
       }
-    }`, { forceStateful: true, experimentalHiddenBatch: true });
+    }`, { forceStateful: true, hiddenBatch: true });
   const calleeInner = new Contract(calleeArtifact, [], { provider });
   const { categoryId: calleeCategory } = await setupStatefulUtxos(
     provider, calleeInner, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -165,7 +165,7 @@ async function deployFixedArray() {
         IFixedArrayTarget(target).set(secondIndex, 11);
         require(true);
       }
-    }`, { forceStateful: true, experimentalRepeatedExternalBatch: true });
+    }`, { forceStateful: true, repeatedExternalBatch: true });
   const callerInner = new Contract(
     callerArtifact, [calleeInner.withCategory(hexToBin(calleeCategory)).lockingBytecode], { provider },
   );
@@ -181,12 +181,12 @@ async function deployFixedArray() {
 describe('Release 5 repeated external callee batch SDK E2E', () => {
   it.each([
     [2, 'run', [2n, 3n], {
-      transactionBytes: 3656,
+      transactionBytes: 4291,
       inputs: [
         {
-          hashes: 19, instructions: 1118, maximumOperationCost: 910400,
-          operationCost: 129362, peakStackBytes: 1671, peakStackItems: 12,
-          pushedBytes: 13880, unlockingBytes: 1097,
+          hashes: 28, instructions: 1136, maximumOperationCost: 1418400,
+          operationCost: 134141, peakStackBytes: 1727, peakStackItems: 12,
+          pushedBytes: 15131, unlockingBytes: 1732,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
@@ -206,12 +206,12 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       ],
     }],
     [3, 'runTriple', [2n, 3n, 4n], {
-      transactionBytes: 3684,
+      transactionBytes: 4319,
       inputs: [
         {
-          hashes: 19, instructions: 1245, maximumOperationCost: 911200,
-          operationCost: 142482, peakStackBytes: 1737, peakStackItems: 13,
-          pushedBytes: 14299, unlockingBytes: 1098,
+          hashes: 28, instructions: 1263, maximumOperationCost: 1419200,
+          operationCost: 147261, peakStackBytes: 1737, peakStackItems: 13,
+          pushedBytes: 15550, unlockingBytes: 1733,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,
@@ -347,12 +347,12 @@ describe('Release 5 repeated external callee batch SDK E2E', () => {
       transactionBytes: encodeTransaction(transaction).length,
       inputs: measured,
     }).toEqual({
-      transactionBytes: 3796,
+      transactionBytes: 4431,
       inputs: [
         {
-          hashes: 19, instructions: 995, maximumOperationCost: 908800,
-          operationCost: 118960, peakStackBytes: 2023, peakStackItems: 10,
-          pushedBytes: 15780, unlockingBytes: 1095,
+          hashes: 28, instructions: 1013, maximumOperationCost: 1416800,
+          operationCost: 123739, peakStackBytes: 2023, peakStackItems: 10,
+          pushedBytes: 17031, unlockingBytes: 1730,
         },
         {
           hashes: 6, instructions: 100, maximumOperationCost: 244800,

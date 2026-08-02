@@ -371,9 +371,9 @@ async function buildA1(rewrite?: Rewrite, physical?: Physical): Promise<BuiltA1>
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const oracleArtifact = compileString(ORACLE, options);

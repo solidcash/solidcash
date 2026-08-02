@@ -45,8 +45,8 @@ describe('C4: composite mapping keys allocate distinct slots', () => {
   });
 
   it('struct-field keys allocate the same slot count as plain-param keys', () => {
-    const struct = compileString(structTwoKeys, { experimentalHiddenBatch: false }).bytecode.length;
-    const param = compileString(paramTwoKeys, { experimentalHiddenBatch: false }).bytecode.length;
+    const struct = compileString(structTwoKeys, { hiddenBatch: false }).bytecode.length;
+    const param = compileString(paramTwoKeys, { hiddenBatch: false }).bytecode.length;
     // Same two-slot covenant; struct-field key loads add only a little code over a bare param load.
     expect(struct / param).toBeGreaterThan(0.9);
     expect(struct / param).toBeLessThan(1.15);
@@ -522,9 +522,9 @@ describe('C1/piece-7: a compiler-synthesized delegatecall pins its co-spend too'
 describe('X16: the graph-mode exclusion does not disarm an ordinary entry point', () => {
   const graphOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-    experimentalMessageBusControllerCategory: '22'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `aa20${'11'.repeat(32)}87`,
+    messageBusControllerCategory: '22'.repeat(32),
   };
   const CONDITIONAL = `pragma solidcash >=0.8.0;
     contract GraphDelegateProxy(address impl) { bigint counter;
@@ -583,7 +583,7 @@ describe('C3: own-category mutable-NFT conservation loop', () => {
   it('emits the conservation loop for a plain data-NFT function', () => {
     const bc = compileString(
       'contract C { int n; function inc() external { this.n = this.n + 1; require(true); } }',
-      { experimentalHiddenBatch: false },
+      { hiddenBatch: false },
     ).bytecode;
     expect(bc).toContain(SIG);
   });

@@ -12,9 +12,9 @@ import { scriptToBytecode } from '@solidcash/utils';
 
 const BUS_BASE = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: 'aa'.repeat(35),
-  experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: 'aa'.repeat(35),
+  messageBusControllerCategory: 'ab'.repeat(32),
 } as never;
 
 const SBE = `${process.env.SBE_ROOT ?? '/Code/solidity-by-example'}/contracts/src`;
@@ -50,9 +50,9 @@ async function attempt(mutation: Mutation): Promise<Attempt> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const fixtureArtifacts: any = compileFileMulti(FIXTURE, {

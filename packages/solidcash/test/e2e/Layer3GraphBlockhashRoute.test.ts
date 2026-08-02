@@ -99,9 +99,9 @@ async function attempt(mutation: Mutation): Promise<string> {
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const callerArtifact = compileString(CALLER, options);
   const targetArtifact = compileString(TARGET, options);

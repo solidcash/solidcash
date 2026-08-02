@@ -28,7 +28,7 @@ describe('bounded fixed-array collection iteration on the Layer-3 route', () => 
     builder: TransactionBuilder; call: any; inner: Contract; categoryId: string;
   }> => {
     const provider = createTestProvider();
-    const artifact = compileString(source, { forceStateful: true, experimentalHiddenBatch: true });
+    const artifact = compileString(source, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },

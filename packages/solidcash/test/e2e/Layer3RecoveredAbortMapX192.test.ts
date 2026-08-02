@@ -66,7 +66,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 const CONTROLLER_GENESIS_TXID = 'c0'.repeat(32);
@@ -140,8 +140,8 @@ describe('X192: the EnglishAuction abort, mapped through the route source map', 
     if (!compiled.has(cacheKey)) {
       const map = compileFileMulti(FILE, {
         ...BUS,
-        experimentalMessageBusController: controllerLockingBytecode,
-        experimentalMessageBusControllerCategory: controllerCategory,
+        messageBusController: controllerLockingBytecode,
+        messageBusControllerCategory: controllerCategory,
       } as never) as any;
       const artifact = map[CONTRACT];
       if (artifact === undefined) throw new Error(`${CONTRACT} did not compile in bus mode`);

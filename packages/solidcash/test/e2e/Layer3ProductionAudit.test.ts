@@ -12,8 +12,8 @@ async function fixture(): Promise<any> {
   const spec: layer3.TranscriptSpec = { participants: 2, resources: [{ owner: 0 }] };
   const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalLayer3BindingSpike: true,
+    hiddenBatch: true,
+    __testLayer3BindingSpike: true,
   });
   const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
   const participants: layer3.TranscriptParticipant[] = [];
@@ -100,8 +100,8 @@ describe('layer-3 production audit probes (findings now CLOSED - fail-closed reg
     const spec: layer3.TranscriptSpec = { participants: 2 };
     const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalLayer3BindingSpike: true,
+      hiddenBatch: true,
+      __testLayer3BindingSpike: true,
     });
     const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
     const parts: any[] = [];

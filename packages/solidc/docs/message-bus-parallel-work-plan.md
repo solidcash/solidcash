@@ -1945,7 +1945,7 @@ bytecode changes, 0 `invocationAnalysis` changes - and C5 measured that this has
 than assuming it.** The reason is precise: `analyseContractInvocations` runs at `compiler.ts:2003`, **after**
 `SymbolTableTraversal` at 1880, so the published footprint is post-resolution where a bare `m[k]` is **already** a
 `MappingAccessNode` and was never wrong. The changed call sites are the **pre-resolution** ones, all hidden-batch
-synthesis, and **no corpus file compiles with `experimentalHiddenBatch`**.
+synthesis, and **no corpus file compiles with `hiddenBatch`**.
 
 **X20 - the auxiliary half was keying a POSITION off a WIDTH.** `deriveBalancedAssemblyFromInputs` claimed the
 sidecar region only when `cursor + participants + 1 === totalSlots - 1`, and both auxiliary checks iterate that

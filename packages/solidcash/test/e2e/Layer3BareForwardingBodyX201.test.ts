@@ -77,9 +77,9 @@ const VECTOR_EXHAUSTED = 'Program called an OP_SPLIT operation with an invalid i
 
 const BUS_OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: 'aa'.repeat(35),
-  experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: 'aa'.repeat(35),
+  messageBusControllerCategory: 'ab'.repeat(32),
 } as never;
 
 type Shape = 'cast-bare' | 'receiver-bare' | 'write-then-call';
@@ -112,9 +112,9 @@ async function attempt(shape: Shape, edge: Edge): Promise<Attempt> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   const calleeArtifact: any = compileString(CALLEE, options);

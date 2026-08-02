@@ -33,7 +33,7 @@ async function deploy() {
   const provider = createTestProvider();
   const artifact = compileString(SOURCE, {
     forceStateful: true,
-    experimentalHiddenBatch: true,
+    hiddenBatch: true,
   });
   const contract = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
@@ -91,7 +91,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
         }
         function check(int expected) public { require(this.accepted == expected); }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [oraclePub], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { accepted: 0n }, { saltContract: true },
@@ -120,7 +120,7 @@ describe('Release 4 hidden owner-local batch SDK E2E', () => {
           this.calls = this.calls + 1;
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { calls: 0n },
@@ -204,7 +204,7 @@ describe('Release 4 mapping-backed owner-local batch SDK E2E', () => {
           require(this.values[key] == expected);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -257,7 +257,7 @@ describe('Release 4 ordered event batch SDK E2E', () => {
         }
         function check(bigint expected) public { require(this.current == expected); }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { current: 0n }, { saltContract: true },
@@ -290,7 +290,7 @@ describe('Release 4 ordered result batch SDK E2E', () => {
         }
         function check(bigint expected) public { require(this.total == expected); }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
@@ -342,7 +342,7 @@ describe('Release 4 ordered result batch SDK E2E', () => {
         function text(string value) public pure returns (string) { return string.concat(value, "!"); }
         function record(bigint n) public pure returns (Pair) { return Pair(n, n > 0); }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -388,7 +388,7 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
           require(msg.value == -amount && amount >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -428,7 +428,7 @@ describe('Release 4 ordered value-effect batch SDK E2E', () => {
           require(msg.value == -amount && amount >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
 
     // A fresh deployment per submission, so the control and the attack differ in the forged byte and in
     // nothing else - not in a spent container, not in carried state.
@@ -505,7 +505,7 @@ describe('Release C bounded dynamic-resource batch', () => {
           require(next.length >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch?.route.blockLayout?.trailingCapacity).toBe(64);
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
@@ -548,7 +548,7 @@ describe('Release C bounded dynamic-resource batch', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { values: [] }, { saltContract: true },
@@ -573,7 +573,7 @@ describe('Release C bounded dynamic-resource batch', () => {
           this.calls = this.calls + 1;
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },
@@ -632,7 +632,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
           require(payload.length > 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },
@@ -674,7 +674,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
           return this.total;
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { total: 0n }, { saltContract: true },
@@ -716,7 +716,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { current: 0n }, { saltContract: true },
@@ -756,7 +756,7 @@ describe('Release 4 output-substitution adversarial gate', () => {
           require(amount >= 0);
         }
       }
-    `, { forceStateful: true, experimentalHiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, {}, { saltContract: true },

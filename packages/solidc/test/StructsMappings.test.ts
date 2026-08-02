@@ -149,22 +149,22 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;`
       + ' function f(bool c, uint256 k, uint256 v) external { mapping(uint256=>uint256) storage m = L.ch(a,b,c);'
       + ' this.r = m[k]; m[k] = v; require(true); } }', {
-      solidityImportCompat: true, experimentalHiddenBatch: false,
+      solidityImportCompat: true, hiddenBatch: false,
     });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;'
       + ' function f(bool c, uint256 k, uint256 v) external { bool __c = c; this.r = __c ? a[k] : b[k];'
       + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', {
-      solidityImportCompat: true, experimentalHiddenBatch: false,
+      solidityImportCompat: true, hiddenBatch: false,
     });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
       + ' function g(bool c, uint256 k) external view returns (uint256) { return L.ch(a,b,c)[k]; } }',
-    { solidityImportCompat: true, experimentalHiddenBatch: false });
+    { solidityImportCompat: true, hiddenBatch: false });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
       + ' function g(bool c, uint256 k) external view returns (uint256) { return c ? a[k] : b[k]; } }',
-    { solidityImportCompat: true, experimentalHiddenBatch: false });
+    { solidityImportCompat: true, hiddenBatch: false });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -471,10 +471,10 @@ describe('struct-array element array-field write (X[i].c[j] = v)', () => {
   it('is byte-identical to the explicit whole-element RMW (sound by reduction)', () => {
     const P = `contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`;
     const sugar = compileString(`${P}s[0].c[1]=9;require(s[0].c[1]==9);}}`, {
-      solidityImportCompat: true, experimentalHiddenBatch: false,
+      solidityImportCompat: true, hiddenBatch: false,
     });
     const hand = compileString(`${P}S t=s[0];t.c[1]=9;s[0]=t;require(s[0].c[1]==9);}}`, {
-      solidityImportCompat: true, experimentalHiddenBatch: false,
+      solidityImportCompat: true, hiddenBatch: false,
     });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });

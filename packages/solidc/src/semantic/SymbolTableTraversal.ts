@@ -1820,13 +1820,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A graph SCB1 route invokes compiler-owned clones whose foreign calls are authenticated against the
       // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
       // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
-      if (node.hiddenBatchRoute && this.compilerOptions.experimentalMessageBusController) {
+      if (node.hiddenBatchRoute && this.compilerOptions.messageBusController) {
         externalCallSlots.length = 0;
       }
 
       if (externalCallSlots.length > 0) {
         const logicalCallSlots = [...externalCallSlots];
-        if (this.compilerOptions.experimentalRepeatedExternalBatch) {
+        if (this.compilerOptions.repeatedExternalBatch) {
           const directCalls = new Set<ExternalFunctionCallNode>();
           for (const statement of node.body.statements ?? []) {
             if (statement instanceof FunctionCallStatementNode
@@ -1873,13 +1873,17 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           const repeated = [...byTarget.values()].filter((group) => group.length > 1);
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          if (knownRepeated.length > 1) {
+          const requireRepeatedExternalBatch =
+            (this.compilerOptions as CompilerOptions & { __requireRepeatedExternalBatch?: boolean })
+              .__requireRepeatedExternalBatch === true;
+          if (knownRepeated.length > 1 && requireRepeatedExternalBatch) {
             throw new Error(
               `Function '${node.name}' repeats ${knownRepeated.length} external state owners; `
               + 'Release 5 supports exactly one repeated callee owner per root invocation',
             );
           }
-          if (knownRepeated.length === 1 && repeated.length === 0) {
+          if (knownRepeated.length === 1 && repeated.length === 0
+            && requireRepeatedExternalBatch) {
             const chain = knownRepeated[0].map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> ');
             throw new Error(
@@ -8739,8 +8743,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         // variant (preserves the callee's commitments). The `{value:}`/`{gas:}` forms keep the existing weak
         // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
         const graphRawValueCall = node.methodName === 'call'
-          && this.compilerOptions.experimentalHiddenBatch
-          && this.compilerOptions.experimentalMessageBusController
+          && this.compilerOptions.hiddenBatch
+          && this.compilerOptions.messageBusController
           && node.callOptions?.value !== undefined
           && node.callOptions.gas === undefined && node.callOptions.salt === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
@@ -8989,8 +8993,8 @@ export default class SymbolTableTraversal extends AstTraversal {
    * a non-address receiver is left alone for its own diagnostic.
    */
   private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): Node | undefined {
-    const messageBusGraphMode = !!this.compilerOptions.experimentalHiddenBatch
-      && !!this.compilerOptions.experimentalMessageBusController;
+    const messageBusGraphMode = !!this.compilerOptions.hiddenBatch
+      && !!this.compilerOptions.messageBusController;
     if (!messageBusGraphMode) return undefined;
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
     if (node.callOptions) return undefined;

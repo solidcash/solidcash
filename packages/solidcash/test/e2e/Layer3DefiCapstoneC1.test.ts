@@ -280,9 +280,9 @@ async function buildC1(
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
 
   // Compile leaf-first: every caller pins its callee's instantiated locking bytecode as a constructor argument.
@@ -1032,9 +1032,9 @@ describe('C1 DeFi integrated semantic capstone', () => {
 describe('C1 admissibility boundaries the composition was shaped around', () => {
   const boundaryOptions = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-    experimentalMessageBusControllerCategory: 'ab'.repeat(32),
+    hiddenBatch: true,
+    messageBusController: `76a914${'11'.repeat(20)}88ac`,
+    messageBusControllerCategory: 'ab'.repeat(32),
   };
   const rejectionOf = (source: string): string => {
     const artifact = compileString(source, boundaryOptions);

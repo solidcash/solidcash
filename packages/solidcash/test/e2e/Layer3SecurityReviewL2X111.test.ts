@@ -231,9 +231,9 @@ async function buildGuardGraph(spec: Spec): Promise<Built> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const VAULT_SOURCES = {
     sender: VAULT_SENDER,
@@ -551,9 +551,9 @@ describe('L2 review of X111 - is the gate a soundness fix or a client-side lint?
 
 const BUS_OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 } as const;
 
 const ROUTER_LBC = `aa20${'33'.repeat(32)}87`;

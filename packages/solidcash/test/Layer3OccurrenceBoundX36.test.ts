@@ -18,9 +18,9 @@ import { layer3 } from '../src/index.js';
  */
 const OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 const CALLER = `pragma solidcash >=0.8.0;
@@ -94,7 +94,7 @@ contract X36RepeatedCaller() {
 
 const caller = compileString(CALLER, OPTIONS);
 const callee = compileString(CALLEE, OPTIONS);
-const repeated = compileString(REPEATED_CALLER, { ...OPTIONS, experimentalRepeatedExternalBatch: true });
+const repeated = compileString(REPEATED_CALLER, { ...OPTIONS, repeatedExternalBatch: true });
 
 const clone = (artifact: Artifact): any => JSON.parse(JSON.stringify(artifact));
 const callsitesOf = (artifact: Artifact, name: string): any[] =>

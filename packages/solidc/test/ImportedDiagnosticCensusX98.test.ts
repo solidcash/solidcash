@@ -72,11 +72,11 @@ function compileCapturing(source: string, imported: boolean): string[] {
         path === './C.sol' ? { source, id: '/C.sol' } : undefined);
       compileString('pragma solidity ^0.8.20;\nimport "./C.sol";\ncontract Root is C {}\n', {
         solidityImportCompat: true, rootFileId: '/main.sol', importResolver: resolver,
-        experimentalHiddenBatch: false,
+        hiddenBatch: false,
       });
     } else {
       compileString(source, {
-        solidityImportCompat: true, rootFileId: '/main.sol', experimentalHiddenBatch: false,
+        solidityImportCompat: true, rootFileId: '/main.sol', hiddenBatch: false,
       });
     }
   } catch {

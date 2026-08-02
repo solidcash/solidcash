@@ -41,7 +41,7 @@ function makeParticipant(n: number): string {
 async function measure(n: number): Promise<{ n: number; ratioPct: number; instr: number; txBytes: number }> {
   const provider = createTestProvider();
   const artifact = compileString(makeParticipant(n), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

@@ -20,7 +20,7 @@ const raw = (b: TransactionBuilder): string => binToHex(encodeTransaction(b.buil
 async function setup(n: number): Promise<any> {
   const provider = createTestProvider();
   const artifact = compileString(layer3.generateControllerBoundCovenant(n, CONTROLLER_CATEGORY), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

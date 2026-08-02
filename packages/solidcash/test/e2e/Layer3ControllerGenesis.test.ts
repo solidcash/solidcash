@@ -29,7 +29,7 @@ async function setupRealController(n: number): Promise<any> {
   const ctrlCat: string = genesis.categoryId;
   // 3. Participant covenant bakes the controller category AND exact lbc.
   const artifact = compileString(layer3.generateControllerBoundCovenant(n, ctrlCat, ctrlLbc), {
-    forceStateful: true, experimentalHiddenBatch: true, experimentalLayer3BindingSpike: true,
+    forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
   });
   const route = artifact.hiddenBatch!.route;
   const sel = hexToBin(artifact.hiddenBatch!.selector);

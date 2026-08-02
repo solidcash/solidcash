@@ -136,9 +136,9 @@ function compileApplicationRow(row: CensusRow): { artifact?: any; error?: string
       solidityImportCompat: true,
       ecrecover: 'p2pkh',
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never);
     result = { artifact, seconds: (Date.now() - started) / 1000 };
   } catch (error) {
@@ -395,9 +395,9 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
           solidityImportCompat: true,
           ecrecover: 'p2pkh',
           forceStateful: true,
-          experimentalHiddenBatch: true,
-          experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-          experimentalMessageBusControllerCategory: '22'.repeat(32),
+          hiddenBatch: true,
+          messageBusController: `aa20${'11'.repeat(32)}87`,
+          messageBusControllerCategory: '22'.repeat(32),
         } as never);
       } catch (error) {
         uncompilable.push(`${subject.corpus}/${subject.contractName}: `
@@ -603,9 +603,9 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
         solidityImportCompat: true,
         ecrecover: 'p2pkh',
         forceStateful: true,
-        experimentalHiddenBatch: true,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
+        hiddenBatch: true,
+        messageBusController: `aa20${'11'.repeat(32)}87`,
+        messageBusControllerCategory: '22'.repeat(32),
       } as never);
       console.log(`[F3] ${artifact.contractName}: blockSize=${artifact.hiddenBatch!.route.blockLayout!.blockSize}`);
       for (const handler of artifact.hiddenBatch!.handlers) {
@@ -634,9 +634,9 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
     const bus = {
       ...direct,
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     let reached = 0;
     for (const target of named) {
@@ -696,9 +696,9 @@ describe('F3 census: how much of the real corpora can reach the bus at all', () 
       solidityImportCompat: true,
       ecrecover: 'p2pkh',
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     };
     const directOptions = { solidityImportCompat: true, ecrecover: 'p2pkh' };
     const headOf = (error: unknown): string =>
@@ -1056,9 +1056,9 @@ describe('F3 measured: one real corpus contract, built as a participant and run 
       solidityImportCompat: true,
       ecrecover: 'p2pkh',
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      hiddenBatch: true,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never);
     // The one-slot rule is re-checked against the compiler, because a row the census recorded as one-slot can
     // compile to a wider block now and building it without seeding the sidecar UTXOs fails further down with

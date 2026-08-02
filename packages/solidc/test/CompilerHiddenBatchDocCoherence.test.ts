@@ -317,7 +317,7 @@ describe('compiler-hidden-batch-v1.md resource tables agree with the tests they 
   });
 
   it('refuses by name rather than checking a subset when the pinned transactions change shape', () => {
-    const halved = release5Text.replace(/transactionBytes:\s*3796/, 'transactionBytesRenamed: 3796');
+    const halved = release5Text.replace(/transactionBytes:\s*4431/, 'transactionBytesRenamed: 4431');
     expect(() => findings(docText, batchCostText, halved))
       .toThrow(/expected exactly 3 pinned transactions .* read 2/s);
   });

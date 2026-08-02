@@ -85,7 +85,7 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 /** A distinctive placeholder result: the probe declares it, so the trace's OTHER operand is the real one. */
@@ -260,8 +260,8 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     for (const row of ROWS) {
       const map = compileFileMulti(row.file, {
         ...BUS,
-        experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-        experimentalMessageBusControllerCategory: '22'.repeat(32),
+        messageBusController: `aa20${'11'.repeat(32)}87`,
+        messageBusControllerCategory: '22'.repeat(32),
       } as never) as any;
       const artifact = map[row.contract];
       expect(artifact, `${row.contract} did not compile in bus mode`).toBeDefined();
@@ -325,8 +325,8 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
     const controllerCategory = genesis.categoryId as string;
     const map = compileFileMulti(row.file, {
       ...BUS,
-      experimentalMessageBusController: controller.lockingBytecode,
-      experimentalMessageBusControllerCategory: controllerCategory,
+      messageBusController: controller.lockingBytecode,
+      messageBusControllerCategory: controllerCategory,
     } as never) as any;
     const artifact = map[row.contract];
     const base = new Contract(artifact, [], { provider });
@@ -597,8 +597,8 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   function preCommitmentsOf(row: Row): string[] {
     const map = compileFileMulti(row.file, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     return buildInitialStateCommitments(map[row.contract].stateLayout!, row.pre);
   }
@@ -612,8 +612,8 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
   const mutates = (row: Row) => async (): Promise<void> => {
     const map = compileFileMulti(row.file, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     const layout = map[row.contract].stateLayout!;
     const computed = await covenantPostState(row);
@@ -733,8 +733,8 @@ describe('X177: the recovered writers whose shape Counter.inc does not cover', (
       it(`MEASURED: ${row.key} is deterministically EXCLUDED - fail-closed, not an exploit`, () => {
         const artifact = compileFileMulti(row.file, {
           ...BUS,
-          experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-          experimentalMessageBusControllerCategory: '22'.repeat(32),
+          messageBusController: `aa20${'11'.repeat(32)}87`,
+          messageBusControllerCategory: '22'.repeat(32),
         } as never)[row.contract] as any;
         expect(artifact.hiddenBatch.handlers.find((handler: any) => handler.name === row.writer)).toMatchObject({
           eligible: false,

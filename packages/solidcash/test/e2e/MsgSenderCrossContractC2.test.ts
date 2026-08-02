@@ -49,7 +49,7 @@ describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], ca
     const artCaller = compileString(CALLER, { forceStateful: true });
     const artCallerWithBatchExperiment = compileString(CALLER, {
       forceStateful: true,
-      experimentalRepeatedExternalBatch: true,
+      repeatedExternalBatch: true,
     });
     expect(artCallerWithBatchExperiment.debug?.bytecode).toBe(artCaller.debug?.bytecode);
     expect(artCallerWithBatchExperiment.abi[0].externalCalls?.[0].batchInvocations)

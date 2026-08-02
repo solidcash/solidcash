@@ -69,14 +69,14 @@ const BUS = {
   solidityImportCompat: true,
   ecrecover: 'p2pkh',
   forceStateful: true,
-  experimentalHiddenBatch: true,
+  hiddenBatch: true,
 };
 
 function compileAttack(controllerLbc: unknown, controllerCategory: string): any {
   return compileFile(TX_ORIGIN, {
     ...BUS,
-    experimentalMessageBusController: controllerLbc,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    messageBusController: controllerLbc,
+    messageBusControllerCategory: controllerCategory,
   } as never);
 }
 
@@ -130,8 +130,8 @@ describe('X136: the one WRITER the L2-F2 repair recovered', () => {
   it('MEASURED: `Wallet` is excluded from the bus with a named fail-closed diagnostic', () => {
     const map = compileFileMulti(TX_ORIGIN, {
       ...BUS,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     } as never) as any;
     const wallet = map.Wallet;
     expect(wallet, 'Wallet did not compile in bus mode').toBeDefined();

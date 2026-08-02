@@ -188,9 +188,9 @@ async function buildEffectSubstitution(cell: Cell): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(hubSource(
     cell.emitting, cell.transferring === true, cell.pointerTable === true,
@@ -444,9 +444,9 @@ async function buildSiblingOnlyBatch(drain: boolean): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(hubSource(false, true), options);
   const hubBase = new Contract(hubArtifact, [], { provider });
@@ -608,9 +608,9 @@ async function buildSec8ContainerBatch(drain: boolean): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(sec8HubSource, options);
   const hubBase = new Contract(hubArtifact, [], { provider });
@@ -830,9 +830,9 @@ async function buildSec9EventBatch(mode: Sec9Mode): Promise<{
   } = await createGraphAuthority(provider);
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const hubArtifact = compileString(sec9HubSource(true), options);
   const hubBase = new Contract(hubArtifact, [], { provider });
@@ -1041,9 +1041,9 @@ const byteRefusals = (rawTx: string): string[] =>
 
 const BUS_OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `76a914${'11'.repeat(20)}88ac`,
-  experimentalMessageBusControllerCategory: 'cd'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `76a914${'11'.repeat(20)}88ac`,
+  messageBusControllerCategory: 'cd'.repeat(32),
 };
 
 // The mock network's consensus decider owns every broadcast refusal below. Keep the node-facing half named
@@ -1297,7 +1297,7 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);
     const flattened = compileString(sec9HubSource(false), {
       forceStateful: true,
-      experimentalHiddenBatch: true,
+      hiddenBatch: true,
     });
     expect(flattened.hiddenBatch).toBeUndefined();
     const uniform = compileString(sec9HubSource(true), BUS_OPTIONS);
@@ -1432,7 +1432,7 @@ ${reading ? '    require(this.tokens[category].tokenAmount >= value);' : ''}
   // The refusal is on the drop, not on the bus: the same handler under a PLAIN hidden batch (no message-bus
   // controller, so no graph handler at all) drops the transfer identically and is refused identically.
   it('refuses the same drop on a plain hidden batch, with no message bus involved', () => {
-    const plain = { forceStateful: true, experimentalHiddenBatch: true };
+    const plain = { forceStateful: true, hiddenBatch: true };
     const source = `pragma solidcash >=0.8.0;
 contract PlainTokenBatch() {
   int calls;
@@ -1464,7 +1464,7 @@ contract TokenContainerReadBatch() {
     this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
     this.calls = this.calls + 1;
   }
-}`, { forceStateful: true, experimentalHiddenBatch: true });
+}`, { forceStateful: true, hiddenBatch: true });
     expect(artifact.hiddenBatch!.route.blockLayout!.slots.map((slot: any) => slot.kind))
       .toEqual(['master', 'dataNft', 'tokenContainer', ...Array.from({ length: 8 }, () => 'tcTransfer')]);
   }, 30_000);

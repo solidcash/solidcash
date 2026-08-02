@@ -14,7 +14,7 @@ describe('Code generation & target code optimisation', () => {
       // surface. Default-on hidden-batch artifacts are covered separately and
       // must not silently rewrite every historical fixture.
       const artifact = compileFile(new URL(`../valid-contract-files/${fixture.fn}`, import.meta.url), {
-        experimentalHiddenBatch: false,
+        hiddenBatch: false,
         ...fixture.compilerOptions,
       });
       // Invocation analysis is additive compiler metadata with dedicated
@@ -27,7 +27,7 @@ describe('Code generation & target code optimisation', () => {
       // selection is not part of the historical artifact contract.
       const legacyArtifact = JSON.parse(JSON.stringify(artifact));
       delete legacyArtifact.invocationAnalysis;
-      delete legacyArtifact.compiler.options.experimentalHiddenBatch;
+      delete legacyArtifact.compiler.options.hiddenBatch;
       // fingerprint is a deterministic hash of the (separately asserted) bytecode, so match its presence
       expect(legacyArtifact).toEqual({
         ...fixture.artifact, updatedAt: expect.any(String), fingerprint: expect.any(String),

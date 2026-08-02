@@ -204,9 +204,9 @@ async function buildDynGuardGraph(spec: Spec): Promise<Built> {
   const controllerCategory = genesis.categoryId as string;
   const options = {
     forceStateful: true,
-    experimentalHiddenBatch: true,
-    experimentalMessageBusController: controller.lockingBytecode,
-    experimentalMessageBusControllerCategory: controllerCategory,
+    hiddenBatch: true,
+    messageBusController: controller.lockingBytecode,
+    messageBusControllerCategory: controllerCategory,
   };
   const honestArtifact = compileString(DYN_GUARD, options);
   const dynBase = new Contract(honestArtifact, [], { provider });
@@ -419,9 +419,9 @@ const SCALAR_GUARD = `pragma solidcash >=0.8.0;
 
 const PROBE_OPTIONS = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 } as const;
 
 const ROUTER_LBC = `aa20${'33'.repeat(32)}87`;
@@ -507,9 +507,9 @@ describe('X138 - X146 closes the dynamic residual at consensus', () => {
   it('the subject is a read-only emission clone on a CHUNK-BACKED slot, so this is X111\'s residual', () => {
     const artifact = compileString(DYN_GUARD, {
       forceStateful: true,
-      experimentalHiddenBatch: true,
-      experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-      experimentalMessageBusControllerCategory: '22'.repeat(32),
+      hiddenBatch: true,
+      messageBusController: `aa20${'11'.repeat(32)}87`,
+      messageBusControllerCategory: '22'.repeat(32),
     });
     const clone = artifact.invocationAnalysis!.functions.find((entry) => entry.name === CLONE);
     expect(clone).toBeDefined();

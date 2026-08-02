@@ -7,9 +7,9 @@ const COMPILE_TIMEOUT_MS = 60_000;
 
 const busOptions = {
   forceStateful: true,
-  experimentalHiddenBatch: true,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  hiddenBatch: true,
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 const plainOptions = { forceStateful: true };
 const solidityBusOptions = { ...busOptions, solidityImportCompat: true };

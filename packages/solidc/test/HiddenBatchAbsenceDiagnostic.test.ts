@@ -14,11 +14,11 @@ import { compileString } from '../src/compiler.js';
 
 const DIAGNOSTIC_CODE = 'hidden-batch-route-not-synthesized';
 
-const batchOnly = { forceStateful: true, experimentalHiddenBatch: true };
+const batchOnly = { forceStateful: true, hiddenBatch: true };
 const graph = {
   ...batchOnly,
-  experimentalMessageBusController: `aa20${'11'.repeat(32)}87`,
-  experimentalMessageBusControllerCategory: '22'.repeat(32),
+  messageBusController: `aa20${'11'.repeat(32)}87`,
+  messageBusControllerCategory: '22'.repeat(32),
 };
 
 const caller = (body: string): string => `pragma solidcash >=0.8.0;
@@ -52,7 +52,7 @@ describe('X15 hidden-batch route absence is stated, not silent', () => {
 
   it('tells the user what to do instead of the refused shape', () => {
     expect(absenceDiagnostics(stateWriteAndCall, batchOnly)[0].message)
-      .toContain('supply experimentalMessageBusController with its experimentalMessageBusControllerCategory');
+      .toContain('supply messageBusController with its messageBusControllerCategory');
   });
 
   /**
@@ -117,7 +117,7 @@ contract X15NoEntry() {
   });
 
   it('stays quiet when hidden-batch synthesis is explicitly disabled', () => {
-    const options = { forceStateful: true, experimentalHiddenBatch: false };
+    const options = { forceStateful: true, hiddenBatch: false };
     expect(compileString(stateWriteAndCall, options).hiddenBatch).toBeUndefined();
     expect(absenceDiagnostics(stateWriteAndCall, options)).toHaveLength(0);
   });

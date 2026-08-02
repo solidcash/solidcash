@@ -1522,6 +1522,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     routeWitnesses: readonly FunctionArgument[] = [],
     internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
     blockBase = 0,
+    emitReturn = false,
+    returnBlob?: Uint8Array,
   ): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
@@ -1608,9 +1610,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         abiFunction: effectiveRoute,
         compilerRouteSelector: routeSelector,
         blockBase,
+        emitReturn,
+        returnBlob,
       }),
       this as unknown as StatefulContract, '__scb1', routeArgs,
-      { abiFunction: effectiveRoute, selector: routeSelector, blockBase },
+      { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob },
     );
   }
 
@@ -6329,6 +6333,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
+      /** Controllerless composition's provisional/final SCB1 return-event commitment. */
+      returnBlob?: Uint8Array;
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
@@ -6426,12 +6432,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
     // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
     let returnEmitOutputIndex = -1;
+    let returnEmitBlockOffset = -1;
     if (overrides?.emitReturn && (abiFunction?.outputs?.length ?? 0) > 0) {
       const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
       if (!slot) {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
-      returnEmitOutputIndex = slot.offset;
+      returnEmitBlockOffset = slot.offset;
+      returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
       // X12/X56. A delegated call's return event is verified by the IMPLEMENTATION (emitReturnEventCovenant-
       // Verification is gated `!functionHasDelegatecall`), which resolves EVERY output-only slot
       // implementation-relative - its event and its own returnEvent alike. When the implementation also emits,
@@ -9180,7 +9188,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // implementation-relative position available. A plain send materializes no return event, so only the
       // layout slot moves there - the witness stays -1 and the covenant skips the check entirely.
       if (delegateReturnEventOffset !== undefined && returnEmitOutputIndex >= 0) {
-        returnEmitOutputIndex = delegateReturnEventOffset;
+        returnEmitBlockOffset = delegateReturnEventOffset;
+        returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
       }
       const denseCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
@@ -9983,7 +9992,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0
       && externalCallUtxoGroups.length === 0
-      && externalOutStateUtxoGroups.length === 0;
+      && externalOutStateUtxoGroups.length === 0
+      && returnEmitOutputIndex < 0;
 
     // A provably read-only getter (compiler writesState=false) produces output state == input state, so the
     // builder reproduces the input commitments (empty stateUpdates) and the multi-pass derivation probe is pure
@@ -10057,7 +10067,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 emit: derive the encoded return value (the covenant compares it to the return-event output
     // commitment) and set it, replacing the placeholder.
     if (returnEmitOutputIndex >= 0) {
-      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
+      const blob = overrides?.returnBlob
+        ?? this._deriveReturnBlob(builder, returnEmitBlockOffset, delegatecallInputIndex ?? 0);
       if (!blob) {
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
@@ -10097,6 +10108,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
     return commitments && commitments.length > 0 ? hexToBin(commitments[0]) : undefined;
+  }
+
+  /** @internal Extract a participant's covenant-authored SCB1 return-event commitment from a complete bus tx. */
+  _layer3ReturnBlobFromTransaction(
+    builder: TransactionBuilder, returnOutputIndex: number, inputIndex: number,
+  ): Uint8Array | undefined {
+    const transaction = builder.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+    const trace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
+      inputIndex, sourceOutputs, transaction,
+    }) as AuthenticationProgramStateCommon[];
+    const commitments = extractCommitmentsFromTrace(trace, 1, {
+      min: returnOutputIndex, max: returnOutputIndex + 1,
+    });
+    return commitments?.[0] === undefined ? undefined : hexToBin(commitments[0]);
   }
 
   /**
@@ -11040,7 +11066,10 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
-  private compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number };
+  private compilerRoute?: {
+    abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number;
+    emitReturn?: boolean; returnBlob?: Uint8Array;
+  };
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -11063,7 +11092,10 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
-    compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number },
+    compilerRoute?: {
+      abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number;
+      emitReturn?: boolean; returnBlob?: Uint8Array;
+    },
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
     // (e.g. when withExternalCall() causes send() to rebuild from scratch)
@@ -11807,6 +11839,8 @@ export class StatefulFunctionCall {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
             blockBase: this.compilerRoute.blockBase,
+            emitReturn: this.compilerRoute.emitReturn,
+            returnBlob: this.compilerRoute.returnBlob,
           }),
         },
       );
@@ -11890,6 +11924,8 @@ export class StatefulFunctionCall {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
             blockBase: this.compilerRoute.blockBase,
+            emitReturn: this.compilerRoute.emitReturn,
+            returnBlob: this.compilerRoute.returnBlob,
           }),
         },
       );
@@ -11923,6 +11959,8 @@ export class StatefulFunctionCall {
               abiFunction: this.compilerRoute.abiFunction,
               compilerRouteSelector: this.compilerRoute.selector,
               blockBase: this.compilerRoute.blockBase,
+              emitReturn: this.compilerRoute.emitReturn,
+              returnBlob: this.compilerRoute.returnBlob,
             }),
           },
         );

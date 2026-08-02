@@ -1,4 +1,5 @@
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin } from '@bitauth/libauth';
+import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
   Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -128,14 +129,6 @@ export class SingleTxBusComposition {
         );
       }
     });
-    const returning = plan.invocations.find((invocation) => invocation.resultTypes.length > 0);
-    if (returning) {
-      throw new Error(
-        `layer3: L3_COMPOSE_RESULT_UNIMPLEMENTED at invocation ${returning.index}; `
-        + 'canonical result derivation must complete before returning calls are composed',
-      );
-    }
-
     const byLockingBytecode = new Map<string, StatefulContract>();
     for (const descriptor of descriptors) {
       byLockingBytecode.set(descriptor.contract.inner.lockingBytecode.toLowerCase(), descriptor.contract);
@@ -145,48 +138,119 @@ export class SingleTxBusComposition {
       if (!contract?.categoryId) throw new Error('layer3: every participant must have a resolved master category');
       return contract.categoryId;
     });
-    const finalized = finalizeSingleTxInvocationGraph(plan, categories);
-    const aggregate = new TransactionBuilder({ provider });
+    const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
+    const provisionalResults = Object.fromEntries(returning.map((invocation) => [invocation.index, '00']));
+    let finalized = finalizeSingleTxInvocationGraph(plan, categories, provisionalResults);
 
-    for (const participant of plan.participants) {
-      const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
-      const blockSize = participant.blockLayout!.blockSize;
-      const local = await contract
-        ._batchRaw(
-          participant.batch.blob,
-          participant.batch.routeWitnesses as FunctionArgument[],
-          participant.routeInputs.some((input) => input.name === '__internal__graphEmissions')
-            ? graphRouteContext(finalized, participant.participant) : {},
-          finalized.layout.participantInputs[participant.participant],
-        )
-        .build();
-      if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
+    const participantReturnBlob = (
+      participant: number, results: Readonly<Record<number, string>>,
+    ): Uint8Array | undefined => {
+      const vector = plan.participants[participant].invocations
+        .filter((invocation) => plan.invocations[invocation].resultTypes.length > 0)
+        .map((invocation) => results[invocation] ?? '')
+        .join('');
+      return vector.length === 0 ? undefined : scriptToBytecode([hexToBin(vector)]);
+    };
+
+    const assemble = async (
+      graph: ReturnType<typeof finalizeSingleTxInvocationGraph>,
+      results: Readonly<Record<number, string>>,
+    ): Promise<TransactionBuilder> => {
+      const aggregate = new TransactionBuilder({ provider });
+
+      for (const participant of plan.participants) {
+        const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+        const blockSize = participant.blockLayout!.blockSize;
+        const returnBlob = participantReturnBlob(participant.participant, results);
+        const local = await contract
+          ._batchRaw(
+            participant.batch.blob,
+            participant.batch.routeWitnesses as FunctionArgument[],
+            participant.routeInputs.some((input) => input.name === '__internal__graphEmissions')
+              ? graphRouteContext(graph, participant.participant) : {},
+            graph.layout.participantInputs[participant.participant],
+            returnBlob !== undefined,
+            returnBlob,
+          )
+          .build();
+        if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
+          throw new Error(
+            `layer3: participant ${participant.participant} built ${local.inputs.length}/${local.outputs.length} `
+            + `slots, expected balanced block size ${blockSize}`,
+          );
+        }
+        aggregate.addInputs(local.inputs);
+        aggregate.addOutputs(local.outputs as Output[]);
+      }
+
+      aggregate.inputs[0] = {
+        ...aggregate.inputs[0],
+        unlocker: withSingleTxCarrier(aggregate.inputs[0].unlocker as never, graph.transcript),
+      };
+      aggregate.addInputs([feeFunder]);
+      aggregate.addBchChangeOutputIfNeeded({
+        to: this.options.changeAddress,
+        feeRate: this.options.feeRate ?? 1,
+      });
+      if (aggregate.inputs.length !== graph.layout.totalSlots
+        || aggregate.outputs.length !== graph.layout.totalSlots) {
         throw new Error(
-          `layer3: participant ${participant.participant} built ${local.inputs.length}/${local.outputs.length} `
-          + `slots, expected balanced block size ${blockSize}`,
+          'layer3: composed transaction is not balanced at the fee tail '
+          + `(${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs)`,
         );
       }
-      aggregate.addInputs(local.inputs);
-      aggregate.addOutputs(local.outputs as Output[]);
-    }
-
-    aggregate.inputs[0] = {
-      ...aggregate.inputs[0],
-      unlocker: withSingleTxCarrier(aggregate.inputs[0].unlocker as never, finalized.transcript),
+      return aggregate;
     };
-    aggregate.addInputs([feeFunder]);
-    aggregate.addBchChangeOutputIfNeeded({
-      to: this.options.changeAddress,
-      feeRate: this.options.feeRate ?? 1,
-    });
-    if (aggregate.inputs.length !== finalized.layout.totalSlots
-      || aggregate.outputs.length !== finalized.layout.totalSlots) {
+
+    if (returning.length > 0) {
+      let claimedResults: Readonly<Record<number, string>> = provisionalResults;
+      for (let pass = 0; pass <= plan.invocations.length; pass += 1) {
+        finalized = finalizeSingleTxInvocationGraph(plan, categories, claimedResults);
+        const provisional = await assemble(finalized, claimedResults);
+        const derivedResults: Record<number, string> = {};
+        for (const participant of plan.participants) {
+          const owned = participant.invocations.filter(
+            (invocation) => plan.invocations[invocation].resultTypes.length > 0,
+          );
+          if (owned.length === 0) continue;
+          const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
+          if (!returnSlot) throw new Error(`layer3: returning participant ${participant.participant} has no return slot`);
+          const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+          const blob = contract._layer3ReturnBlobFromTransaction(
+            provisional,
+            finalized.layout.participantInputs[participant.participant] + returnSlot.offset,
+            finalized.layout.participantInputs[participant.participant],
+          );
+          if (!blob) throw new Error(`layer3: participant ${participant.participant} did not expose its return vector`);
+          const outer = decodePushdataValue(blob, 0, 'bytes');
+          if (!(outer.value instanceof Uint8Array) || outer.bytesConsumed !== blob.length) {
+            throw new Error(`layer3: participant ${participant.participant} exposed a non-canonical return vector`);
+          }
+          let cursor = 0;
+          for (const invocationIndex of owned) {
+            const invocation = plan.invocations[invocationIndex];
+            const start = cursor;
+            for (const type of invocation.resultTypes) {
+              cursor += decodePushdataValue(outer.value, cursor, type, participant.artifact.structs).bytesConsumed;
+            }
+            derivedResults[invocationIndex] = binToHex(outer.value.slice(start, cursor));
+          }
+          if (cursor !== outer.value.length) {
+            throw new Error(`layer3: participant ${participant.participant} return vector has an unchecked suffix`);
+          }
+        }
+        let stable = true;
+        for (const invocation of returning) {
+          if (derivedResults[invocation.index] !== claimedResults[invocation.index]) stable = false;
+        }
+        if (stable) return provisional;
+        claimedResults = derivedResults;
+      }
       throw new Error(
-        'layer3: composed transaction is not balanced at the fee tail '
-        + `(${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs)`,
+        `layer3: L3_RESULT_DERIVATION_DID_NOT_CONVERGE after ${plan.invocations.length + 1} bounded passes`,
       );
     }
-    return aggregate;
+    return assemble(finalized, provisionalResults);
   }
 
   /** Build the complete transaction without broadcasting; all signatures are generated from this final shape. */

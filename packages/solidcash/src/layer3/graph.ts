@@ -250,7 +250,7 @@ export function finalizeSingleTxInvocationGraph(
   );
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
-    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft'].includes(slot.kind))
+    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft', 'returnEvent'].includes(slot.kind))
       || participant.artifact.hiddenBatch?.handlers.some((handler) =>
         (handler.emits?.length ?? 0) > 0 || (handler.transfers?.length ?? 0) > 0
         || (handler.tokenContainerAccesses?.length ?? 0) > 0);

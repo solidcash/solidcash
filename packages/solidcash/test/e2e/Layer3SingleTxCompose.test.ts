@@ -4,21 +4,25 @@ import {
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
+import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 const CALLEE = `contract ComposeCallee() {
   int counter;
-  function settle(int next) public { this.counter = next; require(true); }
+  function settle(int next) public returns (int) {
+    this.counter = next;
+    return next + 1;
+  }
 }`;
 
 const CALLER = `
-interface IComposeCallee { function settle(int next); }
+interface IComposeCallee { function settle(int next) returns (int); }
 contract ComposeCaller(address callee) {
   function prepare(int next) public {
-    IComposeCallee(callee).settle(next);
-    require(true);
+    int result = IComposeCallee(callee).settle(next);
+    require(result == next + 1);
   }
 }`;
 
@@ -26,7 +30,8 @@ const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
 const mutateInputZero = (
-  builder: TransactionBuilder, selectorHex: string, target: 'carrier' | 'emissions',
+  builder: TransactionBuilder, selectorHex: string,
+  target: 'carrier' | 'emissions' | 'carrier-result',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -38,16 +43,30 @@ const mutateInputZero = (
         const instructionIndex = instructions.findIndex((instruction, index) => {
           if (!('data' in instruction)) return false;
           const hex = binToHex(instruction.data);
-          return target === 'carrier'
+          return target === 'carrier' || target === 'carrier-result'
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
         if (instructionIndex < 0) throw new Error(`test could not locate ${target} frame`);
         const instruction = instructions[instructionIndex];
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
+        if (target === 'carrier-result') {
+          const transcript = decodeSingleTxCarrier(instruction.data);
+          const rowIndex = transcript.rows.findIndex((row) => row.resultHex.length > 0);
+          if (rowIndex < 0) throw new Error('test could not locate a returning carrier row');
+          const result = hexToBin(transcript.rows[rowIndex].resultHex);
+          result[result.length - 1] ^= 0x01;
+          const rows = transcript.rows.map((row, index) => index === rowIndex
+            ? { ...row, resultHex: binToHex(result) } : row);
+          instructions[instructionIndex] = {
+            ...instruction, data: encodeSingleTxCarrier({ ...transcript, rows }),
+          };
+          return encodeAuthenticationInstructions(instructions);
+        }
         const data = instruction.data.slice();
-        const selectorOffset = binToHex(data).indexOf(selectorHex) / 2;
-        data[selectorOffset] ^= 0x01;
+        const fieldOffset = binToHex(data).lastIndexOf(selectorHex) / 2;
+        if (fieldOffset < 0) throw new Error(`test could not locate ${target} field`);
+        data[fieldOffset] ^= 0x01;
         instructions[instructionIndex] = { ...instruction, data };
         return encodeAuthenticationInstructions(instructions);
       },
@@ -90,13 +109,31 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     }).build()).rejects.toThrow(/canonical fee tail must be a bare P2PKH input/);
     const built = await composition.build();
-    expect(built.inputs).toHaveLength(4);
-    expect(built.outputs).toHaveLength(4);
+    expect(built.inputs).toHaveLength(5);
+    expect(built.outputs).toHaveLength(5);
     for (const mutation of ['carrier', 'emissions'] as const) {
       const hostile = await composition.build();
       mutateInputZero(hostile, calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!, mutation);
       await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
     }
+    const hostileTranscriptResult = await composition.build();
+    mutateInputZero(
+      hostileTranscriptResult,
+      calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!,
+      'carrier-result',
+    );
+    await expect(provider.sendRawTransaction(raw(hostileTranscriptResult))).rejects.toThrow();
+
+    const hostileReturnOutput = await composition.build();
+    const returnOutput = hostileReturnOutput.outputs.find((output) =>
+      output.token?.category === calleeSetup.categoryId
+      && output.token.nft?.capability === 'none');
+    if (!returnOutput?.token?.nft) throw new Error('test could not locate the callee return-event output');
+    const commitment = hexToBin(returnOutput.token.nft.commitment);
+    expect(commitment.length).toBeGreaterThan(1);
+    commitment[commitment.length - 1] ^= 0x01;
+    returnOutput.token.nft.commitment = binToHex(commitment);
+    await expect(provider.sendRawTransaction(raw(hostileReturnOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect((await callee.getState()).counter).toBe(7n);
   }, 120_000);

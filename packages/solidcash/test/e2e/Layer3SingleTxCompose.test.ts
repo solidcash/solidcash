@@ -137,4 +137,61 @@ describe('layer3.compose controllerless transaction', () => {
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect((await callee.getState()).counter).toBe(7n);
   }, 120_000);
+
+  it('converges nested authenticated returns across an A-to-B-to-C graph', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const leafArtifact = compileString(`contract ComposeLeaf() {
+      function leaf(int value) public pure returns (int) { return value * 2; }
+    }`, { forceStateful: true });
+    const leafBase = new Contract(leafArtifact, [], { provider });
+    const leafSetup = await setupStatefulUtxos(
+      provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const leafInner = leafBase.withCategory(hexToBin(leafSetup.categoryId));
+    const leaf = StatefulContract.withCategory(leafInner, leafSetup.categoryId);
+
+    const middleArtifact = compileString(`
+      interface IComposeLeaf { function leaf(int value) returns (int); }
+      contract ComposeMiddle(address leafAddress) {
+        function middle(int value) public returns (int) {
+          int doubled = IComposeLeaf(leafAddress).leaf(value);
+          return doubled + 3;
+        }
+      }
+    `, { forceStateful: true });
+    const middleBase = new Contract(middleArtifact, [leafInner.lockingBytecode], { provider });
+    const middleSetup = await setupStatefulUtxos(
+      provider, middleBase, middleArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const middleInner = middleBase.withCategory(hexToBin(middleSetup.categoryId));
+    const middle = StatefulContract.withCategory(middleInner, middleSetup.categoryId);
+
+    const rootArtifact = compileString(`
+      interface IComposeMiddle { function middle(int value) returns (int); }
+      contract ComposeRoot(address middleAddress) {
+        function root(int value) public {
+          int result = IComposeMiddle(middleAddress).middle(value);
+          require(result == value * 2 + 3);
+        }
+      }
+    `, { forceStateful: true });
+    const rootBase = new Contract(rootArtifact, [middleInner.lockingBytecode], { provider });
+    const rootSetup = await setupStatefulUtxos(
+      provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const root = StatefulContract.withCategory(
+      rootBase.withCategory(hexToBin(rootSetup.categoryId)), rootSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = layer3.compose({
+      calls: [root.call.root(11n), middle.call.middle(11n), leaf.call.leaf(11n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    expect(built.inputs).toHaveLength(built.outputs.length);
+    expect(built.inputs.length).toBeGreaterThanOrEqual(6);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
 });

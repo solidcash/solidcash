@@ -9872,8 +9872,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         } else if ((this.inner.provider as any).addUtxo) {
           const dummyFunders: UnlockableUtxo[] = [];
           for (let i = 0; i < neededFunders; i++) {
+            // Controllerless participants are assembled independently before their balanced blocks are joined.
+            // Namespace synthetic funders by the compiler-derived absolute block base so two output-only slots
+            // can never reuse one outpoint in the aggregate transaction.
+            const syntheticOutpoint = 0xf0 + (overrides?.blockBase ?? 0) * 0x100 + i;
             const dummy: Utxo = {
-              txid: '00'.repeat(28) + (0xf0 + i).toString(16).padStart(8, '0'),
+              txid: '00'.repeat(28) + syntheticOutpoint.toString(16).padStart(8, '0'),
               vout: 0,
               satoshis: 3000n,
             };

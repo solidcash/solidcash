@@ -72,6 +72,10 @@ const graphRouteContext = (
     uint16(owner.settlementBoundary),
   ]);
   return Object.freeze({
+    __internal__returnOutputIdx: BigInt(
+      finalized.transcript.participants[participant].returnOutput === 0xffff
+        ? -1 : finalized.transcript.participants[participant].returnOutput,
+    ),
     __internal__graphBlockSize: BigInt(execution.blockLayout!.blockSize),
     __internal__graphEmissions: concat(...emissions),
     __internal__graphCallers: concat(...callers),

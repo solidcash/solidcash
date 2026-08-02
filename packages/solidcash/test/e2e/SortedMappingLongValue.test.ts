@@ -1,7 +1,7 @@
 /* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, utf8ToBin, bigIntToVmNumber, sha256 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, getValueChunkAddress } from '../../src/index.js';
 import { buildValueChunkCommitment, splitValueIntoValueChunks } from '@solidcash/utils';

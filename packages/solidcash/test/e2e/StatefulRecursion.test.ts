@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate, MockNetworkProvider } from '../../src/index.js';
 import { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

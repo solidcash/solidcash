@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import type { Artifact } from '@solidcash/utils';
 import {
   Contract, ContractFactory, Signer, getContractFactory, upgrades,

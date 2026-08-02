@@ -1,7 +1,7 @@
 // Scalar-state + control-flow behavior pins: conditional re-writes, switch/loop/early-return writes,
 // if-branch locals, return-in-loop entry points.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 

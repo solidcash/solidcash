@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin, vmNumberToBigInt,
 } from '@bitauth/libauth';

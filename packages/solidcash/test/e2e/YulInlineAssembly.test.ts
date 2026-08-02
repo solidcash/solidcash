@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, MockNetworkProvider, TransactionBuilder } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';

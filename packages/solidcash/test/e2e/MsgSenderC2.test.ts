@@ -1,6 +1,6 @@
 /* eslint-disable max-len */
 import { describe, it, expect, beforeAll } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { vmNumberToBigInt } from '@bitauth/libauth';
 import { Contract, StatefulContract, Signer, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';

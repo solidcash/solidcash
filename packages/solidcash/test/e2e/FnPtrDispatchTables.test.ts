@@ -1,7 +1,7 @@
 // Function-pointer ARRAY dispatch tables: fixed-method, state-selected, varying-method, received-value;
 // broadcast (loop spelling) + Solidity single-element call semantics.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';

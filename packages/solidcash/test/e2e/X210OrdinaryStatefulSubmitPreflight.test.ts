@@ -1,7 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import { asmToBytecode } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
 } from '../../src/index.js';

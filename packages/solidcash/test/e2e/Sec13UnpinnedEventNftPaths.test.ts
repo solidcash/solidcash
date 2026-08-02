@@ -1,6 +1,6 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Artifact, buildEventNftCovenantScript, buildInitialStateCommitments, computeEventNameHash,
   parsePushdataCommitment,

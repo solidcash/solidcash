@@ -1,7 +1,7 @@
 // Solidity behavioral parity pins (VM-run, invisible to the compile-only bench): function types, array
 // bounds/defaults, panics/short-circuit, internal fn-ptr memory arrays and state vars.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory, Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import { fundedSigner, createTestProvider } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';

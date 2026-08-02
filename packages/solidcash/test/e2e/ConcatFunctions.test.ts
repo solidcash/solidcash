@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';

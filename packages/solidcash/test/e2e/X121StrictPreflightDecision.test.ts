@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { binToHex, createVirtualMachineBch2026 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { describe, expect, it } from 'vitest';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, StatefulContract, TransactionBuilder,

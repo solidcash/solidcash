@@ -1,7 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
 import {

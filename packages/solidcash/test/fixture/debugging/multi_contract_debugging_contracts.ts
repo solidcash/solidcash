@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../../direct-compile.js';
 
 const SAME_NAME_DIFFERENT_PATH = `
 contract SameNameDifferentPath(int a) {

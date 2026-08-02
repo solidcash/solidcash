@@ -1,6 +1,6 @@
 import { binToHex, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, StatefulContract, TransactionBuilder, getEventNftAddress, readEventsFromChain,
 } from '../../src/index.js';

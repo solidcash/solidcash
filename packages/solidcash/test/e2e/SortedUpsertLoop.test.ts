@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';

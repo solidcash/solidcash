@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 
 // SOUNDNESS + CLARITY: the C2 diff-key insert-in-loop RANGE-SPLICE covenant pins each new node's value to
 // 0x01/empty (loop-invariant bool), because it walks the SORTED output chain and cannot map a chain position back

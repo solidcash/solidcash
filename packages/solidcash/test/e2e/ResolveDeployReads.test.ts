@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { StatefulContract, resolveDeployReads } from '../../src/index.js';
 
 // A contract whose constructor reads token0()/token1() from a pool - hoisted to deploy inputs

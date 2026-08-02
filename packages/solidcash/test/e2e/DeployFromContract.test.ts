@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {

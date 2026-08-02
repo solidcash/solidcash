@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { asmToBytecode } from '@solidcash/utils';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,

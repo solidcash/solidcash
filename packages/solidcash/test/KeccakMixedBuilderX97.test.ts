@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import {
   keccakComputeLockingBytecode, KECCAK256_SHARED_SALT, KECCAK256_COMPUTE_COVENANT_HASH,
 } from '@solidcash/utils';

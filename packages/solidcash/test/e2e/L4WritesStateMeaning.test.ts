@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { describe, expect, it, beforeAll } from 'vitest';
 import type { Artifact, AbiFunction } from '@solidcash/utils';
 import { StatefulContract } from '../../src/index.js';

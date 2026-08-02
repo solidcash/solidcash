@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { hexToBin } from '@bitauth/libauth';
 import { alicePkh, bobPkh, carolPkh } from '../fixture/vars.js';

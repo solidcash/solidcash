@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
-Tracking baseline: working tree after `d81368a5` (`feat(layer3): compose controllerless blockhash oracles`)
-Overall verified progress: **74 / 100 points (74%)**
+Tracking baseline: `b990c482` (`refactor(layer3): retire controller-era corpus`)
+Overall verified progress: **82 / 100 points (82%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -25,13 +25,13 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | --- | ---: | ---: | --- |
 | 0. Baseline and requirements | 5 | 5 | Complete |
 | 1. Codec and layout | 10 | 10 | Complete |
-| 2. Compiler mutual verifier | 15 | 13 | In progress |
-| 3. One-transaction composer | 15 | 14 | In progress |
+| 2. Compiler mutual verifier | 15 | 15 | Complete |
+| 3. One-transaction composer | 15 | 15 | Complete |
 | 4. Semantic completeness | 30 | 30 | Complete |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
-| 6. Removal and API stabilization | 7 | 2 | In progress |
+| 6. Removal and API stabilization | 7 | 7 | Complete |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **74** | **74%** |
+| **Total** | **100** | **82** | **82%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -60,8 +60,8 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **3 points:** Invocation rows are bound to local SCB1 execution and exact result consumption.
 - [x] **2 points:** Structural carrier and participant mutations are rejected in the BCH-2026 VM.
 - [x] **2 points:** Resource/effect rows have exact physical cardinality checks and local ownership binding.
-- [ ] **1 point:** Graph participation is fully inferred for every admitted family without explicit controller admission.
-- [ ] **1 point:** Controller/projection verifier parameters and semantic fallbacks are absent from production routes.
+- [x] **1 point:** Graph participation is fully inferred for every admitted family without explicit controller admission.
+- [x] **1 point:** Controller/projection verifier parameters and semantic fallbacks are absent from production routes.
 
 ## Phase 3 — SDK one-transaction composer (14/15)
 
@@ -71,7 +71,7 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **2 points:** Transcript and transaction structure are finalized before signatures are produced.
 - [x] **2 points:** `layer3.compose({ calls, funder, changeAddress }).send()` broadcasts without setup execution.
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
-- [ ] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
+- [x] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
 
 ## Phase 4 — semantic completeness (30/30)
 
@@ -129,14 +129,14 @@ positive capstones and hostile row/physical-output mutations.
 
 Controller-era capacity reports do not satisfy these items.
 
-## Phase 6 — removal and API stabilization (2/7)
+## Phase 6 — removal and API stabilization (7/7)
 
-- [ ] **2 points:** Controller genesis, controller NFT, execution-root, and projection implementation are deleted.
+- [x] **2 points:** Controller genesis, controller NFT, execution-root, and projection implementation are deleted.
 - [x] **1 point:** `messageBusController` and `messageBusControllerCategory` are absent from compiler and artifact APIs.
-- [ ] **1 point:** Compatibility paths cannot silently select the old protocol.
+- [x] **1 point:** Compatibility paths cannot silently select the old protocol.
 - [x] **1 point:** `__testLayer3BindingSpike` and semantic bypasses are removed from production code.
-- [ ] **1 point:** Public documentation and examples exclusively teach one-transaction composition.
-- [ ] **1 point:** Retained tests use inferred behavior; obsolete controller tests are deleted or explicitly archived.
+- [x] **1 point:** Public documentation and examples exclusively teach one-transaction composition.
+- [x] **1 point:** Retained tests use inferred behavior; obsolete controller tests are deleted or explicitly archived.
 
 ## Phase 7 — completion audit (0/10)
 
@@ -174,6 +174,7 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | working tree | 72% | Delegate execution is fail-closed: entry handlers publish a positioned stable refusal, internal delegate closures fail before synthetic arity lowering, and forged SDK delegate modes remain rejected. Phase 4 is complete. |
 | 2026-08-02 | working tree | 73% | Removed controller identity options and artifact fields plus controller-conditioned route generation/semantic selection; all builds/lints and the complete 19-case controllerless suite pass. |
 | 2026-08-02 | working tree | 74% | Removed the production `__testLayer3BindingSpike` eligibility bypass and deleted the isolated controller-era SDK codec/covenant/transcript API island. |
+| 2026-08-02 | `b990c482` | 82% | Removed the remaining controller/projection runtime, canonicalized the fee tail, eliminated controller-mode compiler fallbacks, retired the obsolete corpus, and replaced production API docs with one-transaction composition. |
 
 ## Next percentage milestones
 

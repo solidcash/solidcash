@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend, getContractFactory,

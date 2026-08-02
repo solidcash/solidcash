@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it, beforeAll } from 'vitest';
 import type { Artifact } from '@solidcash/utils';

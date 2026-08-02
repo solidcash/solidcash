@@ -1,7 +1,7 @@
 // Foreign external function-pointer VALUE forms: param, return, state var, storage, struct field,
 // single-method callee, cross-contract pass/return, blob struct, contract-member, member-to-internal.
 import { describe, it, expect } from 'vitest';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';

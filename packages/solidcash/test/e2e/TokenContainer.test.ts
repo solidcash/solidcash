@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-shadow */
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 const providerInputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
   + '\\(Unable to verify transaction: error in evaluating input index 0: '
   + 'Program failed an OP_VERIFY operation\\.\\)$');

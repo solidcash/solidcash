@@ -11051,6 +11051,40 @@ export class StatefulFunctionCall {
     this.compilerRoute = compilerRoute;
   }
 
+  /**
+   * Compiler-owned description consumed by the controllerless Layer-3 composer.
+   *
+   * This deliberately exposes no builder or physical indices: composition derives one SCB1 route per
+   * participant only after the complete logical call graph is known. Calls carrying imperative SDK overrides
+   * are refused because replaying only part of that mutable configuration would silently change semantics.
+   */
+  _layer3CompositionDescriptor(): {
+    contract: StatefulContract;
+    functionName: string;
+    args: readonly FunctionArgument[];
+  } {
+    if (!this.parentContract || this.functionName === undefined || !this.functionArgs) {
+      throw new Error('layer3: composition requires a prepared stateful contract call');
+    }
+    const hasOverrides = this.stateOverrides.length > 0 || this.entryOverrides.length > 0
+      || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0
+      || this.entryDeleteSlots.length > 0 || this.transfers.length > 0
+      || this.tokenContainerTransfers.length > 0 || this.tokenContainerTransferNfts.length > 0
+      || this.extraOutputs.length > 0 || this.manualEvents.length > 0 || this.detachedEvents.length > 0
+      || this.externalCallInfos.length > 0 || this.callInfos.length > 0
+      || this.registryExternalStateOverrides.size > 0 || this.emitReturnFlag
+      || this.containerDepositAmount !== 0n || this.locktimeOverride !== undefined
+      || this.splitFundingConfig !== undefined || this.mergeConfig !== undefined;
+    if (hasOverrides) {
+      throw new Error('layer3: prepared calls with imperative SDK overrides are not composable');
+    }
+    return Object.freeze({
+      contract: this.parentContract,
+      functionName: this.functionName,
+      args: Object.freeze([...(this.functionArgs as FunctionArgument[])]),
+    });
+  }
+
   setState(name: string, value: StateValueType): this;
   setState(values: Record<string, StateValueType>): this;
   setState(

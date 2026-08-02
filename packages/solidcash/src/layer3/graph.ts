@@ -223,6 +223,17 @@ export interface SingleTxEventSlotEffect {
   commitmentHex: string;
 }
 
+export interface SingleTxResourceSlotEffect {
+  participant: number;
+  offset: number;
+  /** Canonical resource-row mode. Resource semantics come from the compiler-published physical slot covenant. */
+  mode: number;
+  lockingBytecodeHex: string;
+  tokenCategoryHex: string;
+  inputCommitmentHex: string;
+  outputCommitmentHex: string;
+}
+
 /** Canonical off-chain commitment to the compiler-authored incoming policy published by an artifact. */
 export function singleTxParticipantPolicyHash(artifact: Artifact): string {
   const handlers = artifact.hiddenBatch?.handlers;
@@ -242,14 +253,12 @@ export function singleTxParticipantPolicyHash(artifact: Artifact): string {
   return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
 }
 
-/**
- * Freeze the invocation-only subset into the controllerless wire format. Effect/resource-bearing graphs are
- * deliberately refused until their typed rows are emitted: accepting them here would produce a partial proof.
- */
+/** Freeze the currently admitted invocation, state-resource, and event families into the controllerless wire. */
 export function finalizeSingleTxInvocationGraph(
   plan: CompiledGraphPlan, masterCategories: readonly string[],
   results: Readonly<Record<number, string>> = {},
   eventEffects: readonly SingleTxEventSlotEffect[] = [],
+  resourceEffects: readonly SingleTxResourceSlotEffect[] = [],
 ): FinalizedSingleTxInvocationGraph {
   if (masterCategories.length !== plan.participants.length) {
     throw new Error('layer3: controllerless master categories must align with participants');
@@ -259,7 +268,9 @@ export function finalizeSingleTxInvocationGraph(
   );
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
-    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft', 'event', 'returnEvent'].includes(slot.kind))
+    return slots.some((slot) => ![
+      'master', 'dataNft', 'readOnlyDataNft', 'entry', 'event', 'returnEvent',
+    ].includes(slot.kind))
       || participant.artifact.hiddenBatch?.handlers.some((handler) =>
         (handler.transfers?.length ?? 0) > 0
         || (handler.tokenContainerAccesses?.length ?? 0) > 0);
@@ -320,6 +331,46 @@ export function finalizeSingleTxInvocationGraph(
       effectHex: '',
     };
   });
+  const resourceKeys = new Set(resourceEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (resourceKeys.size !== resourceEffects.length) {
+    throw new Error('layer3: controllerless resource effects contain a duplicate participant slot');
+  }
+  const resourceRows = [...resourceEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      if (!participant) throw new Error(`layer3: resource effect names participant ${effect.participant}`);
+      const slot = participant.blockLayout!.slots.find((candidate) =>
+        ['dataNft', 'readOnlyDataNft', 'entry'].includes(candidate.kind)
+        && candidate.offset === effect.offset);
+      if (!slot) {
+        throw new Error(`layer3: participant ${effect.participant} has no resource slot ${effect.offset}`);
+      }
+      if (effect.mode !== 0) {
+        throw new Error(`layer3: participant ${effect.participant} resource slot ${effect.offset} has nonzero mode`);
+      }
+      for (const [field, value] of [
+        ['locking bytecode', effect.lockingBytecodeHex], ['token category', effect.tokenCategoryHex],
+        ['input commitment', effect.inputCommitmentHex], ['output commitment', effect.outputCommitmentHex],
+      ] as const) {
+        if (!/^(?:[0-9a-fA-F]{2})*$/.test(value)) {
+          throw new Error(`layer3: participant ${effect.participant} resource ${field} is not byte hex`);
+        }
+      }
+      if (effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')) {
+        throw new Error(`layer3: participant ${effect.participant} resource is not a mutable NFT`);
+      }
+      const absolute = layout.participantInputs[effect.participant] + effect.offset;
+      return {
+        kind: 1, owner: effect.participant, consumer: effect.participant,
+        slot: effect.offset, mode: effect.mode, sourceSlot: absolute, targetSlot: absolute,
+        selectorHex: '00000000', position: effect.offset, parent: 0xffff, depth: 0,
+        subtreeEnd: effect.offset, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
+        argsHex: effect.tokenCategoryHex.toLowerCase(),
+        resultHex: effect.inputCommitmentHex.toLowerCase(),
+        effectHex: effect.outputCommitmentHex.toLowerCase(),
+      };
+    });
   const effectKeys = new Set(eventEffects.map((effect) => `${effect.participant}:${effect.offset}`));
   if (effectKeys.size !== eventEffects.length) {
     throw new Error('layer3: controllerless event effects contain a duplicate participant slot');
@@ -358,7 +409,7 @@ export function finalizeSingleTxInvocationGraph(
         argsHex: '', resultHex: '', effectHex: effect.commitmentHex.toLowerCase(),
       };
     });
-  const rows = [...invocationRows, ...eventRows];
+  const rows = [...invocationRows, ...resourceRows, ...eventRows];
   const transcript = { participants, rows };
   const bytes = encodeSingleTxBusTranscript(transcript);
   return Object.freeze({ plan, layout, transcript, bytes, carrier: encodeSingleTxCarrier(transcript) });

@@ -1,10 +1,13 @@
 import {
-  binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions, encodeTransaction, hexToBin,
+  bigIntToVmNumber, binToHex, decodeAuthenticationInstructions, encodeAuthenticationInstructions,
+  encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
+import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
@@ -31,7 +34,8 @@ const raw = (builder: TransactionBuilder): string =>
 
 const mutateInputZero = (
   builder: TransactionBuilder, selectorHex: string,
-  target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event',
+  target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event' | 'carrier-resource'
+  | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -44,17 +48,37 @@ const mutateInputZero = (
           if (!('data' in instruction)) return false;
           const hex = binToHex(instruction.data);
           return target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
+            || target.startsWith('carrier-resource')
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
         if (instructionIndex < 0) throw new Error(`test could not locate ${target} frame`);
         const instruction = instructions[instructionIndex];
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
-        if (target === 'carrier-result' || target === 'carrier-event') {
+        if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')) {
           const transcript = decodeSingleTxCarrier(instruction.data);
           const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
-            ? row.resultHex.length > 0 : row.kind === 2 && row.effectHex.length > 0);
+            ? row.resultHex.length > 0
+            : row.kind === (target.startsWith('carrier-resource') ? 1 : 2) && row.effectHex.length > 0);
           if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
+          if (target === 'carrier-resource-mode' || target === 'carrier-resource-slot'
+            || target === 'carrier-resource-subject') {
+            const row = transcript.rows[rowIndex];
+            const subject = hexToBin(row.subjectHex);
+            if (target === 'carrier-resource-subject') subject[subject.length - 1] ^= 0x01;
+            const rows = transcript.rows.map((candidate, index) => index === rowIndex
+              ? {
+                ...candidate,
+                ...(target === 'carrier-resource-mode' ? { mode: 1 } : {}),
+                ...(target === 'carrier-resource-slot'
+                  ? { sourceSlot: candidate.sourceSlot - 1, targetSlot: candidate.targetSlot - 1 } : {}),
+                ...(target === 'carrier-resource-subject' ? { subjectHex: binToHex(subject) } : {}),
+              } : candidate);
+            instructions[instructionIndex] = {
+              ...instruction, data: encodeSingleTxCarrier({ ...transcript, rows }),
+            };
+            return encodeAuthenticationInstructions(instructions);
+          }
           const field = hexToBin(target === 'carrier-result'
             ? transcript.rows[rowIndex].resultHex : transcript.rows[rowIndex].effectHex);
           field[field.length - 1] ^= 0x01;
@@ -252,6 +276,78 @@ describe('layer3.compose controllerless transaction', () => {
     const commitment = hexToBin(hostileOutput.outputs[eventOutputIndex].token!.nft!.commitment);
     commitment[commitment.length - 1] ^= 0x01;
     hostileOutput.outputs[eventOutputIndex].token!.nft!.commitment = binToHex(commitment);
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('settles an authenticated mapping entry in a later participant block', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeMappingCallee() {
+      mapping(bigint => bigint) values;
+      function set(bigint key, bigint value) public {
+        this.values[key] = value;
+        require(value >= 0);
+      }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const key = 7n;
+    const slot = keyToSlot(bigIntToVmNumber(key));
+    const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, {}, {
+      saltContract: true,
+      extraOutputs: (categoryId) => [{
+        address: getEntryNftAddress(calleeBase, categoryId, 'values'),
+        satoshis: 10_000n,
+        token: {
+          amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: binToHex(encodeEntryCommitment(slot, new Uint8Array(32), bigIntToVmNumber(11n))),
+          },
+        },
+      }],
+    });
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeMappingCallee { function set(bigint key, bigint value); }
+      contract ComposeMappingCaller(address calleeAddress) {
+        function prepare(bigint key, bigint value) public {
+          IComposeMappingCallee(calleeAddress).set(key, value);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.prepare(key, 77n), callee.call.set(key, 77n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const entryOutput = built.outputs.findIndex((output) =>
+      output.token?.category === calleeSetup.categoryId && output.token.nft?.capability === 'mutable'
+      && output.token.nft.commitment.length >= 128);
+    expect(entryOutput).toBeGreaterThan(0);
+    for (const mutation of [
+      'carrier-resource', 'carrier-resource-mode', 'carrier-resource-slot', 'carrier-resource-subject',
+    ] as const) {
+      const hostileCarrier = await composition.build();
+      mutateInputZero(hostileCarrier, '', mutation);
+      const outcome = await provider.sendRawTransaction(raw(hostileCarrier)).then(() => 'accepted').catch(() => 'rejected');
+      expect(outcome, mutation).toBe('rejected');
+    }
+    const hostileOutput = await composition.build();
+    const commitment = hexToBin(hostileOutput.outputs[entryOutput].token!.nft!.commitment);
+    commitment[commitment.length - 1] ^= 0x01;
+    hostileOutput.outputs[entryOutput].token!.nft!.commitment = binToHex(commitment);
     await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);

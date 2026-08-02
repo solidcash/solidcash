@@ -6648,7 +6648,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // at the entry output is known exactly (inject it), and NEW = k||next||v is minted trailing with its
             // value derived from the trace.
             const present = list.has(slot);
-            const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
+            const wUnlocker = createEntryNftUnlocker(
+              this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+            );
             if (present) {
               entryNfts.push({ ...entryBase, utxo: { ...list.find(slot)!.utxo, unlocker: wUnlocker } });
             } else if (isSoftDelete) {
@@ -6934,7 +6936,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
 
         const exists = !!matchingUtxo;
-        const entryUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, access.collection);
+        const entryUnlocker = createEntryNftUnlocker(
+          this.inner, overrides?.blockBase ?? 0, this.categoryId, access.collection,
+        );
 
         entryNfts.push({
           slotIndex,
@@ -7310,7 +7314,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           throw new Error(`C2 insert loop ${info.collection}: keys span multiple gaps (range-splice needs one gap)`);
         }
       }
-      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const wUnlocker = createEntryNftUnlocker(
+        this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+      );
       const commitments: string[] = [binToHex(encodeEntryCommitment(P.slot, sorted[0], P.value))]; // P'
       for (let j = 0; j < sorted.length; j++) {
         const next = j < sorted.length - 1 ? sorted[j + 1] : P.nextKey;
@@ -7542,7 +7548,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
       }
-      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const wUnlocker = createEntryNftUnlocker(
+        this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
+      );
       // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
       // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
       // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).

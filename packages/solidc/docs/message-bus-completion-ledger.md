@@ -1041,10 +1041,10 @@ declarations needed to type their capture locals; treating a named struct as an 
 is no longer possible. `Layer3CompiledGraphController.test.ts` separately proves that the graph
 controller binds the resulting participant vector and rejects a forged result.
 
-SCB1 remains experimental and its version-1 format has not been frozen or enabled by default; this
-change replaces the earlier inactive-default suffix representation before that freeze. Immutable
-version interoperability remains a Release I requirement and this evidence MUST NOT be read as
-support for silently changing a deployed protocol.
+SCB1 version 1 is the stable, default-on owner-local route. Its protocol version and framing are frozen:
+future incompatible encodings require a new version and must not silently reinterpret deployed version-1
+artifacts. The explicit `hiddenBatch: false` compatibility opt-out produces the direct-only artifact;
+ordinary compilation enables the admitted route without an opt-in.
 
 The compiled graph path now also consumes a producer-authenticated two-field return in its parent:
 `CompiledReturningB.twice` returns `(int,int)`, the graph emission binds both canonical fields, and

@@ -107,7 +107,7 @@ describe('Q1 row A: splitting versus a bus route', () => {
    */
   it('CONTROL: the same composition settles with both participants UNSPLIT', async () => {
     const provider = createTestProvider();
-    const artBento = compileString(BENTO);
+    const artBento = compileString(BENTO, { hiddenBatch: false, repeatedExternalBatch: false });
     const artKashi = compileString(`pragma solidcash >=0.8.0;
 ${IBENTO}
 contract Kashi(bytes bentoAddr) {
@@ -116,7 +116,7 @@ contract Kashi(bytes bentoAddr) {
     int shareOut = IBento(bentoAddr).deposit(amount);
     this.collateral = this.collateral + shareOut;
   }
-}`);
+}`, { hiddenBatch: false, repeatedExternalBatch: false });
     const bento = new Contract(artBento, [], { provider });
     const { categoryId: catBento } = await setupStatefulUtxos(
       provider, bento, artBento.stateLayout!, { elastic: 10n, base: 8n }, { saltContract: true },

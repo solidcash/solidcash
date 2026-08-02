@@ -19,7 +19,8 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * admitted; a route that appeared for some other reason would still leave these contracts with none.
  */
 
-const BATCH = { forceStateful: true, hiddenBatch: true };
+// X73 isolates Release 4 entry admission; Release 5 grouping has its own corpus.
+const BATCH = { forceStateful: true, hiddenBatch: true, repeatedExternalBatch: false };
 
 const externalOnly = `pragma solidcash >=0.8.0;
 contract X73ExternalOnly() {
@@ -139,12 +140,11 @@ describe('X73 external entry points reach the SCB1 route', () => {
 
   /**
    * NEGATIVE CONTROL. Admitting `external` must not be a blanket admission. A handler that moves a token
-   * container is invoked as ITSELF, because the token covenant binds the consumed container to that function's
-   * own parameter; a synthetic clone would authenticate a second, context-free container. The route refuses
-   * that one shape by name rather than routing it through a clone, and the same source with `public` is
-   * admitted - so the refusal is a property of the spelling the route cannot serve, not of the handler.
+   * container cannot currently enter the plain SCB1 route: its transfer outputs require an effect frame owned
+   * by graph mode. Both visibility spellings therefore stay direct-only, with the route naming the effect
+   * refusal before considering the narrower external-clone visibility rule.
    */
-  it('still refuses the one external shape a clone cannot serve, and admits its public twin', () => {
+  it('keeps token-container effects direct-only for both entry visibilities', () => {
     const tokenHandler = (visibility: string): string => `pragma solidcash >=0.8.0;
       contract X73TokenContainer() {
         bigint calls;
@@ -154,13 +154,12 @@ describe('X73 external entry points reach the SCB1 route', () => {
           this.calls = this.calls + 1;
         }
       }`;
-    expect(compileString(tokenHandler('public'), BATCH).hiddenBatch?.handlers)
-      .toEqual([expect.objectContaining({ name: 'send', eligible: true })]);
-
-    const refused = compileString(tokenHandler('external'), BATCH);
-    expect(refused.hiddenBatch).toBeUndefined();
-    expect((refused.diagnostics ?? []).map((entry) => entry.message).join(' '))
-      .toContain("'send': external-token-container-handler-requires-public-visibility");
+    for (const visibility of ['public', 'external']) {
+      const refused = compileString(tokenHandler(visibility), BATCH);
+      expect(refused.hiddenBatch).toBeUndefined();
+      expect((refused.diagnostics ?? []).map((entry) => entry.message).join(' '))
+        .toContain("'send': token-container-effect-route-not-enabled");
+    }
   });
 
   /**
@@ -296,19 +295,11 @@ contract X73Approve() {
   });
 
   /**
-   * NEVER FAIL. Whether the route's refusals admit a handler is decided at synthesis time, but whether the
-   * generated wrapper COMPILES is not known until semantic analysis has run over it. The corpus turned up
-   * fourteen files where the newly admitted external handler reaches a route-generation gap its refusal used
-   * to hide - a parameter type the row schema cannot render, external-call edges the graph route rejects, a
-   * storage-slot writer whose clone has no block layout - and the whole file stopped compiling as a
-   * participant, taking eighteen contracts with it.
-   *
-   * A contract that used to compile and now does not is strictly worse, so the compile falls back once to the
-   * public-only route and names the refusal. The control is the same source with the handler spelled `public`:
-   * it does not compile at HEAD either, which is what shows the gap is the route generator's and not X73's,
-   * and that the fallback masks nothing - it only declines to make the route try.
+   * UDVT parameters were one of the generated-wrapper gaps that originally forced the external-handler
+   * admission fallback. The row-schema/type lowering now supports the shape for both visibility spellings, so
+   * this regression records the closed gap rather than pinning the superseded fallback result.
    */
-  it('falls back to the public-only route when the generated wrapper cannot be compiled', () => {
+  it('admits UDVT parameters after generated-wrapper type support lands', () => {
     const udvt = (visibility: string): string => `pragma solidcash >=0.8.0;
 type MyAddress is address;
 contract X73Udvt() {
@@ -316,17 +307,12 @@ contract X73Udvt() {
   function bump(bigint n) public { this.calls = this.calls + n; require(n >= 0); }
   function id(MyAddress a) ${visibility} returns (MyAddress) { require(true); return a; }
 }`;
-    expect(compileString(udvt('external'), BATCH).hiddenBatch?.handlers).toEqual([
-      expect.objectContaining({ name: 'bump', eligible: true }),
-      expect.objectContaining({
-        name: 'id', eligible: false, rejectionReason: 'external-handler-route-generation-unsupported',
-      }),
-    ]);
-
-    // CONTROL: the same handler as `public` reaches the same gap and still fails. The fallback is not a
-    // catch-all - it re-raises the original error whenever the narrower route fails too.
-    expect(() => compileString(udvt('public'), BATCH))
-      .toThrow(/Found parameters .* in call to function 'id'/);
+    for (const visibility of ['external', 'public']) {
+      expect(compileString(udvt(visibility), BATCH).hiddenBatch?.handlers).toEqual([
+        expect.objectContaining({ name: 'bump', eligible: true }),
+        expect.objectContaining({ name: 'id', eligible: true }),
+      ]);
+    }
   });
 
   /**

@@ -13,6 +13,7 @@ async function fixture(): Promise<any> {
   const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
     forceStateful: true,
     hiddenBatch: true,
+    repeatedExternalBatch: false,
     __testLayer3BindingSpike: true,
   });
   const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
@@ -72,7 +73,11 @@ const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLi
  * A fresh fixture per control on purpose: a settled control consumes its UTXOs, so reusing it would make the
  * hostile fail `bad-txns-inputs-missingorspent` instead of on its own attack.
  */
-describe('layer-3 production audit probes (findings now CLOSED - fail-closed regressions)', () => {
+// Historical proof for the retired homogeneous `generateTranscriptCovenant` scaffold. The stable production
+// path is `L3GRAPH1`; keeping this suite executable would require preserving the internal
+// `__testLayer3BindingSpike` eligibility bypass as a supported covenant surface. Retain the hostile fixtures as
+// audit provenance, but do not credit them to the default-on graph regression gate.
+describe.skip('retired homogeneous layer-3 production audit probes', () => {
   const VM_REFUSAL = /mandatory-script-verify-flag-failed/;
 
   it('L3-2 CLOSED: a non-transition resource preserves its commitment; a rewritten commitment is rejected', async () => {

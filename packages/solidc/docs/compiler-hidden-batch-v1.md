@@ -541,8 +541,12 @@ Detailed tasks and ship gates are normative in section 8 of
    corpus artifacts; a regression belongs to the release which introduces it.
 5. Releases 4 and 5 each require an independent adversarial review before default enablement.
 
-During hardening, each new capability remains internal/experimental. A completed earlier release is
-not held back merely because a later batch or graph release is unfinished.
+The hardening gates above are now satisfied for the admitted Release 4 and Release 5 surfaces. Both
+capabilities are stable and enabled by default; `hiddenBatch: false` and `repeatedExternalBatch: false`
+remain explicit compatibility opt-outs. Unsupported shapes remain outside the admitted surface and
+either retain ordinary one-call lowering in implicit-default mode or fail closed when the capability
+is explicitly required. A completed earlier release is not held back merely because a later batch or
+graph release is unfinished.
 
 ## 11. Release invariants
 

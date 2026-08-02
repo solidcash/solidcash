@@ -1,5 +1,9 @@
 # Compiler-hidden batch v1: independent implementation/covenant review
 
+> **HISTORICAL COMMIT-SCOPED AUDIT.** Its default-off disposition applies to the commits named below,
+> before the recorded corrections and graduation evidence. Use `layer3-review-package.md` and
+> `message-bus-completion-ledger.md` for current status; do not apply this old disposition to branch HEAD.
+
 Reviewer: Claude (adversarial soundness + security audit)
 Baseline reviewed: branch `codex/state-bus-research`, HEAD `4cff1624`, implementation commit `cbb360fc`.
 Scope: the R4 owner-local SCB1 batch, the R5 repeated-external-callee route, and the new two-row

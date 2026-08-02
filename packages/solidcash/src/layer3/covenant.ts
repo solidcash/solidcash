@@ -915,7 +915,7 @@ contract Layer3OneShotController(bytes deployerPkh) {
  * selectors, arguments, results, resources, events, or ordering are bound. The participants are clones of one
  * generated covenant (homogeneous), not independently compiled application contracts. It relies on the
  * EXTERNAL assumption of a single immutable mint-once controller NFT for the baked category (no genesis /
- * uniqueness proof here). It is an experimental building block toward a canonical execution transcript, not a
+ * uniqueness proof here). It is a retired research building block toward a canonical execution transcript, not a
  * complete heterogeneous cyclic message bus.
  */
 export function bindingFrameworkBodyControllerBound(

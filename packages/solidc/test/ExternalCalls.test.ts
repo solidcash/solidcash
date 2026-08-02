@@ -146,6 +146,23 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(2);
   });
 
+  it('leaves an ungrouped single external call byte-identical to the explicit opt-out', () => {
+    const source = `
+      interface ICounter { function add(int amount) external; }
+      contract Caller(address counter) {
+        function run(int amount) public {
+          ICounter(counter).add(amount);
+          require(amount >= 0);
+        }
+      }
+    `;
+    const defaultOn = compileString(source);
+    const explicitOff = compileString(source, { repeatedExternalBatch: false });
+    expect(defaultOn.bytecode).toBe(explicitOff.bytecode);
+    expect(defaultOn.abi.find((fn) => fn.name === 'run')?.externalCalls)
+      .toEqual(explicitOff.abi.find((fn) => fn.name === 'run')?.externalCalls);
+  });
+
   it('rejects two repeated callee owners instead of constructing two contended transitions', () => {
     expect(() => compileString(`
       interface ICounter { function add(int amount) external; }

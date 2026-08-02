@@ -1,5 +1,10 @@
 # Compiler-hidden batch v1: implementation/covenant review handoff
 
+> **HISTORICAL REVIEW HANDOFF.** This document records the earlier default-off review baseline.
+> Release 4 and Release 5 have since completed their in-repository graduation gates and are stable,
+> default-on compiler capabilities. Use `layer3-review-package.md` and
+> `message-bus-completion-ledger.md` for the current review target and status.
+
 Status: READY FOR INDEPENDENT REVIEW; DEFAULT ENABLEMENT NOT REQUESTED.
 
 Review baseline: branch `codex/state-bus-research`. The final review commit and validation totals are

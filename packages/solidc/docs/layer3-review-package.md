@@ -81,11 +81,13 @@ and the rejecting input index/diagnostic.
 Run from `packages/solidcash` after `yarn build`. Do not use a stale `dist`.
 
 1. Capstones: the three C1/C2/C3 files in `message-bus-HANDOFF.md`; expected **53 passed / 6 skipped**.
-2. Full bus-mode regression: the documented 115-file command; expected **1,321 passed / 11 skipped**.
+2. Full bus-mode regression: the documented 115-file command; expected **1,318 passed / 14 skipped**.
+   The three additional skips are the retired homogeneous `generateTranscriptCovenant` audit probes;
+   all 114 active files pass.
 3. Settlement union: the committed X235 manifest/probe/consumer; expected **1,564 records / 806 settlements /
    167 contained routes / 157 resolved collisions**, with **145 of 213** eligible handlers proved and 68
    unproved. The 68 are an evidence-breadth limit, not themselves proof of a vulnerability.
-4. Compiler suite: **2,807/2,807**.
+4. Compiler suite: **2,818/2,818**.
 5. SDK suite: **5,188 passed / 49 skipped / 9 todo**. The only expected failures are the two pre-existing POW
    operation-density cases named in the handoff; they are outside this review and must not mask another failure.
 6. Repository `yarn build` and `yarn lint`: green.

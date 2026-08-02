@@ -1432,7 +1432,7 @@ ${reading ? '    require(this.tokens[category].tokenAmount >= value);' : ''}
   // The refusal is on the drop, not on the bus: the same handler under a PLAIN hidden batch (no message-bus
   // controller, so no graph handler at all) drops the transfer identically and is refused identically.
   it('refuses the same drop on a plain hidden batch, with no message bus involved', () => {
-    const plain = { forceStateful: true, hiddenBatch: true };
+    const plain = { forceStateful: true, hiddenBatch: true, repeatedExternalBatch: false };
     const source = `pragma solidcash >=0.8.0;
 contract PlainTokenBatch() {
   int calls;
@@ -1441,8 +1441,10 @@ contract PlainTokenBatch() {
     this.calls = this.calls + 1;
   }
 }`;
-    expect(() => compileString(source, plain))
-      .toThrow(/performs a token-container operation, which the route reserves no output slot for/);
+    const artifact = compileString(source, plain);
+    expect(artifact.hiddenBatch).toBeUndefined();
+    expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
+      .toContain("'send': token-container-effect-route-not-enabled");
   }, 30_000);
 
   /**
@@ -1455,7 +1457,7 @@ contract PlainTokenBatch() {
    * the OTHER guard (SEC-6's, in InlineStoragePointerCalls), because that clone would be flattened and its
    * edges would generate unbound - a different defect with a different refusal.
    */
-  it('still admits a routed token-container transfer whose handler reads the container', () => {
+  it('keeps a read-and-transfer token handler direct-only without a graph effect frame', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
 contract TokenContainerReadBatch() {
   int calls;
@@ -1464,9 +1466,10 @@ contract TokenContainerReadBatch() {
     this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
     this.calls = this.calls + 1;
   }
-}`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch!.route.blockLayout!.slots.map((slot: any) => slot.kind))
-      .toEqual(['master', 'dataNft', 'tokenContainer', ...Array.from({ length: 8 }, () => 'tcTransfer')]);
+}`, { forceStateful: true, hiddenBatch: true, repeatedExternalBatch: false });
+    expect(artifact.hiddenBatch).toBeUndefined();
+    expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
+      .toContain("'send': token-container-effect-route-not-enabled");
   }, 30_000);
 
   // And the bus + external call spelling of the SAME body is refused too, by SEC-6's guard rather than this

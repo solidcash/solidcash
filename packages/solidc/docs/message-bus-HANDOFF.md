@@ -8,7 +8,7 @@ Written for an incoming reviewer/implementer picking this up cold. Read this fil
 
 - Branch `codex/layer3-binding-spike`, worktree `/Code/cashscript/.worktrees/layer3-binding-spike`.
 - Baseline branch is `solidcash_v0.13.1`. This work has NOT been merged to it.
-- `solidc` 2,807/2,807. Capstones C1/C2/C3: 53 passed / 6 skipped.
+- `solidc` 2,818/2,818. Capstones C1/C2/C3: 53 passed / 6 skipped.
 - At `1b57f474`, the full SDK run has 5,188 passed / 49 skipped / 9 todo. Its only failures are the two
   known tests in `test/conformance/arithmetic.conformance.test.ts` (POW op-cost density), proven pre-existing
   by re-running against a clean tree. Do not chase them.
@@ -245,8 +245,9 @@ npx vitest run test/e2e/Layer3DefiCapstoneC1.test.ts \
   test/e2e/Layer3HeterogeneousCycleC2.test.ts test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 
 # 2. The full bus-mode sweep - MANDATORY before any route-admission change lands.
-#    115 files discovered; expect 1,321 passed / 11 skipped on the recorded
-#    final HEAD. It is the only thing that has reliably caught the X229 class.
+#    115 files discovered; expect 1,318 passed / 14 skipped on the recorded
+#    readiness tree. The three added skips retire the homogeneous scaffold audit probes;
+#    all 114 active files pass. This is the only sweep that reliably caught the X229 class.
 npx vitest run $(ls test/e2e/*.test.ts | xargs grep -l hiddenBatch) \
   --maxWorkers=2 --reporter=dot
 
@@ -273,7 +274,7 @@ npx tsx test/e2e/layer3-x235-settlement-consumer.ts /tmp/x235/records.*
 
 Before ANY route-admission change lands, budget for the full bus-mode sweep:
 `ls test/e2e/*.test.ts | xargs grep -l hiddenBatch` discovers 115 files on current HEAD.
-The final recorded sweep is green at 115 files / 1,321 passed / 11 skipped. Re-run it at
+The readiness sweep is green at 115 files / 1,318 passed / 14 skipped (114 active files pass). Re-run it at
 `--maxWorkers=2` after any route-admission change; it is the only measurement that has reliably caught
 this class.
 

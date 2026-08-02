@@ -317,7 +317,7 @@ keys were simple, order-independent, and unconditional - dedup by identifier nam
 top, sink writes to the bottom. Both assumptions break on ordinary code (non-identifier shared keys;
 mid-body returns), and because R1-R3 add no covenant surface, the covenant ratifies the mistake.
 Priority: fix J1 (inflation) and J2 (burn) before this branch is used to compile any value-bearing
-contract, flagged or not; they are not gated by the experimental batch flags. J3-J6 are fail-closed
+contract, batching enabled or explicitly disabled; they are not gated by the stable batch options. J3-J6 are fail-closed
 and can follow.
 
 ## Coverage

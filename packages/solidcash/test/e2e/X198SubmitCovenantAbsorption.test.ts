@@ -106,7 +106,7 @@ const FEE_GUARD_BRAND = 77n;
 
 describe('X198 row 0: the falsy-completion class is what the compiler emits', () => {
   it('a plain contract whose last statement is `require(a == b)` ends in OP_NUMEQUAL, not OP_VERIFY', () => {
-    const artifact = compileString(FEE_GUARD);
+    const artifact = compileString(FEE_GUARD, { hiddenBatch: false });
     // `artifact.bytecode` is an ASM LISTING; `.length / 2` would be meaningless here.
     const bytecode = asmToBytecode(artifact.bytecode);
     const finalOpcode = bytecode[bytecode.length - 1];
@@ -269,7 +269,7 @@ async function build(feeGuardArgument: bigint): Promise<Built> {
   );
 
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const feeGuard = new Contract(compileString(FEE_GUARD), [FEE_GUARD_BRAND], { provider });
+  const feeGuard = new Contract(compileString(FEE_GUARD, { hiddenBatch: false }), [FEE_GUARD_BRAND], { provider });
   const rootFee = randomUtxo({ satoshis: 20_000n });
   await provider.addUtxo(p2pkh.address, rootFee);
   const rootTx = new TransactionBuilder({ provider });

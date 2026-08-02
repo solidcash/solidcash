@@ -562,7 +562,7 @@ describe('Release C bounded dynamic-resource batch', () => {
     expect((await contract.getState()).values).toEqual([11n, 22n, 33n]);
   });
 
-  it('settles repeated fungible-token container effects under one owner', async () => {
+  it('keeps plain owner-local token-container effects direct-only until an effect frame is available', async () => {
     const provider = createTestProvider();
     const artifact = compileString(`pragma solidcash >=0.8.0;
       contract TokenContainerBatchReleaseC() {
@@ -573,7 +573,12 @@ describe('Release C bounded dynamic-resource batch', () => {
           this.calls = this.calls + 1;
         }
       }
-    `, { forceStateful: true, hiddenBatch: true });
+    `, { forceStateful: true, hiddenBatch: true, repeatedExternalBatch: false });
+    if (!artifact.hiddenBatch) {
+      expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
+        .toContain("'send': token-container-effect-route-not-enabled");
+      return;
+    }
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },

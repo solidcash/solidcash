@@ -1826,7 +1826,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       if (externalCallSlots.length > 0) {
         const logicalCallSlots = [...externalCallSlots];
-        if (this.compilerOptions.repeatedExternalBatch) {
+        // A synthesized SCB1 route already assigns physical owner blocks and logical rows. Applying the
+        // owner-local Release-5 collapse while that route is analysed would collapse the source handler's rows
+        // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
+        // therefore runs on source entry points only; their synthesized local or graph route consumes the
+        // compiler-authored grouping instead of rediscovering it.
+        if (this.compilerOptions.repeatedExternalBatch
+          && !node.hiddenBatchRoute && !this.compilerOptions.messageBusController) {
           const directCalls = new Set<ExternalFunctionCallNode>();
           for (const statement of node.body.statements ?? []) {
             if (statement instanceof FunctionCallStatementNode
@@ -1836,10 +1842,12 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           const byTarget = new Map<string, ExternalCallSlot[]>();
           const allByTarget = new Map<string, ExternalCallSlot[]>();
+          const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
           for (const slot of logicalCallSlots) {
             // Single-method interfaces normally omit selector verification, so
             // their slots have no baked selector yet. SCB1 rows always carry
-            // the original direct selector; derive it here for both shapes.
+            // the original direct selector. Infer it without mutating the slot:
+            // discovery must leave every ordinary/unselected call byte-identical.
             if (!slot.compileTimeSelector) {
               const iface = this.interfaceMap.get(slot.interfaceName);
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
@@ -1848,7 +1856,7 @@ export default class SymbolTableTraversal extends AstTraversal {
                 const signature = computeFunctionSignature(
                   slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
                 );
-                slot.compileTimeSelector = computeFunctionSelector(signature);
+                inferredSelectors.set(slot, computeFunctionSelector(signature));
               }
             }
             const identity = slot.addressParam ? `param:${slot.addressParam}`
@@ -1863,7 +1871,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
               && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
-              && !!slot.compileTimeSelector
+              && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot))
               && !(slot.argSources ?? []).some((source) => source.kind === 'expression');
             if (!eligible) continue;
             const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
@@ -1898,11 +1906,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             const representative = group[0];
             representative.batchInvocations = group.map((slot, logicalIndex) => {
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
+              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
+              slot.compileTimeSelector = selector;
               const iface = this.interfaceMap.get(slot.interfaceName);
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
                 .find((fn) => fn.name === slot.functionName);
               return {
-                selector: slot.compileTimeSelector!,
+                selector,
                 parameters: slot.sourceCallNode!.parameters,
                 parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),

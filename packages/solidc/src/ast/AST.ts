@@ -2015,7 +2015,7 @@ export interface ExternalCallSlot {
   // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
-  // Release 5 experimental grouping: several straight-line logical calls
+  // Release 5 repeated-callee grouping: several straight-line logical calls
   // share this one physical callee block and are bound to its SCB1 blob.
   batchInvocations?: {
     selector: Uint8Array;

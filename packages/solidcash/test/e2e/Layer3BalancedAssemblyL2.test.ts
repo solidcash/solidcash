@@ -429,7 +429,7 @@ contract DirectCallee() is IDirectCallee {
     this.total = this.total + n;
     return n;
   }
-}`);
+}`, { hiddenBatch: false, repeatedExternalBatch: false });
     const callerArtifact = compileString(`pragma solidcash >=0.8.0;
 interface IDirectCallee { function bump(int n) returns (int); }
 contract DirectCaller(bytes calleeAddr) {
@@ -438,7 +438,7 @@ contract DirectCaller(bytes calleeAddr) {
     int got = IDirectCallee(calleeAddr).bump(n);
     this.seen = this.seen + got;
   }
-}`);
+}`, { hiddenBatch: false, repeatedExternalBatch: false });
     // The compiler publishes the return event as a slot INSIDE the callee's own three-slot block.
     const calleeAbi = calleeArtifact.abi.find((fn: any) => fn.name === 'bump') as any;
     expect(calleeAbi.blockLayout.blockSize).toBe(3);

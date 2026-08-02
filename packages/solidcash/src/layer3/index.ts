@@ -1,5 +1,5 @@
-// Layer-3 invocation-transcript production module: covenant framework generator, transcript codec, and
-// SDK transaction derivation. See docs/layer3-*.md.
+// Controllerless Layer-3 composition, canonical carrier/transcript codec, compiler-derived planning,
+// and finalized-transaction preflight.
 export * from './compose.js';
 export * from './controllerless.js';
 export * from './delegate.js';

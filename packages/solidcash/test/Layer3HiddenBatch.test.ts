@@ -91,7 +91,10 @@ describe('layer3.encodeHiddenBatch', () => {
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {
     expect(() => layer3.encodeHiddenBatch(
-      compileString('pragma solidcash >=0.8.0; contract Plain() { function f() { require(true); } }'),
+      compileString(
+        'pragma solidcash >=0.8.0; contract Plain() { function f() { require(true); } }',
+        { hiddenBatch: false },
+      ),
       [{ function: 'f' }],
     )).toThrow(/does not advertise/);
     expect(() => layer3.encodeHiddenBatch(artifact, [])).toThrow(/row count/);

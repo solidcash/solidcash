@@ -706,9 +706,6 @@ function synthesizeHiddenBatchRoute(
 ): void {
   if (!compilerOptions.hiddenBatch) return;
   const contract = ast.contract;
-  // Legacy infrastructure sources are not application participants and must not recursively acquire SCB1 routes
-  // while they remain in the tree during migration.
-  if (isMessageBusInfrastructureContract(contract.name)) return;
   assertNoReservedHiddenBatchSelector(contract.functions);
   const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
   // X100. Record every external entry point's span BEFORE any refusal is decided and before anything downstream
@@ -4037,7 +4034,7 @@ function compileResolvedAst(
         ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
       })),
     };
-  } else if (mergedCompilerOptions.hiddenBatch && !isMessageBusInfrastructureContract(ast.contract.name)) {
+  } else if (mergedCompilerOptions.hiddenBatch) {
     // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
     // those names is `hiddenBatch.handlers` - which is not built when no entry point survives. A contract whose
     // every handler is rejected therefore reached the user as an artifact with no `hiddenBatch` and no
@@ -4051,10 +4048,6 @@ function compileResolvedAst(
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
   if (blockOracle.usesBlockhash) artifact.usesBlockhash = true;
   return artifact;
-}
-
-function isMessageBusInfrastructureContract(name: string): boolean {
-  return name === 'GraphRootController' || name === 'GraphProjectionVerifier';
 }
 
 /**

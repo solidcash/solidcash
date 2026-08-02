@@ -40,7 +40,7 @@ export interface CompiledGraphInvocation {
   /**
    * Transaction-origin caller for the root row. This is required when the root handler derives a collection
    * key from `msg.sender`; nested callers remain compiler-derived from the authenticated parent participant.
-   * The plan carries the same locking bytecode into finalization, where the projection covenant binds it to
+   * The plan carries the same locking bytecode into finalization, where the participant covenant binds it to
    * `tx.origin`.
    */
   logicalCaller?: FunctionArgument;
@@ -65,10 +65,9 @@ export interface PlannedGraphInvocation {
    *
    * Bit 0 is the read-only (`staticcall`) mode. Bits 1-7 are the call options a source-level callsite can carry
    * (`{value: ..}` and token-container operations); none is an admitted graph edge, so the only values the
-   * covenants accept are 0 and 1, and a transaction-origin row - which answers no callsite and therefore has no
-   * edge - must be exactly 0. The bits are DERIVED from the same measurement `assertNoUnboundCallOptions`
-   * refuses on, not hardcoded: if that refusal is ever relaxed, an option-bearing row carries its option into
-   * the transcript and the projection verifier rejects it, rather than the option silently disappearing.
+ * covenants accept are 0 and 1, and a transaction-origin row - which answers no callsite and therefore has no
+ * edge - must be exactly 0. The bits are DERIVED from the same measurement `assertNoUnboundCallOptions`
+ * refuses on, not hardcoded.
    */
   callOptions: number;
   argsHex: string;
@@ -182,29 +181,6 @@ export function assertResolvableResultDependencies(
       },
     );
   }
-}
-
-export interface FinalizedCompiledGraph {
-  plan: CompiledGraphPlan;
-  /** Canonical framed transcript bytes authenticated by every participant projection. */
-  bytes: Uint8Array;
-  /** SHA-256 of `bytes`; suitable for the controller NFT commitment. */
-  root: string;
-  /** Canonical per-invocation result bytes, empty for void invocations. */
-  resultsHex: readonly string[];
-  /** Byte offset of each participant's `lbc-frame || batch-frame` within `bytes`. */
-  participantOffsets: readonly number[];
-  participantInputs: readonly number[];
-  projectionInputs: readonly number[];
-  returnOutputs: readonly (number | null)[];
-  /** Inner SCB1 packed result vector (before the outer `bytes` return-event framing), by participant. */
-  participantResultVectorsHex: readonly string[];
-  /** Exact source-emitted child-call rows, grouped by caller owner. */
-  participantEmissionsHex: readonly string[];
-  /** Logical caller locking bytecode per local invocation, framed in local-row order. */
-  participantCallersHex: readonly string[];
-  participantCompletionPositionsHex: readonly string[];
-  settlementTableHex: string;
 }
 
 export interface FinalizedSingleTxInvocationGraph {
@@ -631,122 +607,6 @@ export interface GraphTrailingRegion {
   capacity: number;
 }
 
-export interface CompiledGraphPhysicalLayout {
-  /** Physical master input of each participant, by participant index. */
-  participantInputs: readonly number[];
-  /** One-shot controller NFT input carrying `FinalizedCompiledGraph.root`. */
-  controllerInput: number;
-  /** One paired proof slot per participant. */
-  projectionInputs: readonly number[];
-  /** Final fee-funding input paired with final change. */
-  feeInput: number;
-  /** Exact balanced transaction input/output count. */
-  totalSlots: number;
-  /**
-   * Optional return-event output per participant. Required when that participant's SCB1 plan returns values.
-   * The corresponding expected full NFT commitment is supplied in `resultCommitmentsHex`.
-   */
-  returnOutputs?: readonly (number | null)[];
-  /**
-   * Absolute runtime-resource regions, in participant order. A participant whose block declares none - every
-   * participant with no dynamic state, no loop entry write and no loop sidecar - contributes no entry.
-   */
-  trailingRegions: readonly GraphTrailingRegion[];
-}
-
-/**
- * Compose compiler-emitted participant blocks without diverging input/output bases.
- *
- * Each participant begins after the complete preceding SCB1 route block. Projection
- * proofs, the one-shot controller, and the fee/change tail are each paired one-slot
- * blocks, so the complete transaction has one shared input/output index space.
- */
-export function compiledGraphPhysicalLayout(plan: CompiledGraphPlan): CompiledGraphPhysicalLayout {
-  const participantInputs: number[] = [];
-  const returnOutputs: (number | null)[] = [];
-  const trailingRegions: GraphTrailingRegion[] = [];
-  let cursor = 0;
-  for (const participant of plan.participants) {
-    const layout = participant.blockLayout;
-    if (!layout || layout.blockSize < 1 || layout.slots[0]?.kind !== 'master') {
-      throw new Error(`layer3: participant ${participant.participant} lacks a balanced master block`);
-    }
-    const offsets = new Set<number>();
-    for (const slot of layout.slots) {
-      if (!Number.isInteger(slot.offset) || slot.offset < 0 || slot.offset >= layout.blockSize
-        || offsets.has(slot.offset)) {
-        throw new Error(
-          `layer3: participant ${participant.participant} has a malformed local block descriptor`,
-        );
-      }
-      offsets.add(slot.offset);
-    }
-    if (layout.slots.filter((slot) => slot.kind === 'master').length !== 1
-      || layout.slots.find((slot) => slot.kind === 'master')?.offset !== 0
-      || offsets.size !== layout.blockSize) {
-      throw new Error(
-        `layer3: participant ${participant.participant} local block is not a complete balanced span`,
-      );
-    }
-    if (participant.executionKind === 1) {
-      const executors = layout.slots.filter((slot) => slot.kind === 'lowLevelCall');
-      if (executors.length !== 1 || participant.executorOffset !== executors[0].offset
-        || participant.executorOffset === 0 || participant.executorLockingBytecode.length === 0) {
-        throw new Error(
-          `layer3: delegate participant ${participant.participant} requires one distinct pinned executor slot`,
-        );
-      }
-    }
-    if (layout.trailingBase !== undefined) {
-      const capacity = layout.trailingCapacity ?? -1;
-      const trailing = layout.slots.filter((slot) => slot.kind === 'trailing');
-      if (!Number.isInteger(capacity) || capacity < 1 || trailing.length !== capacity
-        || trailing.some((slot, index) => slot.offset !== layout.trailingBase! + index)) {
-        throw new Error(
-          `layer3: participant ${participant.participant} has a malformed trailing region`,
-        );
-      }
-    }
-    participantInputs.push(cursor);
-    if (layout.trailingBase !== undefined) {
-      trailingRegions.push(Object.freeze({
-        participant: participant.participant,
-        base: cursor + layout.trailingBase,
-        capacity: layout.trailingCapacity!,
-      }));
-    }
-    const returnSlots = layout.slots.filter((slot) => slot.kind === 'returnEvent');
-    if (returnSlots.length > 1) {
-      throw new Error(`layer3: participant ${participant.participant} has multiple return-event slots`);
-    }
-    returnOutputs.push(returnSlots.length === 0 ? null : cursor + returnSlots[0].offset);
-    cursor += layout.blockSize;
-  }
-  const projectionInputs = plan.participants.map((_participant, index) => cursor + index);
-  cursor += plan.participants.length;
-  const controllerInput = cursor;
-  cursor += 1;
-  const feeInput = cursor;
-  cursor += 1;
-  return Object.freeze({
-    participantInputs: Object.freeze(participantInputs),
-    projectionInputs: Object.freeze(projectionInputs),
-    controllerInput,
-    feeInput,
-    totalSlots: cursor,
-    returnOutputs: Object.freeze(returnOutputs),
-    trailingRegions: Object.freeze(trailingRegions),
-  });
-}
-
-/**
- * The part of a physical layout the capacity rule reads: how many participants exist, and which of them
- * declare a runtime-resource region.
- *
- * `CompiledGraphPhysicalLayout` satisfies this structurally, so a caller holding one passes it unchanged. The
- * narrower type is what lets the preflight run the same rule against an assembly DERIVED from a builder's own
- * inputs, where no caller-supplied plan object exists at all - see `preflightLayer3BlockAssembly`.
- */
 export interface GraphTrailingCapacityView {
   participantInputs: readonly number[];
   trailingRegions: readonly GraphTrailingRegion[];
@@ -759,7 +619,7 @@ export interface GraphTrailingCapacityView {
  * dynamic-storage chunk output, loop entry or loop sidecar. The direct route already refuses this shape
  * (`StatefulTransactionBuilder`, "Runtime resource outputs exceed balanced trailing capacity"); the graph
  * route had no analogue, and the difference is measurable. A 65-chunk write against a 64-slot region was
- * built, funded and signed, and then refused by the VM at the FIRST PROJECTION INPUT - a slot that names
+ * built, funded and signed, and then refused by the VM at the first participant input - a slot that names
  * nothing about the cause, because the overflowing block simply runs into the proof region. This states the
  * refusal where the composer can act on it, at zero signature requests.
  *
@@ -801,16 +661,15 @@ export function assertGraphTrailingCapacity(
   }
 }
 
-const GRAPH_DOMAIN = utf8ToBin('L3GRAPH1\0');
 const MAX_GRAPH_PARTICIPANTS = 8;
 const MAX_GRAPH_INVOCATIONS = 24;
 const MAX_GRAPH_DEPTH = 7;
 
 /**
- * Largest SCB1 batch blob the GENERATED root controller admits, in bytes (X106).
+ * Largest SCB1 batch blob the controllerless bus admits, in bytes (X106).
  *
  * NOT A SECOND COPY ANY MORE. This is the shared `MAX_HIDDEN_BATCH_BLOB_BYTES` from `@solidcash/utils` under
- * the name the SDK's layer3 callers already use, so the controller's per-participant frame check and the
+ * the name the SDK's layer3 callers already use, so the carrier's per-participant frame check and the
  * compiler's route check (republished as `artifact.hiddenBatch.maximumBlobBytes`) cannot drift apart. Both were
  * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
  * only place they can share one literal.
@@ -825,41 +684,21 @@ const MAX_GRAPH_DEPTH = 7;
 export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_HIDDEN_BATCH_BLOB_BYTES;
 
 /**
- * Refuse a participant whose published blob envelope is wider than the generated controller admits.
+ * Refuse a participant whose published blob envelope is wider than the controllerless verifier admits.
  *
  * The direction is not symmetric, and only one side is a defect. A participant publishing a SMALLER maximum is
  * merely tighter: `encodeHiddenBatch` refuses the oversized blob first, by name. A participant publishing a
  * LARGER one is the drift that costs: the SDK encodes a blob its own encoder accepts, and the co-spent
- * controller then refuses the whole transaction at the controller input, naming nothing about blob width.
+ * participant verifier then refuses the whole transaction, naming nothing about blob width.
  */
 export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
   const published = artifact.hiddenBatch?.maximumBlobBytes;
   if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
   throw new Error(
     `layer3: participant ${participant} publishes an SCB1 blob envelope of ${published} bytes, wider than the `
-    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the generated graph root controller admits`,
+    + `${GRAPH_MAX_BATCH_BLOB_BYTES} the controllerless bus admits`,
   );
 }
-const concat = (...parts: Uint8Array[]): Uint8Array => {
-  const out = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
-};
-const uint = (value: number, width: 1 | 2): Uint8Array => {
-  const maximum = width === 1 ? 0xff : 0xffff;
-  if (!Number.isInteger(value) || value < 0 || value > maximum) {
-    throw new Error(`layer3: graph field does not fit uint${width * 8}`);
-  }
-  return width === 1
-    ? Uint8Array.of(value)
-    : Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
-};
-const framed = (bytes: Uint8Array): Uint8Array => concat(uint(bytes.length, 2), bytes);
-
 /** Bit 0 of the call-options byte: the compiler-proven read-only (`staticcall`) mode. */
 const CALL_OPTION_READ_ONLY = 1;
 /** Bit 1: the admitted singular raw-call value option. Higher source-level option bits remain refused. */
@@ -869,11 +708,10 @@ const CALL_OPTION_BLOCK_SLOT = 8;
 
 /**
  * The single encoder of a row's committed call-options byte, used by BOTH framings that carry it: the caller's
- * emission row and the global invocation row. They are compared against each other by the projection verifier,
+ * emission row and the global invocation row. They are compared by the participant verifier,
  * so a second copy of this ternary is a place for the two to drift - the shape X31 removed for `abi.find`.
  *
- * `callMode` stays the field the rest of the planner reasons about; this asserts the byte agrees with it, so a
- * hand-constructed `CompiledGraphPlan` handed straight to `finalizeCompiledGraph` cannot desynchronize the two.
+ * `callMode` stays the field the rest of the planner reasons about; this asserts the byte agrees with it.
  */
 const callOptionsByte = (invocation: PlannedGraphInvocation): number => {
   const options = invocation.callOptions;
@@ -889,926 +727,7 @@ const callOptionsByte = (invocation: PlannedGraphInvocation): number => {
   return options;
 };
 
-/**
- * Freeze a planned graph into one unambiguous execution transcript.
- *
- * Results are supplied only after producer VM probes. Every returning invocation must have exactly one
- * canonical result byte vector, while void invocations must not be assigned one. The transcript commits both
- * the global depth-first tree and each owner's exact SCB1 execution blob, preventing a graph/local-projection
- * desynchronization.
- */
-export function finalizeCompiledGraph(
-  plan: CompiledGraphPlan,
-  results: Readonly<Record<number, string>> = {},
-  participantInputs: readonly number[] = plan.participants.map((_participant, index) => index),
-  returnOutputs: readonly (number | null)[] = plan.participants.map(() => null),
-  participantResultVectorsHex: readonly string[] = plan.participants.map(() => ''),
-  projectionInputs: readonly number[] = plan.participants.map(
-    (_participant, index) => plan.participants.length + index,
-  ),
-  rootCallerLockingBytecode = plan.rootCallerLockingBytecode ?? '',
-): FinalizedCompiledGraph {
-  if (participantInputs.length !== plan.participants.length
-    || participantInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
-    || participantInputs.some((input, index) => index > 0 && input <= participantInputs[index - 1])) {
-    throw new Error('layer3: participant physical inputs must be strictly increasing uint16 values');
-  }
-  if (returnOutputs.length !== plan.participants.length
-    || participantResultVectorsHex.length !== plan.participants.length
-    || projectionInputs.length !== plan.participants.length) {
-    throw new Error('layer3: return outputs/result vectors must align with participants');
-  }
-  if (projectionInputs.some((input) => !Number.isInteger(input) || input < 0 || input > 0xffff)
-    || projectionInputs.some((input, index) => index > 0 && input <= projectionInputs[index - 1])
-    || projectionInputs.some((input) => participantInputs.includes(input))) {
-    throw new Error('layer3: projection inputs must be strictly increasing uint16 proof slots');
-  }
-  if (plan.participants.length > MAX_GRAPH_PARTICIPANTS
-    || plan.invocations.length > MAX_GRAPH_INVOCATIONS
-    || plan.invocations.some((invocation) => invocation.depth > MAX_GRAPH_DEPTH)) {
-    const overParticipants = plan.participants.length > MAX_GRAPH_PARTICIPANTS;
-    const overInvocations = plan.invocations.length > MAX_GRAPH_INVOCATIONS;
-    const deepest = Math.max(0, ...plan.invocations.map((invocation) => invocation.depth));
-    const code = overParticipants ? 'L3_PARTICIPANT_LIMIT'
-      : overInvocations ? 'L3_INVOCATION_LIMIT' : 'L3_GRAPH_DEPTH_LIMIT';
-    throw new Layer3DiagnosticError(
-      code,
-      'layer3: graph exceeds the deployed participant, invocation, or depth bound',
-      {
-        measured: overParticipants ? plan.participants.length
-          : overInvocations ? plan.invocations.length : deepest,
-        limit: overParticipants ? MAX_GRAPH_PARTICIPANTS
-          : overInvocations ? MAX_GRAPH_INVOCATIONS : MAX_GRAPH_DEPTH,
-        invocationIds: plan.invocations.map((invocation) => invocation.index),
-        callChain: plan.invocations.map((invocation) => `${invocation.index}:${invocation.function}`),
-      },
-    );
-  }
-  plan.participants.forEach((participant, index) => {
-    const returning = participant.batch.results.length > 0;
-    const output = returnOutputs[index];
-    const vector = participantResultVectorsHex[index];
-    if (returning) {
-      if (!Number.isInteger(output) || output! < 0 || output! > 0xffff
-        || !/^([0-9a-fA-F]{2})+$/.test(vector)) {
-        throw new Error(`layer3: returning participant ${index} lacks a return output/result vector`);
-      }
-      if (vector.length / 2 > 126) {
-        throw new Error(`layer3: participant ${index} result vector exceeds the NFT commitment envelope`);
-      }
-    } else if (output !== null || vector !== '') {
-      throw new Error(`layer3: non-returning participant ${index} cannot carry a result vector`);
-    }
-  });
-  const resultHex = plan.invocations.map((invocation) => {
-    const supplied = results[invocation.index];
-    if (invocation.resultTypes.length === 0) {
-      if (supplied !== undefined && supplied !== '') {
-        throw new Error(`layer3: void invocation ${invocation.index} cannot carry a result`);
-      }
-      return '';
-    }
-    if (supplied === undefined || !/^([0-9a-fA-F]{2})*$/.test(supplied)) {
-      throw new Error(`layer3: returning invocation ${invocation.index} lacks canonical result bytes`);
-    }
-    return supplied.toLowerCase();
-  });
-  const emissionParts = plan.participants.map(() => [] as Uint8Array[]);
-  for (const invocation of plan.invocations) {
-    if (invocation.parent === null || invocation.caller === null) continue;
-    const target = hexToBin(plan.participants[invocation.callee].lockingBytecode);
-    const args = hexToBin(invocation.argsHex);
-    const result = hexToBin(resultHex[invocation.index]);
-    emissionParts[invocation.caller].push(
-      framed(target), uint(callOptionsByte(invocation), 1),
-      hexToBin(invocation.selectorHex), framed(args), framed(result),
-    );
-  }
-  const participantEmissions = emissionParts.map((parts) => concat(...parts));
-  const callerParts = plan.participants.map(() => [] as Uint8Array[]);
-  for (const invocation of plan.invocations) {
-    const caller = invocation.parent === null
-      ? hexToBin(rootCallerLockingBytecode)
-      : hexToBin(plan.participants[invocation.caller!].lockingBytecode);
-    callerParts[invocation.callee].push(framed(caller));
-  }
-  const participantCallers = callerParts.map((parts) => concat(...parts));
-  const participantCompletionPositions = plan.participants.map((participant) => concat(
-    ...participant.completionPositions.map((position) => uint(position, 2)),
-  ));
-  const settlementTable = concat(...plan.participants.flatMap((participant) => [
-    framed(hexToBin(participant.lockingBytecode)),
-    uint(participantInputs[participant.participant], 2), uint(participant.settlementBoundary, 2),
-  ]));
-  const settlementTableCommitment = sha256.hash(settlementTable);
-  for (const key of Object.keys(results)) {
-    const index = Number(key);
-    if (!Number.isInteger(index) || index < 0 || index >= plan.invocations.length) {
-      throw new Layer3DiagnosticError(
-        'L3_TRANSCRIPT_ROW_INCONSISTENT',
-        `result names unknown invocation '${key}'`,
-        { invocationIds: [index], resourceIdentity: `result:${key}` },
-      );
-    }
-  }
-  plan.participants.forEach((participant, owner) => {
-    if (participant.batch.results.length === 0) return;
-    const reachedPrefix = participant.invocations.map((invocation) => resultHex[invocation]).join('');
-    if (!participantResultVectorsHex[owner].toLowerCase().startsWith(reachedPrefix)) {
-      throw new Layer3DiagnosticError(
-        'L3_TRANSCRIPT_ROW_INCONSISTENT',
-        `participant ${owner} result vector disagrees with its invocation results`,
-        {
-          participant: owner,
-          invocationIds: participant.invocations,
-          resourceIdentity: `participant-result-vector:${owner}`,
-        },
-      );
-    }
-  });
-
-  const parts: Uint8Array[] = [GRAPH_DOMAIN, uint(plan.participants.length, 1)];
-  const participantOffsets: number[] = [];
-  let encodedLength = GRAPH_DOMAIN.length + 1;
-  for (const participant of plan.participants) {
-    const participantIndex = participant.participant;
-    const lbc = hexToBin(participant.lockingBytecode);
-    participantOffsets.push(encodedLength);
-    const inputFrame = uint(participantInputs[participantIndex], 2);
-    const blockSizeFrame = uint(participant.blockLayout!.blockSize, 2);
-    const lbcFrame = framed(lbc);
-    const executionKindFrame = uint(participant.executionKind, 1);
-    const executorInputFrame = uint(participant.executorInputIndex, 2);
-    const executorLbcFrame = framed(hexToBin(participant.executorLockingBytecode));
-    const batchFrame = framed(participant.batch.blob);
-    const emissionFrame = framed(participantEmissions[participantIndex]);
-    const callerFrame = framed(participantCallers[participantIndex]);
-    const settlementBoundaryFrame = uint(participant.settlementBoundary, 2);
-    const completionPositionsFrame = framed(participantCompletionPositions[participantIndex]);
-    // Each compiled route binds its supplied table through this constant-width commitment. The table itself is
-    // serialized once after the participant region.
-    const settlementTableCommitmentFrame = settlementTableCommitment;
-    const returnFrame = uint(returnOutputs[participantIndex] ?? 0xffff, 2);
-    const resultFrame = framed(hexToBin(participantResultVectorsHex[participantIndex]));
-    const projectionFrame = uint(projectionInputs[participantIndex], 2);
-    parts.push(inputFrame, blockSizeFrame, lbcFrame, batchFrame, emissionFrame, callerFrame,
-      settlementBoundaryFrame, completionPositionsFrame, settlementTableCommitmentFrame,
-      executionKindFrame, executorInputFrame, executorLbcFrame,
-      returnFrame, resultFrame, projectionFrame);
-    encodedLength += inputFrame.length + blockSizeFrame.length + lbcFrame.length + batchFrame.length
-      + emissionFrame.length + callerFrame.length + settlementBoundaryFrame.length
-      + completionPositionsFrame.length + settlementTableCommitmentFrame.length
-      + executionKindFrame.length + executorInputFrame.length + executorLbcFrame.length
-      + returnFrame.length + resultFrame.length + projectionFrame.length;
-  }
-  // The table describes the graph as a whole. Encoding it in every participant frame makes the transcript
-  // quadratic in participant count and repeats the same witness in every projection input. Keep one framed,
-  // root-authenticated copy between the participant region and the invocation region instead.
-  parts.push(framed(settlementTable), uint(plan.invocations.length, 2));
-  plan.invocations.forEach((invocation, index) => {
-    const args = hexToBin(invocation.argsHex);
-    const result = hexToBin(resultHex[index]);
-    parts.push(
-      uint(invocation.parent === null ? 0xffff : invocation.parent, 2),
-      uint(invocation.callee, 1),
-      uint(invocation.localRow, 1),
-      uint(invocation.depth, 1),
-      uint(invocation.subtreeEnd, 2),
-      hexToBin(invocation.selectorHex),
-      uint(callOptionsByte(invocation), 1),
-      framed(args),
-      framed(result),
-    );
-  });
-  const bytes = concat(...parts);
-  return Object.freeze({
-    plan,
-    bytes,
-    root: binToHex(sha256.hash(bytes)),
-    resultsHex: Object.freeze(resultHex),
-    participantOffsets: Object.freeze(participantOffsets),
-    participantInputs: Object.freeze([...participantInputs]),
-    projectionInputs: Object.freeze([...projectionInputs]),
-    returnOutputs: Object.freeze([...returnOutputs]),
-    participantResultVectorsHex: Object.freeze(
-      participantResultVectorsHex.map((vector) => vector.toLowerCase()),
-    ),
-    participantEmissionsHex: Object.freeze(
-      participantEmissions.map((emissions) => binToHex(emissions)),
-    ),
-    participantCallersHex: Object.freeze(
-      participantCallers.map((callers) => binToHex(callers)),
-    ),
-    participantCompletionPositionsHex: Object.freeze(
-      participantCompletionPositions.map((positions) => binToHex(positions)),
-    ),
-    settlementTableHex: binToHex(settlementTable),
-  });
-}
-
-/**
- * Exact compiler-route arguments for one graph participant. Collection witnesses follow the compiler-owned
- * graph context in route ABI order.
- */
-export function compiledGraphRouteArgs(
-  transcript: FinalizedCompiledGraph,
-  participant: number,
-  controllerInput: number,
-  internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
-): readonly (Uint8Array | bigint | FunctionArgument)[] {
-  const execution = transcript.plan.participants[participant];
-  const offset = transcript.participantOffsets[participant];
-  if (!execution || offset === undefined) throw new Error('layer3: graph participant is out of range');
-  const fixed = new Map<string, FunctionArgument>([
-    ['batchBlob', execution.batch.blob],
-    ['__internal__graphControllerIdx', BigInt(controllerInput)],
-    ['__internal__graphParticipantOffset', BigInt(offset)],
-    ['__internal__graphBlockSize', BigInt(execution.blockLayout!.blockSize)],
-    ['__internal__graphEmissions', hexToBin(transcript.participantEmissionsHex[participant])],
-    ['__internal__graphCallers', hexToBin(transcript.participantCallersHex[participant])],
-    ['__internal__graphSettlementBoundary', BigInt(execution.settlementBoundary)],
-    ['__internal__graphCompletionPositions',
-      hexToBin(transcript.participantCompletionPositionsHex[participant])],
-    ['__internal__graphSettlementTable', hexToBin(transcript.settlementTableHex)],
-  ]);
-  const graphBlockhashOracle = execution.artifact.hiddenBatch?.route.graphBlockhashOracle;
-  if (graphBlockhashOracle) {
-    const firstOracleSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
-    if (!firstOracleSlot) {
-      throw new Error('layer3: graph blockhash oracle plan has no physical blockhashOracle slot');
-    }
-    fixed.set(
-      graphBlockhashOracle.inputBaseParameter,
-      BigInt(transcript.participantInputs[participant] + firstOracleSlot.offset),
-    );
-  }
-  let visibleCursor = 0;
-  const args = execution.routeInputs
-    .filter((input) => input.name !== '__internal__returnOutputIdx')
-    .map((input) => {
-      const fixedValue = fixed.get(input.name);
-      if (fixedValue !== undefined) return fixedValue;
-      if (!input.name.startsWith('__internal__')) {
-        const value = execution.batch.routeWitnesses[visibleCursor];
-        visibleCursor += 1;
-        if (value !== undefined) return value;
-      }
-      const supplied = internalRouteWitnesses[input.name];
-      if (supplied === undefined) {
-        throw new Error(`layer3: compiler route requires internal witness '${input.name}'`);
-      }
-      return supplied;
-    });
-  if (visibleCursor !== execution.batch.routeWitnesses.length) {
-    throw new Error('layer3: compiler route witness cardinality does not match its published ABI');
-  }
-  return Object.freeze(args);
-}
-
-/**
- * Canonical projection-verifier arguments. The transcript is carried once by the controller's `attest(bytes)`
- * unlocking bytecode; the leading empty compatibility field tells the verifier to extract that exact minimally
- * framed push with OP_INPUTBYTECODE instead of serializing another copy into every proof input.
- */
-export function compiledGraphProjectionArgs(
-  controllerInput: number, participant: number,
-): readonly [Uint8Array, bigint, bigint] {
-  if (!Number.isSafeInteger(controllerInput) || controllerInput < 0) {
-    throw new Error('layer3: graph controller input must be a non-negative safe integer');
-  }
-  if (!Number.isSafeInteger(participant) || participant < 0 || participant >= MAX_GRAPH_PARTICIPANTS) {
-    throw new Error(`layer3: graph participant must be in [0, ${MAX_GRAPH_PARTICIPANTS})`);
-  }
-  return [new Uint8Array(), BigInt(controllerInput), BigInt(participant)];
-}
-
-/**
- * Fixed-code one-shot graph-root controller. Its locking bytecode is independent of any transcript, so
- * application artifacts can pin it at compile time. A mint-once mutable NFT supplies the root commitment;
- * `attest` authenticates the complete transcript bytes and burns the unique category.
- */
-export function generateGraphRootController(projectionVerifierLbc: string): string {
-  const verifier = projectionVerifierLbc.toLowerCase();
-  if (!/^([0-9a-f]{2})+$/.test(verifier)) {
-    throw new Error('layer3: projection verifier locking bytecode must be hex bytes');
-  }
-  // One byte per depth frame: `frames[d]` is the open invocation at depth `d`, `frames[8 + d]` its
-  // inclusive subtree end. 0xff marks an unopened frame and cannot be forged, because every real index
-  // is below `invocationCount <= 24` and the parent equality below is gated on that bound.
-  const frameBytes = 2 * (MAX_GRAPH_DEPTH + 1);
-  const emptyFrames = `hex"${'ff'.repeat(frameBytes)}"`;
-  // Per-depth read-only ancestry. A byte is 1 exactly while the invocation occupying that depth was
-  // authenticated with callOptions bit 0 set. The invocation walk uses it to make staticness hereditary.
-  const emptyStaticFrames = `hex"${'00'.repeat(MAX_GRAPH_DEPTH + 1)}"`;
-  const publishedBoundaryDeclarations = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_, index) =>
-    `bigint publishedBoundary${index} = 0;`).join('\n    ');
-  const computedBoundaryDeclarations = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_, index) =>
-    `bigint computedBoundary${index} = 0;`).join('\n    ');
-  const capturePublishedBoundary = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_, index) =>
-    `${index === 0 ? '' : 'else '}if (participant == ${index}) { publishedBoundary${index} = settlementBoundary; }`).join('\n      ');
-  const updateComputedBoundary = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_, index) =>
-    `${index === 0 ? '' : 'else '}if (callee == ${index} && subtreeEnd + 1 > computedBoundary${index}) { computedBoundary${index} = subtreeEnd + 1; }`).join('\n      ');
-  const compareBoundaries = Array.from({ length: MAX_GRAPH_PARTICIPANTS }, (_, index) =>
-    `if (participantCount > ${index}) { require(publishedBoundary${index} == computedBoundary${index}); }`).join('\n    ');
-  return `pragma solidcash >=0.8.0;
-contract GraphRootController(bytes20 initializer) {
-  function initialize(bytes32 root, pubkey pk, sig s) {
-    require(hash160(pk) == initializer);
-    require(checkSig(s, pk));
-    require(root != bytes32(0));
-    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 0);
-    require(tx.inputs[this.activeInputIndex].tokenCategory.slice(32, 33) == hex"01");
-    require(this.activeInputIndex < tx.outputs.length);
-    require(tx.outputs[this.activeInputIndex].lockingBytecode
-      == tx.inputs[this.activeInputIndex].lockingBytecode);
-    require(tx.outputs[this.activeInputIndex].tokenCategory
-      == tx.inputs[this.activeInputIndex].tokenCategory);
-    require(tx.outputs[this.activeInputIndex].nftCommitment == root);
-    require(tx.outputs[this.activeInputIndex].value == tx.inputs[this.activeInputIndex].value);
-    require(true);
-  }
-  function attest(bytes transcript) {
-    require(tx.inputs[this.activeInputIndex].nftCommitment.length == 32);
-    require(tx.inputs[this.activeInputIndex].nftCommitment == sha256(transcript));
-    bigint transcriptLength = transcript.length;
-    require(transcriptLength >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
-    bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
-    require(participantCount >= 1 && participantCount <= 8);
-    bigint previousReturnOutput = -1;
-    bigint previousProjectionInput = -1;
-    bigint expectedInput = 0;
-    // Six bytes per participant: physical block start, block size, and the optional return-event slot.
-    // Keeping the transcript's original bytes avoids a NUM2BIN round trip in the invocation walk.
-    bytes participantBlocks = hex"";
-    bytes publishedSettlementTableCommitment;
-    bytes canonicalSettlementTable = hex"";
-    ${publishedBoundaryDeclarations}
-    ${computedBoundaryDeclarations}
-    bigint cursor = 10;
-    for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-      // X27: split ONE suffix per participant and read every field off it, so a read costs the REMAINING
-      // transcript instead of the whole blob. \`local\` carries the same offset \`cursor\` used to, measured
-      // from the frame start, and every bound is the old \`cursor + n <= transcript.length\` rewritten as
-      // \`local + n <= frame.length\`; frame.length == transcriptLength - cursor makes the two identical.
-      // The suffix split itself is in range because cursor <= transcriptLength holds on entry to every
-      // iteration - 10 <= transcriptLength for the first, and the last bound of the body for the rest.
-      bytes frame = transcript.slice(cursor, transcriptLength);
-      require(frame.length >= 6);
-      bigint participantInput = int(bytes.concat(frame.slice(0, 2), hex"00"));
-      bigint blockSize = int(bytes.concat(frame.slice(2, 4), hex"00"));
-      bigint lbcLength = int(bytes.concat(frame.slice(4, 6), hex"00"));
-      require(participantInput == expectedInput && participantInput < tx.inputs.length);
-      require(blockSize >= 1 && participantInput + blockSize <= tx.inputs.length);
-      expectedInput = participantInput + blockSize;
-      require(lbcLength > 0 && 8 + lbcLength <= frame.length);
-      require(tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength));
-      bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
-      bigint local = 8 + lbcLength;
-      require(batchLength >= 7 && batchLength <= ${GRAPH_MAX_BATCH_BLOB_BYTES} && local + batchLength + 2 <= frame.length);
-      bytes unlocking = tx.inputs[participantInput].unlockingBytecode;
-      require(unlocking.slice(0, 5) == hex"0453434231");
-      if (batchLength <= 75) {
-        require(int(bytes.concat(unlocking.slice(5, 6), hex"00")) == batchLength);
-        require(unlocking.slice(6, 6 + batchLength) == frame.slice(local, local + batchLength));
-      } else {
-        require(unlocking.slice(5, 6) == hex"4c");
-        require(int(bytes.concat(unlocking.slice(6, 7), hex"00")) == batchLength);
-        require(unlocking.slice(7, 7 + batchLength) == frame.slice(local, local + batchLength));
-      }
-      bigint emissionsLength = int(bytes.concat(
-        frame.slice(local + batchLength, local + batchLength + 2), hex"00"));
-      local = local + batchLength + 2;
-      require(local + emissionsLength + 2 <= frame.length);
-      bigint callersLength = int(bytes.concat(
-        frame.slice(local + emissionsLength, local + emissionsLength + 2), hex"00"));
-      local = local + emissionsLength + 2;
-      require(local + callersLength + 8 <= frame.length);
-      local = local + callersLength;
-      bigint settlementBoundary = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
-      ${capturePublishedBoundary}
-      canonicalSettlementTable = bytes.concat(canonicalSettlementTable,
-        frame.slice(4, 6), frame.slice(6, 6 + lbcLength), frame.slice(0, 2), frame.slice(local, local + 2));
-      local = local + 2;
-      bigint completionPositionsLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
-      local = local + 2;
-      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 36 <= frame.length);
-      local = local + completionPositionsLength;
-      if (participant == 0) {
-        publishedSettlementTableCommitment = frame.slice(local, local + 32);
-      } else {
-        require(frame.slice(local, local + 32) == publishedSettlementTableCommitment);
-      }
-      local = local + 32;
-      require(local + 5 <= frame.length);
-      bigint executionKind = int(bytes.concat(frame.slice(local, local + 1), hex"00"));
-      bigint executorInput = int(bytes.concat(frame.slice(local + 1, local + 3), hex"00"));
-      bigint executorLbcLength = int(bytes.concat(frame.slice(local + 3, local + 5), hex"00"));
-      local = local + 5;
-      require(local + executorLbcLength + 4 <= frame.length);
-      if (executionKind == 0) {
-        require(executorInput == 65535 && executorLbcLength == 0);
-      } else {
-        require(executionKind == 1 && executorLbcLength > 0);
-        require(executorInput > participantInput && executorInput < participantInput + blockSize);
-        require(tx.inputs[executorInput].lockingBytecode
-          == frame.slice(local, local + executorLbcLength));
-      }
-      local = local + executorLbcLength;
-      bigint returnOutput = int(bytes.concat(
-        frame.slice(local, local + 2), hex"00"));
-      bigint resultVectorLength = int(bytes.concat(
-        frame.slice(local + 2, local + 4), hex"00"));
-      local = local + 4;
-      require(resultVectorLength <= 126 && local + resultVectorLength + 2 <= frame.length);
-      if (resultVectorLength == 0) {
-        require(returnOutput == 65535);
-      } else {
-        require(returnOutput >= participantInput && returnOutput < participantInput + blockSize);
-        require(returnOutput > previousReturnOutput && returnOutput < tx.outputs.length);
-        previousReturnOutput = returnOutput;
-        bytes expectedCommitment;
-        if (resultVectorLength <= 75) {
-          expectedCommitment = bytes.concat(bytes1(resultVectorLength),
-            frame.slice(local, local + resultVectorLength));
-        } else {
-          expectedCommitment = bytes.concat(hex"4c", bytes1(resultVectorLength),
-            frame.slice(local, local + resultVectorLength));
-        }
-        require(tx.outputs[returnOutput].nftCommitment == expectedCommitment);
-      }
-      bigint projectionInput = int(bytes.concat(
-        frame.slice(local + resultVectorLength, local + resultVectorLength + 2), hex"00"));
-      local = local + resultVectorLength + 2;
-      require(projectionInput > previousProjectionInput && projectionInput < tx.inputs.length);
-      require(participant == 0 || projectionInput == previousProjectionInput + 1);
-      previousProjectionInput = projectionInput;
-      require(tx.inputs[projectionInput].lockingBytecode == hex"${verifier}");
-      participantBlocks = bytes.concat(participantBlocks, frame.slice(0, 4),
-        frame.slice(local - resultVectorLength - 6, local - resultVectorLength - 4));
-      cursor = cursor + local;
-    }
-    require(cursor + 2 <= transcriptLength);
-    bigint settlementTableLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-    cursor = cursor + 2;
-    require(settlementTableLength > 0 && cursor + settlementTableLength + 2 <= transcriptLength);
-    require(transcript.slice(cursor, cursor + settlementTableLength) == canonicalSettlementTable);
-    require(publishedSettlementTableCommitment == sha256(canonicalSettlementTable));
-    cursor = cursor + settlementTableLength;
-    // The proof slots are consecutive, so the last one names the first: the participant REGION ends
-    // exactly where the projection region begins.
-    require(previousProjectionInput + 1 - participantCount == expectedInput);
-    require(this.activeInputIndex == expectedInput + participantCount);
-    require(tx.inputs.length == this.activeInputIndex + 2);
-    require(tx.outputs.length == tx.inputs.length);
-    require(cursor + 2 <= transcriptLength);
-    bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-    require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
-    bytes frames = ${emptyFrames};
-    bytes staticFrames = ${emptyStaticFrames};
-    bigint previousDepth = -1;
-    bigint tail = cursor + 2;
-    for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
-      // X27, same rewrite as the participant loop: one suffix split per row, all six reads off the suffix.
-      bytes row = transcript.slice(tail, transcriptLength);
-      require(row.length >= 14);
-      bigint parent = int(bytes.concat(row.slice(0, 2), hex"00"));
-      bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
-      bigint subtreeEnd = int(bytes.concat(row.slice(5, 7), hex"00"));
-      bigint callee = int(bytes.concat(row.slice(2, 3), hex"00"));
-      require(callee < participantCount);
-      bigint callOptions = int(bytes.concat(row.slice(11, 12), hex"00"));
-      require(callOptions <= 3);
-      ${updateComputedBoundary}
-      if (invocation == 0) {
-        require(parent == 65535 && depth == 0 && subtreeEnd == invocationCount - 1);
-      } else {
-        require(parent < invocation && depth >= 1 && depth <= ${MAX_GRAPH_DEPTH}
-          && depth <= previousDepth + 1);
-        require(subtreeEnd >= invocation && subtreeEnd < invocationCount);
-        bigint openIndex = int(bytes.concat(frames.slice(depth - 1, depth), hex"00"));
-        bigint openEnd = int(bytes.concat(
-          frames.slice(depth + ${MAX_GRAPH_DEPTH}, depth + ${MAX_GRAPH_DEPTH + 1}), hex"00"));
-        require(openIndex < invocationCount && parent == openIndex);
-        require(invocation <= openEnd && subtreeEnd <= openEnd);
-        // Runtime half of staticcall transitivity: compiler metadata may diagnose a non-static descendant,
-        // but the authenticated transcript itself must carry static mode for every row in the subtree.
-        if (int(bytes.concat(staticFrames.slice(depth - 1, depth), hex"00")) == 1) {
-          require(callOptions % 2 == 1);
-        }
-      }
-      previousDepth = depth;
-      frames = bytes.concat(frames.slice(0, depth), bytes1(invocation),
-        frames.slice(depth + 1, depth + ${MAX_GRAPH_DEPTH + 1}), bytes1(subtreeEnd),
-        frames.slice(depth + ${MAX_GRAPH_DEPTH + 2}, ${frameBytes}));
-      staticFrames = bytes.concat(staticFrames.slice(0, depth), bytes1(callOptions % 2),
-        staticFrames.slice(depth + 1, ${MAX_GRAPH_DEPTH + 1}));
-      if (callOptions % 2 == 1) {
-        // Runtime snapshot/return proof. The participant's balanced block is its complete mutable-resource
-        // region. Every ordinary slot must return byte-for-byte and value-for-value unchanged. A canonical
-        // return-event slot may change its locking/token envelope to publish the ABI result, but not its value;
-        // that result is separately authenticated above by the transcript commitment.
-        bigint blockInput = int(bytes.concat(
-          participantBlocks.slice(callee * 6, callee * 6 + 2), hex"00"));
-        bigint blockSize = int(bytes.concat(
-          participantBlocks.slice(callee * 6 + 2, callee * 6 + 4), hex"00"));
-        bigint returnOutput = int(bytes.concat(
-          participantBlocks.slice(callee * 6 + 4, callee * 6 + 6), hex"00"));
-        for (bigint slot = blockInput; slot < blockInput + blockSize; slot = slot + 1) {
-          require(slot < tx.outputs.length);
-          require(tx.outputs[slot].value == tx.inputs[slot].value);
-          if (slot != returnOutput) {
-            require(tx.outputs[slot].lockingBytecode == tx.inputs[slot].lockingBytecode);
-            require(tx.outputs[slot].tokenCategory == tx.inputs[slot].tokenCategory);
-            require(tx.outputs[slot].nftCommitment == tx.inputs[slot].nftCommitment);
-            require(tx.outputs[slot].tokenAmount == tx.inputs[slot].tokenAmount);
-          }
-        }
-      }
-      bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
-      require(16 + argsLength <= row.length);
-      bigint resultLength = int(bytes.concat(
-        row.slice(14 + argsLength, 16 + argsLength), hex"00"));
-      tail = tail + 16 + argsLength + resultLength;
-      require(tail <= transcriptLength);
-    }
-    ${compareBoundaries}
-    require(tail == transcriptLength);
-    require(this.activeInputIndex < tx.outputs.length);
-    require(tx.outputs[this.activeInputIndex].value == 1000);
-    require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
-    require(tx.outputs[this.activeInputIndex].nftCommitment.length == 0);
-    require(tx.outputs[this.activeInputIndex].tokenAmount == 0);
-    require(true);
-  }
-}`;
-}
-
-/**
- * Fixed proof-slot covenant: exhaustively compares one owner's global rows to its SCB1/result projection.
- *
- * The four cursor-exhaustion requires at the end are the whole point of the walk: batch, emissions, callers
- * and results must each be consumed to their exact length, so no row can under-claim its share. The result
- * cursor matters most for a row with no consumer - a returning ROOT invocation has no parent, therefore no
- * emission row and no compiled route decoding it, so the projection slice is its only binding and the slice
- * alone is prefix-only. A non-root row is additionally bound by its consumer's route.
- */
-export function generateGraphProjectionVerifier(): string {
-  // X65: one fixed-stride PARTICIPANT-FRAME table replaces eight live `participantLbcN` locals and the three
-  // 8-way if/else chains that wrote and read them. The table is the participant loop's own 6-byte frame header
-  // appended in participant order, so `lbcHeaders[6i .. 6i+2)` is participant `i`'s input index,
-  // `lbcHeaders[6i+4 .. 6i+6)` is its 2-byte locking-bytecode length field, and the two together reconstruct
-  // the framed entry that `participantLbc{i}` used to hold.
-  //
-  // NOT A BYTE-OFFSET TABLE, and that is the point. An offset table needs a computed 2-byte offset whose
-  // soundness rests on the stack-item bound; this stores RAW TRANSCRIPT BYTES at a constant stride and needs
-  // no offset arithmetic at all. Measured against the shipped chains, the offset forms were also simply
-  // worse: framed-entry table 4,522 / terminal-offset 4,385 / one-slice offset span 4,374 / bounded walk
-  // 4,418, against 4,542 for the chains and 4,098 for the 2-byte index-only table X65 first landed.
-  //
-  // X81: THE `bytes2(...)` BOUND IS GONE, AND THE TABLE CARRIES THE LENGTH FIELD INSTEAD. X65 stored the index
-  // alone (stride 2) and re-derived the framed entry's 2-byte length prefix as `bytes2(targetLbc.length)`. That
-  // reproduces `frame.slice(4, 6)` exactly only while `lbcLength < 32,768`, which held on an appeal to a VM
-  // constant - `8 + lbcLength <= frame.length <= transcript.length <= 10,000`, `transcript` being one stack item
-  // under BCH-2025's `maximumStackItemLength`. The bound was fail-closed (OP_NUM2BIN aborts on
-  // `insufficientLength` rather than truncating) and VM-verified, so it was never an authenticity risk.
-  //
-  // WHAT ACTUALLY CHANGES IS THE DIRECTION OF THE MAP, and that is the whole argument. The old form went
-  // VALUE -> BYTES through OP_NUM2BIN, a PARTIAL function whose domain is a VM constant away from the field's
-  // own domain. The new form goes BYTES -> VALUE through OP_BIN2NUM, which is total, and leans on that decode
-  // being INJECTIVE on two bytes (`b0 + 256*b1` for `b0, b1` in `[0, 256)`) - which is unconditional, not a
-  // bound. So `frame.slice(4, 6)` is pinned to the unique encoding of `lbcLength`, `lbcLength` is pinned to the
-  // introspected script's length by the participant loop's
-  // `tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength)`, and nothing appeals to
-  // `maximumStackItemLength` any more. That matters beyond tidiness: BCH has raised its stack and commitment
-  // limits twice in two years, and a covenant whose admitted set narrows when a limit RISES is a forward-
-  // compatibility hazard rather than a fail-closed convenience.
-  //
-  // Measured at `6183cf12`: 4,098 -> 4,126 for the swap alone, and 4,121 with the independent `expectedTarget`
-  // fold below, so the retired bound was priced at 28 bytes per projection script and the landed net is 23.
-  // (The 19 recorded before this measurement belonged to an encoding that could not be reproduced here; the
-  // four encodings tried were 6-byte stride 4,126, 4-byte stride index-then-length 4,135, 4-byte stride
-  // length-then-index 4,130, two parallel 2-byte tables 4,180. Requiring the prefix's decode instead of
-  // comparing its bytes - also bound-free - measures 4,278 and is much worse.)
-  //
-  // AND IT IS NOT ONLY BYTES, which the board should have when it prices the next one. Every projection input's
-  // operation-cost DENSITY ratio rises, because the walk gains 126 instructions against only 23 bytes of
-  // density-control length: measured per shape at `6183cf12`, C2's four projections 0.33485 -> 0.33654, C3's
-  // eight 0.50829 -> 0.51062, A13's three 0.25122 -> 0.25226, C1's five 0.37421 -> 0.37606. No shape's binding
-  // limit moves and no shape's WORST-density input is a projection, so every `worstDensityRatio` reproduces to
-  // ten decimals; but the projections themselves got denser, not merely bigger.
-  //
-  // WHY THE ADMITTED SET IS UNCHANGED, BOTH TIMES. `callee < participantCount` is required before either
-  // lookup, and every byte of `activeCallees` is either a `bytes1(callee)` written under that same bound or the
-  // 0xff no-caller sentinel - so a lookup index is in `[0, participantCount)` or is 255. In range the table
-  // returns the bytes the chain assigned: entry `i` is appended on participant `i`'s iteration, in order, so
-  // both fields come from ONE frame and cannot be crossed between participants. At 255 the chain hit
-  // `revert("caller out of range")` and `lbcHeaders.slice(1530, 1532)` runs off a <= 48-byte item: both abort
-  // the script. No index reaches the chain's dead `participantCount <= i < 8` arms, which compared against an
-  // unassigned EMPTY local, so removing them removes no admitted case - and would have been a tightening, not a
-  // loosening, had one been reachable.
-  const lbcLookup = (selector: string, name: string): string =>
-    `bytes ${name}Lbc = tx.inputs[int(bytes.concat(
-            lbcHeaders.slice(${selector} * 6, ${selector} * 6 + 2), hex"00"))].lockingBytecode;`;
-  /** The framed entry's 2-byte length prefix, read out of the table rather than re-derived by a NUM2BIN. */
-  const lbcFramedPrefix = (selector: string): string =>
-    `lbcHeaders.slice(${selector} * 6 + 4, ${selector} * 6 + 6)`;
-  // One byte per reachable depth frame plus a leading no-caller sentinel, so frame `d` lives at index
-  // `d + 1` and the root's caller read at index 0 needs no branch.
-  const frameSlots = MAX_GRAPH_DEPTH + 2;
-  const emptyFrames = `hex"${'ff'.repeat(frameSlots)}"`;
-  const emptyUsed = `hex"${'00'.repeat(MAX_GRAPH_PARTICIPANTS)}"`;
-  const allUsed = `hex"${'01'.repeat(MAX_GRAPH_PARTICIPANTS)}"`;
-  return `pragma solidcash >=0.8.0;
-contract GraphProjectionVerifier() {
-  function __graph_controller_transcript(bigint controllerInput) internal view returns (bytes) {
-    bytes unlocking = tx.inputs[controllerInput].unlockingBytecode;
-    require(unlocking.length >= 7 && unlocking.slice(0, 1) == hex"04");
-    bigint opcode = int(bytes.concat(unlocking.slice(5, 6), hex"00"));
-    bigint length;
-    bigint at;
-    if (opcode <= 75) {
-      require(opcode > 0);
-      length = opcode;
-      at = 6;
-    } else if (opcode == 76) {
-      length = int(bytes.concat(unlocking.slice(6, 7), hex"00"));
-      require(length >= 76);
-      at = 7;
-    } else {
-      require(opcode == 77 && unlocking.length >= 8);
-      length = int(bytes.concat(unlocking.slice(6, 8), hex"00"));
-      require(length >= 256);
-      at = 8;
-    }
-    require(length >= 10 && at + length <= unlocking.length);
-    return unlocking.slice(at, at + length);
-  }
-  function verify(bytes transcriptWitness, bigint controllerInput, bigint participantIndex) {
-    require(controllerInput >= 0 && controllerInput < tx.inputs.length);
-    bytes transcript = transcriptWitness;
-    if (transcript.length == 0) {
-      transcript = __graph_controller_transcript(controllerInput);
-    }
-    require(tx.inputs[controllerInput].nftCommitment == sha256(transcript));
-    require(transcript.length >= 10 && transcript.slice(0, 9) == hex"4c3347524150483100");
-    bigint participantCount = int(bytes.concat(transcript.slice(9, 10), hex"00"));
-    require(participantCount >= 1 && participantCount <= ${MAX_GRAPH_PARTICIPANTS});
-    require(participantIndex >= 0 && participantIndex < participantCount);
-    bytes ownerBatch;
-    bytes ownerEmissions;
-    bytes ownerCallers;
-    bytes ownerCompletionPositions;
-    bytes resultVector;
-    bytes lbcHeaders = hex"";
-    bigint previousProjectionInput = -1;
-    bigint expectedParticipantInput = 0;
-    bigint cursor = 10;
-    for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-      // F4-3: X27's suffix split, the rewrite the controller's participant loop already carries. ONE split per
-      // participant, then every field is read at \`local + n\` off the suffix rather than at \`cursor + n\` off
-      // the whole blob. \`frame.length == transcript.length - cursor\`, so each old \`cursor + n <=
-      // transcript.length\` bound is the same predicate as \`local + n <= frame.length\`. The split is in range
-      // because cursor <= transcript.length holds on entry to every iteration - 10 <= transcript.length for
-      // the first, and the last bound of the body for the rest.
-      bytes frame = transcript.slice(cursor, transcript.length);
-      require(frame.length >= 6);
-      bigint participantInput = int(bytes.concat(frame.slice(0, 2), hex"00"));
-      bigint blockSize = int(bytes.concat(frame.slice(2, 4), hex"00"));
-      bigint lbcLength = int(bytes.concat(frame.slice(4, 6), hex"00"));
-      require(blockSize >= 1 && participantInput == expectedParticipantInput);
-      expectedParticipantInput = expectedParticipantInput + blockSize;
-      require(participantInput < controllerInput && expectedParticipantInput <= controllerInput);
-      require(lbcLength > 0 && 8 + lbcLength <= frame.length);
-      // X65: the framed-entry local F4-1 introduced existed only to feed the eight \`participantLbcN\` slots.
-      // With the index table it has no reader left, so this reverts to the direct transcript slice the
-      // CONTROLLER's participant loop has always used - identical bytes, one local fewer, -39.
-      require(tx.inputs[participantInput].lockingBytecode == frame.slice(6, 6 + lbcLength));
-      // X65: append, never overwrite. The loop runs participants in order, so the six bytes appended here are
-      // participant \`participant\`'s own frame header - \`participantInput\`, \`blockSize\`, \`lbcLength\` - at a
-      // constant 6-byte stride. X81 widened it from the 2-byte index field: one slice either way, and carrying
-      // the length field is what retires the NUM2BIN width bound at the two lookups.
-      lbcHeaders = bytes.concat(lbcHeaders, frame.slice(0, 6));
-      bigint batchLength = int(bytes.concat(frame.slice(6 + lbcLength, 8 + lbcLength), hex"00"));
-      bigint local = 8 + lbcLength;
-      require(batchLength >= 7 && local + batchLength + 2 <= frame.length);
-      bigint emissionsLength = int(bytes.concat(
-        frame.slice(local + batchLength, local + batchLength + 2), hex"00"));
-      if (participant == participantIndex) {
-        ownerBatch = frame.slice(local, local + batchLength);
-      }
-      local = local + batchLength + 2;
-      require(local + emissionsLength + 2 <= frame.length);
-      bigint callersLength = int(bytes.concat(
-        frame.slice(local + emissionsLength, local + emissionsLength + 2), hex"00"));
-      if (participant == participantIndex) {
-        ownerEmissions = frame.slice(local, local + emissionsLength);
-      }
-      local = local + emissionsLength + 2;
-      require(local + callersLength + 8 <= frame.length);
-      if (participant == participantIndex) {
-        ownerCallers = frame.slice(local, local + callersLength);
-      }
-      local = local + callersLength;
-      local = local + 2;
-      bigint completionPositionsLength = int(bytes.concat(frame.slice(local, local + 2), hex"00"));
-      local = local + 2;
-      require(completionPositionsLength % 2 == 0 && local + completionPositionsLength + 36 <= frame.length);
-      if (participant == participantIndex) {
-        ownerCompletionPositions = frame.slice(local, local + completionPositionsLength);
-      }
-      local = local + completionPositionsLength;
-      local = local + 32;
-      require(local + 5 <= frame.length);
-      bigint executionKind = int(bytes.concat(frame.slice(local, local + 1), hex"00"));
-      bigint executorInput = int(bytes.concat(frame.slice(local + 1, local + 3), hex"00"));
-      bigint executorLbcLength = int(bytes.concat(frame.slice(local + 3, local + 5), hex"00"));
-      local = local + 5;
-      require(local + executorLbcLength + 4 <= frame.length);
-      if (executionKind == 0) {
-        require(executorInput == 65535 && executorLbcLength == 0);
-      } else {
-        require(executionKind == 1 && executorLbcLength > 0);
-        require(executorInput > participantInput && executorInput < participantInput + blockSize);
-        require(tx.inputs[executorInput].lockingBytecode
-          == frame.slice(local, local + executorLbcLength));
-      }
-      local = local + executorLbcLength;
-      bigint resultLength = int(bytes.concat(
-        frame.slice(local + 2, local + 4), hex"00"));
-      local = local + 4;
-      require(local + resultLength + 2 <= frame.length);
-      bigint projectionInput = int(bytes.concat(
-        frame.slice(local + resultLength, local + resultLength + 2), hex"00"));
-      require(projectionInput > previousProjectionInput && projectionInput < controllerInput);
-      previousProjectionInput = projectionInput;
-      if (participant == participantIndex) {
-        require(projectionInput == this.activeInputIndex);
-        require(participantInput < tx.inputs.length);
-        resultVector = frame.slice(local, local + resultLength);
-      }
-      cursor = cursor + local + resultLength + 2;
-    }
-    require(cursor + 2 <= transcript.length);
-    bigint settlementTableLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-    cursor = cursor + 2;
-    require(settlementTableLength > 0 && cursor + settlementTableLength + 2 <= transcript.length);
-    cursor = cursor + settlementTableLength;
-    bigint invocationCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-    require(invocationCount >= 1 && invocationCount <= ${MAX_GRAPH_INVOCATIONS});
-    bigint valueSkip = int(bytes.concat(ownerBatch.slice(5, 6), hex"00"));
-    require(valueSkip == 0 || valueSkip == 1);
-    valueSkip = valueSkip * 9;
-    bigint modeSkip = int(bytes.concat(ownerBatch.slice(4, 5), hex"00")) == 2 ? 1 : 0;
-    bigint resultCursor = 0;
-    bigint localRow = 0;
-    bigint callerCursor = 0;
-    bigint batchCursor = 7;
-    bigint emissionCursor = 0;
-    bigint completionCursor = 0;
-    bytes usedMask = ${emptyUsed};
-    bytes activeCallees = ${emptyFrames};
-    bigint tail = cursor + 2;
-    for (bigint invocation = 0; invocation < invocationCount; invocation = invocation + 1) {
-      // F4-2: X27's suffix split, the rewrite the controller's invocation loop already carries. ONE split per
-      // row, then every field is read at a constant offset off the suffix instead of at \`tail + n\` off the
-      // whole blob. \`row.length == transcript.length - tail\`, so each old \`tail + n <= transcript.length\`
-      // bound is the same predicate as \`n <= row.length\`. The split is in range because tail <=
-      // transcript.length holds on entry to every iteration - cursor + 2 <= transcript.length for the first,
-      // and the last bound of the body for the rest.
-      bytes row = transcript.slice(tail, transcript.length);
-      require(row.length >= 14);
-      bigint callee = int(bytes.concat(row.slice(2, 3), hex"00"));
-      bigint depth = int(bytes.concat(row.slice(4, 5), hex"00"));
-      require(callee < participantCount);
-      // X5/E2: bit 0 is read-only mode and bit 1 is the singular raw-call value option. No higher option is
-      // admitted, so this bound is the on-chain policy statement rather than an incidental range check. The
-      // caller's compiled emission independently re-derives the exact byte (including the value bit).
-      bigint callOptions = int(bytes.concat(row.slice(11, 12), hex"00"));
-      require(callOptions <= 3);
-      bigint argsLength = int(bytes.concat(row.slice(12, 14), hex"00"));
-      require(16 + argsLength <= row.length);
-      bigint resultLength = int(bytes.concat(row.slice(14 + argsLength, 16 + argsLength), hex"00"));
-      require(16 + argsLength + resultLength <= row.length);
-      // Frame index 0 is the permanent no-caller sentinel, so a depth-0 row reads no caller at all.
-      bigint caller = int(bytes.concat(activeCallees.slice(depth, depth + 1), hex"00"));
-      if (invocation == 0) {
-        // X5: the transaction-origin row answers no callsite, so it has no parent edge and therefore no call
-        // options at all. Every other row's byte is re-derived by its CALLER's compiled route and compared in
-        // the emission-row equality below; the root has no caller, so without this bound its call-options byte
-        // was a committed field no covenant ever read - forgeable in the transcript at zero cost.
-        require(int(bytes.concat(row.slice(0, 2), hex"00")) == 65535 && depth == 0);
-        require(callOptions == 0);
-      } else {
-        require(depth >= 1 && depth <= ${MAX_GRAPH_DEPTH});
-      }
-      usedMask = bytes.concat(
-        usedMask.slice(0, callee), hex"01", usedMask.slice(callee + 1, ${MAX_GRAPH_PARTICIPANTS}));
-      activeCallees = bytes.concat(activeCallees.slice(0, depth + 1), bytes1(callee),
-        activeCallees.slice(depth + 2, ${frameSlots}));
-      if (caller == participantIndex) {
-        ${lbcLookup('callee', 'target')}
-        // The canonical emission row is fully determined by the authenticated transcript record:
-        // framed target || call mode || selector || framed args || framed result. The two trailing
-        // frames are the record's own contiguous bytes, so the whole row compares in one slice.
-        // X81: the framed target had its own local, whose single reader was this concat. Folding it in is
-        // independent of the bound retired above and measures -5 on its own.
-        bytes expectedRow = bytes.concat(
-          bytes.concat(${lbcFramedPrefix('callee')}, targetLbc),
-          row.slice(11, 12), row.slice(7, 11),
-          row.slice(12, 16 + argsLength + resultLength));
-        require(ownerEmissions.slice(emissionCursor, emissionCursor + expectedRow.length)
-          == expectedRow);
-        emissionCursor = emissionCursor + expectedRow.length;
-      }
-      if (callee == participantIndex) {
-        require(int(bytes.concat(ownerCompletionPositions.slice(completionCursor, completionCursor + 2), hex"00"))
-          == int(bytes.concat(row.slice(5, 7), hex"00")) + 1);
-        completionCursor = completionCursor + 2;
-        if (invocation == 0) {
-          bigint logicalCallerLength = int(bytes.concat(
-            ownerCallers.slice(callerCursor, callerCursor + 2), hex"00"));
-          require(logicalCallerLength == 0
-            || ownerCallers.slice(callerCursor + 2, callerCursor + 2 + logicalCallerLength)
-              == tx.origin);
-          callerCursor = callerCursor + 2 + logicalCallerLength;
-        } else {
-          ${lbcLookup('caller', 'caller')}
-          bytes expectedCaller = bytes.concat(${lbcFramedPrefix('caller')}, callerLbc);
-          require(ownerCallers.slice(callerCursor, callerCursor + expectedCaller.length)
-            == expectedCaller);
-          callerCursor = callerCursor + expectedCaller.length;
-        }
-        require(int(bytes.concat(row.slice(3, 4), hex"00")) == localRow);
-        require(ownerBatch.slice(batchCursor, batchCursor + 4) == row.slice(7, 11));
-        require(int(bytes.concat(ownerBatch.slice(batchCursor + 4, batchCursor + 8), hex"00"))
-          == localRow);
-        require(int(bytes.concat(ownerBatch.slice(batchCursor + 8, batchCursor + 10), hex"00")) == 0);
-        require(int(bytes.concat(ownerBatch.slice(batchCursor + 10, batchCursor + 12), hex"00"))
-          == argsLength);
-        if (modeSkip == 1) {
-          require(int(bytes.concat(ownerBatch.slice(batchCursor + 12, batchCursor + 13), hex"00"))
-            == int(bytes.concat(row.slice(11, 12), hex"00")) % 2);
-        }
-        if (valueSkip == 9) {
-          require(int(bytes.concat(
-            ownerBatch.slice(batchCursor + 12 + modeSkip, batchCursor + 13 + modeSkip), hex"00")) <= 1);
-        }
-        require(ownerBatch.slice(
-          batchCursor + 12 + modeSkip + valueSkip, batchCursor + 12 + modeSkip + valueSkip + argsLength)
-          == row.slice(14, 14 + argsLength));
-        batchCursor = batchCursor + 12 + modeSkip + valueSkip + argsLength;
-        localRow = localRow + 1;
-        if (resultLength > 0) {
-          require(resultVector.slice(resultCursor, resultCursor + resultLength)
-            == row.slice(16 + argsLength, 16 + argsLength + resultLength));
-          resultCursor = resultCursor + resultLength;
-        }
-      }
-      tail = tail + 16 + argsLength + resultLength;
-    }
-    require(tail == transcript.length);
-    require(usedMask.slice(0, participantCount) == ${allUsed}.slice(0, participantCount));
-    require(localRow > 0 && batchCursor == ownerBatch.length);
-    require(emissionCursor == ownerEmissions.length);
-    require(callerCursor == ownerCallers.length);
-    require(completionCursor == ownerCompletionPositions.length);
-    // X7: every returned byte is claimed by exactly one row.
-    require(resultCursor == resultVector.length);
-    // The mandatory projection set partitions every output by residue class. Together these scans prove
-    // that the rooted controller category is burned without charging the controller input for all outputs.
-    require(tx.inputs[controllerInput].tokenCategory.length >= 32);
-    bytes controllerCategory = tx.inputs[controllerInput].tokenCategory.slice(0, 32);
-    for (bigint output = participantIndex; output < tx.outputs.length; output = output + participantCount) {
-      bytes outputCategory = tx.outputs[output].tokenCategory;
-      if (outputCategory.length >= 32) {
-        require(outputCategory.slice(0, 32) != controllerCategory);
-      }
-    }
-    require(this.activeInputIndex < tx.outputs.length);
-    require(tx.outputs[this.activeInputIndex].value == 1000);
-    require(tx.outputs[this.activeInputIndex].tokenCategory.length == 0);
-    require(tx.outputs[this.activeInputIndex].nftCommitment.length == 0);
-    require(tx.outputs[this.activeInputIndex].tokenAmount == 0);
-    require(true);
-  }
-}`;
-}
-
-/**
- * A callsite whose reached method is not a compile-time name: received/reduced function pointers, varying
- * selector tables, address-array loops, and low-level `call`/`staticcall` whose method lives in the
- * canonical calldata. Its `functionName` is a placeholder rather than the method the concrete invocation
- * resolves to, so name equality must not be required against it.
- *
- * TRUST BOUNDARY. This predicate reads compiler-authored ABI metadata, and an artifact is NOT trusted input:
- * the SDK cannot tell a compiler-emitted artifact from a hand-written or third-party one. Every disjunct here
- * therefore only widens what a *builder* accepts; none of them weakens a covenant. Authority stays with the
- * transcript machinery and the compiled routes, which authenticate the concrete selector, arguments and
- * result regardless of what the ABI claimed. Given that, a disjunct is worth carrying only if the compiler
- * actually needs it: `possibleTargets` was removed because the compiler emits it strictly alongside
- * `selectorArrayVar` (`Artifact.ts` spreads it inside that guard), so it changed nothing for real compiler
- * output while silently disabling the name and result-schema checks for any artifact that carries it alone.
- */
+/** Runtime-selected callsites authenticate their concrete selector/calldata in the controllerless carrier. */
 const isRuntimeResolvedCallsite = (callsite: ExternalCallAbi): boolean =>
   callsite.fnPtrCall === true
   || callsite.selectorArrayVar !== undefined
@@ -1816,16 +735,7 @@ const isRuntimeResolvedCallsite = (callsite: ExternalCallAbi): boolean =>
   || callsite.functionName === '__raw__'
   || callsite.opaqueReturn === true;
 
-/**
- * Bind each reached child of one invocation to exactly one compiler-authored callsite of its handler.
- *
- * A result edge must name one unambiguous consumer occurrence, not merely a method name: a handler may
- * reach the same method more than once, and two callsites of the same name can differ in whether their
- * result is consumed. When every callsite is statically singular and the reached children exhaust them,
- * the binding is the source order itself. Otherwise conditional and loop callsites make the mapping
- * many-to-one, and the binding is accepted only while every remaining candidate agrees on the result
- * contract; a candidate set that disagrees is rejected rather than guessed.
- */
+/** Bind each reached child to one compiler-authored occurrence without guessing across incompatible schemas. */
 function bindConsumerCallsites(
   parent: number,
   callsites: readonly ExternalCallAbi[],
@@ -1834,9 +744,6 @@ function bindConsumerCallsites(
   if (callsites.length === 0) return reached.map(() => undefined);
   const singular = callsites.every((callsite) =>
     callsite.occurrence === undefined || callsite.occurrence === 'once');
-  // Positional binding checks order, so it applies only when the reached methods are a permutation of the
-  // compiler-named ones. A reached method the compiler never named means the callsite resolves its target
-  // method at runtime - a pointer, a selector table or low-level calldata - and order carries no meaning.
   const sorted = (names: readonly string[]): string => [...names].sort().join('\x00');
   const namesArePermuted = sorted(reached) === sorted(callsites.map((call) => call.functionName));
   if (singular && callsites.length === reached.length && namesArePermuted) {
@@ -1868,13 +775,12 @@ function bindConsumerCallsites(
 }
 
 /**
- * X36: the one named refusal for a planned reached-row count, shared by both public planning entry points.
+ * Freeze a planned graph into one unambiguous execution transcript.
  *
- * A callsite's admitted row count is a property of the ARTIFACT, so it must not depend on which planner
- * reached it. `deriveCompiledGraphPlan` calls this with the count its derivation probe supplied for one
- * callsite; `planCompiledGraph` calls it with the count the caller-supplied rows force onto one callsite.
- * Keeping the message in `occurrenceCountViolation` means neither entry point can drift into its own wording
- * or its own legs.
+ * Results are supplied only after producer VM probes. Every returning invocation must have exactly one
+ * canonical result byte vector, while void invocations must not be assigned one. The transcript commits both
+ * the global depth-first tree and each owner's exact SCB1 execution blob, preventing a graph/local-policy
+ * desynchronization.
  */
 export function assertPlannedOccurrenceCount(call: ExternalCallAbi, count: number): void {
   const bound = occurrenceBoundOf(call);
@@ -2209,13 +1115,13 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
  * Measure the call options one graph invocation's function carries that the executed SCB1 route does not.
  *
  * `IFoo(addr).m{value: v}()` publishes `transferCount` and `satoshiContainer`/`transfer` slots on the DIRECT
- * block layout, while the SCB1 route layout, the handler projection and the transcript row stay byte identical
+ * block layout, while the SCB1 route layout, the handler policy and the transcript row stay byte identical
  * to the option-free form. Executing such a function as a graph row therefore drops the option silently unless
  * something commits it - which is what the row's call-options byte is for.
  *
  * A first-party `this.transfer(..)` publishes the SAME direct-mode fields yet is carried into the route, which
  * is why the direct block layout alone cannot tell a bound effect from a dropped one and why this compares the
- * two projections instead of flagging every value-moving function. The measured discriminator is the SCB1
+ * two policies instead of flagging every value-moving function. The measured discriminator is the SCB1
  * handler: an option contributes nothing to `handler.transfers`, a first-party transfer contributes one entry
  * and eight route `transfer` slots. Dropped token-container operations are already refused at compile time;
  * the container arm here is the SDK-side backstop for the same class.
@@ -2233,7 +1139,7 @@ export function measureUnboundCallOptions(
   const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0);
   const unboundContainer = (fn.tokenContainerAccesses?.length ?? 0)
     - (handler?.tokenContainerAccesses?.length ?? 0);
-  // Backstop for an artifact whose per-handler projection is absent or understated: a direct-mode option slot
+  // Backstop for an artifact whose per-handler policy is absent or understated: a direct-mode option slot
   // kind the route never reserves cannot be settled by the row, whatever the counts claim.
   const droppedKinds = [...new Set((fn.blockLayout?.slots ?? [])
     .filter((slot) => OPTION_SLOT_KINDS.has(slot.kind) && !routeKinds.has(slot.kind))
@@ -2269,7 +1175,7 @@ export function assertNoUnboundCallOptions(
  * Group a finite logical graph by physical owner while preserving global invocation order.
  *
  * Each owner receives one real compiler-generated SCB1 plan, regardless of how often a cycle re-enters it.
- * The resulting `localRow` projection is deterministic and is the bridge between global call edges and the
+ * The resulting `localRow` mapping is deterministic and is the bridge between global call edges and the
  * owner-local sequential journal. This function intentionally does not accept selectors, encoded arguments,
  * or results from the caller: all are derived from compiler artifacts.
  */
@@ -2306,7 +1212,7 @@ export function planCompiledGraph(
       throw new Error('layer3: two participant rows name the same physical locking bytecode');
     }
     identities.add(lbc);
-    // X106: the artifact's published blob envelope has to fit the generated controller's compiled-in bound.
+    // X106: the artifact's published blob envelope has to fit the participant verifier's compiled-in bound.
     // Skipped for an artifact publishing no envelope at all, which fails later by name at `hiddenBatch!`.
     assertGraphBatchBlobEnvelope(participant.artifact, index);
   });
@@ -2410,7 +1316,7 @@ export function planCompiledGraph(
     );
     // X5: the refusal above precedes this, so an accepted plan always measures zero option bits. Deriving them
     // anyway - from that same measurement - is what makes the committed byte a real field: relax the refusal and
-    // the option travels into the transcript, where the projection verifier rejects it, instead of vanishing.
+    // the option travels into the transcript, where the participant verifier rejects it, instead of vanishing.
     let bits = measureUnboundCallOptions(participant.artifact, abiFunction, invocation.function).optionBits;
     // A bound raw `{value:}` option belongs to this row's PARENT EDGE, not to the invocation of the
     // caller handler that authored it. E2 admits exactly one unconditional raw edge, so its compiler-owned
@@ -2548,7 +1454,7 @@ export function planCompiledGraph(
     });
   });
   // Compiler-side diagnostic for §6.3's transitive rule. This is deliberately duplicated by the root
-  // controller's `staticFrames` walk: artifacts and plans are builder input, so this early refusal improves
+  // participant verifier's `staticFrames` walk: artifacts and plans are builder input, so this early refusal improves
   // attribution but is not the security boundary.
   for (const invocation of plannedBase) {
     if (invocation.callMode !== 'staticcall') continue;

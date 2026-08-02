@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Function modifiers: the `_;` placeholder and modifier / custom-modifier interleaving.
 

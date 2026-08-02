@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // X107. X93 labelled the WARN side. Hard errors still printed a bare `at Line N, Column M`, and measured on
 // the mistswap corpus 21 of those named a file too short to hold the line - the headline being `ERC20Mock.sol`

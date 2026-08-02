@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { computeErc7201SlotNumber } from '@solidcash/utils';
-import { compileString, compileStringMulti } from '../src/index.js';
+import { compileString, compileStringMulti } from './direct-compile.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 

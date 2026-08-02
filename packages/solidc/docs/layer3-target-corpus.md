@@ -30,7 +30,7 @@ Artifact invariance is pinned by existing tests:
 - `HiddenBatch.test.ts` proves a disabled experimental capability leaves artifacts byte-identical.
 - `MsgSenderCrossContractC2.test.ts` pins the direct route while the R5 corpus tests exercise the
   experimental route.
-- `BatchCostRegression.test.ts` pins the R4 parser and R5 two-row resource-route bytes.
+- `Layer3SingleTxCapacity.test.ts` pins finalized controllerless transaction and per-input BCH-2026 costs.
 
 Milestone 2 must not modify those fixtures except through an explicit, separately reviewed baseline
 change. It must not advertise a layer-3 selector, version, controller prefix, or default capability.

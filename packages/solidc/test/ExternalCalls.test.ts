@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
 
@@ -195,14 +195,15 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
     );
   });
 
-  it('keeps a Release 5 root callable while excluding it from a Release 4 local route', () => {
+  it('keeps a repeated-call root callable in the inferred controllerless route', () => {
     const artifact = compileString(SOURCE, {
       forceStateful: true,
       hiddenBatch: true,
       repeatedExternalBatch: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
-    expect(artifact.hiddenBatch).toBeUndefined();
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
   });
 });
 

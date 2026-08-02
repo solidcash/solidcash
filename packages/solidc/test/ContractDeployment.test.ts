@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Contract deployment: new C(...), create/create2 options, type(C).creationCode, selfdestruct, parent ctor.
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { asmToBytecode } from '@solidcash/utils';
-import { compileString, compileStringSplit } from '../src/index.js';
+import { compileString, compileStringSplit } from './direct-compile.js';
 import { assertSplitLayoutsAgree } from '../src/compiler.js';
 
 const SOURCE = `

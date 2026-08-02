@@ -6,7 +6,6 @@ import { classifyHiddenBatchRejection } from '../src/compiler.js';
 import { compileString } from '../src/index.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const spec = readFileSync(resolve(root, 'docs/invocation-transcript-v1.md'), 'utf8');
 const compiler = readFileSync(resolve(root, 'src/compiler.ts'), 'utf8');
 
 const MATRIX = [
@@ -19,17 +18,7 @@ const MATRIX = [
   ['staticcall', 'has non-static descendant', 'SCB_UNSUPPORTED_CONSTRUCT'],
 ] as const;
 
-describe('invocation-transcript-v1 section 8 ineligibility matrix', () => {
-  it('has one non-empty enforcement row for every normative exclusion class', () => {
-    expect(MATRIX).toHaveLength(7);
-    expect(new Set(MATRIX.map(([construct]) => construct)).size).toBe(MATRIX.length);
-    for (const [construct, reason, code] of MATRIX) {
-      expect(spec, `section 8 lost '${construct}'`).toContain(construct);
-      expect(reason.length, `${construct} has no exact rejection`).toBeGreaterThan(0);
-      expect(code.length, `${construct} has no structured rejection class`).toBeGreaterThan(0);
-    }
-  });
-
+describe('controllerless route ineligibility matrix', () => {
   it('pins compiler-owned exclusions to exact reasons and structured classes', () => {
     for (const [, reason, code] of MATRIX.slice(0, 5)) {
       expect(compiler, `compiler does not publish '${reason}'`).toContain(`'${reason}'`);

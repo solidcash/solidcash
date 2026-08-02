@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/compiler.js';
+import { compileString } from './direct-compile.js';
 import {
   CircularInterfaceInheritanceError, InterfaceContractBaseError, SolidcDiagnosticError,
   UndefinedInterfaceError,

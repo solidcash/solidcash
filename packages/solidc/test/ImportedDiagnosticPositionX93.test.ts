@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // X93. A `Location` carries no file identity, so a diagnostic printing a bare `at line N` cites a line that is
 // real in an IMPORTED file and impossible in the file the user named. Measured on the mistswap corpus:

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // A plain `mapping` is NOT enumerable (Solidity parity - mappings are not iterable in Solidity). Only an
 // `enumerable mapping(...)` may be iterated. See docs/evm-storage-parity.md.

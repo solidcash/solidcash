@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { ExternalCallAbi } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract Analysis() {

@@ -7,7 +7,7 @@
  * get their specific indices; fallbacks with no state access get [].
  */
 
-import { compileString } from '../../src/index.js';
+import { compileString } from '../direct-compile.js';
 
 describe('Fallback/Receive ABI metadata', () => {
   describe('stateful contract with delegatecall fallback', () => {

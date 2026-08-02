@@ -1,4 +1,4 @@
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // writesState marks a stateful-contract function as provably read-only (false) so the SDK can skip its
 // derivation probe. Conservative: any mutation, side-effect, or covenant-bypass path -> true. Only emitted

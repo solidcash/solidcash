@@ -57,6 +57,17 @@ describe('Compiler', () => {
       expect(legacyExplicit.hiddenBatch).toEqual(inferred.hiddenBatch);
       expect(legacyExplicit.compiler.options).toEqual(inferred.compiler.options);
     });
+
+    it('does not advertise a participant route without a stateful master identity', () => {
+      const source = 'contract Stateless() { function check(int x) { require(x > 0); } }';
+      const inferred = _csRawSolidc(source);
+      const direct = _csRawSolidc(source, { hiddenBatch: false });
+
+      expect(inferred.stateLayout).toBeUndefined();
+      expect(inferred.hiddenBatch).toBeUndefined();
+      expect(inferred.bytecode).toBe(direct.bytecode);
+      expect(inferred.functionBodies).toEqual(direct.functionBodies);
+    });
   });
 
   describe('Compilation errors', () => {

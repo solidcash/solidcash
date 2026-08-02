@@ -698,6 +698,16 @@ function foreignOutStatePrecedesSharedCall(fn: FunctionDefinitionNode): boolean 
  * but before symbol/type analysis. Only signature-free scalar entry points
  * (`public` or `external`) enter the initial covenant surface; every other
  * source handler receives an explicit rejection reason in artifact metadata. */
+function supportsSingleTransactionBus(ast: Ast, compilerOptions: CompilerOptions): boolean {
+  const { contract } = ast;
+  // A controllerless participant is identified by and self-preserves its master NFT. Keep this predicate in
+  // lockstep with artifact stateLayout creation: a stateless contract has no participant identity or balanced
+  // master block and therefore cannot soundly advertise or execute SCB1. `forceStateful` remains the explicit
+  // way to opt a zero-storage contract into the stateful/master-NFT model.
+  return contract.stateVariables.length > 0 || contract.collections.length > 0
+    || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
+}
+
 function synthesizeHiddenBatchRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
@@ -3418,6 +3428,7 @@ function compileResolvedAst(
     }
   }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.hiddenBatch
+    && supportsSingleTransactionBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
@@ -3654,7 +3665,7 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
-  if (!synthesizeBatchBeforeLowering) {
+  if (!synthesizeBatchBeforeLowering && supportsSingleTransactionBus(ast, mergedCompilerOptions)) {
     synthesizeHiddenBatchRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,

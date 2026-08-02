@@ -60,6 +60,7 @@ participant[participantCount] =
   masterCategory[32]
   policyHash[32]
   trailingBase:u16 trailingCapacity:u16     # ffff/0 or exact block suffix
+  returnOutput:u16                          # ffff or absolute in-block return-event slot
 rowCount:u16                                # 0..24
 row[rowCount] =
   kind:u8 owner:u8 consumer:u8 slot:u16 mode:u8

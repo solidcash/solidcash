@@ -5,9 +5,9 @@ import { layer3 } from '../src/index.js';
 const sample = (): layer3.SingleTxBusTranscript => ({
   participants: [
     { lockingBytecode: '51', masterCategory: '11'.repeat(32), base: 0, blockSize: 2,
-      policyHash: 'aa'.repeat(32), trailingCapacity: 0 },
+      policyHash: 'aa'.repeat(32), trailingCapacity: 0, returnOutput: 0xffff },
     { lockingBytecode: '52', masterCategory: '22'.repeat(32), base: 2, blockSize: 3,
-      policyHash: 'bb'.repeat(32), trailingBase: 2, trailingCapacity: 1 },
+      policyHash: 'bb'.repeat(32), trailingBase: 2, trailingCapacity: 1, returnOutput: 4 },
   ],
   rows: [
     {

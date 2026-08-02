@@ -57,6 +57,8 @@ export interface SingleTxParticipant {
   policyHash: string;
   trailingBase?: number;
   trailingCapacity: number;
+  /** Absolute return-event output, or 0xffff when this participant has no returning route. */
+  returnOutput: number;
 }
 
 export interface SingleTxRow {
@@ -125,11 +127,17 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
         || trailingBase + participant.trailingCapacity !== participant.blockSize) {
       throw new Error(`layer3: participant ${index} has a non-canonical trailing region`);
     }
+    if (participant.returnOutput !== 0xffff
+      && (participant.returnOutput < participant.base
+        || participant.returnOutput >= participant.base + participant.blockSize)) {
+      throw new Error(`layer3: participant ${index} has an out-of-block return output`);
+    }
     expectedBase += participant.blockSize;
     return concat(
       uint(participant.base, 2, 'participant base'), uint(participant.blockSize, 2, 'participant block size'),
       frame(lbc, 'locking bytecode'), category, policy,
       uint(trailingBase, 2, 'trailing base'), uint(participant.trailingCapacity, 2, 'trailing capacity'),
+      uint(participant.returnOutput, 2, 'return output'),
     );
   });
   const rowParts = rows.map((row, index) => {
@@ -186,6 +194,7 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const policyHash = binToHex(reader.take(32, `participant ${index}.policyHash`));
     const trailing = reader.uint(2, `participant ${index}.trailingBase`);
     const trailingCapacity = reader.uint(2, `participant ${index}.trailingCapacity`);
+    const returnOutput = reader.uint(2, `participant ${index}.returnOutput`);
     if (base !== expectedBase || blockSize < 1 || lockingBytecode.length === 0) {
       throw new Error(`layer3: participant ${index} has a non-contiguous block`);
     }
@@ -193,9 +202,12 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
       : trailing >= blockSize || trailing + trailingCapacity !== blockSize) {
       throw new Error(`layer3: participant ${index} has a non-canonical trailing region`);
     }
+    if (returnOutput !== 0xffff && (returnOutput < base || returnOutput >= base + blockSize)) {
+      throw new Error(`layer3: participant ${index} has an out-of-block return output`);
+    }
     participants.push({
       base, blockSize, lockingBytecode, masterCategory, policyHash,
-      trailingBase: trailing === 0xffff ? undefined : trailing, trailingCapacity,
+      trailingBase: trailing === 0xffff ? undefined : trailing, trailingCapacity, returnOutput,
     });
     expectedBase += blockSize;
   }

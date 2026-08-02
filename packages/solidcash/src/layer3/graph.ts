@@ -268,6 +268,7 @@ export function finalizeSingleTxInvocationGraph(
       throw new Error(`layer3: participant ${index} master category must be 32-byte hex`);
     }
     const trailingBase = participant.blockLayout!.trailingBase;
+    const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
@@ -278,6 +279,7 @@ export function finalizeSingleTxInvocationGraph(
       policyHash: binToHex(sha256.hash(hexToBin(lockingBytecode))),
       ...(trailingBase === undefined ? {} : { trailingBase }),
       trailingCapacity: participant.blockLayout!.trailingCapacity ?? 0,
+      returnOutput: returnSlot === undefined ? 0xffff : layout.participantInputs[index] + returnSlot.offset,
     };
   });
   const rows = plan.invocations.map((invocation) => {

@@ -2599,9 +2599,10 @@ function synthesizeHiddenBatchRoute(
         bigint expectedBase = 0;
         bigint activeMembership = 0;
         bigint activeParticipant = 255;
+        bigint activeReturnOutput = 65535;
         bytes participantBases = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          require(cursor + 75 <= transcript.length);
+          require(cursor + 77 <= transcript.length);
           bigint base = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
           bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
           bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
@@ -2609,14 +2610,15 @@ function synthesizeHiddenBatchRoute(
           require(base == expectedBase && blockSize >= 1 && lbcLength > 0);
           participantBases = bytes.concat(participantBases, bytes2(base));
           expectedBase = expectedBase + blockSize;
-          require(expectedBase < tx.inputs.length && cursor + lbcLength + 68 <= transcript.length);
+          require(expectedBase < tx.inputs.length && cursor + lbcLength + 70 <= transcript.length);
           bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
           cursor = cursor + lbcLength;
           bytes category = transcript.slice(cursor, cursor + 32);
           bytes policyHash = transcript.slice(cursor + 32, cursor + 64);
           bigint trailingBase = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
           bigint trailingCapacity = int(bytes.concat(transcript.slice(cursor + 66, cursor + 68), hex"00"));
-          cursor = cursor + 68;
+          bigint returnOutput = int(bytes.concat(transcript.slice(cursor + 68, cursor + 70), hex"00"));
+          cursor = cursor + 70;
           require(base < tx.inputs.length && base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
           require(tx.inputs[base].tokenCategory.length >= 33
@@ -2627,9 +2629,11 @@ function synthesizeHiddenBatchRoute(
             && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
           if (trailingCapacity == 0) { require(trailingBase == 65535); }
           else { require(trailingBase < blockSize && trailingBase + trailingCapacity == blockSize); }
+          require(returnOutput == 65535 || (returnOutput >= base && returnOutput < expectedBase));
           if (base == this.activeInputIndex) {
             activeMembership = activeMembership + 1;
             activeParticipant = participant;
+            activeReturnOutput = returnOutput;
           }
         }
         require(activeMembership == 1 && expectedBase + 1 == tx.inputs.length);
@@ -2645,6 +2649,7 @@ function synthesizeHiddenBatchRoute(
         bigint batchValueWidth = int(bytes.concat(localBatch.slice(5, 6), hex"00")) * 9;
         bytes rowConsumers = hex"";
         bytes rowDepths = hex"";
+        bytes localResultVector = hex"";
         for (bigint row = 0; row < rowCount; row = row + 1) {
           require(cursor + 29 <= transcript.length);
           bigint rowStart = cursor;
@@ -2677,6 +2682,7 @@ function synthesizeHiddenBatchRoute(
           cursor = cursor + 21;
           bytes rowSubject;
           bytes rowArguments;
+          bytes rowResult;
           for (bigint field = 0; field < 4; field = field + 1) {
             require(cursor + 2 <= transcript.length);
             bigint fieldLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -2684,6 +2690,7 @@ function synthesizeHiddenBatchRoute(
             require(cursor + fieldLength <= transcript.length);
             if (field == 0) { rowSubject = transcript.slice(cursor, cursor + fieldLength); }
             if (field == 1) { rowArguments = transcript.slice(cursor, cursor + fieldLength); }
+            if (field == 2) { rowResult = transcript.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
           if (kind == 0 && consumer == activeParticipant) {
@@ -2702,6 +2709,7 @@ function synthesizeHiddenBatchRoute(
                 == int(bytes.concat(localBatch.slice(batchCursor + 12, batchCursor + 13), hex"00")));
             }
             require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));
+            localResultVector = bytes.concat(localResultVector, rowResult);
             if (row == 0) { require(rowSubject.length == 0 || rowSubject == tx.origin); }
             else { require(rowSubject == tx.inputs[sourceSlot].lockingBytecode); }
             batchCursor = batchArgsStart + batchArgsLength;
@@ -2710,6 +2718,17 @@ function synthesizeHiddenBatchRoute(
         }
         require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
+        if (activeReturnOutput == 65535) { require(localResultVector.length == 0); }
+        else {
+          require(localResultVector.length <= 126);
+          bytes expectedCommitment;
+          if (localResultVector.length <= 75) {
+            expectedCommitment = bytes.concat(bytes1(localResultVector.length), localResultVector);
+          } else {
+            expectedCommitment = bytes.concat(hex"4c", bytes1(localResultVector.length), localResultVector);
+          }
+          require(tx.outputs[activeReturnOutput].nftCommitment == expectedCommitment);
+        }
       }
   `;
   const singleTxPrologue = graphControllerLbc !== undefined ? '' : `

@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
-  binToHex, encodeTransaction, hexToBin, sha256,
+  bigIntToVmNumber, binToHex, encodeTransaction, hexToBin, sha256,
 } from '@bitauth/libauth';
-import { buildInitialStateCommitments } from '@solidcash/utils';
+import { buildInitialStateCommitments, scriptToBytecode } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import {
   Contract, TransactionBuilder, layer3,
@@ -13,9 +13,8 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 const source = (name: string): string => `contract ${name}() {
   int counter;
-  function add(int amount) public {
-    this.counter = this.counter + amount;
-    require(amount > 0);
+  function add(int amount) public pure returns (int) {
+    return amount;
   }
 }`;
 
@@ -25,8 +24,8 @@ const raw = (builder: TransactionBuilder): string =>
 const reverseCategory = (category: string): string =>
   (category.match(/../g) as string[]).reverse().join('');
 
-type Mutation = 'honest' | 'substitute' | 'gap' | 'suffix-row' | 'selector' | 'arguments'
-| 'parent' | 'caller' | 'target' | 'completion';
+type Mutation = 'honest' | 'no-carrier' | 'substitute' | 'gap' | 'suffix-row' | 'selector' | 'arguments'
+| 'parent' | 'caller' | 'target' | 'completion' | 'result';
 
 async function attempt(mutation: Mutation): Promise<string> {
   const provider = createLayer3SemanticTestProvider();
@@ -39,7 +38,7 @@ async function attempt(mutation: Mutation): Promise<string> {
   const batches = artifacts.map((artifact, index) =>
     layer3.encodeHiddenBatch(artifact, [{ function: 'add', args: [BigInt(index + 1)] }]));
   const blockSizes = artifacts.map((artifact) => artifact.hiddenBatch!.route.blockLayout!.blockSize);
-  expect(blockSizes).toEqual([2, 2]);
+  expect(blockSizes).toEqual([3, 3]);
   const layout = layer3.singleTxBusPhysicalLayout(blockSizes);
   const participants = contracts.map((contract, index) => ({
     lockingBytecode: contract.lockingBytecode,
@@ -47,7 +46,7 @@ async function attempt(mutation: Mutation): Promise<string> {
     base: layout.participantInputs[index] + (mutation === 'gap' && index === 1 ? 1 : 0),
     blockSize: blockSizes[index],
     policyHash: binToHex(sha256.hash(hexToBin(contract.lockingBytecode))),
-    trailingCapacity: 0,
+    trailingCapacity: 0, returnOutput: layout.participantInputs[index] + 2,
   }));
   if (mutation === 'substitute') participants[1].lockingBytecode = '51';
   const rows: layer3.SingleTxRow[] = artifacts.map((artifact, index) => ({
@@ -56,7 +55,8 @@ async function attempt(mutation: Mutation): Promise<string> {
     targetSlot: layout.participantInputs[index], selectorHex: artifact.hiddenBatch!.handlers[0].selector,
     position: 2, parent: index === 0 ? 0xffff : 0, depth: index, subtreeEnd: 1,
     subjectHex: index === 0 ? '' : contracts[0].lockingBytecode,
-    argsHex: batches[index].rows[0].argsHex, resultHex: '', effectHex: '',
+    argsHex: batches[index].rows[0].argsHex,
+    resultHex: binToHex(scriptToBytecode([bigIntToVmNumber(BigInt(index + 1))])), effectHex: '',
   }));
   if (mutation === 'suffix-row') rows.push({ ...rows[1], slot: 1 });
   if (mutation === 'selector') rows[1] = { ...rows[1], selectorHex: 'ffffffff' };
@@ -65,21 +65,27 @@ async function attempt(mutation: Mutation): Promise<string> {
   if (mutation === 'caller') rows[1] = { ...rows[1], subjectHex: contracts[1].lockingBytecode };
   if (mutation === 'target') rows[1] = { ...rows[1], targetSlot: 0 };
   if (mutation === 'completion') rows[1] = { ...rows[1], position: 1 };
+  if (mutation === 'result') rows[1] = { ...rows[1], resultHex: '03' };
   const transcript: layer3.SingleTxBusTranscript = { participants, rows };
 
-  const fee = await createFeeFunder(provider, 100_000n);
+  const fee = await createFeeFunder(provider, 500_000n);
   const tx = new TransactionBuilder({ provider });
   for (let participant = 0; participant < contracts.length; participant += 1) {
     const contract = contracts[participant];
     const artifact = artifacts[participant];
     const setup = setups[participant];
     const route = artifact.hiddenBatch!.route;
+    const routeArgs: never[] = [batches[participant].blob, ...batches[participant].routeWitnesses] as never[];
+    if (route.inputs.some((input) => input.name === '__internal__returnOutputIdx')) {
+      routeArgs.push(BigInt(participants[participant].returnOutput) as never);
+    }
     const routeUnlocker = contract.createCompilerRouteUnlocker(
       route, hexToBin(artifact.hiddenBatch!.selector),
-    )(batches[participant].blob, ...batches[participant].routeWitnesses);
+    )(...routeArgs);
     tx.addInput(
       setup.masterUtxo,
-      participant === 0 ? layer3.withSingleTxCarrier(routeUnlocker, transcript) : routeUnlocker,
+      participant === 0 && mutation !== 'no-carrier'
+        ? layer3.withSingleTxCarrier(routeUnlocker, transcript) : routeUnlocker,
     );
     tx.addOutput({
       to: contract.tokenAddress, amount: setup.masterUtxo.satoshis,
@@ -97,14 +103,28 @@ async function attempt(mutation: Mutation): Promise<string> {
         nft: {
           capability: 'mutable',
           commitment: buildInitialStateCommitments(
-            artifact.stateLayout!, { counter: BigInt(participant + 1) },
+            artifact.stateLayout!, { counter: 0n },
           )[0],
+        },
+      },
+    });
+    const returnFunding = await createFeeFunder(provider, 1000n);
+    tx.addInput(returnFunding.utxo, returnFunding.unlocker);
+    tx.addOutput({
+      to: hexToBin('51'), amount: 1000n,
+      token: {
+        category: setup.categoryId, amount: 0n,
+        nft: {
+          capability: 'none',
+          commitment: binToHex(scriptToBytecode([hexToBin(
+            binToHex(scriptToBytecode([bigIntToVmNumber(BigInt(participant + 1))])),
+          )])),
         },
       },
     });
   }
   tx.addInput(fee.utxo, fee.unlocker);
-  tx.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 90_000n });
+  tx.addOutput({ to: fee.unlocker.generateLockingBytecode(), amount: 100_000n });
   return provider.sendRawTransaction(raw(tx));
 }
 
@@ -113,8 +133,13 @@ describe('controllerless participant mutual structural verifier', () => {
     await expect(attempt('honest')).resolves.toMatch(/^[0-9a-f]{64}$/);
   }, 120_000);
 
+  it('preserves owner-local SCB1 return execution without a carrier', async () => {
+    await expect(attempt('no-carrier')).resolves.toMatch(/^[0-9a-f]{64}$/);
+  }, 120_000);
+
   it.each([
     'substitute', 'gap', 'suffix-row', 'selector', 'arguments', 'parent', 'caller', 'target', 'completion',
+    'result',
   ] as const)(
     'rejects hostile %s transcripts', async (mutation) => {
       await expect(attempt(mutation)).rejects.toThrow();

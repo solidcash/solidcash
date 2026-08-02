@@ -254,6 +254,17 @@ export interface SingleTxTokenSlotEffect {
   capability: 'ft' | 'none' | 'mutable' | 'minting';
 }
 
+export interface SingleTxSidecarSlotEffect {
+  participant: number;
+  offset: number;
+  kind: 'blockhashOracle' | 'keccakSideCar' | 'ecrecoverSideCar';
+  lockingBytecodeHex: string;
+  tokenCategoryHex: string;
+  inputCommitmentHex: string;
+  outputCommitmentHex: string;
+  value: bigint;
+}
+
 const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
 
 const uint64LeHex = (value: bigint, field: string): string => {
@@ -294,6 +305,7 @@ export function finalizeSingleTxInvocationGraph(
   resourceEffects: readonly SingleTxResourceSlotEffect[] = [],
   valueEffects: readonly SingleTxValueSlotEffect[] = [],
   tokenEffects: readonly SingleTxTokenSlotEffect[] = [],
+  sidecarEffects: readonly SingleTxSidecarSlotEffect[] = [],
 ): FinalizedSingleTxInvocationGraph {
   if (masterCategories.length !== plan.participants.length) {
     throw new Error('layer3: controllerless master categories must align with participants');
@@ -305,7 +317,8 @@ export function finalizeSingleTxInvocationGraph(
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
       'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
-      'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'trailing',
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'blockhashOracle', 'keccakSideCar',
+      'ecrecoverSideCar', 'trailing',
     ].includes(slot.kind));
   });
   if (unsupported) {
@@ -556,7 +569,42 @@ export function finalizeSingleTxInvocationGraph(
           : effect.commitmentHex.toLowerCase(),
       };
     });
-  const rows = [...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows];
+  const sidecarKeys = new Set(sidecarEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (sidecarKeys.size !== sidecarEffects.length) {
+    throw new Error('layer3: controllerless sidecar effects contain a duplicate participant slot');
+  }
+  const sidecarRows = [...sidecarEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      const slot = participant?.blockLayout!.slots.find((candidate) =>
+        candidate.kind === effect.kind && candidate.offset === effect.offset);
+      if (!participant || !slot) {
+        throw new Error(`layer3: participant ${effect.participant} has no ${effect.kind} slot ${effect.offset}`);
+      }
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(effect.lockingBytecodeHex)
+        || !/^[0-9a-fA-F]{64}(?:01|02)?$/.test(effect.tokenCategoryHex)
+        || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.inputCommitmentHex)
+        || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.outputCommitmentHex)
+        || effect.value < 0n) {
+        throw new Error(`layer3: participant ${effect.participant} sidecar slot ${effect.offset} is invalid`);
+      }
+      const absolute = layout.participantInputs[effect.participant] + effect.offset;
+      return {
+        kind: 6, owner: effect.participant, consumer: effect.participant,
+        slot: effect.offset,
+        mode: { blockhashOracle: 0, keccakSideCar: 1, ecrecoverSideCar: 2 }[effect.kind],
+        sourceSlot: absolute, targetSlot: absolute, selectorHex: '00000000',
+        position: effect.offset, parent: 0xffff, depth: 0, subtreeEnd: effect.offset,
+        subjectHex: effect.lockingBytecodeHex.toLowerCase(),
+        argsHex: effect.tokenCategoryHex.toLowerCase() + effect.inputCommitmentHex.toLowerCase(),
+        resultHex: '', effectHex: uint64LeHex(effect.value, 'sidecar value')
+          + effect.outputCommitmentHex.toLowerCase(),
+      };
+    });
+  const rows = [
+    ...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows, ...sidecarRows,
+  ];
   const transcript = { participants, rows };
   const bytes = encodeSingleTxBusTranscript(transcript);
   return Object.freeze({ plan, layout, transcript, bytes, carrier: encodeSingleTxCarrier(transcript) });

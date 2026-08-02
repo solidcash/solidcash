@@ -129,6 +129,10 @@ type GraphBlockhashSelection = {
   handler: AbiFunction;
 };
 
+type GraphEcrecoverCall = readonly [
+  FunctionArgument, FunctionArgument, FunctionArgument, FunctionArgument,
+];
+
 /** Decode only the rows selected by an SCB1 envelope and project the compiler-published blockhash descriptors.
  * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
 function selectGraphBlockhashReads(
@@ -137,8 +141,9 @@ function selectGraphBlockhashReads(
   const route = artifact.hiddenBatch?.route;
   const plan = route?.graphBlockhashOracle;
   if (!plan) return [];
-  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231' || blob[4] !== 1) {
-    throw new Error('SCB1 graph blockhash route requires a canonical version-1 envelope');
+  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
+    || (blob[4] !== 1 && blob[4] !== 2)) {
+    throw new Error('SCB1 graph blockhash route requires a canonical version-1 or version-2 envelope');
   }
   const rowCount = blob[6];
   if (rowCount > plan.rowCount) throw new Error('SCB1 graph blockhash row count exceeds the oracle plan');
@@ -147,7 +152,7 @@ function selectGraphBlockhashReads(
   const selected: GraphBlockhashSelection[] = [];
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   for (let row = 0; row < rowCount; row++) {
-    const header = valueMode ? 21 : 12;
+    const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
     if (cursor + header > blob.length) throw new Error(`SCB1 row ${row} is truncated`);
     const selector = binToHex(blob.slice(cursor, cursor + 4));
     const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
@@ -177,6 +182,60 @@ function selectGraphBlockhashReads(
   }
   if (cursor !== blob.length) throw new Error('SCB1 graph blockhash envelope has trailing bytes');
   return selected.sort((a, b) => a.slotOrdinal - b.slotOrdinal);
+}
+
+/** Decode the authenticated ecrecover arguments selected by an SCB1 envelope. Hidden-route ABI arguments
+ * describe the envelope itself, so compute sidecars must be derived from each selected handler row. */
+function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphEcrecoverCall[] {
+  const route = artifact.hiddenBatch?.route;
+  if (!route?.ecrecoverCompute
+    || !artifact.hiddenBatch?.handlers.some((handler) => handler.ecrecoverArgParams?.length)) return [];
+  if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
+    || (blob[4] !== 1 && blob[4] !== 2)) {
+    throw new Error('SCB1 graph ecrecover route requires a canonical version-1 or version-2 envelope');
+  }
+  const rowCount = blob[6];
+  if (rowCount > artifact.hiddenBatch!.maximumRows) {
+    throw new Error('SCB1 graph ecrecover row count exceeds the route limit');
+  }
+  const valueMode = blob[5] === 1;
+  const structs = artifact.structs ?? artifact.stateLayout?.structs;
+  const selected: GraphEcrecoverCall[] = [];
+  let cursor = 7;
+  for (let row = 0; row < rowCount; row += 1) {
+    const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
+    if (cursor + header > blob.length) throw new Error(`SCB1 row ${row} is truncated`);
+    const selector = binToHex(blob.slice(cursor, cursor + 4));
+    const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
+      | (blob[cursor + 7] << 24);
+    if (logicalRow !== row) throw new Error('SCB1 graph rows must use canonical contiguous indices');
+    const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
+    const argsStart = cursor + header;
+    const argsEnd = argsStart + argsLength;
+    if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
+    const handlerInfo = artifact.hiddenBatch!.handlers.find((h) => h.selector === selector && h.eligible);
+    if (!handlerInfo) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
+    const decoded = new Map<string, FunctionArgument>();
+    let argCursor = argsStart;
+    for (const input of handlerInfo.inputs) {
+      const value = decodePushdataValue(blob, argCursor, input.type, structs);
+      decoded.set(input.name, value.value as FunctionArgument);
+      argCursor += value.bytesConsumed;
+    }
+    if (argCursor !== argsEnd) throw new Error(`SCB1 row ${row} argument vector is non-canonical`);
+    for (const names of handlerInfo.ecrecoverArgParams ?? []) {
+      const values = names.map((name) => (name === null ? undefined : decoded.get(name)));
+      if (values.some((value) => value === undefined)) {
+        throw new Error(`SCB1 row ${row} cannot resolve its ecrecover argument vector`);
+      }
+      selected.push([
+        values[0]!, values[1]!, values[2]!, values[3]!,
+      ]);
+    }
+    cursor = argsEnd;
+  }
+  if (cursor !== blob.length) throw new Error('SCB1 graph ecrecover envelope has trailing bytes');
+  return selected;
 }
 
 /**
@@ -1611,6 +1670,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (graphBlockhashSelections.length > 0) {
       (effectiveRoute as AbiFunction & { graphBlockhashSelections: GraphBlockhashSelection[] })
         .graphBlockhashSelections = graphBlockhashSelections;
+    }
+    const graphEcrecoverCalls = selectGraphEcrecoverCalls(this.inner.artifact, blob);
+    if (graphEcrecoverCalls.length > 0) {
+      (effectiveRoute as AbiFunction & { graphEcrecoverCalls: GraphEcrecoverCall[] })
+        .graphEcrecoverCalls = graphEcrecoverCalls;
     }
     const routeSelector = hexToBin(capability.selector);
     return new StatefulFunctionCall(
@@ -4850,11 +4914,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * args come straight from the direct parameters; the split (chunkA) is VM-probed. Returns a flat A0,B0,A1,B1,.. list.
    */
   private async _resolveEcrecoverComputeCoSpends(
-    abiFunction: AbiFunction, args: any[],
+    abiFunction: AbiFunction, args: any[], selectedCalls?: readonly GraphEcrecoverCall[],
   ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>> {
-    const calls = abiFunction.ecrecoverArgParams ?? [];
+    const calls = selectedCalls ?? abiFunction.ecrecoverArgParams ?? [];
     if (calls.length === 0 || !this.categoryId) return [];
-    const salt = hexToBin(this.categoryId).slice().reverse(); // branded: OP_UTXOTOKENCATEGORY is internal (reversed)
+    // A branded sidecar checks the category at absolute input 0, which is only the owning master for a direct call.
+    // Controllerless participants can begin later in the transaction, so graph-selected calls use the shared lock;
+    // the authenticated argument blob, exact kind-6 endpoints, and A->B commitment chain retain result soundness.
+    const salt = selectedCalls ? new Uint8Array(32) : hexToBin(this.categoryId).slice().reverse();
     const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
     const [utxosA, utxosB] = await Promise.all([
       this.inner.provider.getUtxosForLockingBytecode(lockA), this.inner.provider.getUtxosForLockingBytecode(lockB),
@@ -4870,7 +4937,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }> = [];
     for (let i = 0; i < calls.length; i++) {
       const [hp, vp, rp, sp] = calls[i];
-      const hash = argOf(hp), r = argOf(rp), s = argOf(sp), vRaw = argOf(vp);
+      const [hash, vRaw, r, s] = selectedCalls ? [hp, vp, rp, sp]
+        : [argOf(hp as string | null), argOf(vp as string | null), argOf(rp as string | null), argOf(sp as string | null)];
       if (!(hash instanceof Uint8Array) || !(r instanceof Uint8Array) || !(s instanceof Uint8Array)) {
         throw new Error('ecrecoverPubKey in a stateful contract requires direct (hash, v, r, s) parameters.');
       }
@@ -4966,10 +5034,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
     const blockSize = abiFunction.blockLayout?.blockSize ?? 1;
+    const sidecarBase = abiFunction.blockLayout?.trailingBase
+      ?? abiFunction.blockLayout?.slots.find((slot) => slot.kind === 'keccakSideCar')?.offset
+      ?? blockSize;
     // The trailing side-cars start at blockSize = 1 + dataNftCount + front-region slots (read-only NFTs then
     // blockhash oracles). Position the front-region inputs + self-preserving recreations so the trailing region
     // lands at the right base even when the contract also reads external state / blockhashes.
-    if (blockSize !== 1 + dataNftUtxos.length + frontRegionInputs.length) {
+    if (sidecarBase !== 1 + dataNftUtxos.length + frontRegionInputs.length) {
       throw new Error('stateful dynamic keccak256 loop: the front-region inputs (external reads / blockhash '
         + 'oracles) do not fill the slots before the trailing side-car region; cannot position the loop.');
     }
@@ -5010,7 +5081,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
       const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, blockSize, k);
+      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, sidecarBase, k);
       if (callIndex === preimages.length) {
         preimages.push(preimage); // the k-th placeholder was read+aborted -> a new iteration
       } else {
@@ -9537,7 +9608,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       keccakComputeCommitments = resolved.map((cs) => binToHex(cs.commitment));
     }
     if (abiFunction?.ecrecoverCompute && this.categoryId) {
-      const resolved = await this._resolveEcrecoverComputeCoSpends(abiFunction, args);
+      const graphCalls = (abiFunction as AbiFunction & { graphEcrecoverCalls?: GraphEcrecoverCall[] })
+        .graphEcrecoverCalls;
+      const resolved = await this._resolveEcrecoverComputeCoSpends(abiFunction, args, graphCalls);
       ecrecoverComputeCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       ecrecoverComputeRecreates = resolved.map((cs) => cs.recreate);
     }

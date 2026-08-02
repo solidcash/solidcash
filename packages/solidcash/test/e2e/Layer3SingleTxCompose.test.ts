@@ -5,7 +5,11 @@ import {
 import { compileString } from 'solidc';
 import {
   blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode,
+  keccakComputeLockingBytecode,
+  ecrecoverComputeLockingBytecode,
 } from '@solidcash/utils';
+import { keccak_256 } from '@noble/hashes/sha3.js';
+import { ethers } from 'ethers';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
@@ -21,6 +25,7 @@ import { alicePkh } from '../fixture/vars.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
+import { randomUtxo } from '../../src/utils.js';
 
 const CALLEE = `contract ComposeCallee() {
   int counter;
@@ -693,6 +698,169 @@ describe('layer3.compose controllerless transaction', () => {
       }
       expect(vmRejects(hostile), mutation).toBe(true);
     }
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('co-spends and recreates a keccak sidecar at its exact controllerless slot', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const callerArtifact = compileString(`
+      interface IComposeKeccakSink { function accept(bytes32 value); }
+      contract ComposeKeccakCaller() {
+        function invoke(address target, bytes32 payload) public {
+          bytes32 value = keccak256(payload);
+          IComposeKeccakSink(target).accept(value);
+          require(payload.length > 0);
+        }
+      }
+    `, { forceStateful: true });
+    const sinkArtifact = compileString(`contract ComposeKeccakSink() {
+      function accept(bytes32 value) public pure { require(value.length == 32); }
+    }`, { forceStateful: true });
+    const payload = hexToBin('01'.repeat(32));
+    const digest = keccak_256(payload);
+    const sidecarCategory = 'ee'.repeat(32);
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sidecarLock = binToHex(keccakComputeLockingBytecode(
+      hexToBin(callerSetup.categoryId).reverse(), true,
+    ));
+    for (let index = 0; index < 2; index += 1) {
+      await provider.addUtxo(sidecarLock, {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: {
+          category: sidecarCategory, amount: 0n,
+          nft: { capability: 'mutable', commitment: '' },
+        },
+      });
+    }
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.invoke(sink.inner.lockingBytecode, payload), sink.call.accept(digest)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    const sidecarOffset = callerArtifact.hiddenBatch!.route.blockLayout!.slots.find(
+      (slot) => slot.kind === 'keccakSideCar',
+    )?.offset;
+    if (sidecarOffset === undefined) throw new Error('test caller published no keccak sidecar slot');
+    expect(vmRejects(canonical)).toBe(false);
+    const wrongRecreation = await composition.build();
+    wrongRecreation.outputs[sidecarOffset] = {
+      ...wrongRecreation.outputs[sidecarOffset],
+      token: {
+        ...wrongRecreation.outputs[sidecarOffset].token!,
+        nft: { ...wrongRecreation.outputs[sidecarOffset].token!.nft!, commitment: '00'.repeat(32) },
+      },
+    };
+    expect(vmRejects(wrongRecreation)).toBe(true);
+    const omitted = await composition.build();
+    omitted.inputs[sidecarOffset] = { ...omitted.inputs[sidecarOffset + 1] };
+    expect(vmRejects(omitted)).toBe(true);
+    const duplicate = await composition.build();
+    duplicate.inputs[sidecarOffset + 1] = { ...duplicate.inputs[sidecarOffset] };
+    expect(vmRejects(duplicate)).toBe(true);
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('co-spends and recreates an ecrecover A/B pair at exact controllerless slots', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const wallet = ethers.Wallet.createRandom();
+    const message = 'controllerless-single-tx-bus';
+    const signature = await wallet.signMessage(message);
+    const digestHex = ethers.hashMessage(message);
+    const parsed = ethers.Signature.from(signature);
+    const littleEndian = (value: string): Uint8Array => hexToBin(value.replace(/^0x/, '')).reverse();
+    const digest = littleEndian(digestHex);
+    const r = littleEndian(parsed.r);
+    const s = littleEndian(parsed.s);
+    const callerArtifact = compileString(`
+      interface IComposeRecoverSink {
+        function recover(bytes32 h, int v, bytes32 r, bytes32 s);
+      }
+      contract ComposeRecoverCaller() {
+        function invoke(address target, bytes32 h, int v, bytes32 r, bytes32 s) public {
+          IComposeRecoverSink(target).recover(h, v, r, s);
+          require(v == 27 || v == 28);
+        }
+      }
+    `, { forceStateful: true });
+    const sinkArtifact = compileString(`contract ComposeRecoverSink() {
+      function recover(bytes32 h, int v, bytes32 r, bytes32 s) public {
+        pubkey value = ecrecoverPubKey(h, v, r, s);
+        require(value.length == 33);
+      }
+    }`, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sink = StatefulContract.withCategory(
+      sinkBase.withCategory(hexToBin(sinkSetup.categoryId)), sinkSetup.categoryId,
+    );
+    const salt = new Uint8Array(32);
+    const sidecarCategory = 'ed'.repeat(32);
+    for (const role of ['A', 'B'] as const) {
+      await provider.addUtxo(binToHex(ecrecoverComputeLockingBytecode(salt, role)), {
+        ...randomUtxo({ satoshis: 100_000n }),
+        token: {
+          category: sidecarCategory, amount: 0n,
+          nft: { capability: 'mutable', commitment: '' },
+        },
+      });
+    }
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [
+        caller.call.invoke(sink.inner.lockingBytecode, digest, BigInt(parsed.v), r, s),
+        sink.call.recover(digest, BigInt(parsed.v), r, s),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    const sinkBaseOffset = callerArtifact.hiddenBatch!.route.blockLayout!.blockSize;
+    const offsets = sinkArtifact.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot) => slot.kind === 'ecrecoverSideCar')
+      .map((slot) => sinkBaseOffset + slot.offset);
+    expect(offsets).toHaveLength(2);
+    expect(vmRejects(canonical)).toBe(false);
+    const wrongRecreation = await composition.build();
+    wrongRecreation.outputs[offsets[1]] = {
+      ...wrongRecreation.outputs[offsets[1]],
+      token: {
+        ...wrongRecreation.outputs[offsets[1]].token!,
+        nft: { ...wrongRecreation.outputs[offsets[1]].token!.nft!, commitment: '00'.repeat(33) },
+      },
+    };
+    expect(vmRejects(wrongRecreation)).toBe(true);
+    const swapped = await composition.build();
+    [swapped.inputs[offsets[0]], swapped.inputs[offsets[1]]] = [
+      swapped.inputs[offsets[1]], swapped.inputs[offsets[0]],
+    ];
+    expect(vmRejects(swapped)).toBe(true);
+    const duplicated = await composition.build();
+    duplicated.inputs[offsets[1]] = { ...duplicated.inputs[offsets[0]] };
+    expect(vmRejects(duplicated)).toBe(true);
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

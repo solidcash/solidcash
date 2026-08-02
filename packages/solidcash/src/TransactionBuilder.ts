@@ -64,6 +64,8 @@ export interface TransactionBuilderOptions {
   maximumFeeSatsPerByte?: number;
   allowImplicitFungibleTokenBurn?: boolean;
   allowImplicitNftBurn?: boolean;
+  /** The caller has already assembled every compiler-required oracle/compute input at exact positions. */
+  skipAutomaticCoSpends?: boolean;
 }
 
 const DEFAULT_SEQUENCE = 0xfffffffe;
@@ -1126,14 +1128,16 @@ export class TransactionBuilder {
   async send(): Promise<TransactionDetails>;
   async send(raw: true): Promise<string>;
   async send(raw?: true): Promise<TransactionDetails | string> {
-    // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
-    await this.addRequiredBlockhashCoSpends();
-    // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
-    await this.addRequiredKeccakComputeCoSpends();
-    // Auto co-spend ecrecoverPubKey recovery side-car pairs (A checkpoints, B commits the recovered pubkey).
-    await this.addRequiredEcrecoverComputeCoSpends();
-    // Co-spend any required INLINE external-library side-cars (multi-call keccak, user libraries) before building.
-    await this.addRequiredSidecars();
+    if (!this.options.skipAutomaticCoSpends) {
+      // Auto co-spend the blockhash(n) oracle (last input) before sidecars, which would otherwise claim it.
+      await this.addRequiredBlockhashCoSpends();
+      // Auto co-spend keccak256 compute-and-commit side-cars (the default keccak model) from the recorded param.
+      await this.addRequiredKeccakComputeCoSpends();
+      // Auto co-spend ecrecoverPubKey recovery side-car pairs (A checkpoints, B commits the recovered pubkey).
+      await this.addRequiredEcrecoverComputeCoSpends();
+      // Co-spend any required INLINE external-library side-cars (multi-call keccak, user libraries) before building.
+      await this.addRequiredSidecars();
+    }
 
     // Build the transaction, then debug (for script-level errors), then check fees.
     // This order ensures FailedRequireError takes precedence over fee validation errors.

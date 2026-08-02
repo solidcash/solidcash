@@ -743,6 +743,7 @@ export interface Artifact {
       usesMsgValue?: boolean;
       emits?: readonly EmitAbi[];
       tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      ecrecoverArgParams?: readonly (readonly (string | null)[])[];
       transfers?: readonly {
         transferIndex: number;
         recipient: ArgSource;

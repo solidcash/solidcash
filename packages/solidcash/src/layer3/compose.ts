@@ -12,7 +12,7 @@ import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulCont
 import { withSingleTxCarrier } from './controllerless.js';
 import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
-  type SingleTxTokenSlotEffect, type SingleTxValueSlotEffect,
+  type SingleTxSidecarSlotEffect, type SingleTxTokenSlotEffect, type SingleTxValueSlotEffect,
 } from './graph.js';
 import { encodeHiddenBatch } from './hidden-batch.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
@@ -228,14 +228,23 @@ export class SingleTxBusComposition {
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'tcTransfer').map((slot) => ({
         participant: participant.participant, offset: slot.offset,
       })));
+    const sidecarSlots = plan.participants.flatMap((participant) =>
+      participant.blockLayout!.slots
+        .filter((slot) => ['blockhashOracle', 'keccakSideCar', 'ecrecoverSideCar'].includes(slot.kind))
+        .map((slot) => ({
+          participant: participant.participant, offset: slot.offset,
+          kind: slot.kind as SingleTxSidecarSlotEffect['kind'],
+        })));
     const provisionalEventEffects: SingleTxEventSlotEffect[] = [];
     const provisionalResourceEffects: SingleTxResourceSlotEffect[] = [];
     const provisionalValueEffects: SingleTxValueSlotEffect[] = [];
     const provisionalTokenEffects: SingleTxTokenSlotEffect[] = [];
+    const provisionalSidecarEffects: SingleTxSidecarSlotEffect[] = [];
     let finalized = finalizeSingleTxInvocationGraph(
       plan, categories, provisionalResults, provisionalEventEffects, provisionalResourceEffects,
       provisionalValueEffects,
       provisionalTokenEffects,
+      provisionalSidecarEffects,
     );
 
     const participantReturnBlob = (
@@ -261,7 +270,9 @@ export class SingleTxBusComposition {
     ): Promise<TransactionBuilder> => {
       // Resource delete rows authorize exact NFT disappearance at participant-owned slots; the generated
       // covenants still reject any unlisted burn through endpoint cardinality and commitment checks.
-      const aggregate = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
+      const aggregate = new TransactionBuilder({
+        provider, allowImplicitNftBurn: true, skipAutomaticCoSpends: true,
+      });
 
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
@@ -317,17 +328,19 @@ export class SingleTxBusComposition {
     };
 
     if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0
-      || valueSlots.length > 0 || tokenSlots.length > 0) {
+      || valueSlots.length > 0 || tokenSlots.length > 0 || sidecarSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly SingleTxEventSlotEffect[] = provisionalEventEffects;
       let claimedResourceEffects: readonly SingleTxResourceSlotEffect[] = provisionalResourceEffects;
       let claimedValueEffects: readonly SingleTxValueSlotEffect[] = provisionalValueEffects;
       let claimedTokenEffects: readonly SingleTxTokenSlotEffect[] = provisionalTokenEffects;
+      let claimedSidecarEffects: readonly SingleTxSidecarSlotEffect[] = provisionalSidecarEffects;
       const maximumPasses = plan.invocations.length + 5;
       for (let pass = 0; pass < maximumPasses; pass += 1) {
         finalized = finalizeSingleTxInvocationGraph(
           plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
           claimedTokenEffects,
+          claimedSidecarEffects,
         );
         const provisional = await assemble(finalized, claimedResults);
         const derivedResourceEffects: SingleTxResourceSlotEffect[] = [];
@@ -447,6 +460,31 @@ export class SingleTxBusComposition {
         }
         if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
           claimedTokenEffects = derivedTokenEffects;
+          continue;
+        }
+        const derivedSidecarEffects: SingleTxSidecarSlotEffect[] = [];
+        for (const slot of sidecarSlots) {
+          const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
+          const input = provisional.inputs[absolute];
+          const output = provisional.outputs[absolute];
+          if (!input || !output) throw new Error(`layer3: sidecar slot ${slot.participant}:${slot.offset} is absent`);
+          if (!input.token || !output.token) continue;
+          const inputLockingBytecode = input.unlocker.generateLockingBytecode();
+          const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)
+            || internalTokenCategory(input.token) !== internalTokenCategory(output.token)
+            || input.token.amount !== output.token.amount || input.satoshis !== output.amount) {
+            throw new Error(`layer3: sidecar slot ${slot.participant}:${slot.offset} is not recreated in place`);
+          }
+          derivedSidecarEffects.push({
+            ...slot, lockingBytecodeHex: binToHex(inputLockingBytecode),
+            tokenCategoryHex: internalTokenCategory(input.token),
+            inputCommitmentHex: input.token.nft?.commitment ?? '',
+            outputCommitmentHex: output.token.nft?.commitment ?? '', value: input.satoshis,
+          });
+        }
+        if (semanticJson(derivedSidecarEffects) !== semanticJson(claimedSidecarEffects)) {
+          claimedSidecarEffects = derivedSidecarEffects;
           continue;
         }
         const derivedResults: Record<number, string> = {};

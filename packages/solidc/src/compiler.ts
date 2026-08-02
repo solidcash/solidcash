@@ -2681,11 +2681,14 @@ function synthesizeHiddenBatchRoute(
         bigint activeEventRows = 0;
         bigint activeValueRows = 0;
         bigint activeTokenRows = 0;
+        bigint activeSidecarRows = 0;
         bigint activeStaticInvocationRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
         bigint previousValueTarget = -1;
         bigint previousTokenTarget = -1;
+        bigint previousSidecarTarget = -1;
+        bytes activeSidecarTargets = hex"";
         bigint eventsStarted = 0;
         bigint effectsStarted = 0;
         for (bigint row = 0; row < rowCount; row = row + 1) {
@@ -2725,7 +2728,8 @@ function synthesizeHiddenBatchRoute(
             rowDepths = bytes.concat(rowDepths, bytes1(depth));
             invocationRows = invocationRows + 1;
           } else {
-            require((kind == 1 || kind == 2 || kind == 3 || kind == 4) && invocationRows > 0);
+            require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 6)
+              && invocationRows > 0);
             effectsStarted = 1;
             require(owner == consumer && sourceSlot == targetSlot
               && targetSlot >= participantBase && targetSlot < participantBase + participantSize);
@@ -2755,7 +2759,7 @@ function synthesizeHiddenBatchRoute(
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
               require(subtreeEnd == parent);
-            } else {
+            } else if (kind == 4) {
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
               require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
@@ -2763,6 +2767,11 @@ function synthesizeHiddenBatchRoute(
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
               require(subtreeEnd == parent);
+            } else {
+              require(targetSlot > previousSidecarTarget);
+              previousSidecarTarget = targetSlot;
+              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
+              require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             }
           }
           cursor = cursor + 21;
@@ -2887,6 +2896,27 @@ function synthesizeHiddenBatchRoute(
             }
             if (owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
           }
+          if (kind == 6) {
+            require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
+              && rowEffect.length >= 8);
+            bigint categoryLength = tx.inputs[sourceSlot].tokenCategory.length;
+            require((categoryLength == 32 || categoryLength == 33)
+              && rowArguments.slice(0, categoryLength) == tx.inputs[sourceSlot].tokenCategory
+              && rowArguments.slice(categoryLength, rowArguments.length)
+                == tx.inputs[sourceSlot].nftCommitment);
+            require(tx.inputs[sourceSlot].lockingBytecode == rowSubject
+              && tx.outputs[targetSlot].lockingBytecode == rowSubject
+              && tx.outputs[targetSlot].tokenCategory == tx.inputs[sourceSlot].tokenCategory
+              && tx.outputs[targetSlot].tokenAmount == tx.inputs[sourceSlot].tokenAmount
+              && tx.outputs[targetSlot].value == tx.inputs[sourceSlot].value
+              && tx.outputs[targetSlot].value
+                == int(bytes.concat(rowEffect.slice(0, 8), hex"00"))
+              && tx.outputs[targetSlot].nftCommitment == rowEffect.slice(8, rowEffect.length));
+            if (owner == activeParticipant) {
+              activeSidecarRows = activeSidecarRows + 1;
+              activeSidecarTargets = bytes.concat(activeSidecarTargets, bytes2(targetSlot));
+            }
+          }
           bigint priorBoundary = int(bytes.concat(
             participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
           ));
@@ -2947,6 +2977,13 @@ function synthesizeHiddenBatchRoute(
         bigint physicalTokenOutputs = 0;
         for (bigint slot = this.activeInputIndex;
           slot < this.activeInputIndex + activeBlockSize; slot = slot + 1) {
+          bigint isSidecarSlot = 0;
+          for (bigint sidecar = 0; sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+            if (slot == int(bytes.concat(
+              activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
+              isSidecarSlot = 1;
+            }
+          }
           // Controllerless staticcall security boundary. The removed root controller previously owned this
           // snapshot walk; every participant must now enforce it from its mutually authenticated local rows.
           // A return-event slot is allowed to publish the authenticated result vector, but every other slot in
@@ -2961,10 +2998,12 @@ function synthesizeHiddenBatchRoute(
             }
           }
           if (tx.inputs[slot].tokenCategory.length == 33
+            && tx.inputs[slot].tokenCategory.slice(0, 32) == activeCategory
             && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
           if (tx.outputs[slot].tokenCategory.length == 33
+            && tx.outputs[slot].tokenCategory.slice(0, 32) == activeCategory
             && tx.outputs[slot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
@@ -2976,6 +3015,7 @@ function synthesizeHiddenBatchRoute(
           }
           if ((tx.inputs[slot].tokenCategory.length == 32 || tx.inputs[slot].tokenCategory.length == 33)
             && tx.inputs[slot].tokenCategory.slice(0, 32) != activeCategory.slice(0, 32)
+            && isSidecarSlot == 0
             && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
             physicalTokenContainers = physicalTokenContainers + 1;
           }
@@ -3001,11 +3041,13 @@ function synthesizeHiddenBatchRoute(
             physicalEventOutputs = physicalEventOutputs + 1;
           }
         }
-        require(activeResourceEndpoints == physicalResourceEndpoints
-          && activeSatoshiContainerRows == physicalSatoshiContainers
-          && activeTokenContainerRows == physicalTokenContainers
-          && activeEventRows == physicalEventOutputs && activeValueRows == physicalValueOutputs
-          && activeTokenRows == physicalTokenOutputs);
+        require(activeResourceEndpoints == physicalResourceEndpoints);
+        require(activeSatoshiContainerRows == physicalSatoshiContainers);
+        require(activeTokenContainerRows == physicalTokenContainers);
+        require(activeEventRows == physicalEventOutputs);
+        require(activeValueRows == physicalValueOutputs);
+        require(activeTokenRows == physicalTokenOutputs);
+        require(activeSidecarRows * 2 == activeSidecarTargets.length);
         require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
@@ -3775,6 +3817,27 @@ function compileResolvedAst(
   // layout explicitly; otherwise the code generator falls back to activeInput+1 and aliases the first fixed or
   // funding slot rather than the route's canonical trailing region.
   const hiddenBatchRoute = ast.contract.functions.find((fn) => fn.hiddenBatchRoute);
+  const ecrecoverHandlers = ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute
+    && fn.hiddenBatchEligible && fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0);
+  if (hiddenBatchRoute?.blockLayout && ecrecoverHandlers.length > 0) {
+    const maximumCalls = Math.max(...ecrecoverHandlers.map((fn) => fn.ecrecoverCallCount!));
+    const occupied = hiddenBatchRoute.blockLayout.slots.filter((slot) => slot.kind !== 'master');
+    if (occupied.length > 0) {
+      throw new Error('SCB1 ecrecover handlers cannot currently share their participant block with other slots');
+    }
+    hiddenBatchRoute.hiddenBatchMaximumRows = 1;
+    hiddenBatchRoute.ecrecoverCompute = true;
+    hiddenBatchRoute.blockLayout = {
+      ...hiddenBatchRoute.blockLayout,
+      slots: [
+        ...hiddenBatchRoute.blockLayout.slots,
+        ...Array.from({ length: maximumCalls * 2 }, (_, index) => ({
+          kind: 'ecrecoverSideCar' as const, offset: index + 1, slotIndex: index,
+        })),
+      ],
+      blockSize: 1 + maximumCalls * 2,
+    };
+  }
   if (hiddenBatchRoute?.blockLayout) {
     for (const fn of ast.contract.functions) {
       if (fn.graphEmissionHandler || fn.name.startsWith('__scb_array_')) {
@@ -3985,6 +4048,7 @@ function compileResolvedAst(
         ...(abi?.dynamicReads?.length && { dynamicReads: abi.dynamicReads }),
         ...(abi?.dynamicWrites?.length && { dynamicWrites: abi.dynamicWrites }),
         ...(abi?.blockLayout && { blockLayout: abi.blockLayout }),
+        ...(abi?.ecrecoverArgParams?.length && { ecrecoverArgParams: abi.ecrecoverArgParams }),
       });
     }),
     components: invocationAnalysis.components,
@@ -4042,6 +4106,8 @@ function compileResolvedAst(
             ...(sourceAbi?.transfers?.length ? { transfers: sourceAbi.transfers } : {}),
             ...(sourceAbi?.tokenContainerAccesses?.length
               ? { tokenContainerAccesses: sourceAbi.tokenContainerAccesses } : {}),
+            ...(sourceAbi?.ecrecoverArgParams?.length
+              ? { ecrecoverArgParams: sourceAbi.ecrecoverArgParams } : {}),
           };
         })(),
         eligible: fn.hiddenBatchEligible === true,

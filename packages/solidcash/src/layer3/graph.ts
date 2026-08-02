@@ -304,7 +304,8 @@ export function finalizeSingleTxInvocationGraph(
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
       sourceSlot: invocation.caller === null ? 0xffff : layout.participantInputs[invocation.caller],
       targetSlot: layout.participantInputs[invocation.callee], selectorHex: invocation.selectorHex,
-      position: completion, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
+      position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
+      subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
     };
   });

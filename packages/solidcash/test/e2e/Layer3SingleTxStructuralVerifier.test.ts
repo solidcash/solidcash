@@ -25,7 +25,8 @@ const raw = (builder: TransactionBuilder): string =>
 const reverseCategory = (category: string): string =>
   (category.match(/../g) as string[]).reverse().join('');
 
-type Mutation = 'honest' | 'substitute' | 'gap' | 'suffix-row';
+type Mutation = 'honest' | 'substitute' | 'gap' | 'suffix-row' | 'selector' | 'arguments'
+| 'parent' | 'caller' | 'target' | 'completion';
 
 async function attempt(mutation: Mutation): Promise<string> {
   const provider = createLayer3SemanticTestProvider();
@@ -53,10 +54,17 @@ async function attempt(mutation: Mutation): Promise<string> {
     kind: 0, owner: index === 0 ? 0 : 0, consumer: index, slot: index === 0 ? 0xffff : 0,
     mode: 0, sourceSlot: index === 0 ? 0xffff : layout.participantInputs[0],
     targetSlot: layout.participantInputs[index], selectorHex: artifact.hiddenBatch!.handlers[0].selector,
-    position: index + 1, subjectHex: index === 0 ? '' : contracts[0].lockingBytecode,
+    position: 2, parent: index === 0 ? 0xffff : 0, depth: index, subtreeEnd: 1,
+    subjectHex: index === 0 ? '' : contracts[0].lockingBytecode,
     argsHex: batches[index].rows[0].argsHex, resultHex: '', effectHex: '',
   }));
   if (mutation === 'suffix-row') rows.push({ ...rows[1], slot: 1 });
+  if (mutation === 'selector') rows[1] = { ...rows[1], selectorHex: 'ffffffff' };
+  if (mutation === 'arguments') rows[1] = { ...rows[1], argsHex: '03' };
+  if (mutation === 'parent') rows[1] = { ...rows[1], parent: 1 };
+  if (mutation === 'caller') rows[1] = { ...rows[1], subjectHex: contracts[1].lockingBytecode };
+  if (mutation === 'target') rows[1] = { ...rows[1], targetSlot: 0 };
+  if (mutation === 'completion') rows[1] = { ...rows[1], position: 1 };
   const transcript: layer3.SingleTxBusTranscript = { participants, rows };
 
   const fee = await createFeeFunder(provider, 100_000n);
@@ -105,7 +113,11 @@ describe('controllerless participant mutual structural verifier', () => {
     await expect(attempt('honest')).resolves.toMatch(/^[0-9a-f]{64}$/);
   }, 120_000);
 
-  it.each(['substitute', 'gap', 'suffix-row'] as const)('rejects hostile %s transcripts', async (mutation) => {
-    await expect(attempt(mutation)).rejects.toThrow();
-  }, 120_000);
+  it.each([
+    'substitute', 'gap', 'suffix-row', 'selector', 'arguments', 'parent', 'caller', 'target', 'completion',
+  ] as const)(
+    'rejects hostile %s transcripts', async (mutation) => {
+      await expect(attempt(mutation)).rejects.toThrow();
+    }, 120_000,
+  );
 });

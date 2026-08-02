@@ -64,6 +64,7 @@ rowCount:u16                                # 0..24
 row[rowCount] =
   kind:u8 owner:u8 consumer:u8 slot:u16 mode:u8
   sourceSlot:u16 targetSlot:u16 selector[4] position:u16
+  parent:u16 depth:u8 subtreeEnd:u16
   subject:bytes arguments:bytes result:bytes effect:bytes
 EOF
 ```

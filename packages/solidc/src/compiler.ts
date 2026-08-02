@@ -2589,7 +2589,7 @@ function synthesizeHiddenBatchRoute(
         require(transcriptLength > 0 && transcriptLength + 8 == carrier.length);
         return carrier.slice(8, carrier.length);
       }
-      function __scb_verify_single_tx(bytes transcript, bigint expectedLocalRows) internal view {
+      function __scb_verify_single_tx(bytes transcript, bigint expectedLocalRows, bytes localBatch) internal view {
         require(transcript.length >= 16 && transcript.slice(0, 8) == hex"4c33425553310000");
         require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 1);
         require(int(bytes.concat(transcript.slice(9, 13), hex"00000000")) == transcript.length);
@@ -2599,6 +2599,7 @@ function synthesizeHiddenBatchRoute(
         bigint expectedBase = 0;
         bigint activeMembership = 0;
         bigint activeParticipant = 255;
+        bytes participantBases = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           require(cursor + 75 <= transcript.length);
           bigint base = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -2606,6 +2607,7 @@ function synthesizeHiddenBatchRoute(
           bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
           cursor = cursor + 6;
           require(base == expectedBase && blockSize >= 1 && lbcLength > 0);
+          participantBases = bytes.concat(participantBases, bytes2(base));
           expectedBase = expectedBase + blockSize;
           require(expectedBase < tx.inputs.length && cursor + lbcLength + 68 <= transcript.length);
           bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
@@ -2637,29 +2639,83 @@ function synthesizeHiddenBatchRoute(
         require(rowCount <= 24);
         cursor = cursor + 2;
         bigint consumedLocalRows = 0;
+        bigint batchCursor = 7;
+        bigint batchVersion = int(bytes.concat(localBatch.slice(4, 5), hex"00"));
+        bigint batchModeWidth = batchVersion == 2 ? 1 : 0;
+        bigint batchValueWidth = int(bytes.concat(localBatch.slice(5, 6), hex"00")) * 9;
+        bytes rowConsumers = hex"";
+        bytes rowDepths = hex"";
         for (bigint row = 0; row < rowCount; row = row + 1) {
-          require(cursor + 24 <= transcript.length);
+          require(cursor + 29 <= transcript.length);
+          bigint rowStart = cursor;
           bigint kind = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
           bigint owner = int(bytes.concat(transcript.slice(cursor + 1, cursor + 2), hex"00"));
           bigint consumer = int(bytes.concat(transcript.slice(cursor + 2, cursor + 3), hex"00"));
           require(kind <= 6 && owner < participantCount && consumer < participantCount);
-          if (kind == 0 && consumer == activeParticipant) { consumedLocalRows = consumedLocalRows + 1; }
-          cursor = cursor + 16;
+          bigint sourceSlot = int(bytes.concat(transcript.slice(cursor + 6, cursor + 8), hex"00"));
+          bigint targetSlot = int(bytes.concat(transcript.slice(cursor + 8, cursor + 10), hex"00"));
+          bigint completion = int(bytes.concat(transcript.slice(cursor + 14, cursor + 16), hex"00"));
+          bigint parent = int(bytes.concat(transcript.slice(cursor + 16, cursor + 18), hex"00"));
+          bigint depth = int(bytes.concat(transcript.slice(cursor + 18, cursor + 19), hex"00"));
+          bigint subtreeEnd = int(bytes.concat(transcript.slice(cursor + 19, cursor + 21), hex"00"));
+          require(targetSlot == int(bytes.concat(
+            participantBases.slice(consumer * 2, consumer * 2 + 2), hex"00"
+          )));
+          if (row == 0) {
+            require(parent == 65535 && depth == 0 && sourceSlot == 65535 && owner == consumer);
+          } else {
+            require(parent < row && depth >= 1 && depth <= 7);
+            require(owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
+            require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
+            require(sourceSlot == int(bytes.concat(
+              participantBases.slice(owner * 2, owner * 2 + 2), hex"00"
+            )));
+          }
+          require(subtreeEnd >= row && subtreeEnd < rowCount && completion == subtreeEnd + 1);
+          rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
+          rowDepths = bytes.concat(rowDepths, bytes1(depth));
+          cursor = cursor + 21;
+          bytes rowSubject;
+          bytes rowArguments;
           for (bigint field = 0; field < 4; field = field + 1) {
             require(cursor + 2 <= transcript.length);
             bigint fieldLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
             cursor = cursor + 2;
             require(cursor + fieldLength <= transcript.length);
+            if (field == 0) { rowSubject = transcript.slice(cursor, cursor + fieldLength); }
+            if (field == 1) { rowArguments = transcript.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
+          if (kind == 0 && consumer == activeParticipant) {
+            require(batchCursor + 12 + batchModeWidth + batchValueWidth <= localBatch.length);
+            bigint batchArgsLength = int(bytes.concat(
+              localBatch.slice(batchCursor + 10, batchCursor + 12), hex"00"
+            ));
+            bigint batchArgsStart = batchCursor + 12 + batchModeWidth + batchValueWidth;
+            require(batchArgsStart + batchArgsLength <= localBatch.length);
+            require(transcript.slice(rowStart + 10, rowStart + 14)
+              == localBatch.slice(batchCursor, batchCursor + 4));
+            bigint transcriptMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
+            if (batchModeWidth == 0) { require(transcriptMode == 0); }
+            else {
+              require(transcriptMode
+                == int(bytes.concat(localBatch.slice(batchCursor + 12, batchCursor + 13), hex"00")));
+            }
+            require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));
+            if (row == 0) { require(rowSubject.length == 0 || rowSubject == tx.origin); }
+            else { require(rowSubject == tx.inputs[sourceSlot].lockingBytecode); }
+            batchCursor = batchArgsStart + batchArgsLength;
+            consumedLocalRows = consumedLocalRows + 1;
+          }
         }
-        require(cursor == transcript.length && consumedLocalRows == expectedLocalRows);
+        require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
+          && batchCursor == localBatch.length);
       }
   `;
   const singleTxPrologue = graphControllerLbc !== undefined ? '' : `
         bytes __internal__singleTxTranscript = __scb_single_tx_transcript();
         if (__internal__singleTxTranscript.length > 0) {
-          __scb_verify_single_tx(__internal__singleTxTranscript, rowCount);
+          __scb_verify_single_tx(__internal__singleTxTranscript, rowCount, batchBlob);
         }
   `;
   const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {

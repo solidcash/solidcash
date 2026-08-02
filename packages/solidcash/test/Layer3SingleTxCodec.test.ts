@@ -12,11 +12,13 @@ const sample = (): layer3.SingleTxBusTranscript => ({
   rows: [
     {
       kind: 0, owner: 0, consumer: 1, slot: 0, mode: 0, sourceSlot: 0, targetSlot: 2,
-      selectorHex: '12345678', position: 1, subjectHex: '51', argsHex: '01', resultHex: '', effectHex: '',
+      selectorHex: '12345678', position: 1, parent: 0xffff, depth: 0, subtreeEnd: 1,
+      subjectHex: '51', argsHex: '01', resultHex: '', effectHex: '',
     },
     {
       kind: 2, owner: 1, consumer: 0, slot: 4, mode: 0, sourceSlot: 0xffff, targetSlot: 4,
-      selectorHex: 'abcdef01', position: 2, subjectHex: 'abcd', argsHex: '', resultHex: '', effectHex: 'beef',
+      selectorHex: 'abcdef01', position: 2, parent: 0xffff, depth: 0, subtreeEnd: 4,
+      subjectHex: 'abcd', argsHex: '', resultHex: '', effectHex: 'beef',
     },
   ],
 });

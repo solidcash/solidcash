@@ -76,6 +76,10 @@ export interface SingleTxRow {
   selectorHex: string;
   /** Completion position for invocations, otherwise the compiler-authored settlement position. */
   position: number;
+  /** Invocation parent and DFS structure; non-invocation rows use 0xffff/0/slot. */
+  parent: number;
+  depth: number;
+  subtreeEnd: number;
   /** Category, locking bytecode, caller, event topic, or sidecar request identity. */
   subjectHex: string;
   argsHex: string;
@@ -143,7 +147,9 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
       uint(row.consumer, 1, 'row consumer'), uint(row.slot, 2, 'row slot'),
       uint(row.mode, 1, 'row mode'), uint(row.sourceSlot, 2, 'row source slot'),
       uint(row.targetSlot, 2, 'row target slot'), selector,
-      uint(row.position, 2, 'row position'), frame(subject, 'row subject'), frame(args, 'row arguments'),
+      uint(row.position, 2, 'row position'), uint(row.parent, 2, 'row parent'),
+      uint(row.depth, 1, 'row depth'), uint(row.subtreeEnd, 2, 'row subtree end'),
+      frame(subject, 'row subject'), frame(args, 'row arguments'),
       frame(result, 'row result'), frame(effect, 'row effect'),
     );
   });
@@ -206,6 +212,9 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const targetSlot = reader.uint(2, `row ${index}.targetSlot`);
     const selectorHex = binToHex(reader.take(4, `row ${index}.selector`));
     const position = reader.uint(2, `row ${index}.position`);
+    const parent = reader.uint(2, `row ${index}.parent`);
+    const depth = reader.uint(1, `row ${index}.depth`);
+    const subtreeEnd = reader.uint(2, `row ${index}.subtreeEnd`);
     const subjectHex = binToHex(reader.frame(`row ${index}.subject`));
     const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
     const resultHex = binToHex(reader.frame(`row ${index}.result`));
@@ -215,6 +224,7 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     }
     rows.push({
       kind, owner, consumer, slot, mode, sourceSlot, targetSlot, selectorHex, position,
+      parent, depth, subtreeEnd,
       subjectHex, argsHex, resultHex, effectHex,
     });
   }

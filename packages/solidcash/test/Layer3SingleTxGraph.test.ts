@@ -18,7 +18,7 @@ const plan = (): layer3.CompiledGraphPlan => ({
       executorOffset: null, executorInputIndex: 0xffff, executorLockingBytecode: '',
       batch: {} as never, invocations: [0],
       blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
-      routeInputs: [], settlementBoundary: 1, completionPositions: [1],
+      routeInputs: [], settlementBoundary: 2, completionPositions: [2],
     },
     {
       participant: 1, artifact: artifact('22222222'), lockingBytecode: '52', executionKind: 0,
@@ -54,7 +54,7 @@ describe('controllerless compiled invocation graph', () => {
       'aa'.repeat(32), 'bb'.repeat(32),
     ]);
     expect(finalized.transcript.rows).toMatchObject([
-      { owner: 0, consumer: 0, sourceSlot: 0xffff, targetSlot: 0, subjectHex: '53', position: 1 },
+      { owner: 0, consumer: 0, sourceSlot: 0xffff, targetSlot: 0, subjectHex: '53', position: 2 },
       {
         owner: 0, consumer: 1, slot: 7, mode: 1, sourceSlot: 0, targetSlot: 1,
         selectorHex: '22222222', argsHex: '02', resultHex: '2a', position: 2,

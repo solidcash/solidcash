@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
-Tracking baseline: working tree after `8ed2b754` (`feat(layer3): authenticate branch and loop occurrences`)
-Overall verified progress: **66 / 100 points (66%)**
+Tracking baseline: working tree after `cfbf75e3` (`feat(layer3): enforce controllerless static calls`)
+Overall verified progress: **67 / 100 points (67%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -27,11 +27,11 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 1. Codec and layout | 10 | 10 | Complete |
 | 2. Compiler mutual verifier | 15 | 13 | In progress |
 | 3. One-transaction composer | 15 | 14 | In progress |
-| 4. Semantic completeness | 30 | 24 | In progress |
+| 4. Semantic completeness | 30 | 25 | In progress |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
 | 6. Removal and API stabilization | 7 | 0 | Not started |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **66** | **66%** |
+| **Total** | **100** | **67** | **67%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -73,7 +73,7 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
 - [ ] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
 
-## Phase 4 — semantic completeness (24/30)
+## Phase 4 — semantic completeness (25/30)
 
 ### Calls and execution graph (7/7)
 
@@ -111,12 +111,12 @@ settlement capstone supplies the physical `msg.value` binding.
 Evidence: commits `9915aa1d`, `5278ffab`, `19127a9c`, `7ec06606`, and `7798d441`, including
 positive capstones and hostile row/physical-output mutations.
 
-### Oracles, sidecars, and call modes (1/7)
+### Oracles, sidecars, and call modes (2/7)
 
 - [ ] **2 points:** Blockhash oracle slots have positive, stale, omitted, substituted, and duplicate evidence.
 - [ ] **2 points:** Keccak and ecrecover sidecars have exact-slot consumption and recreation evidence.
 - [x] **1 point:** `staticcall` enforces read-only semantics and authenticates its mode bit.
-- [ ] **1 point:** Raw/low-level calls authenticate calldata, selector, results, and supported effects.
+- [x] **1 point:** Raw/low-level calls authenticate calldata, selector, results, and supported effects.
 - [ ] **1 point:** Sound delegate context is implemented and tested, or every delegate shape is explicitly refused.
 
 ## Phase 5 — capacity and optimization (0/8)
@@ -168,6 +168,7 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | `e26fa2ac` | 63% | Repeated callsites share one physical participant, fan-out settles two independent participants, and swapped/dropped/duplicated/retargeted invocation rows fail the BCH VM. |
 | 2026-08-02 | working tree | 65% | Conditional reachability and compile-time-bounded loop occurrences consume exactly the authenticated invocation rows; omitted, duplicate, under-floor, and over-ceiling cases fail. |
 | 2026-08-02 | working tree | 66% | Each controllerless participant enforces static block preservation; canonical static execution broadcasts, while mode substitution and a reached event effect fail the BCH VM. |
+| 2026-08-02 | working tree | 67% | The composer decodes singular low-level calls through a prepared callee proof; target, selector, calldata, and opaque result substitutions fail direct VM validation. |
 
 ## Next percentage milestones
 

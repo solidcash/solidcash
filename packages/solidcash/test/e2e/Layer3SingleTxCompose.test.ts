@@ -3,7 +3,7 @@ import {
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
-import { buildChunkCommitment } from '@solidcash/utils';
+import { buildChunkCommitment, scriptToBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
@@ -558,6 +558,55 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     }).build();
     expect(vmRejects(mutation)).toBe(true);
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('decodes and authenticates a low-level target, selector, calldata, and result', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const targetArtifact = compileString(`contract ComposeRawTarget() {
+      function echo(int value) public pure returns (int) { return value; }
+    }`, { forceStateful: true });
+    const targetBase = new Contract(targetArtifact, [], { provider });
+    const targetSetup = await setupStatefulUtxos(
+      provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const target = StatefulContract.withCategory(
+      targetBase.withCategory(hexToBin(targetSetup.categoryId)), targetSetup.categoryId,
+    );
+    const selector = targetArtifact.abi.find((fn) => fn.name === 'echo')?.selector;
+    if (!selector) throw new Error('test target did not publish its selector');
+    const payload = new Uint8Array([
+      ...hexToBin(selector), ...scriptToBytecode([bigIntToVmNumber(3n)]),
+    ]);
+    const callerArtifact = compileString(`contract ComposeRawCaller() {
+      function invoke(address target, bytes payload) public {
+        (bool ok, bytes result) = target.call(payload);
+        require(ok && result == hex"53");
+      }
+    }`, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.invoke(target.inner.lockingBytecode, payload), target.call.echo(3n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    expect(vmRejects(canonical)).toBe(false);
+    for (const mutation of [
+      'carrier-invocation-target', 'carrier-context-selector', 'carrier-context-args',
+      'carrier-result',
+    ] as const) {
+      const hostile = await composition.build();
+      mutateInputZero(hostile, '', mutation);
+      expect(vmRejects(hostile), mutation).toBe(true);
+    }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

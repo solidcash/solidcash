@@ -141,6 +141,19 @@ export class SingleTxBusComposition {
         while (count < maximum && descriptors[next + count]?.functionName === callsite.functionName) count += 1;
         return count;
       },
+      dynamicCall: ({ kind }) => {
+        if (kind !== 'low-level') {
+          throw new Error(`layer3: controllerless composer does not yet resolve ${kind} calls`);
+        }
+        const descriptor = descriptors[next];
+        if (!descriptor) throw new Error('layer3: prepared calls omit a low-level target');
+        next += 1;
+        return {
+          participant: participantOf(descriptor),
+          function: descriptor.functionName,
+          args: descriptor.args,
+        };
+      },
     });
     if (plan.invocations.length !== descriptors.length) {
       throw new Error(

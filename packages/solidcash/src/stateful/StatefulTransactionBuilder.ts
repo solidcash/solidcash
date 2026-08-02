@@ -1291,7 +1291,12 @@ export class StatefulTransactionBuilder {
     // Dynamic-storage writes consume old chunk NFTs (mint/burn to match the new value), entry deletes burn
     // entries, and loop mapping writes mint new entry NFTs from the master - all intended implicit mint/burns.
     const opts = (this.entryDeletes.size > 0 || this.dynamicChunkInputs.length > 0
-      || this.dynamicChunkVars.length > 0 || this.loopEntryVars.length > 0)
+      || this.dynamicChunkVars.length > 0 || this.loopEntryVars.length > 0
+      // transferNft may change an NFT's capability/commitment, which the generic transaction builder models as
+      // a burn plus mint. The token-container covenant (and, in graph mode, the transcript settlement row)
+      // authenticates the exact transition, so the generic identity-preservation heuristic must not pre-empt
+      // the derivation probe before those checks execute.
+      || this.pendingTokenContainerTransferNfts.length > 0)
       ? { ...baseOpts, allowImplicitNftBurn: true }
       : baseOpts;
     const builder = new CovenantTransactionBuilder(opts);
@@ -1962,7 +1967,14 @@ export class StatefulTransactionBuilder {
     ];
     allTcTransfers.sort((a, b) => a.data.insertionOrder - b.data.insertionOrder);
 
-    for (const entry of allTcTransfers) {
+    const reservedTokenTransferSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'tcTransfer').length
+      ?? allTcTransfers.length;
+    for (let transferSlot = 0; transferSlot < reservedTokenTransferSlots; transferSlot += 1) {
+      const entry = allTcTransfers[transferSlot];
+      if (!entry) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+        continue;
+      }
       if (entry.type === 'ft') {
         builder.addOutput({
           to: entry.data.lockingBytecode,

@@ -230,6 +230,7 @@ export interface SingleTxResourceSlotEffect {
   mode: number;
   lockingBytecodeHex: string;
   tokenCategoryHex: string;
+  outputTokenCategoryHex?: string;
   inputCommitmentHex: string;
   outputCommitmentHex: string;
   inputValue?: bigint;
@@ -242,6 +243,18 @@ export interface SingleTxValueSlotEffect {
   lockingBytecodeHex: string;
   amount: bigint;
 }
+
+export interface SingleTxTokenSlotEffect {
+  participant: number;
+  offset: number;
+  lockingBytecodeHex: string;
+  tokenCategoryHex: string;
+  amount: bigint;
+  commitmentHex: string;
+  capability: 'ft' | 'none' | 'mutable' | 'minting';
+}
+
+const uint8Hex = (value: number): string => value.toString(16).padStart(2, '0');
 
 const uint64LeHex = (value: bigint, field: string): string => {
   if (value < 0n || value > 0xffff_ffff_ffff_ffffn) throw new Error(`layer3: ${field} is outside uint64`);
@@ -280,6 +293,7 @@ export function finalizeSingleTxInvocationGraph(
   eventEffects: readonly SingleTxEventSlotEffect[] = [],
   resourceEffects: readonly SingleTxResourceSlotEffect[] = [],
   valueEffects: readonly SingleTxValueSlotEffect[] = [],
+  tokenEffects: readonly SingleTxTokenSlotEffect[] = [],
 ): FinalizedSingleTxInvocationGraph {
   if (masterCategories.length !== plan.participants.length) {
     throw new Error('layer3: controllerless master categories must align with participants');
@@ -290,11 +304,9 @@ export function finalizeSingleTxInvocationGraph(
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
-      'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'transfer',
-      'event', 'returnEvent', 'trailing',
-    ].includes(slot.kind))
-      || participant.artifact.hiddenBatch?.handlers.some((handler) =>
-        (handler.tokenContainerAccesses?.length ?? 0) > 0);
+      'master', 'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer',
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'trailing',
+    ].includes(slot.kind));
   });
   if (unsupported) {
     throw new Layer3DiagnosticError(
@@ -362,19 +374,23 @@ export function finalizeSingleTxInvocationGraph(
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`layer3: resource effect names participant ${effect.participant}`);
       const slot = participant.blockLayout!.slots.find((candidate) =>
-        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'trailing'].includes(candidate.kind)
+        ['dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing']
+          .includes(candidate.kind)
         && candidate.offset === effect.offset);
       if (!slot) {
         throw new Error(`layer3: participant ${effect.participant} has no resource slot ${effect.offset}`);
       }
       const satoshiContainer = slot.kind === 'satoshiContainer';
-      if (effect.mode < 0 || effect.mode > 3
+      const tokenContainer = slot.kind === 'tokenContainer';
+      if (effect.mode < 0 || effect.mode > 4
         || (satoshiContainer ? effect.mode !== 3 : effect.mode === 3)
-        || (!satoshiContainer && slot.kind !== 'trailing' && effect.mode !== 0)) {
+        || (tokenContainer ? effect.mode !== 4 : effect.mode === 4)
+        || (!satoshiContainer && !tokenContainer && slot.kind !== 'trailing' && effect.mode !== 0)) {
         throw new Error(`layer3: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
         ['locking bytecode', effect.lockingBytecodeHex], ['token category', effect.tokenCategoryHex],
+        ['output token category', effect.outputTokenCategoryHex ?? ''],
         ['input commitment', effect.inputCommitmentHex], ['output commitment', effect.outputCommitmentHex],
       ] as const) {
         if (!/^(?:[0-9a-fA-F]{2})*$/.test(value)) {
@@ -384,7 +400,14 @@ export function finalizeSingleTxInvocationGraph(
       if (satoshiContainer ? effect.tokenCategoryHex.length !== 0
         || effect.inputCommitmentHex.length !== 0 || effect.outputCommitmentHex.length !== 0
         || effect.inputValue === undefined || effect.outputValue === undefined
-        : effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')
+        : tokenContainer ? !/^[0-9a-fA-F]{64}(?:01|02)?$/.test(effect.tokenCategoryHex)
+          || !/^(?:[0-9a-fA-F]{64}(?:01|02)?)?$/.test(effect.outputTokenCategoryHex ?? '')
+          || ((effect.outputTokenCategoryHex?.length ?? 0) > 0
+            && effect.outputTokenCategoryHex!.slice(0, 64).toLowerCase()
+              !== effect.tokenCategoryHex.slice(0, 64).toLowerCase())
+          || ((effect.outputTokenCategoryHex?.length ?? 0) === 0 && effect.outputCommitmentHex.length !== 0)
+          || effect.inputValue === undefined || effect.outputValue === undefined
+          : effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')
           || (effect.mode === 1 && effect.inputCommitmentHex.length !== 0)
           || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)) {
         throw new Error(`layer3: participant ${effect.participant} resource is not a mutable NFT`);
@@ -396,11 +419,20 @@ export function finalizeSingleTxInvocationGraph(
         selectorHex: '00000000', position: effect.offset, parent: 0xffff, depth: 0,
         subtreeEnd: effect.offset, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: satoshiContainer
-          ? uint64LeHex(effect.inputValue!, 'satoshi-container input value') : effect.tokenCategoryHex.toLowerCase(),
-        resultHex: effect.inputCommitmentHex.toLowerCase(),
+          ? uint64LeHex(effect.inputValue!, 'satoshi-container input value')
+          : effect.tokenCategoryHex.toLowerCase(),
+        resultHex: tokenContainer
+          ? uint64LeHex(effect.inputValue!, 'token-container input amount')
+            + effect.inputCommitmentHex.toLowerCase()
+          : effect.inputCommitmentHex.toLowerCase(),
         effectHex: satoshiContainer
           ? uint64LeHex(effect.outputValue!, 'satoshi-container output value')
-          : effect.outputCommitmentHex.toLowerCase(),
+          : tokenContainer ? uint8Hex((effect.outputTokenCategoryHex?.length ?? 0) / 2)
+            + (effect.outputTokenCategoryHex ?? '').toLowerCase()
+            + ((effect.outputTokenCategoryHex?.length ?? 0) === 0 ? ''
+              : uint64LeHex(effect.outputValue!, 'token-container output amount')
+                + effect.outputCommitmentHex.toLowerCase())
+            : effect.outputCommitmentHex.toLowerCase(),
       };
     });
   const effectKeys = new Set(eventEffects.map((effect) => `${effect.participant}:${effect.offset}`));
@@ -476,7 +508,55 @@ export function finalizeSingleTxInvocationGraph(
         argsHex: '', resultHex: '', effectHex: uint64LeHex(effect.amount, 'value transfer amount'),
       };
     });
-  const rows = [...invocationRows, ...resourceRows, ...eventRows, ...valueRows];
+  const tokenKeys = new Set(tokenEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (tokenKeys.size !== tokenEffects.length) {
+    throw new Error('layer3: controllerless token effects contain a duplicate participant slot');
+  }
+  const tokenRows = [...tokenEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      const slot = participant?.blockLayout!.slots.find((candidate) =>
+        candidate.kind === 'tcTransfer' && candidate.offset === effect.offset);
+      if (!participant || !slot || slot.slotIndex === undefined) {
+        throw new Error(`layer3: participant ${effect.participant} has no token-transfer slot ${effect.offset}`);
+      }
+      if (!/^(?:[0-9a-fA-F]{2})+$/.test(effect.lockingBytecodeHex)
+        || effect.lockingBytecodeHex.toLowerCase() === '51'
+        || !/^[0-9a-fA-F]{64}(?:01|02)?$/.test(effect.tokenCategoryHex)
+        || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)
+        || (effect.capability === 'ft'
+          ? effect.tokenCategoryHex.length !== 64 || effect.amount <= 0n || effect.commitmentHex.length !== 0
+          : effect.amount !== 0n
+            || (effect.capability === 'none' ? effect.tokenCategoryHex.length !== 64
+              : !effect.tokenCategoryHex.endsWith(effect.capability === 'mutable' ? '01' : '02')))) {
+        throw new Error(`layer3: participant ${effect.participant} token-transfer slot ${effect.offset} is invalid`);
+      }
+      const transferSlots = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'tcTransfer').length;
+      const maximumRows = participant.artifact.hiddenBatch?.maximumRows ?? 0;
+      if (maximumRows < 1 || transferSlots % maximumRows !== 0) {
+        throw new Error(`layer3: participant ${effect.participant} has a non-canonical token-transfer frame`);
+      }
+      const frameWidth = transferSlots / maximumRows;
+      const parent = participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
+      if (parent === undefined) {
+        throw new Error(`layer3: token-transfer participant ${effect.participant} has no invocation`);
+      }
+      const invocation = plan.invocations[parent];
+      const absolute = layout.participantInputs[effect.participant] + effect.offset;
+      return {
+        kind: 4, owner: effect.participant, consumer: effect.participant,
+        slot: effect.offset, mode: { ft: 0, none: 1, mutable: 2, minting: 3 }[effect.capability],
+        sourceSlot: absolute, targetSlot: absolute,
+        selectorHex: '00000000', position: effect.offset, parent, depth: invocation.depth,
+        subtreeEnd: parent, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
+        argsHex: effect.tokenCategoryHex.toLowerCase(), resultHex: '',
+        effectHex: effect.capability === 'ft'
+          ? uint64LeHex(effect.amount, 'fungible token transfer amount')
+          : effect.commitmentHex.toLowerCase(),
+      };
+    });
+  const rows = [...invocationRows, ...resourceRows, ...eventRows, ...valueRows, ...tokenRows];
   const transcript = { participants, rows };
   const bytes = encodeSingleTxBusTranscript(transcript);
   return Object.freeze({ plan, layout, transcript, bytes, carrier: encodeSingleTxCarrier(transcript) });

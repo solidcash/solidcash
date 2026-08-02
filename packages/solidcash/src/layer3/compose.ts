@@ -4,7 +4,7 @@ import {
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
-  Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
+  Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
@@ -12,7 +12,7 @@ import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulCont
 import { withSingleTxCarrier } from './controllerless.js';
 import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
-  type SingleTxValueSlotEffect,
+  type SingleTxTokenSlotEffect, type SingleTxValueSlotEffect,
 } from './graph.js';
 import { encodeHiddenBatch } from './hidden-batch.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
@@ -173,7 +173,7 @@ export class SingleTxBusComposition {
     const resourceSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots
         .filter((slot) => [
-          'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'trailing',
+          'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'tokenContainer', 'trailing',
         ].includes(slot.kind))
         .map((slot) => ({
           participant: participant.participant, offset: slot.offset, kind: slot.kind,
@@ -182,12 +182,18 @@ export class SingleTxBusComposition {
       participant.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').map((slot) => ({
         participant: participant.participant, offset: slot.offset,
       })));
+    const tokenSlots = plan.participants.flatMap((participant) =>
+      participant.blockLayout!.slots.filter((slot) => slot.kind === 'tcTransfer').map((slot) => ({
+        participant: participant.participant, offset: slot.offset,
+      })));
     const provisionalEventEffects: SingleTxEventSlotEffect[] = [];
     const provisionalResourceEffects: SingleTxResourceSlotEffect[] = [];
     const provisionalValueEffects: SingleTxValueSlotEffect[] = [];
+    const provisionalTokenEffects: SingleTxTokenSlotEffect[] = [];
     let finalized = finalizeSingleTxInvocationGraph(
       plan, categories, provisionalResults, provisionalEventEffects, provisionalResourceEffects,
       provisionalValueEffects,
+      provisionalTokenEffects,
     );
 
     const participantReturnBlob = (
@@ -198,6 +204,13 @@ export class SingleTxBusComposition {
         .map((invocation) => results[invocation] ?? '')
         .join('');
       return vector.length === 0 ? undefined : scriptToBytecode([hexToBin(vector)]);
+    };
+
+    const internalTokenCategory = (token: TokenDetails): string => {
+      const category = binToHex(hexToBin(token.category).reverse());
+      if (!token.nft) return category;
+      const capability = { none: '', mutable: '01', minting: '02' }[token.nft.capability];
+      return `${category}${capability}`;
     };
 
     const assemble = async (
@@ -253,15 +266,18 @@ export class SingleTxBusComposition {
       return aggregate;
     };
 
-    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0 || valueSlots.length > 0) {
+    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0
+      || valueSlots.length > 0 || tokenSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly SingleTxEventSlotEffect[] = provisionalEventEffects;
       let claimedResourceEffects: readonly SingleTxResourceSlotEffect[] = provisionalResourceEffects;
       let claimedValueEffects: readonly SingleTxValueSlotEffect[] = provisionalValueEffects;
-      const maximumPasses = plan.invocations.length + 3;
+      let claimedTokenEffects: readonly SingleTxTokenSlotEffect[] = provisionalTokenEffects;
+      const maximumPasses = plan.invocations.length + 5;
       for (let pass = 0; pass < maximumPasses; pass += 1) {
         finalized = finalizeSingleTxInvocationGraph(
           plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
+          claimedTokenEffects,
         );
         const provisional = await assemble(finalized, claimedResults);
         const derivedResourceEffects: SingleTxResourceSlotEffect[] = [];
@@ -283,6 +299,26 @@ export class SingleTxBusComposition {
               lockingBytecodeHex: binToHex(inputLockingBytecode), tokenCategoryHex: '',
               inputCommitmentHex: '', outputCommitmentHex: '',
               inputValue: input.satoshis, outputValue: output.amount,
+            });
+            continue;
+          }
+          if (slot.kind === 'tokenContainer') {
+            const inputLockingBytecode = input.unlocker.generateLockingBytecode();
+            const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            if (!inputToken || (outputToken && inputToken.category !== outputToken.category)
+              || (!outputToken && binToHex(outputLockingBytecode) !== '6a')
+              || (outputToken && (input.satoshis !== output.amount
+                || binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)))) {
+              throw new Error(`layer3: token container ${slot.participant}:${slot.offset} is invalid`);
+            }
+            derivedResourceEffects.push({
+              participant: slot.participant, offset: slot.offset, mode: 4,
+              lockingBytecodeHex: binToHex(inputLockingBytecode),
+              tokenCategoryHex: internalTokenCategory(inputToken),
+              outputTokenCategoryHex: outputToken ? internalTokenCategory(outputToken) : '',
+              inputCommitmentHex: inputToken.nft?.commitment ?? '',
+              outputCommitmentHex: outputToken?.nft?.commitment ?? '',
+              inputValue: inputToken.amount, outputValue: outputToken?.amount ?? 0n,
             });
             continue;
           }
@@ -334,6 +370,33 @@ export class SingleTxBusComposition {
         }
         if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
           claimedValueEffects = derivedValueEffects;
+          continue;
+        }
+        const derivedTokenEffects: SingleTxTokenSlotEffect[] = [];
+        for (const slot of tokenSlots) {
+          const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
+          const input = provisional.inputs[absolute];
+          const output = provisional.outputs[absolute];
+          if (!input || !output || input.token
+            || binToHex(input.unlocker.generateLockingBytecode()) !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
+            throw new Error(`layer3: token-transfer slot ${slot.participant}:${slot.offset} is not canonically funded`);
+          }
+          if (!output.token) {
+            const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            if (binToHex(lockingBytecode) === '51') continue;
+            throw new Error(`layer3: token-transfer slot ${slot.participant}:${slot.offset} has no token`);
+          }
+          const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          derivedTokenEffects.push({
+            ...slot, lockingBytecodeHex: binToHex(lockingBytecode),
+            tokenCategoryHex: internalTokenCategory(output.token),
+            amount: output.token.amount,
+            commitmentHex: output.token.nft?.commitment ?? '',
+            capability: output.token.nft?.capability ?? 'ft',
+          });
+        }
+        if (semanticJson(derivedTokenEffects) !== semanticJson(claimedTokenEffects)) {
+          claimedTokenEffects = derivedTokenEffects;
           continue;
         }
         const derivedResults: Record<number, string> = {};
@@ -398,6 +461,7 @@ export class SingleTxBusComposition {
         claimedEventEffects = derivedEventEffects;
         claimedResourceEffects = derivedResourceEffects;
         claimedValueEffects = derivedValueEffects;
+        claimedTokenEffects = derivedTokenEffects;
       }
       throw new Error(
         `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${maximumPasses} bounded passes`,

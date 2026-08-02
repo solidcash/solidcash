@@ -80,7 +80,7 @@ describe('controllerless compiled invocation graph', () => {
     expect(categoryChanged.bytes).not.toEqual(first.bytes);
   });
 
-  it('admits canonical event rows and fails closed on missing results or unsupported resources', () => {
+  it('admits canonical event, value, token-container, and token-settlement rows', () => {
     expect(() => layer3.finalizeSingleTxInvocationGraph(
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)],
     )).toThrow(/lacks canonical result/);
@@ -119,17 +119,35 @@ describe('controllerless compiled invocation graph', () => {
       kind: 3, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
       subjectHex: '52', effectHex: '8403000000000000',
     });
-    const unsupported: layer3.CompiledGraphPlan = {
+    const tokenPlan: layer3.CompiledGraphPlan = {
       ...base,
       participants: [base.participants[0], {
         ...base.participants[1],
         blockLayout: {
-          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'tokenContainer', offset: 1 }],
+          blockSize: 3, slots: [
+            { kind: 'master', offset: 0 },
+            { kind: 'tokenContainer', offset: 1, slotIndex: 0 },
+            { kind: 'tcTransfer', offset: 2, slotIndex: 0 },
+          ],
         },
       }],
     };
-    expect(() => layer3.finalizeSingleTxInvocationGraph(
-      unsupported, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
-    )).toThrow(expect.objectContaining({ code: 'L3_TRANSCRIPT_EFFECT_UNIMPLEMENTED' }));
+    const tokenized = layer3.finalizeSingleTxInvocationGraph(
+      tokenPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [{
+        participant: 1, offset: 1, mode: 4, lockingBytecodeHex: '52',
+        tokenCategoryHex: 'cc'.repeat(32), outputTokenCategoryHex: 'cc'.repeat(32),
+        inputCommitmentHex: '', outputCommitmentHex: '', inputValue: 100n, outputValue: 75n,
+      }], [], [{
+        participant: 1, offset: 2, lockingBytecodeHex: '53', tokenCategoryHex: 'cc'.repeat(32),
+        amount: 25n, commitmentHex: '', capability: 'ft',
+      }],
+    );
+    expect(tokenized.transcript.rows.slice(2)).toMatchObject([{
+      kind: 1, mode: 4, sourceSlot: 2, targetSlot: 2, argsHex: 'cc'.repeat(32),
+      resultHex: '6400000000000000', effectHex: `20${'cc'.repeat(32)}4b00000000000000`,
+    }, {
+      kind: 4, mode: 0, sourceSlot: 3, targetSlot: 3, argsHex: 'cc'.repeat(32),
+      effectHex: '1900000000000000',
+    }]);
   });
 });

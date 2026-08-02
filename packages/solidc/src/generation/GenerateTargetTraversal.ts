@@ -23852,7 +23852,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_IF, locationData);
         // capability == 0 (none): expected = cat_internal (32 bytes only)
         this.emit(Op.OP_DROP, locationData);     // drop capability
-        const catIdx0 = this.getStackIndex(catStackName);
+        // The true branch dropped cap_value at runtime, while the compile-time stack tracker keeps it until
+        // both branches rejoin below. The category is therefore one item nearer than its tracked index here.
+        const catIdx0 = this.getStackIndex(catStackName) - 1;
         this.emit(encodeInt(BigInt(catIdx0)), locationData);
         this.emit(Op.OP_PICK, locationData);
         this.emit(Op.OP_REVERSEBYTES, locationData); // display -> internal for OUTPUTTOKENCATEGORY match

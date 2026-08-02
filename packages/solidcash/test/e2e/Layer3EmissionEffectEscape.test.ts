@@ -1448,17 +1448,9 @@ contract PlainTokenBatch() {
       .toContain("'send': token-container-effect-route-not-enabled");
   }, 30_000);
 
-  /**
-   * The over-refusal negative control, and the repair the error message names. Adding the container READ
-   * reserves the input slot and the eight tcTransfer outputs, and the shape compiles unchanged - this is
-   * Release 4's routed token batch, which is settled end-to-end (forged amount and forged recipient both
-   * reject) in HiddenBatchRelease4. The refusal is therefore on the DROP, not on token containers.
-   *
-   * Kept on the plain hidden batch deliberately: the same body plus an outgoing external call is refused by
-   * the OTHER guard (SEC-6's, in InlineStoragePointerCalls), because that clone would be flattened and its
-   * edges would generate unbound - a different defect with a different refusal.
-   */
-  it('keeps a read-and-transfer token handler direct-only without a graph effect frame', () => {
+  /** The container read reserves the input and bounded tcTransfer frame. Controllerless settlement now binds
+   * both families, so this is the positive boundary opposite the slotless drop above. */
+  it('admits a read-and-transfer token handler with its resource and effect frame', () => {
     const artifact = compileString(`pragma solidcash >=0.8.0;
 contract TokenContainerReadBatch() {
   int calls;
@@ -1468,9 +1460,10 @@ contract TokenContainerReadBatch() {
     this.calls = this.calls + 1;
   }
 }`, { forceStateful: true, hiddenBatch: true, repeatedExternalBatch: false });
-    expect(artifact.hiddenBatch).toBeUndefined();
-    expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
-      .toContain("'send': token-container-effect-route-not-enabled");
+    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'send')?.eligible).toBe(true);
+    const kinds = artifact.hiddenBatch?.route.blockLayout?.slots.map((slot) => slot.kind) ?? [];
+    expect(kinds).toContain('tokenContainer');
+    expect(kinds.filter((kind) => kind === 'tcTransfer')).toHaveLength(8);
   }, 30_000);
 
   // And the bus + external call spelling of the SAME body is refused too, by SEC-6's guard rather than this

@@ -138,13 +138,9 @@ describe('X73 external entry points reach the SCB1 route', () => {
     expect((await attacked.getState()).counter).toBe(0n);
   }, 120_000);
 
-  /**
-   * NEGATIVE CONTROL. Admitting `external` must not be a blanket admission. A handler that moves a token
-   * container cannot currently enter the plain SCB1 route: its transfer outputs require an effect frame owned
-   * by graph mode. Both visibility spellings therefore stay direct-only, with the route naming the effect
-   * refusal before considering the narrower external-clone visibility rule.
-   */
-  it('keeps token-container effects direct-only for both entry visibilities', () => {
+  /** Controllerless settlement admits the public spelling; the external clone still cannot retain the source
+   * parameter identity required by the token-container covenant and remains a positioned, named refusal. */
+  it('admits public token-container settlement while retaining the external-clone guard', () => {
     const tokenHandler = (visibility: string): string => `pragma solidcash >=0.8.0;
       contract X73TokenContainer() {
         bigint calls;
@@ -154,12 +150,16 @@ describe('X73 external entry points reach the SCB1 route', () => {
           this.calls = this.calls + 1;
         }
       }`;
-    for (const visibility of ['public', 'external']) {
-      const refused = compileString(tokenHandler(visibility), BATCH);
-      expect(refused.hiddenBatch).toBeUndefined();
-      expect((refused.diagnostics ?? []).map((entry) => entry.message).join(' '))
-        .toContain("'send': token-container-effect-route-not-enabled");
-    }
+    const admitted = compileString(tokenHandler('public'), BATCH);
+    expect(admitted.hiddenBatch?.handlers.find((handler) => handler.name === 'send')?.eligible).toBe(true);
+    expect(admitted.hiddenBatch?.route.blockLayout?.slots.map((slot) => slot.kind))
+      .toContain('tokenContainer');
+    expect(admitted.hiddenBatch?.route.blockLayout?.slots.map((slot) => slot.kind)).toContain('tcTransfer');
+
+    const refused = compileString(tokenHandler('external'), BATCH);
+    expect(refused.hiddenBatch).toBeUndefined();
+    expect((refused.diagnostics ?? []).map((entry) => entry.message).join(' '))
+      .toContain("'send': external-token-container-handler-requires-public-visibility");
   });
 
   /**

@@ -5771,7 +5771,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const ftOps = tokenContainerTransferOps?.filter((o) => o.type === 'transfer') ?? [];
         const nftOps = tokenContainerTransferOps?.filter((o) => o.type === 'transferNft') ?? [];
         for (const op of ftOps) stb.addTokenContainerTransfer(op.categoryId, dummyLbc, 1n);
-        for (const op of nftOps) stb.addTokenContainerTransferNft(op.categoryId, dummyLbc, new Uint8Array(0), 'none');
+        for (const op of nftOps) {
+          // An immutable NFT is conserved by category + commitment. Seeding an empty placeholder commitment
+          // makes token conservation fail before the VM can reveal the handler-authored transfer arguments.
+          // Start from the co-spent container's NFT identity; mutable/minting identities also admit this
+          // preservation-shaped probe and are replaced from the trace once execution reaches transferNft.
+          const inputNft = stb.getTokenContainerInfos().find((container) =>
+            container.tokenContainerCategoryId === op.categoryId)?.utxo?.token?.nft;
+          stb.addTokenContainerTransferNft(
+            op.categoryId, dummyLbc, hexToBin(inputNft?.commitment ?? ''), inputNft?.capability ?? 'none',
+          );
+        }
 
         // Track derived transfers for return
         let derivedTransfers: Array<{ lockingBytecode: Uint8Array; amount: bigint }> | undefined;
@@ -6231,7 +6241,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : false;
           if (derivedNftTransfers && !nftBytecodesFull) {
             stb.clearTokenContainerTransferNfts();
-            for (const op of nftOps) stb.addTokenContainerTransferNft(op.categoryId, dummyLbc, new Uint8Array(0), 'none');
+            for (const op of nftOps) {
+              const inputNft = stb.getTokenContainerInfos().find((container) =>
+                container.tokenContainerCategoryId === op.categoryId)?.utxo?.token?.nft;
+              stb.addTokenContainerTransferNft(
+                op.categoryId, dummyLbc, hexToBin(inputNft?.commitment ?? ''), inputNft?.capability ?? 'none',
+              );
+            }
             derivedNftTransfers = undefined;
           }
         }
@@ -9337,7 +9353,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const exists = !!containerUtxo;
         const tokenContainerUnlocker = createTokenContainerUnlocker(
-          this.inner, 0, this.categoryId, tokenContainerCategoryId,
+          this.inner, overrides?.blockBase ?? 0, this.categoryId, tokenContainerCategoryId,
         );
 
         tokenContainers.push({

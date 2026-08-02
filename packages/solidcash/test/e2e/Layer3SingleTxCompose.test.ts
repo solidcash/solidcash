@@ -8,11 +8,14 @@ import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
 import {
-  getDynamicChunkAddress, getEntryNftAddress, getSatoshiContainerAddress,
+  getDynamicChunkAddress, getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
-import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import {
+  createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
+} from '../test-util.js';
+import { alicePkh } from '../fixture/vars.js';
 import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
 
 const CALLEE = `contract ComposeCallee() {
@@ -40,7 +43,8 @@ const mutateInputZero = (
   target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event' | 'carrier-resource'
   | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject'
   | 'carrier-resource-create' | 'carrier-resource-delete' | 'carrier-value' | 'carrier-value-drop'
-  | 'carrier-satoshi' | 'carrier-satoshi-drop',
+  | 'carrier-satoshi' | 'carrier-satoshi-drop' | 'carrier-token' | 'carrier-token-drop'
+  | 'carrier-token-container' | 'carrier-token-container-drop',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -55,6 +59,7 @@ const mutateInputZero = (
           return target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
             || target.startsWith('carrier-resource') || target.startsWith('carrier-value')
             || target.startsWith('carrier-satoshi')
+            || target.startsWith('carrier-token')
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
@@ -62,16 +67,19 @@ const mutateInputZero = (
         const instruction = instructions[instructionIndex];
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
         if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')
-          || target.startsWith('carrier-value') || target.startsWith('carrier-satoshi')) {
+          || target.startsWith('carrier-value') || target.startsWith('carrier-satoshi')
+          || target.startsWith('carrier-token')) {
           const transcript = decodeSingleTxCarrier(instruction.data);
           const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
             ? row.resultHex.length > 0
             : row.kind === (target.startsWith('carrier-resource') || target.startsWith('carrier-satoshi')
-              ? 1 : target.startsWith('carrier-value') ? 3 : 2)
+              || target.startsWith('carrier-token-container')
+              ? 1 : target.startsWith('carrier-value') ? 3 : target.startsWith('carrier-token') ? 4 : 2)
               && (row.effectHex.length > 0 || target === 'carrier-resource-delete')
               && (target !== 'carrier-resource-create' || row.mode === 1)
               && (target !== 'carrier-resource-delete' || row.mode === 2)
-              && (!target.startsWith('carrier-satoshi') || row.mode === 3));
+              && (!target.startsWith('carrier-satoshi') || row.mode === 3)
+              && (!target.startsWith('carrier-token-container') || row.mode === 4));
           if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
           if (target.endsWith('-drop')) {
             instructions[instructionIndex] = {
@@ -544,6 +552,136 @@ describe('layer3.compose controllerless transaction', () => {
     }
     const hostileOutput = await composition.build();
     hostileOutput.outputs[transferOutput].amount += 1n;
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates a fungible-token container and recipient settlement', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeTokenCallee() {
+      function send(bytes32 category, bytes20 recipient, bigint amount) public {
+        require(this.tokens[category].tokenAmount >= amount);
+        this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
+        require(amount > 0);
+      }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const token = await genesisFtContainer(provider, calleeInner, calleeSetup.categoryId, [100n]);
+    const callerArtifact = compileString(`
+      interface IComposeTokenCallee { function send(bytes32 category, bytes20 recipient, bigint amount); }
+      contract ComposeTokenCaller(address calleeAddress) {
+        function prepare(bytes32 category, bytes20 recipient, bigint amount) public {
+          IComposeTokenCallee(calleeAddress).send(category, recipient, amount);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const category = hexToBin(token.category);
+    const amount = 25n;
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [
+        caller.call.prepare(category, alicePkh, amount),
+        callee.call.send(category, alicePkh, amount),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const tokenOutput = built.outputs.findIndex((output) =>
+      output.token?.category === token.category && output.token.amount === amount && !output.token.nft);
+    expect(tokenOutput).toBeGreaterThan(0);
+    for (const mutation of [
+      'carrier-token', 'carrier-token-drop', 'carrier-token-container', 'carrier-token-container-drop',
+    ] as const) {
+      const hostile = await composition.build();
+      mutateInputZero(hostile, '', mutation);
+      await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
+    }
+    const hostileOutput = await composition.build();
+    hostileOutput.outputs[tokenOutput].token!.amount += 1n;
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates NFT capability, commitment, recipient, and mixed-container settlement', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeNftCallee() {
+      function send(bytes32 category, bytes20 recipient, bytes commitment, int capability) public {
+        require(this.tokens[category].tokenAmount >= 0);
+        this.tokens[category].transferNft(new LockingBytecodeP2PKH(recipient), commitment, capability);
+        require(capability >= 0);
+      }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const commitment = 'c0ffee';
+    const seeded = await provider.addTokenUtxosDynamic((category) => [{
+      address: getTokenContainerAddress(calleeInner, calleeSetup.categoryId, category),
+      satoshis: 1200n,
+      token: { amount: 50n, nft: { capability: 'none', commitment } },
+    }]);
+    const token = { category: seeded.categoryId };
+    const callerArtifact = compileString(`
+      interface IComposeNftCallee {
+        function send(bytes32 category, bytes20 recipient, bytes commitment, int capability);
+      }
+      contract ComposeNftCaller(address calleeAddress) {
+        function prepare(bytes32 category, bytes20 recipient, bytes commitment, int capability) public {
+          IComposeNftCallee(calleeAddress).send(category, recipient, commitment, capability);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const category = hexToBin(token.category);
+    const commitmentBytes = hexToBin(commitment);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [
+        caller.call.prepare(category, alicePkh, commitmentBytes, 0n),
+        callee.call.send(category, alicePkh, commitmentBytes, 0n),
+      ],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const nftOutput = built.outputs.findIndex((output) =>
+      output.token?.category === token.category && output.token.nft?.commitment === commitment);
+    expect(nftOutput).toBeGreaterThan(0);
+    for (const mutation of [
+      'carrier-token', 'carrier-token-drop', 'carrier-token-container', 'carrier-token-container-drop',
+    ] as const) {
+      const hostile = await composition.build();
+      mutateInputZero(hostile, '', mutation);
+      await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
+    }
+    const hostileOutput = await composition.build();
+    hostileOutput.outputs[nftOutput].token!.nft!.commitment = 'c0ffef';
     await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);

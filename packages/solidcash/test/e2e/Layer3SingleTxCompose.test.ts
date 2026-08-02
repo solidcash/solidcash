@@ -101,6 +101,11 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     await expect(layer3.compose({
+      calls: [caller.call.prepare(7n), callee.call.settle(8n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow(/prepared call 1 arguments disagree/);
+    await expect(layer3.compose({
       calls: [caller.call.prepare(7n), callee.call.settle(7n)],
       funder: {
         utxo: fee.utxo,

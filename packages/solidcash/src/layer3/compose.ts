@@ -8,6 +8,7 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import { withSingleTxCarrier } from './controllerless.js';
 import { finalizeSingleTxInvocationGraph } from './graph.js';
+import { encodeHiddenBatch } from './hidden-batch.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
 export interface SingleTxBusFunder {
@@ -130,6 +131,18 @@ export class SingleTxBusComposition {
         throw new Error(
           `layer3: prepared call ${index} is '${supplied?.functionName ?? '<missing>'}', `
           + `expected '${invocation.function}'`,
+        );
+      }
+      const suppliedRow = encodeHiddenBatch(supplied.contract.inner.artifact, [{
+        function: supplied.functionName,
+        args: supplied.args,
+        callMode: invocation.callMode,
+        logicalCaller: invocation.caller === null
+          ? rootCaller : hexToBin(plan.participants[invocation.caller].lockingBytecode),
+      }]).rows[0];
+      if (suppliedRow.argsHex !== invocation.argsHex) {
+        throw new Error(
+          `layer3: prepared call ${index} arguments disagree with compiler-derived invocation arguments`,
         );
       }
     });

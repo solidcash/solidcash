@@ -18,9 +18,16 @@ change output. There are no controller or projection slots. The application neve
 
 ## Carrier
 
-The transcript is one argument in the first SCB1 route unlocking bytecode, which belongs to the master at
-input zero. No other participant carries a transcript copy. The compiler-generated routes inspect that same
-physical unlocking bytecode. The argument payload is:
+The transcript is one canonical push in the first SCB1 route unlocking bytecode, which belongs to the master
+at input zero. No other participant carries a transcript copy. The compiler-generated routes inspect that same
+physical unlocking bytecode. Its fixed position is immediately after the selector push and SCB1's existing
+positional batch push, before ordinary reversed ABI arguments and the redeem script:
+
+```text
+push4("SCB1") push(batchBlob) push(carrier) ...ordinary ABI pushes... push(redeemScript)
+```
+
+The carrier payload is:
 
 ```text
 carrierDomain[4] = "L3C1"

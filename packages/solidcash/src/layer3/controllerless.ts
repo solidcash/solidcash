@@ -1,7 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
-  SINGLE_TX_BUS_VERSION,
+  SINGLE_TX_BUS_VERSION, scriptToBytecode,
 } from '@solidcash/utils';
 
 /** Controllerless single-transaction bus wire domain: ASCII `L3BUS1\0\0`. */
@@ -225,4 +225,52 @@ export function decodeSingleTxCarrier(carrier: Uint8Array): SingleTxBusTranscrip
   const transcript = reader.take(reader.uint(4, 'carrier length'), 'carrier transcript');
   if (!reader.eof()) throw new Error('layer3: trailing bytes after controllerless carrier');
   return decodeSingleTxBusTranscript(transcript);
+}
+
+interface CanonicalPush { start: number; end: number; payload: Uint8Array }
+
+const canonicalPushAt = (script: Uint8Array, start: number, field: string): CanonicalPush => {
+  if (start >= script.length) throw new Error(`layer3: missing ${field} push`);
+  const opcode = script[start];
+  let header = 1;
+  let length: number;
+  if (opcode <= 75) {
+    length = opcode;
+  } else if (opcode === 76) {
+    if (start + 2 > script.length) throw new Error(`layer3: truncated ${field} PUSHDATA1`);
+    length = script[start + 1]; header = 2;
+    if (length < 76) throw new Error(`layer3: non-minimal ${field} PUSHDATA1`);
+  } else if (opcode === 77) {
+    if (start + 3 > script.length) throw new Error(`layer3: truncated ${field} PUSHDATA2`);
+    length = script[start + 1] + script[start + 2] * 256; header = 3;
+    if (length < 256) throw new Error(`layer3: non-minimal ${field} PUSHDATA2`);
+  } else {
+    throw new Error(`layer3: ${field} is not a canonical bounded push`);
+  }
+  const end = start + header + length;
+  if (end > script.length) throw new Error(`layer3: truncated ${field} payload`);
+  return { start, end, payload: script.slice(start + header, end) };
+};
+
+/**
+ * Insert the unique carrier after SCB1's selector and positional batch pushes. The remaining ordinary ABI
+ * pushes and redeem script remain byte-identical, so signatures are still generated only after this insertion.
+ */
+export function insertSingleTxCarrier(
+  unlockingBytecode: Uint8Array, transcript: SingleTxBusTranscript,
+): Uint8Array {
+  const selector = canonicalPushAt(unlockingBytecode, 0, 'SCB1 selector');
+  if (binToHex(selector.payload) !== '53434231') throw new Error('layer3: carrier input is not an SCB1 route');
+  const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
+  const carrierPush = scriptToBytecode([encodeSingleTxCarrier(transcript)]);
+  return concat(unlockingBytecode.slice(0, batch.end), carrierPush, unlockingBytecode.slice(batch.end));
+}
+
+/** Extract the carrier from the exact canonical position in input zero's SCB1 unlocking bytecode. */
+export function extractSingleTxCarrier(unlockingBytecode: Uint8Array): SingleTxBusTranscript {
+  const selector = canonicalPushAt(unlockingBytecode, 0, 'SCB1 selector');
+  if (binToHex(selector.payload) !== '53434231') throw new Error('layer3: carrier input is not an SCB1 route');
+  const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
+  const carrier = canonicalPushAt(unlockingBytecode, batch.end, 'controllerless carrier');
+  return decodeSingleTxCarrier(carrier.payload);
 }

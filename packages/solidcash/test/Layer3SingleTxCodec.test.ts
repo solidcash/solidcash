@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import { scriptToBytecode } from '@solidcash/utils';
 import { layer3 } from '../src/index.js';
 
 const sample = (): layer3.SingleTxBusTranscript => ({
@@ -71,5 +72,34 @@ describe('controllerless single-transaction codec', () => {
     expect(() => layer3.encodeSingleTxBusTranscript({
       ...sample(), rows: Array.from({ length: 25 }, () => sample().rows[0]),
     })).toThrow(/row count/);
+  });
+
+  it('inserts and extracts the carrier at the canonical SCB1 unlocking position', () => {
+    const original = scriptToBytecode([
+      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]),
+      Uint8Array.from([4, 5]), Uint8Array.from({ length: 90 }, () => 6),
+    ]);
+    const withCarrier = layer3.insertSingleTxCarrier(original, sample());
+    expect(layer3.extractSingleTxCarrier(withCarrier)).toEqual(sample());
+    // Selector, positional batch, and every suffix push remain exact.
+    expect(withCarrier.slice(0, 9)).toEqual(original.slice(0, 9));
+    expect(withCarrier.slice(withCarrier.length - (original.length - 9))).toEqual(original.slice(9));
+    expect(() => layer3.extractSingleTxCarrier(original)).toThrow(/carrier/);
+    const nonScb = original.slice(); nonScb[1] ^= 1;
+    expect(() => layer3.insertSingleTxCarrier(nonScb, sample())).toThrow(/not an SCB1 route/);
+  });
+
+  it('rejects non-minimal and truncated carrier push framing', () => {
+    const original = scriptToBytecode([
+      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]), Uint8Array.of(4),
+    ]);
+    const withCarrier = layer3.insertSingleTxCarrier(original, sample());
+    const carrierAt = 9;
+    const nonMinimal = Uint8Array.from([
+      ...withCarrier.slice(0, 5), 76, 3, ...withCarrier.slice(6),
+    ]);
+    expect(() => layer3.extractSingleTxCarrier(nonMinimal)).toThrow(/non-minimal/);
+    expect(() => layer3.extractSingleTxCarrier(withCarrier.slice(0, -withCarrier.length + carrierAt + 2)))
+      .toThrow(/truncated/);
   });
 });

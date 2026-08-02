@@ -5,7 +5,9 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
-  scriptToBytecode, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type, ValueType,
+  scriptToBytecode, SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
+  SINGLE_TX_BUS_VERSION, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type,
+  ValueType,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
@@ -3489,6 +3491,13 @@ function compileResolvedAst(
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: hiddenBatchMaximumRows,
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
+      singleTransactionBus: {
+        domain: SINGLE_TX_BUS_DOMAIN_HEX,
+        version: SINGLE_TX_BUS_VERSION,
+        carrierInput: 0,
+        maximumParticipants: SINGLE_TX_BUS_MAX_PARTICIPANTS,
+        maximumRows: SINGLE_TX_BUS_MAX_ROWS,
+      },
       ...(mergedCompilerOptions.messageBusController && {
         graphControllerLockingBytecode: mergedCompilerOptions.messageBusController.toLowerCase(),
         graphControllerCategory: mergedCompilerOptions.messageBusControllerCategory!.toLowerCase(),

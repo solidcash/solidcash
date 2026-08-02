@@ -1,10 +1,12 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
+import {
+  SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
+  SINGLE_TX_BUS_VERSION,
+} from '@solidcash/utils';
 
 /** Controllerless single-transaction bus wire domain: ASCII `L3BUS1\0\0`. */
-export const SINGLE_TX_BUS_DOMAIN = '4c33425553310000';
-export const SINGLE_TX_BUS_VERSION = 1;
-export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
-export const SINGLE_TX_BUS_MAX_ROWS = 24;
+export const SINGLE_TX_BUS_DOMAIN = SINGLE_TX_BUS_DOMAIN_HEX;
+export { SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS, SINGLE_TX_BUS_VERSION };
 
 const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));

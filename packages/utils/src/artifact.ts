@@ -685,6 +685,12 @@ export interface InvocationAnalysisArtifact {
  */
 export const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
+/** Shared wire constants for the controllerless single-transaction message bus. */
+export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
+export const SINGLE_TX_BUS_VERSION = 1;
+export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
+export const SINGLE_TX_BUS_MAX_ROWS = 24;
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -715,6 +721,14 @@ export interface Artifact {
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
+    /** Compiler-published admission and carrier contract for controllerless composition. */
+    singleTransactionBus?: {
+      domain: typeof SINGLE_TX_BUS_DOMAIN_HEX;
+      version: typeof SINGLE_TX_BUS_VERSION;
+      carrierInput: 0;
+      maximumParticipants: typeof SINGLE_TX_BUS_MAX_PARTICIPANTS;
+      maximumRows: typeof SINGLE_TX_BUS_MAX_ROWS;
+    };
     graphControllerLockingBytecode?: string;
     graphControllerCategory?: string;
     route: AbiFunction;

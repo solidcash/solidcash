@@ -1162,7 +1162,6 @@ export default class SymbolTableTraversal extends AstTraversal {
     const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
       || [
         '__internal__graphTranscript',
-        '__internal__graphControllerIdx',
         '__internal__graphParticipantOffset',
         '__internal__graphBlockSize',
         '__internal__graphEmissions',
@@ -1821,7 +1820,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A graph SCB1 route invokes compiler-owned clones whose foreign calls are authenticated against the
       // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
       // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
-      if (node.hiddenBatchRoute && this.compilerOptions.messageBusController) {
+      if (node.hiddenBatchRoute) {
         externalCallSlots.length = 0;
       }
 
@@ -1832,8 +1831,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
         // therefore runs on source entry points only; their synthesized local or graph route consumes the
         // compiler-authored grouping instead of rediscovering it.
-        if (this.compilerOptions.repeatedExternalBatch
-          && !node.hiddenBatchRoute && !this.compilerOptions.messageBusController) {
+        if (this.compilerOptions.repeatedExternalBatch && !node.hiddenBatchRoute) {
           const directCalls = new Set<ExternalFunctionCallNode>();
           for (const statement of node.body.statements ?? []) {
             if (statement instanceof FunctionCallStatementNode
@@ -8766,7 +8764,6 @@ export default class SymbolTableTraversal extends AstTraversal {
         // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
         const graphRawValueCall = node.methodName === 'call'
           && this.compilerOptions.hiddenBatch
-          && this.compilerOptions.messageBusController
           && node.callOptions?.value !== undefined
           && node.callOptions.gas === undefined && node.callOptions.salt === undefined;
         if ((node.methodName === 'call' || node.methodName === 'staticcall')
@@ -9015,8 +9012,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * a non-address receiver is left alone for its own diagnostic.
    */
   private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): Node | undefined {
-    const messageBusGraphMode = !!this.compilerOptions.hiddenBatch
-      && !!this.compilerOptions.messageBusController;
+    const messageBusGraphMode = !!this.compilerOptions.hiddenBatch;
     if (!messageBusGraphMode) return undefined;
     if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
     if (node.callOptions) return undefined;

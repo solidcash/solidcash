@@ -3,7 +3,7 @@
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
 Tracking baseline: working tree after `d81368a5` (`feat(layer3): compose controllerless blockhash oracles`)
-Overall verified progress: **72 / 100 points (72%)**
+Overall verified progress: **73 / 100 points (73%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -29,9 +29,9 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 3. One-transaction composer | 15 | 14 | In progress |
 | 4. Semantic completeness | 30 | 30 | Complete |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
-| 6. Removal and API stabilization | 7 | 0 | Not started |
+| 6. Removal and API stabilization | 7 | 1 | In progress |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **72** | **72%** |
+| **Total** | **100** | **73** | **73%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -129,10 +129,10 @@ positive capstones and hostile row/physical-output mutations.
 
 Controller-era capacity reports do not satisfy these items.
 
-## Phase 6 — removal and API stabilization (0/7)
+## Phase 6 — removal and API stabilization (1/7)
 
 - [ ] **2 points:** Controller genesis, controller NFT, execution-root, and projection implementation are deleted.
-- [ ] **1 point:** `messageBusController` and `messageBusControllerCategory` are absent from compiler and artifact APIs.
+- [x] **1 point:** `messageBusController` and `messageBusControllerCategory` are absent from compiler and artifact APIs.
 - [ ] **1 point:** Compatibility paths cannot silently select the old protocol.
 - [ ] **1 point:** `__testLayer3BindingSpike` and semantic bypasses are removed from production code.
 - [ ] **1 point:** Public documentation and examples exclusively teach one-transaction composition.
@@ -172,6 +172,7 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | working tree | 69% | Controllerless composition positions and recreates blockhash oracle bands, propagates locktime, and rejects stale, substituted, omitted, and duplicate oracle inputs; the complete 17-case composition suite passes. |
 | 2026-08-02 | working tree | 71% | Keccak and ecrecover compute sidecars occupy authenticated exact slots, recreate exact commitments, broadcast canonically, and reject wrong, swapped, omitted, or duplicate physical endpoints; the complete 19-case composition suite passes. |
 | 2026-08-02 | working tree | 72% | Delegate execution is fail-closed: entry handlers publish a positioned stable refusal, internal delegate closures fail before synthetic arity lowering, and forged SDK delegate modes remain rejected. Phase 4 is complete. |
+| 2026-08-02 | working tree | 73% | Removed controller identity options and artifact fields plus controller-conditioned route generation/semantic selection; all builds/lints and the complete 19-case controllerless suite pass. |
 
 ## Next percentage milestones
 

@@ -58,17 +58,6 @@ export interface CompilerOptions {
   // Group one repeated external callee into the compiler-owned batch route. Enabled by default;
   // set explicitly to false to retain one-call-per-owner lowering.
   repeatedExternalBatch?: boolean;
-  /**
-   * Integrated message-bus route. The compiler-owned SCB1 wrapper requires a co-spent controller
-   * at this exact locking bytecode, authenticates its transcript-root commitment, and proves the local owner
-   * batch is a framed member of that transcript.
-   */
-  messageBusController?: string;
-  /**
-   * Display-order category ID of the unique mint-once controller NFT. Required with
-   * `messageBusController`; locking bytecode alone is cloneable and is not an authority.
-   */
-  messageBusControllerCategory?: string;
 }
 
 export interface AbiInput {
@@ -732,8 +721,6 @@ export interface Artifact {
       maximumParticipants: typeof SINGLE_TX_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof SINGLE_TX_BUS_MAX_ROWS;
     };
-    graphControllerLockingBytecode?: string;
-    graphControllerCategory?: string;
     route: AbiFunction;
     handlers: {
       name: string;

@@ -23,7 +23,6 @@ import {
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
   TokenContainerMethodStatementNode,
-  StateAssignNode, DeleteStateNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -129,10 +128,8 @@ function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
     hiddenBatch: options.hiddenBatch === false ? false : true,
     repeatedExternalBatch: options.repeatedExternalBatch !== false,
     __requireRepeatedExternalBatch: options.repeatedExternalBatch === true,
-    // Internal-only presentation policy: ordinary inferred synthesis must not expose warnings for locals in
-    // source the user never wrote. Configured graph context retains generated-origin diagnostics for auditing.
-    __suppressGeneratedRouteWarnings: options.messageBusController === undefined
-      && options.messageBusControllerCategory === undefined,
+    // Compiler-owned route locals are generated source and never user-actionable warning locations.
+    __suppressGeneratedRouteWarnings: true,
   } as CompilerOptions;
 }
 
@@ -377,14 +374,6 @@ function compileWithExternalAdmissionFallback(
   }
   if (refusedAll !== undefined) return refusedAll;
 
-  // A configured controller selects the security-critical graph protocol, not the best-effort owner-local
-  // default. Silently discarding that configuration would turn malformed authority, transcript, pointer-table,
-  // and effect checks into an ordinary direct artifact. Preserve the graph route's fail-closed diagnostic.
-  if (mergedCompilerOptions.messageBusController !== undefined
-      || mergedCompilerOptions.messageBusControllerCategory !== undefined) {
-    throw firstError;
-  }
-
   // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
@@ -592,9 +581,8 @@ function applyRolledLoopCeilings(
  */
 const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
   'batched-handler-forward-call-not-enabled':
-    'a handler that makes an external call is batched only on the authenticated graph route, and only in void '
-    + 'tail form: supply messageBusController with its messageBusControllerCategory, '
-    + 'declare no return type, and end the body with a require - or move the call into its own handler',
+    'declare a statically bounded call shape supported by the controllerless graph route, '
+    + 'or move the call into its own handler',
   'unresolved-or-effectful-handler':
     'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
     + 'the footprint is known',
@@ -718,25 +706,9 @@ function synthesizeHiddenBatchRoute(
 ): void {
   if (!compilerOptions.hiddenBatch) return;
   const contract = ast.contract;
-  // Protocol infrastructure authenticates the graph itself; it is never an application participant and must
-  // not acquire a second SCB1 entry surface merely because application batching is default-on. Keeping these
-  // compiler-owned contracts on their direct covenant preserves the reviewed controller/projection byte
-  // envelope and prevents recursive graph participation. The names are reserved by the Layer-3 generators.
+  // Legacy infrastructure sources are not application participants and must not recursively acquire SCB1 routes
+  // while they remain in the tree during migration.
   if (isMessageBusInfrastructureContract(contract.name)) return;
-  const graphControllerLbc = compilerOptions.messageBusController?.toLowerCase();
-  const graphControllerCategory = compilerOptions.messageBusControllerCategory?.toLowerCase();
-  if (graphControllerLbc !== undefined && !/^([0-9a-f]{2})+$/.test(graphControllerLbc)) {
-    throw new Error('messageBusController must be hex-encoded locking bytecode');
-  }
-  if ((graphControllerLbc === undefined) !== (graphControllerCategory === undefined)
-    || (graphControllerCategory !== undefined && !/^[0-9a-f]{64}$/.test(graphControllerCategory))) {
-    throw new Error(
-      'messageBusController requires a 32-byte messageBusControllerCategory',
-    );
-  }
-  const graphControllerCategoryInternal = graphControllerCategory === undefined
-    ? undefined
-    : (graphControllerCategory.match(/../g) as string[]).reverse().join('');
   assertNoReservedHiddenBatchSelector(contract.functions);
   const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
   // X100. Record every external entry point's span BEFORE any refusal is decided and before anything downstream
@@ -1241,19 +1213,10 @@ function synthesizeHiddenBatchRoute(
           }
           // Synchronous iteration; `reason` is the intended accumulator for this surrounding route loop.
           // eslint-disable-next-line @typescript-eslint/no-loop-func
-          alternatives[0].forEach((inputIndex, keyIndex) => {
+          alternatives[0].forEach((inputIndex) => {
             if (inputIndex === -2) {
-              if (graphControllerLbc === undefined) {
-                reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
-                return;
-              }
-              const routeInput = `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}`
-                + `_sender_${keyIndex}`;
-              routeKeyWitnesses.set(routeInput, [{
-                name: routeInput,
-                type: collection.allKeyTypes[keyIndex],
-              }]);
-              keyWitnesses.push({ routeInput, inputIndex: -1, source: 'msgSender' });
+              reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
+              return;
             } else {
               globalInputs.add(inputIndex);
             }
@@ -1308,17 +1271,8 @@ function synthesizeHiddenBatchRoute(
           // eslint-disable-next-line @typescript-eslint/no-loop-func
           alternatives[0].forEach((inputIndex, keyIndex) => {
             if (inputIndex === -2) {
-              if (graphControllerLbc === undefined) {
-                reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
-                return;
-              }
-              const routeInput = `__scb_key_${collectionName.replace(/[^A-Za-z0-9_]/g, '_')}`
-                + `_sender_${keyIndex}`;
-              routeKeyWitnesses.set(routeInput, [{
-                name: routeInput,
-                type: collection.allKeyTypes[keyIndex],
-              }]);
-              keyWitnesses.push({ routeInput, inputIndex: -1, source: 'msgSender' });
+              reason = 'msg-sender-collection-key-requires-authenticated-graph-caller';
+              return;
             } else {
               keyWitnesses.push({
                 routeInput: witnesses[keyIndex].name,
@@ -1368,11 +1322,11 @@ function synthesizeHiddenBatchRoute(
         });
       }
     }
-    if (!reason && graphControllerLbc === undefined && writesDynamicState && reachesCollection) {
+    if (!reason && writesDynamicState && reachesCollection) {
       reason = 'dynamic-and-collection-route-not-enabled';
     }
     const readsTokenContainer = footprint.reads.some((resource) => resource.startsWith('collection:tokens:'));
-    if (!reason && graphControllerLbc === undefined && hasTokenContainerEffect && !readsTokenContainer) {
+    if (!reason && hasTokenContainerEffect && !readsTokenContainer) {
       reason = 'token-container-effect-route-not-enabled';
     }
     // Controllerless participants authenticate token-container resources and settlements directly in the
@@ -1402,7 +1356,6 @@ function synthesizeHiddenBatchRoute(
     else if (!reason && (
       (signatureCheck || fn.parameters.some((parameter) =>
         ['sig', 'sig[]'].includes(parameter.type.toString())))
-      && graphControllerLbc === undefined
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
@@ -1446,13 +1399,8 @@ function synthesizeHiddenBatchRoute(
     fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
-    let hasScalarStateWrite = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (node instanceof StateAssignNode || node instanceof DeleteStateNode) hasScalarStateWrite = true;
-    });
     if (!reason && (graphTailCallEligible
       || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue || routeUsesTxOrigin
-      || (graphControllerLbc !== undefined && hasScalarStateWrite)
       || routeUsesMsgValue)) {
       graphTailHandlers.add(fn);
     }
@@ -1472,16 +1420,6 @@ function synthesizeHiddenBatchRoute(
 
   const eligibleFootprint = (fn: FunctionDefinitionNode): ReturnType<typeof analyseFunctionFootprint> =>
     analyseFunctionFootprint(fn, byName);
-  const consumesExternalResult = (fn: FunctionDefinitionNode): boolean => {
-    let found = false;
-    walkInvocationAst(fn.body, (node) => {
-      if (!(node instanceof VariableDefinitionNode || node instanceof TupleAssignmentNode)) return;
-      walkInvocationAst(node, (candidate) => {
-        if (candidate instanceof MethodCallNode || candidate instanceof ExternalFunctionCallNode) found = true;
-      });
-    });
-    return found;
-  };
   const carriesRawValueOption = (fn: FunctionDefinitionNode): boolean => {
     let found = false;
     walkInvocationAst(fn.body, (node) => {
@@ -1593,7 +1531,7 @@ function synthesizeHiddenBatchRoute(
       // Producer-returning effect handlers remain refused. A result CONSUMER is distinct: its producer result
       // is authenticated before the handler resumes, and X29 binds the consumer's effect frame by site.
       for (const fn of survivors) {
-        const continuationEffect = graphControllerLbc !== undefined && consumesExternalResult(fn);
+        const continuationEffect = false;
         if ((!continuationEffect && eligibleFootprint(fn).effects.length > 0)
           || (!relaxResultRouteEffects && eventMode)) {
           fn.hiddenBatchEligible = false;
@@ -2355,15 +2293,7 @@ function synthesizeHiddenBatchRoute(
           !entry.perRow && `${entry.base}_row` === varyingEntry.base)
         : -1;
       const callArgs = [...sourceCallArgs, ...physicalEntryArgs].join(', ');
-      const outStateBoundaryChecks = graphControllerLbc === undefined ? '' : (fn.externalOutStateReads ?? [])
-        .map((read) => {
-          const targetIndex = fn.parameters.findIndex((parameter) => parameter.name === read.addressParam);
-          if (targetIndex < 0) {
-            throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
-          }
-          return 'require(__scb_graph_completion >= __scb_graph_settlement('
-          + `__internal__graphSettlementTable, __scb_arg_${handlerIndex}_${targetIndex}));`;
-        }).join(' ');
+      const outStateBoundaryChecks = '';
       const decode = declarations.length === 0
         ? 'require(rowArgs.length == 0);'
         : declarations.length === 1
@@ -2437,13 +2367,8 @@ function synthesizeHiddenBatchRoute(
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
-  const controllerlessGraphRoute = graphControllerLbc === undefined && graphTailHandlers.size > 0;
-  const graphExecutionContext = graphControllerLbc !== undefined || controllerlessGraphRoute;
+  const graphExecutionContext = graphTailHandlers.size > 0;
   const graphRouteParameters = !graphExecutionContext ? [] : [
-    ...(graphControllerLbc === undefined ? [] : [
-      'bigint __internal__graphControllerIdx',
-      'bigint __internal__graphParticipantOffset',
-    ]),
     'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
@@ -2500,69 +2425,9 @@ function synthesizeHiddenBatchRoute(
   const returnStatement = resultMode
     ? 'return __scb_results;'
     : '';
-  const graphPrologue = graphControllerLbc === undefined ? '' : `
-        require(__internal__graphControllerIdx >= 0
-          && __internal__graphControllerIdx < tx.inputs.length
-          && __internal__graphControllerIdx != this.activeInputIndex);
-        require(tx.inputs[__internal__graphControllerIdx].lockingBytecode == hex"${graphControllerLbc}");
-        require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(0, 32)
-          == hex"${graphControllerCategoryInternal}");
-        require(tx.inputs[__internal__graphControllerIdx].tokenCategory.slice(32, 33) == hex"01");
-        bytes __internal__graphTranscript = __scb_graph_transcript(__internal__graphControllerIdx);
-        require(tx.inputs[__internal__graphControllerIdx].nftCommitment == sha256(__internal__graphTranscript));
-        bytes __graph_owner_lbc = tx.inputs[this.activeInputIndex].lockingBytecode;
-        bytes __graph_owner_frame = bytes.concat(
-          bytes.concat(
-            bytes2(this.activeInputIndex),
-            bytes2(__internal__graphBlockSize),
-            bytes2(__graph_owner_lbc.length),
-            __graph_owner_lbc
-          ),
-          bytes2(batchBlob.length),
-          batchBlob,
-          bytes2(__internal__graphEmissions.length),
-          __internal__graphEmissions,
-          bytes2(__internal__graphCallers.length),
-          __internal__graphCallers,
-          bytes2(__internal__graphSettlementBoundary),
-          bytes2(__internal__graphCompletionPositions.length),
-          __internal__graphCompletionPositions,
-          sha256(__internal__graphSettlementTable)
-        );
-        require(__internal__graphParticipantOffset >= 0
-          && __internal__graphParticipantOffset + __graph_owner_frame.length <= __internal__graphTranscript.length);
-        require(__internal__graphTranscript.slice(
-          __internal__graphParticipantOffset,
-          __internal__graphParticipantOffset + __graph_owner_frame.length
-        ) == __graph_owner_frame);
-  `;
-  const graphTranscriptLoader = graphControllerLbc === undefined ? '' : `
-      function __scb_graph_transcript(bigint __scb_controller) internal view returns (bytes) {
-        bytes __scb_unlock = tx.inputs[__scb_controller].unlockingBytecode;
-        require(__scb_unlock.length >= 7 && __scb_unlock.slice(0, 1) == hex"04");
-        bigint __scb_opcode = int(bytes.concat(__scb_unlock.slice(5, 6), hex"00"));
-        bigint __scb_length;
-        bigint __scb_at;
-        if (__scb_opcode <= 75) {
-          require(__scb_opcode > 0);
-          __scb_length = __scb_opcode;
-          __scb_at = 6;
-        } else if (__scb_opcode == 76) {
-          require(__scb_unlock.length >= 7);
-          __scb_length = int(bytes.concat(__scb_unlock.slice(6, 7), hex"00"));
-          require(__scb_length >= 76);
-          __scb_at = 7;
-        } else {
-          require(__scb_opcode == 77 && __scb_unlock.length >= 8);
-          __scb_length = int(bytes.concat(__scb_unlock.slice(6, 8), hex"00"));
-          require(__scb_length >= 256);
-          __scb_at = 8;
-        }
-        require(__scb_length >= 10 && __scb_at + __scb_length <= __scb_unlock.length);
-        return __scb_unlock.slice(__scb_at, __scb_at + __scb_length);
-      }
-  `;
-  const singleTxTranscriptLoader = graphControllerLbc !== undefined ? '' : `
+  const graphPrologue = '';
+  const graphTranscriptLoader = '';
+  const singleTxTranscriptLoader = `
       function __scb_single_tx_push(bytes script, bigint at) internal pure returns (bigint, bigint) {
         require(at >= 0 && at < script.length);
         bigint opcode = int(bytes.concat(script.slice(at, at + 1), hex"00"));
@@ -3088,7 +2953,7 @@ function synthesizeHiddenBatchRoute(
         }
       }
   `;
-  const singleTxPrologue = graphControllerLbc !== undefined ? '' : `
+  const singleTxPrologue = `
         bytes __internal__singleTxTranscript = __scb_single_tx_transcript();
         if (__internal__singleTxTranscript.length > 0) {
           __scb_verify_single_tx(
@@ -3413,7 +3278,7 @@ function compileResolvedAst(
     }
   });
   const messageBusGraphMode = !!mergedCompilerOptions.hiddenBatch
-    && (!!mergedCompilerOptions.messageBusController || inferredGraphEdge);
+    && inferredGraphEdge;
   // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
   // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
   // or renames a handler. Without this the same sources reach the user as `Block slot not found: lowLevelCall[0]`
@@ -4077,10 +3942,6 @@ function compileResolvedAst(
         maximumParticipants: SINGLE_TX_BUS_MAX_PARTICIPANTS,
         maximumRows: SINGLE_TX_BUS_MAX_ROWS,
       },
-      ...(mergedCompilerOptions.messageBusController && {
-        graphControllerLockingBytecode: mergedCompilerOptions.messageBusController.toLowerCase(),
-        graphControllerCategory: mergedCompilerOptions.messageBusControllerCategory!.toLowerCase(),
-      }),
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,
@@ -4569,8 +4430,8 @@ function mergeFootprints(plans: PlannedFunction[]): SplitStateFootprint {
  * callsites. Graph mode therefore keeps the post-filter route and leans on `assertSplitLayoutsAgree`, which
  * refuses the divergent bundle rather than emitting it.
  */
-function splitPreLowersFnPtrArrays(options: CompilerOptions): boolean {
-  return !(options.hiddenBatch && options.messageBusController);
+function splitPreLowersFnPtrArrays(_options: CompilerOptions): boolean {
+  return true;
 }
 
 /** Prepare the complete logical contract before deciding physical placement. The normal compiler repeats these

@@ -130,6 +130,17 @@ export class SingleTxBusComposition {
         next += 1;
         return participantOf(descriptor);
       },
+      occurrence: ({ participant, function: ownerFunction, callsiteId, kind }) => {
+        const abiFunction = participant.artifact.abi.find((candidate) => candidate.name === ownerFunction);
+        const callsite = abiFunction?.externalCalls?.find((candidate) => candidate.callsiteId === callsiteId);
+        if (!callsite) {
+          throw new Error(`layer3: compiler omitted occurrence metadata for callsite ${callsiteId}`);
+        }
+        const maximum = callsite.maximumOccurrences ?? (kind === 'conditional' ? 1 : 0);
+        let count = 0;
+        while (count < maximum && descriptors[next + count]?.functionName === callsite.functionName) count += 1;
+        return count;
+      },
     });
     if (plan.invocations.length !== descriptors.length) {
       throw new Error(

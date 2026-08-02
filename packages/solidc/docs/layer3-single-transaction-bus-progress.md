@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
-Tracking baseline: `4ed61e64` (`feat(layer3): authenticate logical call context`)  
-Overall verified progress: **62 / 100 points (62%)**
+Tracking baseline: working tree after `e26fa2ac` (`feat(layer3): compose repeated and fan-out calls`)
+Overall verified progress: **65 / 100 points (65%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -27,11 +27,11 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 1. Codec and layout | 10 | 10 | Complete |
 | 2. Compiler mutual verifier | 15 | 13 | In progress |
 | 3. One-transaction composer | 15 | 14 | In progress |
-| 4. Semantic completeness | 30 | 20 | In progress |
+| 4. Semantic completeness | 30 | 23 | In progress |
 | 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
 | 6. Removal and API stabilization | 7 | 0 | Not started |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **62** | **62%** |
+| **Total** | **100** | **65** | **65%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -73,16 +73,16 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
 - [ ] **1 point:** Public API surface and tests prove there is no silent legacy-controller selection path.
 
-## Phase 4 — semantic completeness (20/30)
+## Phase 4 — semantic completeness (23/30)
 
-### Calls and execution graph (4/7)
+### Calls and execution graph (7/7)
 
 - [x] **2 points:** Void and returning calls complete with authenticated results.
 - [x] **1 point:** A three-participant transitive return chain completes.
 - [x] **1 point:** Nested result dependencies and fan-in result binding have controllerless evidence.
-- [ ] **1 point:** Repeated calls and fan-out have positive and hostile controllerless VM evidence.
-- [ ] **1 point:** Branch reachability and exact occurrence consumption have controllerless VM evidence.
-- [ ] **1 point:** Bounded loops have positive, overflow, omitted-row, and duplicate-row controllerless evidence.
+- [x] **1 point:** Repeated calls and fan-out have positive and hostile controllerless VM evidence.
+- [x] **1 point:** Branch reachability and exact occurrence consumption have controllerless VM evidence.
+- [x] **1 point:** Bounded loops have positive, overflow, omitted-row, and duplicate-row controllerless evidence.
 
 ### Logical transaction context (4/4)
 
@@ -165,6 +165,8 @@ Controller-era capacity reports do not satisfy these items.
 | --- | --- | ---: | --- |
 | 2026-08-02 | `7798d441` | 58% | Initial ledger. Counts committed controllerless codec, mutual verification, composition, journals, events, BCH transfers, and FT/NFT settlement evidence. |
 | 2026-08-02 | `4ed61e64` | 62% | Authenticated logical `msg.sender`, `msg.sig`, `msg.data`, `msg.value`, and `tx.origin` with canonical broadcast and hostile carrier mutations. |
+| 2026-08-02 | `e26fa2ac` | 63% | Repeated callsites share one physical participant, fan-out settles two independent participants, and swapped/dropped/duplicated/retargeted invocation rows fail the BCH VM. |
+| 2026-08-02 | working tree | 65% | Conditional reachability and compile-time-bounded loop occurrences consume exactly the authenticated invocation rows; omitted, duplicate, under-floor, and over-ceiling cases fail. |
 
 ## Next percentage milestones
 

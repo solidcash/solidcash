@@ -93,7 +93,8 @@ const mutateInputZero = (
               .filter(({ row }) => row.kind === 0 && row.parent !== 0xffff)
               .map(({ index }) => index);
             if (invocationIndices.length < 1
-              || (target !== 'carrier-invocation-target' && invocationIndices.length < 2)) {
+              || (['carrier-invocation-swap', 'carrier-invocation-drop'].includes(target)
+                && invocationIndices.length < 2)) {
               throw new Error('test could not locate required invocation rows');
             }
             const [first, second] = invocationIndices;
@@ -109,7 +110,8 @@ const mutateInputZero = (
             } else if (target === 'carrier-invocation-drop') {
               rows.splice(second, 1);
             } else {
-              rows.splice(second + 1, 0, { ...rows[second] });
+              const selected = second ?? first;
+              rows.splice(selected + 1, 0, { ...rows[selected] });
             }
             instructions[instructionIndex] = {
               ...instruction, data: encodeSingleTxCarrier({ ...transcript, rows }),
@@ -358,6 +360,116 @@ describe('layer3.compose controllerless transaction', () => {
     const hostile = await composition.build();
     mutateInputZero(hostile, '', 'carrier-invocation-target');
     expect(vmRejects(hostile)).toBe(true);
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates taken and untaken conditional call reachability exactly', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const sinkArtifact = compileString(`contract ComposeBranchSink() {
+      function ping(int value) public { require(value >= 0); }
+    }`, { forceStateful: true });
+    const connectSink = async (): Promise<StatefulContract> => {
+      const base = new Contract(sinkArtifact, [], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, sinkArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const always = await connectSink();
+    const conditional = await connectSink();
+    const callerArtifact = compileString(`
+      interface IComposeBranchSink { function ping(int value); }
+      contract ComposeBranchCaller(address always, address conditional) {
+        function invoke(bool takeBranch, int value) public {
+          IComposeBranchSink(always).ping(value);
+          if (takeBranch) { IComposeBranchSink(conditional).ping(9); }
+          require(value >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(
+      callerArtifact, [always.inner.lockingBytecode, conditional.inner.lockingBytecode], { provider },
+    );
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const taken = layer3.compose({
+      calls: [caller.call.invoke(true, 7n), always.call.ping(7n), conditional.call.ping(9n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const untaken = layer3.compose({
+      calls: [caller.call.invoke(false, 7n), always.call.ping(7n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonicalTaken = await taken.build();
+    const canonicalUntaken = await untaken.build();
+    expect(vmRejects(canonicalTaken)).toBe(false);
+    expect(vmRejects(canonicalUntaken)).toBe(false);
+    const omitted = await taken.build();
+    mutateInputZero(omitted, '', 'carrier-invocation-drop');
+    expect(vmRejects(omitted)).toBe(true);
+    const phantom = await untaken.build();
+    mutateInputZero(phantom, '', 'carrier-invocation-duplicate');
+    expect(vmRejects(phantom)).toBe(true);
+    await expect(canonicalTaken.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates bounded-loop occurrence floors, ceilings, and exact row consumption', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const sinkArtifact = compileString(`contract ComposeLoopSink() {
+      function ping(int value) public { require(value >= 0); }
+    }`, { forceStateful: true });
+    const sinkBase = new Contract(sinkArtifact, [], { provider });
+    const sinkSetup = await setupStatefulUtxos(
+      provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const sinkInner = sinkBase.withCategory(hexToBin(sinkSetup.categoryId));
+    const sink = StatefulContract.withCategory(sinkInner, sinkSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeLoopSink { function ping(int value); }
+      contract ComposeLoopCaller(address sink) {
+        function invoke(int value) public {
+          for (int i = 0; i < 2; i = i + 1) { IComposeLoopSink(sink).ping(value); }
+          require(value >= 0);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [sinkInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.invoke(7n), sink.call.ping(7n), sink.call.ping(7n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    expect(vmRejects(canonical)).toBe(false);
+    await expect(layer3.compose({
+      calls: [caller.call.invoke(7n), sink.call.ping(7n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow(/below the 2 proven by a compile-time trip count/);
+    await expect(layer3.compose({
+      calls: [caller.call.invoke(7n), sink.call.ping(7n), sink.call.ping(7n), sink.call.ping(7n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build()).rejects.toThrow(/compiled graph reaches 3/);
+    for (const mutation of ['carrier-invocation-drop', 'carrier-invocation-duplicate'] as const) {
+      const hostile = await composition.build();
+      mutateInputZero(hostile, '', mutation);
+      expect(vmRejects(hostile), mutation).toBe(true);
+    }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

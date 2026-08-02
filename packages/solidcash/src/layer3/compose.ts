@@ -5,9 +5,12 @@ import type {
   Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
+import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import { withSingleTxCarrier } from './controllerless.js';
-import { finalizeSingleTxInvocationGraph } from './graph.js';
+import {
+  finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect,
+} from './graph.js';
 import { encodeHiddenBatch } from './hidden-batch.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
@@ -157,7 +160,14 @@ export class SingleTxBusComposition {
     });
     const returning = plan.invocations.filter((invocation) => invocation.resultTypes.length > 0);
     const provisionalResults = Object.fromEntries(returning.map((invocation) => [invocation.index, '00']));
-    let finalized = finalizeSingleTxInvocationGraph(plan, categories, provisionalResults);
+    const eventSlots = plan.participants.flatMap((participant) =>
+      participant.blockLayout!.slots.filter((slot) => slot.kind === 'event').map((slot) => ({
+        participant: participant.participant, offset: slot.offset,
+      })));
+    const provisionalEventEffects: SingleTxEventSlotEffect[] = [];
+    let finalized = finalizeSingleTxInvocationGraph(
+      plan, categories, provisionalResults, provisionalEventEffects,
+    );
 
     const participantReturnBlob = (
       participant: number, results: Readonly<Record<number, string>>,
@@ -219,10 +229,11 @@ export class SingleTxBusComposition {
       return aggregate;
     };
 
-    if (returning.length > 0) {
+    if (returning.length > 0 || eventSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
+      let claimedEventEffects: readonly SingleTxEventSlotEffect[] = provisionalEventEffects;
       for (let pass = 0; pass <= plan.invocations.length; pass += 1) {
-        finalized = finalizeSingleTxInvocationGraph(plan, categories, claimedResults);
+        finalized = finalizeSingleTxInvocationGraph(plan, categories, claimedResults, claimedEventEffects);
         const provisional = await assemble(finalized, claimedResults);
         const derivedResults: Record<number, string> = {};
         for (const participant of plan.participants) {
@@ -256,15 +267,37 @@ export class SingleTxBusComposition {
             throw new Error(`layer3: participant ${participant.participant} return vector has an unchecked suffix`);
           }
         }
+        const derivedEventEffects: SingleTxEventSlotEffect[] = [];
+        for (const slot of eventSlots) {
+          const outputIndex = finalized.layout.participantInputs[slot.participant] + slot.offset;
+          const output = provisional.outputs[outputIndex];
+          if (!output) throw new Error(`layer3: event slot ${slot.participant}:${slot.offset} has no output`);
+          const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          const active = output.token !== undefined;
+          if (active && (output.token!.category !== categories[slot.participant]
+            || output.token!.nft?.capability !== 'none')) {
+            throw new Error(
+              `layer3: event slot ${slot.participant}:${slot.offset} is not an immutable participant NFT`,
+            );
+          }
+          if (active) {
+            derivedEventEffects.push({
+              ...slot, active, lockingBytecodeHex: binToHex(lockingBytecode),
+              commitmentHex: output.token?.nft?.commitment ?? '',
+            });
+          }
+        }
         let stable = true;
         for (const invocation of returning) {
           if (derivedResults[invocation.index] !== claimedResults[invocation.index]) stable = false;
         }
+        if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
         if (stable) return provisional;
         claimedResults = derivedResults;
+        claimedEventEffects = derivedEventEffects;
       }
       throw new Error(
-        `layer3: L3_RESULT_DERIVATION_DID_NOT_CONVERGE after ${plan.invocations.length + 1} bounded passes`,
+        `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${plan.invocations.length + 1} bounded passes`,
       );
     }
     return assemble(finalized, provisionalResults);

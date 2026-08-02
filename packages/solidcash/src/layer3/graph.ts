@@ -215,6 +215,14 @@ export interface FinalizedSingleTxInvocationGraph {
   carrier: Uint8Array;
 }
 
+export interface SingleTxEventSlotEffect {
+  participant: number;
+  offset: number;
+  active: boolean;
+  lockingBytecodeHex: string;
+  commitmentHex: string;
+}
+
 /** Canonical off-chain commitment to the compiler-authored incoming policy published by an artifact. */
 export function singleTxParticipantPolicyHash(artifact: Artifact): string {
   const handlers = artifact.hiddenBatch?.handlers;
@@ -241,6 +249,7 @@ export function singleTxParticipantPolicyHash(artifact: Artifact): string {
 export function finalizeSingleTxInvocationGraph(
   plan: CompiledGraphPlan, masterCategories: readonly string[],
   results: Readonly<Record<number, string>> = {},
+  eventEffects: readonly SingleTxEventSlotEffect[] = [],
 ): FinalizedSingleTxInvocationGraph {
   if (masterCategories.length !== plan.participants.length) {
     throw new Error('layer3: controllerless master categories must align with participants');
@@ -250,9 +259,9 @@ export function finalizeSingleTxInvocationGraph(
   );
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
-    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft', 'returnEvent'].includes(slot.kind))
+    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft', 'event', 'returnEvent'].includes(slot.kind))
       || participant.artifact.hiddenBatch?.handlers.some((handler) =>
-        (handler.emits?.length ?? 0) > 0 || (handler.transfers?.length ?? 0) > 0
+        (handler.transfers?.length ?? 0) > 0
         || (handler.tokenContainerAccesses?.length ?? 0) > 0);
   });
   if (unsupported) {
@@ -282,7 +291,7 @@ export function finalizeSingleTxInvocationGraph(
       returnOutput: returnSlot === undefined ? 0xffff : layout.participantInputs[index] + returnSlot.offset,
     };
   });
-  const rows = plan.invocations.map((invocation) => {
+  const invocationRows = plan.invocations.map((invocation) => {
     const result = results[invocation.index] ?? '';
     if (!/^(?:[0-9a-fA-F]{2})*$/.test(result)) {
       throw new Error(`layer3: invocation ${invocation.index} result is not byte-aligned hex`);
@@ -311,6 +320,45 @@ export function finalizeSingleTxInvocationGraph(
       effectHex: '',
     };
   });
+  const effectKeys = new Set(eventEffects.map((effect) => `${effect.participant}:${effect.offset}`));
+  if (effectKeys.size !== eventEffects.length) {
+    throw new Error('layer3: controllerless event effects contain a duplicate participant slot');
+  }
+  const eventRows = [...eventEffects]
+    .sort((a, b) => a.participant - b.participant || a.offset - b.offset)
+    .map((effect) => {
+      const participant = plan.participants[effect.participant];
+      if (!participant) throw new Error(`layer3: event effect names participant ${effect.participant}`);
+      const slot = participant.blockLayout!.slots.find((candidate) =>
+        candidate.kind === 'event' && candidate.offset === effect.offset);
+      if (!slot) {
+        throw new Error(`layer3: participant ${effect.participant} has no event slot ${effect.offset}`);
+      }
+      if (!effect.active) throw new Error('layer3: inactive event slots must not produce transcript rows');
+      const eventSlotCount = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'event').length;
+      const maximumRows = participant.artifact.hiddenBatch?.maximumRows ?? 0;
+      if (maximumRows < 1 || eventSlotCount % maximumRows !== 0 || slot.slotIndex === undefined) {
+        throw new Error(`layer3: participant ${effect.participant} has a non-canonical event frame`);
+      }
+      const frameWidth = eventSlotCount / maximumRows;
+      const parent = participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
+      if (!/^(?:[0-9a-fA-F]{2})*$/.test(effect.lockingBytecodeHex)
+        || !/^(?:[0-9a-fA-F]{2})*$/.test(effect.commitmentHex)) {
+        throw new Error(`layer3: participant ${participant.participant} event slot ${slot.offset} is not byte hex`);
+      }
+      if (parent === undefined) throw new Error(`layer3: event participant ${participant.participant} has no invocation`);
+      const invocation = plan.invocations[parent];
+      const absolute = layout.participantInputs[participant.participant] + slot.offset;
+      return {
+        kind: 2, owner: participant.participant, consumer: participant.participant,
+        slot: slot.offset, mode: effect.active ? 1 : 0,
+        sourceSlot: absolute, targetSlot: absolute, selectorHex: '00000000',
+        position: slot.offset, parent, depth: invocation.depth,
+        subtreeEnd: parent, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
+        argsHex: '', resultHex: '', effectHex: effect.commitmentHex.toLowerCase(),
+      };
+    });
+  const rows = [...invocationRows, ...eventRows];
   const transcript = { participants, rows };
   const bytes = encodeSingleTxBusTranscript(transcript);
   return Object.freeze({ plan, layout, transcript, bytes, carrier: encodeSingleTxCarrier(transcript) });

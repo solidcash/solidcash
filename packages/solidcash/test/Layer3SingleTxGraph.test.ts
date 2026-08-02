@@ -4,6 +4,7 @@ import { layer3 } from '../src/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
   hiddenBatch: {
+    maximumRows: 1,
     handlers: [{
       name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], eligible: true,
     }],
@@ -79,17 +80,34 @@ describe('controllerless compiled invocation graph', () => {
     expect(categoryChanged.bytes).not.toEqual(first.bytes);
   });
 
-  it('fails closed on missing results and unimplemented effect/resource rows', () => {
+  it('admits canonical event rows and fails closed on missing results or unsupported resources', () => {
     expect(() => layer3.finalizeSingleTxInvocationGraph(
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)],
     )).toThrow(/lacks canonical result/);
     const base = plan();
+    const eventPlan: layer3.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1],
+        blockLayout: {
+          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 1, slotIndex: 0 }],
+        },
+      }],
+    };
+    expect(layer3.finalizeSingleTxInvocationGraph(
+      eventPlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [{
+        participant: 1, offset: 1, active: true, lockingBytecodeHex: '51', commitmentHex: '012a',
+      }],
+    ).transcript.rows[2]).toMatchObject({
+      kind: 2, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
+      subjectHex: '51', effectHex: '012a',
+    });
     const unsupported: layer3.CompiledGraphPlan = {
       ...base,
       participants: [base.participants[0], {
         ...base.participants[1],
         blockLayout: {
-          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'event', offset: 1 }],
+          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'transfer', offset: 1 }],
         },
       }],
     };

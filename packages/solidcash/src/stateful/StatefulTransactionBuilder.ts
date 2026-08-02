@@ -2035,8 +2035,17 @@ export class StatefulTransactionBuilder {
       };
     }
 
-    for (const eo of eventOutputEntries) {
-      if (!eo) continue;
+    const reservedEventSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'event').length
+      ?? eventOutputEntries.length;
+    for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
+      const eo = eventOutputEntries[eventSlot];
+      if (!eo) {
+        // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
+        // later participant cannot slide into the gap; the route covenant separately excludes an own-category
+        // NFT here, and the controllerless transcript lists only active immutable event outputs.
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        continue;
+      }
       const lockingBytecode = this.eventNftLockingBytecodes.get(eo.eventSignature);
       if (!lockingBytecode) {
         throw new Error(`No locking bytecode provided for event: ${eo.eventSignature}`);

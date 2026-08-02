@@ -1034,7 +1034,7 @@ describe('SEC-10: a one-armed conditional emit reserves a slot nothing verifies 
    * both emit counts 3 direct statements (so `eventWidths` in the gate agrees with the 3-emit sibling) while
    * `emitInfos` records only the longer arm, 2.
    */
-  it('supports heterogeneous graph event frames while the ambiguous flattened route remains fail-closed', () => {
+  it('supports heterogeneous event frames in explicit and inferred controllerless graph routes', () => {
     const source = `pragma solidcash >=0.8.0;
 interface IEffectLeg { function credit(uint value); }
 contract ArmHub() {
@@ -1064,8 +1064,12 @@ contract ArmHub() {
     expect(graph.hiddenBatch!.handlers.map((handler: any) => handler.emits.length)).toEqual([2, 3]);
     expect(graph.hiddenBatch!.route.blockLayout!.slots
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(24);
-    const flattened = compileString(source, { forceStateful: true, hiddenBatch: true });
-    expect(flattened.hiddenBatch).toBeUndefined();
+    const controllerless = compileString(source, { forceStateful: true, hiddenBatch: true });
+    expect(controllerless.hiddenBatch?.singleTransactionBus).toMatchObject({
+      carrierInput: 0, maximumParticipants: 8, maximumRows: 24,
+    });
+    expect(controllerless.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot: any) => slot.kind === 'event')).toHaveLength(24);
   }, 60_000);
 
   // SEC-9 on the transfer axis: the refusal compares emitInfos only, so this compiles.

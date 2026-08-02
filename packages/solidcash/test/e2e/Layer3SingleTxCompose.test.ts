@@ -31,7 +31,7 @@ const raw = (builder: TransactionBuilder): string =>
 
 const mutateInputZero = (
   builder: TransactionBuilder, selectorHex: string,
-  target: 'carrier' | 'emissions' | 'carrier-result',
+  target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -43,21 +43,27 @@ const mutateInputZero = (
         const instructionIndex = instructions.findIndex((instruction, index) => {
           if (!('data' in instruction)) return false;
           const hex = binToHex(instruction.data);
-          return target === 'carrier' || target === 'carrier-result'
+          return target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
         if (instructionIndex < 0) throw new Error(`test could not locate ${target} frame`);
         const instruction = instructions[instructionIndex];
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
-        if (target === 'carrier-result') {
+        if (target === 'carrier-result' || target === 'carrier-event') {
           const transcript = decodeSingleTxCarrier(instruction.data);
-          const rowIndex = transcript.rows.findIndex((row) => row.resultHex.length > 0);
-          if (rowIndex < 0) throw new Error('test could not locate a returning carrier row');
-          const result = hexToBin(transcript.rows[rowIndex].resultHex);
-          result[result.length - 1] ^= 0x01;
+          const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
+            ? row.resultHex.length > 0 : row.kind === 2 && row.effectHex.length > 0);
+          if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
+          const field = hexToBin(target === 'carrier-result'
+            ? transcript.rows[rowIndex].resultHex : transcript.rows[rowIndex].effectHex);
+          field[field.length - 1] ^= 0x01;
           const rows = transcript.rows.map((row, index) => index === rowIndex
-            ? { ...row, resultHex: binToHex(result) } : row);
+            ? {
+              ...row,
+              ...(target === 'carrier-result'
+                ? { resultHex: binToHex(field) } : { effectHex: binToHex(field) }),
+            } : row);
           instructions[instructionIndex] = {
             ...instruction, data: encodeSingleTxCarrier({ ...transcript, rows }),
           };
@@ -197,6 +203,56 @@ describe('layer3.compose controllerless transaction', () => {
     const built = await composition.build();
     expect(built.inputs).toHaveLength(built.outputs.length);
     expect(built.inputs.length).toBeGreaterThanOrEqual(6);
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('binds an emitted event row to its absolute physical output', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeEventCallee() {
+      event Settled(int value);
+      function settle(int value) public { emit Settled(value); require(true); }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeEventCallee { function settle(int value); }
+      contract ComposeEventCaller(address calleeAddress) {
+        function prepare(int value) public {
+          IComposeEventCallee(calleeAddress).settle(value);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 500_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.prepare(13n), callee.call.settle(13n)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const eventOutputIndex = built.outputs.findIndex((output) =>
+      output.token?.category === calleeSetup.categoryId && output.token.nft?.capability === 'none');
+    expect(eventOutputIndex).toBeGreaterThan(0);
+    const hostileCarrier = await composition.build();
+    mutateInputZero(hostileCarrier, '', 'carrier-event');
+    await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+    const hostileOutput = await composition.build();
+    const commitment = hexToBin(hostileOutput.outputs[eventOutputIndex].token!.nft!.commitment);
+    commitment[commitment.length - 1] ^= 0x01;
+    hostileOutput.outputs[eventOutputIndex].token!.nft!.commitment = binToHex(commitment);
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 });

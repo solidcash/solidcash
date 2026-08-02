@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString as compile } from 'solidc';
+import { compileString as compile } from '../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

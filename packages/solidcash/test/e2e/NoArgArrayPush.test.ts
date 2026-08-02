@@ -1,5 +1,5 @@
 import { describe, it } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '../direct-compile.js';
 
 // Default (entry-model) array push/pop byte format; C2 push/pop is covered by SortedMappingArrayElementWrite.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>

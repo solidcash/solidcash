@@ -776,7 +776,7 @@ describe('layer3.compose controllerless transaction', () => {
 
   it('co-spends and recreates an ecrecover A/B pair at exact controllerless slots', async () => {
     const provider = createLayer3SemanticTestProvider();
-    const wallet = ethers.Wallet.createRandom();
+    const wallet = new ethers.Wallet(`0x${'11'.repeat(32)}`);
     const message = 'controllerless-single-tx-bus';
     const signature = await wallet.signMessage(message);
     const digestHex = ethers.hashMessage(message);

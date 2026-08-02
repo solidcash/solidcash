@@ -1,6 +1,6 @@
 import { readFileSync } from 'fs';
 import { describe, expect, it } from 'vitest';
-import { compileStringSplit } from 'solidc';
+import { compileStringSplit } from '../direct-compile.js';
 import {
   ContractFactory, Signer, SignatureTemplate, SplitContractBundle, StatefulContract,
 } from '../../src/index.js';

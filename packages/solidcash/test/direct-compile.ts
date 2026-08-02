@@ -1,10 +1,12 @@
 import {
   compileString as compileStringRaw,
   compileStringMulti as compileStringMultiRaw,
+  compileStringSplit as compileStringSplitRaw,
 } from 'solidc';
 
 type StringOptions = NonNullable<Parameters<typeof compileStringRaw>[1]>;
 type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;
+type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 
 /**
  * Compile fixtures which exercise the pre-SCB1 direct transaction APIs.
@@ -20,3 +22,7 @@ export const compileString = (
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
 ): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { hiddenBatch: false, ...options });
+
+export const compileStringSplit = (
+  source: string, options: SplitOptions,
+): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { hiddenBatch: false, ...options });

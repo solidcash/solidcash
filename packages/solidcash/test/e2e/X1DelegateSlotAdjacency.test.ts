@@ -1,6 +1,6 @@
 import { binToHex, encodeTransaction } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
-import { compileStringSplit } from 'solidc';
+import { compileStringSplit } from '../direct-compile.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle } from '../../src/index.js';
 import { alicePriv } from '../fixture/vars.js';

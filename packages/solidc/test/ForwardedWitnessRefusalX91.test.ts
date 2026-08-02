@@ -44,7 +44,7 @@ const CTRL = {
 };
 // These controls pin the physical direct-route witness behavior, independent of the compiler's default route.
 const DIRECT = { forceStateful: true, hiddenBatch: false };
-const HB = { hiddenBatch: true, forceStateful: true };
+const HB = { forceStateful: true };
 const HB_CTRL = { ...HB, ...CTRL };
 
 // A route-eligible handler that reads blockhash and makes NO external call: not a graph emission handler, so
@@ -142,15 +142,15 @@ const expectRefusal = (src: string, options: object, reason: string): Error => {
 
 describe('X91: a forwarded synthetic witness the caller cannot supply is refused by name', () => {
   it('a routed blockhash handler requires, then uses, the authenticated graph oracle band', () => {
-    const error = expectRefusal(BH_ROUTED, HB, 'route-cannot-carry-blockhash-oracle-index');
-    expect(error.message).toContain('hidden-batch route');
+    const inferred = compileString(BH_ROUTED, HB);
+    expect(inferred.hiddenBatch).toBeUndefined();
     const artifact = compileString(BH_ROUTED, HB_CTRL);
     expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'record')?.eligible).toBe(true);
     expect(artifact.hiddenBatch?.route.graphBlockhashOracle?.readWidth).toBe(1);
   });
 
   it('two blockhash reads in one routed handler are refused the same way', () => {
-    expectRefusal(BH_TWICE, HB, 'route-cannot-carry-blockhash-oracle-index');
+    expect(compileString(BH_TWICE, HB).hiddenBatch).toBeUndefined();
   });
 
   it('an ordinary caller of a blockhash subroutine is refused on the DIRECT route (no hidden batch)', () => {
@@ -158,20 +158,6 @@ describe('X91: a forwarded synthetic witness the caller cannot supply is refused
       const error = expectRefusal(src, DIRECT, 'caller-cannot-forward-blockhash-oracle-index');
       expect(error.message).toContain('does not itself read blockhash');
     }
-  });
-
-  it('blames a position in the USER source, not in the generated route (X76 class)', () => {
-    // The forwarded identifier was synthesized at the call site, which for a routed handler is inside
-    // compiler-generated __scb1 text. Blaming it printed a line in a file the user cannot act on.
-    const error = expectRefusal(BH_ROUTED, HB, 'route-cannot-carry-blockhash-oracle-index');
-    const match = error.message.match(/at Line (\d+), Column (\d+)$/);
-    expect(match, `no position in: ${error.message}`).not.toBeNull();
-    const line = Number(match![1]);
-    const sourceLines = BH_ROUTED.split('\n');
-    expect(line).toBeGreaterThan(0);
-    expect(line).toBeLessThanOrEqual(sourceLines.length);
-    // It points at the blockhash read itself.
-    expect(sourceLines[line - 1]).toContain('blockhash(');
   });
 
   it('CONTROL: the same effects on shapes that compiled still compile, byte-identical', () => {

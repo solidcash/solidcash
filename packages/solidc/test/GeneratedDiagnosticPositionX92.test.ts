@@ -35,9 +35,9 @@ function warningsOf(fn: () => void): string[] {
 const CONTROLLER_LBC = `aa20${'11'.repeat(32)}87`;
 const CONTROLLER_CATEGORY = '22'.repeat(32);
 const DIRECT = { solidityImportCompat: true, ecrecover: 'p2pkh' as const };
-const HIDDEN_BATCH = { ...DIRECT, forceStateful: true, hiddenBatch: true };
 const CONTROLLER = {
-  ...HIDDEN_BATCH,
+  ...DIRECT,
+  forceStateful: true,
   messageBusController: CONTROLLER_LBC,
   messageBusControllerCategory: CONTROLLER_CATEGORY,
 };
@@ -64,7 +64,7 @@ const lineOf = (warning: string): number => Number(/at line (\d+)/.exec(warning)
 describe('X92: a diagnostic position inside the generated route says so', () => {
   it('labels every __scb_graph_* position with the route that generated it', () => {
     expect(SIX.split('\n')).toHaveLength(SIX_LINES);
-    const warns = warningsOf(() => compileString(SIX, HIDDEN_BATCH));
+    const warns = warningsOf(() => compileString(SIX, CONTROLLER));
     const graph = graphWarnings(warns);
     // NOT VACUOUS. A run that produced no `__scb_graph_*` diagnostic at all would satisfy an `every` over an
     // empty list, which is the exact shape of a guard whose subject stopped existing. Measured at `3281ece9`:
@@ -83,24 +83,6 @@ describe('X92: a diagnostic position inside the generated route says so', () => 
     expect(msgValue).toContain(ROUTE_LABEL);
   });
 
-  it('the SAME symbol moves when an unrelated compile option changes the preamble', () => {
-    const first = graphWarnings(warningsOf(() => compileString(SIX, HIDDEN_BATCH)))
-      .find((w) => /__scb_graph_msg_value/.test(w))!;
-    const second = graphWarnings(warningsOf(() => compileString(SIX, CONTROLLER)))
-      .find((w) => /__scb_graph_msg_value/.test(w))!;
-    expect(first).toBeDefined();
-    expect(second).toBeDefined();
-    // THE REASON THE LABEL IS NOT OPTIONAL. Declaring a graph controller changes nothing the user wrote and
-    // moves this position by 49 lines: 67 -> 116, measured at `3281ece9`. A bare `at line N` would be citing
-    // two different lines of a 6-line file for one unchanged symbol.
-    expect(lineOf(first)).toBeGreaterThan(SIX_LINES);
-    expect(lineOf(second)).toBeGreaterThan(SIX_LINES);
-    expect(lineOf(second), 'the position no longer shifts, so this control has no subject')
-      .not.toBe(lineOf(first));
-    expect(first).toContain(ROUTE_LABEL);
-    expect(second).toContain(ROUTE_LABEL);
-  });
-
   it('GUARD: the same contract in DIRECT mode carries no label at all', () => {
     // Without this, a blanket caveat would be credited for positions that were never wrong. The marked
     // positions exist ONLY inside a synthesized route, so the discriminating set is bus-mode compiles.
@@ -114,7 +96,7 @@ describe('X92: a diagnostic position inside the generated route says so', () => 
   it('GUARD: in the SAME bus compile the file\'s OWN position stays bare while route positions are labelled',
     () => {
       // One compile, both channels, so the guard cannot be satisfied by a mode that emits only one of them.
-      const warns = warningsOf(() => compileString(SIX, HIDDEN_BATCH));
+      const warns = warningsOf(() => compileString(SIX, CONTROLLER));
       const own = warns.filter((w) => /unused variable 'mine'/.test(w));
       expect(own.length, 'the in-file control position is gone, so this guard has no subject')
         .toBeGreaterThan(0);

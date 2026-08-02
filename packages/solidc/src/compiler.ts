@@ -116,7 +116,6 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
-  hiddenBatch: true,
   repeatedExternalBatch: true,
 };
 
@@ -125,12 +124,13 @@ function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
   return {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
-    hiddenBatch: options.hiddenBatch !== false,
+    hiddenBatch: options.hiddenBatch === false ? false : true,
     repeatedExternalBatch: options.repeatedExternalBatch !== false,
     __requireRepeatedExternalBatch: options.repeatedExternalBatch === true,
-    // Internal-only presentation policy: default-on synthesis must not expose warnings for locals in source
-    // the user never wrote. Explicit route builds retain them for diagnostic-origin auditing.
-    __suppressGeneratedRouteWarnings: options.hiddenBatch !== true,
+    // Internal-only presentation policy: ordinary inferred synthesis must not expose warnings for locals in
+    // source the user never wrote. Configured graph context retains generated-origin diagnostics for auditing.
+    __suppressGeneratedRouteWarnings: options.messageBusController === undefined
+      && options.messageBusControllerCategory === undefined,
   } as CompilerOptions;
 }
 
@@ -261,7 +261,6 @@ function compileWithExternalAdmissionFallback(
   mergedCompilerOptions: CompilerOptions,
   errorListener?: SolidCashErrorListener,
   primaryContractName?: string,
-  requireHiddenRoute = false,
 ): Artifact {
   const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
@@ -379,8 +378,7 @@ function compileWithExternalAdmissionFallback(
   // A configured controller selects the security-critical graph protocol, not the best-effort owner-local
   // default. Silently discarding that configuration would turn malformed authority, transcript, pointer-table,
   // and effect checks into an ordinary direct artifact. Preserve the graph route's fail-closed diagnostic.
-  if (requireHiddenRoute
-      || mergedCompilerOptions.messageBusController !== undefined
+  if (mergedCompilerOptions.messageBusController !== undefined
       || mergedCompilerOptions.messageBusControllerCategory !== undefined) {
     throw firstError;
   }
@@ -411,9 +409,8 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  const requireHiddenRoute = artifactCompilerOptions.hiddenBatch === true;
   const artifact = compileWithExternalAdmissionFallback(
-    code, mergedCompilerOptions, errorListener, primaryContractName, requireHiddenRoute,
+    code, mergedCompilerOptions, errorListener, primaryContractName,
   );
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
@@ -3621,7 +3618,6 @@ function isMessageBusInfrastructureContract(name: string): boolean {
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  const requireHiddenRoute = artifactCompilerOptions.hiddenBatch === true;
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -3637,7 +3633,7 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     map[contract.name] = compileWithExternalAdmissionFallback(
-      code, mergedCompilerOptions, errorListener, contract.name, requireHiddenRoute,
+      code, mergedCompilerOptions, errorListener, contract.name,
     );
   }
 

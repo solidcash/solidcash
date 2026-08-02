@@ -50,7 +50,7 @@ const spec = { ...shape, appBody: [
 
 // 2. Generate + compile the covenant; instantiate the participants branded with the controller salt.
 const artifact = compileString(layer3.generateTranscriptCovenant(spec), {
-  forceStateful: true, hiddenBatch: true, __testLayer3BindingSpike: true,
+  forceStateful: true, __testLayer3BindingSpike: true,
 });
 const salt = hexToBin(layer3.CONTROLLER_SALT_HEX);
 const participants = /* [{ contract: new Contract(artifact, [], { provider, salt }), master, categoryId }, ...] */;

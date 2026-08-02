@@ -109,7 +109,7 @@ Four corpora, each compiled twice: once in ordinary direct mode, once in message
 
 ```
 direct : { solidityImportCompat: true, ecrecover: 'p2pkh' }
-bus    : direct + { forceStateful: true, hiddenBatch: true,
+bus    : direct + { forceStateful: true,
                     messageBusController: <p2sh32 lbc>,
                     messageBusControllerCategory: <32 bytes> }
 ```

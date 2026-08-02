@@ -45,7 +45,6 @@ const DIRECT = { solidityImportCompat: true, ecrecover: 'p2pkh' as const };
 const BUS = {
   ...DIRECT,
   forceStateful: true,
-  hiddenBatch: true,
   messageBusController: CONTROLLER_LBC,
   messageBusControllerCategory: CONTROLLER_CATEGORY,
 };

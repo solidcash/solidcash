@@ -42,6 +42,21 @@ describe('Compiler', () => {
       expect(artifact.hiddenBatch).toBeUndefined();
       expect(artifact.compiler.options?.hiddenBatch).toBe(true);
     });
+
+    it('infers hidden-batch synthesis without an opt-in flag', () => {
+      const source = `contract Counter() {
+        int counter;
+        function increment() { this.counter = this.counter + 1; }
+      }`;
+
+      const inferred = compileString(source);
+      const legacyExplicit = compileString(source, { hiddenBatch: true });
+
+      expect(inferred.hiddenBatch).toBeDefined();
+      expect(legacyExplicit.bytecode).toBe(inferred.bytecode);
+      expect(legacyExplicit.hiddenBatch).toEqual(inferred.hiddenBatch);
+      expect(legacyExplicit.compiler.options).toEqual(inferred.compiler.options);
+    });
   });
 
   describe('Compilation errors', () => {

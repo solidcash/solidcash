@@ -157,7 +157,6 @@ Recommended path:
    ```ts
    {
      forceStateful: true,
-     hiddenBatch: true,
      __testLayer3BindingSpike: true,
    }
    ```

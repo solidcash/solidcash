@@ -102,4 +102,34 @@ describe('controllerless single-transaction codec', () => {
     expect(() => layer3.extractSingleTxCarrier(withCarrier.slice(0, -withCarrier.length + carrierAt + 2)))
       .toThrow(/truncated/);
   });
+
+  it('is injective under every single-byte mutation of a canonical transcript', () => {
+    const encoded = layer3.encodeSingleTxBusTranscript(sample());
+    for (let offset = 0; offset < encoded.length; offset += 1) {
+      const changed = encoded.slice();
+      changed[offset] ^= 1;
+      try {
+        const decoded = layer3.decodeSingleTxBusTranscript(changed);
+        expect(decoded, `mutation at byte ${offset} decoded to the original value`).not.toEqual(sample());
+        expect(layer3.encodeSingleTxBusTranscript(decoded), `mutation at byte ${offset} was non-canonical`)
+          .toEqual(changed);
+      } catch (error) {
+        expect(error).toBeInstanceOf(Error);
+      }
+    }
+  });
+
+  it('round-trips framing boundaries across direct, PUSHDATA1, and PUSHDATA2 carriers', () => {
+    for (const payloadBytes of [0, 75, 76, 255, 256, 1024]) {
+      const value: layer3.SingleTxBusTranscript = {
+        ...sample(), rows: [{ ...sample().rows[0], payloadHex: 'ab'.repeat(payloadBytes) }],
+      };
+      const carrier = layer3.encodeSingleTxCarrier(value);
+      expect(layer3.decodeSingleTxCarrier(carrier)).toEqual(value);
+      const unlocking = scriptToBytecode([
+        Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2]), Uint8Array.from([2, 3]),
+      ]);
+      expect(layer3.extractSingleTxCarrier(layer3.insertSingleTxCarrier(unlocking, value))).toEqual(value);
+    }
+  });
 });

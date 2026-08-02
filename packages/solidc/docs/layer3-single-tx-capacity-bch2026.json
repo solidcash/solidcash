@@ -1,0 +1,75 @@
+{
+  "schema": "solidcash-layer3-controllerless-capacity-v1",
+  "measuredAt": "2026-08-02",
+  "profile": {
+    "vm": "libauth createVirtualMachineBch2026(false)",
+    "operationCostBudgetPerByte": 800,
+    "transactionByteLimit": 100000,
+    "shape": "compiled root -> returning hop* -> returning sink; one salted state master and one return-event slot per participant; one terminal P2PKH fee/change slot",
+    "command": "yarn workspace solidcash vitest run test/e2e/Layer3SingleTxCapacity.test.ts --reporter=verbose --disableConsoleIntercept"
+  },
+  "admission": {
+    "maximumPhysicalParticipants": 5,
+    "firstRejectedPhysicalParticipants": 6,
+    "enforcedBy": "layer3.assertSingleTxParticipantCapacity and exact finalized-transaction preflight"
+  },
+  "accepted": [
+    {
+      "participants": 2,
+      "slots": 4,
+      "transactionBytes": 15289,
+      "transcriptBytes": 359,
+      "inputOperationCosts": [2555789, 2597211, 695, 27321],
+      "inputMaximumOperationCosts": [6157600, 5725600, 34400, 112800],
+      "worstOperationRatio": 0.4536137697359229
+    },
+    {
+      "participants": 4,
+      "slots": 8,
+      "transactionBytes": 31737,
+      "transcriptBytes": 713,
+      "inputOperationCosts": [4141635, 4213139, 695, 4212527, 695, 4192306, 695, 27321],
+      "inputMaximumOperationCosts": [6506400, 6268800, 34400, 6268800, 34400, 5725600, 34400, 112800],
+      "worstOperationRatio": 0.7322037865027246
+    },
+    {
+      "participants": 5,
+      "slots": 10,
+      "transactionBytes": 40084,
+      "transcriptBytes": 890,
+      "inputOperationCosts": [4978598, 5047401, 695, 5046789, 695, 5046158, 695, 5032915, 695, 27321],
+      "inputMaximumOperationCosts": [6680800, 6301600, 34400, 6301600, 34400, 6301600, 34400, 5725600, 34400, 112800],
+      "worstOperationRatio": 0.8790196660611989
+    }
+  ],
+  "rejected": [
+    {
+      "participants": 6,
+      "inputIndex": 9,
+      "reason": "operation cost density",
+      "maximumOperationCost": 5725600,
+      "operationCostFollowingOperation": 5725641
+    },
+    {
+      "participants": 7,
+      "inputIndex": 1,
+      "reason": "operation cost density",
+      "maximumOperationCost": 6368000,
+      "operationCostFollowingOperation": 6368033
+    },
+    {
+      "participants": 8,
+      "inputIndex": 0,
+      "reason": "operation cost density",
+      "maximumOperationCost": 7204800,
+      "operationCostFollowingOperation": 7204816
+    }
+  ],
+  "costAttribution": {
+    "method": "Compare the same compiled hop input between the four- and five-participant chains, then compare dedicated return-event and fee slots.",
+    "duplicatedGlobalVerificationMarginalOperationCost": 834262,
+    "localReturnEventOperationCost": 695,
+    "terminalP2pkhFeeOperationCost": 27321,
+    "conclusion": "Duplicated parsing and verification of the complete global transcript dominates scaling; local return-event verification and the fee tail are effectively fixed. Exact per-shape VM preflight remains authoritative because local business and resource verification vary by artifact."
+  }
+}

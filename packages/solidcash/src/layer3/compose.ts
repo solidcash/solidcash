@@ -10,11 +10,13 @@ import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
 import { withSingleTxCarrier } from './controllerless.js';
+import { assertSingleTxParticipantCapacity } from './capacity.js';
 import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
   type SingleTxSidecarSlotEffect, type SingleTxTokenSlotEffect, type SingleTxValueSlotEffect,
 } from './graph.js';
 import { encodeHiddenBatch } from './hidden-batch.js';
+import { preflightLayer3Transaction } from './preflight.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
 export interface SingleTxBusFunder {
@@ -176,6 +178,7 @@ export class SingleTxBusComposition {
         + `${plan.invocations.length}`,
       );
     }
+    assertSingleTxParticipantCapacity(plan.participants.length);
     plan.invocations.forEach((invocation, index) => {
       const supplied = descriptors[index];
       if (!supplied || supplied.functionName !== invocation.function) {
@@ -325,6 +328,10 @@ export class SingleTxBusComposition {
         );
       }
       return aggregate;
+    };
+    const admit = (builder: TransactionBuilder): TransactionBuilder => {
+      preflightLayer3Transaction(builder);
+      return builder;
     };
 
     if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0
@@ -544,7 +551,7 @@ export class SingleTxBusComposition {
           if (derivedResults[invocation.index] !== claimedResults[invocation.index]) stable = false;
         }
         if (JSON.stringify(derivedEventEffects) !== JSON.stringify(claimedEventEffects)) stable = false;
-        if (stable) return provisional;
+        if (stable) return admit(provisional);
         claimedResults = derivedResults;
         claimedEventEffects = derivedEventEffects;
         claimedResourceEffects = derivedResourceEffects;
@@ -555,7 +562,7 @@ export class SingleTxBusComposition {
         `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${maximumPasses} bounded passes`,
       );
     }
-    return assemble(finalized, provisionalResults);
+    return admit(await assemble(finalized, provisionalResults));
   }
 
   /** Build the complete transaction without broadcasting; all signatures are generated from this final shape. */

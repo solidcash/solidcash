@@ -559,12 +559,11 @@ describe('layer3.compose controllerless transaction', () => {
     const mutatingCaller = StatefulContract.withCategory(
       mutatingCallerBase.withCategory(hexToBin(mutatingCallerSetup.categoryId)), mutatingCallerSetup.categoryId,
     );
-    const mutation = await layer3.compose({
+    await expect(layer3.compose({
       calls: [mutatingCaller.call.invoke(), mutable.call.mutate()],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
-    }).build();
-    expect(vmRejects(mutation)).toBe(true);
+    }).build()).rejects.toThrow(/BCH-2026 preflight failed at input 1/);
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

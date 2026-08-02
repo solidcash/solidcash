@@ -20,7 +20,7 @@ const composition = layer3.compose({
   changeAddress,
 });
 
-const transactionId = await composition.send();
+const { txid } = await composition.send();
 ```
 
 `funder` must be one bare P2PKH input. It is the terminal fee input and authenticates the root invocation's
@@ -51,6 +51,10 @@ legacy mode or controller-backed fallback.
 
 ## Limits
 
-Version 1 admits at most eight participants and 24 transcript rows, subject to the stricter finalized-byte and
-VM preflight checks. See `layer3-single-transaction-bus-protocol.md` for the wire grammar and
-`layer3-single-transaction-bus-requirements.md` for security invariants.
+Version 1 admits at most five physical participants and 24 transcript rows. Repeated invocations of the same
+physical contract do not consume another participant. The five-participant ceiling is the largest measured
+representative returning chain below stock BCH-2026 operation density; the adjacent six-participant chain is
+refused. `layer3.SINGLE_TX_BUS_CAPACITY` publishes this limit. Exact finalized-byte and VM preflight still apply
+to every graph because resource-heavy local verification can bind earlier. See
+`layer3-single-tx-capacity-bch2026.json` for measurements, `layer3-single-transaction-bus-protocol.md` for the
+wire grammar, and `layer3-single-transaction-bus-requirements.md` for security invariants.

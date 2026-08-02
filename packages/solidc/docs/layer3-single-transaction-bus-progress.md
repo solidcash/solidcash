@@ -3,7 +3,7 @@
 Last updated: 2026-08-02  
 Branch: `codex/layer3-single-tx-bus`  
 Tracking baseline: `b990c482` (`refactor(layer3): retire controller-era corpus`)
-Overall verified progress: **82 / 100 points (82%)**
+Overall verified progress: **90 / 100 points (90%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -28,10 +28,10 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 2. Compiler mutual verifier | 15 | 15 | Complete |
 | 3. One-transaction composer | 15 | 15 | Complete |
 | 4. Semantic completeness | 30 | 30 | Complete |
-| 5. Capacity and optimization | 8 | 0 | Not started for controllerless product |
+| 5. Capacity and optimization | 8 | 8 | Complete |
 | 6. Removal and API stabilization | 7 | 7 | Complete |
 | 7. Completion audit | 10 | 0 | Not started |
-| **Total** | **100** | **82** | **82%** |
+| **Total** | **100** | **90** | **90%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -53,7 +53,7 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits `59c094e1`,
 `23aca57f`, and `c540a849`.
 
-## Phase 2 — compiler mutual verifier (13/15)
+## Phase 2 — compiler mutual verifier (15/15)
 
 - [x] **3 points:** Every participant extracts and parses the identical carrier bytes.
 - [x] **3 points:** Participant identity, active membership, block bases, sizes, and fee-tail boundary are verified.
@@ -63,7 +63,7 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 - [x] **1 point:** Graph participation is fully inferred for every admitted family without explicit controller admission.
 - [x] **1 point:** Controller/projection verifier parameters and semantic fallbacks are absent from production routes.
 
-## Phase 3 — SDK one-transaction composer (14/15)
+## Phase 3 — SDK one-transaction composer (15/15)
 
 - [x] **3 points:** Composer derives canonical participant order, absolute block bases, and complete balanced blocks.
 - [x] **3 points:** One transcript is encoded into input 0 and shared by all participant verifiers.
@@ -119,15 +119,21 @@ positive capstones and hostile row/physical-output mutations.
 - [x] **1 point:** Raw/low-level calls authenticate calldata, selector, results, and supported effects.
 - [x] **1 point:** Sound delegate context is implemented and tested, or every delegate shape is explicitly refused.
 
-## Phase 5 — capacity and optimization (0/8)
+## Phase 5 — capacity and optimization (8/8)
 
-- [ ] **2 points:** Actual BCH-2026 measurements exist for admitted 2-participant graphs.
-- [ ] **2 points:** Actual measurements exist for admitted 4-participant representative graphs.
-- [ ] **2 points:** Actual measurements exist for admitted 8-participant/max-resource graphs, or a smaller bound is proven.
-- [ ] **1 point:** Cost is attributed between duplicated global verification and local verification.
-- [ ] **1 point:** Measured participant/resource limits are published in artifacts and enforced by SDK preflight.
+- [x] **2 points:** Actual BCH-2026 measurements exist for admitted 2-participant graphs.
+- [x] **2 points:** Actual measurements exist for admitted 4-participant representative graphs.
+- [x] **2 points:** Actual measurements exist for admitted 8-participant/max-resource graphs, or a smaller bound is proven.
+- [x] **1 point:** Cost is attributed between duplicated global verification and local verification.
+- [x] **1 point:** Measured participant/resource limits are published in artifacts and enforced by SDK preflight.
 
-Controller-era capacity reports do not satisfy these items.
+Evidence: `Layer3SingleTxCapacity.test.ts` evaluates every finalized input against stock BCH-2026 and pins
+the accepted 2-, 4-, and 5-participant rows. The adjacent 6-participant returning chain fails operation-density
+at input 9 (5,725,641 attempted versus 5,725,600 allowed); 7 and 8 also fail. The measurements and cost
+attribution are published in `layer3-single-tx-capacity-bch2026.json`. `SINGLE_TX_BUS_CAPACITY` publishes the
+five-participant ceiling, `assertSingleTxParticipantCapacity` enforces it before block assembly, and the
+composer now runs exact structural, VM, and finalized-byte preflight before returning a builder. Artifact block
+layouts continue to publish and enforce per-participant resource capacity. Controller-era reports are excluded.
 
 ## Phase 6 — removal and API stabilization (7/7)
 
@@ -175,12 +181,9 @@ Controller-era capacity reports do not satisfy these items.
 | 2026-08-02 | working tree | 73% | Removed controller identity options and artifact fields plus controller-conditioned route generation/semantic selection; all builds/lints and the complete 19-case controllerless suite pass. |
 | 2026-08-02 | working tree | 74% | Removed the production `__testLayer3BindingSpike` eligibility bypass and deleted the isolated controller-era SDK codec/covenant/transcript API island. |
 | 2026-08-02 | `b990c482` | 82% | Removed the remaining controller/projection runtime, canonicalized the fee tail, eliminated controller-mode compiler fallbacks, retired the obsolete corpus, and replaced production API docs with one-transaction composition. |
+| 2026-08-02 | working tree | 90% | Measured stock BCH-2026 controllerless capacity at 2/4/5 participants, proved 6 as the adjacent failing bound, attributed marginal global-verification cost, published and enforced the five-participant ceiling, and added exact composer preflight. |
 
 ## Next percentage milestones
 
-- **62%:** logical context capstone is committed with canonical success and hostile caller/selector/args/origin failures.
-- **71%:** controllerless repeated/branch/loop, static/raw calls, and all oracle/sidecar families are directly proven.
-- **72%:** all Phase 4 semantic modes are implemented or soundly refused with tests.
-- **81%:** controllerless capacity measurements and enforced bounds are complete.
-- **88%:** controller/projection code and compatibility paths are removed; public API/docs are stable.
+- **90%:** implementation, semantic coverage, capacity evidence, controller removal, and public API stabilization are complete.
 - **100%:** all final repository gates, live-regtest capstones, residue review, and invariant audit pass.

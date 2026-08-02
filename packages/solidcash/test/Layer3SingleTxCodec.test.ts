@@ -10,8 +10,14 @@ const sample = (): layer3.SingleTxBusTranscript => ({
       policyHash: 'bb'.repeat(32), trailingBase: 2, trailingCapacity: 1 },
   ],
   rows: [
-    { kind: 0, owner: 0, consumer: 1, slot: 0, payloadHex: '123456780001' },
-    { kind: 2, owner: 1, consumer: 0, slot: 4, payloadHex: 'abcd' },
+    {
+      kind: 0, owner: 0, consumer: 1, slot: 0, mode: 0, sourceSlot: 0, targetSlot: 2,
+      selectorHex: '12345678', position: 1, subjectHex: '51', argsHex: '01', resultHex: '', effectHex: '',
+    },
+    {
+      kind: 2, owner: 1, consumer: 0, slot: 4, mode: 0, sourceSlot: 0xffff, targetSlot: 4,
+      selectorHex: 'abcdef01', position: 2, subjectHex: 'abcd', argsHex: '', resultHex: '', effectHex: 'beef',
+    },
   ],
 });
 
@@ -122,7 +128,7 @@ describe('controllerless single-transaction codec', () => {
   it('round-trips framing boundaries across direct, PUSHDATA1, and PUSHDATA2 carriers', () => {
     for (const payloadBytes of [0, 75, 76, 255, 256, 1024]) {
       const value: layer3.SingleTxBusTranscript = {
-        ...sample(), rows: [{ ...sample().rows[0], payloadHex: 'ab'.repeat(payloadBytes) }],
+        ...sample(), rows: [{ ...sample().rows[0], effectHex: 'ab'.repeat(payloadBytes) }],
       };
       const carrier = layer3.encodeSingleTxCarrier(value);
       expect(layer3.decodeSingleTxCarrier(carrier)).toEqual(value);

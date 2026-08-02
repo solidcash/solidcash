@@ -58,15 +58,21 @@ participant[participantCount] =
   trailingBase:u16 trailingCapacity:u16     # ffff/0 or exact block suffix
 rowCount:u16                                # 0..24
 row[rowCount] =
-  kind:u8 owner:u8 consumer:u8 slot:u16 payload:bytes
+  kind:u8 owner:u8 consumer:u8 slot:u16 mode:u8
+  sourceSlot:u16 targetSlot:u16 selector[4] position:u16
+  subject:bytes arguments:bytes result:bytes effect:bytes
 EOF
 ```
 
 Row kinds are 0 invocation, 1 resource, 2 event, 3 value transfer, 4 token effect, 5 return event, and 6
-sidecar. Payload grammars are frozen as each semantic family migrates; `policyHash` commits to the compiler's
-admitted selectors, modes, schemas, occurrence bounds, and effect bounds. A row's owner is the participant
-whose compiler emission creates it; consumer is the participant or effect owner that exhausts it; slot is the
-absolute transaction slot or completion position relevant to that row. Unknown row kinds fail closed.
+sidecar. `mode` is the call mode or effect subtype. Source/target slots use `ffff` when absent. `selector` is
+the function, event, or effect discriminator (zero when none applies); `position` is the completion or
+settlement position. The four frames respectively bind identity/caller/topic, arguments, returned bytes, and
+the resulting state/event/transfer/sidecar effect. Empty frames are encoded as a zero `u16` length, never
+omitted. `policyHash` commits to the compiler's admitted selectors, modes, schemas, occurrence bounds, and
+effect bounds. A row's owner is the participant whose compiler emission creates it; consumer is the
+participant or effect owner that exhausts it; slot is its exact compiler-authored occurrence/resource ordinal.
+Unknown row kinds fail closed.
 
 ## Authorization
 

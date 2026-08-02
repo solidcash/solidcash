@@ -7,6 +7,10 @@ import {
   encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
 } from './hidden-batch.js';
 import { Layer3DiagnosticError } from './diagnostics.js';
+import {
+  encodeSingleTxBusTranscript, encodeSingleTxCarrier, singleTxBusPhysicalLayout,
+  type SingleTxBusTranscript, type SingleTxPhysicalLayout,
+} from './controllerless.js';
 
 export interface CompiledGraphParticipant {
   artifact: Artifact;
@@ -201,6 +205,108 @@ export interface FinalizedCompiledGraph {
   participantCallersHex: readonly string[];
   participantCompletionPositionsHex: readonly string[];
   settlementTableHex: string;
+}
+
+export interface FinalizedSingleTxInvocationGraph {
+  plan: CompiledGraphPlan;
+  layout: SingleTxPhysicalLayout;
+  transcript: SingleTxBusTranscript;
+  bytes: Uint8Array;
+  carrier: Uint8Array;
+}
+
+/** Canonical commitment to the compiler-authored incoming policy published by one participant artifact. */
+export function singleTxParticipantPolicyHash(artifact: Artifact): string {
+  const handlers = artifact.hiddenBatch?.handlers;
+  if (!handlers) throw new Error('layer3: controllerless participant has no compiler-published SCB1 policy');
+  const policy = handlers.map((handler) => ({
+    name: handler.name,
+    selector: handler.selector.toLowerCase(),
+    inputs: handler.inputs.map((input) => input.type),
+    outputs: (handler.outputs ?? []).map((output) => output.type),
+    eligible: handler.eligible,
+    rejectionCode: handler.rejectionCode ?? '',
+    emits: (handler.emits ?? []).map((event) => [event.eventName, event.eventSignature, event.emitIndex]),
+    transfers: (handler.transfers ?? []).map((transfer) => [transfer.transferIndex, transfer.callOption ?? '']),
+    tokenOperations: (handler.tokenContainerAccesses ?? []).map((access) =>
+      [access.keyParam, ...access.operations, access.transferCount ?? 0, access.transferNftCount ?? 0]),
+  }));
+  return binToHex(sha256.hash(utf8ToBin(JSON.stringify(policy))));
+}
+
+/**
+ * Freeze the invocation-only subset into the controllerless wire format. Effect/resource-bearing graphs are
+ * deliberately refused until their typed rows are emitted: accepting them here would produce a partial proof.
+ */
+export function finalizeSingleTxInvocationGraph(
+  plan: CompiledGraphPlan, masterCategories: readonly string[],
+  results: Readonly<Record<number, string>> = {},
+): FinalizedSingleTxInvocationGraph {
+  if (masterCategories.length !== plan.participants.length) {
+    throw new Error('layer3: controllerless master categories must align with participants');
+  }
+  const layout = singleTxBusPhysicalLayout(
+    plan.participants.map((participant) => participant.blockLayout!.blockSize),
+  );
+  const unsupported = plan.participants.find((participant) => {
+    const slots = participant.blockLayout!.slots;
+    return slots.some((slot) => !['master', 'dataNft', 'readOnlyDataNft'].includes(slot.kind))
+      || participant.artifact.hiddenBatch?.handlers.some((handler) =>
+        (handler.emits?.length ?? 0) > 0 || (handler.transfers?.length ?? 0) > 0
+        || (handler.tokenContainerAccesses?.length ?? 0) > 0);
+  });
+  if (unsupported) {
+    throw new Layer3DiagnosticError(
+      'L3_TRANSCRIPT_EFFECT_UNIMPLEMENTED',
+      `participant ${unsupported.participant} requires typed resource/effect rows not yet admitted`,
+      { participant: unsupported.participant },
+    );
+  }
+  const participants = plan.participants.map((participant, index) => {
+    const category = masterCategories[index].toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(category)) {
+      throw new Error(`layer3: participant ${index} master category must be 32-byte hex`);
+    }
+    const trailingBase = participant.blockLayout!.trailingBase;
+    return {
+      lockingBytecode: participant.lockingBytecode.toLowerCase(), masterCategory: category,
+      base: layout.participantInputs[index], blockSize: participant.blockLayout!.blockSize,
+      policyHash: singleTxParticipantPolicyHash(participant.artifact),
+      ...(trailingBase === undefined ? {} : { trailingBase }),
+      trailingCapacity: participant.blockLayout!.trailingCapacity ?? 0,
+    };
+  });
+  const rows = plan.invocations.map((invocation) => {
+    const result = results[invocation.index] ?? '';
+    if (!/^(?:[0-9a-fA-F]{2})*$/.test(result)) {
+      throw new Error(`layer3: invocation ${invocation.index} result is not byte-aligned hex`);
+    }
+    if (invocation.resultTypes.length > 0 && results[invocation.index] === undefined) {
+      throw new Error(`layer3: returning invocation ${invocation.index} lacks canonical result bytes`);
+    }
+    if (invocation.resultTypes.length === 0 && result.length > 0) {
+      throw new Error(`layer3: void invocation ${invocation.index} cannot carry a result`);
+    }
+    const caller = invocation.caller === null ? 0xff : invocation.caller;
+    const subjectHex = invocation.caller === null
+      ? plan.rootCallerLockingBytecode ?? ''
+      : plan.participants[invocation.caller].lockingBytecode;
+    const completion = plan.participants[invocation.callee].completionPositions[invocation.localRow];
+    if (completion === undefined) {
+      throw new Error(`layer3: invocation ${invocation.index} has no compiler-authored completion position`);
+    }
+    return {
+      kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
+      slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
+      sourceSlot: invocation.caller === null ? 0xffff : layout.participantInputs[invocation.caller],
+      targetSlot: layout.participantInputs[invocation.callee], selectorHex: invocation.selectorHex,
+      position: completion, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
+      effectHex: '',
+    };
+  });
+  const transcript = { participants, rows };
+  const bytes = encodeSingleTxBusTranscript(transcript);
+  return Object.freeze({ plan, layout, transcript, bytes, carrier: encodeSingleTxCarrier(transcript) });
 }
 
 /**

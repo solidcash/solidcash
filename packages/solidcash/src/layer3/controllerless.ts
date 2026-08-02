@@ -63,8 +63,24 @@ export interface SingleTxRow {
   kind: number;
   owner: number;
   consumer: number;
+  /** Exact occurrence/resource ordinal within the owning compiler policy. */
   slot: number;
-  payloadHex: string;
+  /** Invocation call mode or effect subtype; zero when the row family has no subtype. */
+  mode: number;
+  /** Absolute input slot, or 0xffff when the row consumes no distinct input. */
+  sourceSlot: number;
+  /** Absolute output slot, or 0xffff when the row creates no distinct output. */
+  targetSlot: number;
+  /** Four-byte function/event/effect discriminator; zero for resource rows without one. */
+  selectorHex: string;
+  /** Completion position for invocations, otherwise the compiler-authored settlement position. */
+  position: number;
+  /** Category, locking bytecode, caller, event topic, or sidecar request identity. */
+  subjectHex: string;
+  argsHex: string;
+  resultHex: string;
+  /** State commitment, event data, transfer amount/token fields, or sidecar response. */
+  effectHex: string;
 }
 
 export interface SingleTxBusTranscript {
@@ -116,10 +132,18 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
     if (row.owner >= participants.length || row.consumer >= participants.length) {
       throw new Error(`layer3: row ${index} names an unknown participant`);
     }
+    const selector = checkedHex(row.selectorHex, 4, `row ${index} selector`);
+    const subject = checkedHex(row.subjectHex, undefined, `row ${index} subject`);
+    const args = checkedHex(row.argsHex, undefined, `row ${index} arguments`);
+    const result = checkedHex(row.resultHex, undefined, `row ${index} result`);
+    const effect = checkedHex(row.effectHex, undefined, `row ${index} effect`);
     return concat(
       uint(row.kind, 1, 'row kind'), uint(row.owner, 1, 'row owner'),
       uint(row.consumer, 1, 'row consumer'), uint(row.slot, 2, 'row slot'),
-      frame(checkedHex(row.payloadHex, undefined, `row ${index} payload`), 'row payload'),
+      uint(row.mode, 1, 'row mode'), uint(row.sourceSlot, 2, 'row source slot'),
+      uint(row.targetSlot, 2, 'row target slot'), selector,
+      uint(row.position, 2, 'row position'), frame(subject, 'row subject'), frame(args, 'row arguments'),
+      frame(result, 'row result'), frame(effect, 'row effect'),
     );
   });
   const body = concat(
@@ -176,11 +200,22 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const owner = reader.uint(1, `row ${index}.owner`);
     const consumer = reader.uint(1, `row ${index}.consumer`);
     const slot = reader.uint(2, `row ${index}.slot`);
-    const payloadHex = binToHex(reader.frame(`row ${index}.payload`));
+    const mode = reader.uint(1, `row ${index}.mode`);
+    const sourceSlot = reader.uint(2, `row ${index}.sourceSlot`);
+    const targetSlot = reader.uint(2, `row ${index}.targetSlot`);
+    const selectorHex = binToHex(reader.take(4, `row ${index}.selector`));
+    const position = reader.uint(2, `row ${index}.position`);
+    const subjectHex = binToHex(reader.frame(`row ${index}.subject`));
+    const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
+    const resultHex = binToHex(reader.frame(`row ${index}.result`));
+    const effectHex = binToHex(reader.frame(`row ${index}.effect`));
     if (kind > 6 || owner >= participantCount || consumer >= participantCount) {
       throw new Error(`layer3: row ${index} has an invalid kind or participant`);
     }
-    rows.push({ kind, owner, consumer, slot, payloadHex });
+    rows.push({
+      kind, owner, consumer, slot, mode, sourceSlot, targetSlot, selectorHex, position,
+      subjectHex, argsHex, resultHex, effectHex,
+    });
   }
   if (!reader.eof()) throw new Error('layer3: trailing bytes after controllerless transcript');
   return { participants, rows };

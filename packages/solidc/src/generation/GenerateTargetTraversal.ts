@@ -237,11 +237,9 @@ const P2SH32_LBC_SUFFIX = hexToBin('87');    // OP_EQUAL
 // items. Two counted OP_BEGIN loops do that in 26 fixed bytes but ~22N executed instructions; the unrolled
 // sequence is 3N-2 of both. The depth is a compile-time constant, so the unrolled form is always available.
 //
-// MEASURED, run to completion on a relaxed budget (never on an aborted evaluation - see X23): a three-
-// participant graph's projection-proof inputs fell 1,495,922 -> 1,234,227 (-17.5%), the graph root controller
-// 893,411 -> 792,035 (-11.3%), a participant route 332,418 -> 292,508 (-12.0%). The deployed projection
-// verifier grew 9,002 -> 9,268 bytes (+3.0%, still inside the ordinary 10,000-byte input limit) and the root
-// controller SHRANK 1,528 -> 1,510 - the outliner shares the repeated 3-op runs better than the 26-byte loop.
+// MEASURED, run to completion on a relaxed budget (never on an aborted evaluation - see X23): representative
+// generated covenant evaluations fell by 11-18%, while the largest measured script remained below the ordinary
+// 10,000-byte input limit. The outliner shares the repeated 3-op runs better than the 26-byte loop.
 // One named constant rather than a compiler option: the lowering is not something a caller should select,
 // and keeping the loop below it makes reverting the trade one byte-exact line.
 const UNROLL_DEEP_REPLACE = true;

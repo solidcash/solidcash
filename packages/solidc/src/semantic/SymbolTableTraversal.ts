@@ -1562,7 +1562,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (usesMsgSender) {
         node.usesMsgSender = true;
         // Graph handlers receive logical msg.sender from the caller vector
-        // authenticated by the projection covenant. Neither the cloned
+        // authenticated by the participant mutual verifier. Neither the cloned
         // handler nor its compiler-owned SCB1 wrapper may acquire the
         // unrelated direct-route category witness.
         if (!node.graphEmissionHandler && !node.hiddenBatchRoute) {

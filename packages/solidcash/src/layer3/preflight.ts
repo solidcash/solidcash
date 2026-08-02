@@ -84,7 +84,7 @@ const trailingRegionsOf = (assembly: BalancedAssembly): GraphTrailingRegion[] =>
  *
  * It also runs the runtime-resource capacity rule (`assertGraphTrailingCapacity`) against runs measured off the
  * transaction itself. That rule used to exist without a caller: an over-capacity chunk run was built, funded and
- * signed, and only then refused by the VM at the first projection input - a slot that names nothing about the
+ * signed, and only then refused by the VM at a participant input - a slot that names nothing about the
  * cause. A gate the caller must remember to call is not a gate.
  *
  * Returns the assembly it checked, or undefined when the transaction is out of the block model's scope.

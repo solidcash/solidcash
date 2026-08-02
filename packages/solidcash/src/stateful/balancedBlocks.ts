@@ -27,13 +27,7 @@ export const EVENT_BLOCK_SLOT_KINDS: ReadonlySet<BlockSlotKind> = new Set<BlockS
   'event', 'returnEvent',
 ]);
 
-/**
- * Satoshi value of an AUXILIARY (sidecar) slot output - the graph projection proofs and the root controller.
- *
- * This one is authenticated, not a convention: both generated sidecar covenants carry
- * `require(tx.outputs[this.activeInputIndex].value == 1000)` (see `layer3/graph.ts`), so a sidecar slot paying
- * anything else is refused on chain by the covenant itself.
- */
+/** Standard value for participant-local sidecar continuation outputs. */
 export const BALANCED_SLOT_SATOSHIS = 1000n;
 
 /**
@@ -63,9 +57,7 @@ export interface BalancedBlockPlacement {
 export interface BalancedAssembly {
   /** Participant blocks in physical order, concatenated from index 0. */
   blocks: readonly BalancedBlockPlacement[];
-  /** 1:1 proof/authority slots following the participant region (projection proofs, controller). */
-  auxiliaryInputs: readonly number[];
-  /** Physical index of the fee-funding input; must sit outside every participant block. */
+  /** Physical index of the fee-funding input; immediately follows every participant block. */
   feeInput: number;
   /** Physical index of the terminal change output; must sit outside every participant block. */
   changeOutput: number;
@@ -80,8 +72,6 @@ export interface BalancedAssemblyView {
 }
 
 export interface BalancedAssemblyOptions {
-  /** Exact value every AUXILIARY (sidecar) slot output must carry; the sidecar covenants require it. */
-  slotSatoshis?: bigint;
   /** Upper bound on an event / return-event slot output's value; the emitting covenant enforces it. */
   eventSlotCeiling?: bigint;
   /** Skip the value check for slots whose output value is protocol-defined elsewhere. */
@@ -116,40 +106,6 @@ export function assertCompleteLocalBlock(participant: number, layout: FunctionBl
   }
 }
 
-/**
- * Build the physical index space from a compiled-graph plan and its layout. Both arguments are read
- * structurally, so the caller can pass the layer-3 plan/layout objects directly.
- */
-export function balancedAssemblyFromGraphLayout(
-  participants: readonly { blockLayout?: FunctionBlockLayout }[],
-  layout: {
-    participantInputs: readonly number[];
-    projectionInputs: readonly number[];
-    controllerInput: number;
-    feeInput: number;
-    totalSlots: number;
-  },
-): BalancedAssembly {
-  if (participants.length !== layout.participantInputs.length) {
-    fail(`layout describes ${layout.participantInputs.length} bases for ${participants.length} participants`);
-  }
-  const blocks = participants.map((participant, index) => {
-    if (!participant.blockLayout) fail(`participant ${index} publishes no block layout`);
-    return {
-      participant: index,
-      base: layout.participantInputs[index],
-      blockLayout: participant.blockLayout!,
-    };
-  });
-  return {
-    blocks,
-    auxiliaryInputs: [...layout.projectionInputs, layout.controllerInput],
-    feeInput: layout.feeInput,
-    changeOutput: layout.totalSlots - 1,
-    totalSlots: layout.totalSlots,
-  };
-}
-
 /** Minimal view of one builder input for deriving an assembly without a caller-declared layout. */
 export interface BalancedAssemblyInputView {
   unlocker?: { abiFunction?: { blockLayout?: FunctionBlockLayout } };
@@ -178,10 +134,9 @@ const publishedMasterBlock = (
  * the caller, so an unlocker that produces byte-identical unlocking bytecode without re-exposing `abiFunction`
  * used to erase the whole gate by making it report "nothing to check".
  *
- * SCOPE, measured rather than assumed: a published master AFTER the participant region (an injected extra
- * block) is not refused here. That shape is already refused by the token-outside-the-region check when its
- * outputs carry tokens, and by the graph-root controller's exhaustive participant table when they do not, and
- * both refusals name the defect more precisely than this derivation could.
+ * The canonical controllerless layout has no auxiliary tail: the one fee input/change output slot follows the
+ * complete participant prefix immediately. Any gap, extra participant, or old projection/controller slot is
+ * therefore structurally refused here.
  */
 export function deriveBalancedAssemblyFromInputs(
   inputs: readonly BalancedAssemblyInputView[], totalSlots: number,
@@ -214,35 +169,16 @@ export function deriveBalancedAssemblyFromInputs(
   if (cursor > totalSlots) {
     fail(`participant ${blocks.length - 1} block runs past the transaction's ${totalSlots} slots`);
   }
-  // The model puts the fee input and the terminal change output past every relocatable block.
-  if (cursor > totalSlots - 1) {
-    fail(`the participant region covers all ${totalSlots} slots, leaving no fee input or change output`);
+  if (cursor !== totalSlots - 1) {
+    fail(
+      `participant region ends at ${cursor}, but the canonical fee/change slot is ${totalSlots - 1}; `
+      + 'controllerless compositions permit no auxiliary or padding slots',
+    );
   }
-  // The composed tail is one projection proof per participant, then the graph-root controller, then the
-  // fee/change slot. Reporting no auxiliary slots at all silently disabled both auxiliary checks, one of which
-  // the sidecar covenants require.
-  //
-  // X20: the sidecar region's POSITION is fixed by the participant region, not by the tail's total width. The
-  // projection covenant requires `projectionInput > previousProjectionInput && projectionInput < controllerInput`
-  // with `participantInput == expectedParticipantInput` accumulated across the table, and the root controller
-  // requires `previousProjectionInput + 1 - participantCount == expectedInput` - so one proof per participant
-  // begins exactly where the participant region ends, and the controller sits immediately after them. Claiming
-  // the region only when the tail was EXACTLY canonical therefore keyed a POSITION off a WIDTH: appending one
-  // ordinary padding slot anywhere after the controller restored the pre-L2 fail-open, dropping both auxiliary
-  // checks while every claimed index stayed exactly where it had been. Claim the region wherever it fits.
-  //
-  // Slots BEYOND it are still left unclaimed rather than mislabelled as sidecars - an injected extra participant
-  // block lands there too - and the controller's exhaustive `tx.inputs.length == activeInputIndex + 2` rule is
-  // what names that shape.
-  const sidecars = blocks.length + 1;
-  const auxiliaryRegionFits = cursor + sidecars <= totalSlots - 1;
   return {
     blocks,
-    auxiliaryInputs: auxiliaryRegionFits
-      ? Array.from({ length: sidecars }, (_unused, index) => cursor + index)
-      : [],
-    feeInput: totalSlots - 1,
-    changeOutput: totalSlots - 1,
+    feeInput: cursor,
+    changeOutput: cursor,
     totalSlots,
   };
 }
@@ -260,8 +196,8 @@ export function participantRegionEnd(assembly: BalancedAssembly): number {
  * Rejects: a transaction whose input and output counts disagree with each other or with the layout;
  * participant blocks that are not concatenated from index 0; an incomplete local block descriptor; an
  * output-only slot whose paired funding input is missing (which is what makes the two bases diverge); an
- * event or return-event output whose value exceeds the covenant's anti-siphon ceiling; an auxiliary slot
- * output that is not the covenant-required sidecar value; a token output outside every participant block (an
+ * event or return-event output whose value exceeds the covenant's anti-siphon ceiling; a token output outside
+ * every participant block (an
  * event NFT that escaped its emitter's block); and fee/change slots inside a relocatable participant block.
  */
 export function preflightBalancedBlockAssembly(
@@ -269,7 +205,6 @@ export function preflightBalancedBlockAssembly(
   assembly: BalancedAssembly,
   options: BalancedAssemblyOptions = {},
 ): void {
-  const slotSatoshis = options.slotSatoshis ?? BALANCED_SLOT_SATOSHIS;
   const eventSlotCeiling = options.eventSlotCeiling ?? BALANCED_EVENT_SLOT_CEILING;
   const ignoreValueAt = new Set(options.ignoreValueAt ?? []);
   if (!Number.isInteger(assembly.totalSlots) || assembly.totalSlots < 1) {
@@ -295,25 +230,12 @@ export function preflightBalancedBlockAssembly(
   }
   const regionEnd = cursor;
 
-  // Every 1:1 proof/authority slot follows the participant region, in order, before the fee slot.
-  let previousAuxiliary = regionEnd - 1;
-  for (const auxiliary of assembly.auxiliaryInputs) {
-    if (!Number.isInteger(auxiliary) || auxiliary <= previousAuxiliary) {
-      fail(`auxiliary slot ${auxiliary} does not follow the participant region in order`);
-    }
-    if (auxiliary < regionEnd) {
-      fail(`auxiliary slot ${auxiliary} falls inside the participant region [0, ${regionEnd})`);
-    }
-    previousAuxiliary = auxiliary;
-  }
-  if (assembly.feeInput < regionEnd) {
-    fail(`fee input ${assembly.feeInput} falls inside a relocatable participant block`);
-  }
-  if (assembly.changeOutput < regionEnd) {
-    fail(`change output ${assembly.changeOutput} falls inside a relocatable participant block`);
-  }
-  if (assembly.feeInput >= assembly.totalSlots || assembly.changeOutput >= assembly.totalSlots) {
-    fail(`fee/change slots ${assembly.feeInput}/${assembly.changeOutput} exceed the declared slot count`);
+  if (assembly.feeInput !== regionEnd || assembly.changeOutput !== regionEnd
+    || regionEnd !== assembly.totalSlots - 1) {
+    fail(
+      `fee/change slots ${assembly.feeInput}/${assembly.changeOutput} must immediately follow participant `
+      + `region [0, ${regionEnd}) and be the terminal slot`,
+    );
   }
 
   // Output-only slots need their paired funding input, and their outputs carry the specified value/shape.
@@ -347,17 +269,6 @@ export function preflightBalancedBlockAssembly(
   for (let index = regionEnd; index < transaction.outputs.length; index += 1) {
     if (transaction.outputs[index].token !== undefined) {
       fail(`output ${index} carries a token outside every participant block (region ends at ${regionEnd})`);
-    }
-  }
-  // Each auxiliary slot pairs with an ordinary dust output; the terminal change output absorbs the remainder.
-  // This equality IS covenant-required (both sidecar covenants check their own continuation output).
-  for (const auxiliary of assembly.auxiliaryInputs) {
-    const output = transaction.outputs[auxiliary];
-    if (!ignoreValueAt.has(auxiliary) && output.amount !== slotSatoshis) {
-      fail(
-        `auxiliary slot ${auxiliary} output is ${output.amount} satoshis, `
-        + `the sidecar covenant requires ${slotSatoshis}`,
-      );
     }
   }
 }

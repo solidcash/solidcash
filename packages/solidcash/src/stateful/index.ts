@@ -123,7 +123,6 @@ export {
 } from './covenant-helpers.js';
 export {
   preflightBalancedBlockAssembly,
-  balancedAssemblyFromGraphLayout,
   deriveBalancedAssemblyFromInputs,
   assertCompleteLocalBlock,
   participantRegionEnd,

@@ -58,7 +58,7 @@ const mutateInputZero = (
   | 'carrier-token-container' | 'carrier-token-container-drop'
   | 'carrier-context-caller' | 'carrier-context-selector' | 'carrier-context-args' | 'carrier-root-origin'
   | 'carrier-invocation-swap' | 'carrier-invocation-drop' | 'carrier-invocation-duplicate'
-  | 'carrier-invocation-target',
+  | 'carrier-invocation-target' | 'carrier-invocation-mode',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -103,6 +103,8 @@ const mutateInputZero = (
               rows[first] = {
                 ...rows[first], consumer: (rows[first].consumer + 1) % transcript.participants.length,
               };
+            } else if (target === 'carrier-invocation-mode') {
+              rows[first] = { ...rows[first], mode: rows[first].mode ^ 1 };
             } else if (target === 'carrier-invocation-swap') {
               rows = rows.map((row, index) => index === first
                 ? { ...row, argsHex: transcript.rows[second].argsHex }
@@ -470,6 +472,92 @@ describe('layer3.compose controllerless transaction', () => {
       mutateInputZero(hostile, '', mutation);
       expect(vmRejects(hostile), mutation).toBe(true);
     }
+    await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates staticcall mode and enforces a read-only participant snapshot', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const connect = async (artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
+      const base = new Contract(artifact, [], { provider });
+      const setup = await setupStatefulUtxos(
+        provider, base, artifact.stateLayout!, {}, { saltContract: true },
+      );
+      return StatefulContract.withCategory(base.withCategory(hexToBin(setup.categoryId)), setup.categoryId);
+    };
+    const readonlyArtifact = compileString(`contract ComposeStaticSink() {
+      function peek() public pure { require(true); }
+    }`, { forceStateful: true });
+    const readonly = await connect(readonlyArtifact);
+    const callerArtifact = compileString(`
+      interface IComposeStaticSink { function peek(); }
+      contract ComposeStaticCaller(address sink) {
+        function invoke() public {
+          IComposeStaticSink(sink).peek.staticcall();
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [readonly.inner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.invoke(), readonly.call.peek()],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+    const canonical = await composition.build();
+    const carrierPush = decodeAuthenticationInstructions(
+      canonical.inputs[0].unlocker!.generateUnlockingBytecode({
+        transaction: canonical.buildLibauthTransaction(), inputIndex: 0,
+      }),
+    ).find((instruction) => 'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
+    if (!carrierPush || !('data' in carrierPush)) throw new Error('test could not locate canonical carrier');
+    const staticRow = decodeSingleTxCarrier(carrierPush.data).rows.find(
+      (row) => row.kind === 0 && row.parent !== 0xffff,
+    );
+    expect(staticRow?.mode).toBe(1);
+    expect(vmRejects(canonical)).toBe(false);
+    const renamed = await composition.build();
+    mutateInputZero(renamed, '', 'carrier-invocation-mode');
+    expect(vmRejects(renamed)).toBe(true);
+
+    const mutableArtifact = compileString(`contract ComposeStaticMutation() {
+      event Changed(int next);
+      function mutate() public {
+        emit Changed(9);
+        require(true);
+      }
+    }`, { forceStateful: true });
+    const mutable = await connect(mutableArtifact);
+    const mutatingCallerArtifact = compileString(`
+      interface IComposeStaticMutation { function mutate(); }
+      contract ComposeStaticMutationCaller(address sink) {
+        function invoke() public {
+          IComposeStaticMutation(sink).mutate.staticcall();
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const mutatingCallerBase = new Contract(
+      mutatingCallerArtifact, [mutable.inner.lockingBytecode], { provider },
+    );
+    const mutatingCallerSetup = await setupStatefulUtxos(
+      provider, mutatingCallerBase, mutatingCallerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const mutatingCaller = StatefulContract.withCategory(
+      mutatingCallerBase.withCategory(hexToBin(mutatingCallerSetup.categoryId)), mutatingCallerSetup.categoryId,
+    );
+    const mutation = await layer3.compose({
+      calls: [mutatingCaller.call.invoke(), mutable.call.mutate()],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    }).build();
+    expect(vmRejects(mutation)).toBe(true);
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 

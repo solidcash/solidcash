@@ -2681,6 +2681,7 @@ function synthesizeHiddenBatchRoute(
         bigint activeEventRows = 0;
         bigint activeValueRows = 0;
         bigint activeTokenRows = 0;
+        bigint activeStaticInvocationRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
         bigint previousValueTarget = -1;
@@ -2914,6 +2915,9 @@ function synthesizeHiddenBatchRoute(
             require(transcript.slice(rowStart + 10, rowStart + 14)
               == localBatch.slice(batchCursor, batchCursor + 4));
             bigint transcriptMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
+            if (transcriptMode % 2 == 1) {
+              activeStaticInvocationRows = activeStaticInvocationRows + 1;
+            }
             if (batchModeWidth == 0) { require(transcriptMode == 0); }
             else {
               require(transcriptMode
@@ -2943,6 +2947,19 @@ function synthesizeHiddenBatchRoute(
         bigint physicalTokenOutputs = 0;
         for (bigint slot = this.activeInputIndex;
           slot < this.activeInputIndex + activeBlockSize; slot = slot + 1) {
+          // Controllerless staticcall security boundary. The removed root controller previously owned this
+          // snapshot walk; every participant must now enforce it from its mutually authenticated local rows.
+          // A return-event slot is allowed to publish the authenticated result vector, but every other slot in
+          // the participant's complete balanced block must be byte-for-byte and value-for-value preserved.
+          if (activeStaticInvocationRows > 0) {
+            require(tx.outputs[slot].value == tx.inputs[slot].value);
+            if (slot != activeReturnOutput) {
+              require(tx.outputs[slot].lockingBytecode == tx.inputs[slot].lockingBytecode);
+              require(tx.outputs[slot].tokenCategory == tx.inputs[slot].tokenCategory);
+              require(tx.outputs[slot].nftCommitment == tx.inputs[slot].nftCommitment);
+              require(tx.outputs[slot].tokenAmount == tx.inputs[slot].tokenAmount);
+            }
+          }
           if (tx.inputs[slot].tokenCategory.length == 33
             && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;

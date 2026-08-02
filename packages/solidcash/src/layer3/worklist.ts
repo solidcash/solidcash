@@ -25,6 +25,8 @@ export interface DeriveCompiledGraphOptions {
   root: WorklistParticipant;
   function: string;
   args?: readonly FunctionArgument[];
+  /** Transaction-origin locking bytecode authenticated by the carrier's root row. */
+  rootCaller?: Uint8Array;
   targets: WorklistTargetRegistry;
   /**
    * Resolve a typed call target by its compiler-stable callsite and reached occurrence. Unlike interface
@@ -304,7 +306,10 @@ export function deriveCompiledGraphPlan(options: DeriveCompiledGraphOptions): Co
     }
     const owner = intern(participant);
     const invocation = invocations.length;
-    invocations.push({ parent, callee: owner, function: functionName, args, ...(callMode && { callMode }) });
+    invocations.push({
+      parent, callee: owner, function: functionName, args, ...(callMode && { callMode }),
+      ...(parent === null && options.rootCaller !== undefined && { logicalCaller: options.rootCaller }),
+    });
     activeInvocations.push(invocation);
     const fn = functionAbi(participant, functionName);
     assertNoUnboundCallOptions(

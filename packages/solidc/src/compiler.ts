@@ -1014,8 +1014,9 @@ function synthesizeHiddenBatchRoute(
       && (lastStatement instanceof MethodCallStatementNode
         || (lastStatement instanceof FunctionCallStatementNode
           && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
-    const graphTailCallEligible = graphControllerLbc !== undefined
-      && methodCallCount >= 1
+    // Outgoing-call handlers participate in the controllerless carrier protocol by construction. The legacy
+    // controller option selects only the old transcript transport; it is no longer admission authority.
+    const graphTailCallEligible = methodCallCount >= 1
       && (graphTailStatement || graphResultStatement
         || (admitBareForwardingHandlers && graphBareTailStatement)
         || (fn.returnTypes.length === 0
@@ -2433,9 +2434,13 @@ function synthesizeHiddenBatchRoute(
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
-  const graphRouteParameters = graphControllerLbc === undefined ? [] : [
-    'bigint __internal__graphControllerIdx',
-    'bigint __internal__graphParticipantOffset',
+  const controllerlessGraphRoute = graphControllerLbc === undefined && graphTailHandlers.size > 0;
+  const graphExecutionContext = graphControllerLbc !== undefined || controllerlessGraphRoute;
+  const graphRouteParameters = !graphExecutionContext ? [] : [
+    ...(graphControllerLbc === undefined ? [] : [
+      'bigint __internal__graphControllerIdx',
+      'bigint __internal__graphParticipantOffset',
+    ]),
     'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
@@ -2447,9 +2452,9 @@ function synthesizeHiddenBatchRoute(
   const routeParameters = [
     'bytes batchBlob', ...graphRouteParameters, ...routeSignatureParameters, ...routeKeyParameters,
   ].join(', ');
-  const graphOutStateMode = graphControllerLbc !== undefined
+  const graphOutStateMode = graphExecutionContext
     && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
-  const parseGraphCaller = graphControllerLbc === undefined ? '' : `
+  const parseGraphCaller = !graphExecutionContext ? '' : `
           address __scb_graph_caller;
           (__scb_graph_caller, __scb_graph_caller_cursor) = __scb_parse_graph_caller(
             __internal__graphCallers, __scb_graph_caller_cursor
@@ -2589,7 +2594,12 @@ function synthesizeHiddenBatchRoute(
         require(transcriptLength > 0 && transcriptLength + 8 == carrier.length);
         return carrier.slice(8, carrier.length);
       }
-      function __scb_verify_single_tx(bytes transcript, bigint expectedLocalRows, bytes localBatch) internal view {
+      function __scb_verify_single_tx(
+        bytes transcript, bigint expectedLocalRows, bytes localBatch
+        ${!graphExecutionContext ? '' : `,
+        bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
+        bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
+      ) internal view {
         require(transcript.length >= 16 && transcript.slice(0, 8) == hex"4c33425553310000");
         require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 1);
         require(int(bytes.concat(transcript.slice(9, 13), hex"00000000")) == transcript.length);
@@ -2599,8 +2609,10 @@ function synthesizeHiddenBatchRoute(
         bigint expectedBase = 0;
         bigint activeMembership = 0;
         bigint activeParticipant = 255;
+        bigint activeBlockSize = 0;
         bigint activeReturnOutput = 65535;
         bytes participantBases = hex"";
+        bytes participantLbcs = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           require(cursor + 77 <= transcript.length);
           bigint base = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -2613,6 +2625,7 @@ function synthesizeHiddenBatchRoute(
           require(expectedBase < tx.inputs.length && cursor + lbcLength + 70 <= transcript.length);
           bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
           cursor = cursor + lbcLength;
+          participantLbcs = bytes.concat(participantLbcs, bytes2(lbcLength), participantLbc);
           bytes category = transcript.slice(cursor, cursor + 32);
           bytes policyHash = transcript.slice(cursor + 32, cursor + 64);
           bigint trailingBase = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
@@ -2633,6 +2646,7 @@ function synthesizeHiddenBatchRoute(
           if (base == this.activeInputIndex) {
             activeMembership = activeMembership + 1;
             activeParticipant = participant;
+            activeBlockSize = blockSize;
             activeReturnOutput = returnOutput;
           }
         }
@@ -2650,6 +2664,14 @@ function synthesizeHiddenBatchRoute(
         bytes rowConsumers = hex"";
         bytes rowDepths = hex"";
         bytes localResultVector = hex"";
+        bytes expectedEmissions = hex"";
+        bytes expectedCallers = hex"";
+        bytes expectedCompletionPositions = hex"";
+        bytes participantBoundaries = hex"";
+        for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+          participantBoundaries = bytes.concat(participantBoundaries, hex"0000");
+        }
+        bigint activeSettlementBoundary = 0;
         for (bigint row = 0; row < rowCount; row = row + 1) {
           require(cursor + 29 <= transcript.length);
           bigint rowStart = cursor;
@@ -2693,6 +2715,24 @@ function synthesizeHiddenBatchRoute(
             if (field == 2) { rowResult = transcript.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
+          bigint priorBoundary = int(bytes.concat(
+            participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
+          ));
+          if (completion > priorBoundary) {
+            participantBoundaries = bytes.concat(
+              participantBoundaries.slice(0, consumer * 2), bytes2(completion),
+              participantBoundaries.slice(consumer * 2 + 2, participantBoundaries.length)
+            );
+          }
+          if (kind == 0 && row > 0 && owner == activeParticipant) {
+            bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
+            expectedEmissions = bytes.concat(
+              expectedEmissions, bytes2(targetLbc.length), targetLbc,
+              transcript.slice(rowStart + 5, rowStart + 6),
+              transcript.slice(rowStart + 10, rowStart + 14),
+              bytes2(rowArguments.length), rowArguments, bytes2(rowResult.length), rowResult
+            );
+          }
           if (kind == 0 && consumer == activeParticipant) {
             require(batchCursor + 12 + batchModeWidth + batchValueWidth <= localBatch.length);
             bigint batchArgsLength = int(bytes.concat(
@@ -2710,14 +2750,40 @@ function synthesizeHiddenBatchRoute(
             }
             require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));
             localResultVector = bytes.concat(localResultVector, rowResult);
-            if (row == 0) { require(rowSubject.length == 0 || rowSubject == tx.origin); }
+            if (row == 0) {
+              ${graphExecutionContext
+    ? 'require(rowSubject == tx.origin);'
+    : 'require(rowSubject.length == 0 || rowSubject == tx.origin);'}
+            }
             else { require(rowSubject == tx.inputs[sourceSlot].lockingBytecode); }
+            expectedCallers = bytes.concat(expectedCallers, bytes2(rowSubject.length), rowSubject);
+            expectedCompletionPositions = bytes.concat(expectedCompletionPositions, bytes2(completion));
+            if (completion > activeSettlementBoundary) { activeSettlementBoundary = completion; }
             batchCursor = batchArgsStart + batchArgsLength;
             consumedLocalRows = consumedLocalRows + 1;
           }
         }
         require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
+        ${!graphExecutionContext ? '' : `
+        require(suppliedBlockSize == activeBlockSize);
+        require(suppliedEmissions == expectedEmissions);
+        require(suppliedCallers == expectedCallers);
+        require(suppliedSettlementBoundary == activeSettlementBoundary);
+        require(suppliedCompletionPositions == expectedCompletionPositions);
+        bytes expectedSettlementTable = hex"";
+        bigint lbcCursor = 0;
+        for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+          bigint lbcLength = int(bytes.concat(participantLbcs.slice(lbcCursor, lbcCursor + 2), hex"00"));
+          bytes participantLbc = participantLbcs.slice(lbcCursor + 2, lbcCursor + 2 + lbcLength);
+          expectedSettlementTable = bytes.concat(
+            expectedSettlementTable, bytes2(lbcLength), participantLbc,
+            participantBases.slice(participant * 2, participant * 2 + 2),
+            participantBoundaries.slice(participant * 2, participant * 2 + 2)
+          );
+          lbcCursor = lbcCursor + 2 + lbcLength;
+        }
+        require(lbcCursor == participantLbcs.length && suppliedSettlementTable == expectedSettlementTable);`}
         if (activeReturnOutput == 65535) { require(localResultVector.length == 0); }
         else {
           require(localResultVector.length <= 126);
@@ -2734,7 +2800,13 @@ function synthesizeHiddenBatchRoute(
   const singleTxPrologue = graphControllerLbc !== undefined ? '' : `
         bytes __internal__singleTxTranscript = __scb_single_tx_transcript();
         if (__internal__singleTxTranscript.length > 0) {
-          __scb_verify_single_tx(__internal__singleTxTranscript, rowCount, batchBlob);
+          __scb_verify_single_tx(
+            __internal__singleTxTranscript, rowCount, batchBlob
+            ${!graphExecutionContext ? '' : `,
+            __internal__graphBlockSize, __internal__graphEmissions, __internal__graphCallers,
+            __internal__graphSettlementBoundary, __internal__graphCompletionPositions,
+            __internal__graphSettlementTable`}
+          );
         }
   `;
   const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {
@@ -2814,7 +2886,7 @@ function synthesizeHiddenBatchRoute(
           __scb_at + __scb_args_length
         );
       }
-      ${graphControllerLbc === undefined ? '' : `
+      ${!graphExecutionContext ? '' : `
       function __scb_parse_graph_caller(
         bytes __scb_callers, bigint __scb_at
       ) internal pure returns (address, bigint) {
@@ -2891,18 +2963,18 @@ function synthesizeHiddenBatchRoute(
     : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
         ${singleTxPrologue}
         bigint cursor = 7;
-        ${graphControllerLbc === undefined ? '' : 'bigint __scb_graph_caller_cursor = 0;'}
+        ${!graphExecutionContext ? '' : 'bigint __scb_graph_caller_cursor = 0;'}
         ${resultDeclarations}
         ${parser}
         require(cursor == batchBlob.length);
-        ${graphControllerLbc === undefined ? ''
+        ${!graphExecutionContext ? ''
     : 'require(__internal__graphCompletionPositions.length == rowCount * 2);'}
-        ${graphControllerLbc === undefined
+        ${!graphExecutionContext
     ? ''
     : 'require(__scb_graph_caller_cursor == __internal__graphCallers.length);'}
         // Keep the emission witness live through compiler-owned call verification above. The generated verifier
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
-        ${graphControllerLbc === undefined
+        ${!graphExecutionContext
     ? ''
     : `${allGraphEmissionHandlersRuntime
       ? 'require(__internal__graphEmissions.length == 0);'
@@ -3040,8 +3112,17 @@ function compileResolvedAst(
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
   // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
+  let inferredGraphEdge = false;
+  walkInvocationAst(ast.contract, (node) => {
+    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
+      || node instanceof MethodCallNode
+      || (node instanceof FunctionCallNode
+        && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name))) {
+      inferredGraphEdge = true;
+    }
+  });
   const messageBusGraphMode = !!mergedCompilerOptions.hiddenBatch
-    && !!mergedCompilerOptions.messageBusController;
+    && (!!mergedCompilerOptions.messageBusController || inferredGraphEdge);
   // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
   // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
   // or renames a handler. Without this the same sources reach the user as `Block slot not found: lowLevelCall[0]`

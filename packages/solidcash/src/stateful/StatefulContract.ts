@@ -1517,7 +1517,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** @internal Adversarial-test hook: execute an exact candidate blob through
    * the positional SCB1 route without canonical SDK construction. */
-  _batchRaw(blob: Uint8Array, routeWitnesses: readonly FunctionArgument[] = []): StatefulFunctionCall {
+  _batchRaw(
+    blob: Uint8Array,
+    routeWitnesses: readonly FunctionArgument[] = [],
+    internalRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
+    blockBase = 0,
+  ): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
     const expectedWitnesses = capability.route.inputs
@@ -1528,7 +1533,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + `got ${routeWitnesses.length}`,
       );
     }
-    const routeArgs = [blob, ...routeWitnesses];
+    let routeWitness = 0;
+    const routeArgs = Object.keys(internalRouteWitnesses).length === 0
+      ? [blob, ...routeWitnesses]
+      : capability.route.inputs.map((input): FunctionArgument => {
+        if (input.name === 'batchBlob') return blob;
+        if (input.name.startsWith('__internal__')) {
+          const value = internalRouteWitnesses[input.name];
+          if (value === undefined) {
+            throw new Error(`SCB1 route requires compiler-owned witness '${input.name}'`);
+          }
+          return value;
+        }
+        const value = routeWitnesses[routeWitness];
+        routeWitness += 1;
+        return value;
+      });
     const rowCount = blob.length > 6 ? blob[6] : 0;
     // Recover the reached selectors from the canonical blob so conditional token-transfer slots are derived only
     // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
@@ -1587,9 +1607,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       this._createBuilder('__scb1', routeArgs, {
         abiFunction: effectiveRoute,
         compilerRouteSelector: routeSelector,
+        blockBase,
       }),
       this as unknown as StatefulContract, '__scb1', routeArgs,
-      { abiFunction: effectiveRoute, selector: routeSelector },
+      { abiFunction: effectiveRoute, selector: routeSelector, blockBase },
     );
   }
 
@@ -6312,6 +6333,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       returnProbeOnly?: boolean;
       abiFunction?: AbiFunction;
       compilerRouteSelector?: Uint8Array;
+      /** Absolute base when this local balanced block is concatenated after another participant. */
+      blockBase?: number;
     },
   ): Promise<StatefulTransactionBuilder> {
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
@@ -9396,8 +9419,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
       : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
     const masterUnlocker = unlockFn(...finalArgs);
+    const blockBase = overrides?.blockBase ?? 0;
     const dataNftUnlockers = filteredDataNftUtxos.map(
-      () => createDataNftUnlocker(this.inner, 0, this.categoryId),
+      () => createDataNftUnlocker(this.inner, blockBase, this.categoryId),
     );
 
     // blockhash(n): resolve the oracle co-spends now that the complete master unlocker exists (the computed-n
@@ -11016,7 +11040,7 @@ export class StatefulFunctionCall {
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
   private consumesLogicalNonce = true;
-  private compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array };
+  private compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number };
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -11039,7 +11063,7 @@ export class StatefulFunctionCall {
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
-    compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array },
+    compilerRoute?: { abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number },
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
     // (e.g. when withExternalCall() causes send() to rebuild from scratch)
@@ -11782,6 +11806,7 @@ export class StatefulFunctionCall {
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
+            blockBase: this.compilerRoute.blockBase,
           }),
         },
       );
@@ -11864,6 +11889,7 @@ export class StatefulFunctionCall {
           ...(this.compilerRoute && {
             abiFunction: this.compilerRoute.abiFunction,
             compilerRouteSelector: this.compilerRoute.selector,
+            blockBase: this.compilerRoute.blockBase,
           }),
         },
       );
@@ -11896,6 +11922,7 @@ export class StatefulFunctionCall {
             ...(this.compilerRoute && {
               abiFunction: this.compilerRoute.abiFunction,
               compilerRouteSelector: this.compilerRoute.selector,
+              blockBase: this.compilerRoute.blockBase,
             }),
           },
         );

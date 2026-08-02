@@ -19,7 +19,7 @@ import {
 } from '../src/stateful/covenant-helpers.js';
 import { headSentinelCommitment } from '../src/stateful/SortedList.js';
 import {
-  network as defaultNetwork, alicePub, alicePriv, alicePkh,
+  network as defaultNetwork, aliceAddress, alicePub, alicePriv, alicePkh,
 } from './fixture/vars.js';
 import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import { generateLibauthSourceOutputs, getNetworkPrefix, libauthOutputToSolidCashOutput } from '../src/utils.js';
@@ -145,6 +145,16 @@ export async function createFeeFunder(
     utxo,
     unlocker: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
   };
+}
+
+/** A bare P2PKH fee input, suitable for protocols that bind their root caller to `tx.origin`. */
+export async function createBareP2pkhFeeFunder(
+  provider: MockNetworkProvider | RegtestNetworkProvider,
+  satoshis: bigint = 10000n,
+): Promise<{ utxo: Utxo; unlocker: any }> {
+  const utxo: Utxo = { txid: nextFundingTxid(), vout: 0, satoshis };
+  await provider.addUtxo(aliceAddress, utxo);
+  return { utxo, unlocker: new SignatureTemplate(alicePriv).unlockP2PKH() };
 }
 
 export function gatherUtxos(

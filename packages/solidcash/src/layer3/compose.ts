@@ -166,9 +166,9 @@ export class SingleTxBusComposition {
       })));
     const resourceSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots
-        .filter((slot) => ['dataNft', 'readOnlyDataNft', 'entry'].includes(slot.kind))
+        .filter((slot) => ['dataNft', 'readOnlyDataNft', 'entry', 'trailing'].includes(slot.kind))
         .map((slot) => ({
-          participant: participant.participant, offset: slot.offset, mode: 0,
+          participant: participant.participant, offset: slot.offset, trailing: slot.kind === 'trailing',
         })));
     const provisionalEventEffects: SingleTxEventSlotEffect[] = [];
     const provisionalResourceEffects: SingleTxResourceSlotEffect[] = [];
@@ -190,7 +190,9 @@ export class SingleTxBusComposition {
       graph: ReturnType<typeof finalizeSingleTxInvocationGraph>,
       results: Readonly<Record<number, string>>,
     ): Promise<TransactionBuilder> => {
-      const aggregate = new TransactionBuilder({ provider });
+      // Resource delete rows authorize exact NFT disappearance at participant-owned slots; the generated
+      // covenants still reject any unlisted burn through endpoint cardinality and commitment checks.
+      const aggregate = new TransactionBuilder({ provider, allowImplicitNftBurn: true });
 
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
@@ -205,6 +207,7 @@ export class SingleTxBusComposition {
             graph.layout.participantInputs[participant.participant],
             returnBlob !== undefined,
             returnBlob,
+            true,
           )
           .build();
         if (local.inputs.length !== blockSize || local.outputs.length !== blockSize) {
@@ -253,22 +256,31 @@ export class SingleTxBusComposition {
           if (!input || !output) throw new Error(`layer3: resource slot ${slot.participant}:${slot.offset} is absent`);
           const inputToken = input.token;
           const outputToken = output.token;
-          if (inputToken?.nft?.capability !== 'mutable' || outputToken?.nft?.capability !== 'mutable'
-            || inputToken.category !== outputToken.category || inputToken.amount !== 0n || outputToken.amount !== 0n
-            || input.satoshis !== output.amount) {
-            throw new Error(`layer3: resource slot ${slot.participant}:${slot.offset} is not a balanced mutable NFT`);
+          const inputMutable = inputToken?.nft?.capability === 'mutable';
+          const outputMutable = outputToken?.nft?.capability === 'mutable';
+          if (!inputMutable && !outputMutable) continue;
+          const mode = inputMutable ? (outputMutable ? 0 : 2) : 1;
+          if (!slot.trailing && mode !== 0) {
+            throw new Error(`layer3: fixed resource slot ${slot.participant}:${slot.offset} is not preserved`);
+          }
+          const activeToken = inputMutable ? inputToken : outputToken!;
+          if (activeToken.amount !== 0n || (inputMutable && outputMutable
+            && (inputToken.category !== outputToken!.category || input.satoshis !== output.amount))) {
+            throw new Error(`layer3: resource slot ${slot.participant}:${slot.offset} has an invalid NFT transition`);
           }
           const inputLockingBytecode = input.unlocker.generateLockingBytecode();
           const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
-          if (binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)) {
+          const resourceLockingBytecode = inputMutable ? inputLockingBytecode : outputLockingBytecode;
+          if (inputMutable && outputMutable
+            && binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)) {
             throw new Error(`layer3: resource slot ${slot.participant}:${slot.offset} changes locking bytecode`);
           }
           derivedResourceEffects.push({
-            ...slot,
-            lockingBytecodeHex: binToHex(inputLockingBytecode),
-            tokenCategoryHex: `${binToHex(hexToBin(inputToken.category).reverse())}01`,
-            inputCommitmentHex: inputToken.nft.commitment,
-            outputCommitmentHex: outputToken.nft.commitment,
+            participant: slot.participant, offset: slot.offset, mode,
+            lockingBytecodeHex: binToHex(resourceLockingBytecode),
+            tokenCategoryHex: `${binToHex(hexToBin(activeToken.category).reverse())}01`,
+            inputCommitmentHex: inputMutable ? inputToken.nft!.commitment : '',
+            outputCommitmentHex: outputMutable ? outputToken!.nft!.commitment : '',
           });
         }
         if (JSON.stringify(derivedResourceEffects) !== JSON.stringify(claimedResourceEffects)) {

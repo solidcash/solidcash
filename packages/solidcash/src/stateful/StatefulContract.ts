@@ -1524,6 +1524,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     blockBase = 0,
     emitReturn = false,
     returnBlob?: Uint8Array,
+    omitLocalFeeTail = false,
   ): StatefulFunctionCall {
     const capability = this.inner.artifact.hiddenBatch;
     if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
@@ -1612,9 +1613,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         blockBase,
         emitReturn,
         returnBlob,
+        omitLocalFeeTail,
       }),
       this as unknown as StatefulContract, '__scb1', routeArgs,
-      { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob },
+      { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
     );
   }
 
@@ -6341,6 +6343,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       compilerRouteSelector?: Uint8Array;
       /** Absolute base when this local balanced block is concatenated after another participant. */
       blockBase?: number;
+      /** A controllerless composition supplies one global fee tail after all participant blocks. */
+      omitLocalFeeTail?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
     await this._ensureResolved(); // address-constructed instances: resolve the category before building the tx
@@ -7239,7 +7243,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .map((u) => ({ utxo: u, chunkIndex: parseChunkCommitment(u.token!.nft!.commitment).chunkIndex }))
           .sort((a, b) => a.chunkIndex - b.chunkIndex);
         for (const { utxo } of chunks) {
-          const unlocker = createReadOnlyDynamicChunkUnlocker(this.inner, 0, this.categoryId, dynVar.name, dynVar.type);
+          const unlocker = createReadOnlyDynamicChunkUnlocker(
+            this.inner, overrides?.blockBase ?? 0, this.categoryId, dynVar.name, dynVar.type,
+          );
           iterationEntryInputs.push({ ...utxo, unlocker });
         }
       }
@@ -9592,7 +9598,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .map((utxo) => ({ utxo, chunkIndex: parseChunkCommitment(utxo.token!.nft!.commitment).chunkIndex }))
         .sort((a, b) => a.chunkIndex - b.chunkIndex);
       for (const { utxo } of chunks) {
-        const unlocker = createDynamicChunkUnlocker(this.inner, 0, this.categoryId, v.name, v.type);
+        const unlocker = createDynamicChunkUnlocker(
+          this.inner, overrides?.blockBase ?? 0, this.categoryId, v.name, v.type,
+        );
         dynamicChunkInputs.push({ ...utxo, unlocker });
       }
     }
@@ -9608,7 +9616,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         u.token?.category === this.categoryId && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0);
       for (const utxo of oldChunks) {
         dynamicChunkInputs.push({ ...utxo, unlocker:
-          createValueChunkUnlocker(this.inner, 0, this.categoryId, gc.collection, gcSlot, gcRoot) });
+          createValueChunkUnlocker(
+            this.inner, overrides?.blockBase ?? 0, this.categoryId, gc.collection, gcSlot, gcRoot,
+          ) });
       }
     }
 
@@ -9825,7 +9835,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         // One additional input sits after the balanced owner block and funds
         // the fee; the transaction builder pairs it with the final change output.
-        neededFunders += trailingCapacity - existingTrailingInputs + 1;
+        neededFunders += trailingCapacity - existingTrailingInputs + (overrides?.omitLocalFeeTail ? 0 : 1);
       }
       // ANY msg.sender / tx.origin use needs the sender's NATIVE P2PKH input present so the covenant's emitTxOrigin
       // resolves to it (the sender IS tx.origin), even when the write's fees would otherwise come from the contract.
@@ -11080,7 +11090,7 @@ export class StatefulFunctionCall {
   private consumesLogicalNonce = true;
   private compilerRoute?: {
     abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number;
-    emitReturn?: boolean; returnBlob?: Uint8Array;
+    emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
   };
 
   private splitFundingConfig?: {
@@ -11106,7 +11116,7 @@ export class StatefulFunctionCall {
     functionArgs?: any[],
     compilerRoute?: {
       abiFunction: AbiFunction; selector: Uint8Array; blockBase?: number;
-      emitReturn?: boolean; returnBlob?: Uint8Array;
+      emitReturn?: boolean; returnBlob?: Uint8Array; omitLocalFeeTail?: boolean;
     },
   ) {
     // Prevent unhandled rejection if the builder fails before send() is called
@@ -11853,6 +11863,7 @@ export class StatefulFunctionCall {
             blockBase: this.compilerRoute.blockBase,
             emitReturn: this.compilerRoute.emitReturn,
             returnBlob: this.compilerRoute.returnBlob,
+            omitLocalFeeTail: this.compilerRoute.omitLocalFeeTail,
           }),
         },
       );
@@ -11938,6 +11949,7 @@ export class StatefulFunctionCall {
             blockBase: this.compilerRoute.blockBase,
             emitReturn: this.compilerRoute.emitReturn,
             returnBlob: this.compilerRoute.returnBlob,
+            omitLocalFeeTail: this.compilerRoute.omitLocalFeeTail,
           }),
         },
       );
@@ -11973,6 +11985,7 @@ export class StatefulFunctionCall {
               blockBase: this.compilerRoute.blockBase,
               emitReturn: this.compilerRoute.emitReturn,
               returnBlob: this.compilerRoute.returnBlob,
+              omitLocalFeeTail: this.compilerRoute.omitLocalFeeTail,
             }),
           },
         );

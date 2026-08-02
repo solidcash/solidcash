@@ -2678,7 +2678,7 @@ function synthesizeHiddenBatchRoute(
         bigint activeSettlementBoundary = 0;
         bigint invocationRows = 0;
         bigint rootSubtreeEnd = 65535;
-        bigint activeResourceRows = 0;
+        bigint activeResourceEndpoints = 0;
         bigint activeEventRows = 0;
         bigint previousResourceTarget = -1;
         bigint previousEventTarget = -1;
@@ -2732,7 +2732,7 @@ function synthesizeHiddenBatchRoute(
             if (kind == 1) {
               require(eventsStarted == 0 && targetSlot > previousResourceTarget);
               previousResourceTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) == 0);
+              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             } else {
               eventsStarted = 1;
@@ -2762,18 +2762,29 @@ function synthesizeHiddenBatchRoute(
             cursor = cursor + fieldLength;
           }
           if (kind == 1) {
+            bigint resourceMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
             require(rowSubject.length > 0 && rowArguments.length == 33);
             require(rowArguments.slice(32, 33) == hex"01");
-            require(tx.inputs[sourceSlot].lockingBytecode == rowSubject
-              && tx.outputs[targetSlot].lockingBytecode == rowSubject);
-            require(tx.inputs[sourceSlot].tokenCategory == rowArguments
-              && tx.outputs[targetSlot].tokenCategory == rowArguments);
-            require(tx.inputs[sourceSlot].nftCommitment == rowResult
-              && tx.outputs[targetSlot].nftCommitment == rowEffect);
-            require(tx.inputs[sourceSlot].tokenAmount == 0
-              && tx.outputs[targetSlot].tokenAmount == 0);
-            require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value);
-            if (owner == activeParticipant) { activeResourceRows = activeResourceRows + 1; }
+            if (resourceMode != 1) {
+              require(tx.inputs[sourceSlot].lockingBytecode == rowSubject
+                && tx.inputs[sourceSlot].tokenCategory == rowArguments
+                && tx.inputs[sourceSlot].nftCommitment == rowResult
+                && tx.inputs[sourceSlot].tokenAmount == 0);
+            } else {
+              require(rowResult.length == 0 && tx.inputs[sourceSlot].tokenCategory.length == 0);
+            }
+            if (resourceMode != 2) {
+              require(tx.outputs[targetSlot].lockingBytecode == rowSubject
+                && tx.outputs[targetSlot].tokenCategory == rowArguments
+                && tx.outputs[targetSlot].nftCommitment == rowEffect
+                && tx.outputs[targetSlot].tokenAmount == 0);
+            } else {
+              require(rowEffect.length == 0 && tx.outputs[targetSlot].tokenCategory.length == 0);
+            }
+            if (resourceMode == 0) { require(tx.inputs[sourceSlot].value == tx.outputs[targetSlot].value); }
+            if (owner == activeParticipant) {
+              activeResourceEndpoints = activeResourceEndpoints + (resourceMode == 0 ? 2 : 1);
+            }
           }
           if (kind == 2) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length > 0);
@@ -2833,19 +2844,23 @@ function synthesizeHiddenBatchRoute(
           }
         }
         require(invocationRows > 0 && rootSubtreeEnd + 1 == invocationRows);
-        bigint physicalResourceInputs = 0;
+        bigint physicalResourceEndpoints = 0;
         bigint physicalEventOutputs = 0;
         for (bigint slot = this.activeInputIndex;
           slot < this.activeInputIndex + activeBlockSize; slot = slot + 1) {
           if (tx.inputs[slot].tokenCategory.length == 33
             && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
-            physicalResourceInputs = physicalResourceInputs + 1;
+            physicalResourceEndpoints = physicalResourceEndpoints + 1;
+          }
+          if (tx.outputs[slot].tokenCategory.length == 33
+            && tx.outputs[slot].tokenCategory.slice(32, 33) == hex"01") {
+            physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
           if (slot != activeReturnOutput && tx.outputs[slot].tokenCategory == activeCategory) {
             physicalEventOutputs = physicalEventOutputs + 1;
           }
         }
-        require(activeResourceRows == physicalResourceInputs && activeEventRows == physicalEventOutputs);
+        require(activeResourceEndpoints == physicalResourceEndpoints && activeEventRows == physicalEventOutputs);
         require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `

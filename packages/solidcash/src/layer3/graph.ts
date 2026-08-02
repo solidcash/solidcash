@@ -226,7 +226,7 @@ export interface SingleTxEventSlotEffect {
 export interface SingleTxResourceSlotEffect {
   participant: number;
   offset: number;
-  /** Canonical resource-row mode. Resource semantics come from the compiler-published physical slot covenant. */
+  /** 0 transition/preserve, 1 create, 2 delete. */
   mode: number;
   lockingBytecodeHex: string;
   tokenCategoryHex: string;
@@ -269,7 +269,7 @@ export function finalizeSingleTxInvocationGraph(
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
-      'master', 'dataNft', 'readOnlyDataNft', 'entry', 'event', 'returnEvent',
+      'master', 'dataNft', 'readOnlyDataNft', 'entry', 'event', 'returnEvent', 'trailing',
     ].includes(slot.kind))
       || participant.artifact.hiddenBatch?.handlers.some((handler) =>
         (handler.transfers?.length ?? 0) > 0
@@ -341,13 +341,13 @@ export function finalizeSingleTxInvocationGraph(
       const participant = plan.participants[effect.participant];
       if (!participant) throw new Error(`layer3: resource effect names participant ${effect.participant}`);
       const slot = participant.blockLayout!.slots.find((candidate) =>
-        ['dataNft', 'readOnlyDataNft', 'entry'].includes(candidate.kind)
+        ['dataNft', 'readOnlyDataNft', 'entry', 'trailing'].includes(candidate.kind)
         && candidate.offset === effect.offset);
       if (!slot) {
         throw new Error(`layer3: participant ${effect.participant} has no resource slot ${effect.offset}`);
       }
-      if (effect.mode !== 0) {
-        throw new Error(`layer3: participant ${effect.participant} resource slot ${effect.offset} has nonzero mode`);
+      if (effect.mode < 0 || effect.mode > 2 || (slot.kind !== 'trailing' && effect.mode !== 0)) {
+        throw new Error(`layer3: participant ${effect.participant} resource slot ${effect.offset} has invalid mode`);
       }
       for (const [field, value] of [
         ['locking bytecode', effect.lockingBytecodeHex], ['token category', effect.tokenCategoryHex],
@@ -357,7 +357,9 @@ export function finalizeSingleTxInvocationGraph(
           throw new Error(`layer3: participant ${effect.participant} resource ${field} is not byte hex`);
         }
       }
-      if (effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')) {
+      if (effect.tokenCategoryHex.length !== 66 || !effect.tokenCategoryHex.endsWith('01')
+        || (effect.mode === 1 && effect.inputCommitmentHex.length !== 0)
+        || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)) {
         throw new Error(`layer3: participant ${effect.participant} resource is not a mutable NFT`);
       }
       const absolute = layout.participantInputs[effect.participant] + effect.offset;

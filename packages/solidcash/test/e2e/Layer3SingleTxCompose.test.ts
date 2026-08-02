@@ -3,10 +3,11 @@ import {
   encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
+import { buildChunkCommitment } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
-import { getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import { getDynamicChunkAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
@@ -35,7 +36,8 @@ const raw = (builder: TransactionBuilder): string =>
 const mutateInputZero = (
   builder: TransactionBuilder, selectorHex: string,
   target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event' | 'carrier-resource'
-  | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject',
+  | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject'
+  | 'carrier-resource-create' | 'carrier-resource-delete',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -59,7 +61,10 @@ const mutateInputZero = (
           const transcript = decodeSingleTxCarrier(instruction.data);
           const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
             ? row.resultHex.length > 0
-            : row.kind === (target.startsWith('carrier-resource') ? 1 : 2) && row.effectHex.length > 0);
+            : row.kind === (target.startsWith('carrier-resource') ? 1 : 2)
+              && (row.effectHex.length > 0 || target === 'carrier-resource-delete')
+              && (target !== 'carrier-resource-create' || row.mode === 1)
+              && (target !== 'carrier-resource-delete' || row.mode === 2));
           if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
           if (target === 'carrier-resource-mode' || target === 'carrier-resource-slot'
             || target === 'carrier-resource-subject') {
@@ -79,7 +84,7 @@ const mutateInputZero = (
             };
             return encodeAuthenticationInstructions(instructions);
           }
-          const field = hexToBin(target === 'carrier-result'
+          const field = hexToBin(target === 'carrier-result' || target === 'carrier-resource-delete'
             ? transcript.rows[rowIndex].resultHex : transcript.rows[rowIndex].effectHex);
           field[field.length - 1] ^= 0x01;
           const rows = transcript.rows.map((row, index) => index === rowIndex
@@ -349,6 +354,119 @@ describe('layer3.compose controllerless transaction', () => {
     commitment[commitment.length - 1] ^= 0x01;
     hostileOutput.outputs[entryOutput].token!.nft!.commitment = binToHex(commitment);
     await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates a created dynamic-state chunk inside the trailing region', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeDynamicCallee() {
+      bytes note;
+      function set(bytes value) public { this.note = value; require(value.length > 0); }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, { note: new Uint8Array() }, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeDynamicCallee { function set(bytes value); }
+      contract ComposeDynamicCaller(address calleeAddress) {
+        function prepare(bytes value) public {
+          IComposeDynamicCallee(calleeAddress).set(value);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const value = Uint8Array.from({ length: 80 }, (_, index) => index + 1);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.prepare(value), callee.call.set(value)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const mutableOutputs = built.outputs
+      .map((output, index) => ({ output, index }))
+      .filter(({ output }) => output.token?.category === calleeSetup.categoryId
+        && output.token.nft?.capability === 'mutable');
+    expect(mutableOutputs.length).toBeGreaterThanOrEqual(2);
+    const chunkOutput = mutableOutputs[mutableOutputs.length - 1].index;
+    const hostileCarrier = await composition.build();
+    mutateInputZero(hostileCarrier, '', 'carrier-resource-create');
+    await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+    const hostileOutput = await composition.build();
+    const commitment = hexToBin(hostileOutput.outputs[chunkOutput].token!.nft!.commitment);
+    commitment[commitment.length - 1] ^= 0x01;
+    hostileOutput.outputs[chunkOutput].token!.nft!.commitment = binToHex(commitment);
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates deletion when a dynamic-state chunk run shrinks', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeShrinkCallee() {
+      bytes note;
+      function set(bytes value) public { this.note = value; require(value.length > 0); }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const initial = Uint8Array.from({ length: 160 }, (_, index) => 255 - index);
+    const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, { note: initial }, {
+      saltContract: true,
+      extraOutputs: (categoryId) => [initial.slice(0, 120), initial.slice(120)].map((chunk, index) => ({
+        address: getDynamicChunkAddress(calleeBase, categoryId, 'note', 'bytes'),
+        satoshis: 1200n,
+        token: {
+          amount: 0n,
+          nft: { capability: 'mutable', commitment: buildChunkCommitment(index, chunk) },
+        },
+      })),
+    });
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    const callerArtifact = compileString(`
+      interface IComposeShrinkCallee { function set(bytes value); }
+      contract ComposeShrinkCaller(address calleeAddress) {
+        function prepare(bytes value) public {
+          IComposeShrinkCallee(calleeAddress).set(value);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const value = initial.slice(0, 80);
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const composition = layer3.compose({
+      calls: [caller.call.prepare(value), callee.call.set(value)],
+      funder: fee,
+      changeAddress: fee.unlocker.generateLockingBytecode(),
+    });
+
+    const built = await composition.build();
+    const instructions = decodeAuthenticationInstructions(
+      built.buildLibauthTransaction().inputs[0].unlockingBytecode,
+    );
+    const carrier = instructions.find((instruction, index) =>
+      index === 2 && 'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
+    if (!carrier || !('data' in carrier)) throw new Error('test could not locate shrink carrier');
+    expect(decodeSingleTxCarrier(carrier.data).rows.some((row) => row.kind === 1 && row.mode === 2)).toBe(true);
+    const hostile = await composition.build();
+    mutateInputZero(hostile, '', 'carrier-resource-delete');
+    await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 });

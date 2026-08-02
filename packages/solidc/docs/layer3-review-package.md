@@ -2,9 +2,9 @@
 
 Status: **READY FOR INDEPENDENT REVIEW; SIGN-OFF PENDING**.
 
-Audit target: `codex/layer3-binding-spike` branch HEAD. The integration owner must replace this sentence with
-the exact immutable commit after the default-on implementation and final verification are integrated. A review
-of any other commit does not close the ledger's independent-review gate.
+Audit target: `2ef505e2aa7aab2f82639fce7744a56e8b21969d`. This immutable commit contains the
+default-on implementation and the verification totals recorded below. A review of any other production-byte
+commit does not close the ledger's independent-review gate; the following commit changes only this pointer.
 
 ## 1. Project decisions and review boundary
 

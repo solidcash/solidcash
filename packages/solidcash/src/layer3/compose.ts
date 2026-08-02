@@ -131,8 +131,11 @@ export class SingleTxBusComposition {
         return participantOf(descriptor);
       },
     });
-    if (next !== descriptors.length) {
-      throw new Error(`layer3: ${descriptors.length - next} prepared call(s) are not reached by the compiled graph`);
+    if (plan.invocations.length !== descriptors.length) {
+      throw new Error(
+        `layer3: prepared ${descriptors.length} call(s), but the compiled graph reaches `
+        + `${plan.invocations.length}`,
+      );
     }
     plan.invocations.forEach((invocation, index) => {
       const supplied = descriptors[index];

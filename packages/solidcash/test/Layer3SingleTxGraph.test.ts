@@ -102,12 +102,29 @@ describe('controllerless compiled invocation graph', () => {
       kind: 2, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
       subjectHex: '51', effectHex: '012a',
     });
+    const valuePlan: layer3.CompiledGraphPlan = {
+      ...base,
+      participants: [base.participants[0], {
+        ...base.participants[1],
+        blockLayout: {
+          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'transfer', offset: 1, slotIndex: 0 }],
+        },
+      }],
+    };
+    expect(layer3.finalizeSingleTxInvocationGraph(
+      valuePlan, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' }, [], [], [{
+        participant: 1, offset: 1, lockingBytecodeHex: '52', amount: 900n,
+      }],
+    ).transcript.rows[2]).toMatchObject({
+      kind: 3, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
+      subjectHex: '52', effectHex: '8403000000000000',
+    });
     const unsupported: layer3.CompiledGraphPlan = {
       ...base,
       participants: [base.participants[0], {
         ...base.participants[1],
         blockLayout: {
-          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'transfer', offset: 1 }],
+          blockSize: 2, slots: [{ kind: 'master', offset: 0 }, { kind: 'tokenContainer', offset: 1 }],
         },
       }],
     };

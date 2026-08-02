@@ -1937,14 +1937,20 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    // Create transfer outputs (plain BCH, no tokens)
-    // Skip inactive conditional transfers (empty locking bytecode from unbalanced branches)
-    for (const transfer of this.pendingTransfers) {
-      if (transfer.lockingBytecode.length === 0) continue;
-      builder.addOutput({
-        to: transfer.lockingBytecode,
-        amount: transfer.amount,
-      });
+    // Create transfer outputs (plain BCH, no tokens). A graph route reserves a fixed per-row transfer frame;
+    // inactive sites remain OP_TRUE outputs so later participant blocks cannot slide into the gaps.
+    const reservedTransferSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'transfer').length
+      ?? this.pendingTransfers.length;
+    for (let transferSlot = 0; transferSlot < reservedTransferSlots; transferSlot += 1) {
+      const transfer = this.pendingTransfers[transferSlot];
+      if (!transfer || transfer.lockingBytecode.length === 0) {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: BALANCED_SLOT_SATOSHIS });
+      } else {
+        builder.addOutput({
+          to: transfer.lockingBytecode,
+          amount: transfer.amount,
+        });
+      }
     }
 
     // Create token container transfer outputs (FT and NFT interleaved in source-code order)

@@ -1,5 +1,7 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
-import { decodePushdataValue, scriptToBytecode } from '@solidcash/utils';
+import {
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, scriptToBytecode,
+} from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
   Output, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
@@ -10,6 +12,7 @@ import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulCont
 import { withSingleTxCarrier } from './controllerless.js';
 import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
+  type SingleTxValueSlotEffect,
 } from './graph.js';
 import { encodeHiddenBatch } from './hidden-batch.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
@@ -52,6 +55,9 @@ const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
 
 const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
 const framed = (value: Uint8Array): Uint8Array => concat(uint16(value.length), value);
+const semanticJson = (value: unknown): string => JSON.stringify(
+  value, (_key, field) => typeof field === 'bigint' ? field.toString() : field,
+);
 
 const graphRouteContext = (
   finalized: ReturnType<typeof finalizeSingleTxInvocationGraph>, participant: number,
@@ -166,14 +172,22 @@ export class SingleTxBusComposition {
       })));
     const resourceSlots = plan.participants.flatMap((participant) =>
       participant.blockLayout!.slots
-        .filter((slot) => ['dataNft', 'readOnlyDataNft', 'entry', 'trailing'].includes(slot.kind))
+        .filter((slot) => [
+          'dataNft', 'readOnlyDataNft', 'entry', 'satoshiContainer', 'trailing',
+        ].includes(slot.kind))
         .map((slot) => ({
-          participant: participant.participant, offset: slot.offset, trailing: slot.kind === 'trailing',
+          participant: participant.participant, offset: slot.offset, kind: slot.kind,
         })));
+    const valueSlots = plan.participants.flatMap((participant) =>
+      participant.blockLayout!.slots.filter((slot) => slot.kind === 'transfer').map((slot) => ({
+        participant: participant.participant, offset: slot.offset,
+      })));
     const provisionalEventEffects: SingleTxEventSlotEffect[] = [];
     const provisionalResourceEffects: SingleTxResourceSlotEffect[] = [];
+    const provisionalValueEffects: SingleTxValueSlotEffect[] = [];
     let finalized = finalizeSingleTxInvocationGraph(
       plan, categories, provisionalResults, provisionalEventEffects, provisionalResourceEffects,
+      provisionalValueEffects,
     );
 
     const participantReturnBlob = (
@@ -239,13 +253,15 @@ export class SingleTxBusComposition {
       return aggregate;
     };
 
-    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0) {
+    if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0 || valueSlots.length > 0) {
       let claimedResults: Readonly<Record<number, string>> = provisionalResults;
       let claimedEventEffects: readonly SingleTxEventSlotEffect[] = provisionalEventEffects;
       let claimedResourceEffects: readonly SingleTxResourceSlotEffect[] = provisionalResourceEffects;
-      for (let pass = 0; pass <= plan.invocations.length; pass += 1) {
+      let claimedValueEffects: readonly SingleTxValueSlotEffect[] = provisionalValueEffects;
+      const maximumPasses = plan.invocations.length + 3;
+      for (let pass = 0; pass < maximumPasses; pass += 1) {
         finalized = finalizeSingleTxInvocationGraph(
-          plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects,
+          plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
         );
         const provisional = await assemble(finalized, claimedResults);
         const derivedResourceEffects: SingleTxResourceSlotEffect[] = [];
@@ -256,11 +272,25 @@ export class SingleTxBusComposition {
           if (!input || !output) throw new Error(`layer3: resource slot ${slot.participant}:${slot.offset} is absent`);
           const inputToken = input.token;
           const outputToken = output.token;
+          if (slot.kind === 'satoshiContainer') {
+            const inputLockingBytecode = input.unlocker.generateLockingBytecode();
+            const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+            if (inputToken || outputToken || binToHex(inputLockingBytecode) !== binToHex(outputLockingBytecode)) {
+              throw new Error(`layer3: satoshi container ${slot.participant}:${slot.offset} is not preserved`);
+            }
+            derivedResourceEffects.push({
+              participant: slot.participant, offset: slot.offset, mode: 3,
+              lockingBytecodeHex: binToHex(inputLockingBytecode), tokenCategoryHex: '',
+              inputCommitmentHex: '', outputCommitmentHex: '',
+              inputValue: input.satoshis, outputValue: output.amount,
+            });
+            continue;
+          }
           const inputMutable = inputToken?.nft?.capability === 'mutable';
           const outputMutable = outputToken?.nft?.capability === 'mutable';
           if (!inputMutable && !outputMutable) continue;
           const mode = inputMutable ? (outputMutable ? 0 : 2) : 1;
-          if (!slot.trailing && mode !== 0) {
+          if (slot.kind !== 'trailing' && mode !== 0) {
             throw new Error(`layer3: fixed resource slot ${slot.participant}:${slot.offset} is not preserved`);
           }
           const activeToken = inputMutable ? inputToken : outputToken!;
@@ -283,8 +313,27 @@ export class SingleTxBusComposition {
             outputCommitmentHex: outputMutable ? outputToken!.nft!.commitment : '',
           });
         }
-        if (JSON.stringify(derivedResourceEffects) !== JSON.stringify(claimedResourceEffects)) {
+        if (semanticJson(derivedResourceEffects) !== semanticJson(claimedResourceEffects)) {
           claimedResourceEffects = derivedResourceEffects;
+          continue;
+        }
+        const derivedValueEffects: SingleTxValueSlotEffect[] = [];
+        for (const slot of valueSlots) {
+          const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
+          const input = provisional.inputs[absolute];
+          const output = provisional.outputs[absolute];
+          if (!input || !output || input.token || output.token
+            || binToHex(input.unlocker.generateLockingBytecode()) !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX) {
+            throw new Error(`layer3: transfer slot ${slot.participant}:${slot.offset} is not canonically funded`);
+          }
+          const lockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (binToHex(lockingBytecode) === '51') continue;
+          derivedValueEffects.push({
+            ...slot, lockingBytecodeHex: binToHex(lockingBytecode), amount: output.amount,
+          });
+        }
+        if (semanticJson(derivedValueEffects) !== semanticJson(claimedValueEffects)) {
+          claimedValueEffects = derivedValueEffects;
           continue;
         }
         const derivedResults: Record<number, string> = {};
@@ -348,9 +397,10 @@ export class SingleTxBusComposition {
         claimedResults = derivedResults;
         claimedEventEffects = derivedEventEffects;
         claimedResourceEffects = derivedResourceEffects;
+        claimedValueEffects = derivedValueEffects;
       }
       throw new Error(
-        `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${plan.invocations.length + 1} bounded passes`,
+        `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${maximumPasses} bounded passes`,
       );
     }
     return assemble(finalized, provisionalResults);

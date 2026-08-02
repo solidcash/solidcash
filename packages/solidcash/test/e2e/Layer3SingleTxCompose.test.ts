@@ -7,7 +7,9 @@ import { buildChunkCommitment } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
-import { getDynamicChunkAddress, getEntryNftAddress } from '../../src/stateful/covenant-helpers.js';
+import {
+  getDynamicChunkAddress, getEntryNftAddress, getSatoshiContainerAddress,
+} from '../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
@@ -37,7 +39,8 @@ const mutateInputZero = (
   builder: TransactionBuilder, selectorHex: string,
   target: 'carrier' | 'emissions' | 'carrier-result' | 'carrier-event' | 'carrier-resource'
   | 'carrier-resource-mode' | 'carrier-resource-slot' | 'carrier-resource-subject'
-  | 'carrier-resource-create' | 'carrier-resource-delete',
+  | 'carrier-resource-create' | 'carrier-resource-delete' | 'carrier-value' | 'carrier-value-drop'
+  | 'carrier-satoshi' | 'carrier-satoshi-drop',
 ): void => {
   const original = builder.inputs[0].unlocker!;
   builder.inputs[0] = {
@@ -50,22 +53,35 @@ const mutateInputZero = (
           if (!('data' in instruction)) return false;
           const hex = binToHex(instruction.data);
           return target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
-            || target.startsWith('carrier-resource')
+            || target.startsWith('carrier-resource') || target.startsWith('carrier-value')
+            || target.startsWith('carrier-satoshi')
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
         if (instructionIndex < 0) throw new Error(`test could not locate ${target} frame`);
         const instruction = instructions[instructionIndex];
         if (!('data' in instruction)) throw new Error(`test ${target} frame is not a push`);
-        if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')) {
+        if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')
+          || target.startsWith('carrier-value') || target.startsWith('carrier-satoshi')) {
           const transcript = decodeSingleTxCarrier(instruction.data);
           const rowIndex = transcript.rows.findIndex((row) => target === 'carrier-result'
             ? row.resultHex.length > 0
-            : row.kind === (target.startsWith('carrier-resource') ? 1 : 2)
+            : row.kind === (target.startsWith('carrier-resource') || target.startsWith('carrier-satoshi')
+              ? 1 : target.startsWith('carrier-value') ? 3 : 2)
               && (row.effectHex.length > 0 || target === 'carrier-resource-delete')
               && (target !== 'carrier-resource-create' || row.mode === 1)
-              && (target !== 'carrier-resource-delete' || row.mode === 2));
+              && (target !== 'carrier-resource-delete' || row.mode === 2)
+              && (!target.startsWith('carrier-satoshi') || row.mode === 3));
           if (rowIndex < 0) throw new Error(`test could not locate a ${target} row`);
+          if (target.endsWith('-drop')) {
+            instructions[instructionIndex] = {
+              ...instruction,
+              data: encodeSingleTxCarrier({
+                ...transcript, rows: transcript.rows.filter((_row, index) => index !== rowIndex),
+              }),
+            };
+            return encodeAuthenticationInstructions(instructions);
+          }
           if (target === 'carrier-resource-mode' || target === 'carrier-resource-slot'
             || target === 'carrier-resource-subject') {
             const row = transcript.rows[rowIndex];
@@ -467,6 +483,68 @@ describe('layer3.compose controllerless transaction', () => {
     const hostile = await composition.build();
     mutateInputZero(hostile, '', 'carrier-resource-delete');
     await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
+    await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+  }, 120_000);
+
+  it('authenticates a BCH transfer and its satoshi-container settlement', async () => {
+    const provider = createLayer3SemanticTestProvider();
+    const calleeArtifact = compileString(`contract ComposeValueCallee() {
+      event Paid(bigint amount);
+      function pay(bytes recipient, bigint amount) public {
+        this.transfer(recipient, amount);
+        emit Paid(amount);
+        require(amount > 0);
+      }
+    }`, { forceStateful: true });
+    const calleeBase = new Contract(calleeArtifact, [], { provider });
+    const calleeSetup = await setupStatefulUtxos(
+      provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
+    const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
+    await provider.addUtxo(getSatoshiContainerAddress(calleeInner, calleeSetup.categoryId), {
+      txid: 'ef'.repeat(32), vout: 1, satoshis: 50_000n,
+    });
+    const callerArtifact = compileString(`
+      interface IComposeValueCallee { function pay(bytes recipient, bigint amount); }
+      contract ComposeValueCaller(address calleeAddress) {
+        function prepare(bytes recipient, bigint amount) public {
+          IComposeValueCallee(calleeAddress).pay(recipient, amount);
+          require(true);
+        }
+      }
+    `, { forceStateful: true });
+    const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
+    const callerSetup = await setupStatefulUtxos(
+      provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+    );
+    const caller = StatefulContract.withCategory(
+      callerBase.withCategory(hexToBin(callerSetup.categoryId)), callerSetup.categoryId,
+    );
+    const fee = await createBareP2pkhFeeFunder(provider, 1_000_000n);
+    const recipient = fee.unlocker.generateLockingBytecode();
+    const amount = 4_000n;
+    const composition = layer3.compose({
+      calls: [caller.call.prepare(recipient, amount), callee.call.pay(recipient, amount)],
+      funder: fee,
+      changeAddress: recipient,
+    });
+
+    const built = await composition.build();
+    const transferOutput = built.outputs.findIndex((output) =>
+      output.amount === amount && !output.token
+      && typeof output.to !== 'string' && binToHex(output.to) === binToHex(recipient));
+    expect(transferOutput).toBeGreaterThan(0);
+    for (const mutation of [
+      'carrier-value', 'carrier-value-drop', 'carrier-satoshi', 'carrier-satoshi-drop',
+    ] as const) {
+      const hostileCarrier = await composition.build();
+      mutateInputZero(hostileCarrier, '', mutation);
+      await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+    }
+    const hostileOutput = await composition.build();
+    hostileOutput.outputs[transferOutput].amount += 1n;
+    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 });

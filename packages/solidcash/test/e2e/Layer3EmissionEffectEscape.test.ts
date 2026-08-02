@@ -1290,8 +1290,8 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
     await expect(built.provider.sendRawTransaction(built.transaction)).resolves.toBeTypeOf('string');
   }, 600_000);
 
-  /** Graph framing carries each handler's event width, while the legacy flattened route remains fail-closed. */
-  it('supports heterogeneous graph event frames but refuses the ambiguous flattened route', () => {
+  /** Inferred controllerless framing carries each handler's event width without an explicit controller option. */
+  it('supports heterogeneous event frames in explicit and inferred controllerless routes', () => {
     const heterogeneous = compileString(sec9HubSource(false), BUS_OPTIONS);
     expect(heterogeneous.hiddenBatch!.route.blockLayout!.slots
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);
@@ -1299,7 +1299,8 @@ describe('Layer-3 emission binding vs an effect-carrying handler (SEMANTIC)', ()
       forceStateful: true,
       hiddenBatch: true,
     });
-    expect(flattened.hiddenBatch).toBeUndefined();
+    expect(flattened.hiddenBatch!.route.blockLayout!.slots
+      .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);
     const uniform = compileString(sec9HubSource(true), BUS_OPTIONS);
     expect(uniform.hiddenBatch!.route.blockLayout!.slots
       .filter((slot: any) => slot.kind === 'event')).toHaveLength(16);

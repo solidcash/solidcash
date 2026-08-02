@@ -690,6 +690,9 @@ export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
 export const SINGLE_TX_BUS_VERSION = 1;
 export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
 export const SINGLE_TX_BUS_MAX_ROWS = 24;
+/** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
+export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
+  'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
 export interface Artifact {
   contractName: string;

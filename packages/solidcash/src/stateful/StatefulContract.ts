@@ -53,6 +53,7 @@ import {
   parseArrayTypeString,
   decodePackedEventArray,
   scriptToBytecode,
+  BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
@@ -118,13 +119,7 @@ import NetworkProvider from '../network/NetworkProvider.js';
 // P2SH32-wrapped OP_TRUE for consensus-valid dummy funders.
 // Redeem script: OP_TRUE (0x51). Locking: OP_HASH256 <hash256(0x51)> OP_EQUAL.
 // Unlocking: <push 0x51> (the redeem script).
-const DUMMY_FUNDER_LOCKING_BYTECODE = new Uint8Array([
-  0xaa, // OP_HASH256
-  0x20, // push 32 bytes
-  0x95, 0x3c, 0xcf, 0xa5, 0x96, 0xa6, 0xc6, 0xd3, 0x9e, 0x59, 0x80, 0x19, 0x45, 0x39, 0x12, 0x4f,
-  0xdc, 0xff, 0x11, 0x6a, 0x57, 0x14, 0x55, 0xa2, 0x12, 0xba, 0xed, 0x81, 0x1f, 0x58, 0x5e, 0xe0,
-  0x87, // OP_EQUAL
-]);
+const DUMMY_FUNDER_LOCKING_BYTECODE = hexToBin(BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX);
 const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-byte redeem script
 
 type GraphBlockhashSelection = {
@@ -9378,7 +9373,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
 
-      const satoshiContainerUnlocker = createSatoshiContainerUnlocker(this.inner, 0, this.categoryId);
+      const satoshiContainerUnlocker = createSatoshiContainerUnlocker(
+        this.inner, overrides?.blockBase ?? 0, this.categoryId,
+      );
       satoshiContainerUtxo = { ...containerUtxo, unlocker: satoshiContainerUnlocker };
 
       // Build locking bytecode for preservation output

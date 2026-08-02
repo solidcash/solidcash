@@ -79,6 +79,6 @@ describe('bounded fixed-array collection iteration on the Layer-3 route', () => 
     builder.outputs.push(builder.outputs[builder.outputs.length - 1]);
     (builder as any).options.allowImplicitNftBurn = true;
     expect(() => layer3.preflightLayer3Transaction(builder))
-      .toThrow('BCH-2026 preflight failed at input 0: malformed SCB1 envelope; VM: Program failed an OP_VERIFY operation.');
+      .toThrow('controllerless compositions permit no auxiliary or padding slots');
   }, 180_000);
 });

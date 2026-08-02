@@ -1359,11 +1359,9 @@ function synthesizeHiddenBatchRoute(
     )) {
       reason = 'transaction-signature-route-binding-required';
     } else if (!reason && routeSensitive
-      && !((!routeUsesOtherIntrospection
-          && (routeUsesStableOwnerIntrospection || routeUsesTxOrigin
-            || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))
-        || ((compilerOptions as CompilerOptions & { __testLayer3BindingSpike?: boolean })
-          .__testLayer3BindingSpike && fn.name === '__layer3_bind'))) {
+      && !(!routeUsesOtherIntrospection
+        && (routeUsesStableOwnerIntrospection || routeUsesTxOrigin
+          || routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig || routeUsesMsgValue))) {
       reason = 'direct-versus-batch-introspection-divergence';
     // E4. A leaf graph handler reconstructs these three values from its authenticated invocation row, but an
     // emission handler also needs that row while constructing its outgoing emission. The current lowering

@@ -2,6 +2,7 @@
 // SDK transaction derivation. See docs/layer3-*.md.
 export * from './codec.js';
 export * from './contention.js';
+export * from './controllerless.js';
 export * from './covenant.js';
 export * from './delegate.js';
 export * from './diagnostics.js';

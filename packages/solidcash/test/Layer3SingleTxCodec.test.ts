@@ -1,0 +1,75 @@
+import { describe, expect, it } from 'vitest';
+import { layer3 } from '../src/index.js';
+
+const sample = (): layer3.SingleTxBusTranscript => ({
+  participants: [
+    { lockingBytecode: '51', masterCategory: '11'.repeat(32), base: 0, blockSize: 2,
+      policyHash: 'aa'.repeat(32), trailingCapacity: 0 },
+    { lockingBytecode: '52', masterCategory: '22'.repeat(32), base: 2, blockSize: 3,
+      policyHash: 'bb'.repeat(32), trailingBase: 2, trailingCapacity: 1 },
+  ],
+  rows: [
+    { kind: 0, owner: 0, consumer: 1, slot: 0, payloadHex: '123456780001' },
+    { kind: 2, owner: 1, consumer: 0, slot: 4, payloadHex: 'abcd' },
+  ],
+});
+
+describe('controllerless single-transaction codec', () => {
+  it('round-trips one canonical transcript and carrier', () => {
+    const value = sample();
+    const encoded = layer3.encodeSingleTxBusTranscript(value);
+    expect(layer3.decodeSingleTxBusTranscript(encoded)).toEqual(value);
+    expect(layer3.decodeSingleTxCarrier(layer3.encodeSingleTxCarrier(value))).toEqual(value);
+  });
+
+  it('places complete blocks contiguously before the fee tail', () => {
+    expect(layer3.singleTxBusPhysicalLayout([2, 3, 1])).toEqual({
+      participantInputs: [0, 2, 5], feeInput: 6, totalSlots: 7,
+    });
+  });
+
+  it('rejects domain, version, declared length, truncation, suffix, and carrier mutations', () => {
+    const encoded = layer3.encodeSingleTxBusTranscript(sample());
+    for (const offset of [0, 8, 9]) {
+      const changed = encoded.slice(); changed[offset] ^= 1;
+      expect(() => layer3.decodeSingleTxBusTranscript(changed)).toThrow();
+    }
+    expect(() => layer3.decodeSingleTxBusTranscript(encoded.slice(0, -1))).toThrow();
+    expect(() => layer3.decodeSingleTxBusTranscript(Uint8Array.from([...encoded, 0]))).toThrow();
+    const carrier = layer3.encodeSingleTxCarrier(sample());
+    for (const offset of [0, 4]) {
+      const changed = carrier.slice(); changed[offset] ^= 1;
+      expect(() => layer3.decodeSingleTxCarrier(changed)).toThrow();
+    }
+    expect(() => layer3.decodeSingleTxCarrier(Uint8Array.from([...carrier, 0]))).toThrow();
+  });
+
+  it('rejects mutations to participant boundaries and every row discriminator', () => {
+    const encoded = layer3.encodeSingleTxBusTranscript(sample());
+    // Header is 14 bytes; first base/blockSize fields start there.
+    for (const offset of [13, 14, 16]) {
+      const changed = encoded.slice(); changed[offset] ^= 0xff;
+      expect(() => layer3.decodeSingleTxBusTranscript(changed)).toThrow();
+    }
+    const decoded = layer3.decodeSingleTxBusTranscript(encoded);
+    expect(() => layer3.encodeSingleTxBusTranscript({ ...decoded, rows: [
+      { ...decoded.rows[0], kind: 7 }, ...decoded.rows.slice(1),
+    ] })).toThrow(/unknown kind/);
+    expect(() => layer3.encodeSingleTxBusTranscript({ ...decoded, rows: [
+      { ...decoded.rows[0], owner: 2 }, ...decoded.rows.slice(1),
+    ] })).toThrow(/unknown participant/);
+  });
+
+  it('rejects gaps, overlap, absent masters, malformed trailing regions, and capacity overflow', () => {
+    expect(() => layer3.singleTxBusPhysicalLayout([1, 0])).toThrow(/positive integer/);
+    expect(() => layer3.encodeSingleTxBusTranscript({ ...sample(), participants: [
+      sample().participants[0], { ...sample().participants[1], base: 3 },
+    ] })).toThrow(/contiguous/);
+    expect(() => layer3.encodeSingleTxBusTranscript({ ...sample(), participants: [
+      sample().participants[0], { ...sample().participants[1], trailingBase: 1 },
+    ] })).toThrow(/trailing region/);
+    expect(() => layer3.encodeSingleTxBusTranscript({
+      ...sample(), rows: Array.from({ length: 25 }, () => sample().rows[0]),
+    })).toThrow(/row count/);
+  });
+});

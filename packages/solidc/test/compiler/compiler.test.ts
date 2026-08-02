@@ -9,7 +9,7 @@ import { URL } from 'url';
 import { getSubdirectories, readCashFiles } from '../test-utils.js';
 import * as Errors from '../../src/Errors.js';
 import { compileString as _csRawSolidc } from '../../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
+import { compileString } from '../direct-compile.js';
 import type { SolidCashErrorListener } from '../../src/index.js';
 
 const VALID_SOURCE = `
@@ -30,7 +30,7 @@ describe('Compiler', () => {
     });
 
     it('keeps the default enabled while omitting a handler whose effects cannot be settled', () => {
-      const artifact = compileString(`contract ConditionalTokenContainerSend() {
+      const artifact = _csRawSolidc(`contract ConditionalTokenContainerSend() {
         int counter;
         function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
           if (flag) this.tokens[category].transfer(a, amount);
@@ -49,8 +49,8 @@ describe('Compiler', () => {
         function increment() { this.counter = this.counter + 1; }
       }`;
 
-      const inferred = compileString(source);
-      const legacyExplicit = compileString(source, { hiddenBatch: true });
+      const inferred = _csRawSolidc(source);
+      const legacyExplicit = _csRawSolidc(source, { hiddenBatch: true });
 
       expect(inferred.hiddenBatch).toBeDefined();
       expect(legacyExplicit.bytecode).toBe(inferred.bytecode);
@@ -111,7 +111,7 @@ describe('Compiler', () => {
         },
       };
 
-      const artifact = compileString(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
+      const artifact = _csRawSolidc(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
 
       expect(artifact.compiler.options).toEqual({
         enforceFunctionParameterTypes: true,

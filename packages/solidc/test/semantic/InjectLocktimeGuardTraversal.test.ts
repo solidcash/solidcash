@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { scriptToAsm, bytecodeToScript } from '@solidcash/utils';
-import { compileString } from '../../src/compiler.js';
+import { compileString } from '../direct-compile.js';
 
 const GUARD_PREFIX = 'OP_TXLOCKTIME OP_CHECKLOCKTIMEVERIFY OP_DROP';
 

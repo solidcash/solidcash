@@ -1,8 +1,10 @@
 import {
+  compileFile as compileFileRaw,
   compileString as compileStringRaw, compileStringMulti as compileStringMultiRaw,
   compileStringSplit as compileStringSplitRaw,
 } from '../src/index.js';
 
+type FileOptions = NonNullable<Parameters<typeof compileFileRaw>[1]>;
 type StringOptions = NonNullable<Parameters<typeof compileStringRaw>[1]>;
 type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;
 type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
@@ -14,6 +16,10 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
  * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
  * runtime. Layer-3 tests import the production compiler directly. An explicit `hiddenBatch: true` still wins.
  */
+export const compileFile = (
+  sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},
+): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, { hiddenBatch: false, ...options });
+
 export const compileString = (
   source: string, options: StringOptions = {},
 ): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { hiddenBatch: false, ...options });

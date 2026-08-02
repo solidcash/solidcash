@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 describe('C2 fixed-write batch metadata', () => {
   it('groups distinct fixed writes to one collection by final entry slot', () => {

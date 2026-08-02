@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // File structure and imports: pragma, declaration order, multiple top-level defs, interface/declaration-only files.
 

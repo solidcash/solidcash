@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 /**
  * D2/R19. The collection-journal wrapper check refused ANY `return` in a wrapper that calls a multi-entry

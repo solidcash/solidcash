@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 const probe = (declaration: string, expression: string, params = ''): string => `
 pragma solidcash >=0.8.0;

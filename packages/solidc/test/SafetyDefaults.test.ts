@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 import * as Errors from '../src/Errors.js';
 
 // Behaviours that used to be gated behind solidityImportCompat but are now plain SolidCash defaults.

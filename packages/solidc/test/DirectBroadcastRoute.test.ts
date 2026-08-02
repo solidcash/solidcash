@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 /**
  * Direct (non-message-bus) function-pointer broadcast route.

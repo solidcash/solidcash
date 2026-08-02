@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Events and emit (parameter types, qualified/named-arg emit). Split out of PortingFixes.test.ts by topic.
 

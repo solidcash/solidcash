@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 const PREFIX = 'pragma solidcash >=0.8.0; contract C() { int x;';
 const HELPER_BODY = 'this.x = ((this.x + n) * 3 - n) / 2;';

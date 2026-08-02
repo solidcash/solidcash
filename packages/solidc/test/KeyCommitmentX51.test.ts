@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { AbiFunction, signatureGuardKeyCommitment, signatureGuardKeyProvenance } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 /**
  * X51. The artifact publishes what a signature-guard KEY is pinned to, not only where the key came from.

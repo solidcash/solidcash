@@ -1,6 +1,6 @@
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // These tests inspect the physical route's helper allocation and byte budget.
 // Hidden-batch route synthesis has its own cost and structure regression suite.

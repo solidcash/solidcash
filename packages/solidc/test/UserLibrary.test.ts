@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // A user-supplied external library: a single-opcode blob (OP_1ADD) callable as inc(int) -> int.
 // Proves the generic registry treats user libraries exactly like the built-in precompiles.

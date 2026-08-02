@@ -6,7 +6,8 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { compileFile, compileString, createMapResolver } from '../../src/index.js';
+import { createMapResolver } from '../../src/index.js';
+import { compileFile, compileString } from '../direct-compile.js';
 import type { ResolvedImport } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,

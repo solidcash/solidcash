@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 describe('conditional transfer reached through an internal helper', () => {
   it('preallocates the helper transfer outside the branch cleanup scope', () => {

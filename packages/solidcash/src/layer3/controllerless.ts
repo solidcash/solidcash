@@ -3,6 +3,7 @@ import {
   SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
   SINGLE_TX_BUS_VERSION, scriptToBytecode,
 } from '@solidcash/utils';
+import type { ContractUnlocker } from '../interfaces.js';
 
 /** Controllerless single-transaction bus wire domain: ASCII `L3BUS1\0\0`. */
 export const SINGLE_TX_BUS_DOMAIN = SINGLE_TX_BUS_DOMAIN_HEX;
@@ -297,8 +298,10 @@ export function insertSingleTxCarrier(
   const selector = canonicalPushAt(unlockingBytecode, 0, 'SCB1 selector');
   if (binToHex(selector.payload) !== '53434231') throw new Error('layer3: carrier input is not an SCB1 route');
   const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
+  const placeholder = canonicalPushAt(unlockingBytecode, batch.end, 'controllerless carrier placeholder');
+  if (placeholder.payload.length !== 0) throw new Error('layer3: controllerless carrier slot is not empty');
   const carrierPush = scriptToBytecode([encodeSingleTxCarrier(transcript)]);
-  return concat(unlockingBytecode.slice(0, batch.end), carrierPush, unlockingBytecode.slice(batch.end));
+  return concat(unlockingBytecode.slice(0, placeholder.start), carrierPush, unlockingBytecode.slice(placeholder.end));
 }
 
 /** Extract the carrier from the exact canonical position in input zero's SCB1 unlocking bytecode. */
@@ -308,4 +311,15 @@ export function extractSingleTxCarrier(unlockingBytecode: Uint8Array): SingleTxB
   const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
   const carrier = canonicalPushAt(unlockingBytecode, batch.end, 'controllerless carrier');
   return decodeSingleTxCarrier(carrier.payload);
+}
+
+/** Wrap an SCB1 unlocker so carrier insertion happens after all transaction-dependent signatures are final. */
+export function withSingleTxCarrier(
+  unlocker: ContractUnlocker, transcript: SingleTxBusTranscript,
+): ContractUnlocker {
+  return {
+    ...unlocker,
+    generateUnlockingBytecode: (options) =>
+      insertSingleTxCarrier(unlocker.generateUnlockingBytecode(options), transcript),
+  };
 }

@@ -27,6 +27,10 @@ positional batch push, before ordinary reversed ABI arguments and the redeem scr
 push4("SCB1") push(batchBlob) push(carrier) ...ordinary ABI pushes... push(redeemScript)
 ```
 
+Every SCB1 unlocker reserves this position as `OP_0`. Controllerless composition replaces that placeholder
+after transaction-dependent signatures are produced. Generated route bytecode removes both positional values
+before executing the handler, so neither the batch copy nor carrier leaks onto the final stack.
+
 The carrier payload is:
 
 ```text

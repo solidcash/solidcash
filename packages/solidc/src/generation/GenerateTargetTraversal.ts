@@ -3514,15 +3514,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // SCB1 unlocking bytecode carries an authenticated positional copy of the
-    // blob below the ordinary ABI argument stack. It exists so foreign callers
-    // can bind the exact second push. Remove that untracked bottom item before
-    // executing the route; the route separately proves it equals batchBlob.
+    // blob and one reserved controllerless-carrier slot below the ordinary ABI argument stack. They exist so
+    // every participant can bind physical pushes in input zero. Remove both untracked bottom items before
+    // executing the route; the route separately proves the blob and carrier framing from transaction bytes.
     if (node.hiddenBatchRoute) {
       const loc = { location: node.location, positionHint: PositionHint.START };
-      this.emit(Op.OP_DEPTH, loc);
-      this.emit(Op.OP_1SUB, loc);
-      this.emit(Op.OP_ROLL, loc);
-      this.emit(Op.OP_DROP, loc);
+      for (let positional = 0; positional < 2; positional += 1) {
+        this.emit(Op.OP_DEPTH, loc);
+        this.emit(Op.OP_1SUB, loc);
+        this.emit(Op.OP_ROLL, loc);
+        this.emit(Op.OP_DROP, loc);
+      }
     }
 
     // Load each external library this function uses and OP_DEFINE it once, before the body. Inlined

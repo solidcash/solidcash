@@ -2554,6 +2554,114 @@ function synthesizeHiddenBatchRoute(
         return __scb_unlock.slice(__scb_at, __scb_at + __scb_length);
       }
   `;
+  const singleTxTranscriptLoader = graphControllerLbc !== undefined ? '' : `
+      function __scb_single_tx_push(bytes script, bigint at) internal pure returns (bigint, bigint) {
+        require(at >= 0 && at < script.length);
+        bigint opcode = int(bytes.concat(script.slice(at, at + 1), hex"00"));
+        if (opcode <= 75) {
+          require(opcode > 0 && at + 1 + opcode <= script.length);
+          return (at + 1, opcode);
+        }
+        if (opcode == 76) {
+          require(at + 2 <= script.length);
+          bigint length = int(bytes.concat(script.slice(at + 1, at + 2), hex"00"));
+          require(length >= 76 && at + 2 + length <= script.length);
+          return (at + 2, length);
+        }
+        require(opcode == 77 && at + 3 <= script.length);
+        bigint length = int(bytes.concat(script.slice(at + 1, at + 3), hex"00"));
+        require(length >= 256 && at + 3 + length <= script.length);
+        return (at + 3, length);
+      }
+      function __scb_single_tx_transcript() internal view returns (bytes) {
+        bytes unlocking = tx.inputs[0].unlockingBytecode;
+        if (unlocking.length < 6 || unlocking.slice(0, 5) != hex"0453434231") { return hex""; }
+        bigint at;
+        bigint length;
+        (at, length) = __scb_single_tx_push(unlocking, 5);
+        bigint carrierOpcode = at + length;
+        if (carrierOpcode >= unlocking.length) { return hex""; }
+        if (unlocking.slice(carrierOpcode, carrierOpcode + 1) == hex"00") { return hex""; }
+        (at, length) = __scb_single_tx_push(unlocking, carrierOpcode);
+        bytes carrier = unlocking.slice(at, at + length);
+        if (carrier.length < 8 || carrier.slice(0, 4) != hex"4c334331") { return hex""; }
+        bigint transcriptLength = int(bytes.concat(carrier.slice(4, 8), hex"00000000"));
+        require(transcriptLength > 0 && transcriptLength + 8 == carrier.length);
+        return carrier.slice(8, carrier.length);
+      }
+      function __scb_verify_single_tx(bytes transcript, bigint expectedLocalRows) internal view {
+        require(transcript.length >= 16 && transcript.slice(0, 8) == hex"4c33425553310000");
+        require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 1);
+        require(int(bytes.concat(transcript.slice(9, 13), hex"00000000")) == transcript.length);
+        bigint participantCount = int(bytes.concat(transcript.slice(13, 14), hex"00"));
+        require(participantCount >= 2 && participantCount <= 8);
+        bigint cursor = 14;
+        bigint expectedBase = 0;
+        bigint activeMembership = 0;
+        bigint activeParticipant = 255;
+        for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
+          require(cursor + 75 <= transcript.length);
+          bigint base = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+          bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
+          bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
+          cursor = cursor + 6;
+          require(base == expectedBase && blockSize >= 1 && lbcLength > 0);
+          expectedBase = expectedBase + blockSize;
+          require(expectedBase < tx.inputs.length && cursor + lbcLength + 68 <= transcript.length);
+          bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
+          cursor = cursor + lbcLength;
+          bytes category = transcript.slice(cursor, cursor + 32);
+          bytes policyHash = transcript.slice(cursor + 32, cursor + 64);
+          bigint trailingBase = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
+          bigint trailingCapacity = int(bytes.concat(transcript.slice(cursor + 66, cursor + 68), hex"00"));
+          cursor = cursor + 68;
+          require(base < tx.inputs.length && base < tx.outputs.length);
+          require(tx.inputs[base].lockingBytecode == participantLbc);
+          require(tx.inputs[base].tokenCategory.length >= 33
+            && tx.inputs[base].tokenCategory.slice(0, 32) == category
+            && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
+          require(policyHash == sha256(participantLbc));
+          require(tx.outputs[base].lockingBytecode == participantLbc
+            && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
+          if (trailingCapacity == 0) { require(trailingBase == 65535); }
+          else { require(trailingBase < blockSize && trailingBase + trailingCapacity == blockSize); }
+          if (base == this.activeInputIndex) {
+            activeMembership = activeMembership + 1;
+            activeParticipant = participant;
+          }
+        }
+        require(activeMembership == 1 && expectedBase + 1 == tx.inputs.length);
+        require(tx.outputs.length == tx.inputs.length);
+        require(cursor + 2 <= transcript.length);
+        bigint rowCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+        require(rowCount <= 24);
+        cursor = cursor + 2;
+        bigint consumedLocalRows = 0;
+        for (bigint row = 0; row < rowCount; row = row + 1) {
+          require(cursor + 24 <= transcript.length);
+          bigint kind = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
+          bigint owner = int(bytes.concat(transcript.slice(cursor + 1, cursor + 2), hex"00"));
+          bigint consumer = int(bytes.concat(transcript.slice(cursor + 2, cursor + 3), hex"00"));
+          require(kind <= 6 && owner < participantCount && consumer < participantCount);
+          if (kind == 0 && consumer == activeParticipant) { consumedLocalRows = consumedLocalRows + 1; }
+          cursor = cursor + 16;
+          for (bigint field = 0; field < 4; field = field + 1) {
+            require(cursor + 2 <= transcript.length);
+            bigint fieldLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+            cursor = cursor + 2;
+            require(cursor + fieldLength <= transcript.length);
+            cursor = cursor + fieldLength;
+          }
+        }
+        require(cursor == transcript.length && consumedLocalRows == expectedLocalRows);
+      }
+  `;
+  const singleTxPrologue = graphControllerLbc !== undefined ? '' : `
+        bytes __internal__singleTxTranscript = __scb_single_tx_transcript();
+        if (__internal__singleTxTranscript.length > 0) {
+          __scb_verify_single_tx(__internal__singleTxTranscript, rowCount);
+        }
+  `;
   const fixedIterationEntryPins = [...fixedIterationCollections].flatMap((name) => {
     const collection = collectionByName.get(name)!;
     const bound = collection.type instanceof ArrayType ? collection.type.bound ?? 0 : 0;
@@ -2590,6 +2698,7 @@ function synthesizeHiddenBatchRoute(
     ${routeStructs}
     contract __HiddenBatchHost() {
       ${graphTranscriptLoader}
+      ${singleTxTranscriptLoader}
       function __scb_parse_row(
         bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite, bigint __scb_version
       ) internal pure returns (bytes4, bytes, bigint, bigint) {
@@ -2705,6 +2814,7 @@ function synthesizeHiddenBatchRoute(
         require(${resourceShapedHandler
     ? `rowCount == ${routeMaximumRows}`
     : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
+        ${singleTxPrologue}
         bigint cursor = 7;
         ${graphControllerLbc === undefined ? '' : 'bigint __scb_graph_caller_cursor = 0;'}
         ${resultDeclarations}

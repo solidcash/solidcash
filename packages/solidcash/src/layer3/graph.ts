@@ -215,7 +215,7 @@ export interface FinalizedSingleTxInvocationGraph {
   carrier: Uint8Array;
 }
 
-/** Canonical commitment to the compiler-authored incoming policy published by one participant artifact. */
+/** Canonical off-chain commitment to the compiler-authored incoming policy published by an artifact. */
 export function singleTxParticipantPolicyHash(artifact: Artifact): string {
   const handlers = artifact.hiddenBatch?.handlers;
   if (!handlers) throw new Error('layer3: controllerless participant has no compiler-published SCB1 policy');
@@ -268,10 +268,14 @@ export function finalizeSingleTxInvocationGraph(
       throw new Error(`layer3: participant ${index} master category must be 32-byte hex`);
     }
     const trailingBase = participant.blockLayout!.trailingBase;
+    const lockingBytecode = participant.lockingBytecode.toLowerCase();
+    const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
-      lockingBytecode: participant.lockingBytecode.toLowerCase(), masterCategory: category,
+      lockingBytecode, masterCategory: internalCategory,
       base: layout.participantInputs[index], blockSize: participant.blockLayout!.blockSize,
-      policyHash: singleTxParticipantPolicyHash(participant.artifact),
+      // The concrete instantiated locking bytecode commits the compiler-authored policy and constructor values.
+      // Keeping its hash explicit makes the on-chain participant-table walk constant-space and self-authenticating.
+      policyHash: binToHex(sha256.hash(hexToBin(lockingBytecode))),
       ...(trailingBase === undefined ? {} : { trailingBase }),
       trailingCapacity: participant.blockLayout!.trailingCapacity ?? 0,
     };

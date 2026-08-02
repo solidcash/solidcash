@@ -50,6 +50,9 @@ describe('controllerless compiled invocation graph', () => {
     );
     expect(finalized.layout).toEqual({ participantInputs: [0, 1], feeInput: 2, totalSlots: 3 });
     expect(finalized.transcript.participants.map((participant) => participant.base)).toEqual([0, 1]);
+    expect(finalized.transcript.participants.map((participant) => participant.masterCategory)).toEqual([
+      'aa'.repeat(32), 'bb'.repeat(32),
+    ]);
     expect(finalized.transcript.rows).toMatchObject([
       { owner: 0, consumer: 0, sourceSlot: 0xffff, targetSlot: 0, subjectHex: '53', position: 1 },
       {
@@ -60,13 +63,19 @@ describe('controllerless compiled invocation graph', () => {
     expect(layer3.decodeSingleTxCarrier(finalized.carrier)).toEqual(finalized.transcript);
   });
 
-  it('changes the participant identity table when policy or category changes', () => {
+  it('changes the participant identity table when code identity or category changes', () => {
     const first = layer3.finalizeSingleTxInvocationGraph(plan(), ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' });
     const categoryChanged = layer3.finalizeSingleTxInvocationGraph(
       plan(), ['aa'.repeat(32), 'cc'.repeat(32)], { 1: '2a' },
     );
-    expect(layer3.singleTxParticipantPolicyHash(artifact('22222222', 'uint')))
-      .not.toBe(layer3.singleTxParticipantPolicyHash(artifact('22222222')));
+    const codeChanged = plan();
+    const changed = {
+      ...codeChanged,
+      participants: [codeChanged.participants[0], { ...codeChanged.participants[1], lockingBytecode: '5353' }],
+    };
+    expect(layer3.finalizeSingleTxInvocationGraph(
+      changed, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
+    ).bytes).not.toEqual(first.bytes);
     expect(categoryChanged.bytes).not.toEqual(first.bytes);
   });
 

@@ -83,23 +83,24 @@ describe('controllerless single-transaction codec', () => {
   it('inserts and extracts the carrier at the canonical SCB1 unlocking position', () => {
     const original = scriptToBytecode([
       Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]),
-      Uint8Array.from([4, 5]), Uint8Array.from({ length: 90 }, () => 6),
+      new Uint8Array(), Uint8Array.from([4, 5]), Uint8Array.from({ length: 90 }, () => 6),
     ]);
     const withCarrier = layer3.insertSingleTxCarrier(original, sample());
     expect(layer3.extractSingleTxCarrier(withCarrier)).toEqual(sample());
     // Selector, positional batch, and every suffix push remain exact.
     expect(withCarrier.slice(0, 9)).toEqual(original.slice(0, 9));
-    expect(withCarrier.slice(withCarrier.length - (original.length - 9))).toEqual(original.slice(9));
+    expect(withCarrier.slice(withCarrier.length - (original.length - 10))).toEqual(original.slice(10));
     expect(() => layer3.extractSingleTxCarrier(original)).toThrow(/carrier/);
     const nonScb = original.slice(); nonScb[1] ^= 1;
     expect(() => layer3.insertSingleTxCarrier(nonScb, sample())).toThrow(/not an SCB1 route/);
   });
 
   it('rejects non-minimal and truncated carrier push framing', () => {
-    const original = scriptToBytecode([
-      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]), Uint8Array.of(4),
+    const withPlaceholder = scriptToBytecode([
+      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]), new Uint8Array(),
+      Uint8Array.of(4),
     ]);
-    const withCarrier = layer3.insertSingleTxCarrier(original, sample());
+    const withCarrier = layer3.insertSingleTxCarrier(withPlaceholder, sample());
     const carrierAt = 9;
     const nonMinimal = Uint8Array.from([
       ...withCarrier.slice(0, 5), 76, 3, ...withCarrier.slice(6),
@@ -133,7 +134,8 @@ describe('controllerless single-transaction codec', () => {
       const carrier = layer3.encodeSingleTxCarrier(value);
       expect(layer3.decodeSingleTxCarrier(carrier)).toEqual(value);
       const unlocking = scriptToBytecode([
-        Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2]), Uint8Array.from([2, 3]),
+        Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2]), new Uint8Array(),
+        Uint8Array.from([2, 3]),
       ]);
       expect(layer3.extractSingleTxCarrier(layer3.insertSingleTxCarrier(unlocking, value))).toEqual(value);
     }

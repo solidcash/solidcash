@@ -454,6 +454,9 @@ export class Contract<
       const blob = args[batchBlobIndex];
       if (!(blob instanceof Uint8Array)) throw new Error('SCB1 batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
+      // Reserve the canonical controllerless carrier position. Owner-local execution leaves it empty; the
+      // single-transaction composer replaces this OP_0 with one transcript push after signatures are finalized.
+      const carrierPlaceholder = scriptToBytecode([new Uint8Array()]);
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
@@ -464,6 +467,7 @@ export class Contract<
         return new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
+          ...carrierPlaceholder,
           ...ordinary.slice(5),
         ]);
       };

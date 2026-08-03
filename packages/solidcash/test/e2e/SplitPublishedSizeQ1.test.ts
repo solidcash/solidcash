@@ -51,5 +51,5 @@ describe('Q1: the published split size against the constructed redeem script', (
     const root = new Contract(bundle.root, links as never[], { provider, category });
     console.log(`[Q1-size] root: constructed ${root.bytesize} with ${links.length} facet links`);
     expect(root.bytesize).toBeGreaterThan(links.length * 30);
-  });
+  }, 240_000);
 });

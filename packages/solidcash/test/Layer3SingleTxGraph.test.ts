@@ -49,7 +49,9 @@ describe('controllerless compiled invocation graph', () => {
     const finalized = layer3.finalizeSingleTxInvocationGraph(
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
-    expect(finalized.layout).toEqual({ participantInputs: [0, 1], feeInput: 2, totalSlots: 3 });
+    expect(finalized.layout).toEqual({
+      participantInputs: [0, 1], verifierInputs: [2, 3], verifierInput: 3, feeInput: 4, totalSlots: 5,
+    });
     expect(finalized.transcript.participants.map((participant) => participant.actualSize)).toEqual([1, 1]);
     expect(finalized.transcript.participants.map((participant) => participant.masterCategory)).toEqual([
       'aa'.repeat(32), 'bb'.repeat(32),

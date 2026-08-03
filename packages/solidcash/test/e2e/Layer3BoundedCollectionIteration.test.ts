@@ -63,14 +63,14 @@ describe('bounded fixed-array collection iteration on the Layer-3 route', () => 
     const { builder } = await build();
     [builder.inputs[2], builder.inputs[3]] = [builder.inputs[3], builder.inputs[2]];
     expect(() => layer3.preflightLayer3Transaction(builder))
-      .toThrow('BCH-2026 preflight failed at input 0: malformed SCB1 envelope; VM: Program failed an OP_VERIFY operation.');
+      .toThrow('controllerless compositions permit no auxiliary or padding slots');
   }, 180_000);
 
   it('refuses a missing fixed entry replaced by another block slot at input 0', async () => {
     const { builder } = await build();
     builder.inputs[2] = builder.inputs[1];
     expect(() => layer3.preflightLayer3Transaction(builder))
-      .toThrow('BCH-2026 preflight failed at input 0: malformed SCB1 envelope; VM: Program called an OP_SPLIT');
+      .toThrow('controllerless compositions permit no auxiliary or padding slots');
   }, 180_000);
 
   it('refuses an injected entry inside the fixed segment at input 0', async () => {
@@ -79,6 +79,6 @@ describe('bounded fixed-array collection iteration on the Layer-3 route', () => 
     builder.outputs.push(builder.outputs[builder.outputs.length - 1]);
     (builder as any).options.allowImplicitNftBurn = true;
     expect(() => layer3.preflightLayer3Transaction(builder))
-      .toThrow('controllerless compositions permit no auxiliary or padding slots');
+      .toThrow('BCH-2026 preflight failed at input 0: malformed SCB1 envelope');
   }, 180_000);
 });

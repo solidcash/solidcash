@@ -54,6 +54,8 @@ import {
   decodePackedEventArray,
   scriptToBytecode,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  buildLayer3VerifierCovenantScript,
+  layer3VerifierCommitment,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
@@ -362,6 +364,8 @@ export interface DeployOptions {
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
+  /** Independently spendable, category-branded Layer-3 verifier covenants minted by genesis. */
+  layer3VerifierCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
@@ -1591,21 +1595,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
     let routeWitness = 0;
-    const routeArgs = Object.keys(internalRouteWitnesses).length === 0
-      ? [blob, ...routeWitnesses]
-      : capability.route.inputs.map((input): FunctionArgument => {
-        if (input.name === 'batchBlob') return blob;
-        if (input.name.startsWith('__internal__')) {
-          const value = internalRouteWitnesses[input.name];
-          if (value === undefined) {
-            throw new Error(`SCB1 route requires compiler-owned witness '${input.name}'`);
-          }
-          return value;
-        }
-        const value = routeWitnesses[routeWitness];
-        routeWitness += 1;
-        return value;
-      });
+    const routeArgs = capability.route.inputs.map((input): FunctionArgument => {
+      if (input.name === 'batchBlob') return blob;
+      if (input.name.startsWith('__internal__')) {
+        const value = internalRouteWitnesses[input.name];
+        if (value !== undefined) return value;
+        if (input.name === '__internal__singleTxTranscript') return Uint8Array.of();
+        if (input.name === '__internal__activeVerifierIndex') return -1n;
+        throw new Error(`SCB1 route requires compiler-owned witness '${input.name}'`);
+      }
+      const value = routeWitnesses[routeWitness];
+      routeWitness += 1;
+      return value;
+    });
     const rowCount = blob.length > 6 ? blob[6] : 0;
     // Recover the reached selectors from the canonical blob so conditional token-transfer slots are derived only
     // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
@@ -1939,6 +1941,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (threadCount < 1 || !Number.isInteger(threadCount)) {
       throw new Error(`threadCount must be a positive integer, got ${threadCount}`);
     }
+    const layer3VerifierCount = options.layer3VerifierCount ?? (artifact.hiddenBatch?.verifierProgram ? 1 : 0);
+    if (!Number.isSafeInteger(layer3VerifierCount) || layer3VerifierCount < 0 || layer3VerifierCount > 0xffff) {
+      throw new Error(`layer3VerifierCount must be an unsigned 16-bit integer, got ${layer3VerifierCount}`);
+    }
 
     const initialBalance = options.initialBalance ?? 0n;
     const totalMaster = masterAmount * BigInt(threadCount);
@@ -1946,10 +1952,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalEntryNft = dataNftAmount * BigInt(entryOutputCount + trailingEntryOutputCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
     const totalDynamicNft = dataNftAmount * BigInt(dynamicInitialChunks.length);
+    const totalLayer3Verifiers = dataNftAmount * BigInt(layer3VerifierCount);
     const identityAnchors = options.identityAnchors ?? [];
     const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
     const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + totalDynamicNft
-      + totalIdentity + initialBalance + estimatedFee;
+      + totalLayer3Verifiers + totalIdentity + initialBalance + estimatedFee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
     if (changeAmount < 0n) {
@@ -2127,6 +2134,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           nft: { capability: 'mutable', commitment: chunk.commitment },
         },
       });
+    }
+
+    // Composition verifier pool. All instances share the category-branded covenant address and use their
+    // commitment ordinal as a stable identity. A composed transaction consumes one instance and recreates it at
+    // the same input/output index, so N instances permit N independently in-flight root compositions.
+    if (layer3VerifierCount > 0) {
+      const verifierProgram = artifact.hiddenBatch?.verifierProgram;
+      if (!verifierProgram) {
+        throw new Error(`Contract '${artifact.contractName}' publishes no Layer-3 verifier program`);
+      }
+      const verifierAddress = scriptToLockingBytecode(
+        buildLayer3VerifierCovenantScript(verifierProgram), 'p2sh32',
+      );
+      for (let instance = 0; instance < layer3VerifierCount; instance++) {
+        builder.addOutput({
+          to: verifierAddress,
+          amount: dataNftAmount,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: { capability: 'mutable', commitment: binToHex(layer3VerifierCommitment(instance)) },
+          },
+        });
+      }
     }
 
     // Satoshi container output (if initialBalance > 0)

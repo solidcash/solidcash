@@ -1,4 +1,4 @@
-import { asmToBytecode } from '@solidcash/utils';
+import { asmToBytecode, layer3VerifierCovenantBytecode } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
@@ -8,18 +8,24 @@ const bytes = (source: string, hiddenBatch: boolean): number => asmToBytecode(co
 }).bytecode).length;
 
 describe('controllerless verifier bytecode specialization', () => {
-  it('keeps the scalar SCB1 framework tax below 4.9 KB', () => {
+  it('moves the global verifier out of the scalar master and keeps both covenants deployable', () => {
     const source = `contract ScalarVerifierSize(int minimum) {
       function set(int value) public { require(value >= minimum); }
     }`;
     const direct = bytes(source, false);
     const composed = bytes(source, true);
+    const artifact = compileString(source, { forceStateful: true, hiddenBatch: true });
+    const verifierProgram = artifact.hiddenBatch?.verifierProgram;
+    expect(verifierProgram).toBeDefined();
+    const sidecar = layer3VerifierCovenantBytecode(verifierProgram!).length;
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 219,
-      composed: 5044,
-      frameworkTax: 4825,
+      composed: 1129,
+      frameworkTax: 910,
     });
-    expect(composed - direct).toBeLessThanOrEqual(4900);
+    expect(composed).toBeLessThanOrEqual(1200);
+    expect(composed - direct).toBeLessThanOrEqual(1000);
+    expect(sidecar).toBeLessThanOrEqual(10_000);
   });
 
   it('does not bake mapping, event, or value-effect validators into a pure returning sink', () => {

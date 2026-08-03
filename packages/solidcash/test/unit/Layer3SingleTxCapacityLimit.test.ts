@@ -4,14 +4,14 @@ import { layer3 } from '../../src/index.js';
 describe('controllerless single-transaction admission limit', () => {
   it('publishes and enforces the adjacent measured BCH-2026 participant bound', () => {
     expect(layer3.SINGLE_TX_BUS_CAPACITY).toMatchObject({
-      profile: 'controllerless-return-chain-bch2026-stock-v2',
-      maximumParticipants: 5,
-      firstRejectedParticipants: 6,
+      profile: 'self-preserved-verifier-return-chain-bch2026-stock-v4',
+      maximumParticipants: 8,
+      firstRejectedParticipants: 9,
       operationCostBudgetPerByte: 800,
     });
-    expect(() => layer3.assertSingleTxParticipantCapacity(5)).not.toThrow();
-    expect(() => layer3.assertSingleTxParticipantCapacity(6)).toThrow(expect.objectContaining({
-      code: 'L3_PARTICIPANT_LIMIT', context: { measured: 6, limit: 5 },
+    expect(() => layer3.assertSingleTxParticipantCapacity(8)).not.toThrow();
+    expect(() => layer3.assertSingleTxParticipantCapacity(9)).toThrow(expect.objectContaining({
+      code: 'L3_PARTICIPANT_LIMIT', context: { measured: 9, limit: 8 },
     }));
   });
 

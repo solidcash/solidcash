@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { decodeSingleTxCarrier, encodeSingleTxCarrier } from '../../src/layer3/controllerless.js';
 import {
-  getDynamicChunkAddress, getEntryNftAddress, getSatoshiContainerAddress, getTokenContainerAddress,
+  getDynamicChunkAddress, getEntryNftAddress, getLayer3VerifierLockingBytecode,
+  getSatoshiContainerAddress, getTokenContainerAddress,
 } from '../../src/stateful/covenant-helpers.js';
 import { encodeEntryCommitment, keyToSlot } from '../../src/stateful/SortedList.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
@@ -38,10 +39,12 @@ const CALLEE = `contract ComposeCallee() {
 const CALLER = `
 interface IComposeCallee { function settle(int next) returns (int); }
 contract ComposeCaller(address callee) {
+  int marker;
   function prepare(int next) public {
     int result = IComposeCallee(callee).settle(next);
     require(result == next + 1);
   }
+  function setDirect(int next) public { this.marker = next; require(next >= 0); }
 }`;
 
 const raw = (builder: TransactionBuilder): string =>
@@ -68,9 +71,18 @@ const mutateInputZero = (
   | 'carrier-invocation-swap' | 'carrier-invocation-drop' | 'carrier-invocation-duplicate'
   | 'carrier-invocation-target' | 'carrier-invocation-mode',
 ): void => {
-  const original = builder.inputs[0].unlocker!;
-  builder.inputs[0] = {
-    ...builder.inputs[0],
+  const carrierTarget = target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
+    || target.startsWith('carrier-resource') || target.startsWith('carrier-value')
+    || target.startsWith('carrier-satoshi') || target.startsWith('carrier-token')
+    || target.startsWith('carrier-context-') || target === 'carrier-root-origin'
+    || target.startsWith('carrier-span-') || target.startsWith('carrier-invocation-');
+  const inputIndex = carrierTarget
+    ? builder.inputs.findIndex((input) => input.token?.nft?.commitment.startsWith('4c335631'))
+    : 0;
+  if (inputIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
+  const original = builder.inputs[inputIndex].unlocker!;
+  builder.inputs[inputIndex] = {
+    ...builder.inputs[inputIndex],
     unlocker: {
       generateLockingBytecode: () => original.generateLockingBytecode(),
       generateUnlockingBytecode: (options) => {
@@ -78,14 +90,8 @@ const mutateInputZero = (
         const instructionIndex = instructions.findIndex((instruction, index) => {
           if (!('data' in instruction)) return false;
           const hex = binToHex(instruction.data);
-          return target === 'carrier' || target === 'carrier-result' || target === 'carrier-event'
-            || target.startsWith('carrier-resource') || target.startsWith('carrier-value')
-            || target.startsWith('carrier-satoshi')
-            || target.startsWith('carrier-token')
-            || target.startsWith('carrier-context-') || target === 'carrier-root-origin'
-            || target.startsWith('carrier-span-')
-            || target.startsWith('carrier-invocation-')
-            ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
+          return carrierTarget
+            ? hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
         });
         if (instructionIndex < 0) throw new Error(`test could not locate ${target} frame`);
@@ -334,7 +340,7 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
-    expect(canonical.inputs).toHaveLength(3);
+    expect(canonical.inputs).toHaveLength(5);
     expect(vmRejects(canonical)).toBe(false);
     await expect(layer3.compose({
       calls: [caller.call.invoke(7n), sink.call.ping(9n), sink.call.ping(7n)],
@@ -391,7 +397,7 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
-    expect(canonical.inputs).toHaveLength(4);
+    expect(canonical.inputs).toHaveLength(7);
     expect(vmRejects(canonical)).toBe(false);
     const hostile = await composition.build();
     mutateInputZero(hostile, '', 'carrier-invocation-target');
@@ -545,9 +551,13 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
+    const verifierIndex = canonical.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+    );
+    if (verifierIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
     const carrierPush = decodeAuthenticationInstructions(
-      canonical.inputs[0].unlocker!.generateUnlockingBytecode({
-        transaction: canonical.buildLibauthTransaction(), inputIndex: 0,
+      canonical.inputs[verifierIndex].unlocker!.generateUnlockingBytecode({
+        transaction: canonical.buildLibauthTransaction(), inputIndex: verifierIndex,
       }),
     ).find((instruction) => 'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
     if (!carrierPush || !('data' in carrierPush)) throw new Error('test could not locate canonical carrier');
@@ -929,16 +939,20 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     }).build()).rejects.toThrow(/canonical fee tail must be a bare P2PKH input/);
     const built = await composition.build();
-    expect(built.inputs).toHaveLength(5);
-    expect(built.outputs).toHaveLength(5);
+    expect(built.inputs).toHaveLength(8);
+    expect(built.outputs).toHaveLength(8);
     // Graph finalization already produced the carrier before this transaction requested any signatures. Prove
     // that its exact physical push remains stable as each finalized input signature is regenerated in order.
     const finalizedTransaction = built.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(built.inputs);
+    const verifierIndex = built.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+    );
+    if (verifierIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
     const carrierPush = (): Uint8Array => {
       const instruction = decodeAuthenticationInstructions(
-        finalizedTransaction.inputs[0].unlockingBytecode,
-      )[2];
+        finalizedTransaction.inputs[verifierIndex].unlockingBytecode,
+      ).find((candidate) => 'data' in candidate && binToHex(candidate.data).startsWith('4c334331'));
       if (!instruction || !('data' in instruction)) throw new Error('test could not locate canonical carrier');
       return instruction.data;
     };
@@ -952,6 +966,30 @@ describe('layer3.compose controllerless transaction', () => {
     expect(decodeSingleTxCarrier(carrierBeforeResigning)).toEqual(
       decodeSingleTxCarrier(carrierPush()),
     );
+    const hostileVerifierCommitment = await composition.build();
+    const hostileVerifierIndex = hostileVerifierCommitment.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+    );
+    if (hostileVerifierIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
+    const verifierCommitment = hexToBin(
+      hostileVerifierCommitment.outputs[hostileVerifierIndex].token!.nft!.commitment,
+    );
+    verifierCommitment[verifierCommitment.length - 1] ^= 1;
+    hostileVerifierCommitment.outputs[hostileVerifierIndex].token!.nft!.commitment = binToHex(verifierCommitment);
+    expect(vmRejects(hostileVerifierCommitment)).toBe(true);
+
+    const hostileVerifierLock = await composition.build();
+    const lockVerifierIndex = hostileVerifierLock.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+    );
+    if (lockVerifierIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
+    const verifierUnlocker = hostileVerifierLock.inputs[lockVerifierIndex].unlocker!;
+    hostileVerifierLock.inputs[lockVerifierIndex].unlocker = {
+      ...verifierUnlocker,
+      generateLockingBytecode: () => Uint8Array.of(0x51),
+    };
+    expect(vmRejects(hostileVerifierLock)).toBe(true);
+
     for (const mutation of ['carrier', 'emissions'] as const) {
       const hostile = await composition.build();
       mutateInputZero(hostile, calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!, mutation);
@@ -977,6 +1015,18 @@ describe('layer3.compose controllerless transaction', () => {
     await expect(provider.sendRawTransaction(raw(hostileReturnOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect((await callee.getState()).counter).toBe(7n);
+    const verifierLock = getLayer3VerifierLockingBytecode(
+      caller.inner, callerSetup.categoryId, caller.inner.addressType,
+    );
+    const verifierOutpointsBefore = (await provider.getUtxosForLockingBytecode(verifierLock))
+      .map((utxo) => `${utxo.txid}:${utxo.vout}`).sort();
+    await expect(caller.call.setDirect(9n).send()).resolves.toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const verifierOutpointsAfter = (await provider.getUtxosForLockingBytecode(verifierLock))
+      .map((utxo) => `${utxo.txid}:${utxo.vout}`).sort();
+    expect(verifierOutpointsAfter).toEqual(verifierOutpointsBefore);
+    expect((await caller.getState()).marker).toBe(9n);
   }, 240_000);
 
   it('converges nested authenticated returns across an A-to-B-to-C graph', async () => {
@@ -1265,11 +1315,15 @@ describe('layer3.compose controllerless transaction', () => {
     });
 
     const built = await composition.build();
-    const instructions = decodeAuthenticationInstructions(
-      built.buildLibauthTransaction().inputs[0].unlockingBytecode,
+    const verifierIndex = built.inputs.findIndex(
+      (input) => input.token?.nft?.commitment.startsWith('4c335631'),
     );
-    const carrier = instructions.find((instruction, index) =>
-      index === 2 && 'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
+    if (verifierIndex < 0) throw new Error('test could not locate a deployed Layer-3 verifier input');
+    const instructions = decodeAuthenticationInstructions(
+      built.buildLibauthTransaction().inputs[verifierIndex].unlockingBytecode,
+    );
+    const carrier = instructions.find((instruction) =>
+      'data' in instruction && binToHex(instruction.data).startsWith('4c334331'));
     if (!carrier || !('data' in carrier)) throw new Error('test could not locate shrink carrier');
     expect(decodeSingleTxCarrier(carrier.data).rows.some((row) => row.kind === 1 && row.mode === 2)).toBe(true);
     const hostile = await composition.build();

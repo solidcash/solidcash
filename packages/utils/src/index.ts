@@ -7,6 +7,7 @@ export * from './hash.js';
 export * from './keccak-library.js';
 export * from './outline.js';
 export * from './keccak-compute-library.js';
+export * from './layer3-verifier.js';
 export * from './ecrecover-compute-library.js';
 export * from './external-library.js';
 export * from './script.js';

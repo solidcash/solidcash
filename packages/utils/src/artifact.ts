@@ -6,6 +6,13 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
+  /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
+  __layer3VerifierProgram?: {
+    verifyFunctionId: number;
+    inputCount: number;
+    inputs: readonly AbiInput[];
+    functions: readonly { id: number; name: string; bytecode: string }[];
+  };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
@@ -676,7 +683,6 @@ export const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 /** Shared wire constants for the controllerless single-transaction message bus. */
 export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
-export const SINGLE_TX_BUS_VERSION = 2;
 export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
 export const SINGLE_TX_BUS_MAX_ROWS = 24;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
@@ -716,10 +722,21 @@ export interface Artifact {
     /** Compiler-published admission and carrier contract for controllerless composition. */
     singleTransactionBus?: {
       domain: typeof SINGLE_TX_BUS_DOMAIN_HEX;
-      version: typeof SINGLE_TX_BUS_VERSION;
-      carrierInput: 0;
+      /** Every verifier carries the same canonical frame; participant binders read the final verifier. */
+      carrier: {
+        region: 'participant-verifiers';
+        canonicalInput: 'final-participant-verifier';
+        unlockingPush: 0;
+      };
       maximumParticipants: typeof SINGLE_TX_BUS_MAX_PARTICIPANTS;
       maximumRows: typeof SINGLE_TX_BUS_MAX_ROWS;
+    };
+    /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
+    verifierProgram?: {
+      verifyFunctionId: number;
+      inputCount: number;
+      inputs: readonly AbiInput[];
+      functions: readonly { id: number; name: string; bytecode: string }[];
     };
     route: AbiFunction;
     handlers: {

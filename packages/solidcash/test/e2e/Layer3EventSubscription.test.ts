@@ -50,13 +50,15 @@ describe('EventSubscription mixed collection journal', () => {
     const { builder } = await build();
     builder.outputs[1] = builder.outputs[0];
     builder.outputs.push(builder.outputs[builder.outputs.length - 1]);
-    expect(() => layer3.preflightLayer3Transaction(builder)).toThrow(/input 0/);
+    expect(() => layer3.preflightLayer3Transaction(builder))
+      .toThrow('controllerless compositions permit no auxiliary or padding slots');
   }, 180_000);
 
   it('refuses a forged mapping-entry post-state slot at input 0', async () => {
     const { builder } = await build();
     builder.outputs[2] = builder.outputs[0];
     builder.outputs.push(builder.outputs[builder.outputs.length - 1]);
-    expect(() => layer3.preflightLayer3Transaction(builder)).toThrow(/input 0/);
+    expect(() => layer3.preflightLayer3Transaction(builder))
+      .toThrow('controllerless compositions permit no auxiliary or padding slots');
   }, 180_000);
 });

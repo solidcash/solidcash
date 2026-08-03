@@ -6,7 +6,9 @@ import {
   encodeTransaction,
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
-import { buildInitialStateCommitments, type StateLayout } from '@solidcash/utils';
+import {
+  buildInitialStateCommitments, layer3VerifierCommitment, type StateLayout,
+} from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
   Contract, TransactionBuilder, HDSigner, signersFromMnemonic,
@@ -15,7 +17,7 @@ import {
   MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
 } from '../src/index.js';
 import {
-  getDataNftAddress, getEntryNftAddress, getTokenContainerAddress,
+  getDataNftAddress, getEntryNftAddress, getLayer3VerifierAddress, getTokenContainerAddress,
 } from '../src/stateful/covenant-helpers.js';
 import { headSentinelCommitment } from '../src/stateful/SortedList.js';
 import {
@@ -291,6 +293,7 @@ export interface StatefulUtxoSetup {
   masterUtxo: Utxo;
   dataNftUtxos: Utxo[];
   dataNftAddresses: string[];
+  verifierUtxos?: Utxo[];
   extraUtxos?: Utxo[];
 }
 
@@ -313,6 +316,7 @@ export async function setupStatefulUtxos(
   initialState: Record<string, any>,
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
+    layer3VerifierCount?: number;
     // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
     // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
     extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
@@ -323,6 +327,7 @@ export async function setupStatefulUtxos(
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
   const sortedCollections = (stateLayout.collections ?? []).filter((collection) => collection.sorted);
+  const verifierCount = opts?.layer3VerifierCount ?? (contract.artifact.hiddenBatch?.verifierProgram ? 1 : 0);
 
   // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
   // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the
@@ -355,7 +360,17 @@ export async function setupStatefulUtxos(
         },
       });
     }
-    return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses };
+    const verifierUtxos: Utxo[] = [];
+    for (let i = 0; i < verifierCount; i++) {
+      verifierUtxos.push(await (provider as any).addUtxo(getLayer3VerifierAddress(pinnedContract, categoryId), {
+        txid: categoryId, vout: commitments.length + sortedCollections.length + i + 1, satoshis: dataNftSatoshis,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(layer3VerifierCommitment(i)) },
+        },
+      }));
+    }
+    return { categoryId, masterUtxo, dataNftUtxos, dataNftAddresses, verifierUtxos };
   }
 
   // Use addTokenUtxosDynamic for proper genesis on both providers.
@@ -382,6 +397,14 @@ export async function setupStatefulUtxos(
           nft: { capability: 'mutable' as const, commitment: binToHex(headSentinelCommitment()) },
         },
       })),
+      ...Array.from({ length: verifierCount }, (_, i) => ({
+        address: getLayer3VerifierAddress(pinnedContract, categoryId),
+        satoshis: dataNftSatoshis,
+        token: {
+          amount: 0n,
+          nft: { capability: 'mutable' as const, commitment: binToHex(layer3VerifierCommitment(i)) },
+        },
+      })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),
     ];
   });
@@ -398,6 +421,10 @@ export async function setupStatefulUtxos(
     masterUtxo: result.utxos[0],
     dataNftUtxos: result.utxos.slice(1, 1 + dataNftCount),
     dataNftAddresses,
-    extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length),
+    verifierUtxos: result.utxos.slice(
+      1 + dataNftCount + sortedCollections.length,
+      1 + dataNftCount + sortedCollections.length + verifierCount,
+    ),
+    extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length + verifierCount),
   };
 }

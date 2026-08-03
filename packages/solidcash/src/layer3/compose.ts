@@ -1,15 +1,19 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX, decodePushdataValue, scriptToBytecode,
+  LAYER3_VERIFIER_COMMITMENT_DOMAIN, sha256,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import type {
-  Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
+  ContractUnlocker, Output, TokenDetails, TransactionDetails, UnlockableUtxo, Unlocker, Utxo,
 } from '../interfaces.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { addressToLockScript } from '../utils.js';
 import { StatefulContract, StatefulFunctionCall } from '../stateful/StatefulContract.js';
-import { withSingleTxCarrier } from './controllerless.js';
+import {
+  createLayer3VerifierUnlocker, getLayer3VerifierLockingBytecode,
+} from '../stateful/covenant-helpers.js';
+import { encodeSingleTxBusTranscript, encodeSingleTxCarrier } from './controllerless.js';
 import { assertSingleTxParticipantCapacity } from './capacity.js';
 import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
@@ -63,6 +67,7 @@ const semanticJson = (value: unknown): string => JSON.stringify(
 
 const graphRouteContext = (
   finalized: ReturnType<typeof finalizeSingleTxInvocationGraph>, participant: number,
+  includeTranscript = false,
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
   const rows = finalized.transcript.rows;
@@ -86,6 +91,9 @@ const graphRouteContext = (
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
   const blockhashParameter = execution.artifact.hiddenBatch?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
+    __internal__singleTxTranscript: includeTranscript
+      ? encodeSingleTxBusTranscript(finalized.transcript) : Uint8Array.of(),
+    __internal__activeVerifierIndex: BigInt(finalized.layout.verifierInputs[participant]),
     __internal__graphFixedSize: BigInt(finalized.transcript.participants[participant].fixedSize),
     __internal__returnOutputIdx: BigInt(
       finalized.transcript.participants[participant].returnOffset === 0xffff
@@ -279,6 +287,7 @@ export class SingleTxBusComposition {
         provider, allowImplicitNftBurn: true, skipAutomaticCoSpends: true,
       });
       const actualSizes: number[] = [];
+      const masterUnlockers: ContractUnlocker[] = [];
 
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
@@ -288,8 +297,7 @@ export class SingleTxBusComposition {
           ._batchRaw(
             participant.batch.blob,
             participant.batch.routeWitnesses as FunctionArgument[],
-            participant.routeInputs.some((input) => input.name === '__internal__graphEmissions')
-              ? graphRouteContext(graph, participant.participant) : {},
+            graphRouteContext(graph, participant.participant),
             graph.layout.participantInputs[participant.participant],
             returnBlob !== undefined,
             returnBlob,
@@ -328,6 +336,7 @@ export class SingleTxBusComposition {
         const masterUnlocker = local.inputs[0].unlocker as Unlocker & {
           abiFunction?: { blockLayout?: NonNullable<typeof participant.blockLayout> };
         };
+        masterUnlockers[participant.participant] = local.inputs[0].unlocker as ContractUnlocker;
         if (masterUnlocker.abiFunction?.blockLayout !== undefined) {
           masterUnlocker.abiFunction = {
             ...masterUnlocker.abiFunction,
@@ -349,10 +358,82 @@ export class SingleTxBusComposition {
       );
       if (!spansMatch) return { builder: aggregate, actualSizes };
 
-      aggregate.inputs[0] = {
-        ...aggregate.inputs[0],
-        unlocker: withSingleTxCarrier(aggregate.inputs[0].unlocker as never, graph.transcript),
-      };
+      const verifierDomain = binToHex(LAYER3_VERIFIER_COMMITMENT_DOMAIN);
+      const carrier = encodeSingleTxCarrier(graph.transcript);
+      const transcript = encodeSingleTxBusTranscript(graph.transcript);
+      for (const participant of plan.participants) {
+        const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
+        const verifierLock = getLayer3VerifierLockingBytecode(
+          contract.inner, categories[participant.participant], contract.inner.addressType,
+        );
+        const verifier = (await provider.getUtxosForLockingBytecode(verifierLock)).find((utxo) =>
+          utxo.token?.category.toLowerCase() === categories[participant.participant].toLowerCase()
+          && utxo.token.nft?.capability === 'mutable'
+          && utxo.token.nft.commitment.toLowerCase().startsWith(verifierDomain));
+        if (!verifier) {
+          throw new Error(
+            `layer3: participant ${participant.participant} has no deployed verifier covenant; `
+            + 'deploy with layer3VerifierCount >= 1',
+          );
+        }
+        const masterUnlocker = masterUnlockers[participant.participant];
+        const transcriptParameter = masterUnlocker.abiFunction.inputs
+          .findIndex((input) => input.name === '__internal__singleTxTranscript');
+        if (transcriptParameter < 0) {
+          throw new Error(`layer3: compact master route omits its compiler-owned transcript witness (${masterUnlocker.abiFunction.inputs.map((input) => input.name).join(', ')})`);
+        }
+        masterUnlocker.params[transcriptParameter] = transcript;
+        const verifierProgram = contract.inner.artifact.hiddenBatch!.verifierProgram!;
+        const batchBlob = masterUnlocker.params[0] as Uint8Array;
+        const routeContext = graphRouteContext(graph, participant.participant);
+        const verifierGraphArgumentNames = [
+          '__internal__graphFixedSize', '__internal__graphBlockSize', '__internal__graphEmissions',
+          '__internal__graphCallers', '__internal__graphSettlementBoundary',
+          '__internal__graphCompletionPositions', '__internal__graphSettlementTable',
+        ] as const;
+        const graphArguments = verifierProgram.inputs.slice(4).map((input, index) => {
+          const argument = routeContext[verifierGraphArgumentNames[index]];
+          if (argument === undefined) {
+            throw new Error(`layer3: verifier argument '${input.name}' has no compiler-authored value`);
+          }
+          return argument;
+        });
+        const verifierArgs: FunctionArgument[] = [
+          transcript,
+          BigInt(graph.layout.participantInputs[participant.participant]),
+          BigInt(batchBlob[6]),
+          batchBlob,
+          ...graphArguments,
+        ];
+        const bindingDigestParts = [
+          sha256(transcript),
+          uint16(graph.layout.participantInputs[participant.participant]),
+          uint16(batchBlob[6]),
+          sha256(batchBlob),
+        ];
+        for (const argument of graphArguments) {
+          bindingDigestParts.push(typeof argument === 'bigint'
+            ? uint16(Number(argument))
+            : sha256(argument as Uint8Array));
+        }
+        const bindingDigest = sha256(concat(...bindingDigestParts));
+        const verifierUnlocker = createLayer3VerifierUnlocker(
+          contract.inner, categories[participant.participant], carrier, verifierArgs,
+        );
+        aggregate.addInput(verifier, verifierUnlocker);
+        aggregate.addOutput({
+          to: verifierLock,
+          amount: verifier.satoshis,
+          token: {
+            category: verifier.token!.category,
+            amount: verifier.token!.amount ?? 0n,
+            nft: {
+              ...verifier.token!.nft!,
+              commitment: `${verifier.token!.nft!.commitment.slice(0, 12)}${binToHex(bindingDigest)}`,
+            },
+          },
+        });
+      }
       aggregate.addInputs([feeFunder]);
       aggregate.addBchChangeOutputIfNeeded({
         to: this.options.changeAddress,

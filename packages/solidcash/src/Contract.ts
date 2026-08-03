@@ -454,8 +454,8 @@ export class Contract<
       const blob = args[batchBlobIndex];
       if (!(blob instanceof Uint8Array)) throw new Error('SCB1 batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
-      // Reserve the canonical controllerless carrier position. Owner-local execution leaves it empty; the
-      // single-transaction composer replaces this OP_0 with one transcript push after signatures are finalized.
+      // Preserve the historical positional frame without carrying the transcript in the master. The
+      // artifact-specialized verifier inputs carry the canonical transcript.
       const carrierPlaceholder = scriptToBytecode([new Uint8Array()]);
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,

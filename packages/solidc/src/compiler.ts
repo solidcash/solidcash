@@ -5,9 +5,11 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
-  scriptToBytecode, SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
-  SINGLE_TX_BUS_VERSION, sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type,
+  scriptToBytecode, bytecodeToScript, decodeInt, Op, SINGLE_TX_BUS_DOMAIN_HEX,
+  SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
+  sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
+  layer3VerifierLockingBytecode,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
@@ -373,7 +375,16 @@ function compileWithExternalAdmissionFallback(
     && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
     return attributed;
   }
+  if (mergedCompilerOptions.__layer3VerifierProgram && attributed === undefined && firstError) {
+    throw firstError instanceof Error ? firstError : new Error(String(firstError));
+  }
   if (refusedAll !== undefined) return refusedAll;
+
+  // The verifier-binder second pass is compiler-internal: falling back to a direct-only artifact would silently
+  // discard the verifier program after the first pass succeeded. Surface the generated-route defect instead.
+  if (mergedCompilerOptions.__layer3VerifierProgram && firstError) {
+    throw firstError instanceof Error ? firstError : new Error(String(firstError));
+  }
 
   // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
@@ -401,9 +412,23 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  const artifact = compileWithExternalAdmissionFallback(
+  let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  if (process.env.SOLIDC_SKIP_LAYER3_BINDER !== '1'
+    && !artifactCompilerOptions.__layer3VerifierProgram && artifact.hiddenBatch?.verifierProgram) {
+    const verifierProgram = artifact.hiddenBatch.verifierProgram;
+    const binderOptions = normalizeCompilerOptions({
+      ...artifactCompilerOptions,
+      __layer3VerifierProgram: verifierProgram,
+    });
+    artifact = compileResolvedAst(
+      parseAndResolve(code, binderOptions, errorListener, primaryContractName),
+      code, binderOptions,
+    );
+    if (artifact.hiddenBatch) artifact.hiddenBatch.verifierProgram = verifierProgram;
+    if (artifact.compiler.options) delete artifact.compiler.options.__layer3VerifierProgram;
+  }
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
 }
@@ -2399,8 +2424,11 @@ function synthesizeHiddenBatchRoute(
     'bytes __internal__graphSettlementTable',
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
+  const verifierBinderRouteParameters = compilerOptions.__layer3VerifierProgram
+    ? ['bytes __internal__singleTxTranscript', 'bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
-    'bytes batchBlob', ...graphRouteParameters, ...routeSignatureParameters, ...routeKeyParameters,
+    'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
+    ...routeSignatureParameters, ...routeKeyParameters,
   ].join(', ');
   const graphOutStateMode = graphExecutionContext
     && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
@@ -2449,12 +2477,39 @@ function synthesizeHiddenBatchRoute(
     : '';
   const graphPrologue = '';
   const graphTranscriptLoader = '';
+  const offloadedVerifier = compilerOptions.__layer3VerifierProgram;
+  const offloadedVerifierLock = offloadedVerifier
+    ? binToHex(layer3VerifierLockingBytecode(offloadedVerifier)) : '';
+  const compactSingleTxBinder = `
+        require(tx.inputs[activeInputIndex].tokenCategory.length == 33
+          && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
+          && tx.outputs[activeInputIndex].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
+          && tx.outputs[activeInputIndex].tokenCategory == tx.inputs[activeInputIndex].tokenCategory);
+        bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
+        bigint activeVerifier = __internal__activeVerifierIndex;
+        require(activeVerifier >= 0 && activeVerifier < tx.inputs.length
+          && tx.inputs[activeVerifier].lockingBytecode == hex"${offloadedVerifierLock}"
+          && tx.inputs[activeVerifier].tokenCategory.length == 33
+          && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
+          && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
+        require(tx.inputs[activeVerifier].nftCommitment.length >= 6
+          && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
+        require(tx.outputs[activeVerifier].nftCommitment == bytes.concat(
+          tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
+          bindingDigest
+        ));
+  `;
+  const bindingDigestGraphValues = !graphExecutionContext ? '' : `,
+          bytes2(suppliedFixedSize), bytes2(suppliedBlockSize), sha256(suppliedEmissions),
+          sha256(suppliedCallers), bytes2(suppliedSettlementBoundary),
+          sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const singleTxTranscriptLoader = `
+      ${offloadedVerifier ? '' : `
       function __scb_single_tx_push(bytes script, bigint at) internal pure returns (bigint, bigint) {
         require(at >= 0 && at < script.length);
         bigint opcode = int(bytes.concat(script.slice(at, at + 1), hex"00"));
         if (opcode <= 75) {
-          require(opcode > 0 && at + 1 + opcode <= script.length);
+          require(at + 1 + opcode <= script.length);
           return (at + 1, opcode);
         }
         if (opcode == 76) {
@@ -2468,34 +2523,46 @@ function synthesizeHiddenBatchRoute(
         require(length >= 256 && at + 3 + length <= script.length);
         return (at + 3, length);
       }
-      function __scb_single_tx_transcript() internal view returns (bytes) {
-        bytes unlocking = tx.inputs[0].unlockingBytecode;
-        if (unlocking.length < 6 || unlocking.slice(0, 5) != hex"0453434231") { return hex""; }
+      function __scb_single_tx_transcript_at(bigint verifier) internal view returns (bytes) {
+        if (tx.inputs.length < 4 || verifier < 0 || verifier >= tx.inputs.length) { return hex""; }
+        bytes unlocking = tx.inputs[verifier].unlockingBytecode;
+        if (unlocking.length < 2) { return hex""; }
         bigint at;
         bigint length;
-        (at, length) = __scb_single_tx_push(unlocking, 5);
-        bigint carrierOpcode = at + length;
-        if (carrierOpcode >= unlocking.length) { return hex""; }
-        if (unlocking.slice(carrierOpcode, carrierOpcode + 1) == hex"00") { return hex""; }
-        (at, length) = __scb_single_tx_push(unlocking, carrierOpcode);
+        (at, length) = __scb_single_tx_push(unlocking, 0);
         bytes carrier = unlocking.slice(at, at + length);
         if (carrier.length < 8 || carrier.slice(0, 4) != hex"4c334331") { return hex""; }
         bigint transcriptLength = int(bytes.concat(carrier.slice(4, 8), hex"00000000"));
         require(transcriptLength > 0 && transcriptLength + 8 == carrier.length);
+        require(tx.inputs[verifier].tokenCategory.length == 33
+          && tx.inputs[verifier].tokenCategory.slice(32, 33) == hex"01");
+        require(tx.outputs[verifier].lockingBytecode == tx.inputs[verifier].lockingBytecode
+          && tx.outputs[verifier].tokenCategory == tx.inputs[verifier].tokenCategory
+          && tx.outputs[verifier].tokenAmount == tx.inputs[verifier].tokenAmount
+          && tx.outputs[verifier].value == tx.inputs[verifier].value);
         return carrier.slice(8, carrier.length);
       }
+      function __scb_single_tx_transcript() internal view returns (bytes) {
+        return __scb_single_tx_transcript_at(tx.inputs.length - 2);
+      }
+      `}
       function __scb_verify_single_tx(
-        bytes transcript, bigint expectedLocalRows, bytes localBatch
+        bytes transcript, bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        ${!offloadedVerifier ? '' : ', bigint __internal__activeVerifierIndex'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
-      ) internal view {
-        require(transcript.length >= 16 && transcript.slice(0, 8) == hex"4c33425553310000");
-        require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 2);
-        require(int(bytes.concat(transcript.slice(9, 13), hex"00000000")) == transcript.length);
-        bigint participantCount = int(bytes.concat(transcript.slice(13, 14), hex"00"));
+      ) internal view returns (bytes) {
+        bytes bindingDigest = sha256(bytes.concat(
+          sha256(transcript), bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
+          ${bindingDigestGraphValues}
+        ));
+        ${offloadedVerifier ? compactSingleTxBinder : `
+        require(transcript.length >= 15 && transcript.slice(0, 8) == hex"4c33425553310000");
+        require(int(bytes.concat(transcript.slice(8, 12), hex"00000000")) == transcript.length);
+        bigint participantCount = int(bytes.concat(transcript.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
-        bigint cursor = 14;
+        bigint cursor = 13;
         bigint expectedBase = 0;
         bigint activeMembership = 0;
         bigint activeParticipant = 255;
@@ -2539,7 +2606,7 @@ function synthesizeHiddenBatchRoute(
             && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
           require(blockSize == fixedSize + trailingUsed && blockSize <= maximumSize);
           require(returnOffset == 65535 || returnOffset < fixedSize);
-          if (base == this.activeInputIndex) {
+          if (base == activeInputIndex) {
             activeMembership = activeMembership + 1;
             activeParticipant = participant;
             activeFixedSize = fixedSize;
@@ -2549,7 +2616,22 @@ function synthesizeHiddenBatchRoute(
             activeCategory = category;
           }
         }
-        require(activeMembership == 1 && expectedBase + 1 == tx.inputs.length);
+        // Participant prefix || one artifact-specialized verifier per participant || one fee input.
+        require(activeMembership == 1 && expectedBase + participantCount + 1 == tx.inputs.length);
+        bigint activeVerifier = expectedBase + activeParticipant;
+        require(tx.inputs[activeVerifier].tokenCategory.length == 33
+          && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
+          && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
+        require(tx.outputs[activeVerifier].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
+          && tx.outputs[activeVerifier].tokenCategory == tx.inputs[activeVerifier].tokenCategory
+          && tx.outputs[activeVerifier].tokenAmount == tx.inputs[activeVerifier].tokenAmount
+          && tx.outputs[activeVerifier].value == tx.inputs[activeVerifier].value);
+        require(tx.inputs[activeVerifier].nftCommitment.length >= 6
+          && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
+        require(tx.outputs[activeVerifier].nftCommitment == bytes.concat(
+          tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
+          bindingDigest
+        ));
         require(tx.outputs.length == tx.inputs.length);
         require(cursor + 2 <= transcript.length);
         bigint rowCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
@@ -2874,8 +2956,8 @@ function synthesizeHiddenBatchRoute(
         bigint physicalEventOutputs = 0;
         bigint physicalValueOutputs = 0;
         bigint physicalTokenOutputs = 0;
-        for (bigint slot = this.activeInputIndex;
-          slot < this.activeInputIndex + activeBlockSize; slot = slot + 1) {
+        for (bigint slot = activeInputIndex;
+          slot < activeInputIndex + activeBlockSize; slot = slot + 1) {
           bigint isSidecarSlot = 0;
           ${sidecarVerificationMode ? `for (bigint sidecar = 0;
             sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
@@ -2980,13 +3062,19 @@ function synthesizeHiddenBatchRoute(
           }
           require(tx.outputs[activeReturnOutput].nftCommitment == expectedCommitment);
         }
+        `}
+        return bytes.concat(
+          bindingDigest,
+          sha256(bytes.concat(hex"4c334331", bytes4(transcript.length), transcript))
+        );
       }
   `;
   const singleTxPrologue = `
-        bytes __internal__singleTxTranscript = __scb_single_tx_transcript();
+        ${offloadedVerifier ? '' : 'bytes __internal__singleTxTranscript = __scb_single_tx_transcript();'}
         if (__internal__singleTxTranscript.length > 0) {
-          __scb_verify_single_tx(
-            __internal__singleTxTranscript, rowCount, batchBlob
+          bytes __internal__singleTxBindingDigest = __scb_verify_single_tx(
+            __internal__singleTxTranscript, this.activeInputIndex, rowCount, batchBlob
+            ${!offloadedVerifier ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,
             __internal__graphEmissions, __internal__graphCallers,
@@ -3959,6 +4047,48 @@ function compileResolvedAst(
     && ast.contract.functions.some((fn) => fn.hiddenBatchRoute)) {
     const hiddenBatchMaximumRows = ast.contract.functions.find((fn) =>
       fn.hiddenBatchRoute)?.hiddenBatchMaximumRows ?? MAX_HIDDEN_BATCH_ROWS;
+    const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__scb_verify_single_tx');
+    const functionNameById = new Map(ast.contract.functions
+      .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
+    // Compiler compact helpers occupy the reserved >= 0x80 range and are selected dynamically from IDs kept
+    // in the verifier frame, so they cannot be recovered by scanning only literal OP_INVOKE predecessors.
+    // User/handler functions occupy the lower range; include the verifier plus the compact-helper namespace.
+    const verifierBytecodes = new Map([
+      ...traversal.invokedFunctionBytecodes,
+      ...traversal.outlinedSubroutineBytecodes,
+    ]);
+    const collectDefinitions = (script: ReturnType<typeof bytecodeToScript>): void => {
+      for (let i = 2; i < script.length; i++) {
+        if (script[i] !== Op.OP_DEFINE) continue;
+        const body = script[i - 2];
+        const encodedId = script[i - 1];
+        if (!(body instanceof Uint8Array)) continue;
+        let id: number | undefined;
+        if (encodedId instanceof Uint8Array) {
+          try {
+            const decoded = decodeInt(encodedId);
+            if (decoded >= BigInt(Number.MIN_SAFE_INTEGER)
+              && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) id = Number(decoded);
+          } catch {
+            // OP_DEFINE can occur as ordinary executable data; only minimally encoded numeric predecessors
+            // identify compiler-emitted function definitions.
+          }
+        } else if (encodedId === Op.OP_0) id = 0;
+        else if (encodedId >= Op.OP_1 && encodedId <= Op.OP_16) id = encodedId - Op.OP_1 + 1;
+        if (id !== undefined) verifierBytecodes.set(id, body);
+      }
+    };
+    collectDefinitions(optimisationResult.script);
+    const scbEntryBody = traversal.entryPointBytecodes.get(SCB1_SELECTOR_HEX);
+    if (scbEntryBody) collectDefinitions(bytecodeToScript(scbEntryBody));
+    const verifierFunctionIds = [...verifierBytecodes.keys()]
+      .filter((id) => id <= -12 || id === verifierFunction?.functionId)
+      .sort((a, b) => a - b);
+    const verifierFunctions = verifierFunctionIds.map((id) => ({
+      id,
+      name: functionNameById.get(id) ?? `__internal_${id}`,
+      bytecode: binToHex(verifierBytecodes.get(id)!),
+    }));
     artifact.hiddenBatch = {
       version: 1,
       selector: SCB1_SELECTOR_HEX,
@@ -3968,11 +4098,26 @@ function compileResolvedAst(
       maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
       singleTransactionBus: {
         domain: SINGLE_TX_BUS_DOMAIN_HEX,
-        version: SINGLE_TX_BUS_VERSION,
-        carrierInput: 0,
+        carrier: {
+          region: 'participant-verifiers',
+          canonicalInput: 'final-participant-verifier',
+          unlockingPush: 0,
+        },
         maximumParticipants: SINGLE_TX_BUS_MAX_PARTICIPANTS,
         maximumRows: SINGLE_TX_BUS_MAX_ROWS,
       },
+      ...(verifierFunction?.functionId !== undefined
+        && traversal.invokedFunctionBytecodes.has(verifierFunction.functionId) && {
+        verifierProgram: {
+          verifyFunctionId: verifierFunction.functionId,
+          inputCount: verifierFunction.parameters.length,
+          inputs: verifierFunction.parameters.map((parameter) => ({
+            name: parameter.name,
+            type: parameter.type.toString().replace(/address payable/g, 'address'),
+          })),
+          functions: verifierFunctions,
+        },
+      }),
       route: hiddenBatchRouteAbi!,
       handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,

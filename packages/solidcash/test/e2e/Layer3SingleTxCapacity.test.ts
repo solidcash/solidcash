@@ -1,5 +1,5 @@
 import {
-  binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin,
+  binToHex, createVirtualMachineBch2026, decodeAuthenticationInstructions, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -47,31 +47,55 @@ interface CapacityReading {
 
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
-    participants: 2, authenticatedParticipants: 2, slots: 4,
-    transactionBytes: 12_668, transcriptBytes: 359,
-    worstOperationCost: 2_375_148, worstMaximumOperationCost: 4_715_200,
-    worstRatio: 0.5037215812690872,
-    inputOperationCosts: [2_254_380, 2_375_148, 695, 27_321],
-    inputMaximumOperationCosts: [5_071_200, 4_715_200, 34_400, 112_800],
+    participants: 2, authenticatedParticipants: 2, slots: 6,
+    transactionBytes: 16_485, transcriptBytes: 358,
+    worstOperationCost: 1_943_070, worstMaximumOperationCost: 4_903_200,
+    worstRatio: 0.39628609887420463,
+    inputOperationCosts: [234_742, 219_428, 695, 1_823_701, 1_943_070, 27_321],
+    inputMaximumOperationCosts: [1_552_000, 1_395_200, 34_400, 4_799_200, 4_903_200, 112_800],
   },
   4: {
-    participants: 4, authenticatedParticipants: 4, slots: 8,
-    transactionBytes: 26_830, transcriptBytes: 713,
-    worstOperationCost: 3_860_769, worstMaximumOperationCost: 4_715_200,
-    worstRatio: 0.8187922039362063,
-    inputOperationCosts: [3_668_364, 3_840_019, 695, 3_839_481, 695, 3_860_769, 695, 27_321],
-    inputMaximumOperationCosts: [5_420_000, 5_354_400, 34_400, 5_354_400, 34_400, 4_715_200, 34_400, 112_800],
-  },
-  5: {
-    participants: 5, authenticatedParticipants: 5, slots: 10,
-    transactionBytes: 34_034, transcriptBytes: 890,
-    worstOperationCost: 4_646_641, worstMaximumOperationCost: 4_715_200,
-    worstRatio: 0.9854600016966406,
+    participants: 4, authenticatedParticipants: 4, slots: 12,
+    transactionBytes: 38_397, transcriptBytes: 712,
+    worstOperationCost: 3_368_897, worstMaximumOperationCost: 5_469_600,
+    worstRatio: 0.6159311467017697,
     inputOperationCosts: [
-      4_419_396, 4_608_736, 695, 4_608_198, 695, 4_607_641, 695, 4_646_641, 695, 27_321,
+      287_448, 336_384, 695, 336_384, 695, 290_414, 695,
+      3_199_433, 3_312_326, 3_311_788, 3_368_897, 27_321,
     ],
     inputMaximumOperationCosts: [
-      5_594_400, 5_387_200, 34_400, 5_387_200, 34_400, 5_387_200, 34_400, 4_715_200, 34_400, 112_800,
+      1_617_600, 1_931_200, 34_400, 1_931_200, 34_400, 1_395_200, 34_400,
+      5_431_200, 5_970_400, 5_970_400, 5_469_600, 112_800,
+    ],
+  },
+  5: {
+    participants: 5, authenticatedParticipants: 5, slots: 15,
+    transactionBytes: 50_661, transcriptBytes: 889,
+    worstOperationCost: 4_124_872, worstMaximumOperationCost: 5_752_800,
+    worstRatio: 0.7170198859685718,
+    inputOperationCosts: [
+      313_801, 372_246, 695, 372_246, 695, 372_246, 695, 325_907, 695,
+      3_931_371, 4_050_435, 4_049_897, 4_049_340, 4_124_872, 27_321,
+    ],
+    inputMaximumOperationCosts: [
+      1_650_400, 1_964_000, 34_400, 1_964_000, 34_400, 1_964_000, 34_400, 1_395_200, 34_400,
+      5_747_200, 6_286_400, 6_286_400, 6_286_400, 5_752_800, 112_800,
+    ],
+  },
+  8: {
+    participants: 8, authenticatedParticipants: 8, slots: 24,
+    transactionBytes: 92_705, transcriptBytes: 1_420,
+    worstOperationCost: 6_564_889, worstMaximumOperationCost: 6_602_400,
+    worstRatio: 0.9943185811220162,
+    inputOperationCosts: [
+      392_868, 479_840, 695, 479_848, 695, 479_848, 695, 479_848, 695, 479_848, 695,
+      479_848, 695, 432_394, 695, 6_303_029, 6_440_606, 6_440_068, 6_439_511,
+      6_438_954, 6_438_397, 6_437_840, 6_564_889, 27_321,
+    ],
+    inputMaximumOperationCosts: [
+      1_749_600, 2_063_200, 34_400, 2_064_000, 34_400, 2_064_000, 34_400, 2_064_000,
+      34_400, 2_064_000, 34_400, 2_064_000, 34_400, 1_396_000, 34_400, 6_696_000,
+      7_235_200, 7_235_200, 7_235_200, 7_235_200, 7_235_200, 7_235_200, 6_602_400, 112_800,
     ],
   },
 });
@@ -130,11 +154,19 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
       worstMaximumOperationCost = result.metrics.maximumOperationCost;
     }
   }
-  const transcript = layer3.extractSingleTxCarrier(builder.inputs[0].unlocker!.generateUnlockingBytecode({
-    inputIndex: 0,
-    sourceOutputs,
-    transaction,
-  }));
+  const verifierIndex = builder.inputs.findIndex(
+    (input) => input.token?.nft?.commitment.startsWith('4c335631'),
+  );
+  if (verifierIndex < 0) throw new Error('capacity fixture has no deployed Layer-3 verifier input');
+  const carrier = decodeAuthenticationInstructions(
+    builder.inputs[verifierIndex].unlocker!.generateUnlockingBytecode({
+      inputIndex: verifierIndex,
+      sourceOutputs,
+      transaction,
+    }),
+  )[0];
+  if (!carrier || !('data' in carrier)) throw new Error('capacity fixture verifier has no carrier push');
+  const transcript = layer3.decodeSingleTxCarrier(carrier.data);
   return {
     participants,
     authenticatedParticipants: transcript.participants.length,
@@ -150,7 +182,7 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
 };
 
 describe('controllerless single-transaction capacity', () => {
-  it.each([2, 4, 5])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
+  it.each([2, 4, 5, 8])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
     const builder = await buildChain(count);
     const reading = measure(count, builder);
     expect(reading.transactionBytes).toBeLessThanOrEqual(100_000);
@@ -160,7 +192,7 @@ describe('controllerless single-transaction capacity', () => {
     expect(reading).toEqual(EXPECTED[count]);
     console.log(`L3_SINGLE_TX_CAPACITY ${JSON.stringify(reading)}`);
     // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
-    // filter for the five-participant case to prove the maximum admitted physical/resource shape on BCHN.
+    // filter for the eight-participant case to prove the maximum admitted physical/resource shape on BCHN.
     if (process.env.TESTS_USE_REGTEST) {
       const finalizedHex = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
       await expect(builder.send()).resolves.toMatchObject({

@@ -3,6 +3,10 @@
 Layer 3 composes existing stateful contract UTXOs into one Bitcoin Cash transaction. There is no controller,
 execution-root preparation, projection proof, setup transaction, or confirmation step.
 
+At contract deployment, set `layer3VerifierCount: N` to create `N` independently spendable verifier instances
+(the default is one for artifacts that publish a verifier program). These covenants are created in genesis and
+self-preserve; no verifier deployment occurs between contract creation and a composed call.
+
 ## Compose and send
 
 Prepare calls from category-bound `StatefulContract` instances, then pass them in compiler-authored
@@ -24,7 +28,8 @@ const { txid } = await composition.send();
 ```
 
 `funder` must be one bare P2PKH input. It is the terminal fee input and authenticates the root invocation's
-`tx.origin`. Every participant before it contributes one complete compiler-published balanced block.
+`tx.origin`. Every participant contributes one complete compiler-published balanced block followed by one
+artifact-specialized verifier input/output; the fee tail follows the verifier region.
 
 ## Offline build and signing
 
@@ -36,8 +41,8 @@ const transaction = builder.buildLibauthTransaction();
 ```
 
 The composer finalizes the participant table, transcript rows, effects, block layout, and canonical carrier
-before any input signature is produced. The carrier is stored once in participant zero's SCB1 unlocking
-bytecode; every participant verifier reads that physical byte region.
+before any input signature is produced. Every verifier carries the same first-push carrier, and each master
+binds its own verifier to the canonical final-verifier copy and to its exact route arguments.
 
 ## Admission and refusals
 
@@ -54,10 +59,11 @@ legacy mode or controller-backed fallback.
 
 ## Limits
 
-Version 2 admits at most five physical participants and 24 transcript rows. Repeated invocations of the same
-physical contract do not consume another participant. The five-participant ceiling is the largest measured
-representative returning chain below stock BCH-2026 operation density; the adjacent six-participant chain is
-refused. `layer3.SINGLE_TX_BUS_CAPACITY` publishes this limit. Exact finalized-byte and VM preflight still apply
+The semantic-versioned protocol admits at most eight physical participants and 24 transcript rows; the carrier
+has no redundant wire-version byte. Repeated invocations of the same
+physical contract do not consume another participant. The eight-participant ceiling is both the protocol maximum
+and a measured representative returning chain below stock BCH-2026 operation density and transaction size;
+nine is refused. `layer3.SINGLE_TX_BUS_CAPACITY` publishes this limit. Exact finalized-byte and VM preflight still apply
 to every graph because resource-heavy local verification can bind earlier. See
 `layer3-single-tx-capacity-bch2026.json` for measurements, `layer3-single-transaction-bus-protocol.md` for the
 wire grammar, and `layer3-single-transaction-bus-requirements.md` for security invariants.

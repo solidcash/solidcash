@@ -1169,6 +1169,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         '__internal__graphSettlementBoundary',
         '__internal__graphCompletionPositions',
         '__internal__graphSettlementTable',
+        '__internal__activeVerifierIndex',
+        '__internal__singleTxTranscript',
         '__internal__blockhashInputIndex',
         '__internal__blockhashRowOffset',
       ].includes(node.name);

@@ -8,7 +8,8 @@ the removed `L3GRAPH1` implementation survive only in the historical baseline ce
 For canonically ordered participant blocks `P0..Pn-1`, inputs and outputs share this slot layout:
 
 ```text
-P0[0..actualSize0) || P1[0..actualSize1) || ... || Pn-1[0..actualSizen-1) || fee/change
+P0[0..actualSize0) || ... || Pn-1[0..actualSizen-1)
+|| V0 || ... || Vn-1 || fee/change
 ```
 
 `P0.base = 0`; every later base is the prefix sum of preceding authenticated `actualSize` values. Local offset
@@ -16,23 +17,26 @@ zero is the sole master slot. Each contract commits a fixed prefix and maximum t
 bytecode, while each transaction commits `actualSize = fixedSize + trailingUsed`. Only that contiguous used
 prefix is physically present; unused trailing capacity is not padded with inputs or outputs. All transcript
 rows carry participant-local offsets, and every absolute access is derived as `base(owner/consumer) + offset`
-while verifying the transaction. The fee input is paired with change immediately after the actual participant
-prefix. There are no controller or projection slots. The application never supplies absolute indices.
+while verifying the transaction. `Vi` is participant `Pi`'s artifact-specialized, self-preserved verifier NFT.
+The fee input is paired with change immediately after the verifier region. There are no controller or projection
+slots. The SDK derives all absolute indices; application code supplies none.
 
 ## Carrier
 
-The transcript is one canonical push in the first SCB1 route unlocking bytecode, which belongs to the master
-at input zero. No other participant carries a transcript copy. The compiler-generated routes inspect that same
-physical unlocking bytecode. Its fixed position is immediately after the selector push and SCB1's existing
-positional batch push, before ordinary reversed ABI arguments and the redeem script:
+Every verifier unlocking bytecode carries the same transcript as its first canonical push. Arguments follow in
+reverse ABI order, followed by the verifier redeem program:
 
 ```text
-push4("SCB1") push(batchBlob) push(carrier) ...ordinary ABI pushes... push(redeemScript)
+push(carrier) ...reversed verifier ABI pushes... push(verifierProgram)
 ```
 
-Every SCB1 unlocker reserves this position as `OP_0`. Controllerless composition replaces that placeholder
-after transaction-dependent signatures are produced. Generated route bytecode removes both positional values
-before executing the handler, so neither the batch copy nor carrier leaks onto the final stack.
+The SDK supplies the same transcript to each master and verifier. The artifact-specialized verifier validates
+the transcript, returns `bindingDigest || expectedCarrierHash`, and the preserving covenant authenticates the
+actual first push without parsing it. The verifier output commitment is
+`"L3V1" || instance:u16le || bindingDigest`, where `bindingDigest` hashes the transcript, local batch, active
+input, row count, and graph witnesses. Each compact master recomputes that one digest and pins the exact verifier
+lock, category, index, and commitment. Signatures and complete unlocking bytecodes are excluded, so there is no
+transaction-signature circularity.
 
 The carrier payload is:
 
@@ -54,7 +58,6 @@ canonical: decoders consume exactly the declared rows and require EOF.
 
 ```text
 domain[8] = "L3BUS1\0\0"
-version:u8 = 2
 totalLength:u32le
 participantCount:u8                         # 2..8
 participant[participantCount] =
@@ -86,16 +89,21 @@ Unknown row kinds fail closed.
 
 ## Authorization
 
-Transcript integrity is structural, not conferred by a reusable token. Each participant verifies the carrier,
-participant table, its own identity `(lockingBytecode, masterCategory)`, active master position, policy hash,
-and every row it owns or consumes. Concrete participant UTXOs are consumed by the transaction. An application
-that restricts counterpart selection must publish an explicit state policy or data-signature proof in the
-same transaction; no universal signer or preparatory UTXO is part of this protocol.
+Transcript integrity is structural, not conferred by a reusable token. Each artifact-specialized verifier checks
+the participant table, identity `(lockingBytecode, masterCategory)`, active master position, policy hash, and every
+row its participant owns or consumes. The master binder pins the verifier's code, category, recreation,
+attestation, carrier, and exact ABI arguments. Concrete participant UTXOs are consumed by the transaction. An
+application that restricts counterpart selection must publish an explicit state policy or data-signature proof in
+the same transaction; no universal signer or preparatory transaction is part of this protocol.
+
+At genesis, a deployment may mint `N` verifier instances. A composition consumes and recreates one instance;
+therefore `N` is the contract's maximum number of independently spendable in-flight compositions. Ordinary calls
+do not consume verifier instances.
 
 ## Bounds
 
-Version 2 admits at most five participants and 24 rows. The participant ceiling is the measured BCH-2026
-limit: two-, four-, and five-participant graphs complete, while the adjacent six-participant returning chain
-exceeds operation-cost density. `SINGLE_TX_BUS_CAPACITY`, compiler metadata, composer preflight, and finalized
+The current semantic-versioned release admits at most eight participants and 24 rows. There is no redundant wire
+version byte. Two-, four-, five-, and eight-participant graphs complete under measured BCH-2026 limits; nine is
+outside the protocol bound. `SINGLE_TX_BUS_CAPACITY`, compiler metadata, composer preflight, and finalized
 transaction VM preflight enforce these bounds. Exact measurements are published in
 `layer3-single-tx-capacity-bch2026.json`.

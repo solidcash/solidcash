@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'vitest';
-import { scriptToBytecode } from '@solidcash/utils';
 import { layer3 } from '../src/index.js';
 
 const sample = (): layer3.SingleTxBusTranscript => ({
@@ -33,13 +32,14 @@ describe('controllerless single-transaction codec', () => {
 
   it('places complete blocks contiguously before the fee tail', () => {
     expect(layer3.singleTxBusPhysicalLayout([2, 3, 1])).toEqual({
-      participantInputs: [0, 2, 5], feeInput: 6, totalSlots: 7,
+      participantInputs: [0, 2, 5], verifierInputs: [6, 7, 8],
+      verifierInput: 8, feeInput: 9, totalSlots: 10,
     });
   });
 
-  it('rejects domain, version, declared length, truncation, suffix, and carrier mutations', () => {
+  it('rejects domain, declared length, participant count, truncation, suffix, and carrier mutations', () => {
     const encoded = layer3.encodeSingleTxBusTranscript(sample());
-    for (const offset of [0, 8, 9]) {
+    for (const offset of [0, 8, 12]) {
       const changed = encoded.slice(); changed[offset] ^= 1;
       expect(() => layer3.decodeSingleTxBusTranscript(changed)).toThrow();
     }
@@ -55,8 +55,8 @@ describe('controllerless single-transaction codec', () => {
 
   it('rejects mutations to participant boundaries and every row discriminator', () => {
     const encoded = layer3.encodeSingleTxBusTranscript(sample());
-    // Header is 14 bytes; first base/blockSize fields start there.
-    for (const offset of [13, 14, 16]) {
+    // Header is 13 bytes; first fixedSize/actualSize fields start there.
+    for (const offset of [12, 13, 15]) {
       const changed = encoded.slice(); changed[offset] ^= 0xff;
       expect(() => layer3.decodeSingleTxBusTranscript(changed)).toThrow();
     }
@@ -95,42 +95,12 @@ describe('controllerless single-transaction codec', () => {
       participants: [{ ...oneChunk.participants[0], actualSize: 7, trailingUsed: 5 }, oneChunk.participants[1]],
     };
     expect(layer3.singleTxBusPhysicalLayout(oneChunk.participants.map((p) => p.actualSize)))
-      .toMatchObject({ participantInputs: [0, 3], feeInput: 6 });
+      .toMatchObject({ participantInputs: [0, 3], verifierInputs: [6, 7], verifierInput: 7, feeInput: 8 });
     expect(layer3.singleTxBusPhysicalLayout(fiveChunks.participants.map((p) => p.actualSize)))
-      .toMatchObject({ participantInputs: [0, 7], feeInput: 10 });
+      .toMatchObject({ participantInputs: [0, 7], verifierInputs: [10, 11], verifierInput: 11, feeInput: 12 });
     expect(fiveChunks.rows).toEqual(oneChunk.rows);
     expect(layer3.decodeSingleTxBusTranscript(layer3.encodeSingleTxBusTranscript(fiveChunks)))
       .toEqual(fiveChunks);
-  });
-
-  it('inserts and extracts the carrier at the canonical SCB1 unlocking position', () => {
-    const original = scriptToBytecode([
-      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]),
-      new Uint8Array(), Uint8Array.from([4, 5]), Uint8Array.from({ length: 90 }, () => 6),
-    ]);
-    const withCarrier = layer3.insertSingleTxCarrier(original, sample());
-    expect(layer3.extractSingleTxCarrier(withCarrier)).toEqual(sample());
-    // Selector, positional batch, and every suffix push remain exact.
-    expect(withCarrier.slice(0, 9)).toEqual(original.slice(0, 9));
-    expect(withCarrier.slice(withCarrier.length - (original.length - 10))).toEqual(original.slice(10));
-    expect(() => layer3.extractSingleTxCarrier(original)).toThrow(/carrier/);
-    const nonScb = original.slice(); nonScb[1] ^= 1;
-    expect(() => layer3.insertSingleTxCarrier(nonScb, sample())).toThrow(/not an SCB1 route/);
-  });
-
-  it('rejects non-minimal and truncated carrier push framing', () => {
-    const withPlaceholder = scriptToBytecode([
-      Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2, 3]), new Uint8Array(),
-      Uint8Array.of(4),
-    ]);
-    const withCarrier = layer3.insertSingleTxCarrier(withPlaceholder, sample());
-    const carrierAt = 9;
-    const nonMinimal = Uint8Array.from([
-      ...withCarrier.slice(0, 5), 76, 3, ...withCarrier.slice(6),
-    ]);
-    expect(() => layer3.extractSingleTxCarrier(nonMinimal)).toThrow(/non-minimal/);
-    expect(() => layer3.extractSingleTxCarrier(withCarrier.slice(0, -withCarrier.length + carrierAt + 2)))
-      .toThrow(/truncated/);
   });
 
   it('is injective under every single-byte mutation of a canonical transcript', () => {
@@ -149,18 +119,13 @@ describe('controllerless single-transaction codec', () => {
     }
   });
 
-  it('round-trips framing boundaries across direct, PUSHDATA1, and PUSHDATA2 carriers', () => {
+  it('round-trips carrier payloads across Bitcoin Script push-size boundaries', () => {
     for (const payloadBytes of [0, 75, 76, 255, 256, 1024]) {
       const value: layer3.SingleTxBusTranscript = {
         ...sample(), rows: [{ ...sample().rows[0], effectHex: 'ab'.repeat(payloadBytes) }],
       };
       const carrier = layer3.encodeSingleTxCarrier(value);
       expect(layer3.decodeSingleTxCarrier(carrier)).toEqual(value);
-      const unlocking = scriptToBytecode([
-        Uint8Array.from([0x53, 0x43, 0x42, 0x31]), Uint8Array.from([1, 2]), new Uint8Array(),
-        Uint8Array.from([2, 3]),
-      ]);
-      expect(layer3.extractSingleTxCarrier(layer3.insertSingleTxCarrier(unlocking, value))).toEqual(value);
     }
   });
 });

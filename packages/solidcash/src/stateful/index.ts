@@ -96,6 +96,8 @@ export {
 } from './SortedList.js';
 export {
   getDataNftAddress,
+  getLayer3VerifierAddress,
+  getLayer3VerifierLockingBytecode,
   getDataNftLockingBytecode,
   getEntryNftLockingBytecode,
   getEntryNftAddress,
@@ -107,6 +109,7 @@ export {
   getSatoshiContainerAddress,
   getContractState,
   createDataNftUnlocker,
+  createLayer3VerifierUnlocker,
   createDestroyDataNftUnlocker,
   createReadOnlyDataNftUnlocker,
   createEntryNftUnlocker,

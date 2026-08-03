@@ -97,7 +97,11 @@ export function encodeHiddenBatch(
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
 ): EncodedHiddenBatch {
   const capability = artifact.hiddenBatch;
-  if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+  if (!capability) {
+    throw new Error(
+      `Artifact '${artifact.contractName}' does not advertise the compiler-hidden SCB1 batch route`,
+    );
+  }
   if (capability.version !== 1) {
     throw new Layer3DiagnosticError(
       'L3_PROTOCOL_VERSION_UNSUPPORTED',

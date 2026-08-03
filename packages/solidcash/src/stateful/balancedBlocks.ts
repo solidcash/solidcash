@@ -57,7 +57,11 @@ export interface BalancedBlockPlacement {
 export interface BalancedAssembly {
   /** Participant blocks in physical order, concatenated from index 0. */
   blocks: readonly BalancedBlockPlacement[];
-  /** Physical index of the fee-funding input; immediately follows every participant block. */
+  /** Physical verifier region, one artifact-specialized covenant per participant. */
+  verifierInputs: readonly number[];
+  /** Final verifier input; it carries the canonical transcript consumed by participant binders. */
+  verifierInput: number;
+  /** Physical index of the fee-funding input; follows the verifier covenant. */
   feeInput: number;
   /** Physical index of the terminal change output; must sit outside every participant block. */
   changeOutput: number;
@@ -134,9 +138,8 @@ const publishedMasterBlock = (
  * the caller, so an unlocker that produces byte-identical unlocking bytecode without re-exposing `abiFunction`
  * used to erase the whole gate by making it report "nothing to check".
  *
- * The canonical controllerless layout has no auxiliary tail: the one fee input/change output slot follows the
- * complete participant prefix immediately. Any gap, extra participant, or obsolete auxiliary slot is
- * therefore structurally refused here.
+ * The canonical layout is participant prefix || one verifier per participant || fee/change. Any other gap is
+ * structurally refused here.
  */
 export function deriveBalancedAssemblyFromInputs(
   inputs: readonly BalancedAssemblyInputView[], totalSlots: number,
@@ -169,16 +172,20 @@ export function deriveBalancedAssemblyFromInputs(
   if (cursor > totalSlots) {
     fail(`participant ${blocks.length - 1} block runs past the transaction's ${totalSlots} slots`);
   }
-  if (cursor !== totalSlots - 1) {
+  if (cursor !== totalSlots - blocks.length - 1) {
     fail(
-      `participant region ends at ${cursor}, but the canonical fee/change slot is ${totalSlots - 1}; `
+      `participant region ends at ${cursor}, but ${blocks.length} verifier slots plus fee require tail start `
+      + `${totalSlots - blocks.length - 1}; `
       + 'controllerless compositions permit no auxiliary or padding slots',
     );
   }
+  const verifierInputs = blocks.map((_block, participant) => cursor + participant);
   return {
     blocks,
-    feeInput: cursor,
-    changeOutput: cursor,
+    verifierInputs,
+    verifierInput: verifierInputs[verifierInputs.length - 1],
+    feeInput: cursor + blocks.length,
+    changeOutput: cursor + blocks.length,
     totalSlots,
   };
 }
@@ -230,11 +237,16 @@ export function preflightBalancedBlockAssembly(
   }
   const regionEnd = cursor;
 
-  if (assembly.feeInput !== regionEnd || assembly.changeOutput !== regionEnd
-    || regionEnd !== assembly.totalSlots - 1) {
+  const expectedVerifiers = assembly.blocks.map((_block, participant) => regionEnd + participant);
+  if (assembly.verifierInputs.length !== expectedVerifiers.length
+    || assembly.verifierInputs.some((input, participant) => input !== expectedVerifiers[participant])
+    || assembly.verifierInput !== expectedVerifiers[expectedVerifiers.length - 1]
+    || assembly.feeInput !== regionEnd + assembly.blocks.length
+    || assembly.changeOutput !== regionEnd + assembly.blocks.length
+    || regionEnd !== assembly.totalSlots - assembly.blocks.length - 1) {
     fail(
-      `fee/change slots ${assembly.feeInput}/${assembly.changeOutput} must immediately follow participant `
-      + `region [0, ${regionEnd}) and be the terminal slot`,
+      `verifier/fee/change slots ${assembly.verifierInputs.join(',')}/${assembly.feeInput}/${assembly.changeOutput} must `
+      + `follow participant region [0, ${regionEnd}) and end at the terminal slot`,
     );
   }
 
@@ -265,9 +277,9 @@ export function preflightBalancedBlockAssembly(
     }
   }
 
-  // Nothing token-bearing may sit outside the participant region: an event NFT must stay in its block.
+  // Only the canonical verifier NFT may sit outside the participant region.
   for (let index = regionEnd; index < transaction.outputs.length; index += 1) {
-    if (transaction.outputs[index].token !== undefined) {
+    if (!assembly.verifierInputs.includes(index) && transaction.outputs[index].token !== undefined) {
       fail(`output ${index} carries a token outside every participant block (region ends at ${regionEnd})`);
     }
   }

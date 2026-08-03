@@ -1020,6 +1020,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   entryPointDebugInfo: Map<string, FunctionDebugInformation> = new Map();  // selector hex -> debug info
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
   invokedFunctionBytecodes: Map<number, Uint8Array> = new Map(); // function id -> internal OP_INVOKE body
+  outlinedSubroutineBytecodes: Map<number, Uint8Array> = new Map(); // compiler helper id -> OP_INVOKE body
 
   // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
   // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
@@ -2328,6 +2329,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .map(([dependency]) => dependency),
     ));
     const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
     this.emit(bodyBytecode, locationData);
     this.emit(encodeInt(id), locationData);
@@ -3512,10 +3514,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
-    // SCB1 unlocking bytecode carries an authenticated positional copy of the
-    // blob and one reserved controllerless-carrier slot below the ordinary ABI argument stack. They exist so
-    // every participant can bind physical pushes in input zero. Remove both untracked bottom items before
-    // executing the route; the route separately proves the blob and carrier framing from transaction bytes.
+    // SCB1 unlocking bytecode retains its positional batch copy and historical reserved slot below the ordinary
+    // ABI argument stack. Remove both untracked bottom items before executing the route. Composition transcripts
+    // now live exclusively in artifact-specialized verifier inputs.
     if (node.hiddenBatchRoute) {
       const loc = { location: node.location, positionHint: PositionHint.START };
       for (let positional = 0; positional < 2; positional += 1) {

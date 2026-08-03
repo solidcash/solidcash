@@ -2,7 +2,7 @@
 
 Last updated: 2026-08-03
 Branch: `codex/layer3-single-tx-bus`  
-Verified implementation revision: `b8a3611f` (`test(layer3): allow live hostile broadcast latency`)
+Verified implementation revision: pending final self-preserved-verifier commit
 Overall verified progress: **100 / 100 points (100%)**
 
 This is the durable progress ledger for
@@ -25,7 +25,7 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | --- | ---: | ---: | --- |
 | 0. Baseline and requirements | 5 | 5 | Complete |
 | 1. Codec and layout | 10 | 10 | Complete |
-| 2. Compiler mutual verifier | 15 | 15 | Complete |
+| 2. Compiler sidecar verifier and binder | 15 | 15 | Complete |
 | 3. One-transaction composer | 15 | 15 | Complete |
 | 4. Semantic completeness | 30 | 30 | Complete |
 | 5. Capacity and optimization | 8 | 8 | Complete |
@@ -44,21 +44,21 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 
 ## Phase 1 — codec and layout (10/10)
 
-- [x] **2 points:** Controllerless domain, version, and canonical byte grammar are defined.
-- [x] **2 points:** The first participant master input is the canonical transcript carrier.
+- [x] **2 points:** Controllerless domain and versionless canonical byte grammar are defined.
+- [x] **2 points:** Every participant verifier carries the canonical transcript as its first push.
 - [x] **2 points:** Strict encode/decode rejects malformed lengths, non-canonical fields, and suffix bytes.
-- [x] **2 points:** Participant blocks are contiguous and end at one ordinary fee/change tail.
+- [x] **2 points:** Participant blocks are contiguous, followed by one verifier each and one fee/change tail.
 - [x] **2 points:** Pure codec/layout mutation tests cover every field and framing boundary without controller objects.
 
 Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits `59c094e1`,
 `23aca57f`, and `c540a849`.
 
-## Phase 2 — compiler mutual verifier (15/15)
+## Phase 2 — compiler sidecar verifier and compact binder (15/15)
 
-- [x] **3 points:** Every participant extracts and parses the identical carrier bytes.
+- [x] **3 points:** Every artifact-specialized verifier parses identical carrier bytes and self-preserves.
 - [x] **3 points:** Participant identity, active membership, block bases, sizes, and fee-tail boundary are verified.
 - [x] **3 points:** Invocation rows are bound to local SCB1 execution and exact result consumption.
-- [x] **2 points:** Structural carrier and participant mutations are rejected in the BCH-2026 VM.
+- [x] **2 points:** Carrier, verifier lock, attestation, argument, and participant mutations are rejected in the BCH-2026 VM.
 - [x] **2 points:** Resource/effect rows have exact physical cardinality checks and local ownership binding.
 - [x] **1 point:** Graph participation is fully inferred for every admitted family without explicit controller admission.
 - [x] **1 point:** Controller/projection verifier parameters and semantic fallbacks are absent from production routes.
@@ -66,8 +66,8 @@ Evidence: `Layer3SingleTxCodec.test.ts`, `Layer3SingleTxGraph.test.ts`, commits 
 ## Phase 3 — SDK one-transaction composer (15/15)
 
 - [x] **3 points:** Composer derives canonical participant order, prefix-summed actual block bases, and compact balanced blocks.
-- [x] **3 points:** One transcript is encoded into input 0 and shared by all participant verifiers.
-- [x] **3 points:** Participant inputs/outputs plus one P2PKH fee/change tail are assembled in one builder.
+- [x] **3 points:** One transcript is encoded as the first push of every participant verifier.
+- [x] **3 points:** Participant blocks, one verifier per participant, and one P2PKH fee/change tail are assembled in one builder.
 - [x] **2 points:** Transcript and transaction structure are finalized before signatures are produced.
 - [x] **2 points:** `layer3.compose({ calls, funder, changeAddress }).send()` broadcasts without setup execution.
 - [x] **1 point:** Offline `build()` exists for inspection, mutation testing, and later signing.
@@ -128,10 +128,11 @@ positive capstones and hostile row/physical-output mutations.
 - [x] **1 point:** Measured participant/resource limits are published in artifacts and enforced by SDK preflight.
 
 Evidence: `Layer3SingleTxCapacity.test.ts` evaluates every finalized input against stock BCH-2026 and pins
-the accepted 2-, 4-, and 5-participant rows. The adjacent 6-participant returning chain fails operation-density
-at input 9 (5,725,641 attempted versus 5,725,600 allowed); 7 and 8 also fail. The measurements and cost
-attribution are published in `layer3-single-tx-capacity-bch2026.json`. `SINGLE_TX_BUS_CAPACITY` publishes the
-five-participant ceiling, `assertSingleTxParticipantCapacity` enforces it before block assembly, and the
+the accepted 2-, 4-, 5-, and 8-participant rows. The eight-party shape is 92,705 bytes and its worst input uses
+99.43% of its operation-density allowance; nine is outside the protocol bound. Global density reserve bytes live
+only in deployed verifier sidecars. The measurements and cost attribution are published in
+`layer3-single-tx-capacity-bch2026.json`. `SINGLE_TX_BUS_CAPACITY` publishes the eight-participant ceiling,
+`assertSingleTxParticipantCapacity` enforces it before block assembly, and the
 composer now runs exact structural, VM, and finalized-byte preflight before returning a builder. Artifact block
 layouts continue to publish and enforce per-participant resource capacity. Controller-era reports are excluded.
 
@@ -153,10 +154,10 @@ layouts continue to publish and enforce per-participant resource capacity. Contr
 - [x] **1 point:** Full `packages/solidc` test suite passes without relevant skips.
 - [x] **1 point:** Full `packages/solidcash` test suite passes without relevant skips.
 
-Evidence recorded 2026-08-03: build and lint passed in all six packages; SolidC passed 62 files and 2,405
+Evidence recorded 2026-08-03: build and lint passed in all six packages; SolidC passed 63 files and 2,407
 tests; SolidCash passed 429 files and 3,729 tests. Its 8 skipped files/38 skipped tests and 9 todos are the
 pre-existing opt-in network, regtest, envelope, and unrelated split-corpus fixtures. The controllerless codec,
-graph, balanced assembly, 19-case composition, and 2/4/5 capacity tests all ran.
+graph, balanced assembly, 19-case composition, and 2/4/5/8 capacity tests all ran.
 
 ### Live BCH-2026/regtest capstones (4/4)
 
@@ -167,7 +168,7 @@ graph, balanced assembly, 19-case composition, and 2/4/5 capacity tests all ran.
 
 Evidence recorded 2026-08-03 with `test/regtest/standard-policy-harness.sh`: BCHN ran with
 `acceptnonstdtxn=0`; heterogeneous state/return, three-party transitive return, event, BCH settlement, repeated
-FT settlement, and the maximum five-participant shape all broadcast successfully. The capacity capstone also
+FT settlement, and the maximum eight-participant shape all broadcast successfully. The capacity capstone also
 proved the exact finalized transaction is rejected on second submission. The harness restored default policy.
 
 ### Final proof (2/2)
@@ -179,8 +180,9 @@ The production search over `packages/solidc/src`, `packages/solidcash/src`, and 
 matches for controller terminology and every concrete removed symbol/domain. Remaining uses of “projection”
 describe ordinary row/data projections, not projection inputs or verifier artifacts. Historical migration terms
 remain only in documentation. The verified evidence for S1 through S12 is recorded in the security requirements
-matrix. Every live application transaction uses existing participant/resource UTXOs plus one ordinary P2PKH fee
-input; the harness creates no execution authority, verifier, projection, or setup transaction.
+matrix. Every live application transaction uses existing participant/resource UTXOs, one genesis-deployed
+self-preserved verifier per participant, and one ordinary P2PKH fee input; the harness creates no controller,
+projection, or pre-call setup transaction.
 
 ## Update log
 

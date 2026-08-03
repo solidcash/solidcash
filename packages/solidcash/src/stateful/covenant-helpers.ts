@@ -19,6 +19,7 @@ import {
   valueChunkSignature,
   Script,
   scriptToBytecode,
+  buildLayer3VerifierCovenantScript,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, FunctionArgument } from '../Argument.js';
 import { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
@@ -122,6 +123,27 @@ export function getDataNftAddress(contract: Contract<any, any>, categoryId: stri
   validateCategoryId(categoryId);
   const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
+}
+
+export function getLayer3VerifierAddress(contract: Contract<any, any>, categoryId: string): string {
+  validateCategoryId(categoryId);
+  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
+  return scriptToAddress(
+    buildLayer3VerifierCovenantScript(program),
+    contract.provider.network,
+    'p2sh32',
+    true,
+  );
+}
+
+export function getLayer3VerifierLockingBytecode(
+  contract: Contract<any, any>, categoryId: string, _addressType: AddressType = 'p2sh32',
+): Uint8Array {
+  validateCategoryId(categoryId);
+  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
+  return scriptToLockingBytecode(buildLayer3VerifierCovenantScript(program), 'p2sh32');
 }
 
 export function getEntryNftAddress(
@@ -267,6 +289,25 @@ export async function getContractState(
 // ---------------------------------------------------------------------------
 // Covenant unlocker factories
 // ---------------------------------------------------------------------------
+
+export function createLayer3VerifierUnlocker(
+  contract: Contract<any, any>, categoryId: string, carrier: Uint8Array, verifierArgs: FunctionArgument[],
+): ContractUnlocker {
+  validateCategoryId(categoryId);
+  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
+  if (verifierArgs.length !== program.inputs.length) {
+    throw new Error(`Layer-3 verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
+  }
+  return createCovenantContractUnlocker(
+    contract,
+    `Layer3Verifier_${categoryId.slice(0, 8)}`,
+    buildLayer3VerifierCovenantScript(program),
+    [...program.inputs, { name: 'carrier', type: 'bytes' }],
+    [...verifierArgs, carrier],
+    'p2sh32',
+  );
+}
 
 export function createDataNftUnlocker(
   contract: Contract<any, any>, masterInputIndex: number, categoryId: string,

@@ -1,21 +1,25 @@
 import { compileString } from '../direct-compile.js';
-import { hexToBin } from '@bitauth/libauth';
+import { compileString as compileLayer3String } from 'solidc';
+import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
   StateReader, SignatureTemplate, StatefulContract,
   StatefulTransactionBuilder,
   getDataNftAddress, createDataNftUnlocker, createDestroyDataNftUnlocker, getContractState,
+  getLayer3VerifierLockingBytecode,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
-  buildDataNftCovenantBytecode,
+  buildDataNftCovenantBytecode, layer3VerifierCommitment,
 } from '@solidcash/utils';
 import {
   alicePkh,
   alicePub,
   alicePriv,
 } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs, createFeeFunder, setupStatefulUtxos } from '../test-util.js';
+import {
+  createTestProvider, getTxOutputs, createFeeFunder, setupStatefulUtxos,
+} from '../test-util.js';
 import { Utxo, TokenDetails } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -862,6 +866,45 @@ describe('StatefulContract.deploy()', () => {
   const deployArtifact = compileString(COUNTER_CONTRACT);
   const deployP2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: deployProvider });
   const zeroLabel = new Uint8Array(4);
+
+  it('mints N independently identified Layer-3 verifier covenants in genesis', async () => {
+    const verifierArtifact = compileLayer3String(`
+      interface IVerifierTarget { function ping(int value) returns (int); }
+      contract VerifierPool(address target) {
+        function run(int value) public {
+          int returned = IVerifierTarget(target).ping(value);
+          require(returned == value);
+        }
+      }
+    `, { forceStateful: true });
+    let fundingUtxo: Utxo = {
+      txid: 'f0ce'.repeat(16),
+      vout: 0,
+      satoshis: 100000n,
+    };
+    fundingUtxo = await deployProvider.addUtxo(deployP2pkh.address, fundingUtxo);
+    const result = await StatefulContract.deploy(verifierArtifact, [deployP2pkh.lockingBytecode], {
+      provider: deployProvider,
+      fundingUtxo,
+      funder: deployP2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+      changeAddress: deployP2pkh.address,
+      layer3VerifierCount: 3,
+    });
+
+    const expected = [0, 1, 2].map((instance) => binToHex(layer3VerifierCommitment(instance)));
+    const verifiers = getTxOutputs(result.tx).filter((output) =>
+      output.token?.category === result.categoryId
+      && output.token.nft?.capability === 'mutable'
+      && expected.includes(output.token.nft.commitment));
+    expect(verifiers.map((output) => output.token!.nft!.commitment)).toEqual(expected);
+    expect(new Set(verifiers.map((output) => output.to))).toHaveLength(1);
+
+    const verifierLock = getLayer3VerifierLockingBytecode(
+      result.contract.inner, result.categoryId, result.contract.inner.addressType,
+    );
+    const [verifierUtxo] = await deployProvider.getUtxosForLockingBytecode(verifierLock);
+    expect(verifierUtxo).toBeDefined();
+  });
 
   it('should deploy with explicit initial state and read state back', async () => {
     let fundingUtxo: Utxo = {

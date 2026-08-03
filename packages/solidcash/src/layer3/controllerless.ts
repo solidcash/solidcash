@@ -1,13 +1,11 @@
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   SINGLE_TX_BUS_DOMAIN_HEX, SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
-  SINGLE_TX_BUS_VERSION, scriptToBytecode,
 } from '@solidcash/utils';
-import type { ContractUnlocker } from '../interfaces.js';
 
 /** Controllerless single-transaction bus wire domain: ASCII `L3BUS1\0\0`. */
 export const SINGLE_TX_BUS_DOMAIN = SINGLE_TX_BUS_DOMAIN_HEX;
-export { SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS, SINGLE_TX_BUS_VERSION };
+export { SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS };
 
 const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
@@ -163,20 +161,16 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
     );
   });
   const body = concat(
-    hexToBin(SINGLE_TX_BUS_DOMAIN), uint(SINGLE_TX_BUS_VERSION, 1, 'version'),
-    uint(participants.length, 1, 'participant count'), ...participantParts,
+    hexToBin(SINGLE_TX_BUS_DOMAIN), uint(participants.length, 1, 'participant count'), ...participantParts,
     uint(rows.length, 2, 'row count'), ...rowParts,
   );
-  return concat(body.slice(0, 9), uint(body.length + 4, 4, 'total length'), body.slice(9));
+  return concat(body.slice(0, 8), uint(body.length + 4, 4, 'total length'), body.slice(8));
 }
 
 export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTranscript {
   const reader = new Reader(bytes);
   if (binToHex(reader.take(8, 'domain')) !== SINGLE_TX_BUS_DOMAIN) {
     throw new Error('layer3: invalid controllerless transcript domain');
-  }
-  if (reader.uint(1, 'version') !== SINGLE_TX_BUS_VERSION) {
-    throw new Error('layer3: unsupported controllerless transcript version');
   }
   if (reader.uint(4, 'total length') !== bytes.length) {
     throw new Error('layer3: controllerless transcript length mismatch');
@@ -242,11 +236,14 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
 
 export interface SingleTxPhysicalLayout {
   participantInputs: readonly number[];
+  verifierInputs: readonly number[];
+  /** Canonical carrier source: the final verifier in the verifier region. */
+  verifierInput: number;
   feeInput: number;
   totalSlots: number;
 }
 
-/** Participant blocks occupy the complete prefix; only the ordinary fee/change pair follows it. */
+/** Participant blocks occupy the prefix; one verifier per participant and the fee/change pair follow it. */
 export function singleTxBusPhysicalLayout(blockSizes: readonly number[]): SingleTxPhysicalLayout {
   if (blockSizes.length < 2 || blockSizes.length > SINGLE_TX_BUS_MAX_PARTICIPANTS) {
     throw new Error(`layer3: participant count must be in [2, ${SINGLE_TX_BUS_MAX_PARTICIPANTS}]`);
@@ -260,8 +257,13 @@ export function singleTxBusPhysicalLayout(blockSizes: readonly number[]): Single
     participantInputs.push(cursor);
     cursor += size;
   });
+  const verifierInputs = blockSizes.map((_size, participant) => cursor + participant);
   return Object.freeze({
-    participantInputs: Object.freeze(participantInputs), feeInput: cursor, totalSlots: cursor + 1,
+    participantInputs: Object.freeze(participantInputs),
+    verifierInputs: Object.freeze(verifierInputs),
+    verifierInput: verifierInputs[verifierInputs.length - 1],
+    feeInput: cursor + blockSizes.length,
+    totalSlots: cursor + blockSizes.length + 1,
   });
 }
 
@@ -279,65 +281,4 @@ export function decodeSingleTxCarrier(carrier: Uint8Array): SingleTxBusTranscrip
   const transcript = reader.take(reader.uint(4, 'carrier length'), 'carrier transcript');
   if (!reader.eof()) throw new Error('layer3: trailing bytes after controllerless carrier');
   return decodeSingleTxBusTranscript(transcript);
-}
-
-interface CanonicalPush { start: number; end: number; payload: Uint8Array }
-
-const canonicalPushAt = (script: Uint8Array, start: number, field: string): CanonicalPush => {
-  if (start >= script.length) throw new Error(`layer3: missing ${field} push`);
-  const opcode = script[start];
-  let header = 1;
-  let length: number;
-  if (opcode <= 75) {
-    length = opcode;
-  } else if (opcode === 76) {
-    if (start + 2 > script.length) throw new Error(`layer3: truncated ${field} PUSHDATA1`);
-    length = script[start + 1]; header = 2;
-    if (length < 76) throw new Error(`layer3: non-minimal ${field} PUSHDATA1`);
-  } else if (opcode === 77) {
-    if (start + 3 > script.length) throw new Error(`layer3: truncated ${field} PUSHDATA2`);
-    length = script[start + 1] + script[start + 2] * 256; header = 3;
-    if (length < 256) throw new Error(`layer3: non-minimal ${field} PUSHDATA2`);
-  } else {
-    throw new Error(`layer3: ${field} is not a canonical bounded push`);
-  }
-  const end = start + header + length;
-  if (end > script.length) throw new Error(`layer3: truncated ${field} payload`);
-  return { start, end, payload: script.slice(start + header, end) };
-};
-
-/**
- * Insert the unique carrier after SCB1's selector and positional batch pushes. The remaining ordinary ABI
- * pushes and redeem script remain byte-identical, so signatures are still generated only after this insertion.
- */
-export function insertSingleTxCarrier(
-  unlockingBytecode: Uint8Array, transcript: SingleTxBusTranscript,
-): Uint8Array {
-  const selector = canonicalPushAt(unlockingBytecode, 0, 'SCB1 selector');
-  if (binToHex(selector.payload) !== '53434231') throw new Error('layer3: carrier input is not an SCB1 route');
-  const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
-  const placeholder = canonicalPushAt(unlockingBytecode, batch.end, 'controllerless carrier placeholder');
-  if (placeholder.payload.length !== 0) throw new Error('layer3: controllerless carrier slot is not empty');
-  const carrierPush = scriptToBytecode([encodeSingleTxCarrier(transcript)]);
-  return concat(unlockingBytecode.slice(0, placeholder.start), carrierPush, unlockingBytecode.slice(placeholder.end));
-}
-
-/** Extract the carrier from the exact canonical position in input zero's SCB1 unlocking bytecode. */
-export function extractSingleTxCarrier(unlockingBytecode: Uint8Array): SingleTxBusTranscript {
-  const selector = canonicalPushAt(unlockingBytecode, 0, 'SCB1 selector');
-  if (binToHex(selector.payload) !== '53434231') throw new Error('layer3: carrier input is not an SCB1 route');
-  const batch = canonicalPushAt(unlockingBytecode, selector.end, 'SCB1 positional batch');
-  const carrier = canonicalPushAt(unlockingBytecode, batch.end, 'controllerless carrier');
-  return decodeSingleTxCarrier(carrier.payload);
-}
-
-/** Wrap an SCB1 unlocker so carrier insertion happens after all transaction-dependent signatures are final. */
-export function withSingleTxCarrier(
-  unlocker: ContractUnlocker, transcript: SingleTxBusTranscript,
-): ContractUnlocker {
-  return {
-    ...unlocker,
-    generateUnlockingBytecode: (options) =>
-      insertSingleTxCarrier(unlocker.generateUnlockingBytecode(options), transcript),
-  };
 }

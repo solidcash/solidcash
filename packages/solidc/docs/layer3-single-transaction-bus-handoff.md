@@ -4,8 +4,9 @@
 
 Replace the exact-root controller-NFT workflow with a complete, production-ready
 single-transaction message bus. Composition, authorization, execution, and
-settlement must occur in one Bitcoin Cash transaction. No execution-specific
-UTXO may be minted, confirmed, or prepared first.
+settlement must occur in one Bitcoin Cash transaction. Artifact-specialized verifier
+covenants are deployed once with each contract; no execution-specific UTXO may be
+minted, confirmed, or prepared before a call.
 
 This branch starts at `aa562953` from `codex/layer3-binding-spike`. The existing
 controller-backed implementation is the behavioral and hostile-test corpus. It
@@ -42,19 +43,25 @@ The SDK must not expose or require:
 
 ## Protocol decision
 
-Use controllerless mutual transcript verification.
+Use compiler-specialized, self-preserved verifier covenants deployed at contract genesis.
 
-The first canonical participant master input is the transcript carrier. Its
-unlocking bytecode contains one canonical, framed graph transcript. Every
-participant reads that same physical byte region, verifies the global structure
-needed for safety, and verifies its own local frame and effects. Transcript
-equality is therefore structural; no participant receives an independent root
-or blob that could diverge.
+Each contract deploys a configurable pool of `N` mutable verifier NFTs locked by the
+verifier program generated from that contract's hidden-batch route. A composition consumes
+and exactly recreates one verifier for every participant. The verifier carries the canonical
+framed graph transcript as the first push in its unlocking bytecode and performs the heavy
+global and local verification. The participant master retains only a compact binder which
+pins its verifier bytecode, category, preservation, transcript, and exact verifier arguments.
+
+This is not a controller or an execution authority: there is no shared category, privileged
+owner, graph-specific root, or setup lifecycle. Verifiers are ordinary contract-owned genesis
+resources, are specialized to the artifact, and self-preserve indefinitely. `N` controls the
+number of concurrently spendable compositions involving that contract. Ordinary calls do not
+consume a verifier and retain their existing spending path.
 
 Do not make the transcript commit to the transaction ID, complete unlocking
 bytecodes, or signatures contained within itself. It commits to semantic facts:
 
-- protocol domain and version;
+- protocol domain (wire compatibility follows the package semantic version; no redundant version byte);
 - participant count, order, locking bytecodes, and master categories;
 - authenticated actual block spans, compiler-published fixed prefixes and maximum capacities;
 - selectors, call modes, arguments, results, callers, and completion positions;
@@ -73,19 +80,24 @@ inputs/outputs:
   [P1 complete balanced block]
   ...
   [Pn-1 complete balanced block]
+  [P0 artifact-specialized verifier]
+  ...
+  [Pn-1 artifact-specialized verifier]
   [fee input / change output]
 ```
 
 Rules:
 
-1. `P0` starts at index 0 and carries the transcript.
+1. `P0` starts at index 0.
 2. `Pi.base = P(i-1).base + P(i-1).actualSize`; bases are derived, never encoded as caller-selected indices.
 3. Each block has exactly one master at local offset 0.
 4. Every fixed slot and every used trailing slot is present exactly once at `base + offset`; unused trailing
    capacity is physically absent.
-5. No projection or controller slots occur between participants and the fee tail.
-6. The fee input is the first index after the last complete participant block.
-7. Outputs use the same absolute slot model as inputs.
+5. One verifier for each participant occurs, in participant order, immediately after all blocks.
+6. Every verifier carries identical carrier bytes; binders read the final verifier as the canonical carrier.
+7. The fee input is the first index after the verifier region.
+8. Outputs use the same absolute slot model as inputs; each verifier output exactly recreates its input
+   locking bytecode, category, capability, token amount, value, and instance prefix.
 
 The composer derives all indices. Application code supplies no global indices.
 
@@ -112,8 +124,8 @@ UTXO. Do not introduce a universal privileged signer as a protocol requirement.
 
 The implementation is incomplete until VM tests prove all of these:
 
-1. **One transcript:** every participant parses the carrier input's identical
-   canonical bytes.
+1. **One transcript:** every verifier carries identical canonical bytes and every participant binder
+   pins its verifier's carrier to the canonical final-verifier bytes.
 2. **Exact participant set:** no participant can be omitted, duplicated,
    substituted, or reordered relative to the transcript.
 3. **Contiguous blocks:** bases and sizes cover the participant prefix without
@@ -128,8 +140,8 @@ The implementation is incomplete until VM tests prove all of these:
    and token-container transitions preserve ownership and settle exactly once.
 8. **Effect authenticity:** value transfers, token transfers, events, and return
    events cannot be forged, redirected, duplicated, or left unclaimed.
-9. **No replay authority:** there is no reusable execution token; replay is
-   prevented naturally because participant UTXOs are consumed.
+9. **No replay authority:** verifier NFTs confer no independent authority; replay is prevented because
+   participant UTXOs are consumed, while verifiers only attest the transaction that spends them.
 10. **No circular commitment:** transcript construction remains possible before
     transaction signatures and produces stable bytes after signing.
 11. **Fail closed:** unsupported recursion, aliases, dynamic cardinality,
@@ -155,10 +167,10 @@ The implementation is incomplete until VM tests prove all of these:
 
 ### Replace
 
-- controller-root lookup with carrier-input transcript extraction;
-- controller/projection verification with participant mutual verification;
+- controller-root lookup with verifier-carried transcript extraction;
+- controller/projection verification with artifact-specialized self-preserved verifiers;
 - controller-bound compiler preamble with inferred graph-participant context;
-- controller-inclusive physical layout with participant blocks plus fee tail;
+- controller-inclusive physical layout with participant blocks, participant verifiers, and fee tail;
 - exact-root NFT lifecycle APIs with `compose(...).send()`;
 - graph metadata that publishes controller identity with carrier and policy
   metadata.
@@ -186,21 +198,22 @@ Deliverable: committed protocol specification and executable baseline census.
 
 ### Phase 1 — codec and layout
 
-1. Define a new domain/version for the controllerless transcript.
-2. Define canonical carrier framing within the first SCB1 unlocking bytecode.
+1. Define a new domain for the controllerless transcript; do not duplicate the package semantic version on wire.
+2. Define canonical carrier framing as the first push of every verifier unlocking bytecode.
 3. Implement encode/decode with strict length and EOF checks.
 4. Implement controllerless physical layout and artifact metadata.
 5. Add mutation/property tests for every field and boundary.
 
 Deliverable: pure codec/layout tests with no controller objects.
 
-### Phase 2 — compiler mutual verifier
+### Phase 2 — compiler-specialized verifier and compact binder
 
-1. Generate carrier extraction and canonical participant-table verification.
+1. Generate an artifact-specialized verifier program and genesis covenant bytecode.
 2. Bind active participant membership and contiguous block layout.
 3. Verify compiler-published local policy and local transcript rows.
-4. Prove global exact-consumption invariants without projection inputs.
-5. Infer graph participation; remove explicit hidden/controller admission flags.
+4. Generate a compact master binder pinning verifier code, category, preservation, carrier, and ABI arguments.
+5. Prove global exact-consumption invariants without controller/projection inputs.
+6. Infer graph participation; remove explicit hidden/controller admission flags.
 
 Deliverable: two independently compiled participants reject all structural
 mutations in the BCH-2026 VM.
@@ -208,8 +221,8 @@ mutations in the BCH-2026 VM.
 ### Phase 3 — SDK one-transaction composer
 
 1. Derive participant order, blocks, calls, results, resources, and effects.
-2. Encode one transcript into the canonical carrier input.
-3. Build all participant inputs/outputs and the fee/change tail in one builder.
+2. Encode one transcript into each participant verifier's canonical first push.
+3. Build all participant inputs/outputs, verifier inputs/outputs, and fee/change tail in one builder.
 4. Sign only after transcript and transaction structure are final.
 5. Provide ergonomic `compose(...).send()` and offline build/sign APIs.
 
@@ -237,9 +250,9 @@ Each family needs positive VM completion and hostile field-mutation tests.
 3. Optimize without weakening exact-consumption or membership proofs.
 4. Publish enforced limits in artifacts and SDK preflight.
 
-Do not introduce a pre-created verifier UTXO merely to improve capacity. A
-stateless verifier input is a fallback design requiring explicit review because
-it reintroduces UTXO availability and contention, even if not transcript-specific.
+Measure both the master binder and each artifact-specialized verifier. Contract deployment
+may mint `N` self-preserved verifier instances; publish and test the resulting concurrency
+bound. No verifier may be created in a setup transaction between deployment and composition.
 
 ### Phase 6 — removal and public API stabilization
 

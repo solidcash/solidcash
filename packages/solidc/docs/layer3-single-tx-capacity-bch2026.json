@@ -47,8 +47,8 @@
       "participants": 6,
       "inputIndex": 9,
       "reason": "operation cost density",
-      "maximumOperationCost": 5009600,
-      "operationCostFollowingOperation": 5009699
+      "maximumOperationCost": 4715200,
+      "operationCostFollowingOperation": 4715217
     }
   ],
   "costAttribution": {

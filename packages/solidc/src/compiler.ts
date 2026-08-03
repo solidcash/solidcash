@@ -2372,6 +2372,10 @@ function synthesizeHiddenBatchRoute(
           `${parameter.type.toString()} ${signatureWitnessName(handlerIndex, parameterIndex, row)}`)
         : []));
   const graphExecutionContext = graphTailHandlers.size > 0;
+  const resourceVerificationMode = eligible.some((fn) => {
+    const footprint = eligibleFootprint(fn);
+    return footprint.reads.length > 0 || footprint.writes.length > 0;
+  }) || valueEffectMode || tokenContainerMode;
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',
@@ -2672,7 +2676,7 @@ function synthesizeHiddenBatchRoute(
             if (field == 3) { rowEffect = transcript.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
-          if (kind == 1) {
+          ${resourceVerificationMode ? `if (kind == 1 && owner == activeParticipant) {
             bigint resourceMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
             require(rowSubject.length > 0);
             if (resourceMode == 3) {
@@ -2734,8 +2738,8 @@ function synthesizeHiddenBatchRoute(
                 activeResourceEndpoints = activeResourceEndpoints + (resourceMode == 0 ? 2 : 1);
               }
             }
-          }
-          if (kind == 2) {
+          }` : ''}
+          ${eventMode ? `if (kind == 2 && owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length > 0);
             require(rowSubject == tx.outputs[targetSlot].lockingBytecode);
             require(rowEffect == tx.outputs[targetSlot].nftCommitment);
@@ -2743,8 +2747,8 @@ function synthesizeHiddenBatchRoute(
               || owner != activeParticipant);
             require(tx.outputs[targetSlot].tokenAmount == 0);
             if (owner == activeParticipant) { activeEventRows = activeEventRows + 1; }
-          }
-          if (kind == 3) {
+          }` : ''}
+          ${valueEffectMode ? `if (kind == 3 && owner == activeParticipant) {
             require(rowArguments.length == 0 && rowResult.length == 0 && rowEffect.length == 8);
             require(rowSubject.length > 0 && rowSubject != hex"51");
             require(tx.inputs[sourceSlot].lockingBytecode
@@ -2754,7 +2758,7 @@ function synthesizeHiddenBatchRoute(
             require(tx.outputs[targetSlot].lockingBytecode == rowSubject);
             require(tx.outputs[targetSlot].value == int(bytes.concat(rowEffect, hex"00")));
             if (owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
-          }
+          }` : ''}
           if (kind == 4) {
             bigint tokenMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)

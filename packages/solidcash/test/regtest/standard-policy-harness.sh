@@ -1,57 +1,82 @@
 #!/usr/bin/env bash
-# Audit P13: a committed, reproducible STANDARD-POLICY harness for the layer-3 N-party lifecycle.
+# Reproducible live BCHN proof for the controllerless single-transaction bus.
 #
-# Regtest defaults to acceptnonstdtxn=1 (accepts non-standard txs), which only proves consensus-node
-# acceptance. This harness recreates the bchn node with -acceptnonstdtxn=0 (mainnet standard relay policy),
-# runs the N-party execution-transcript lifecycle against it, then restores the node - so the standard-policy
-# result is reproducible, not a one-off manual assertion.
+# The temporary Compose override runs BCHN with mainnet standard relay policy. No tracked file is edited, and
+# the original regtest service is restored on exit. Every selected test creates only participant/resource UTXOs,
+# then broadcasts one controllerless application transaction; none creates or spends a controller/verifier UTXO.
 #
-# Usage (from repo root, with the regtest stack up):  bash packages/solidcash/test/regtest/standard-policy-harness.sh
+# Usage from the repository root:
+#   bash packages/solidcash/test/regtest/standard-policy-harness.sh
 set -euo pipefail
 
 COMPOSE="docker-compose.regtest.yml"
 PROJECT="cashscript"
 BCHN="cashscript-bchn-1"
-FLAG="-acceptnonstdtxn=0"
 
-cli() { docker exec "$BCHN" bitcoin-cli -regtest -rpcuser=user -rpcpassword=password "$@"; }
-wait_healthy() {
-  for _ in $(seq 1 20); do
-    [ "$(docker inspect "$BCHN" --format '{{.State.Health.Status}}' 2>/dev/null)" = "healthy" ] && return 0
-    sleep 3
-  done
-  echo "bchn did not become healthy" >&2; return 1
-}
-
-echo "== standard-policy harness =="
-if grep -q "acceptnonstdtxn" "$COMPOSE"; then
-  echo "compose already sets acceptnonstdtxn; aborting to avoid clobbering" >&2; exit 1
+if [[ ! -f "$COMPOSE" ]]; then
+  echo "run this harness from the repository root" >&2
+  exit 1
 fi
 
-# 1. Recreate bchn with standard policy (non-standard acceptance DISABLED).
-cleanup() {
-  echo "-- restoring bchn to default policy --"
-  git checkout -- "$COMPOSE" 2>/dev/null || sed -i "\|      $FLAG|d" "$COMPOSE"
+override_file="$(mktemp)"
+cli() { docker exec "$BCHN" bitcoin-cli -regtest -rpcuser=user -rpcpassword=password "$@"; }
+wait_healthy() {
+  for _ in $(seq 1 30); do
+    if [[ "$(docker inspect "$BCHN" --format '{{.State.Health.Status}}' 2>/dev/null || true)" == "healthy" ]]; then
+      return 0
+    fi
+    sleep 3
+  done
+  echo "bchn did not become healthy" >&2
+  return 1
+}
+restore() {
+  echo "-- restoring BCHN's default regtest policy --"
   docker compose -p "$PROJECT" -f "$COMPOSE" up -d --force-recreate bchn >/dev/null 2>&1 || true
   wait_healthy || true
+  rm -f "$override_file"
 }
-trap cleanup EXIT
+trap restore EXIT
 
-sed -i "s|^      -upgrade12activationtime=.*|&\n      $FLAG|" "$COMPOSE"
-docker compose -p "$PROJECT" -f "$COMPOSE" up -d --force-recreate bchn >/dev/null
+cat >"$override_file" <<'YAML'
+services:
+  bchn:
+    command:
+      - bitcoind
+      - -regtest
+      - -server=1
+      - -txindex=1
+      - -rpcuser=user
+      - -rpcpassword=password
+      - -rpcallowip=0.0.0.0/0
+      - -rpcbind=0.0.0.0
+      - -zmqpubhashblock=tcp://0.0.0.0:28332
+      - -upgrade12activationtime=1762596456
+      - -acceptnonstdtxn=0
+YAML
+
+echo "== controllerless single-transaction bus: live standard-policy proof =="
+docker compose -p "$PROJECT" -f "$COMPOSE" -f "$override_file" up -d --force-recreate bchn >/dev/null
 wait_healthy
-echo "bchn recreated with $FLAG; chain at block $(cli getblockchaininfo | grep -o '"blocks": [0-9]*' | grep -o '[0-9]*')"
+if ! docker inspect "$BCHN" --format '{{json .Config.Cmd}}' | grep -q -- '-acceptnonstdtxn=0'; then
+  echo "BCHN did not start with -acceptnonstdtxn=0" >&2
+  exit 1
+fi
+if [[ "$(cli getnetworkinfo | tr -d '\n ' | grep -o '"localrelay":true' || true)" != '"localrelay":true' ]]; then
+  echo "BCHN is not relaying transactions" >&2
+  exit 1
+fi
+echo "BCHN healthy at block $(cli getblockcount), acceptnonstdtxn=0"
 
-# 2. Run the lifecycle + balanced-layout shapes under standard relay policy. Each vitest sendRawTransaction
-#    submits to the standard-policy node's mempool, so a passing run IS a mempool-acceptance proof. The
-#    committed CI gate Layer3BalancedStandardPolicy.test.ts additionally checks the same shapes statically
-#    (script/commitment/dust limits) without needing this node reconfiguration.
-echo "-- running the lifecycle + balanced shapes against the standard-policy node --"
-TESTS_USE_REGTEST=true yarn vitest run --no-file-parallelism \
-  packages/solidcash/test/e2e/Layer3ControllerGenesis.test.ts \
-  packages/solidcash/test/e2e/Layer3Heterogeneous.test.ts \
-  packages/solidcash/test/e2e/Layer3Balanced.test.ts \
-  packages/solidcash/test/e2e/Layer3BalancedEvents.test.ts \
-  packages/solidcash/test/e2e/Layer3BalancedCall.test.ts
+# Heterogeneous state+return, three-party transitive return chain, and the three effect families required by
+# the completion specification. Vitest executes the selected tests serially against one live provider.
+TESTS_USE_REGTEST=true yarn workspace solidcash test \
+  test/e2e/Layer3SingleTxCompose.test.ts --no-file-parallelism \
+  -t 'builds and broadcasts one transaction|converges nested authenticated returns|binds an emitted event row|authenticates a BCH transfer|authenticates repeated fungible-token calls'
 
-echo "== PASS: the execution-transcript lifecycle + balanced layouts are accepted under mainnet standard policy =="
+# The published five-participant shape is the adjacent-to-failure maximum under stock BCH-2026 operation
+# density. This test verifies every input, pins the exact capacity reading, and broadcasts those same bytes.
+TESTS_USE_REGTEST=true yarn workspace solidcash test \
+  test/e2e/Layer3SingleTxCapacity.test.ts --no-file-parallelism -t '5-participant'
+
+echo "== PASS: all controllerless capstones were accepted by BCHN under standard relay policy =="

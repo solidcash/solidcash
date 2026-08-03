@@ -7,7 +7,7 @@ import { Contract, StatefulContract, layer3 } from '../../src/index.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import type { TransactionBuilder } from '../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createLayer3CapstoneTestProvider } from './layer3-semantic-profile.js';
 
 const HOP = `
 interface ICapacityHop { function run(int value) returns (int); }
@@ -77,7 +77,7 @@ const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
 });
 
 const buildChain = async (participants: number): Promise<TransactionBuilder> => {
-  const provider = createLayer3SemanticTestProvider();
+  const provider = createLayer3CapstoneTestProvider();
   const rootArtifact = compileString(ROOT, { forceStateful: true });
   const hopArtifact = compileString(HOP, { forceStateful: true });
   const sinkArtifact = compileString(SINK, { forceStateful: true });
@@ -151,12 +151,20 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
 
 describe('controllerless single-transaction capacity', () => {
   it.each([2, 4, 5])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
-    const reading = measure(count, await buildChain(count));
+    const builder = await buildChain(count);
+    const reading = measure(count, builder);
     expect(reading.transactionBytes).toBeLessThanOrEqual(100_000);
     expect(reading.worstRatio).toBeLessThanOrEqual(1);
     expect(reading.authenticatedParticipants).toBe(count);
     expect(reading.slots).toBeGreaterThan(count);
     expect(reading).toEqual(EXPECTED[count]);
     console.log(`L3_SINGLE_TX_CAPACITY ${JSON.stringify(reading)}`);
+    // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
+    // filter for the five-participant case to prove the maximum admitted physical/resource shape on BCHN.
+    if (process.env.TESTS_USE_REGTEST) {
+      await expect(builder.send()).resolves.toMatchObject({
+        txid: expect.stringMatching(/^[0-9a-f]{64}$/),
+      });
+    }
   }, 180_000);
 });

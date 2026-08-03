@@ -26,6 +26,7 @@ import {
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
+import { GlobalFunction } from './ast/Globals.js';
 import { ThrowingErrorListener, SolidCashErrorListener, ForwardingErrorListener } from './ast/error-listeners.js';
 import GenerateTargetTraversal from './generation/GenerateTargetTraversal.js';
 import SolidCashLexer from './grammar/SolidCashLexer.js';
@@ -2376,6 +2377,18 @@ function synthesizeHiddenBatchRoute(
     const footprint = eligibleFootprint(fn);
     return footprint.reads.length > 0 || footprint.writes.length > 0;
   }) || valueEffectMode || tokenContainerMode;
+  const sidecarVerificationMode = graphBlockhashReads.size > 0 || eligible.some((fn) => {
+    let found = false;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof FunctionCallNode && [
+        GlobalFunction.KECCAK256,
+        GlobalFunction.ECRECOVER_PUBKEY,
+        GlobalFunction.ECRECOVER_P2PKH,
+        GlobalFunction.ECRECOVER_EVM,
+      ].includes(node.identifier.name as GlobalFunction)) found = true;
+    });
+    return found;
+  });
   const graphRouteParameters = !graphExecutionContext ? [] : [
     'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',
@@ -2759,7 +2772,7 @@ function synthesizeHiddenBatchRoute(
             require(tx.outputs[targetSlot].value == int(bytes.concat(rowEffect, hex"00")));
             if (owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
           }` : ''}
-          if (kind == 4) {
+          ${tokenContainerMode ? `if (kind == 4 && owner == activeParticipant) {
             bigint tokenMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)
               || (tokenMode == 1 && rowArguments.length == 32)
@@ -2781,8 +2794,8 @@ function synthesizeHiddenBatchRoute(
                 && tx.outputs[targetSlot].nftCommitment == rowEffect);
             }
             if (owner == activeParticipant) { activeTokenRows = activeTokenRows + 1; }
-          }
-          if (kind == 6) {
+          }` : ''}
+          ${sidecarVerificationMode ? `if (kind == 6 && owner == activeParticipant) {
             require(rowSubject.length > 0 && rowArguments.length >= 32 && rowResult.length == 0
               && rowEffect.length >= 8);
             bigint categoryLength = tx.inputs[sourceSlot].tokenCategory.length;
@@ -2802,7 +2815,7 @@ function synthesizeHiddenBatchRoute(
               activeSidecarRows = activeSidecarRows + 1;
               activeSidecarTargets = bytes.concat(activeSidecarTargets, bytes2(targetSlot));
             }
-          }
+          }` : ''}
           bigint priorBoundary = int(bytes.concat(
             participantBoundaries.slice(consumer * 2, consumer * 2 + 2), hex"00"
           ));
@@ -2864,12 +2877,13 @@ function synthesizeHiddenBatchRoute(
         for (bigint slot = this.activeInputIndex;
           slot < this.activeInputIndex + activeBlockSize; slot = slot + 1) {
           bigint isSidecarSlot = 0;
-          for (bigint sidecar = 0; sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
+          ${sidecarVerificationMode ? `for (bigint sidecar = 0;
+            sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
             if (slot == int(bytes.concat(
               activeSidecarTargets.slice(sidecar, sidecar + 2), hex"00"))) {
               isSidecarSlot = 1;
             }
-          }
+          }` : ''}
           // Controllerless staticcall security boundary: every participant enforces this snapshot walk from
           // its mutually authenticated local rows.
           // A return-event slot is allowed to publish the authenticated result vector, but every other slot in

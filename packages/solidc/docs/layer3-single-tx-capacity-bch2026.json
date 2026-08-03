@@ -17,29 +17,29 @@
     {
       "participants": 2,
       "slots": 4,
-      "transactionBytes": 13628,
+      "transactionBytes": 12668,
       "transcriptBytes": 359,
-      "inputOperationCosts": [2424394, 2375352, 695, 27321],
-      "inputMaximumOperationCosts": [5544800, 5009600, 34400, 112800],
-      "worstOperationRatio": 0.4741600127754711
+      "inputOperationCosts": [2254380, 2375148, 695, 27321],
+      "inputMaximumOperationCosts": [5071200, 4715200, 34400, 112800],
+      "worstOperationRatio": 0.5037215812690872
     },
     {
       "participants": 4,
       "slots": 8,
-      "transactionBytes": 28526,
+      "transactionBytes": 26830,
       "transcriptBytes": 713,
-      "inputOperationCosts": [3935394, 3965572, 695, 3965034, 695, 3835073, 695, 27321],
-      "inputMaximumOperationCosts": [5893600, 5648800, 34400, 5648800, 34400, 5009600, 34400, 112800],
-      "worstOperationRatio": 0.7655447540721814
+      "inputOperationCosts": [3668364, 3840019, 695, 3839481, 695, 3860769, 695, 27321],
+      "inputMaximumOperationCosts": [5420000, 5354400, 34400, 5354400, 34400, 4715200, 34400, 112800],
+      "worstOperationRatio": 0.8187922039362063
     },
     {
       "participants": 5,
       "slots": 10,
-      "transactionBytes": 36098,
+      "transactionBytes": 34034,
       "transcriptBytes": 890,
-      "inputOperationCosts": [4734934, 4754691, 695, 4754153, 695, 4753596, 695, 4607995, 695, 27321],
-      "inputMaximumOperationCosts": [6068000, 5681600, 34400, 5681600, 34400, 5681600, 34400, 5009600, 34400, 112800],
-      "worstOperationRatio": 0.9198329207920792
+      "inputOperationCosts": [4419396, 4608736, 695, 4608198, 695, 4607641, 695, 4646641, 695, 27321],
+      "inputMaximumOperationCosts": [5594400, 5387200, 34400, 5387200, 34400, 5387200, 34400, 4715200, 34400, 112800],
+      "worstOperationRatio": 0.9854600016966406
     }
   ],
   "rejected": [
@@ -53,7 +53,7 @@
   ],
   "costAttribution": {
     "method": "Compare the same compiled hop input between the four- and five-participant chains, then compare dedicated return-event and fee slots.",
-    "duplicatedGlobalVerificationMarginalOperationCost": 772922,
+    "duplicatedGlobalVerificationMarginalOperationCost": 785872,
     "localReturnEventOperationCost": 695,
     "terminalP2pkhFeeOperationCost": 27321,
     "conclusion": "Duplicated parsing and verification of the complete global transcript dominates scaling; local return-event verification and the fee tail are effectively fixed. Exact per-shape VM preflight remains authoritative because local business and resource verification vary by artifact."

@@ -1,8 +1,8 @@
 # State journal and message bus
 
 This is the user-oriented description of the two mechanisms SolidCash uses to make stateful contract calls feel
-like ordinary program execution on Bitcoin Cash. Protocol specifications and audit notes remain authoritative for
-exact byte layouts; this document explains the model and the public behavior.
+like ordinary program execution on Bitcoin Cash. The canonical specifications define exact behavior; this document
+explains the model and public workflow.
 
 ## The short version
 
@@ -90,6 +90,6 @@ updates cannot be committed.
 ## Detailed references
 
 - `layer3-single-transaction-bus-protocol.md` defines the canonical protocol.
-- `layer3-production-api.md` documents the SDK composition API.
-- `state-journal-audit.md` and `state-bus-audit-handoff.md` contain implementation and audit history.
-- `journal-message-bus-docs-todo.md` tracks consolidation of the historical document set.
+- `state-journal-protocol.md` defines normative journal semantics.
+- `layer3-coverage-matrix.md` records stable acceptance and security coverage.
+- `archive/journal-message-bus/` preserves dated implementation, benchmark, and audit evidence.

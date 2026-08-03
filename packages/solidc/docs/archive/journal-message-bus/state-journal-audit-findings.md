@@ -1,4 +1,7 @@
-# State-journal + full-branch soundness audit (R1-R5)
+# State-journal + full-branch soundness audit (archived R1-R5 findings)
+
+> Archived evidence. Current normative behavior is defined by `../../state-journal-protocol.md`. Do not update
+> product semantics here; this file preserves the dated discovery and remediation record.
 
 Reviewer: Claude (adversarial soundness + security audit)
 Baseline: branch `codex/state-bus-research`, HEAD `4cff1624`, forked from `d36116aa` (62 commits, ~5.2k

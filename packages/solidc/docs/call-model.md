@@ -191,7 +191,7 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
   co-spent minting masters. It proves IDENTITY (this master was co-spent), not per-call AUTHORIZATION:
   co-presence of a peer's master is not proof that peer initiated this call. For peer-mode caller-intent
   authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
-  `layer3-production-api.md`. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
+  the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
 - **Co-spend liveness:** targets are real inputs, recreated for reads; the tx grows with N.
 

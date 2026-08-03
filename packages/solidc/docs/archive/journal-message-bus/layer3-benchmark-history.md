@@ -1,4 +1,8 @@
-# Layer-3 target corpus and Milestone-0 baseline
+# Layer-3 target corpus and benchmark history (archived)
+
+> Archived dated evidence. The stable acceptance matrix is `../../layer3-coverage-matrix.md`; current protocol
+> behavior is `../../layer3-single-transaction-bus-protocol.md`. Obsolete controller terminology below is retained
+> only to make historical measurements reproducible.
 
 Status: observed-need gate **passes** for one bounded acyclic workload. This document authorizes a
 disposable participant-binding spike only. It does not freeze a transcript or authorize production
@@ -19,7 +23,7 @@ The baseline was rebuilt and tested under the repository's BCH-2026 default:
 | monorepo `yarn build` | six packages passed |
 | `packages/solidc` complete suite | 2,302 passed; two heavy `MessageBus` cases hit the suite's 5 s timeout |
 | isolated `MessageBus` rerun with 30 s timeout | 9/9 passed; the two timed-out shapes completed in 2.88 s and 3.13 s |
-| `packages/solidcash` complete suite | 3,261 passed, 24 skipped, 9 todo |
+| `packages/solidcash` complete suite | 3,261 passed, 24 skipped, 9 historical placeholders |
 
 The raw timeout is retained as baseline evidence rather than described as a clean full-suite pass.
 It is the already-documented concurrent-CPU measurement flake, not a different result or bytecode.

@@ -3,7 +3,10 @@
   "version": "1.0.0",
   "private": true,
   "scripts": {
+    "docs:generate": "node scripts/generate-message-bus-reference.mjs",
+    "prestart": "yarn docs:generate",
     "start": "docusaurus start",
+    "prebuild": "yarn docs:generate",
     "build": "docusaurus build",
     "swizzle": "docusaurus swizzle",
     "deploy": "docusaurus deploy"

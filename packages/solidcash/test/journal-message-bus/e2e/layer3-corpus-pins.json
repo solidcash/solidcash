@@ -95,7 +95,7 @@
         "party cannot recreate this corpus from a public commit.",
         "Measured scope of the divergence: 15 of the 16 census targets are byte-identical to the nearest public",
         "ancestor 1f8622bb. Exactly one differs, contracts/bentobox/BentoBoxV1.sol (10 lines), and it is one of",
-        "the two load-bearing corpus anchors in layer3-target-corpus.md section 2.",
+        "the two load-bearing corpus anchors preserved in docs/archive/journal-message-bus/layer3-benchmark-history.md section 2.",
         "The divergence is cosmetic rebranding (a domain-separator string 'BentoBox V1' -> 'Mirror V1', two",
         "approval strings, a trailing space in a revert reason, STRATEGY_DELAY 2 weeks -> 2 minutes). It does",
         "not touch the deposit path the corpus cites, so it is immaterial to what the census measures, but the",

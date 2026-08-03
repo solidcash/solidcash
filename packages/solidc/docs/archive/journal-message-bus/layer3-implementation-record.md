@@ -1,13 +1,34 @@
-# Layer 3 single-transaction bus progress
+# Layer 3 single-transaction bus implementation record (archived)
+
+> Completed implementation evidence. Current normative behavior is defined by
+> `../../layer3-single-transaction-bus-protocol.md`; stable coverage is `../../layer3-coverage-matrix.md`.
 
 Last updated: 2026-08-03
 Branch: `codex/layer3-single-tx-bus`  
-Verified implementation revision: pending final self-preserved-verifier commit
+Verified implementation revisions: `095517ca`, `b8a3611f`, and consolidation revision history
 Overall verified progress: **100 / 100 points (100%)**
 
-This is the durable progress ledger for
-[`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
-Update it whenever a checklist item gains or loses authoritative evidence.
+This record consolidates the completed handoff, requirements census, phase ledger, and final audit. It is immutable
+historical evidence; current requirements are maintained in `../../layer3-coverage-matrix.md` and current wire
+behavior in `../../layer3-single-transaction-bus-protocol.md`.
+
+## Mission and architectural disposition
+
+The project replaced the exact-root controller-NFT workflow with atomic composition using compiler-specialized,
+self-preserved verifier covenants deployed at contract genesis. Composition, authorization, execution, and
+settlement occur in one transaction. There is no controller category, execution-root preparation, projection
+input, confirmation barrier, or setup transaction. Participant blocks use authenticated actual spans and local
+offsets; verifier inputs follow the blocks, and the ordinary fee/change tail is last.
+
+At baseline `aa562953`, controller/projection concerns crossed compiler options and admission, code generation,
+artifact metadata, graph codec/planning, controller covenants, balanced assembly, preflight, and public exports.
+Reusable journal and row-encoding evidence was preserved; controller-bound assembly was adapted; genesis,
+projection, root-lifecycle, and compatibility APIs were removed after controllerless VM evidence existed.
+
+All twelve final security obligations—one transcript, exact participants, contiguous blocks, active membership,
+exact row consumption, authentic calls/state/effects, no replay authority, no circular commitment, fail-closed
+admission, and measured capacity—are enumerated in the stable coverage matrix. The phase evidence below records
+their implementation closure.
 
 ## Scoring rules
 
@@ -40,7 +61,7 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 - [x] **1 point:** Controller-backed baseline size/capacity evidence is recorded for comparison.
 - [x] **1 point:** All twelve security invariants are mapped to required evidence.
 - [x] **1 point:** Protocol requirements and controllerless architecture are committed in
-  `layer3-single-transaction-bus-requirements.md` and `layer3-single-transaction-bus-protocol.md`.
+  the requirements census and `../../layer3-single-transaction-bus-protocol.md`.
 
 ## Phase 1 — codec and layout (10/10)
 

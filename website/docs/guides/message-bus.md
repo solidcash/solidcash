@@ -61,4 +61,50 @@ number of collection-entry NFTs does not shift another contract's meaning.
 The SDK rejects malformed carriers, unsupported call graphs, missing participant capabilities, and transactions
 which exceed the published participant, row, byte, or standardness limits before broadcast.
 
+## Compose and send
+
+Prepare calls from category-bound `StatefulContract` instances in compiler-authored depth-first execution order:
+
+```ts
+import { layer3 } from 'solidcash';
+
+const composition = layer3.compose({
+  calls: [
+    caller.call.prepare(next),
+    callee.call.settle(next),
+  ],
+  funder: feeUtxo,
+  changeAddress,
+});
+
+const { txid } = await composition.send();
+```
+
+The funder is the terminal bare-P2PKH fee input and authenticates the root invocation's `tx.origin`. Applications
+supply calls and funding; the compiler artifacts and SDK derive participant identities, local slots, effects, and
+all absolute transaction positions.
+
+At deployment, `layer3VerifierCount: N` creates `N` independently spendable verifier instances. One is the default
+for artifacts with a verifier program. They are genesis resources and self-preserve, so no deployment or setup is
+performed between contract creation and composition.
+
+## Offline construction
+
+`build()` finalizes the same composition without broadcasting it:
+
+```ts
+const builder = await composition.build();
+const transaction = builder.buildLibauthTransaction();
+```
+
+The participant table, transcript, effects, block layout, and carrier are fixed before signatures are produced.
+Use this path for inspection, offline signing, and mutation tests.
+
+## Admission and limits
+
+Unsupported recursion, dynamic cardinality, call options, delegate contexts, introspection, or effect shapes fail
+with a named compiler or SDK diagnostic. There is no legacy-controller fallback. The current limits and the exact
+`Artifact.messageBus` fields are generated from the compiler schema in the
+[Message Bus Artifact Reference](../reference/message-bus-artifact.md).
+
 For local state semantics, see [How the State Journal Works](./state-journal.md).

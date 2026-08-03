@@ -82,6 +82,13 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
+      label: 'Reference',
+      items: [
+        'reference/message-bus-artifact',
+      ],
+    },
+    {
+      type: 'category',
       label: 'Releases',
       items: [
         'releases/release-notes',

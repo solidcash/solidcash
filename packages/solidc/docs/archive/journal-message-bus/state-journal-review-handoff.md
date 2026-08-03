@@ -1,4 +1,8 @@
-# State bus/journal audit handoff
+# State journal audit review handoff (archived)
+
+> Archived evidence. Here, **journal** means transaction-local deferred state, **message bus** means atomic
+> multi-participant composition, and **carrier** means the canonical per-transaction transcript. Current semantics
+> are in `../../state-journal-protocol.md` and `../../layer3-single-transaction-bus-protocol.md`.
 
 Date: 2026-07-24  
 Branch: `codex/state-bus-research`  
@@ -27,7 +31,7 @@ approved release surface.
 - `packages/solidc/docs/invocation-transcript-research.md`
 - `packages/solidc/docs/compiler-message-bus-v1.md`
 - `packages/solidc/docs/compiler-message-bus-v1-audit.md`
-- `packages/solidc/docs/state-journal-audit.md`
+- `packages/solidc/docs/archive/journal-message-bus/state-journal-audit-findings.md`
 
 Treat the first two as design/specification material and the latter two as historical independent
 finding reports plus remediation annotations. Verify annotations; do not trust them as evidence.
@@ -133,7 +137,7 @@ PASS: 51 files, 2,303 tests
 cd packages/solidcash && yarn test
 PASS: 368 files, 3,261 tests
 SKIP: 4 files / 24 tests
-TODO: 9 tests
+PLACEHOLDER AT THIS HISTORICAL REVISION: 9 tests
 ```
 
 Focused gates:

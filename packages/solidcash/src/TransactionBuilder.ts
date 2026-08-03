@@ -1170,7 +1170,8 @@ export class TransactionBuilder {
     //
     // MEASURED BEFORE LANDING, not assumed: 1,170 sends through this site across the whole SDK e2e population,
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
-    // `test/e2e/layer3-gatesite-probe.ts` for the per-site table and `test/e2e/X131SendFinalizedBytesGate.test.ts`
+    // `test/journal-message-bus/e2e/layer3-gatesite-probe.ts` for the per-site table and
+    // `test/e2e/X131SendFinalizedBytesGate.test.ts`
     // for the throw census that confirms it after the gate was applied.
     //
     // IT DOES NOT READ `provider.policy`, AND MUST NOT START (X157, decided). The observation that prompted the

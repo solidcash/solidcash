@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { computeErc7201SlotNumber } from '@solidcash/utils';
 import { compileString, compileStringMulti } from './direct-compile.js';
+import { compileString as compileMessageBus } from '../src/compiler.js';
 
 // Compile-level regression guards for solc-corpus gap fixes (see examples/solidity-corpus/PROGRESS.md).
 
@@ -2247,9 +2248,10 @@ describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EA
       + ' ITok(job.token).transfer(msg.sender, 1); require(true); } }')).toBe('C');
   });
   it('dedups two identical-chain casts to ONE synthesized local (compiles, no re-decl)', () => {
-    expect(ok(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
+    expect(compileMessageBus(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
       + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1);'
-      + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }')).toBe('C');
+      + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
 
@@ -3099,7 +3101,7 @@ describe('inlined helper with an interface-cast external-call target (clone .cal
   // while SymbolTableTraversal re-derived from the stale `.call` - losing an `IFactory(factory).createPair()`
   // co-spend target ("must be a constructor/function parameter"). cloneNode now re-aliases them. Router02 _addLiquidity.
   it('resolves IFactory(factory).m() inside an inlined storage-pointer helper', () => {
-    expect(() => compileString('pragma experimental ABIEncoderV2;'
+    expect(() => compileMessageBus('pragma experimental ABIEncoderV2;'
       + ' interface IFactory { function getPair(address a, address b) external view returns (address);'
       + ' function createPair(address a, address b) external returns (address); }'
       + ' contract C { address factory; mapping(address => uint256) data;'

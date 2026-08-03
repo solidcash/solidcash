@@ -42,7 +42,7 @@ That made the census irreproducible in the way that matters: re-running it later
 upstream sources silently changes the denominator of every percentage the board quotes over real
 contracts, and nothing distinguishes "the compiler changed" from "the corpus changed".
 
-Identity is now recorded in `packages/solidcash/test/e2e/layer3-corpus-pins.json` and verified by
+Identity is now recorded in `packages/solidcash/test/journal-message-bus/e2e/layer3-corpus-pins.json` and verified by
 `layer3-corpus-pins.ts`. The sources are not vendored: the manifest records identity, not content. It
 follows the pattern `examples/solidity-by-example/SBE_SOURCE.md` already set and the census had not
 adopted.
@@ -258,7 +258,7 @@ contention, full projection exhaustiveness, and independent review remain mandat
 ## 8. Milestone-2 measured results (2026-07-24, this pass)
 
 Status: the two-participant invariant-15 **binding core is now VM-proven and feasible**, not just
-compiled. Test: `packages/solidcash/test/e2e/Layer3ParticipantBindingSpike.test.ts` (5/5), executed on
+compiled. Test: `packages/solidcash/test/journal-message-bus/e2e/Layer3ParticipantBindingSpike.test.ts` (5/5), executed on
 the real BCH-2026 VM via `MockNetworkProvider.sendRawTransaction` (full consensus verifier).
 
 Design realized: two clones of one stateful `Participant` artifact (distinct random categories, shared
@@ -391,7 +391,7 @@ proven for N=8.
 
 ### 8.4 N-participant scaling measurement (2026-07-24)
 
-Test: `packages/solidcash/test/e2e/Layer3ScalingSpike.test.ts`. Two findings.
+Test: `packages/solidcash/test/journal-message-bus/e2e/Layer3ScalingSpike.test.ts`. Two findings.
 
 **Finding A - the hard ceiling is the SCB1 blob cap, not the op budget.** Carrying full identity
 (35-byte owner locking bytecode + 33-byte category) per participant in the SCB1 row makes the blob

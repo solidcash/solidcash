@@ -68,6 +68,8 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       items: [
         'guides/stateful-guide',
+        'guides/state-journal',
+        'guides/message-bus',
         'guides/covenants',
         'guides/lifecycle',
         'guides/cashtokens',

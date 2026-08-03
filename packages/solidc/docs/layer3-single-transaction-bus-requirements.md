@@ -71,5 +71,5 @@ on this branch:
 
 ```bash
 cd packages/solidcash
-yarn test --run test/Layer3SingleTxCodec.test.ts
+yarn test --run test/journal-message-bus/Layer3SingleTxCodec.test.ts
 ```

@@ -6,7 +6,7 @@
     "operationCostBudgetPerByte": 800,
     "transactionByteLimit": 100000,
     "shape": "compiled root -> returning hop* -> returning sink; one artifact-specialized verifier per participant; one terminal P2PKH fee/change slot",
-    "command": "yarn workspace solidcash vitest run test/e2e/Layer3SingleTxCapacity.test.ts --reporter=verbose --disableConsoleIntercept"
+    "command": "yarn workspace solidcash vitest run test/journal-message-bus/e2e/Layer3SingleTxCapacity.test.ts --reporter=verbose --disableConsoleIntercept"
   },
   "admission": {
     "maximumPhysicalParticipants": 8,

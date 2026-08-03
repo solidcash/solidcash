@@ -71,12 +71,12 @@ echo "BCHN healthy at block $(cli getblockcount), acceptnonstdtxn=0"
 # Heterogeneous state+return, three-party transitive return chain, and the three effect families required by
 # the completion specification. Vitest executes the selected tests serially against one live provider.
 TESTS_USE_REGTEST=true yarn workspace solidcash test \
-  test/e2e/Layer3SingleTxCompose.test.ts --no-file-parallelism \
+  test/journal-message-bus/e2e/Layer3SingleTxCompose.test.ts --no-file-parallelism \
   -t 'builds and broadcasts one transaction|converges nested authenticated returns|binds an emitted event row|authenticates a BCH transfer|authenticates repeated fungible-token calls'
 
 # The published eight-participant shape is the protocol maximum under stock BCH-2026 operation density and
 # transaction size. This test verifies every input, pins the exact capacity reading, and broadcasts those bytes.
 TESTS_USE_REGTEST=true yarn workspace solidcash test \
-  test/e2e/Layer3SingleTxCapacity.test.ts --no-file-parallelism -t '8-participant'
+  test/journal-message-bus/e2e/Layer3SingleTxCapacity.test.ts --no-file-parallelism -t '8-participant'
 
 echo "== PASS: all controllerless capstones were accepted by BCHN under standard relay policy =="

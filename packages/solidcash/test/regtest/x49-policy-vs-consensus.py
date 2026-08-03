@@ -9,7 +9,7 @@ when the SAME bytes are offered by the other path, inside a block.
 
 This script is MUTATING - it spends wallet coins and submits blocks - which is why it is a harness rather
 than a test. The non-mutating half of the same evidence is committed as
-`test/e2e/Layer3NodeEnvelopeX49.test.ts` and runs under `TESTS_USE_REGTEST`.
+`test/journal-message-bus/e2e/Layer3NodeEnvelopeX49.test.ts` and runs under `TESTS_USE_REGTEST`.
 
 Usage, from the repo root with the regtest stack up:
     python3 packages/solidcash/test/regtest/x49-policy-vs-consensus.py

@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import { compileString as compileMessageBus } from 'solidc';
 import { compileString } from './direct-compile.js';
 
 // A value-transfer in a NESTED/else-if branch used to CRASH codegen with an internal error ("__internal__transfer_lb_N
@@ -34,6 +35,6 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
       + ' contract C { I i = I(address(0xcafecafe)); constructor() payable {}'
       + ' function f(uint c) external returns (uint) { if (c==0) i.a(); else if (c==1) i.b(); else if (c==2) i.c();'
       + ' else if (c==3) i.c{value: 1}(); else if (c==4) i.x(); return 1 + c; } }';
-    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+    expect(compileMessageBus(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 });

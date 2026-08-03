@@ -1833,7 +1833,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
         // therefore runs on source entry points only; their synthesized local or graph route consumes the
         // compiler-authored grouping instead of rediscovering it.
-        if (this.compilerOptions.repeatedExternalBatch && !node.messageBusRoute) {
+        const messageBusExplicitlyDisabled =
+          (this.compilerOptions as CompilerOptions & { __messageBusExplicitlyDisabled?: boolean })
+            .__messageBusExplicitlyDisabled === true;
+        if (!node.messageBusRoute) {
           const directCalls = new Set<ExternalFunctionCallNode>();
           for (const statement of node.body.statements ?? []) {
             if (statement instanceof FunctionCallStatementNode
@@ -1882,7 +1885,6 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
           const repeated = [...byTarget.values()].filter((group) => group.length > 1);
           const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
-          const messageBusExplicitlyDisabled = this.compilerOptions.__messageBusExplicitlyDisabled === true;
           if (knownRepeated.length > 0 && messageBusExplicitlyDisabled) {
             const chains = knownRepeated.map((group) => group.map((slot) =>
               `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
@@ -1892,25 +1894,6 @@ export default class SymbolTableTraversal extends AstTraversal {
               + 'A UTXO master can be spent only once, so this transaction cannot be built with '
               + '`messageBus: false`; omit the option to infer message-bus support or set it to true.',
               { functionName: node.name, callChains: chains, option: 'messageBus' },
-            );
-          }
-          const requireRepeatedExternalBatch =
-            (this.compilerOptions as CompilerOptions & { __requireRepeatedExternalBatch?: boolean })
-              .__requireRepeatedExternalBatch === true;
-          if (knownRepeated.length > 1 && requireRepeatedExternalBatch) {
-            throw new Error(
-              `Function '${node.name}' repeats ${knownRepeated.length} external state owners; `
-              + 'Release 5 supports exactly one repeated callee owner per root invocation',
-            );
-          }
-          if (knownRepeated.length === 1 && repeated.length === 0
-            && requireRepeatedExternalBatch) {
-            const chain = knownRepeated[0].map((slot) =>
-              `${slot.interfaceName}.${slot.functionName}`).join(' -> ');
-            throw new Error(
-              `Function '${node.name}' has an unresolvable repeated external call chain `
-              + `'${chain}'; Release 5 requires straight-line, argument-resolvable, `
-              + 'non-returning calls to one pinned owner',
             );
           }
           // V1 permits exactly one repeated callee group in a root invocation.

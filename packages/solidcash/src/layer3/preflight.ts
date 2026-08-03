@@ -938,7 +938,8 @@ export const preflightLayer3Transaction = (
  *
  * THE BLAST RADIUS IS MEASURED, NOT ASSUMED (X126). Every broadcast of the whole SDK e2e population was first
  * assessed against these rules without enforcing them - 5,370 sends across 422 green files - and the per-site
- * table is in `test/e2e/layer3-gatesite-probe.ts`. Six of the seven ungated sites would newly refuse NOTHING;
+ * table is in `test/journal-message-bus/e2e/layer3-gatesite-probe.ts`. Six of the seven ungated sites would newly
+ * refuse NOTHING;
  * the submit phase would newly refuse two tests in one fixture, both because that fixture paid 100/200/300
  * satoshis to a one-byte script and tripped `output-dust` at the same 474-satoshi threshold BCHN used to
  * refuse C1. The gate was node-correct and the fixture was building a transaction the network rejects, so the

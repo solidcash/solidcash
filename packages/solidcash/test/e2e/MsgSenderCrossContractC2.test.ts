@@ -47,12 +47,12 @@ describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], ca
     const provider = createTestProvider();
     const artBank = compileString(BANK, { forceStateful: true });
     const artCaller = compileString(CALLER, { forceStateful: true });
-    const artCallerWithBatchExperiment = compileString(CALLER, {
+    const artCallerExplicitBus = compileString(CALLER, {
       forceStateful: true,
-      repeatedExternalBatch: true,
+      messageBus: true,
     });
-    expect(artCallerWithBatchExperiment.debug?.bytecode).toBe(artCaller.debug?.bytecode);
-    expect(artCallerWithBatchExperiment.abi[0].externalCalls?.[0].batchInvocations)
+    expect(artCallerExplicitBus.debug?.bytecode).toBe(artCaller.debug?.bytecode);
+    expect(artCallerExplicitBus.abi[0].externalCalls?.[0].batchInvocations)
       .toBeUndefined();
 
     // Genesis Bank first (A embeds Bank's category).

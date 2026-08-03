@@ -21,7 +21,7 @@ import {
  * SCOPE OF THIS GATE. Everything here is an SDK BUILDER guard over published artifact metadata. It is not a
  * covenant check: a caller that splices unlocking bytecode directly never reaches it. The covenant-level
  * authority for an admitted class is listed per class below and is what the VM cases in
- * `test/e2e/Layer3DelegateClassesE3.test.ts` attack.
+ * `test/journal-message-bus/e2e/Layer3DelegateClassesE3.test.ts` attack.
  *
  * ADMISSION READS SEMANTICS, NOT PUBLISHED TYPES (X43). Two shapes escaped the round-13 revision of this module
  * (review A13, `test/e2e/ReviewA13DelegateE3.test.ts`), both settling a foreign implementation rewriting proxy

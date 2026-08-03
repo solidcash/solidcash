@@ -6,7 +6,7 @@ Evidence label: `SEMANTIC`
 
 VM target: `BCH_2026_05`
 
-Implementation: `packages/solidcash/test/e2e/layer3-semantic-profile.ts`
+Implementation: `packages/solidcash/test/journal-message-bus/e2e/layer3-semantic-profile.ts`
 
 This test-only profile allows message-bus semantic capstones to execute before bytecode and transaction-size
 optimization. It uses the BCH-2026 instruction set and BCH-2026 introspection behavior. Only capacity and mock relay

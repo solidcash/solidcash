@@ -6,8 +6,6 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
-  /** Internal marker preserving whether the caller explicitly disabled inferred message-bus generation. */
-  __messageBusExplicitlyDisabled?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __layer3VerifierProgram?: {
     verifyFunctionId: number;
@@ -64,9 +62,6 @@ export interface CompilerOptions {
   // contract when omitted. Explicit `false` requests direct-only compilation and is rejected when semantic
   // analysis finds a transaction shape that cannot be built without one shared message bus.
   messageBus?: boolean;
-  // Group one repeated external callee into the compiler-owned batch route. Enabled by default;
-  // set explicitly to false to retain one-call-per-owner lowering.
-  repeatedExternalBatch?: boolean;
 }
 
 export interface AbiInput {

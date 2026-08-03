@@ -21,7 +21,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * transactions in question. The non-circular figure is a THROW CENSUS - instrument `send()` itself, record
  * every throw with its calling frame, and diff against the same run before the gate. Run over the whole e2e
  * population with the gate applied, it found ZERO sends that newly throw and zero whose message changed.
- * `test/e2e/layer3-throw-census.ts` is the instrument.
+ * `test/journal-message-bus/e2e/layer3-throw-census.ts` is the instrument.
  *
  * IT SPEAKS AFTER `debug()`, and row 3 is what holds that. At a gated site the byte gate otherwise speaks
  * BEFORE the covenant, and a hostile test that pays dust and matches loosely then reports the gate's refusal

@@ -120,21 +120,20 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
-  repeatedExternalBatch: true,
 };
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
+type InternalCompilerOptions = CompilerOptions & { __messageBusExplicitlyDisabled?: boolean };
+
+function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
   return {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
     messageBus: options.messageBus === false ? false : true,
-    __messageBusExplicitlyDisabled: options.__messageBusExplicitlyDisabled === true,
-    repeatedExternalBatch: options.repeatedExternalBatch !== false,
-    __requireRepeatedExternalBatch: options.repeatedExternalBatch === true,
+    __messageBusExplicitlyDisabled: false,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
     __suppressGeneratedRouteWarnings: true,
-  } as CompilerOptions;
+  } as InternalCompilerOptions;
 }
 
 export interface CompileOptions extends CompilerOptions {
@@ -413,8 +412,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.__messageBusExplicitlyDisabled
-    ?? (artifactCompilerOptions.messageBus === false);
+  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
@@ -4244,8 +4242,7 @@ function compileResolvedAst(
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
-  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.__messageBusExplicitlyDisabled
-    ?? (artifactCompilerOptions.messageBus === false);
+  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -4293,8 +4290,7 @@ const LIFECYCLE_MODIFIERS = new Set([
 export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
   const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
   const merged = normalizeCompilerOptions(artifactOptions);
-  merged.__messageBusExplicitlyDisabled = artifactOptions.__messageBusExplicitlyDisabled
-    ?? (artifactOptions.messageBus === false);
+  merged.__messageBusExplicitlyDisabled = artifactOptions.messageBus === false;
   const baseline = compileString(code, { ...artifactOptions, errorListener });
   const probe = prepareSplitAst(code, merged, errorListener);
   const logicalName = probe.contract.name;

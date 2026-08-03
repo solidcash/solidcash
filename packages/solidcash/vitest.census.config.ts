@@ -13,7 +13,7 @@ export default defineConfig({
     exclude: ['**/types/**'],
     globals: true,
     silent: true,
-    setupFiles: ['./vitest.setup.ts', './test/e2e/layer3-throw-census.ts'],
+    setupFiles: ['./vitest.setup.ts', './test/journal-message-bus/e2e/layer3-throw-census.ts'],
     testTimeout: 900_000,
     hookTimeout: 900_000,
   },

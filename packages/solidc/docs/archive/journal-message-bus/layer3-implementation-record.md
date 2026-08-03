@@ -4,7 +4,7 @@
 > `../../layer3-single-transaction-bus-protocol.md`; stable coverage is `../../layer3-coverage-matrix.md`.
 
 Last updated: 2026-08-03
-Branch: `codex/layer3-single-tx-bus`  
+Branch: `codex/layer3-single-tx-bus`
 Verified implementation revisions: `095517ca`, `b8a3611f`, and consolidation revision history
 Overall verified progress: **100 / 100 points (100%)**
 

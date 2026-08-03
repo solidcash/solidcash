@@ -208,7 +208,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       // refused rather than published with unbound edges.
       //
       // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
-      // merely reads msg.sender / msg.value under a controller, and such a clone has no external call for the
+      // merely reads msg.sender / msg.value in a graph route, and such a clone has no external call for the
       // transcript to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
       if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
         throw new GraphEmissionEffectError(fn, fn.name.replace(/^__scb_(graph|resource)_/, ''),

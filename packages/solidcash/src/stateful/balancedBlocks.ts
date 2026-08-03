@@ -135,7 +135,7 @@ const publishedMasterBlock = (
  * used to erase the whole gate by making it report "nothing to check".
  *
  * The canonical controllerless layout has no auxiliary tail: the one fee input/change output slot follows the
- * complete participant prefix immediately. Any gap, extra participant, or old projection/controller slot is
+ * complete participant prefix immediately. Any gap, extra participant, or obsolete auxiliary slot is
  * therefore structurally refused here.
  */
 export function deriveBalancedAssemblyFromInputs(

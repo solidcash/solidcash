@@ -993,8 +993,8 @@ function synthesizeHiddenBatchRoute(
       && (lastStatement instanceof MethodCallStatementNode
         || (lastStatement instanceof FunctionCallStatementNode
           && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
-    // Outgoing-call handlers participate in the controllerless carrier protocol by construction. The legacy
-    // controller option selects only the old transcript transport; it is no longer admission authority.
+    // Outgoing-call handlers participate in the controllerless carrier protocol by construction. Admission is
+    // inferred from the handler closure; there is no compiler option that can opt a handler into the protocol.
     const graphTailCallEligible = methodCallCount >= 1
       && (graphTailStatement || graphResultStatement
         || (admitBareForwardingHandlers && graphBareTailStatement)
@@ -1307,7 +1307,7 @@ function synthesizeHiddenBatchRoute(
     // Previously these two shapes were cloned first and rejected only after
     // lowering, turning default-on batching into a whole-contract compile
     // failure (or, for token writes, discovering an omitted effect after the
-    // unsafe route had already been constructed). Graph/controller mode keeps
+    // unsafe route had already been constructed). Graph-route mode keeps
     // the established hard refusal because its published graph promises that
     // every admitted edge is represented.
     let writesDynamicState = footprint.writes.some((resource) =>
@@ -1354,10 +1354,9 @@ function synthesizeHiddenBatchRoute(
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     else if (!reason && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
-    // A transaction signature cannot be placed in the controller-rooted SCB1
-    // argument vector: the signature commits the transaction containing the
-    // controller commitment, while that commitment would in turn commit the
-    // signature. In authenticated graph mode `sig` and `sig[]` are instead
+    // A transaction signature cannot be placed inside the SCB1 carrier transcript: the signature commits the
+    // transaction containing that transcript, while the transcript would in turn commit the signature. In
+    // authenticated graph mode `sig` and `sig[]` are instead
     // positional, per-row route witnesses (generated below) and are verified
     // by the original handler against the final transaction.
     else if (!reason && (
@@ -2860,8 +2859,8 @@ function synthesizeHiddenBatchRoute(
               isSidecarSlot = 1;
             }
           }
-          // Controllerless staticcall security boundary. The removed root controller previously owned this
-          // snapshot walk; every participant must now enforce it from its mutually authenticated local rows.
+          // Controllerless staticcall security boundary: every participant enforces this snapshot walk from
+          // its mutually authenticated local rows.
           // A return-event slot is allowed to publish the authenticated result vector, but every other slot in
           // the participant's complete balanced block must be byte-for-byte and value-for-value preserved.
           if (activeStaticInvocationRows > 0) {
@@ -3840,7 +3839,7 @@ function compileResolvedAst(
   if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
-  // controller compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
+  // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
   if (messageBusGraphMode && pointerTableBounds.size > 0) {
     artifact.abi = artifact.abi.map((fn) => {
       if (!fn.externalCalls?.length) return fn;

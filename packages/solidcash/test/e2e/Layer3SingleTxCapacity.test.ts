@@ -1,5 +1,5 @@
 import {
-  createVirtualMachineBch2026, encodeTransaction, hexToBin,
+  binToHex, createVirtualMachineBch2026, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
@@ -162,9 +162,13 @@ describe('controllerless single-transaction capacity', () => {
     // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
     // filter for the five-participant case to prove the maximum admitted physical/resource shape on BCHN.
     if (process.env.TESTS_USE_REGTEST) {
+      const finalizedHex = binToHex(encodeTransaction(builder.buildLibauthTransaction()));
       await expect(builder.send()).resolves.toMatchObject({
         txid: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
+      // There is no reusable execution authority: the exact same transaction is rejected after its participant
+      // and resource UTXOs have been consumed by the first standard-policy broadcast.
+      await expect(builder.provider.sendRawTransaction(finalizedHex)).rejects.toThrow();
     }
   }, 180_000);
 });

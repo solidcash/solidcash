@@ -63,11 +63,11 @@ eight participants, 24 invocations, depth seven, and 223 bytes per hidden-batch 
 
 The new executable census is `Layer3SingleTxCodec.test.ts`: it pins the controllerless 2/3/1 block layout to
 participant bases `[0,2,5]`, fee input 6, and seven total paired slots. This shows the architectural delta
-without deleting the old measurements. Full baseline reproduction commands are:
+without deleting the old measurements. The first two historical fixtures were deliberately removed in Phase
+6; reproduce their figures only by checking out baseline `aa562953`. The surviving controllerless census runs
+on this branch:
 
 ```bash
 cd packages/solidcash
-yarn test --run test/Layer3CompiledGraph.test.ts
-yarn test --run test/e2e/Layer3BoundedMaximumGraphC3.test.ts
 yarn test --run test/Layer3SingleTxCodec.test.ts
 ```

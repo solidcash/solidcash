@@ -904,6 +904,27 @@ describe('layer3.compose controllerless transaction', () => {
     const built = await composition.build();
     expect(built.inputs).toHaveLength(5);
     expect(built.outputs).toHaveLength(5);
+    // Graph finalization already produced the carrier before this transaction requested any signatures. Prove
+    // that its exact physical push remains stable as each finalized input signature is regenerated in order.
+    const finalizedTransaction = built.buildLibauthTransaction();
+    const sourceOutputs = generateLibauthSourceOutputs(built.inputs);
+    const carrierPush = (): Uint8Array => {
+      const instruction = decodeAuthenticationInstructions(
+        finalizedTransaction.inputs[0].unlockingBytecode,
+      )[2];
+      if (!instruction || !('data' in instruction)) throw new Error('test could not locate canonical carrier');
+      return instruction.data;
+    };
+    const carrierBeforeResigning = carrierPush();
+    for (const [inputIndex, input] of built.inputs.entries()) {
+      finalizedTransaction.inputs[inputIndex].unlockingBytecode = input.unlocker.generateUnlockingBytecode({
+        transaction: finalizedTransaction, sourceOutputs, inputIndex,
+      });
+      expect(carrierPush()).toEqual(carrierBeforeResigning);
+    }
+    expect(decodeSingleTxCarrier(carrierBeforeResigning)).toEqual(
+      decodeSingleTxCarrier(carrierPush()),
+    );
     for (const mutation of ['carrier', 'emissions'] as const) {
       const hostile = await composition.build();
       mutateInputZero(hostile, calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!, mutation);

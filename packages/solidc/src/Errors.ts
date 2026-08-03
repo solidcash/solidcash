@@ -77,7 +77,7 @@ export class SolidcDiagnosticError extends Error {
  *
  * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
  * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
- * Measured on `SushiMakerKashi.sol` (169 lines) under `+controller`:
+ * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
  * `Undefined reference to symbol __scb_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
  * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
  */

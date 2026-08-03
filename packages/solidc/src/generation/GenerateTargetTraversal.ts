@@ -19702,9 +19702,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
       if (slot.loopArrayVar) {
         // Transcript handlers authenticate every reached array element while executing the source loop:
-        // target, runtime selector, arguments, order, and callee projection are all rooted. The legacy
-        // epilogue assumes callees occupy one contiguous direct-call block, which is false once graph
-        // participant projections/controller inputs are interleaved into the balanced transaction.
+        // target, runtime selector, arguments, order, and callee frame are all authenticated. The direct-call
+        // epilogue assumes callees occupy one contiguous call block, which is false when independently balanced
+        // graph participant blocks own those inputs.
         if (node.graphEmissionHandler) continue;
         this.emitArrayExternalCallLoop(slot, node);
         continue;

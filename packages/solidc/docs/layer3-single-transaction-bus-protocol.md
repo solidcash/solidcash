@@ -1,7 +1,7 @@
 # Layer 3 controllerless single-transaction bus protocol
 
-Status: wire-format freeze for implementation phases 0 and 1. This document is normative for the
-controllerless path. The controller-backed `L3GRAPH1` implementation remains only as a migration baseline.
+Status: production wire format. This document is normative for the controllerless path. Measurements from
+the removed `L3GRAPH1` implementation survive only in the historical baseline census.
 
 ## Transaction shape
 
@@ -90,6 +90,8 @@ same transaction; no universal signer or preparatory UTXO is part of this protoc
 
 ## Bounds
 
-Version 1 initially retains the measured baseline admission bounds of eight participants and 24 rows. These
-are ceilings, not capacity claims. Phase 5 must lower and enforce them if 2/4/8-participant VM measurements do
-not fit BCH-2026 consensus and relay limits.
+Version 1 admits at most five participants and 24 rows. The participant ceiling is the measured BCH-2026
+limit: two-, four-, and five-participant graphs complete, while the adjacent six-participant returning chain
+exceeds operation-cost density. `SINGLE_TX_BUS_CAPACITY`, compiler metadata, composer preflight, and finalized
+transaction VM preflight enforce these bounds. Exact measurements are published in
+`layer3-single-tx-capacity-bch2026.json`.

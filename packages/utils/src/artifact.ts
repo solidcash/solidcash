@@ -663,7 +663,7 @@ export interface InvocationAnalysisArtifact {
  *
  * ONE home for a value with two enforcers. The compiler compiles this bound into every hidden-batch route
  * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.hiddenBatch.maximumBlobBytes`; the SDK's
- * layer3 graph generator compiles the same bound into the root controller's per-participant frame check. Both
+ * layer3 graph generator enforces the same bound while framing each participant's carrier rows. Both
  * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
  *

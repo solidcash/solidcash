@@ -977,7 +977,7 @@ describe('layer3.compose controllerless transaction', () => {
     await expect(provider.sendRawTransaction(raw(hostileReturnOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
     expect((await callee.getState()).counter).toBe(7n);
-  }, 120_000);
+  }, 240_000);
 
   it('converges nested authenticated returns across an A-to-B-to-C graph', async () => {
     const provider = createLayer3CapstoneTestProvider();

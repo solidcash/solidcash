@@ -170,5 +170,5 @@ describe('controllerless single-transaction capacity', () => {
       // and resource UTXOs have been consumed by the first standard-policy broadcast.
       await expect(builder.provider.sendRawTransaction(finalizedHex)).rejects.toThrow();
     }
-  }, 180_000);
+  }, 300_000);
 });

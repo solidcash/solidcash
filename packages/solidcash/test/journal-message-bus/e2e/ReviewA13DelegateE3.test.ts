@@ -5,18 +5,18 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulTransactionBuilder, layer3, getDataNftAddress, createDataNftUnlocker,
+  Contract, SignatureTemplate, StatefulTransactionBuilder, messageBus, getDataNftAddress, createDataNftUnlocker,
 } from '../../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../../src/utils.js';
 import { Utxo } from '../../../src/interfaces.js';
 import { alicePub, bobPriv, bobPub } from '../../fixture/vars.js';
 import { getTxOutputs } from '../../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createMessageBusSemanticTestProvider } from './message-bus-semantic-profile.js';
 
 // Round-13 independent hostile review of E3 (Worker B's). I implemented none of it.
 //
-// ROUND 14 (Worker B): both escapes are CLOSED in `src/layer3/delegate.ts`. The two gate assertions below are
+// ROUND 14 (Worker B): both escapes are CLOSED in `src/message-bus/delegate.ts`. The two gate assertions below are
 // inverted in place - A13-1a and A13-2a now demand a NAMED refusal - and every other case in this file is
 // untouched, including the two VM cases that settle 5 -> 999 (they are why the refusals must exist) and the
 // two honest controls that are still refused by the covenant at input 0.
@@ -120,7 +120,7 @@ const PROXY_BYTES_UNUSED = PROXY_BYTES_TARGET
   .replace('E3BytesTargetProxy', 'E3BytesUnusedProxy')
   .replace('        address t = address(target);\n        t.delegatecall(input);', '        impl.delegatecall(input);');
 
-type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
+type SemanticProvider = ReturnType<typeof createMessageBusSemanticTestProvider>;
 
 interface Deployed {
   contract: Contract;
@@ -184,7 +184,7 @@ const failingInput = (message: string): number | null => {
 
 const expectPreflightRefusal = (message: string, input: number, reason: string): void => {
   expect([
-    `layer3: BCH-2026 preflight failed at input ${input}: ${reason}`,
+    `messageBus: BCH-2026 preflight failed at input ${input}: ${reason}`,
     `mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index ${input}: ${reason})`,
   ]).toContain(message);
   expect(failingInput(message)).toBe(input);
@@ -215,7 +215,7 @@ const bytesUnusedProxyArtifact = compileString(PROXY_BYTES_UNUSED);
 
 describe('A13 review of E3: bytecode-pinned detection', () => {
   it('A13-1a: FIXED - the gate refuses the caller-chosen proxy by name, pin or no pin', () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const implementation = new Contract(implArtifact, [], { provider });
     const implementationLbc = binToHex(addressToLockScript(implementation.address));
     // The constructor argument is the honest implementation, so its bytes really are in the proxy's p2sh32.
@@ -223,14 +223,14 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
     expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
     // The substring test still says "pinned"; it is no longer allowed to answer the code-identity question,
     // because the proxy function publishes an `address` parameter the delegatecall may target instead.
-    expect(() => layer3.classifyDelegateParticipant({
+    expect(() => messageBus.classifyDelegateParticipant({
       proxy: { artifact: trapProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*delegatecalls caller-supplied parameter 'impl'/s);
 
     // CONTROL, one field apart: the same proxy pair with no `address` parameter is still admitted.
     const honest = new Contract(pinnedProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
-    expect(layer3.classifyDelegateParticipant({
+    expect(messageBus.classifyDelegateParticipant({
       proxy: { artifact: pinnedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     }).id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
@@ -243,7 +243,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
   });
 
   it('A13-1b: and the VM settles a FOREIGN implementation rewriting that proxy state', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const honest = await deploy(provider, implArtifact, [], { counter: 0n });
     const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
     // The proxy's p2sh32 commits to the HONEST implementation; the caller supplies the FOREIGN one.
@@ -269,7 +269,7 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
   }, 240_000);
 
   it('A13-1c: CONTROL - the real bytecode-pinned proxy refuses the same substitution at input 0', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const honest = await deploy(provider, implArtifact, [], { counter: 0n });
     const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
     const proxy = await deploy(
@@ -294,20 +294,20 @@ describe('A13 review of E3: bytecode-pinned detection', () => {
 
 describe('A13 review of E3: caller-authorized authority', () => {
   it('A13-2a: FIXED - the gate refuses the self-authorizing proxy by name', () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const implementation = new Contract(implArtifact, [], { provider });
     const implementationLbc = binToHex(addressToLockScript(implementation.address));
     const proxy = new Contract(selfAuthProxyArtifact, [] as never[], { provider });
     // A `sig` parameter is no longer enough: the gate asks whether the key it could be checked against is one
     // the CALLER supplies, and refuses when it is (or when the proxy commits no key at all).
-    expect(() => layer3.classifyDelegateParticipant({
+    expect(() => messageBus.classifyDelegateParticipant({
       proxy: { artifact: selfAuthProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     })).toThrow(/class 'self-authorized' is not admitted.*checked against caller-supplied parameter 'pk'/s);
 
     // CONTROL, one field apart: the same shape whose key is a CONSTRUCTOR argument is still admitted.
     const honest = new Contract(authorizedProxyArtifact, [alicePub] as never[], { provider });
-    expect(layer3.classifyDelegateParticipant({
+    expect(messageBus.classifyDelegateParticipant({
       proxy: { artifact: authorizedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     }).id).toBe('caller-authorized/adjacent-proxy-block/scalar');
@@ -330,7 +330,7 @@ describe('A13 review of E3: caller-authorized authority', () => {
   });
 
   it('A13-2b: and a STRANGER selects a foreign implementation, which settles', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
     // Owner is Alice. Bob signs with Bob's own key and supplies it as the parameter.
     const proxy = await deploy(provider, selfAuthProxyArtifact, [], { counter: 5n });
@@ -357,7 +357,7 @@ describe('A13 review of E3: caller-authorized authority', () => {
   }, 240_000);
 
   it('A13-2c: CONTROL - the real caller-authorized proxy refuses the stranger at input 0', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
     const proxy = await deploy(provider, authorizedProxyArtifact, [alicePub], { counter: 5n });
     const message = await outcome(new StatefulTransactionBuilder({
@@ -389,7 +389,7 @@ describe('A13 review of E3: caller-authorized authority', () => {
 
 describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
   it('A13-3a: the gate refuses it, on the published target provenance rather than the parameter type', () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const implementation = new Contract(implArtifact, [], { provider });
     const implementationLbc = binToHex(addressToLockScript(implementation.address));
     const proxy = new Contract(bytesTargetProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
@@ -398,21 +398,21 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
       .filter((entry) => !entry.name.startsWith('__internal__')).map((entry) => entry.type))
       .toEqual(['bytes', 'bytes']);
     expect(proxy.bytecode.toLowerCase()).toContain(implementationLbc.toLowerCase());
-    expect(() => layer3.classifyDelegateParticipant({
+    expect(() => messageBus.classifyDelegateParticipant({
       proxy: { artifact: bytesTargetProxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     })).toThrow(/class 'pinned-but-caller-selected' is not admitted.*caller-supplied parameter 'target'/s);
 
     // GUARD CONTROL, same published types, same containment, one expression apart: still admitted.
     const honest = new Contract(bytesUnusedProxyArtifact, [hexToBin(implementationLbc)] as never[], { provider });
-    expect(layer3.classifyDelegateParticipant({
+    expect(messageBus.classifyDelegateParticipant({
       proxy: { artifact: bytesUnusedProxyArtifact, functionName: 'up', bytecode: honest.bytecode },
       implementation: { artifact: implArtifact, functionName: 'increment', lockingBytecode: implementationLbc },
     }).id).toBe('bytecode-pinned/adjacent-proxy-block/scalar');
   });
 
   it('A13-3b: and the VM settles a FOREIGN implementation rewriting that proxy state', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createMessageBusSemanticTestProvider();
     const honest = await deploy(provider, implArtifact, [], { counter: 0n });
     const foreign = await deploy(provider, foreignArtifact, [], { counter: 0n });
     // p2sh32 committed to the HONEST implementation; the caller hands the FOREIGN one in as `bytes`.
@@ -439,7 +439,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
 
   it('A13-3c: GUARD CONTROL - the same-typed honest proxy settles, and refuses the substitution at input 0',
     async () => {
-      const provider = createLayer3SemanticTestProvider();
+      const provider = createMessageBusSemanticTestProvider();
       const honestImpl = await deploy(provider, implArtifact, [], { counter: 0n });
       const honestLbc = addressToLockScript(honestImpl.contract.address);
       const proxy = await deploy(provider, bytesUnusedProxyArtifact, [honestLbc], { counter: 5n });
@@ -458,7 +458,7 @@ describe('A13-3 (round 16): the `bytes`-typed re-spelling of A13-1', () => {
       }).setState('counter', 6n).send();
       expect(stateOf(tx, proxy.categoryId, bytesUnusedProxyArtifact.stateLayout!).counter).toBe(6n);
 
-      const hostileProvider = createLayer3SemanticTestProvider();
+      const hostileProvider = createMessageBusSemanticTestProvider();
       const pinned = await deploy(hostileProvider, implArtifact, [], { counter: 0n });
       const foreign = await deploy(hostileProvider, foreignArtifact, [], { counter: 0n });
       const hostileProxy = await deploy(
@@ -493,11 +493,11 @@ describe('A13 review of E3: is the gate wired to anything?', () => {
   // ROUND 14: still true, now as a MEASURED decision. Instrumenting `withDelegatecall` to classify every pair
   // it receives and running the three suites that use it gave 11 calls over 6 distinct pairs, 11/11 refused -
   // so wiring it would break every settling delegatecall send in the suite. See the round-14 block in
-  // Layer3DelegateClassesE3.test.ts.
+  // MessageBusDelegateClassesE3.test.ts.
   it('A13-2d: no SDK source calls the gate - it is opt-in, and `withDelegatecall` never consults it', () => {
     const root = new URL('../../../src', import.meta.url).pathname;
     const callers = sourceFiles(root).filter((file) => {
-      if (file.endsWith(`layer3${'/'}delegate.ts`)) return false; // the definition itself
+      if (file.endsWith(`message-bus${'/'}delegate.ts`)) return false; // the definition itself
       const text = readFileSync(file, 'utf8');
       return /classifyDelegateParticipant|assertAdmittedDelegateClass|ADMITTED_DELEGATE_PARTICIPANT_CLASSES/
         .test(text);
@@ -505,7 +505,7 @@ describe('A13 review of E3: is the gate wired to anything?', () => {
     // NOTHING in the SDK names the gate. It reaches users only through the barrel's `export * from
     // './delegate.js'`, which is publication, not enforcement.
     expect(callers).toEqual([]);
-    expect(readFileSync(join(root, 'layer3/index.ts'), 'utf8')).toContain("export * from './delegate.js'");
+    expect(readFileSync(join(root, 'message-bus/index.ts'), 'utf8')).toContain("export * from './delegate.js'");
 
     // And the builder entry point a delegate participant actually goes through carries no class check.
     const builder = readFileSync(join(root, 'stateful/StatefulContract.ts'), 'utf8');

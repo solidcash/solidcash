@@ -42,7 +42,7 @@ contract C() {
 
 describe('IterableMapping remove() - swap-remove with computed-key index update', () => {
   const ALIAS_REFUSAL =
-    /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+    /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
   const a1 = hexToBin(`aa20${'11'.repeat(32)}87`);

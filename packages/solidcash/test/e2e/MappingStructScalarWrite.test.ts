@@ -4,7 +4,7 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const verifyPreflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A state struct with a mapping field flattens to per-field state (`s__a` scalar + `s__c` mapping). The bare
 // scalar field write `s.a = v` (the Solidity form) resolves to the flattened `s__a` state var, symmetric with

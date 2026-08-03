@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 const provider = createTestProvider();
 

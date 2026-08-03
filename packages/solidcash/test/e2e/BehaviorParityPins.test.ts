@@ -11,7 +11,7 @@ const missingAuthenticatedReturn = (functionName: string): string =>
   `Could not derive the return value of '${functionName}' for .emitReturn(). The covenant trace did not expose an authenticated return commitment.`;
 
 const preflightFailure = (reason: string): string =>
-  `layer3: BCH-2026 preflight failed at input 0: ${reason}`;
+  `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
 
 describe('function types', () => {
   // functionTypes/ corpus files VM-run against their Solidity `// ----` outputs (the bench is

@@ -5,7 +5,7 @@ import { hexToBin } from '@bitauth/libauth';
 import { alicePkh, bobPkh, carolPkh } from '../../fixture/vars.js';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../../test-util.js';
 
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract CollectionJournalRelease3() {

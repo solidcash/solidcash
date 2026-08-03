@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // End-to-end (mocknet) validation that the solidity-by-example porting features execute correctly on the
 // VM, not just that they compile. Each contract's spend only succeeds if the emitted bytecode computes the

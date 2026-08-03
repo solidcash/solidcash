@@ -57,7 +57,7 @@ contract X171LocalEmpty() {
 
 const b8 = (n: number): Uint8Array => new Uint8Array(8).fill(n);
 
-const MASTER_REFUSAL = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const MASTER_REFUSAL = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 async function deploy(source: string): Promise<any> {
   const provider = createTestProvider();

@@ -10,8 +10,8 @@ import {
   createTestProvider, getTxOutputs, setupStatefulUtxos, type StatefulUtxoSetup,
 } from '../test-util.js';
 
-const input0Preflight = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
-const input2Preflight = 'layer3: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.';
+const input0Preflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const input2Preflight = 'messageBus: BCH-2026 preflight failed at input 2: Program failed an OP_VERIFY operation.';
 
 // library-contracts 3b: a state-touching LIBRARY (docs/library-contracts.md) lowers to a delegate contract
 // (auto-delegated public functions). This probes the consumer side: a proxy delegatecalls the library via the

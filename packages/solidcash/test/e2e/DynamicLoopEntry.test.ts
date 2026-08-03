@@ -5,7 +5,7 @@ import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.j
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // A DYNAMIC-bound loop (int[] calldata, runtime length) that writes a mapping. Unlike the fixed-bound case
 // (unrolled to N static writes), this compiles to a native OP_BEGIN/OP_UNTIL covenant loop that mints one new

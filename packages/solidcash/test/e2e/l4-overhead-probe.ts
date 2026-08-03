@@ -3,7 +3,7 @@ import { expect } from 'vitest';
 import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { asmToBytecode } from '@solidcash/utils';
 import { TransactionBuilder } from '../../src/TransactionBuilder.js';
-import { assessFinalizedTransactionBytes } from '../../src/layer3/preflight.js';
+import { assessFinalizedTransactionBytes } from '../../src/message-bus/preflight.js';
 
 /**
  * X163 ROW B - THE OVERHEAD PROBE. Measures the ONE quantity the 122-byte figure was a single sample of.
@@ -83,7 +83,7 @@ if (OUT !== undefined) {
  *
  * A SEPARATE SUBJECT FROM THE SEND SITES, and that is the point. `build()` is reached by every send path in
  * `src/` that broadcasts a prebuilt hex (split, merge, destroy, `_sendRawBuilder`,
- * `sendPreflightedLayer3Transaction`), by `generateWcTransactionObject`, and by every fixture that constructs
+ * `sendPreflightedMessageBusTransaction`), by `generateWcTransactionObject`, and by every fixture that constructs
  * bytes to inspect or to hand somewhere else. A refusal there is a refusal to CONSTRUCT, which is a strictly
  * larger claim than a refusal to broadcast.
  *

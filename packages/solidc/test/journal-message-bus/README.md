@@ -5,7 +5,7 @@ This directory owns compiler-level coverage for deferred state journaling and at
 - scalar and collection journal lowering;
 - bounded collection routes and direct broadcast lowering;
 - message-bus selector/refusal diagnostics;
-- controllerless transcript eligibility and verifier size.
+- atomic callManifest eligibility and verifier size.
 
 General parser, type-system, and direct-route tests remain one level above. Run this suite with:
 

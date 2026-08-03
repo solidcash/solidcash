@@ -29,7 +29,7 @@ const WRITE_SRC = `contract C() {
 }`;
 
 const ZERO = slotValueToBytes(0n);
-const WRONG_VALUE_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const WRONG_VALUE_INPUT_0 = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 describe('sorted mapping with unbounded bytes/string value (P5a: value in the 64 B tail)', () => {
   const provider = createTestProvider();

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from '../../direct-compile.js';
 import { Contract, StatefulContract } from '../../../src/index.js';
-import { encodeMessageBus } from '../../../src/layer3/message-bus.js';
+import { encodeMessageBatch } from '../../../src/message-bus/message-bus.js';
 import { alicePkh, bobPkh } from '../../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 
@@ -125,7 +125,7 @@ describe('X94 a scalar handler joins a collection route', () => {
    * still reserves. The entry must come back UNCHANGED - not merely "the transaction verified" - which is the
    * difference between the slot being flushed from its hoisted cache and being left unconstrained.
    *
-   * The entry witness has to be supplied by hand: no row binds it, which `encodeMessageBus` reports rather
+   * The entry witness has to be supplied by hand: no row binds it, which `encodeMessageBatch` reports rather
    * than guessing. That is the honest shape of an all-scalar batch on a route that reserves an entry.
    */
   it('settles an ALL-SCALAR batch and flushes the reserved entry unchanged', async () => {
@@ -133,10 +133,10 @@ describe('X94 a scalar handler joins a collection route', () => {
     const contract = await deploy(MIXED);
     await contract.getFunction('credit')(alicePkh, 100n).send();
     await contract.getFunction('credit')(bobPkh, 40n).send();
-    const encoded = encodeMessageBus(
+    const encoded = encodeMessageBatch(
       artifact,
       [{ function: 'bump', args: [3n] }, { function: 'bump', args: [4n] }],
-      { __scb_key_balances_0: alicePkh },
+      { __message_bus_key_balances_0: alicePkh },
     );
     expect(await failingInput(() => contract._batchRaw(encoded.blob, encoded.routeWitnesses).send()))
       .toBe(null);
@@ -180,13 +180,13 @@ describe('X94 a scalar handler joins a collection route', () => {
 
     const honest = await deploy(MIXED);
     await honest.getFunction('credit')(alicePkh, 100n).send();
-    const clean = encodeMessageBus(artifact, rows);
+    const clean = encodeMessageBatch(artifact, rows);
     expect(await failingInput(() => honest._batchRaw(clean.blob, clean.routeWitnesses).send())).toBe(null);
     await honest.getFunction('checkBalance')(alicePkh, 105n).send();
 
     const attacked = await deploy(MIXED);
     await attacked.getFunction('credit')(alicePkh, 100n).send();
-    const forged = encodeMessageBus(artifact, rows);
+    const forged = encodeMessageBatch(artifact, rows);
     const blob = Uint8Array.from(forged.blob);
     const scalar = artifact.messageBus!.handlers.find((handler) => handler.name === 'bump')!;
     const entry = artifact.messageBus!.handlers.find((handler) => handler.name === 'credit')!;
@@ -215,7 +215,7 @@ describe('X94 a scalar handler joins a collection route', () => {
       ?.some((witness: any) => witness.perRow)).toBe(true);
     // And the slots that makes unbindable are real route inputs, one per row, with no row to bind them.
     expect(artifact.messageBus?.route.inputs.map((input: any) => input.name))
-      .toEqual(expect.arrayContaining(['__scb_key_balances_0_row_r0', '__scb_key_balances_0_row_r1']));
+      .toEqual(expect.arrayContaining(['__message_bus_key_balances_0_row_r0', '__message_bus_key_balances_0_row_r1']));
   }, 180_000);
 
   /**
@@ -326,6 +326,6 @@ contract X88Iter() {
     });
     expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({ eligible: true });
     expect(artifact.messageBus?.route.entryAccesses)
-      .toEqual([{ collection: 'm', keyParams: ['__scb_key_m_0'], operations: ['read', 'write'] }]);
+      .toEqual([{ collection: 'm', keyParams: ['__message_bus_key_m_0'], operations: ['read', 'write'] }]);
   }, 240_000);
 });

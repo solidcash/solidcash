@@ -24,8 +24,8 @@ export interface DeployContractOptions {
   fee?: bigint;
   addressType?: AddressType;
   threadCount?: number;
-  /** Number of self-preserved Layer-3 verifier instances created in the genesis transaction. */
-  layer3VerifierCount?: number;
+  /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
+  messageBusVerificationInputCount?: number;
   initialBalance?: bigint;
   initArgs?: DeployOptions['initArgs'];
   /** Internal composition escape: a split/proxy parent owns the one logical transaction nonce. */
@@ -139,7 +139,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
           + '{ fundingUtxo, funder, changeAddress } override with a NetworkProvider runner.',
         );
       }
-      const verifierCount = overrides.layer3VerifierCount ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
+      const verifierCount = overrides.messageBusVerificationInputCount
+        ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
       fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact, new Set(), 1 + verifierCount);
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
@@ -175,7 +176,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         fee: overrides.fee,
         addressType: overrides.addressType,
         threadCount: overrides.threadCount,
-        layer3VerifierCount: overrides.layer3VerifierCount,
+        messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,

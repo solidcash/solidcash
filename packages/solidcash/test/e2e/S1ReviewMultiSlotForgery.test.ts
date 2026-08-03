@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 import { compileString as compile } from '../direct-compile.js';
 import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,

@@ -3,7 +3,7 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { Artifact, buildInitialStateCommitments, parsePushdataCommitment } from '@solidcash/utils';
 import {
-  Contract, SignatureTemplate, StatefulTransactionBuilder, layer3, getDataNftAddress, createDataNftUnlocker,
+  Contract, SignatureTemplate, StatefulTransactionBuilder, messageBus, getDataNftAddress, createDataNftUnlocker,
 } from '../../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../../src/stateful/StatefulTransactionBuilder.js';
 import { addressToLockScript } from '../../../src/utils.js';
@@ -12,7 +12,7 @@ import {
   alicePkh, alicePriv, alicePub, bobPriv, bobPub,
 } from '../../fixture/vars.js';
 import { getTxOutputs } from '../../test-util.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createMessageBusSemanticTestProvider } from './message-bus-semantic-profile.js';
 
 /**
  * X51 - the SDK delegate gate reads the PUBLISHED key commitment.
@@ -33,7 +33,7 @@ import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
  *    again by name;
  *  - the hostile shapes that must stay refused, including X46's vacuous commitment.
  *
- * SEMANTIC evidence only, on createLayer3SemanticTestProvider (BCH-2026 opcode, introspection and 128-byte
+ * SEMANTIC evidence only, on createMessageBusSemanticTestProvider (BCH-2026 opcode, introspection and 128-byte
  * commitment behaviour, relaxed capacity).
  */
 
@@ -120,7 +120,7 @@ contract X51OverwriteProxy() {
 // Fixtures
 // ---------------------------------------------------------------------------
 
-type SemanticProvider = ReturnType<typeof createLayer3SemanticTestProvider>;
+type SemanticProvider = ReturnType<typeof createMessageBusSemanticTestProvider>;
 
 interface Deployed {
   contract: Contract;
@@ -193,10 +193,10 @@ const decoyProxyArtifact = compileString(PROXY_COMMITTED_TO_PARAMETER);
 const classify = (
   proxyArtifact: Artifact, constructorArgs: unknown[],
 ): (() => { id: string }) => {
-  const provider = createLayer3SemanticTestProvider();
+  const provider = createMessageBusSemanticTestProvider();
   const implementation = new Contract(implArtifact, [], { provider });
   const proxy = new Contract(proxyArtifact, constructorArgs as never[], { provider });
-  return () => layer3.classifyDelegateParticipant({
+  return () => messageBus.classifyDelegateParticipant({
     proxy: { artifact: proxyArtifact, functionName: 'up', bytecode: proxy.bytecode },
     implementation: {
       artifact: implArtifact,
@@ -216,7 +216,7 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
       constructorArgs: unknown[];
       signer: 'admin' | 'stranger';
     }): Promise<{ send: Promise<any>; proxyCategory: string }> {
-      const provider = createLayer3SemanticTestProvider();
+      const provider = createMessageBusSemanticTestProvider();
       const implementation = await deploy(provider, implArtifact, [], { counter: 0n });
       const proxy = await deploy(provider, options.artifact, options.constructorArgs, { counter: 5n });
       const stranger = options.signer === 'stranger';
@@ -491,17 +491,17 @@ contract X51MixedProxy(bytes20 adminPkh) {
   // =========================================================================
   describe('the enumeration records the closure', () => {
     it('drops `hash160-committed-key`, absorbed into `self-authorized`', () => {
-      const ids = layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id);
+      const ids = messageBus.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.map((entry) => entry.id);
       expect(ids).not.toContain('hash160-committed-key');
       expect(ids).toContain('self-authorized');
       // The absorption is recorded in the class's own reason, so a reader of the enumeration alone finds it.
-      expect(layer3.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.find((entry) => entry.id === 'self-authorized')!
+      expect(messageBus.UNADMITTED_DELEGATE_PARTICIPANT_CLASSES.find((entry) => entry.id === 'self-authorized')!
         .reason).toContain('hash160-committed-key');
     });
 
     /** X51 changes nothing about the classes this gate cannot SEE; those are occurrence and the decoy target. */
     it('leaves the undetected list unchanged', () => {
-      expect(layer3.UNDETECTED_BY_THIS_GATE).toEqual([
+      expect(messageBus.UNDETECTED_BY_THIS_GATE).toEqual([
         'conditional-delegate-edge', 'iterated-delegate-edge', 'decoy-committed-target',
       ]);
     });

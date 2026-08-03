@@ -5,11 +5,11 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_MESSAGE_BUS_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
-  scriptToBytecode, bytecodeToScript, decodeInt, Op, SINGLE_TX_BUS_DOMAIN_HEX,
-  SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
+  scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+  ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, Type,
   ValueType, BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  layer3VerifierLockingBytecode,
+  messageBusVerifierLockingBytecode,
 } from '@solidcash/utils';
 import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifact.js';
 import {
@@ -187,7 +187,7 @@ function recordExternalHandlerSpan(
 
 /** Name prefixes of the internal clones route synthesis dispatches a source handler through. */
 const MESSAGE_BUS_CLONE_PREFIXES = [
-  '__scb_resource_', '__scb_handler_', '__scb_graph_', '__scb_array_', '__scb_external_',
+  '__message_bus_resource_', '__message_bus_handler_', '__message_bus_graph_', '__message_bus_array_', '__message_bus_external_',
 ];
 
 const withinSpan = (location: Location, point: Point): boolean => {
@@ -202,7 +202,7 @@ const withinSpan = (location: Location, point: Point): boolean => {
  * The external handlers a thrown route-generation error implicates, by the two channels an error can carry.
  *
  * NAME: the message names one of the internal clones route synthesis pushed - `Block layout not available while
- * compiling '__scb_external_deposit'` is a plain Error with no position at all, so nothing but the name is
+ * compiling '__message_bus_external_deposit'` is a plain Error with no position at all, so nothing but the name is
  * available. The longest matching handler name wins, so `transfer` is not blamed for `transferFrom`.
  * POSITION: a SolidCashError carries `node.location`, and `cloneNode` shares Location objects, so a diagnostic
  * raised inside a clone still points into the handler that was cloned. Accepted only when exactly one recorded
@@ -286,7 +286,7 @@ function compileWithExternalAdmissionFallback(
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
   // spelling makes the route TRY a handler its refusal used to hide, and the solc corpus turned up four files
   // where that reaches a pre-existing route-generation gap ('Block layout not available while compiling
-  // __scb_resource_transfer', 'Graph handler .. requires forwarded identifier arguments'). Those throw for the
+  // __message_bus_resource_transfer', 'Graph handler .. requires forwarded identifier arguments'). Those throw for the
   // WHOLE FILE, so a sibling contract that compiles fine is dropped with it. Each rung refuses one more thing
   // than the last, the widest that compiles wins, and the FIRST error is re-raised when none does - so no
   // contract is worse off than at the narrowest rung, and nothing is masked.
@@ -375,20 +375,20 @@ function compileWithExternalAdmissionFallback(
     && (refusedAll === undefined || admittedHandlerCount(attributed) >= admittedHandlerCount(refusedAll))) {
     return attributed;
   }
-  if (mergedCompilerOptions.__layer3VerifierProgram && attributed === undefined && firstError) {
+  if (mergedCompilerOptions.__messageBusVerifierProgram && attributed === undefined && firstError) {
     throw firstError instanceof Error ? firstError : new Error(String(firstError));
   }
   if (refusedAll !== undefined) return refusedAll;
 
   // The verifier-binder second pass is compiler-internal: falling back to a direct-only artifact would silently
   // discard the verifier program after the first pass succeeded. Surface the generated-route defect instead.
-  if (mergedCompilerOptions.__layer3VerifierProgram && firstError) {
+  if (mergedCompilerOptions.__messageBusVerifierProgram && firstError) {
     throw firstError instanceof Error ? firstError : new Error(String(firstError));
   }
 
   // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
-  // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
+  // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated message-bus batch
   // clone); if it succeeds, the resolved compiler options truthfully publish the fallback as direct-only.
   const directOptions = { ...mergedCompilerOptions, messageBus: false };
   try {
@@ -416,19 +416,19 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
-  if (process.env.SOLIDC_SKIP_LAYER3_BINDER !== '1'
-    && !artifactCompilerOptions.__layer3VerifierProgram && artifact.messageBus?.verifierProgram) {
+  if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
+    && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
     const verifierProgram = artifact.messageBus.verifierProgram;
-    const binderOptions = normalizeCompilerOptions({
+    const bindingOptions = normalizeCompilerOptions({
       ...artifactCompilerOptions,
-      __layer3VerifierProgram: verifierProgram,
+      __messageBusVerifierProgram: verifierProgram,
     });
     artifact = compileResolvedAst(
-      parseAndResolve(code, binderOptions, errorListener, primaryContractName),
-      code, binderOptions,
+      parseAndResolve(code, bindingOptions, errorListener, primaryContractName),
+      code, bindingOptions,
     );
     if (artifact.messageBus) artifact.messageBus.verifierProgram = verifierProgram;
-    if (artifact.compiler.options) delete artifact.compiler.options.__layer3VerifierProgram;
+    if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? structuredClone(artifact) : artifact;
@@ -478,19 +478,19 @@ function setPrimaryContract(ast: Ast, name: string): void {
   ast.importedContracts = all.filter((c) => c !== target);
 }
 
-const SCB1_SELECTOR_HEX = '53434231';
+const MESSAGE_BUS_SELECTOR_HEX = '53434231';
 
 export function assertNoReservedMessageBusSelector(
   functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
 ): void {
   const collision = functions.find((fn) => fn.functionSelector
-    && binToHex(fn.functionSelector) === SCB1_SELECTOR_HEX);
+    && binToHex(fn.functionSelector) === MESSAGE_BUS_SELECTOR_HEX);
   if (!collision) return;
   throw new SolidcDiagnosticError(
-    'SCB_RESERVED_SELECTOR_COLLISION',
+    'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION',
     'source function selector collides with reserved message-bus selector 0x53434231',
     {
-      selector: SCB1_SELECTOR_HEX,
+      selector: MESSAGE_BUS_SELECTOR_HEX,
       functionName: collision.name,
       sourceLocation: {
         line: collision.location.start.line,
@@ -504,21 +504,21 @@ export type MessageBusStaticRejectionCode = NonNullable<
 NonNullable<Artifact['messageBus']>['handlers'][number]['rejectionCode']
 >;
 
-/** Classify every published route refusal into one of transcript-v1 section 9.2's stable classes. */
+/** Classify every published route refusal into one of callManifest-v1 section 9.2's stable classes. */
 export function classifyMessageBusRejection(reason: string): MessageBusStaticRejectionCode {
-  if (/foreign-(outstate|intermediate-state)/.test(reason)) return 'SCB_FOREIGN_INTERMEDIATE_STATE_READ';
-  if (/(future|ancestor|result-before-use)/.test(reason)) return 'SCB_FUTURE_RESULT_DEPENDENCY';
-  if (/(unbounded-recursion|external-recursion)/.test(reason)) return 'SCB_EXTERNAL_RECURSION_UNBOUNDED';
+  if (/foreign-(outstate|intermediate-state)/.test(reason)) return 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ';
+  if (/(future|ancestor|result-before-use)/.test(reason)) return 'MESSAGE_BUS_FUTURE_RESULT_DEPENDENCY';
+  if (/(unbounded-recursion|external-recursion)/.test(reason)) return 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED';
   if (/(ambiguous-global-and-row-key|duplicate-settlement-authority)/.test(reason)) {
-    return 'SCB_DUPLICATE_SETTLEMENT_AUTHORITY';
+    return 'MESSAGE_BUS_DUPLICATE_SETTLEMENT_AUTHORITY';
   }
   if (/(stack|context|introspection-divergence|would-shrink-the-route|route-generation-unsupported)/.test(reason)) {
-    return 'SCB_STACK_CONTEXT_UNPRESERVABLE';
+    return 'MESSAGE_BUS_STACK_CONTEXT_UNPRESERVABLE';
   }
   if (/(effect|event|transfer|token|signature-route-binding|resource.*cannot-be-summarized)/.test(reason)) {
-    return 'SCB_EFFECT_UNSUMMARIZABLE';
+    return 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE';
   }
-  return 'SCB_UNSUPPORTED_CONSTRUCT';
+  return 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT';
 }
 const MAX_MESSAGE_BUS_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
@@ -608,7 +608,7 @@ function applyRolledLoopCeilings(
  */
 const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
   'batched-handler-forward-call-not-enabled':
-    'declare a statically bounded call shape supported by the controllerless graph route, '
+    'declare a statically bounded call shape supported by the atomic graph route, '
     + 'or move the call into its own handler',
   'unresolved-or-effectful-handler':
     'move the effect (transfer, deploy, emit) into a handler the route admits, or resolve the call target so '
@@ -655,7 +655,7 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
 function messageBusAbsenceMessage(
   contractName: string, functions: readonly FunctionDefinitionNode[],
 ): string {
-  const head = `No message-bus route was synthesized for '${contractName}': it has no SCB1 entry point and `
+  const head = `No message-bus route was synthesized for '${contractName}': it has no message-bus batch entry point and `
     + 'cannot participate in a message bus. Only the direct per-function route exists. ';
   const entryPoints = functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract && !fn.messageBusRoute);
   if (entryPoints.length === 0) return `${head}The contract declares no entry point for a route to admit.`;
@@ -725,11 +725,11 @@ function foreignOutStatePrecedesSharedCall(fn: FunctionDefinitionNode): boolean 
  * but before symbol/type analysis. Only signature-free scalar entry points
  * (`public` or `external`) enter the initial covenant surface; every other
  * source handler receives an explicit rejection reason in artifact metadata. */
-function supportsSingleTransactionBus(ast: Ast, compilerOptions: CompilerOptions): boolean {
+function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): boolean {
   const { contract } = ast;
-  // A controllerless participant is identified by and self-preserves its master NFT. Keep this predicate in
+  // A atomic participant is identified by and self-preserves its master NFT. Keep this predicate in
   // lockstep with artifact stateLayout creation: a stateless contract has no participant identity or balanced
-  // master block and therefore cannot soundly advertise or execute SCB1. `forceStateful` remains the explicit
+  // master block and therefore cannot soundly advertise or execute message-bus batch. `forceStateful` remains the explicit
   // way to opt a zero-storage contract into the stateful/master-NFT model.
   return contract.stateVariables.length > 0 || contract.collections.length > 0
     || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
@@ -1000,7 +1000,7 @@ function synthesizeMessageBusRoute(
     // MEASURED BOUNDARIES, both kept deliberately narrow.
     //
     // LOW-LEVEL forms are excluded. Admitting `callee.call(payload);` here routes it to the raw-calldata graph
-    // lowering, which aborts with the INTERNAL `Graph handler '__scb_graph_*' requires one forwarded raw
+    // lowering, which aborts with the INTERNAL `Graph handler '__message_bus_graph_*' requires one forwarded raw
     // calldata argument` - a throw where the handler previously got the named refusal
     // `batched-handler-forward-call-not-enabled`. Widening must not trade a named refusal for a crash.
     //
@@ -1020,7 +1020,7 @@ function synthesizeMessageBusRoute(
       && (lastStatement instanceof MethodCallStatementNode
         || (lastStatement instanceof FunctionCallStatementNode
           && contractTypedReceiverCall(lastStatement.call, interfaceTypedReceivers(fn))));
-    // Outgoing-call handlers participate in the controllerless carrier protocol by construction. Admission is
+    // Outgoing-call handlers participate in the atomic messageEnvelope protocol by construction. Admission is
     // inferred from the handler closure; there is no compiler option that can opt a handler into the protocol.
     const graphTailCallEligible = methodCallCount >= 1
       && (graphTailStatement || graphResultStatement
@@ -1056,8 +1056,8 @@ function synthesizeMessageBusRoute(
       // state-vs-local; only the `this.`-prefixed spelling reaches here as a Mapping* node. Walking the
       // Mapping* forms alone therefore left that spelling with an EMPTY directKeys while the footprint had
       // already reported the collection, and every such handler was rejected 'collection-helper-route-not-enabled'
-      // - no SCB1 route at all, for a write the direct route compiles. A name bound locally in this function is a
-      // LOCAL array element, not a collection entry; that is the same test analyseFunctionFootprint applies.
+      // - no message-bus batch route at all, for a write the direct route compiles. A name bound locally in this
+      // function is a LOCAL array element, not a collection entry; that is the same footprint test.
       const locallyBound = locallyBoundNames(fn);
       const bareAccessOf = (node: Node): { name: string; keys: ExpressionNode[] } | undefined => {
         if (node instanceof ArrayAssignNode || node instanceof ArrayDeleteNode) {
@@ -1239,7 +1239,7 @@ function synthesizeMessageBusRoute(
             break;
           }
           // Only the shared (first) alternative can be caller-keyed: its witness is a single global route input
-          // checked against `__scb_graph_caller`. A row-local alternative would need one such witness per row,
+          // checked against `__message_bus_graph_caller`. A row-local alternative would need one such witness per row,
           // which the row-key encoding does not carry.
           if (alternatives.slice(1).some((indices) => indices.includes(-2))) {
             reason = 'row-local-msg-sender-collection-key-not-enabled';
@@ -1275,8 +1275,8 @@ function synthesizeMessageBusRoute(
               indices.forEach((inputIndex, keyIndex) => {
                 if (inputIndex < 0) return;
                 const routeInput = perRow
-                  ? `__scb_key_${safeName}_${keyIndex}_row`
-                  : `__scb_key_${safeName}_${keyIndex}`;
+                  ? `__message_bus_key_${safeName}_${keyIndex}_row`
+                  : `__message_bus_key_${safeName}_${keyIndex}`;
                 routeKeyWitnesses.set(routeInput, [{
                   name: routeInput, type: collection.allKeyTypes[keyIndex],
                 }]);
@@ -1297,7 +1297,7 @@ function synthesizeMessageBusRoute(
           }
           const safeName = collectionName.replace(/[^A-Za-z0-9_]/g, '_');
           const witnesses = collection.allKeyTypes.map((type, keyIndex) => ({
-            name: `__scb_key_${safeName}_${keyIndex}`,
+            name: `__message_bus_key_${safeName}_${keyIndex}`,
             type,
           }));
           for (const witness of witnesses) routeKeyWitnesses.set(witness.name, [witness]);
@@ -1320,7 +1320,7 @@ function synthesizeMessageBusRoute(
     }
     // X73. `external` and `public` differ in exactly one thing: whether the name is callable from inside the
     // contract. Every other route property - entry-point status, ABI membership, block layout, the final-require
-    // rule, data locations - reads the two identically, and the route's own `__scb1` is itself declared
+    // rule, data locations - reads the two identically, and the route's own `__message_bus1` is itself declared
     // `external`. The refusal was the dispatcher's bare `handler(args)` call, which the resolver rejects as an
     // internal call to an external function; an admitted external handler is invoked through an internal clone
     // instead (see the clone loop below), so the source rule stays enforced for user code.
@@ -1329,7 +1329,7 @@ function synthesizeMessageBusRoute(
     // container to the SOURCE parameter's stack identity, and a synthetic clone emits a second, context-free
     // covenant (the same reason `tokenCategoryInputByHandler` keeps that handler on its own name). Refuse it by
     // name rather than route it through a clone that would authenticate the wrong container.
-    // A plain SCB route is optional: when its current physical layout cannot
+    // A plain message bus route is optional: when its current physical layout cannot
     // settle a handler, exclude that handler and keep the source entry point.
     // Previously these two shapes were cloned first and rejected only after
     // lowering, turning default-on batching into a whole-contract compile
@@ -1363,8 +1363,8 @@ function synthesizeMessageBusRoute(
     if (!reason && hasTokenContainerEffect && !readsTokenContainer) {
       reason = 'token-container-effect-route-not-enabled';
     }
-    // Controllerless participants authenticate token-container resources and settlements directly in the
-    // carrier transcript. Slotless token effects remain refused later by the existing physical-layout guard.
+    // Atomic participants authenticate token-container resources and settlements directly in the
+    // messageEnvelope callManifest. Slotless token effects remain refused later by the existing physical-layout guard.
 
     const externalTokenContainer = fn.visibility === 'external'
       && [...footprint.reads, ...footprint.writes].some((resource) => resource.startsWith('collection:tokens:'));
@@ -1381,8 +1381,8 @@ function synthesizeMessageBusRoute(
     if (!reason && visibilityRefusal !== undefined) reason = visibilityRefusal;
     else if (!reason && foreignOutStatePrecedesSharedCall(fn))
       reason = 'foreign-outstate-read-precedes-shared-call-settlement';
-    // A transaction signature cannot be placed inside the SCB1 carrier transcript: the signature commits the
-    // transaction containing that transcript, while the transcript would in turn commit the signature. In
+    // A transaction signature cannot be placed inside the message-bus envelope: the signature commits the
+    // transaction containing the call manifest, while the call manifest would in turn commit the signature. In
     // authenticated graph mode `sig` and `sig[]` are instead
     // positional, per-row route witnesses (generated below) and are verified
     // by the original handler against the final transaction.
@@ -1406,15 +1406,15 @@ function synthesizeMessageBusRoute(
       && (routeUsesMsgSender || routeUsesMsgData || routeUsesMsgSig)) {
       reason = 'emission-handler-logical-context-reconstruction-unsupported';
     } else if (!reason && routeUsesForeignTryCatch) {
-      reason = 'foreign-try-catch-transcript-ineligible';
+      reason = 'foreign-try-catch-callManifest-ineligible';
     } else if (!reason && routeUsesOpaqueAssembly) {
-      reason = 'opaque-assembly-effects-transcript-ineligible';
+      reason = 'opaque-assembly-effects-callManifest-ineligible';
     } else if (!reason && graphHasDelegatecall) {
       // A delegate executor shares the proxy's state authority rather than owning an independent participant
-      // block. Until the controllerless transcript publishes and verifies that execution frame, advertising the
+      // block. Until the atomic callManifest publishes and verifies that execution frame, advertising the
       // proxy handler as an ordinary graph edge would authorize the wrong owner/output context. Refuse every
       // surface spelling (including internal-closure calls) detected above instead of inheriting legacy slots.
-      reason = 'controllerless-delegate-context-unpreservable';
+      reason = 'atomic-delegate-context-unpreservable';
     } else if (!reason && statefulExternalCall && !graphTailCallEligible) {
       reason = 'batched-handler-forward-call-not-enabled';
     // Result-consuming effect handlers remain behind their authenticated graph OP_INVOKE frame. X29's
@@ -1742,7 +1742,7 @@ function synthesizeMessageBusRoute(
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
   const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_MESSAGE_BUS_ROWS;
-  // SCB1 graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
+  // message-bus batch graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
   // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
   // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
   const graphBlockhashReads = new Map<FunctionDefinitionNode, string[]>();
@@ -1765,7 +1765,7 @@ function synthesizeMessageBusRoute(
     fn.parameters.some((parameter) => isTransactionSignatureType(parameter.type.toString())));
   const signatureWitnessName = (
     handlerIndex: number, parameterIndex: number, row: number,
-  ): string => `__scb_sig_${handlerIndex}_${parameterIndex}_r${row}`;
+  ): string => `__message_bus_sig_${handlerIndex}_${parameterIndex}_r${row}`;
   // X199. THE ROUTE'S ROW FORMAT IS DECIDED OVER THE HANDLERS THE ROUTE CAN DISPATCH.
   //
   // `graphMsgValueHandlers` is filled during the FIRST per-handler pass and never revised, while `eligible`
@@ -1773,7 +1773,7 @@ function synthesizeMessageBusRoute(
   // published handlers nor the final survivors, and a payable handler admitted by pass one and demoted by
   // uniformity still widened every row from 12 to 21 bytes. Intersecting with the survivors is also what makes
   // the flag REPRODUCIBLE off the artifact: `handlers[].eligible && handlers[].usesMsgValue` is the same
-  // predicate, and it is the one the SDK encoder now computes (`layer3/message-bus.ts`). Counting every
+  // predicate, and it is the one the SDK encoder now computes (`message-bus/message-bus.ts`). Counting every
   // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
   // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
   const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
@@ -1786,7 +1786,7 @@ function synthesizeMessageBusRoute(
   // A `msg.sender` mapping key blocks value-threaded journalling: the collection-journal lowering only accepts
   // parameter-keyed entries, so without this the batched clone re-reads and re-flushes the same physical entry
   // once per row, and two rows demand two different post-states from one output. Every msg.sender key witness is
-  // already required to equal `__scb_graph_caller` at each row, so the rows all agree on one spender - which
+  // already required to equal `__message_bus_graph_caller` at each row, so the rows all agree on one spender - which
   // means the clone can take it as an ordinary parameter fed by that same route witness. The direct entry point
   // is untouched and keeps reading `msg.sender`.
   // Explicit compiler-supplied entry identity.
@@ -1799,8 +1799,8 @@ function synthesizeMessageBusRoute(
   // entry key, named after that entry's canonical route input, and its mapping keys are rewritten to those
   // parameters. The key expression at every call site is then the entry's identity by construction, whatever
   // source parameter originally supplied the value. `msg.sender` keys are just another entry key here; the
-  // route still requires each one to equal `__scb_graph_caller`.
-  const ENTRY_KEY_PREFIX = '__scb_ek_';
+  // route still requires each one to equal `__message_bus_graph_caller`.
+  const ENTRY_KEY_PREFIX = '__message_bus_ek_';
   const handlerEntryKeys = new Map<FunctionDefinitionNode, {
     base: string; perRow: boolean; collection: string;
   }[]>();
@@ -1885,10 +1885,10 @@ function synthesizeMessageBusRoute(
       node.keys = node.keys.map((key, keyIndex) => {
         const isSender = key instanceof NullaryOpNode && key.operator === NullaryOperator.MSG_SENDER;
         const base = isSender
-          ? `__scb_key_${safeName}_sender_${keyIndex}`
+          ? `__message_bus_key_${safeName}_sender_${keyIndex}`
           : rowLocal
-            ? `__scb_key_${safeName}_${keyIndex}_row`
-            : `__scb_key_${safeName}_${keyIndex}`;
+            ? `__message_bus_key_${safeName}_${keyIndex}_row`
+            : `__message_bus_key_${safeName}_${keyIndex}`;
         const parameterName = `${ENTRY_KEY_PREFIX}${base}`;
         if (!declared.has(base)) {
           declared.add(base);
@@ -1914,7 +1914,7 @@ function synthesizeMessageBusRoute(
     && [...graphTailHandlers].every((handler) => graphRuntimeHandlers.has(handler));
   if (resourceShapedHandler) {
     const handler = cloneNode(resourceShapedHandler);
-    handler.name = `__scb_resource_${resourceShapedHandler.name}`;
+    handler.name = `__message_bus_resource_${resourceShapedHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -1979,7 +1979,7 @@ function synthesizeMessageBusRoute(
     for (const sourceHandler of eligible) {
       if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)) continue;
       const handler = cloneNode(sourceHandler);
-      handler.name = `__scb_handler_${sourceHandler.name}`;
+      handler.name = `__message_bus_handler_${sourceHandler.name}`;
       handler.modifiers = [FunctionModifier.INTERNAL];
       handler.functionId = undefined;
       handler.functionSelector = undefined;
@@ -2006,7 +2006,7 @@ function synthesizeMessageBusRoute(
     });
     if (!deletesEntry) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_handler_${sourceHandler.name}`;
+    handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2032,7 +2032,7 @@ function synthesizeMessageBusRoute(
     // The pre-semantic AST has dedicated compound/field lvalue shapes which are not all Mapping* nodes yet.
     // Admission has already proven and recorded their collection key witnesses, so use that authoritative
     // result too; otherwise the route calls the public handler directly and later inlining substitutes a
-    // branch-local __scb_arg_* into a journal initializer hoisted above the branch.
+    // branch-local __message_bus_arg_* into a journal initializer hoisted above the branch.
     let touchesEntry = (sourceHandler.messageBusKeyWitnesses?.length ?? 0) > 0;
     let touchesFixedArray = false;
     const bound = locallyBoundNames(sourceHandler);
@@ -2055,7 +2055,7 @@ function synthesizeMessageBusRoute(
     // rule; dynamically-cardinal collection iteration remains ineligible before clone selection reaches here.
     if (touchesFixedArray || fixedArrayRouteHandlers.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_entry_${sourceHandler.name}`;
+    handler.name = `__message_bus_entry_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2070,7 +2070,7 @@ function synthesizeMessageBusRoute(
   for (const sourceHandler of graphTailHandlers) {
     if (!eligible.includes(sourceHandler) || sourceHandler === resourceShapedHandler) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_graph_${sourceHandler.name}`;
+    handler.name = `__message_bus_graph_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2138,7 +2138,7 @@ function synthesizeMessageBusRoute(
       categoryInput = input;
     });
     if (categoryInput < 0) continue;
-    const routeInput = '__scb_token_category';
+    const routeInput = '__message_bus_token_category';
     routeKeyWitnesses.set(routeInput, [{
       name: routeInput,
       type: new BytesType(32),
@@ -2157,7 +2157,7 @@ function synthesizeMessageBusRoute(
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
     if (!touchesDynamic) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_dynamic_${sourceHandler.name}`;
+    handler.name = `__message_bus_dynamic_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2182,7 +2182,7 @@ function synthesizeMessageBusRoute(
     });
     if (!touchesFixedArray && !fixedArrayRouteHandlers.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_array_${sourceHandler.name}`;
+    handler.name = `__message_bus_array_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2203,7 +2203,7 @@ function synthesizeMessageBusRoute(
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_handler_${sourceHandler.name}`;
+    handler.name = `__message_bus_handler_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2225,7 +2225,7 @@ function synthesizeMessageBusRoute(
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
       || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
     const handler = cloneNode(sourceHandler);
-    handler.name = `__scb_external_${sourceHandler.name}`;
+    handler.name = `__message_bus_external_${sourceHandler.name}`;
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
@@ -2247,14 +2247,14 @@ function synthesizeMessageBusRoute(
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
         if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
         const names = fn.returnTypes.map((_type, index) =>
-          `__scb_value_${rowIndex}_${handlerIndex}_${index}`);
+          `__message_bus_value_${rowIndex}_${handlerIndex}_${index}`);
         const declarations = fn.returnTypes.map((type, index) =>
           `${type.toString()} ${names[index]};`).join(' ');
         const assignment = fn.returnTypes.length === 1
           ? `${names[0]} = ${selectedInvokeName}(${args});`
           : `(${names.join(', ')}) = ${selectedInvokeName}(${args});`;
-        return `${declarations} ${assignment} __scb_results = bytes.concat(
-        __scb_results, abi.encode(${names.join(', ')})
+        return `${declarations} ${assignment} __message_bus_results = bytes.concat(
+        __message_bus_results, abi.encode(${names.join(', ')})
       );`;
       };
       const blockhashRowOffset = graphBlockhashReads.has(fn)
@@ -2272,7 +2272,7 @@ function synthesizeMessageBusRoute(
           ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [])];
         const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
-          .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
+          .map((binding) => `require(${witnessName(binding)} == __message_bus_graph_caller);`).join(' ');
         return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
       }
       const decodedParameters = fn.parameters
@@ -2280,17 +2280,17 @@ function synthesizeMessageBusRoute(
         .filter(({ parameter }) => !isTransactionSignatureType(parameter.type.toString())
         && !parameter.name.startsWith('__internal__'));
       const declarations = decodedParameters.map(({ parameter, index }) =>
-        `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
+        `${parameter.type.toString()} __message_bus_arg_${handlerIndex}_${index}`);
       const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
       const keyChecks = (fn.messageBusKeyWitnesses ?? []).map((binding) =>
         binding.source === 'msgSender'
-          ? `require(${witnessName(binding)} == __scb_graph_caller);`
-          : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
+          ? `require(${witnessName(binding)} == __message_bus_graph_caller);`
+          : `require(__message_bus_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
       // Declared arguments come from the row; entry keys come from the canonical witnesses this row already
       // checked, so the journal sees one identity per physical entry however the handler names its parameters.
       //
       // A handler with no batch clone has no entry-key parameters, and the journal hoists its entry reads to the
-      // top of the wrapper - above the dispatch branch where `__scb_arg_*` is declared. Those key positions must
+      // top of the wrapper - above the dispatch branch where `__message_bus_arg_*` is declared. Those key positions must
       // still be passed as route witnesses, which are wrapper parameters and therefore always in scope.
       const substituteKeyWitnesses = !handlerEntryKeys.has(fn);
       const witnessByInput = new Map(substituteKeyWitnesses
@@ -2307,12 +2307,12 @@ function synthesizeMessageBusRoute(
                 const targetName = fn.externalOutStateReads?.find((read) => read.addressParam)?.addressParam;
                 const targetIndex = fn.parameters.findIndex((candidate) => candidate.name === targetName);
                 if (targetIndex < 0) throw new Error(`foreign outState target for '${fn.name}' is not parameter-bound`);
-                return '__scb_graph_owner_input(__internal__graphSettlementTable, '
-              + `__scb_arg_${handlerIndex}_${targetIndex})`;
+                return '__message_bus_graph_owner_input(__internal__graphSettlementTable, '
+              + `__message_bus_arg_${handlerIndex}_${targetIndex})`;
               })()
               : i === tokenCategoryInputByHandler.get(fn)
-                ? '__scb_token_category'
-                : (witnessByInput.get(i) ?? `__scb_arg_${handlerIndex}_${i}`)),
+                ? '__message_bus_token_category'
+                : (witnessByInput.get(i) ?? `__message_bus_arg_${handlerIndex}_${i}`)),
         ...(blockhashRowOffset ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : []),
       ];
       const physicalEntryArgs = entryKeyArguments(fn);
@@ -2425,7 +2425,7 @@ function synthesizeMessageBusRoute(
     'bytes __internal__graphSettlementTable',
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
-  const verifierBinderRouteParameters = compilerOptions.__layer3VerifierProgram
+  const verifierBinderRouteParameters = compilerOptions.__messageBusVerifierProgram
     ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
@@ -2434,25 +2434,25 @@ function synthesizeMessageBusRoute(
   const graphOutStateMode = graphExecutionContext
     && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
   const parseGraphCaller = !graphExecutionContext ? '' : `
-          address __scb_graph_caller;
-          (__scb_graph_caller, __scb_graph_caller_cursor) = __scb_parse_graph_caller(
-            __internal__graphCallers, __scb_graph_caller_cursor
+          address __message_bus_graph_caller;
+          (__message_bus_graph_caller, __message_bus_graph_caller_cursor) = __message_bus_parse_graph_caller(
+            __internal__graphCallers, __message_bus_graph_caller_cursor
           );
   `;
   const parseOneRow = (rowExpression: string, captureResults = false, rowIndex?: number): string => `
           ${parseGraphCaller}
           bytes4 rowSelector;
           bytes rowArgs;
-          bigint __scb_graph_msg_value;
-          (rowSelector, rowArgs, __scb_graph_msg_value, cursor) = __scb_parse_row(
-            batchBlob, cursor, ${rowExpression}, __scb_version
+          bigint __message_bus_graph_msg_value;
+          (rowSelector, rowArgs, __message_bus_graph_msg_value, cursor) = __message_bus_parse_row(
+            batchBlob, cursor, ${rowExpression}, __message_bus_version
           );
-          bigint __scb_call_options = int(bytes.concat(rowArgs.slice(0, 1), hex"00"));
+          bigint __message_bus_call_options = int(bytes.concat(rowArgs.slice(0, 1), hex"00"));
           rowArgs = rowArgs.slice(1, rowArgs.length);
-          bytes __scb_graph_msg_data = bytes.concat(rowSelector, rowArgs);
+          bytes __message_bus_graph_msg_data = bytes.concat(rowSelector, rowArgs);
           ${!graphOutStateMode ? '' : `require((${rowExpression} + 1) * 2
             <= __internal__graphCompletionPositions.length);
-          bigint __scb_graph_completion = int(bytes.concat(
+          bigint __message_bus_graph_completion = int(bytes.concat(
             __internal__graphCompletionPositions.slice(${rowExpression} * 2, (${rowExpression} + 1) * 2),
             hex"00"
           ));`}
@@ -2469,19 +2469,19 @@ function synthesizeMessageBusRoute(
       : `for (bigint row = 0; row < rowCount; row = row + 1) {
         ${parseOneRow('row')}
       }`;
-  const resultDeclarations = resultMode ? 'bytes __scb_results = hex\"\";' : '';
+  const resultDeclarations = resultMode ? 'bytes __message_bus_results = hex\"\";' : '';
   const returnDeclaration = resultMode
     ? ' returns (bytes)'
     : '';
   const returnStatement = resultMode
-    ? 'return __scb_results;'
+    ? 'return __message_bus_results;'
     : '';
   const graphPrologue = '';
-  const graphTranscriptLoader = '';
-  const offloadedVerifier = compilerOptions.__layer3VerifierProgram;
+  const graphCallManifestLoader = '';
+  const offloadedVerifier = compilerOptions.__messageBusVerifierProgram;
   const offloadedVerifierLock = offloadedVerifier
-    ? binToHex(layer3VerifierLockingBytecode(offloadedVerifier)) : '';
-  const compactSingleTxBinder = `
+    ? binToHex(messageBusVerifierLockingBytecode(offloadedVerifier)) : '';
+  const compactAtomicBinder = `
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33
           && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
           && tx.outputs[activeInputIndex].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
@@ -2504,8 +2504,8 @@ function synthesizeMessageBusRoute(
           bytes2(suppliedFixedSize), bytes2(suppliedBlockSize), sha256(suppliedEmissions),
           sha256(suppliedCallers), bytes2(suppliedSettlementBoundary),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
-  const singleTxTranscriptLoader = `
-      function __scb_verify_single_tx(
+  const atomicCallManifestLoader = `
+      function __message_bus_verify_atomic(
         bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
         ${!offloadedVerifier ? '' : ', bigint __internal__activeVerifierIndex'}
         ${!graphExecutionContext ? '' : `,
@@ -2514,17 +2514,17 @@ function synthesizeMessageBusRoute(
       ) internal view returns (bytes) {
         bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
         require(unlocking.slice(0, 1) == hex"4d");
-        bigint carrierLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
-        bytes carrier = unlocking.slice(3, 3 + carrierLength);
-        bytes transcript = carrier.slice(8, carrier.length);
+        bigint messageEnvelopeLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
+        bytes messageEnvelope = unlocking.slice(3, 3 + messageEnvelopeLength);
+        bytes callManifest = messageEnvelope.slice(8, messageEnvelope.length);
         bytes bindingDigest = sha256(bytes.concat(
-          sha256(transcript), bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
+          sha256(callManifest), bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
           ${bindingDigestGraphValues}
         ));
-        ${offloadedVerifier ? compactSingleTxBinder : `
-        require(transcript.length >= 15 && transcript.slice(0, 8) == hex"4c33425553310000");
-        require(int(bytes.concat(transcript.slice(8, 12), hex"00000000")) == transcript.length);
-        bigint participantCount = int(bytes.concat(transcript.slice(12, 13), hex"00"));
+        ${offloadedVerifier ? compactAtomicBinder : `
+        require(callManifest.length >= 15 && callManifest.slice(0, 8) == hex"4c33425553310000");
+        require(int(bytes.concat(callManifest.slice(8, 12), hex"00000000")) == callManifest.length);
+        bigint participantCount = int(bytes.concat(callManifest.slice(12, 13), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
         bigint cursor = 13;
         bigint expectedBase = 0;
@@ -2539,24 +2539,24 @@ function synthesizeMessageBusRoute(
         bytes participantSizes = hex"";
         bytes participantLbcs = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          require(cursor + 45 <= transcript.length);
+          require(cursor + 45 <= callManifest.length);
           bigint base = expectedBase;
-          bigint fixedSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
-          bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
-          bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
+          bigint fixedSize = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
+          bigint blockSize = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 4), hex"00"));
+          bigint lbcLength = int(bytes.concat(callManifest.slice(cursor + 4, cursor + 6), hex"00"));
           cursor = cursor + 6;
           require(fixedSize >= 1 && blockSize >= fixedSize && lbcLength > 0);
           participantBases = bytes.concat(participantBases, bytes2(base));
           participantSizes = bytes.concat(participantSizes, bytes2(blockSize));
           expectedBase = expectedBase + blockSize;
-          require(expectedBase < tx.inputs.length && cursor + lbcLength + 38 <= transcript.length);
-          bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
+          require(expectedBase < tx.inputs.length && cursor + lbcLength + 38 <= callManifest.length);
+          bytes participantLbc = callManifest.slice(cursor, cursor + lbcLength);
           cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, bytes2(lbcLength), participantLbc);
-          bytes category = transcript.slice(cursor, cursor + 32);
-          bigint maximumSize = int(bytes.concat(transcript.slice(cursor + 32, cursor + 34), hex"00"));
-          bigint trailingUsed = int(bytes.concat(transcript.slice(cursor + 34, cursor + 36), hex"00"));
-          bigint returnOffset = int(bytes.concat(transcript.slice(cursor + 36, cursor + 38), hex"00"));
+          bytes category = callManifest.slice(cursor, cursor + 32);
+          bigint maximumSize = int(bytes.concat(callManifest.slice(cursor + 32, cursor + 34), hex"00"));
+          bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
+          bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
           bigint returnOutput = returnOffset == 65535 ? 65535 : base + returnOffset;
           cursor = cursor + 38;
           require(base < tx.inputs.length && base < tx.outputs.length);
@@ -2595,8 +2595,8 @@ function synthesizeMessageBusRoute(
           bindingDigest
         ));
         require(tx.outputs.length == tx.inputs.length);
-        require(cursor + 2 <= transcript.length);
-        bigint rowCount = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+        require(cursor + 2 <= callManifest.length);
+        bigint rowCount = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
         require(rowCount <= 24);
         cursor = cursor + 2;
         bigint consumedLocalRows = 0;
@@ -2634,18 +2634,18 @@ function synthesizeMessageBusRoute(
         bigint eventsStarted = 0;
         bigint effectsStarted = 0;
         for (bigint row = 0; row < rowCount; row = row + 1) {
-          require(cursor + 29 <= transcript.length);
+          require(cursor + 29 <= callManifest.length);
           bigint rowStart = cursor;
-          bigint kind = int(bytes.concat(transcript.slice(cursor, cursor + 1), hex"00"));
-          bigint owner = int(bytes.concat(transcript.slice(cursor + 1, cursor + 2), hex"00"));
-          bigint consumer = int(bytes.concat(transcript.slice(cursor + 2, cursor + 3), hex"00"));
+          bigint kind = int(bytes.concat(callManifest.slice(cursor, cursor + 1), hex"00"));
+          bigint owner = int(bytes.concat(callManifest.slice(cursor + 1, cursor + 2), hex"00"));
+          bigint consumer = int(bytes.concat(callManifest.slice(cursor + 2, cursor + 3), hex"00"));
           require(kind <= 6 && owner < participantCount && consumer < participantCount);
-          bigint sourceOffset = int(bytes.concat(transcript.slice(cursor + 6, cursor + 8), hex"00"));
-          bigint targetOffset = int(bytes.concat(transcript.slice(cursor + 8, cursor + 10), hex"00"));
-          bigint completion = int(bytes.concat(transcript.slice(cursor + 14, cursor + 16), hex"00"));
-          bigint parent = int(bytes.concat(transcript.slice(cursor + 16, cursor + 18), hex"00"));
-          bigint depth = int(bytes.concat(transcript.slice(cursor + 18, cursor + 19), hex"00"));
-          bigint subtreeEnd = int(bytes.concat(transcript.slice(cursor + 19, cursor + 21), hex"00"));
+          bigint sourceOffset = int(bytes.concat(callManifest.slice(cursor + 6, cursor + 8), hex"00"));
+          bigint targetOffset = int(bytes.concat(callManifest.slice(cursor + 8, cursor + 10), hex"00"));
+          bigint completion = int(bytes.concat(callManifest.slice(cursor + 14, cursor + 16), hex"00"));
+          bigint parent = int(bytes.concat(callManifest.slice(cursor + 16, cursor + 18), hex"00"));
+          bigint depth = int(bytes.concat(callManifest.slice(cursor + 18, cursor + 19), hex"00"));
+          bigint subtreeEnd = int(bytes.concat(callManifest.slice(cursor + 19, cursor + 21), hex"00"));
           bigint participantBase = int(bytes.concat(
             participantBases.slice(consumer * 2, consumer * 2 + 2), hex"00"
           ));
@@ -2676,20 +2676,20 @@ function synthesizeMessageBusRoute(
               && invocationRows > 0);
             effectsStarted = 1;
             require(owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
-            require(int(bytes.concat(transcript.slice(cursor + 3, cursor + 5), hex"00"))
+            require(int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00"))
               == targetOffset);
-            require(transcript.slice(cursor + 10, cursor + 14) == hex"00000000");
-            require(completion == int(bytes.concat(transcript.slice(cursor + 3, cursor + 5), hex"00")));
+            require(callManifest.slice(cursor + 10, cursor + 14) == hex"00000000");
+            require(completion == int(bytes.concat(callManifest.slice(cursor + 3, cursor + 5), hex"00")));
             if (kind == 1) {
               require(eventsStarted == 0 && targetSlot > previousResourceTarget);
               previousResourceTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 4);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 4);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             } else if (kind == 2) {
               eventsStarted = 1;
               require(targetSlot > previousEventTarget);
               previousEventTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
               require(parent < invocationRows
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
@@ -2697,7 +2697,7 @@ function synthesizeMessageBusRoute(
             } else if (kind == 3) {
               require(targetSlot > previousValueTarget);
               previousValueTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) == 1);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) == 1);
               require(parent < invocationRows
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
@@ -2705,7 +2705,7 @@ function synthesizeMessageBusRoute(
             } else if (kind == 4) {
               require(targetSlot > previousTokenTarget);
               previousTokenTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 3);
               require(parent < invocationRows
                 && consumer == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")));
@@ -2713,7 +2713,7 @@ function synthesizeMessageBusRoute(
             } else {
               require(targetSlot > previousSidecarTarget);
               previousSidecarTarget = targetSlot;
-              require(int(bytes.concat(transcript.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
+              require(int(bytes.concat(callManifest.slice(cursor + 5, cursor + 6), hex"00")) <= 2);
               require(parent == 65535 && depth == 0 && subtreeEnd == completion);
             }
           }
@@ -2723,18 +2723,18 @@ function synthesizeMessageBusRoute(
           bytes rowResult;
           bytes rowEffect;
           for (bigint field = 0; field < 4; field = field + 1) {
-            require(cursor + 2 <= transcript.length);
-            bigint fieldLength = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+            require(cursor + 2 <= callManifest.length);
+            bigint fieldLength = int(bytes.concat(callManifest.slice(cursor, cursor + 2), hex"00"));
             cursor = cursor + 2;
-            require(cursor + fieldLength <= transcript.length);
-            if (field == 0) { rowSubject = transcript.slice(cursor, cursor + fieldLength); }
-            if (field == 1) { rowArguments = transcript.slice(cursor, cursor + fieldLength); }
-            if (field == 2) { rowResult = transcript.slice(cursor, cursor + fieldLength); }
-            if (field == 3) { rowEffect = transcript.slice(cursor, cursor + fieldLength); }
+            require(cursor + fieldLength <= callManifest.length);
+            if (field == 0) { rowSubject = callManifest.slice(cursor, cursor + fieldLength); }
+            if (field == 1) { rowArguments = callManifest.slice(cursor, cursor + fieldLength); }
+            if (field == 2) { rowResult = callManifest.slice(cursor, cursor + fieldLength); }
+            if (field == 3) { rowEffect = callManifest.slice(cursor, cursor + fieldLength); }
             cursor = cursor + fieldLength;
           }
           ${resourceVerificationMode ? `if (kind == 1 && owner == activeParticipant) {
-            bigint resourceMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint resourceMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
             require(rowSubject.length > 0);
             if (resourceMode == 3) {
               require(rowArguments.length == 8 && rowResult.length == 0 && rowEffect.length == 8);
@@ -2817,7 +2817,7 @@ function synthesizeMessageBusRoute(
             if (owner == activeParticipant) { activeValueRows = activeValueRows + 1; }
           }` : ''}
           ${tokenContainerMode ? `if (kind == 4 && owner == activeParticipant) {
-            bigint tokenMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
+            bigint tokenMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
             require((tokenMode == 0 && rowArguments.length == 32 && rowEffect.length == 8)
               || (tokenMode == 1 && rowArguments.length == 32)
               || (tokenMode > 1 && tokenMode <= 3 && rowArguments.length == 33
@@ -2873,8 +2873,8 @@ function synthesizeMessageBusRoute(
             bytes targetLbc = tx.inputs[targetSlot].lockingBytecode;
             expectedEmissions = bytes.concat(
               expectedEmissions, bytes2(targetLbc.length), targetLbc,
-              transcript.slice(rowStart + 5, rowStart + 6),
-              transcript.slice(rowStart + 10, rowStart + 14),
+              callManifest.slice(rowStart + 5, rowStart + 6),
+              callManifest.slice(rowStart + 10, rowStart + 14),
               bytes2(rowArguments.length), rowArguments, bytes2(rowResult.length), rowResult
             );
           }
@@ -2885,15 +2885,15 @@ function synthesizeMessageBusRoute(
             ));
             bigint batchArgsStart = batchCursor + 12 + batchModeWidth + batchValueWidth;
             require(batchArgsStart + batchArgsLength <= localBatch.length);
-            require(transcript.slice(rowStart + 10, rowStart + 14)
+            require(callManifest.slice(rowStart + 10, rowStart + 14)
               == localBatch.slice(batchCursor, batchCursor + 4));
-            bigint transcriptMode = int(bytes.concat(transcript.slice(rowStart + 5, rowStart + 6), hex"00"));
-            if (transcriptMode % 2 == 1) {
+            bigint callManifestMode = int(bytes.concat(callManifest.slice(rowStart + 5, rowStart + 6), hex"00"));
+            if (callManifestMode % 2 == 1) {
               activeStaticInvocationRows = activeStaticInvocationRows + 1;
             }
-            if (batchModeWidth == 0) { require(transcriptMode == 0); }
+            if (batchModeWidth == 0) { require(callManifestMode == 0); }
             else {
-              require(transcriptMode
+              require(callManifestMode
                 == int(bytes.concat(localBatch.slice(batchCursor + 12, batchCursor + 13), hex"00")));
             }
             require(rowArguments == localBatch.slice(batchArgsStart, batchArgsStart + batchArgsLength));
@@ -2928,7 +2928,7 @@ function synthesizeMessageBusRoute(
               isSidecarSlot = 1;
             }
           }` : ''}
-          // Controllerless staticcall security boundary: every participant enforces this snapshot walk from
+          // Atomic staticcall security boundary: every participant enforces this snapshot walk from
           // its mutually authenticated local rows.
           // A return-event slot is allowed to publish the authenticated result vector, but every other slot in
           // the participant's complete balanced block must be byte-for-byte and value-for-value preserved.
@@ -2992,7 +2992,7 @@ function synthesizeMessageBusRoute(
         require(activeValueRows == physicalValueOutputs);
         require(activeTokenRows == physicalTokenOutputs);
         require(activeSidecarRows * 2 == activeSidecarTargets.length);
-        require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
+        require(cursor == callManifest.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
         require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeMaximumSize);
@@ -3027,14 +3027,14 @@ function synthesizeMessageBusRoute(
         `}
         return bytes.concat(
           bindingDigest,
-          sha256(bytes.concat(hex"4c334331", bytes4(transcript.length), transcript))
+          sha256(bytes.concat(hex"4c334331", bytes4(callManifest.length), callManifest))
         );
       }
   `;
-  const singleTxPrologue = `
+  const atomicPrologue = `
         if (${offloadedVerifier && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
           tx.inputs[this.activeInputIndex].outpointIndex != 4294967295) {
-          bytes __internal__singleTxBindingDigest = __scb_verify_single_tx(
+          bytes __internal__atomicBindingDigest = __message_bus_verify_atomic(
             this.activeInputIndex, rowCount, batchBlob
             ${!offloadedVerifier ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
@@ -3080,126 +3080,126 @@ function synthesizeMessageBusRoute(
     ${routeTypes}
     ${routeStructs}
     contract __MessageBusHost() {
-      ${graphTranscriptLoader}
-      ${singleTxTranscriptLoader}
-      function __scb_parse_row(
-        bytes __scb_blob, bigint __scb_at, bigint __scb_expected_callsite, bigint __scb_version
+      ${graphCallManifestLoader}
+      ${atomicCallManifestLoader}
+      function __message_bus_parse_row(
+        bytes __message_bus_blob, bigint __message_bus_at, bigint __message_bus_expected_callsite, bigint __message_bus_version
       ) internal pure returns (bytes4, bytes, bigint, bigint) {
-        require(__scb_at + ${logicalValueMode ? 21 : 12} <= __scb_blob.length);
-        bytes4 __scb_parsed_selector = bytes4(__scb_blob.slice(__scb_at, __scb_at + 4));
-        __scb_at = __scb_at + 4;
-        bigint __scb_callsite = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 4), hex"00"));
-        __scb_at = __scb_at + 4;
-        require(__scb_callsite == __scb_expected_callsite);
-        bigint __scb_occurrence = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
-        __scb_at = __scb_at + 2;
-        require(__scb_occurrence == 0);
-        bigint __scb_args_length = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 2), hex"00"));
-        __scb_at = __scb_at + 2;
-        bigint __scb_call_options = 0;
-        if (__scb_version == 2) {
-          __scb_call_options = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 1), hex"00"));
-          require(__scb_call_options <= 1);
-          __scb_at = __scb_at + 1;
+        require(__message_bus_at + ${logicalValueMode ? 21 : 12} <= __message_bus_blob.length);
+        bytes4 __message_bus_parsed_selector = bytes4(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 4));
+        __message_bus_at = __message_bus_at + 4;
+        bigint __message_bus_callsite = int(bytes.concat(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 4), hex"00"));
+        __message_bus_at = __message_bus_at + 4;
+        require(__message_bus_callsite == __message_bus_expected_callsite);
+        bigint __message_bus_occurrence = int(bytes.concat(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 2), hex"00"));
+        __message_bus_at = __message_bus_at + 2;
+        require(__message_bus_occurrence == 0);
+        bigint __message_bus_args_length = int(bytes.concat(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 2), hex"00"));
+        __message_bus_at = __message_bus_at + 2;
+        bigint __message_bus_call_options = 0;
+        if (__message_bus_version == 2) {
+          __message_bus_call_options = int(bytes.concat(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 1), hex"00"));
+          require(__message_bus_call_options <= 1);
+          __message_bus_at = __message_bus_at + 1;
         }
-        bigint __scb_logical_value = 0;
+        bigint __message_bus_logical_value = 0;
         ${logicalValueMode ? `
-        bigint __scb_value_negative = int(bytes.concat(__scb_blob.slice(__scb_at, __scb_at + 1), hex"00"));
-        require(__scb_value_negative == 0 || __scb_value_negative == 1);
-        __scb_at = __scb_at + 1;
-        bigint __scb_value_magnitude = int(bytes.concat(
-          __scb_blob.slice(__scb_at, __scb_at + 8), hex"00"
+        bigint __message_bus_value_negative = int(bytes.concat(__message_bus_blob.slice(__message_bus_at, __message_bus_at + 1), hex"00"));
+        require(__message_bus_value_negative == 0 || __message_bus_value_negative == 1);
+        __message_bus_at = __message_bus_at + 1;
+        bigint __message_bus_value_magnitude = int(bytes.concat(
+          __message_bus_blob.slice(__message_bus_at, __message_bus_at + 8), hex"00"
         ));
-        __scb_at = __scb_at + 8;
-        __scb_logical_value = __scb_value_negative == 1
-          ? -__scb_value_magnitude : __scb_value_magnitude;
+        __message_bus_at = __message_bus_at + 8;
+        __message_bus_logical_value = __message_bus_value_negative == 1
+          ? -__message_bus_value_magnitude : __message_bus_value_magnitude;
         ` : ''}
-        require(__scb_args_length >= 0 && __scb_at + __scb_args_length <= __scb_blob.length);
-        bytes __scb_parsed_args = bytes.concat(bytes1(__scb_call_options),
-          __scb_blob.slice(__scb_at, __scb_at + __scb_args_length));
+        require(__message_bus_args_length >= 0 && __message_bus_at + __message_bus_args_length <= __message_bus_blob.length);
+        bytes __message_bus_parsed_args = bytes.concat(bytes1(__message_bus_call_options),
+          __message_bus_blob.slice(__message_bus_at, __message_bus_at + __message_bus_args_length));
         return (
-          __scb_parsed_selector, __scb_parsed_args, __scb_logical_value,
-          __scb_at + __scb_args_length
+          __message_bus_parsed_selector, __message_bus_parsed_args, __message_bus_logical_value,
+          __message_bus_at + __message_bus_args_length
         );
       }
       ${!graphExecutionContext ? '' : `
-      function __scb_parse_graph_caller(
-        bytes __scb_callers, bigint __scb_at
+      function __message_bus_parse_graph_caller(
+        bytes __message_bus_callers, bigint __message_bus_at
       ) internal pure returns (address, bigint) {
-        require(__scb_at + 2 <= __scb_callers.length);
-        bigint __scb_caller_length = int(bytes.concat(
-          __scb_callers.slice(__scb_at, __scb_at + 2), hex"00"
+        require(__message_bus_at + 2 <= __message_bus_callers.length);
+        bigint __message_bus_caller_length = int(bytes.concat(
+          __message_bus_callers.slice(__message_bus_at, __message_bus_at + 2), hex"00"
         ));
-        __scb_at = __scb_at + 2;
-        require(__scb_at + __scb_caller_length <= __scb_callers.length);
+        __message_bus_at = __message_bus_at + 2;
+        require(__message_bus_at + __message_bus_caller_length <= __message_bus_callers.length);
         return (
-          address(__scb_callers.slice(__scb_at, __scb_at + __scb_caller_length)),
-          __scb_at + __scb_caller_length
+          address(__message_bus_callers.slice(__message_bus_at, __message_bus_at + __message_bus_caller_length)),
+          __message_bus_at + __message_bus_caller_length
         );
       }`}
       ${!graphOutStateMode ? '' : `
-      function __scb_graph_owner_input(bytes __scb_table, address __scb_target) internal pure returns (bigint) {
-        bigint __scb_at = 0;
-        while (__scb_at < __scb_table.length) {
-          require(__scb_at + 2 <= __scb_table.length);
-          bigint __scb_lbc_length = int(bytes.concat(__scb_table.slice(__scb_at, __scb_at + 2), hex"00"));
-          __scb_at = __scb_at + 2;
-          require(__scb_at + __scb_lbc_length + 4 <= __scb_table.length);
-          bytes __scb_lbc = __scb_table.slice(__scb_at, __scb_at + __scb_lbc_length);
-          bigint __scb_input = int(bytes.concat(
-            __scb_table.slice(__scb_at + __scb_lbc_length, __scb_at + __scb_lbc_length + 2), hex"00"
+      function __message_bus_graph_owner_input(bytes __message_bus_table, address __message_bus_target) internal pure returns (bigint) {
+        bigint __message_bus_at = 0;
+        while (__message_bus_at < __message_bus_table.length) {
+          require(__message_bus_at + 2 <= __message_bus_table.length);
+          bigint __message_bus_lbc_length = int(bytes.concat(__message_bus_table.slice(__message_bus_at, __message_bus_at + 2), hex"00"));
+          __message_bus_at = __message_bus_at + 2;
+          require(__message_bus_at + __message_bus_lbc_length + 4 <= __message_bus_table.length);
+          bytes __message_bus_lbc = __message_bus_table.slice(__message_bus_at, __message_bus_at + __message_bus_lbc_length);
+          bigint __message_bus_input = int(bytes.concat(
+            __message_bus_table.slice(__message_bus_at + __message_bus_lbc_length, __message_bus_at + __message_bus_lbc_length + 2), hex"00"
           ));
-          if (__scb_lbc == __scb_target) { return __scb_input; }
-          __scb_at = __scb_at + __scb_lbc_length + 4;
+          if (__message_bus_lbc == __message_bus_target) { return __message_bus_input; }
+          __message_bus_at = __message_bus_at + __message_bus_lbc_length + 4;
         }
         revert("foreign outState owner absent");
       }
-      function __scb_graph_settlement(bytes __scb_table, address __scb_target) internal pure returns (bigint) {
-        bigint __scb_at = 0;
-        while (__scb_at < __scb_table.length) {
-          require(__scb_at + 2 <= __scb_table.length);
-          bigint __scb_lbc_length = int(bytes.concat(__scb_table.slice(__scb_at, __scb_at + 2), hex"00"));
-          __scb_at = __scb_at + 2;
-          require(__scb_at + __scb_lbc_length + 4 <= __scb_table.length);
-          bytes __scb_lbc = __scb_table.slice(__scb_at, __scb_at + __scb_lbc_length);
-          bigint __scb_boundary = int(bytes.concat(
-            __scb_table.slice(__scb_at + __scb_lbc_length + 2, __scb_at + __scb_lbc_length + 4), hex"00"
+      function __message_bus_graph_settlement(bytes __message_bus_table, address __message_bus_target) internal pure returns (bigint) {
+        bigint __message_bus_at = 0;
+        while (__message_bus_at < __message_bus_table.length) {
+          require(__message_bus_at + 2 <= __message_bus_table.length);
+          bigint __message_bus_lbc_length = int(bytes.concat(__message_bus_table.slice(__message_bus_at, __message_bus_at + 2), hex"00"));
+          __message_bus_at = __message_bus_at + 2;
+          require(__message_bus_at + __message_bus_lbc_length + 4 <= __message_bus_table.length);
+          bytes __message_bus_lbc = __message_bus_table.slice(__message_bus_at, __message_bus_at + __message_bus_lbc_length);
+          bigint __message_bus_boundary = int(bytes.concat(
+            __message_bus_table.slice(__message_bus_at + __message_bus_lbc_length + 2, __message_bus_at + __message_bus_lbc_length + 4), hex"00"
           ));
-          if (__scb_lbc == __scb_target) { return __scb_boundary; }
-          __scb_at = __scb_at + __scb_lbc_length + 4;
+          if (__message_bus_lbc == __message_bus_target) { return __message_bus_boundary; }
+          __message_bus_at = __message_bus_at + __message_bus_lbc_length + 4;
         }
         revert("foreign outState owner absent");
       }`}
-      function __scb1(${routeParameters}) external${returnDeclaration} {
+      function __message_bus1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
         require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
-        bytes __scb_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
-        require(__scb_unlock.length >= 7);
-        require(__scb_unlock.slice(0, 5) == hex"0453434231");
-        bigint __scb_pushOpcode = int(bytes.concat(__scb_unlock.slice(5, 6), hex"00"));
+        bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
+        require(__message_bus_unlock.length >= 7);
+        require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
+        bigint __message_bus_pushOpcode = int(bytes.concat(__message_bus_unlock.slice(5, 6), hex"00"));
         if (batchBlob.length <= 75) {
-          require(__scb_pushOpcode == batchBlob.length);
-          require(__scb_unlock.slice(6, 6 + batchBlob.length) == batchBlob);
+          require(__message_bus_pushOpcode == batchBlob.length);
+          require(__message_bus_unlock.slice(6, 6 + batchBlob.length) == batchBlob);
         } else {
-          require(__scb_pushOpcode == 76);
+          require(__message_bus_pushOpcode == 76);
           // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
           // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
           // through Script-number casts: their sign-bit encoding is not the unsigned push length.
-          require(__scb_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
+          require(__message_bus_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
-        bigint __scb_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));
-        require(__scb_version == 1 || __scb_version == 2);
+        bigint __message_bus_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));
+        require(__message_bus_version == 1 || __message_bus_version == 2);
         require(batchBlob.slice(5, 6) == hex"${logicalValueMode ? '01' : '00'}");
         ${graphPrologue}
         bigint rowCount = int(bytes.concat(batchBlob.slice(6, 7), hex"00"));
         require(${resourceShapedHandler
     ? `rowCount == ${routeMaximumRows}`
     : `rowCount >= 1 && rowCount <= ${routeMaximumRows}`});
-        ${singleTxPrologue}
+        ${atomicPrologue}
         bigint cursor = 7;
-        ${!graphExecutionContext ? '' : 'bigint __scb_graph_caller_cursor = 0;'}
+        ${!graphExecutionContext ? '' : 'bigint __message_bus_graph_caller_cursor = 0;'}
         ${resultDeclarations}
         ${parser}
         require(cursor == batchBlob.length);
@@ -3207,7 +3207,7 @@ function synthesizeMessageBusRoute(
     : 'require(__internal__graphCompletionPositions.length == rowCount * 2);'}
         ${!graphExecutionContext
     ? ''
-    : 'require(__scb_graph_caller_cursor == __internal__graphCallers.length);'}
+    : 'require(__message_bus_graph_caller_cursor == __internal__graphCallers.length);'}
         // Keep the emission witness live through compiler-owned call verification above. The generated verifier
         // consumes a copy directly, so this source-level final reference prevents last-use stack relocation.
         ${!graphExecutionContext
@@ -3359,10 +3359,10 @@ function compileResolvedAst(
   });
   const messageBusGraphMode = !!mergedCompilerOptions.messageBus
     && inferredGraphEdge;
-  // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
+  // Reject the low-level call shapes the callManifest row cannot bind (call options, iterated and conditional
   // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
   // or renames a handler. Without this the same sources reach the user as `Block slot not found: lowLevelCall[0]`
-  // or as a rule naming the synthesized `__scb_graph_run`. Graph mode only: the direct route compiles call
+  // or as a rule naming the synthesized `__message_bus_graph_run`. Graph mode only: the direct route compiles call
   // options and iterated low-level calls today and must keep doing so.
   if (messageBusGraphMode) validateLowLevelCallShapes(ast.contract);
   const pointerTableBounds = new Map<string, PointerTableExpansion[]>();
@@ -3426,7 +3426,7 @@ function compileResolvedAst(
   // Message-bus synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
   // visible to its wrapper. Beta-reduce side-effect-free foreign function-pointer return/pass helpers before that
   // snapshot too; otherwise the source entry point is lowered later to an external edge while its already-cloned
-  // SCB1 wrapper still calls the pre-lowering higher-order signature (and lacks the generated edge witnesses).
+  // message-bus batch wrapper still calls the pre-lowering higher-order signature (and lacks the generated edge witnesses).
   // The normal later pass remains: this early application is intentionally idempotent and covers only candidates
   // already visible after modifier expansion.
   if (mergedCompilerOptions.messageBus) {
@@ -3503,7 +3503,7 @@ function compileResolvedAst(
     }
   }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
-    && supportsSingleTransactionBus(ast, mergedCompilerOptions)
+    && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
       const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
@@ -3740,7 +3740,7 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
-  if (!synthesizeBatchBeforeLowering && supportsSingleTransactionBus(ast, mergedCompilerOptions)) {
+  if (!synthesizeBatchBeforeLowering && supportsAtomicMessageBus(ast, mergedCompilerOptions)) {
     synthesizeMessageBusRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
@@ -3763,7 +3763,7 @@ function compileResolvedAst(
     }
   }
   // Graph-emission handlers execute as OP_DEFINE subroutines inside the hidden route's physical participant
-  // block. Their external edges are transcript rows, not additional co-spent slots, so their independently
+  // block. Their external edges are callManifest rows, not additional co-spent slots, so their independently
   // inferred function layout is intentionally absent. Dynamic state reads/writes in those handlers must still
   // address the owner's data NFTs and trailing chunks relative to the hidden route's block. Share that physical
   // layout explicitly; otherwise the code generator falls back to activeInput+1 and aliases the first fixed or
@@ -3775,7 +3775,7 @@ function compileResolvedAst(
     const maximumCalls = Math.max(...ecrecoverHandlers.map((fn) => fn.ecrecoverCallCount!));
     const occupied = messageBusRoute.blockLayout.slots.filter((slot) => slot.kind !== 'master');
     if (occupied.length > 0) {
-      throw new Error('SCB1 ecrecover handlers cannot currently share their participant block with other slots');
+      throw new Error('message-bus batch ecrecover handlers cannot currently share their participant block with other slots');
     }
     messageBusRoute.messageBusMaximumRows = 1;
     messageBusRoute.ecrecoverCompute = true;
@@ -3792,7 +3792,7 @@ function compileResolvedAst(
   }
   if (messageBusRoute?.blockLayout) {
     for (const fn of ast.contract.functions) {
-      if (fn.graphEmissionHandler || fn.name.startsWith('__scb_array_')) {
+      if (fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')) {
         fn.blockLayout = messageBusRoute.blockLayout;
       }
     }
@@ -3911,7 +3911,7 @@ function compileResolvedAst(
     // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
     console.warn(`Error: ${message}`);
   }
-  const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
+  const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__message_bus1');
   if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== messageBusRouteAbi);
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
@@ -4009,7 +4009,7 @@ function compileResolvedAst(
     && ast.contract.functions.some((fn) => fn.messageBusRoute)) {
     const messageBusMaximumRows = ast.contract.functions.find((fn) =>
       fn.messageBusRoute)?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
-    const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__scb_verify_single_tx');
+    const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
     const functionNameById = new Map(ast.contract.functions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
     // Compiler compact helpers occupy the reserved >= 0x80 range and are selected dynamically from IDs kept
@@ -4041,8 +4041,8 @@ function compileResolvedAst(
       }
     };
     collectDefinitions(optimisationResult.script);
-    const scbEntryBody = traversal.entryPointBytecodes.get(SCB1_SELECTOR_HEX);
-    if (scbEntryBody) collectDefinitions(bytecodeToScript(scbEntryBody));
+    const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
+    if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
     const verifierFunctionIds = [...verifierBytecodes.keys()]
       .filter((id) => id <= -12 || id === verifierFunction?.functionId)
       .sort((a, b) => a - b);
@@ -4053,20 +4053,20 @@ function compileResolvedAst(
     }));
     artifact.messageBus = {
       version: 1,
-      selector: SCB1_SELECTOR_HEX,
+      selector: MESSAGE_BUS_SELECTOR_HEX,
       ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
       maximumRows: messageBusMaximumRows,
       maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
-      singleTransactionBus: {
-        domain: SINGLE_TX_BUS_DOMAIN_HEX,
-        carrier: {
+      atomicMessageBus: {
+        domain: ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
+        messageEnvelope: {
           region: 'participant-verifiers',
           canonicalInput: 'final-participant-verifier',
           unlockingPush: 0,
         },
-        maximumParticipants: SINGLE_TX_BUS_MAX_PARTICIPANTS,
-        maximumRows: SINGLE_TX_BUS_MAX_ROWS,
+        maximumParticipants: ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS,
+        maximumRows: ATOMIC_MESSAGE_BUS_MAX_ROWS,
       },
       ...(verifierFunction?.functionId !== undefined
         && traversal.invokedFunctionBytecodes.has(verifierFunction.functionId) && {
@@ -4131,14 +4131,14 @@ function compileResolvedAst(
             const rejectionCode = classifyMessageBusRejection(reason);
             const analysisFunctions = artifact.invocationAnalysis?.functions ?? [];
             const target = (candidate: typeof analysisFunctions[number]): boolean => {
-              if (rejectionCode === 'SCB_EFFECT_UNSUMMARIZABLE') {
+              if (rejectionCode === 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE') {
                 return candidate.effects.length > 0 || candidate.unknown;
               }
-              if (rejectionCode === 'SCB_EXTERNAL_RECURSION_UNBOUNDED') return candidate.recursive;
-              if (rejectionCode === 'SCB_FOREIGN_INTERMEDIATE_STATE_READ') {
+              if (rejectionCode === 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED') return candidate.recursive;
+              if (rejectionCode === 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ') {
                 return (candidate.externalOutStateReads?.length ?? 0) > 0;
               }
-              if (rejectionCode === 'SCB_UNSUPPORTED_CONSTRUCT') return candidate.unknown;
+              if (rejectionCode === 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT') return candidate.unknown;
               return candidate.id === handlerId;
             };
             let callChain: string[] | undefined;
@@ -5022,7 +5022,7 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
     walk(fn.body!, (node) => { if (node instanceof EmitStatementNode) emits = true; });
     if (!emits) continue;
     // Name the handler the user wrote, not the compiler's synthetic clone spelling of it.
-    throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__scb_[a-z]+_/, ''), fn.collectionJournal === true);
+    throw new EmittingStateHelperEventError(fn, fn.name.replace(/^__message_bus_[a-z]+_/, ''), fn.collectionJournal === true);
   }
 }
 

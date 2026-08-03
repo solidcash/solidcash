@@ -89,7 +89,7 @@ describe('computed external-call target pinning', () => {
     await expect(
       readerSc.bump(alicePub, sig()).withExternalCall(counterBSc, 'increment', [alicePub, sig()]).send(),
     ).rejects.toThrow(
-      'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.',
+      'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.',
     );
   });
 });

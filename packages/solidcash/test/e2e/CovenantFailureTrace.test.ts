@@ -6,7 +6,7 @@ import { alicePub, bobPriv } from '../fixture/vars.js';
 
 // A signature failure is rejected by the BCH-2026 preflight before submission, so it must not be mislabeled as
 // a later submission trace.
-const nullfail = 'layer3: BCH-2026 preflight failed at input 0: Program failed a signature verification '
+const nullfail = 'messageBus: BCH-2026 preflight failed at input 0: Program failed a signature verification '
   + 'with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.';
 const FAILING = `pragma solidcash >=0.8.0;
 contract Failing() {

@@ -72,7 +72,7 @@ async function deploy(initial = { x: 0n, y: 0n }): Promise<{
 
 describe('Release 1 scalar journal SDK E2E', () => {
   const PREFLIGHT_REFUSAL =
-    /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+    /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   const PROVIDER_REFUSAL =
     /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
   it('auto-derives one sequential settlement for a helper called at three sites', async () => {

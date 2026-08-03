@@ -1,0 +1,69 @@
+{
+  "schema": "solidcash-message-bus-self-preserved-verifier-capacity-v5",
+  "measuredAt": "2026-08-03",
+  "profile": {
+    "vm": "libauth createVirtualMachineBch2026(false)",
+    "operationCostBudgetPerByte": 800,
+    "transactionByteLimit": 100000,
+    "shape": "compiled root -> returning hop* -> returning sink; one artifact-specialized verifier per participant; one terminal P2PKH fee/change slot",
+    "command": "yarn workspace solidcash vitest run test/journal-message-bus/e2e/AtomicMessageBusCapacity.test.ts --reporter=verbose --disableConsoleIntercept"
+  },
+  "admission": {
+    "maximumPhysicalParticipants": 8,
+    "firstRejectedPhysicalParticipants": 9,
+    "enforcedBy": "the protocol participant maximum, messageBus.assertAtomicParticipantCapacity, and exact finalized-transaction preflight"
+  },
+  "accepted": [
+    {
+      "participants": 2,
+      "slots": 6,
+      "transactionBytes": 18798,
+      "transcriptBytes": 294,
+      "inputOperationCosts": [320795, 302488, 695, 1863609, 1982886, 27321],
+      "inputMaximumOperationCosts": [1593600, 1439200, 34400, 5648000, 5819200, 112800],
+      "worstOperationRatio": 0.34074890019246634
+    },
+    {
+      "participants": 4,
+      "slots": 12,
+      "transactionBytes": 41418,
+      "transcriptBytes": 584,
+      "inputOperationCosts": [379009, 427847, 695, 427847, 695, 378754, 695, 3206184, 3453698, 3453160, 3369538, 27321],
+      "inputMaximumOperationCosts": [1659200, 1970400, 34400, 1970400, 34400, 1439200, 34400, 5945600, 6548800, 6548800, 6051200, 112800],
+      "worstOperationRatio": 0.5568379825489159
+    },
+    {
+      "participants": 5,
+      "slots": 15,
+      "transactionBytes": 53409,
+      "transcriptBytes": 729,
+      "inputOperationCosts": [408084, 466431, 695, 466431, 695, 466431, 695, 416823, 695, 3912347, 4193986, 4193448, 4192891, 4096729, 27321],
+      "inputMaximumOperationCosts": [1692000, 2003200, 34400, 2003200, 34400, 2003200, 34400, 1439200, 34400, 6094400, 6697600, 6697600, 6697600, 6167200, 112800],
+      "worstOperationRatio": 0.6642769814502529
+    },
+    {
+      "participants": 8,
+      "slots": 24,
+      "transactionBytes": 92126,
+      "transcriptBytes": 1164,
+      "inputOperationCosts": [495381, 582255, 695, 582263, 695, 582263, 695, 582263, 695, 582263, 695, 582263, 695, 531166, 695, 6170662, 6554676, 6554138, 6553581, 6553024, 6552467, 6551910, 6414376, 27321],
+      "inputMaximumOperationCosts": [1791200, 2102400, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 1440000, 34400, 6541600, 7144800, 7144800, 7144800, 7144800, 7144800, 7144800, 6515200, 112800],
+      "worstOperationRatio": 0.9845248035363457
+    }
+  ],
+  "rejected": [
+    {
+      "participants": 9,
+      "reason": "protocol participant maximum",
+      "limit": 8
+    }
+  ],
+  "costAttribution": {
+    "method": "Compare master binders and artifact-specialized verifier inputs across the two-, four-, five-, and eight-participant chains.",
+    "masterBinderWorstOperationCostAtEightParticipants": 582263,
+    "largestVerifierOperationCostAtEightParticipants": 6554676,
+    "localReturnEventOperationCost": 695,
+    "terminalP2pkhFeeOperationCost": 27321,
+    "conclusion": "Global verification and its BCH-2026 density reserve live in one artifact-specialized verifier per participant. Compact masters bind a 32-byte attestation, an exact verifier index, and the participant category. Exact per-shape VM preflight remains authoritative."
+  }
+}

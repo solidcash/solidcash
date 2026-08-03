@@ -29,7 +29,7 @@ export type {
   SplitArtifactBundle, SplitManifest, SplitRoute, SplitFacetInfo, SplitStateFootprint,
 } from '@solidcash/utils';
 export * as utils from '@solidcash/utils';
-export * as layer3 from './layer3/index.js';
+export * as messageBus from './message-bus/index.js';
 export * from './interfaces.js';
 export * from './Errors.js';
 export {

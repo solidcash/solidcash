@@ -37,7 +37,7 @@ import { attachWait } from '../wait.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import {
   assertFinalizedTransactionBytes, assertFinalizedTransactionCovenants, inputSubjectsOfBuilder,
-} from '../layer3/preflight.js';
+} from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
   Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
@@ -110,7 +110,7 @@ export interface ExternalCallUtxoGroup {
     args: any[];
     internalArgs?: Record<string, any>;
   };
-  /** Active SCB1 blockhash reads, retained until the group's absolute input base is known. */
+  /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
   }>;
@@ -147,7 +147,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   requiredNftIndices?: number[];  // if absent, use all indices
   readOnlyDataNftUtxos?: UnlockableUtxo[];  // read-only data NFTs from other contracts
   blockhashCoSpendUtxos?: UnlockableUtxo[];  // (n->hash) oracle co-spends for blockhash(n) readers
-  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph SCB1
+  /** Optional physical ordinal within the function's blockhashOracle slots for each co-spend. Graph message-bus batch
    * routes reserve a fixed row band, so active reads are sparse and the inactive slots must remain funders. */
   blockhashCoSpendSlotOrdinals?: number[];
   keccakComputeCoSpendUtxos?: UnlockableUtxo[]; // keccak256 compute side-cars (one per call) at keccakSideCar slots
@@ -217,7 +217,7 @@ export class StatefulTransactionBuilder {
   private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
-  private layer3ProbeMasterVout?: number;
+  private messageBusProbeMasterVout?: number;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
   private requiredNftIndices: readonly number[];
@@ -408,16 +408,16 @@ export class StatefulTransactionBuilder {
     );
   }
 
-  /** @internal Mark an impossible-output-index master used only by controllerless VM derivation probes. */
-  _setLayer3ProbeMasterVout(realVout: number): void {
-    this.layer3ProbeMasterVout = realVout;
+  /** @internal Mark an impossible-output-index master used only by atomic VM derivation probes. */
+  _setMessageBusProbeMasterVout(realVout: number): void {
+    this.messageBusProbeMasterVout = realVout;
   }
 
-  /** @internal Restore the real spend before a controllerless participant block leaves SDK construction. */
-  _restoreLayer3ProbeMasterOutpoint(): void {
-    if (this.layer3ProbeMasterVout === undefined) return;
-    this.masterUtxo.vout = this.layer3ProbeMasterVout;
-    this.layer3ProbeMasterVout = undefined;
+  /** @internal Restore the real spend before a atomic participant block leaves SDK construction. */
+  _restoreMessageBusProbeMasterOutpoint(): void {
+    if (this.messageBusProbeMasterVout === undefined) return;
+    this.masterUtxo.vout = this.messageBusProbeMasterVout;
+    this.messageBusProbeMasterVout = undefined;
   }
 
   /** Require the fully funded and signed transaction to pass the artifact's
@@ -1181,7 +1181,7 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external call group.
    */
   getExternalCallMasterInputIndex(groupIdx: number): number {
-    // A sparse SCB1 oracle band makes the active co-spend count smaller than its physical width. Resolve the
+    // A sparse message-bus batch oracle band makes the active co-spend count smaller than its physical width. Resolve the
     // already-positioned callee master directly rather than reconstructing its base from dense resource counts.
     if (this.blockhashCoSpendSlotOrdinals) {
       const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
@@ -1306,7 +1306,7 @@ export class StatefulTransactionBuilder {
     const opts = (this.entryDeletes.size > 0 || this.dynamicChunkInputs.length > 0
       || this.dynamicChunkVars.length > 0 || this.loopEntryVars.length > 0
       // transferNft may change an NFT's capability/commitment, which the generic transaction builder models as
-      // a burn plus mint. The token-container covenant (and, in graph mode, the transcript settlement row)
+      // a burn plus mint. The token-container covenant (and, in graph mode, the callManifest settlement row)
       // authenticates the exact transition, so the generic identity-preservation heuristic must not pre-empt
       // the derivation probe before those checks execute.
       || this.pendingTokenContainerTransferNfts.length > 0)
@@ -2073,7 +2073,7 @@ export class StatefulTransactionBuilder {
       if (!eo) {
         // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
         // later participant cannot slide into the gap; the route covenant separately excludes an own-category
-        // NFT here, and the controllerless transcript lists only active immutable event outputs.
+        // NFT here, and the atomic callManifest lists only active immutable event outputs.
         builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         continue;
       }
@@ -2786,12 +2786,12 @@ export class StatefulTransactionBuilder {
     // The old `if (state.error)` was also a truthiness test where `!== undefined` is meant.
     //
     // Scope: this path is opt-in and default-off, and no hostile was constructed against it. The repair is
-    // inferred from field semantics that WERE measured, on the sibling decider in `layer3/preflight.ts`.
+    // inferred from field semantics that WERE measured, on the sibling decider in `message-bus/preflight.ts`.
     try {
       assertFinalizedTransactionCovenants(builder, transaction);
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
-      throw new Error(reason.replace(/^layer3: BCH-2026 preflight failed at /, ''));
+      throw new Error(reason.replace(/^messageBus: BCH-2026 preflight failed at /, ''));
     }
   }
 

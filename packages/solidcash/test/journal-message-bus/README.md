@@ -1,7 +1,7 @@
 # Journal and message-bus SDK tests
 
 This directory owns SDK, VM, hostile-input, capacity, and live-composition coverage for the state journal and
-controllerless message bus.
+atomic message bus.
 
 - Root tests cover codecs, graph planning, balanced verifier assembly, and blockhash layout.
 - `unit/` covers admission and diagnostic boundaries.

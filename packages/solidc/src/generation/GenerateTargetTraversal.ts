@@ -206,10 +206,10 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
-// X29. Hidden context an SCB1 route pushes at every call site of an effect-carrying graph emission handler:
+// X29. Hidden context an message-bus batch route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
-// Authenticated SCB2 call mode and one runtime mutation bit. Every reached state/resource/effect operation in
+// Authenticated message-bus v2 call mode and one runtime mutation bit. Every reached state/resource/effect operation in
 // an invoked graph handler raises DIRTY; the handler verifies it stayed clear when the row selected staticcall.
 const GRAPH_STATIC_MODE = '__internal__handlerStaticMode';
 const GRAPH_STATIC_DIRTY = '__internal__handlerStaticDirty';
@@ -271,7 +271,7 @@ function splitOnDelimiter(bytes: Uint8Array, delim: Uint8Array): Uint8Array[] {
  *
  * Both shapes reached code generation and died on an internal invariant. A `new C(..)` asked for a `deploy`
  * block slot the graph route's layout never reserves (`Block slot not found: deploy[0]`), and a `blockhash(n)`
- * left the route forwarding a `__internal__blockhashInputIndex` witness the SCB1 route never receives
+ * left the route forwarding a `__internal__blockhashInputIndex` witness the message-bus batch route never receives
  * (`Expected variable '__internal__blockhashInputIndex' does not exist on the stack`). Neither produced an
  * artifact, so naming them changes no emitted bytecode - it replaces an internal invariant message with the
  * shape, the reason and the remedy.
@@ -286,12 +286,12 @@ const GRAPH_HANDLER_EFFECT_DETAIL: Record<string, string> = {
   'graph-handler-deploy-not-enabled':
     'deploying a contract (new C(...)) inside a message-bus graph handler is not admitted. The graph route\'s '
     + 'block layout reserves owner slots only, with no deploy slot, so the child genesis input and its genesis '
-    + 'output have nowhere to be verified and the handler cannot describe the deploy in its transcript row. '
+    + 'output have nowhere to be verified and the handler cannot describe the deploy in its callManifest row. '
     + 'Move the deploy into a function that makes no external call: that function stays on the direct route, '
     + 'where the deploy covenant is emitted',
   'graph-handler-blockhash-not-enabled':
     'reading blockhash(n) inside a message-bus graph handler is not admitted. The block-oracle co-spend is '
-    + 'located through a synthesized __internal__blockhashInputIndex witness that the SCB1 route does not carry, '
+    + 'located through a synthesized __internal__blockhashInputIndex witness that the message-bus batch route does not carry, '
     + 'so the handler would read an unlocated input. Move the blockhash read into a function that makes no '
     + 'external call: that function stays on the direct route, where the SDK fills the oracle input index',
 };
@@ -343,7 +343,7 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  *      Unlike `__internal__msgSenderCategory`, that injection is NOT skipped for a route or a graph handler.
  *   2. `TypeCheckTraversal.forwardInternalReturnOutputIdx` auto-forwards such a witness at an internal call
  *      site as an identifier naming "the caller's own same-named param".
- *   3. The generated `__scb1` route calls each eligible handler with the user-visible args only, and declares
+ *   3. The generated `__message_bus1` route calls each eligible handler with the user-visible args only, and declares
  *      no such param - so step 2 inserts a reference to a name the route does not have.
  *   4. Code generation evaluates that identifier and died on the bare internal
  *      `Expected variable '__internal__blockhashInputIndex' does not exist on the stack`.
@@ -375,7 +375,7 @@ const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
   'route-cannot-carry-blockhash-oracle-index':
     'reading blockhash(n) is not admitted in a function the message-bus route invokes. The block-oracle '
     + 'co-spend is located through a synthesized __internal__blockhashInputIndex witness that the compiler '
-    + 'forwards from the caller; the generated __scb1 route neither declares it nor appears in the ABI, so the '
+    + 'forwards from the caller; the generated __message_bus1 route neither declares it nor appears in the ABI, so the '
     + 'SDK has nowhere to fill it and the handler would read an unlocated input. The read itself is fine off the '
     + 'route: compile without the message-bus option, or keep the blockhash read in a function the route does '
     + 'not admit, and it compiles unchanged',
@@ -410,7 +410,7 @@ function forwardedWitnessMiss(
   constantExpressions: Map<string, ExpressionNode>,
 ): { reason: string; node: Node } | undefined {
   // X76's class: the forwarded identifier was synthesized by TypeCheckTraversal at the CALL site, which for a
-  // routed handler lives in compiler-generated `__scb1` source. Its Line/Column reads as a position in the
+  // routed handler lives in compiler-generated `__message_bus1` source. Its Line/Column reads as a position in the
   // user's file and is not one. Report the effect's own site in the callee instead, falling back to the callee's
   // declaration - both are genuine user-source positions.
   const blame = (name: string, fallback: Node): Node =>
@@ -1816,9 +1816,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *
    * X151 checked only bodies compiled on the contract traversal, and refused every chunk read in an OP_DEFINE'd
    * body outright because such a body carries its own footprint rather than the invoking entry's. X170 measured
-   * the shape that reached: `__scb_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
-   * the only entry that reaches it (`__scb1`), and whose bytecode is byte-identical with and without X151's
-   * correction. `Layer3RuntimeSizedPointerTable` settles that same contract on the VM over a non-empty chunk run
+   * the shape that reached: `__message_bus_graph_fireAll`, whose emitted basis and trailing base ALREADY equal those of
+   * the only entry that reaches it (`__message_bus1`), and whose bytecode is byte-identical with and without X151's
+   * correction. `MessageBusRuntimeSizedPointerTable` settles that same contract on the VM over a non-empty chunk run
    * at 1, 2 and 3 rows. The blanket refusal was over-broad, so it is replaced by the check it should have been:
    * compare the emitted basis against every entry that can reach the body, and refuse on disagreement.
    *
@@ -2044,7 +2044,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // the message-bus route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
     // commitment while an earlier row's write was live in the wrapper's frame - a stale read that settled.
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
-    // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
+    // the route's own call closure: a contract with no `__message_bus1` produces the same map as before, and a
     // read-only function outside the route keeps its established covenant path.
     // X111. A graph EMISSION clone used to be dropped from this widening entirely, so a clone which reads a
     // scalar slot and writes none still re-read the pre-transaction commitment while an earlier row's write
@@ -3514,8 +3514,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMEQUALVERIFY, loc);
     }
 
-    // SCB1 unlocking bytecode retains its positional batch copy and historical reserved slot below the ordinary
-    // ABI argument stack. Remove both untracked bottom items before executing the route. Composition transcripts
+    // message-bus batch unlocking bytecode retains its positional batch copy and historical reserved slot below the ordinary
+    // ABI argument stack. Remove both untracked bottom items before executing the route. Composition callManifests
     // now live exclusively in artifact-specialized verifier inputs.
     if (node.messageBusRoute) {
       const loc = { location: node.location, positionHint: PositionHint.START };
@@ -4275,7 +4275,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X24. The depth is a COMPILE-TIME constant, so the rotation is always unrollable: `index-1` OP_SWAPs
     // interleaved with `index-2` OP_TOALTSTACKs, then `index-2` OP_FROMALTSTACKs - 3k-2 instructions emitted
     // AND executed, against the two counted loops' ~22k executed for 26 fixed bytes. The loops are a SIZE
-    // optimization; their runtime cost is what dominates a Layer-3 covenant's operation-density budget.
+    // optimization; their runtime cost is what dominates a message bus covenant's operation-density budget.
     // Retained below UNROLL_DEEP_REPLACE so reverting the trade is a one-line, byte-exact operation.
     if (index >= 14 && !UNROLL_DEEP_REPLACE) {
       const count = BigInt(index - 1);
@@ -4567,7 +4567,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const slotIndex of mappingDeleteSlots) {
       // An enclosing loop that already registered this slot owns the delete. Seeding a soft-delete here would
       // push its key/value encodings inside the loop body, where they cannot survive to the epilogue - the
-      // epilogue would then look for a stack slot that no longer exists. The SCB1 row loop dispatches every
+      // epilogue would then look for a stack slot that no longer exists. The message-bus batch row loop dispatches every
       // handler through exactly this branch shape, so without the guard a `delete m[k]` handler aborted code
       // generation outright.
       if (this.pendingEntryDeletes.has(slotIndex)) continue;
@@ -4707,7 +4707,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ): void {
     if (!block.statements) return;
     for (const stmt of block.statements) {
-      // A branch that only *invokes* a handler still reaches that handler's mapping slots. The SCB1 route is
+      // A branch that only *invokes* a handler still reaches that handler's mapping slots. The message-bus batch route is
       // exactly this shape - every row dispatches `if (rowSelector == ...) { handler(...); }` - so without
       // following the call, a `delete` inside the handler is never pre-allocated and its key/value encodings are
       // dropped when the branch closes, leaving the epilogue looking for a stack slot that no longer exists.
@@ -6624,7 +6624,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ], loc);
       if (this.currentFunction.parameters.some((parameter) =>
         parameter.name === '__internal__blockhashRowOffset')) {
-        // The SCB1 route reserves `maximumRows * readWidth` slots. Its clone receives the row-local offset,
+        // The message-bus batch route reserves `maximumRows * readWidth` slots. Its clone receives the row-local offset,
         // keeping the ordinary direct ABI/base witness unchanged while selecting this row's authenticated band.
         const offsetDepth = this.getStackIndex('__internal__blockhashRowOffset') + 1;
         this.emit([encodeInt(BigInt(offsetDepth)), Op.OP_PICK, Op.OP_ADD], loc);
@@ -7028,10 +7028,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let hiddenContextCount = 0;
     if (targetFunc.graphEmissionHandler && this.contractUsesMsgValue) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
-      if (!this.stack.includes('__scb_graph_msg_value')) {
+      if (!this.stack.includes('__message_bus_graph_msg_value')) {
         throw new Error(`Missing authenticated logical msg.value while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_value'))), contextLoc);
+      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_value'))), contextLoc);
       this.emit(Op.OP_PICK, contextLoc);
       this.pushToStack(`(__handler_msg_value_${targetFunc.functionId})`);
       hiddenContextCount += 1;
@@ -7040,10 +7040,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && this.contractUsesMsgData) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (targetFunc.graphEmissionHandler) {
-        if (!this.stack.includes('__scb_graph_msg_data')) {
+        if (!this.stack.includes('__message_bus_graph_msg_data')) {
           throw new Error(`Missing logical graph calldata while invoking '${targetFunc.name}'`);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_data'))), contextLoc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_data'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgData')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgData'))), contextLoc);
@@ -7076,10 +7076,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && targetFunc.usesMsgSender) {
       const contextLoc = { location: node.location, positionHint: PositionHint.START };
       if (targetFunc.graphEmissionHandler) {
-        if (!this.stack.includes('__scb_graph_caller')) {
+        if (!this.stack.includes('__message_bus_graph_caller')) {
           throw new Error(`Missing authenticated graph caller while invoking '${targetFunc.name}'`);
         }
-        this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_caller'))), contextLoc);
+        this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), contextLoc);
         this.emit(Op.OP_PICK, contextLoc);
       } else if (this.stack.includes('__internal__handlerMsgSender')) {
         this.emit(encodeInt(BigInt(this.getStackIndex('__internal__handlerMsgSender'))), contextLoc);
@@ -7133,10 +7133,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (const result of emissionResults) this.pushToStack(result);
     }
     if (targetFunc.graphEmissionHandler) {
-      if (!this.stack.includes('__scb_call_options')) {
+      if (!this.stack.includes('__message_bus_call_options')) {
         throw new Error(`Missing authenticated call mode while invoking '${targetFunc.name}'`);
       }
-      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_call_options'))), locationData);
+      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_call_options'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       this.pushToStack(`(__graph_static_mode_${targetFunc.functionId})`);
       this.emit(Op.OP_0, locationData);
@@ -9671,7 +9671,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.name === '__internal__graphFixedSize') {
       const blockLayout = this.currentFunction.blockLayout;
       if (!this.currentFunction.messageBusRoute || blockLayout === undefined) {
-        throw new Error('Compiler-owned graph fixed size used outside an SCB1 route');
+        throw new Error('Compiler-owned graph fixed size used outside an message-bus batch route');
       }
       this.emit(encodeInt(BigInt(blockLayout.trailingBase ?? blockLayout.blockSize)),
         { location: node.location, positionHint: PositionHint.START });
@@ -9681,7 +9681,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.name === '__internal__graphBlockSize') {
       const blockSize = this.currentFunction.blockLayout?.blockSize;
       if (!this.currentFunction.messageBusRoute || blockSize === undefined) {
-        throw new Error('Compiler-owned graph block size used outside an SCB1 route');
+        throw new Error('Compiler-owned graph block size used outside an message-bus batch route');
       }
       this.emit(encodeInt(BigInt(blockSize)),
         { location: node.location, positionHint: PositionHint.START });
@@ -13052,27 +13052,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       return parameters[source.paramIndex];
     });
-    // Transaction signatures are positional SCB1 route witnesses rather than
+    // Transaction signatures are positional message-bus batch route witnesses rather than
     // rooted invocation bytes (rooting them creates a signing fixed point).
     // Both caller emission and callee row projection therefore omit the same
     // typed fields while the callee's original checkSig remains authoritative.
-    const transcriptArgumentParameters = argumentParameters.filter((parameter) =>
+    const callManifestArgumentParameters = argumentParameters.filter((parameter) =>
       parameter.type !== PrimitiveType.SIG);
     if (rawCall) {
-      if (!transcriptArgumentParameters[0]) {
+      if (!callManifestArgumentParameters[0]) {
         throw new Error('Raw graph call lacks its canonical calldata argument');
       }
       this.emit(Op.OP_FROMALTSTACK, locationData);
       this.pushToStack('(__graph_args)');
-    } else if (transcriptArgumentParameters.length === 0) {
+    } else if (callManifestArgumentParameters.length === 0) {
       this.emit(new Uint8Array(), locationData);
       this.pushToStack('(__graph_args)');
     } else {
-      for (let i = 0; i < transcriptArgumentParameters.length; i++) {
-        let parameter = transcriptArgumentParameters[i];
+      for (let i = 0; i < callManifestArgumentParameters.length; i++) {
+        let parameter = callManifestArgumentParameters[i];
         if (parametersAreCallArguments) {
           parameter = this.visit(parameter);
-          transcriptArgumentParameters[i] = parameter;
+          callManifestArgumentParameters[i] = parameter;
         } else {
           if (!(parameter instanceof IdentifierNode)) {
             throw new Error('Graph argument forwarding requires identifiers');
@@ -19713,7 +19713,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Array-element target `IFoo(arr[i]).m()`: verify EVERY co-spent callee against the array in a loop.
       if (slot.inlineLoopDispatch) continue; // handled inline per-iteration in visitExternalFunctionCall
       if (slot.loopArrayVar) {
-        // Transcript handlers authenticate every reached array element while executing the source loop:
+        // CallManifest handlers authenticate every reached array element while executing the source loop:
         // target, runtime selector, arguments, order, and callee frame are all authenticated. The direct-call
         // epilogue assumes callees occupy one contiguous call block, which is false when independently balanced
         // graph participant blocks own those inputs.
@@ -20721,7 +20721,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private emitExternalBatchBlobVerification(locationData: SingleLocationData): void {
     const accumulator = '__internal__external_batch_blob';
-    // [idx] -> verify first push is exactly minimal push4("SCB1"), retain remainder.
+    // [idx] -> verify first push is exactly minimal push4("message-bus batch"), retain remainder.
     this.emit(Op.OP_DUP, locationData);
     this.emit(Op.OP_INPUTBYTECODE, locationData);
     this.emit(encodeInt(5n), locationData);
@@ -20732,7 +20732,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Construct the exact minimal push encoding of the expected blob. Blobs
     // through 75 bytes use a one-byte direct-push opcode; the remainder of the
-    // The shared SCB1 envelope above the direct-push range uses OP_PUSHDATA1
+    // The shared message-bus batch envelope above the direct-push range uses OP_PUSHDATA1
     // followed by one length byte.
     // Comparing the complete encoded push avoids divergent locator/parser
     // rules and rejects non-minimal encodings without content scanning.
@@ -22491,8 +22491,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_PICK, locationData);
       return;
     }
-    if (this.stack.includes('__scb_graph_caller')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_caller'))), locationData);
+    if (this.stack.includes('__message_bus_graph_caller')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_caller'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -22531,10 +22531,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * Stack after:  [..., value]
    */
   private emitMsgValue(locationData: SingleLocationData): void {
-    // Inlined SCB1 handlers execute in the wrapper traversal, where the parsed
+    // Inlined message-bus batch handlers execute in the wrapper traversal, where the parsed
     // row value is an ordinary local rather than an OP_DEFINE frame argument.
-    if (this.stack.includes('__scb_graph_msg_value')) {
-      this.emit(encodeInt(BigInt(this.getStackIndex('__scb_graph_msg_value'))), locationData);
+    if (this.stack.includes('__message_bus_graph_msg_value')) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('__message_bus_graph_msg_value'))), locationData);
       this.emit(Op.OP_PICK, locationData);
       return;
     }
@@ -23661,7 +23661,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(32n), locationData);
       this.emit(Op.OP_SPLIT, locationData);
       this.emit(Op.OP_DROP, locationData);
-      // 2 untracked (tcCategoryId, masterCategoryId)
+      // 2 untracked (tcCategoryId, stateCategoryId)
 
       // Build the container covenant script bytes at runtime
       // Must match buildTokenContainerCovenantScript in state.ts

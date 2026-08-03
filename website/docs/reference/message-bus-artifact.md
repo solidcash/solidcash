@@ -11,10 +11,10 @@ after changing message-bus artifact fields or limits.
 
 | Artifact source | Value |
 | --- | ---: |
-| `SINGLE_TX_BUS_MAX_PARTICIPANTS` | 8 |
-| `SINGLE_TX_BUS_MAX_ROWS` | 24 |
+| `ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS` | 8 |
+| `ATOMIC_MESSAGE_BUS_MAX_ROWS` | 24 |
 | `MAX_MESSAGE_BUS_BLOB_BYTES` | 223 bytes |
-| `SINGLE_TX_BUS_DOMAIN_HEX` | `4c33425553310000` |
+| `ATOMIC_MESSAGE_BUS_DOMAIN_HEX` | `4c33425553310000` |
 
 These are admission ceilings. Finalized transaction size and BCH-2026 VM preflight can impose a smaller limit for
 a resource-heavy graph.
@@ -29,6 +29,6 @@ a resource-heavy graph.
 | `maximumRows` | `number` |
 | `maximumBlobBytes` | `number` |
 
-The nested `singleTransactionBus` record publishes carrier placement and participant/row bounds. The
+The nested `atomicMessageBus` record publishes message-envelope placement and participant/row bounds. The
 `verifierProgram` record is deployment material for the artifact-specialized self-preserving verifier; it is not
 an execution controller.

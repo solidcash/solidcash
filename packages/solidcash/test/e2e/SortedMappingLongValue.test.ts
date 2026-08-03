@@ -9,7 +9,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 const badChunkRoot = 'C2 value chunks do not match the authenticated root';
 
 // P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 60 B inline body. The entry

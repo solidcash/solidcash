@@ -10,18 +10,18 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 /**
  * X131 - the finalized-bytes gate at `TransactionBuilder.send()`, site 2 of 8.
  *
- * WHY THIS SITE. `layer3-gatesite-probe.ts` measured every broadcast the SDK e2e population makes and
+ * WHY THIS SITE. `message-bus-gatesite-probe.ts` measured every broadcast the SDK e2e population makes and
  * attributed each to its `src/` frame: this site carries 1,170 sends across 1,030 tests, 1,159 of which the
  * provider accepted, and the byte rules refuse NONE of them. It is the largest ungated site by an order of
- * magnitude, and 14 of the 100 `Layer3*` e2e files broadcast through it, so gating it closes the non-stateful
- * half of Layer-3 broadcasting.
+ * magnitude, and 14 of the 100 `MessageBus*` e2e files broadcast through it, so gating it closes the non-stateful
+ * half of message bus broadcasting.
  *
  * THE OBSERVER FIGURE ABOVE IS PRE-GATE, which is the only time it is worth anything: once a site is gated a
  * refused send never reaches the provider, so an observer wrapped around the provider stops seeing exactly the
  * transactions in question. The non-circular figure is a THROW CENSUS - instrument `send()` itself, record
  * every throw with its calling frame, and diff against the same run before the gate. Run over the whole e2e
  * population with the gate applied, it found ZERO sends that newly throw and zero whose message changed.
- * `test/journal-message-bus/e2e/layer3-throw-census.ts` is the instrument.
+ * `test/journal-message-bus/e2e/message-bus-throw-census.ts` is the instrument.
  *
  * IT SPEAKS AFTER `debug()`, and row 3 is what holds that. At a gated site the byte gate otherwise speaks
  * BEFORE the covenant, and a hostile test that pays dust and matches loosely then reports the gate's refusal
@@ -116,7 +116,7 @@ describe('X131 - TransactionBuilder.send() decides its finalized bytes', () => {
     // 3 * (10 + 148) = 474 satoshis for a 10-byte serialized output. The message names every term, so this
     // cannot pass against an unrelated refusal.
     const message = await sendError(await p2pkhBuilder(dustProvider(), 100n));
-    expect(message).toMatch(/layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(message).toMatch(/\[policy\] output-dust at output 0/);
     expect(message).toMatch(
       /100 satoshis is 374 short of the 474-satoshi dust threshold for a 10-byte output \(3 \* \(10 \+ 148\)\)/,

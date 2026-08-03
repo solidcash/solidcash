@@ -10,7 +10,7 @@ import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
  *
  * It is not the dialect. `this.note = tag` is a `StateAssignNode` from the parser; the bare `note = tag` is an
  * `AssignNode` over an `IdentifierNode` until symbol resolution, which runs AFTER these lowerings. So
- * `analyseFunctionFootprint` never records `state:note` for the bare spelling, no `__scb_dynamic_<handler>`
+ * `analyseFunctionFootprint` never records `state:note` for the bare spelling, no `__message_bus_dynamic_<handler>`
  * clone is synthesized, `LowerDynamicStateJournalHelpers` converts nothing, and S2's guard - which fires on a
  * `__dj_` first parameter - never sees the handler. Solidity syntax spelled `this.note` is refused and `.scash`
  * spelled bare is admitted, which is what rules the front end out. The compile-side matrix is pinned in

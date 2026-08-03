@@ -44,7 +44,7 @@ the exact used trailing span. Unused trailing capacity is absent rather than pad
 
 Events, BCH transfers, token transfers, return events, and sidecars are effects adjacent to the journal, not journal
 values. Their rows are emitted and consumed separately. In a message-bus transaction, each participant still owns
-its local journal and the carrier authenticates the cross-participant ordering and settlement of those effects.
+its local journal and the messageEnvelope authenticates the cross-participant ordering and settlement of those effects.
 
 ## Required evidence
 

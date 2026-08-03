@@ -214,7 +214,7 @@ whenever the callsite is not straight-line:
   Delegate to an implementation function that performs the iteration itself.
 
 Scope: both rules apply to any callsite that owns ONE reserved delegate slot — a hand-written
-`impl.delegatecall(input)` and the synthesized forms of rule E alike. A compiler-synthesized SCB1 route / graph
+`impl.delegatecall(input)` and the synthesized forms of rule E alike. A compiler-synthesized message-bus batch route / graph
 handler dispatches rows through a loop by design and derives a delegate index per ROW, so it is excluded from
 both.
 
@@ -223,8 +223,8 @@ the three things that actually hold there, each measured at compile time on the 
 
 - The **source entry point is not excluded**. Compiling a conditional-delegate proxy with the message-bus
   options still classifies its callsite `conditional` and still emits the not-taken-path covenant into that
-  function's body. Only the `__scb_graph_*` clone (`graphEmissionHandler`) and the `__scb1` route are excluded.
-- The **route never skips its own state covenant.** `__scb1` issues no delegatecall itself (it `OP_INVOKE`s
+  function's body. Only the `__message_bus_graph_*` clone (`graphEmissionHandler`) and the `__message_bus1` route are excluded.
+- The **route never skips its own state covenant.** `__message_bus1` issues no delegatecall itself (it `OP_INVOKE`s
   handlers), so `functionHasDelegatecall` is false for it and it runs the ordinary data-NFT covenant. Rule D's
   hazard is precisely "the per-function skip is wider than the per-callsite pin"; with no skip there is no gap.
 - A **state-writing batch contract with a delegate row does not compile at all**: the route inlines the row
@@ -321,7 +321,7 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
 - **D (reached at most once per path)** — enforced. A delegatecall inside a **loop** is a hard compile error; a
   delegatecall inside a **branch/switch/try arm** compiles and carries an extra epilogue covenant freezing the
   proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
-  `Layer3DelegateClassesE3`: the not-taken forgery is refused at input 0, the honest taken spend still settles,
+  `MessageBusDelegateClassesE3`: the not-taken forgery is refused at input 0, the honest taken spend still settles,
   and a not-taken no-op still settles.
 - **E (synthesized delegatecalls are pinned too)** — enforced. `L.f()` library sugar and split-facet forwarders
   set `pinsDelegateCoSpend` with `delegateIndexFromBlockSlot`, so the identity pin reads the reserved block slot

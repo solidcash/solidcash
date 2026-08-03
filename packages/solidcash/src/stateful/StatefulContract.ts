@@ -54,17 +54,17 @@ import {
   decodePackedEventArray,
   scriptToBytecode,
   BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX,
-  buildLayer3VerifierCovenantScript,
-  layer3VerifierCommitment,
+  buildMessageBusVerifierCovenantScript,
+  messageBusVerifierCommitment,
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
-import { encodeMessageBus } from '../layer3/message-bus.js';
-// X186. The covenant-annotating gate moved to `layer3/preflight.ts` when `TransactionBuilder.send` became its
+import { encodeMessageBatch } from '../message-bus/message-bus.js';
+// X186. The covenant-annotating gate moved to `message-bus/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
 import {
   assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder, type FinalizedByteSubject,
-} from '../layer3/preflight.js';
+} from '../message-bus/preflight.js';
 import {
   binToHex,
   hexToBin,
@@ -135,7 +135,7 @@ type GraphEcrecoverCall = readonly [
   FunctionArgument, FunctionArgument, FunctionArgument, FunctionArgument,
 ];
 
-/** Decode only the rows selected by an SCB1 envelope and project the compiler-published blockhash descriptors.
+/** Decode only the rows selected by an message-bus batch envelope and project the compiler-published blockhash descriptors.
  * Artifact metadata is not trusted to describe the blob: selector, row and argument bounds are checked here. */
 function selectGraphBlockhashReads(
   artifact: Artifact, blob: Uint8Array,
@@ -145,28 +145,28 @@ function selectGraphBlockhashReads(
   if (!plan) return [];
   if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
     || (blob[4] !== 1 && blob[4] !== 2)) {
-    throw new Error('SCB1 graph blockhash route requires a canonical version-1 or version-2 envelope');
+    throw new Error('message-bus batch graph blockhash route requires a canonical version-1 or version-2 envelope');
   }
   const rowCount = blob[6];
-  if (rowCount > plan.rowCount) throw new Error('SCB1 graph blockhash row count exceeds the oracle plan');
+  if (rowCount > plan.rowCount) throw new Error('message-bus batch graph blockhash row count exceeds the oracle plan');
   const valueMode = blob[5] === 1;
   let cursor = 7;
   const selected: GraphBlockhashSelection[] = [];
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
   for (let row = 0; row < rowCount; row++) {
     const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
-    if (cursor + header > blob.length) throw new Error(`SCB1 row ${row} is truncated`);
+    if (cursor + header > blob.length) throw new Error(`message-bus batch row ${row} is truncated`);
     const selector = binToHex(blob.slice(cursor, cursor + 4));
     const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
       | (blob[cursor + 7] << 24);
-    if (logicalRow !== row) throw new Error('SCB1 graph rows must use canonical contiguous indices');
+    if (logicalRow !== row) throw new Error('message-bus batch graph rows must use canonical contiguous indices');
     const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
     const argsStart = cursor + header;
     const argsEnd = argsStart + argsLength;
-    if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
+    if (argsEnd > blob.length) throw new Error(`message-bus batch row ${row} arguments are truncated`);
     const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
     const handler = artifact.abi.find((f) => f.name === handlerInfo?.name);
-    if (!handlerInfo || !handler) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
+    if (!handlerInfo || !handler) throw new Error(`message-bus batch row ${row} selects an ineligible handler`);
     const rowArgs: FunctionArgument[] = [];
     let argCursor = argsStart;
     for (const input of handlerInfo.inputs) {
@@ -174,7 +174,7 @@ function selectGraphBlockhashReads(
       rowArgs.push(decoded.value as FunctionArgument);
       argCursor += decoded.bytesConsumed;
     }
-    if (argCursor !== argsEnd) throw new Error(`SCB1 row ${row} argument vector is non-canonical`);
+    if (argCursor !== argsEnd) throw new Error(`message-bus batch row ${row} argument vector is non-canonical`);
     for (const descriptor of plan.reads) {
       if (descriptor.row === row && descriptor.selector === selector) {
         selected.push({ readKey: descriptor.readKey, slotOrdinal: descriptor.slotOffset, rowArgs, handler });
@@ -182,11 +182,11 @@ function selectGraphBlockhashReads(
     }
     cursor = argsEnd;
   }
-  if (cursor !== blob.length) throw new Error('SCB1 graph blockhash envelope has trailing bytes');
+  if (cursor !== blob.length) throw new Error('message-bus batch graph blockhash envelope has trailing bytes');
   return selected.sort((a, b) => a.slotOrdinal - b.slotOrdinal);
 }
 
-/** Decode the authenticated ecrecover arguments selected by an SCB1 envelope. Hidden-route ABI arguments
+/** Decode the authenticated ecrecover arguments selected by an message-bus batch envelope. Hidden-route ABI arguments
  * describe the envelope itself, so compute sidecars must be derived from each selected handler row. */
 function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphEcrecoverCall[] {
   const route = artifact.messageBus?.route;
@@ -194,11 +194,11 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
     || !artifact.messageBus?.handlers.some((handler) => handler.ecrecoverArgParams?.length)) return [];
   if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
     || (blob[4] !== 1 && blob[4] !== 2)) {
-    throw new Error('SCB1 graph ecrecover route requires a canonical version-1 or version-2 envelope');
+    throw new Error('message-bus batch graph ecrecover route requires a canonical version-1 or version-2 envelope');
   }
   const rowCount = blob[6];
   if (rowCount > artifact.messageBus!.maximumRows) {
-    throw new Error('SCB1 graph ecrecover row count exceeds the route limit');
+    throw new Error('message-bus batch graph ecrecover row count exceeds the route limit');
   }
   const valueMode = blob[5] === 1;
   const structs = artifact.structs ?? artifact.stateLayout?.structs;
@@ -206,17 +206,17 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
   let cursor = 7;
   for (let row = 0; row < rowCount; row += 1) {
     const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
-    if (cursor + header > blob.length) throw new Error(`SCB1 row ${row} is truncated`);
+    if (cursor + header > blob.length) throw new Error(`message-bus batch row ${row} is truncated`);
     const selector = binToHex(blob.slice(cursor, cursor + 4));
     const logicalRow = blob[cursor + 4] | (blob[cursor + 5] << 8) | (blob[cursor + 6] << 16)
       | (blob[cursor + 7] << 24);
-    if (logicalRow !== row) throw new Error('SCB1 graph rows must use canonical contiguous indices');
+    if (logicalRow !== row) throw new Error('message-bus batch graph rows must use canonical contiguous indices');
     const argsLength = blob[cursor + 10] | (blob[cursor + 11] << 8);
     const argsStart = cursor + header;
     const argsEnd = argsStart + argsLength;
-    if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
+    if (argsEnd > blob.length) throw new Error(`message-bus batch row ${row} arguments are truncated`);
     const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
-    if (!handlerInfo) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
+    if (!handlerInfo) throw new Error(`message-bus batch row ${row} selects an ineligible handler`);
     const decoded = new Map<string, FunctionArgument>();
     let argCursor = argsStart;
     for (const input of handlerInfo.inputs) {
@@ -224,11 +224,11 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
       decoded.set(input.name, value.value as FunctionArgument);
       argCursor += value.bytesConsumed;
     }
-    if (argCursor !== argsEnd) throw new Error(`SCB1 row ${row} argument vector is non-canonical`);
+    if (argCursor !== argsEnd) throw new Error(`message-bus batch row ${row} argument vector is non-canonical`);
     for (const names of handlerInfo.ecrecoverArgParams ?? []) {
       const values = names.map((name) => (name === null ? undefined : decoded.get(name)));
       if (values.some((value) => value === undefined)) {
-        throw new Error(`SCB1 row ${row} cannot resolve its ecrecover argument vector`);
+        throw new Error(`message-bus batch row ${row} cannot resolve its ecrecover argument vector`);
       }
       selected.push([
         values[0]!, values[1]!, values[2]!, values[3]!,
@@ -236,7 +236,7 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
     }
     cursor = argsEnd;
   }
-  if (cursor !== blob.length) throw new Error('SCB1 graph ecrecover envelope has trailing bytes');
+  if (cursor !== blob.length) throw new Error('message-bus batch graph ecrecover envelope has trailing bytes');
   return selected;
 }
 
@@ -364,8 +364,8 @@ export interface DeployOptions {
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
-  /** Independently spendable, category-branded Layer-3 verifier covenants minted by genesis. */
-  layer3VerifierCount?: number;
+  /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
+  messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
   /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
   identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
@@ -1562,19 +1562,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /**
    * Execute several eligible public handlers against one physical owner input.
-   * The compiler-owned SCB1 route is selected only when advertised by the
+   * The compiler-owned message-bus batch route is selected only when advertised by the
    * artifact; one ordinary invocation should continue to use its direct ABI
    * wrapper.
    */
   batch(
     invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
   ): StatefulFunctionCall {
-    const { blob, routeWitnesses } = encodeMessageBus(this.inner.artifact, invocations);
+    const { blob, routeWitnesses } = encodeMessageBatch(this.inner.artifact, invocations);
     return this._batchRaw(blob, routeWitnesses);
   }
 
   /** @internal Adversarial-test hook: execute an exact candidate blob through
-   * the positional SCB1 route without canonical SDK construction. */
+   * the positional message-bus batch route without canonical SDK construction. */
   _batchRaw(
     blob: Uint8Array,
     routeWitnesses: readonly FunctionArgument[] = [],
@@ -1590,7 +1590,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
     if (routeWitnesses.length !== expectedWitnesses) {
       throw new Error(
-        `SCB1 route requires ${expectedWitnesses} collection witnesses, `
+        `message-bus batch route requires ${expectedWitnesses} collection witnesses, `
         + `got ${routeWitnesses.length}`,
       );
     }
@@ -1601,7 +1601,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const value = internalRouteWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
-        throw new Error(`SCB1 route requires compiler-owned witness '${input.name}'`);
+        throw new Error(`message-bus batch route requires compiler-owned witness '${input.name}'`);
       }
       const value = routeWitnesses[routeWitness];
       routeWitness += 1;
@@ -1650,8 +1650,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const graphOwnedRoute = Object.keys(internalRouteWitnesses).length > 0;
     const effectiveRoute: AbiFunction = {
       ...capability.route,
-      // The controllerless composer has already expanded every logical edge into the authenticated
-      // carrier and laid out every participant block. Keeping the source handler's legacy external-call
+      // The atomic composer has already expanded every logical edge into the authenticated
+      // messageEnvelope and laid out every participant block. Keeping the source handler's legacy external-call
       // metadata here would make _createBuilder independently plan the same edge and append synthetic
       // arguments which do not exist in the graph route ABI.
       ...(graphOwnedRoute && {
@@ -1681,7 +1681,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const routeSelector = hexToBin(capability.selector);
     return new StatefulFunctionCall(
-      this._createBuilder('__scb1', routeArgs, {
+      this._createBuilder('__message_bus1', routeArgs, {
         abiFunction: effectiveRoute,
         compilerRouteSelector: routeSelector,
         blockBase,
@@ -1689,7 +1689,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnBlob,
         omitLocalFeeTail,
       }),
-      this as unknown as StatefulContract, '__scb1', routeArgs,
+      this as unknown as StatefulContract, '__message_bus1', routeArgs,
       { abiFunction: effectiveRoute, selector: routeSelector, blockBase, emitReturn, returnBlob, omitLocalFeeTail },
     );
   }
@@ -1718,7 +1718,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private static _signedLogicalValue(value: bigint): Uint8Array {
     const magnitude = value < 0n ? -value : value;
     if (magnitude > 0x7fff_ffff_ffff_ffffn) {
-      throw new Error('SCB1 logical msg.value exceeds the signed 64-bit satoshi envelope');
+      throw new Error('message-bus batch logical msg.value exceeds the signed 64-bit satoshi envelope');
     }
     return StatefulContract._concatBytes(
       Uint8Array.of(value < 0n ? 1 : 0),
@@ -1940,9 +1940,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (threadCount < 1 || !Number.isInteger(threadCount)) {
       throw new Error(`threadCount must be a positive integer, got ${threadCount}`);
     }
-    const layer3VerifierCount = options.layer3VerifierCount ?? (artifact.messageBus?.verifierProgram ? 1 : 0);
-    if (!Number.isSafeInteger(layer3VerifierCount) || layer3VerifierCount < 0 || layer3VerifierCount > 0xffff) {
-      throw new Error(`layer3VerifierCount must be an unsigned 16-bit integer, got ${layer3VerifierCount}`);
+    const messageBusVerificationInputCount = options.messageBusVerificationInputCount
+      ?? (artifact.messageBus?.verifierProgram ? 1 : 0);
+    if (!Number.isSafeInteger(messageBusVerificationInputCount)
+      || messageBusVerificationInputCount < 0 || messageBusVerificationInputCount > 0xffff) {
+      throw new Error(
+        `messageBusVerificationInputCount must be an unsigned 16-bit integer, got ${messageBusVerificationInputCount}`,
+      );
     }
 
     const initialBalance = options.initialBalance ?? 0n;
@@ -1951,11 +1955,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const totalEntryNft = dataNftAmount * BigInt(entryOutputCount + trailingEntryOutputCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
     const totalDynamicNft = dataNftAmount * BigInt(dynamicInitialChunks.length);
-    const totalLayer3Verifiers = dataNftAmount * BigInt(layer3VerifierCount);
+    const totalMessageBusVerifiers = dataNftAmount * BigInt(messageBusVerificationInputCount);
     const identityAnchors = options.identityAnchors ?? [];
     const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
     const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + totalDynamicNft
-      + totalLayer3Verifiers + totalIdentity + initialBalance + estimatedFee;
+      + totalMessageBusVerifiers + totalIdentity + initialBalance + estimatedFee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
     if (changeAmount < 0n) {
@@ -2138,22 +2142,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Composition verifier pool. All instances share the category-branded covenant address and use their
     // commitment ordinal as a stable identity. A composed transaction consumes one instance and recreates it at
     // the same input/output index, so N instances permit N independently in-flight root compositions.
-    if (layer3VerifierCount > 0) {
+    if (messageBusVerificationInputCount > 0) {
       const verifierProgram = artifact.messageBus?.verifierProgram;
       if (!verifierProgram) {
-        throw new Error(`Contract '${artifact.contractName}' publishes no Layer-3 verifier program`);
+        throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
       }
       const verifierAddress = scriptToLockingBytecode(
-        buildLayer3VerifierCovenantScript(verifierProgram), 'p2sh32',
+        buildMessageBusVerifierCovenantScript(verifierProgram), 'p2sh32',
       );
-      for (let instance = 0; instance < layer3VerifierCount; instance++) {
+      for (let instance = 0; instance < messageBusVerificationInputCount; instance++) {
         builder.addOutput({
           to: verifierAddress,
           amount: dataNftAmount,
           token: {
             category: categoryId,
             amount: 0n,
-            nft: { capability: 'mutable', commitment: binToHex(layer3VerifierCommitment(instance)) },
+            nft: { capability: 'mutable', commitment: binToHex(messageBusVerifierCommitment(instance)) },
           },
         });
       }
@@ -2335,7 +2339,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
 
     // Create the unlocker for the old contract's upgrade function
-    const masterUnlocker = (oldContract.inner.unlock as any)[upgradeFunctionName](...finalArgs);
+    const stateInputUnlocker = (oldContract.inner.unlock as any)[upgradeFunctionName](...finalArgs);
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(oldContract.inner, 0, categoryId),
     );
@@ -2348,7 +2352,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
 
     // Input 0: old master UTXO (unlocked via upgrade function)
-    builder.addInput(masterUtxo, masterUnlocker);
+    builder.addInput(masterUtxo, stateInputUnlocker);
 
     // Inputs 1..N: data NFTs (if the upgrade function accesses state)
     for (let i = 0; i < filteredDataNftUtxos.length; i++) {
@@ -2758,7 +2762,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Create unlockers for factory's master UTXO and data NFTs
-    const masterUnlocker = (factory.inner.unlock as any)[deployFunctionName](...finalArgs);
+    const stateInputUnlocker = (factory.inner.unlock as any)[deployFunctionName](...finalArgs);
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(factory.inner, 0, factory.categoryId),
     );
@@ -2987,7 +2991,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
 
     // Input 0: factory master UTXO
-    builder.addInput(masterUtxo, masterUnlocker);
+    builder.addInput(masterUtxo, stateInputUnlocker);
 
     // Inputs 1..N: factory data NFTs
     for (let i = 0; i < filteredDataNftUtxos.length; i++) {
@@ -3491,8 +3495,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
 
     // Input 0: primary master UTXO
-    const masterUnlocker = (contract.inner.unlock as any)[destroyFunctionName](...destroyFunctionArgs);
-    builder.addInput(masterUtxos[0], masterUnlocker);
+    const stateInputUnlocker = (contract.inner.unlock as any)[destroyFunctionName](...destroyFunctionArgs);
+    builder.addInput(masterUtxos[0], stateInputUnlocker);
 
     // Additional masters (for final multi-threaded destruction)
     for (let i = 1; i < masterUtxos.length; i++) {
@@ -4787,7 +4791,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // oracle is not yet co-spent aborts the probe at its OP_UTXOTOKENCATEGORY - but the (n, idx) is captured on
   // the pre-abort step - so the caller resolves reads one at a time in slot order (priorCoSpends grows).
   private async _extractBlockhashReads(
-    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+    masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
     priorCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
     base: number, slotCount: number,
   ): Promise<Array<{ inputIndex: number; n: bigint }>> {
@@ -4796,10 +4800,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const b = new CovenantTransactionBuilder({ provider: this.inner.provider });
     b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
     const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(this.inner, 0, this.categoryId));
-    b.addInput(masterUtxo, masterUnlocker);
+    b.addInput(masterUtxo, stateInputUnlocker);
     dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
     for (const cs of priorCoSpends) b.addInput(cs.utxo, cs.unlocker);
-    b.addOutput({ to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
     dataNftUtxos.forEach((u, i) => b.addOutput({
       to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
     }));
@@ -4810,10 +4814,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return extractBlockhashReadsFromTrace(trace, base, slotCount);
   }
 
-  /** SCB1 graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding inactive
-   * positions are represented by inert inputs and prior active oracle co-spends are placed at their exact slots. */
+  /** Message-bus graph variant of the trace probe. The compiler reserves a sparse fixed row band, so preceding
+   * inactive positions use inert inputs and prior active oracle co-spends occupy their exact slots. */
   private async _extractGraphBlockhashRead(
-    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+    masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
     prior: Array<{ slotOrdinal: number; utxo: Utxo; unlocker: Unlocker; recreate: Output }>,
     base: number, targetOrdinal: number, slotCount: number, masterInputIndex = 0,
   ): Promise<bigint | null> {
@@ -4830,7 +4834,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const i = b.inputs.length;
       b.addInput({ txid: (0x8000 + i).toString(16).padStart(64, '0'), vout: 0, satoshis: 10000n }, inertUnlocker);
     }
-    b.addInput(masterUtxo, masterUnlocker);
+    b.addInput(masterUtxo, stateInputUnlocker);
     dataNftUtxos.forEach((u, i) => b.addInput(u, dataUnlockers[i]));
     const priorByIndex = new Map(prior.map((p) => [base + p.slotOrdinal, p]));
     while (b.inputs.length <= base + targetOrdinal) {
@@ -4842,7 +4846,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     while (b.outputs.length < masterInputIndex) {
       b.addOutput({ to: DUMMY_FUNDER_LOCKING_BYTECODE, amount: 10000n });
     }
-    b.addOutput({ to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
+    b.addOutput({ to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token });
     dataNftUtxos.forEach((u, i) => b.addOutput({
       to: dataUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
     }));
@@ -4865,7 +4869,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // reads (so the covenant reaches this read). Single source of truth: computed n comes from the covenant.
   private async _resolveBlockhashCoSpends(
     abiFunction: AbiFunction, args: any[], base: number, slotCount: number,
-    masterUtxo: Utxo, masterUnlocker: Unlocker, dataNftUtxos: Utxo[],
+    masterUtxo: Utxo, stateInputUnlocker: Unlocker, dataNftUtxos: Utxo[],
   ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }>> {
     const reads = abiFunction.blockhashReads ?? [];
     const ordered: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; locktime: number }> = [];
@@ -4873,7 +4877,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let n: bigint | null;
       if (isComputedBlockhashKey(reads[k])) {
         const extracted = await this._extractBlockhashReads(
-          masterUtxo, masterUnlocker, dataNftUtxos, ordered, base, slotCount,
+          masterUtxo, stateInputUnlocker, dataNftUtxos, ordered, base, slotCount,
         );
         n = extracted.find((r) => r.inputIndex === base + k)?.n ?? null;
       } else {
@@ -4896,7 +4900,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _resolveKeccakComputeCoSpends(
     abiFunction: AbiFunction, args: any[],
     probeCtx?: {
-      masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
+      masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
       frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
     },
   ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>> {
@@ -4951,7 +4955,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const calls = selectedCalls ?? abiFunction.ecrecoverArgParams ?? [];
     if (calls.length === 0 || !this.categoryId) return [];
     // A branded sidecar checks the category at absolute input 0, which is only the owning master for a direct call.
-    // Controllerless participants can begin later in the transaction, so graph-selected calls use the shared lock;
+    // Atomic participants can begin later in the transaction, so graph-selected calls use the shared lock;
     // the authenticated argument blob, exact kind-6 endpoints, and A->B commitment chain retain result soundness.
     const salt = selectedCalls ? new Uint8Array(32) : hexToBin(this.categoryId).slice().reverse();
     const [lockA, lockB] = [ecrecoverComputeLockingBytecode(salt, 'A'), ecrecoverComputeLockingBytecode(salt, 'B')];
@@ -4994,7 +4998,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private async _extractStatefulKeccakPreimages(
     abiFunction: AbiFunction, preimages: (Uint8Array | null)[], salt: Uint8Array, scUtxos: Utxo[],
     probeCtx?: {
-      masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
+      masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[];
       frontRegionInputs?: UnlockableUtxo[]; locktime?: number;
     },
   ): Promise<void> {
@@ -5002,7 +5006,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       throw new Error('keccak256 with a complex/nested argument in a stateful contract is resolved during '
         + 'auto-derivation; build the call through StatefulContract (internal probe context missing).');
     }
-    const { masterUtxo, masterUnlocker, dataNftUtxos, dataNftUnlockers } = probeCtx;
+    const { masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers } = probeCtx;
     // Front-region inputs (read-only data NFTs then blockhash oracles) sit between the data NFTs and the keccak
     // side-cars, shifting the side-car base. Positioning them (and their self-preserving recreations) lets the
     // probe reach the keccak call even when the contract also reads external state / blockhashes.
@@ -5022,7 +5026,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (guard++ > n) throw new Error('keccak256 stateful preimage extraction did not converge.');
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
       if (probeCtx.locktime) probe.setLocktime(probeCtx.locktime);
-      probe.addInput(masterUtxo, masterUnlocker);
+      probe.addInput(masterUtxo, stateInputUnlocker);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
@@ -5032,7 +5036,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         recreates.push(recreate);
       }
       probe.addOutput({
-        to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
+        to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
       });
       dataNftUtxos.forEach((u, i) => probe.addOutput({
         to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
@@ -5061,7 +5065,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // read is an already-resolved index) => N reached. MVP: no fixed front-region slots before the trailing region
   // (blockSize == 1 + dataNftCount) and no other trailing users (entries/containers/transfers).
   private async _resolveStatefulKeccakLoop(
-    abiFunction: AbiFunction, masterUtxo: Utxo, masterUnlocker: Unlocker,
+    abiFunction: AbiFunction, masterUtxo: Utxo, stateInputUnlocker: Unlocker,
     dataNftUtxos: Utxo[], dataNftUnlockers: Unlocker[],
     frontRegionInputs: UnlockableUtxo[] = [], locktime = 0,
   ): Promise<{ sideCars: UnlockableUtxo[]; recreates: Output[] }> {
@@ -5091,7 +5095,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const probe = new CovenantTransactionBuilder({ provider: this.inner.provider });
       if (locktime) probe.setLocktime(locktime);
-      probe.addInput(masterUtxo, masterUnlocker);
+      probe.addInput(masterUtxo, stateInputUnlocker);
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegionInputs.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
@@ -5103,7 +5107,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         recreates.push(recreate);
       }
       probe.addOutput({
-        to: masterUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
+        to: stateInputUnlocker.generateLockingBytecode(), amount: masterUtxo.satoshis, token: masterUtxo.token,
       });
       dataNftUtxos.forEach((u, i) => probe.addOutput({
         to: dataNftUnlockers[i].generateLockingBytecode(), amount: u.satoshis, token: u.token,
@@ -5186,15 +5190,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // keccak preimages by evaluating B in an isolated mini-tx (like the direct stateful complex path, but on B).
   private async _externalKeccakProbeCtx(
     bContract: StatefulContract, bAbiFunc: AbiFunction, args: any[], externalCategoryId: string,
-  ): Promise<{ masterUtxo: Utxo; masterUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[] }> {
+  ): Promise<{ masterUtxo: Utxo; stateInputUnlocker: Unlocker; dataNftUtxos: Utxo[]; dataNftUnlockers: Unlocker[] }> {
     const bState = await bContract.getFullState();
     if (!bState.masterUtxo) throw new Error(`External contract master UTXO not found (category ${externalCategoryId}).`);
     const unlockFns = bContract.inner.unlock as Record<string, (...a: any[]) => Unlocker>;
-    const masterUnlocker = unlockFns[bAbiFunc.name]?.(...(args ?? []));
-    if (!masterUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
+    const stateInputUnlocker = unlockFns[bAbiFunc.name]?.(...(args ?? []));
+    if (!stateInputUnlocker) throw new Error(`Cannot build an unlocker for external function ${bAbiFunc.name}.`);
     const dataNftUtxos = bState.dataNftUtxos;
     const dataNftUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(bContract.inner, 0, externalCategoryId));
-    return { masterUtxo: bState.masterUtxo, masterUnlocker, dataNftUtxos, dataNftUnlockers };
+    return { masterUtxo: bState.masterUtxo, stateInputUnlocker, dataNftUtxos, dataNftUnlockers };
   }
 
   // Absolute input index of the first blockhashOracle slot + the slot count (master is input 0, so the slot
@@ -5247,7 +5251,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // Build unlock functions for the probe transaction
-      const masterUnlocker = (this.inner.unlock as any)[functionName](...args);
+      const stateInputUnlocker = (this.inner.unlock as any)[functionName](...args);
       const dataNftUnlockers = filteredDataNftUtxos.map(
         () => createDataNftUnlocker(this.inner, 0, this.categoryId),
       );
@@ -5259,7 +5263,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (abiFunction.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
         const { base, count } = this.blockhashSlotBase(abiFunction);
         bhProbeCoSpends = await this._resolveBlockhashCoSpends(
-          abiFunction, args, base, count, masterUtxo, masterUnlocker, filteredDataNftUtxos,
+          abiFunction, args, base, count, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
         );
       }
 
@@ -5268,7 +5272,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       let keccakProbeCoSpends: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
       if (abiFunction.keccakCompute && !abiFunction.keccakLoopReads && this.categoryId) {
         keccakProbeCoSpends = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
-          masterUtxo, masterUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+          masterUtxo, stateInputUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         });
       }
       // ecrecover recovery A/B pairs at the ecrecoverSideCar slots (right after keccak): the probe co-spends them so
@@ -5291,7 +5295,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Input 0: master UTXO
-          probeBuilder.addInput(masterUtxo, masterUnlocker);
+          probeBuilder.addInput(masterUtxo, stateInputUnlocker);
 
           // Inputs 1..N: filtered data NFTs
           filteredDataNftUtxos.forEach((nftUtxo, i) => {
@@ -5316,7 +5320,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // Output 0: master UTXO preserved
           probeBuilder.addOutput({
-            to: masterUnlocker.generateLockingBytecode(),
+            to: stateInputUnlocker.generateLockingBytecode(),
             amount: masterUtxo.satoshis,
             token: masterUtxo.token,
           });
@@ -6461,7 +6465,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       drainSatoshiContainer?: boolean;
       drainTokenContainers?: string[];
       emitReturn?: boolean;
-      /** Controllerless composition's provisional/final SCB1 return-event commitment. */
+      /** Atomic composition's provisional/final message-bus batch return-event commitment. */
       returnBlob?: Uint8Array;
       /** `.staticCall()`: emitReturn is set only to lay out the probe; nothing is ever broadcast. */
       returnProbeOnly?: boolean;
@@ -6469,7 +6473,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       compilerRouteSelector?: Uint8Array;
       /** Absolute base when this local balanced block is concatenated after another participant. */
       blockBase?: number;
-      /** A controllerless composition supplies one global fee tail after all participant blocks. */
+      /** A atomic composition supplies one global fee tail after all participant blocks. */
       omitLocalFeeTail?: boolean;
     },
   ): Promise<StatefulTransactionBuilder> {
@@ -6504,9 +6508,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     const masterUtxo = overrides?.masterUtxo ?? onChainState.masterUtxo!;
-    // Controllerless local VM probes run before the canonical verifier region is assembled. An output index of
-    // 0xffffffff cannot identify a real UTXO, so generated SCB1 code may bypass only its final binder during these
-    // probes; the real outpoint is restored before the participant block leaves this builder.
+    // Atomic local VM probes run before the canonical verifier region is assembled. An output index of
+    // 0xffffffff cannot identify a real UTXO, so generated message-bus code may bypass only its final binding
+    // check during these probes; the real outpoint is restored before the participant block leaves this builder.
     const derivationMasterUtxo = overrides?.omitLocalFeeTail
       ? { ...masterUtxo, vout: 0xffffffff }
       : masterUtxo;
@@ -8285,7 +8289,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         if (value instanceof Uint8Array) return value;
                         if (typeof value === 'bigint') return bigIntToVmNumber(value);
                         if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-                        throw new Error(`External SCB1 cannot resolve entry key '${name}'`);
+                        throw new Error(`External message-bus batch cannot resolve entry key '${name}'`);
                       });
                       const directKeyBin = effKeyValue instanceof Uint8Array ? effKeyValue
                         : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
@@ -8305,10 +8309,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             const blockOffset = bBlockLayout.slots.find((candidate) =>
                               candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
                             if (blockOffset === undefined) {
-                              throw new Error(`External SCB1 entry slot ${routeSlot} has no block offset`);
+                              throw new Error(`External message-bus batch entry slot ${routeSlot} has no block offset`);
                             }
                             const commitment = exact.utxo.token?.nft?.commitment;
-                            if (!commitment) throw new Error(`External SCB1 entry slot ${routeSlot} has no commitment`);
+                            if (!commitment) throw new Error(`External message-bus batch entry slot ${routeSlot} has no commitment`);
                             bCompilerInternalArgs[`__internal__c2BatchSlot_${routeSlot}`] = bSlot;
                             bCompilerInternalArgs[`__internal__c2BatchProof_${routeSlot}`] = BigInt(blockOffset);
                             bCompilerInternalArgs[`__internal__c2BatchNext_${routeSlot}`] =
@@ -8319,7 +8323,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       } catch { matchUtxo = undefined; }
                       if (unsupportedColdEntry) {
                         throw new Error(
-                          'External SCB1 resource-shaped route requires an existing '
+                          'External message-bus batch resource-shaped route requires an existing '
                           + `${bEntryAccess.collection} entry for slot ${slot.slotIndex}; `
                           + 'cold-entry predecessor planning is not yet supported',
                         );
@@ -8530,7 +8534,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const owner = seenEntries.get(outpoint);
             if (owner !== undefined) {
               throw new Error(
-                `External SCB1 resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
+                `External message-bus batch resource shape aliases entry slots ${owner} and ${slot.slotIndex}; `
                 + 'this physical alias is not supported by the advertised route',
               );
             }
@@ -8703,7 +8707,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // chunk run sits right after the block (read at blockSize+i); the callees are appended
       // AFTER that chunk run, so the base advances by the chunk count.
       let externalCallInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length + outStateInputCount;
-      // SCB1 reserves the complete oracle row band before its callees. Active reads are sparse; count the
+      // message-bus batch reserves the complete oracle row band before its callees. Active reads are sparse; count the
       // physical width, not the number of resolved oracle UTXOs, when assigning the first participant base.
       externalCallInputBase += abiFunction?.graphBlockhashOracle?.slotCount ?? 0;
       if (iterationEntryInputs.length > 0) externalCallInputBase += iterationEntryInputs.length;
@@ -8883,7 +8887,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               (slot) => slot.kind === 'blockhashOracle',
             )?.offset;
             if (firstOracleOffset === undefined) {
-              throw new Error('External SCB1 graph blockhash plan has no physical oracle band');
+              throw new Error('External message-bus batch graph blockhash plan has no physical oracle band');
             }
             bFinalArgs.push(BigInt(masterInputIndex + firstOracleOffset));
           } else if (paramName === '__internal__returnOutputIdx') {
@@ -8933,19 +8937,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           )(...bFinalArgs)
           : (group.externalContract.inner.unlock as any)[group.functionName](...bFinalArgs);
 
-        // The external participant's absolute group base is known only here. Resolve its selected SCB1 rows now,
-        // place active oracle co-spends at their exact row-band offsets, and leave every inactive slot as the
+        // The external participant's absolute group base is known only here. Resolve its selected message-bus
+        // rows now, place active oracle co-spends at their exact row-band offsets, and leave every inactive slot as the
         // already-created funder. Computed n values are recovered from B's own covenant trace at B's real index.
         if (group.graphBlockhashSelections?.length) {
           if (!group.blockInputs || !group.blockLayout) {
-            throw new Error('External SCB1 graph blockhash route has no balanced participant block');
+            throw new Error('External message-bus batch graph blockhash route has no balanced participant block');
           }
           const firstOracleOffset = group.blockLayout.slots.find(
             (slot) => slot.kind === 'blockhashOracle',
           )?.offset;
           const plan = group.compilerRoute?.abiFunction.graphBlockhashOracle;
           if (firstOracleOffset === undefined || !plan) {
-            throw new Error('External SCB1 graph blockhash metadata/layout mismatch');
+            throw new Error('External message-bus batch graph blockhash metadata/layout mismatch');
           }
           const absoluteBase = masterInputIndex + firstOracleOffset;
           const bSc = group.externalContract as StatefulContract;
@@ -8959,7 +8963,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 prior, absoluteBase, selection.slotOrdinal, plan.slotCount, masterInputIndex,
               )
               : bSc.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
-            if (n === null) throw new Error(`blockhash: could not resolve external SCB1 read "${selection.readKey}"`);
+            if (n === null) throw new Error(`blockhash: could not resolve external message-bus batch read "${selection.readKey}"`);
             const coSpend = await resolveBlockhashCoSpend(this.inner.provider, group.categoryId, n);
             if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
             const physicalOffset = firstOracleOffset + selection.slotOrdinal;
@@ -9575,7 +9579,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const unlockFn = overrides?.compilerRouteSelector && abiFunction
       ? this.inner.createCompilerRouteUnlocker(abiFunction, overrides.compilerRouteSelector)
       : ((this.inner.unlock as any)[unlockName] ?? (this.inner.unlock as any)[functionName]);
-    const masterUnlocker = unlockFn(...finalArgs);
+    const stateInputUnlocker = unlockFn(...finalArgs);
     const blockBase = overrides?.blockBase ?? 0;
     const dataNftUnlockers = filteredDataNftUtxos.map(
       () => createDataNftUnlocker(this.inner, blockBase, this.categoryId),
@@ -9597,11 +9601,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       for (const selection of graphSelections) {
         const n = isComputedBlockhashKey(selection.readKey)
           ? await this._extractGraphBlockhashRead(
-            masterUtxo, masterUnlocker, filteredDataNftUtxos, graphPrior,
+            masterUtxo, stateInputUnlocker, filteredDataNftUtxos, graphPrior,
             graphBase, selection.slotOrdinal, graphSlotCount,
           )
           : this.paramBlockhashN(selection.readKey, selection.rowArgs, selection.handler);
-        if (n === null) throw new Error(`blockhash: could not resolve SCB1 row read "${selection.readKey}"`);
+        if (n === null) throw new Error(`blockhash: could not resolve message-bus batch row read "${selection.readKey}"`);
         const coSpend = await resolveBlockhashCoSpend(this.inner.provider, this.categoryId, n);
         if (!coSpend) throw new Error(`blockhash(${n}): no (n->hash) oracle UTXO at addr(${n})`);
         resolved.push(coSpend);
@@ -9616,7 +9620,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } else if (abiFunction?.blockhashReads && abiFunction.blockhashReads.length > 0 && this.categoryId) {
       const { base, count } = this.blockhashSlotBase(abiFunction);
       const resolved = await this._resolveBlockhashCoSpends(
-        abiFunction, args, base, count, masterUtxo, masterUnlocker, filteredDataNftUtxos,
+        abiFunction, args, base, count, masterUtxo, stateInputUnlocker, filteredDataNftUtxos,
       );
       blockhashCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
       maxBhLocktime = resolved.reduce((m, cs) => Math.max(m, cs.locktime), 0);
@@ -9632,14 +9636,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (abiFunction?.keccakLoopReads && this.categoryId) {
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe.
       const loop = await this._resolveStatefulKeccakLoop(
-        abiFunction, derivationMasterUtxo, masterUnlocker, filteredDataNftUtxos, dataNftUnlockers,
+        abiFunction, derivationMasterUtxo, stateInputUnlocker, filteredDataNftUtxos, dataNftUnlockers,
         keccakFrontRegion, maxBhLocktime,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
     } else if (abiFunction?.keccakCompute && this.categoryId) {
       const resolved = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
-        masterUtxo: derivationMasterUtxo, masterUnlocker,
+        masterUtxo: derivationMasterUtxo, stateInputUnlocker,
         dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
       });
@@ -9656,7 +9660,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const unlockableMaster = {
       ...derivationMasterUtxo,
-      unlocker: masterUnlocker,
+      unlocker: stateInputUnlocker,
     };
 
     const unlockableDataNfts = filteredDataNftUtxos.map((nftUtxo, i) => ({
@@ -9857,7 +9861,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
     });
-    if (overrides?.omitLocalFeeTail) builder._setLayer3ProbeMasterVout(masterUtxo.vout);
+    if (overrides?.omitLocalFeeTail) builder._setMessageBusProbeMasterVout(masterUtxo.vout);
 
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
@@ -10028,7 +10032,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         } else if ((this.inner.provider as any).addUtxo) {
           const dummyFunders: UnlockableUtxo[] = [];
           for (let i = 0; i < neededFunders; i++) {
-            // Controllerless participants are assembled independently before their balanced blocks are joined.
+            // Atomic participants are assembled independently before their balanced blocks are joined.
             // Namespace synthetic funders by the compiler-derived absolute block base so two output-only slots
             // can never reuse one outpoint in the aggregate transaction.
             const syntheticOutpoint = 0xf0 + (overrides?.blockBase ?? 0) * 0x100 + i;
@@ -10270,8 +10274,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return commitments && commitments.length > 0 ? hexToBin(commitments[0]) : undefined;
   }
 
-  /** @internal Extract a participant's covenant-authored SCB1 return-event commitment from a complete bus tx. */
-  _layer3ReturnBlobFromTransaction(
+  /** @internal Extract a participant's message-bus return commitment from a complete bus transaction. */
+  _messageBusReturnBlobFromTransaction(
     builder: TransactionBuilder, returnOutputIndex: number, inputIndex: number,
   ): Uint8Array | undefined {
     const transaction = builder.buildLibauthTransaction();
@@ -10458,7 +10462,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /**
-   * Construct the exact positional SCB1 blob expected by a grouped external
+   * Construct the exact positional message-bus batch blob expected by a grouped external
    * call. The callee capability is treated as untrusted artifact data: every
    * logical selector must resolve to an advertised eligible handler with the
    * same input types before any transaction is built.
@@ -10475,7 +10479,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     } | undefined {
     const rows = externalCall.batchInvocations;
     if (!rows) return undefined;
-    if (rows.length < 2) throw new Error('Repeated external SCB1 batch must contain at least two rows');
+    if (rows.length < 2) throw new Error('Repeated external message-bus batch batch must contain at least two rows');
 
     const capability = externalContract.inner.artifact.messageBus;
     if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
@@ -10486,7 +10490,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const minimumRows = capability.minimumRows ?? 1;
     if (rows.length < minimumRows || rows.length > capability.maximumRows) {
       throw new Error(
-        `Repeated external SCB1 batch has ${rows.length} rows; callee requires `
+        `Repeated external message-bus batch batch has ${rows.length} rows; callee requires `
         + `${minimumRows}..${capability.maximumRows}`,
       );
     }
@@ -10502,28 +10506,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
-        throw new Error('Repeated external SCB1 rows must use canonical contiguous callsite indices');
+        throw new Error('Repeated external message-bus batch rows must use canonical contiguous callsite indices');
       }
       const handler = capability.handlers.find((candidate) => candidate.selector === row.selector);
       if (!handler?.eligible) {
         throw new Error(
-          `External SCB1 selector ${row.selector} is not advertised as an eligible callee handler`,
+          `External message-bus batch selector ${row.selector} is not advertised as an eligible callee handler`,
         );
       }
       if (handler.inputs.length !== row.inputs.length
         || handler.inputs.some((input, index) => input.type !== row.inputs[index].type)) {
-        throw new Error(`External SCB1 selector ${row.selector} has incompatible caller/callee input types`);
+        throw new Error(`External message-bus batch selector ${row.selector} has incompatible caller/callee input types`);
       }
       const args = row.inputs.length === 0
         ? []
         : this._resolveExternalArgs(row.argSources, functionArgs, this.inner.artifact);
       if (!args || args.length !== row.inputs.length) {
-        throw new Error(`Could not resolve every argument for external SCB1 row ${rowIndex}`);
+        throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);
       }
       const encoded = args.map((arg, index) =>
         encodeFunctionArgument(arg, row.inputs[index].type, structs));
       if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
-        throw new Error('Signature-like arguments are not eligible for external SCB1 batching');
+        throw new Error('Signature-like arguments are not eligible for external message-bus batch batching');
       }
       for (const binding of handler.batchKeyWitnesses ?? []) {
         const routeInput = binding.perRow
@@ -10532,17 +10536,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const encodedValue = encoded[binding.inputIndex] as Uint8Array;
         const prior = keyWitnessValues.get(routeInput);
         if (prior && binToHex(prior.encoded) !== binToHex(encodedValue)) {
-          throw new Error(`External SCB1 collection witness '${routeInput}' is ambiguous`);
+          throw new Error(`External message-bus batch collection witness '${routeInput}' is ambiguous`);
         }
         if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
       }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
-      if (argsBlob.length > 0xffff) throw new Error(`External SCB1 row ${rowIndex} exceeds 65535 bytes`);
+      if (argsBlob.length > 0xffff) throw new Error(`External message-bus batch row ${rowIndex} exceeds 65535 bytes`);
       let logicalValue = 0n;
       if (handler.usesMsgValue) {
         if ((handler.transfers?.length ?? 0) === 0) {
           throw new Error(
-            `External SCB1 msg.value for '${handler.name}' has no compiler-authored transfer`,
+            `External message-bus batch msg.value for '${handler.name}' has no compiler-authored transfer`,
           );
         }
         for (const transfer of handler.transfers!) {
@@ -10555,7 +10559,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             amount = BigInt(source.value);
           } else {
             throw new Error(
-              `External SCB1 msg.value for '${handler.name}' has a non-derivable transfer amount`,
+              `External message-bus batch msg.value for '${handler.name}' has a non-derivable transfer amount`,
             );
           }
           logicalValue -= amount;
@@ -10575,14 +10579,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     );
     if (blob.length > capability.maximumBlobBytes) {
       throw new Error(
-        `External SCB1 blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
+        `External message-bus batch blob is ${blob.length} bytes; maximum is ${capability.maximumBlobBytes}`,
       );
     }
     const routeWitnessInputs = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
     const routeWitnesses = routeWitnessInputs.map((input) => {
       const witness = keyWitnessValues.get(input.name);
-      if (!witness) throw new Error(`Missing external SCB1 route witness '${input.name}'`);
+      if (!witness) throw new Error(`Missing external message-bus batch route witness '${input.name}'`);
       return witness.value;
     });
     return {
@@ -11268,19 +11272,19 @@ export class StatefulFunctionCall {
   }
 
   /**
-   * Compiler-owned description consumed by the controllerless Layer-3 composer.
+   * Compiler-owned description consumed by the atomic message bus composer.
    *
-   * This deliberately exposes no builder or physical indices: composition derives one SCB1 route per
+   * This deliberately exposes no builder or physical indices: composition derives one message-bus batch route per
    * participant only after the complete logical call graph is known. Calls carrying imperative SDK overrides
    * are refused because replaying only part of that mutable configuration would silently change semantics.
    */
-  _layer3CompositionDescriptor(): {
+  _messageBusCompositionDescriptor(): {
     contract: StatefulContract;
     functionName: string;
     args: readonly FunctionArgument[];
   } {
     if (!this.parentContract || this.functionName === undefined || !this.functionArgs) {
-      throw new Error('layer3: composition requires a prepared stateful contract call');
+      throw new Error('messageBus: composition requires a prepared stateful contract call');
     }
     const hasOverrides = this.stateOverrides.length > 0 || this.entryOverrides.length > 0
       || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0
@@ -11292,7 +11296,7 @@ export class StatefulFunctionCall {
       || this.containerDepositAmount !== 0n || this.locktimeOverride !== undefined
       || this.splitFundingConfig !== undefined || this.mergeConfig !== undefined;
     if (hasOverrides) {
-      throw new Error('layer3: prepared calls with imperative SDK overrides are not composable');
+      throw new Error('messageBus: prepared calls with imperative SDK overrides are not composable');
     }
     return Object.freeze({
       contract: this.parentContract,
@@ -12263,7 +12267,7 @@ export class StatefulFunctionCall {
       builder.emitDetachedEvent(event.name, ...event.args);
     }
 
-    builder._restoreLayer3ProbeMasterOutpoint();
+    builder._restoreMessageBusProbeMasterOutpoint();
     return builder;
   }
 

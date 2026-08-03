@@ -30,7 +30,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * a STANDARD NON-COVENANT transaction, and row 1d is what holds that distinction.
  *
  * WHAT CLOSES THEM. `assertFinalizedBytesWithCovenant`, moved out of `StatefulContract` into
- * `layer3/preflight.ts` so `send` can share it. It cannot cost anything: the bytes are assessed FIRST and an
+ * `message-bus/preflight.ts` so `send` can share it. It cannot cost anything: the bytes are assessed FIRST and an
  * admitted verdict returns before the VM is touched (row 5a is the source-order pin), so a covenant objection
  * can only ever annotate a refusal that was already happening. No transaction that used to settle can fail.
  *
@@ -127,8 +127,8 @@ async function oversizedInputBuilder(pushBytes: number): Promise<TransactionBuil
 /** The gate's OWN marker. Structural, so it cannot go blind when libauth rephrases a failure. */
 const COVENANT_LINE = /\[covenant\] input 0: /;
 /** The combined prefix. Mutually exclusive with the byte-only one below, character for character. */
-const BOTH_REFUSED = /^layer3: finalized transaction refused by its covenant and 1 byte rule\(s\)/;
-const BYTES_ONLY = /^layer3: finalized transaction refused by 1 byte rule\(s\)/;
+const BOTH_REFUSED = /^messageBus: finalized transaction refused by its covenant and 1 byte rule\(s\)/;
+const BYTES_ONLY = /^messageBus: finalized transaction refused by 1 byte rule\(s\)/;
 const DUST_DETAIL = new RegExp('\\[policy\\] output-dust at output 0: 100 satoshis is 374 short of the '
   + '474-satoshi dust threshold for a 10-byte output \\(3 \\* \\(10 \\+ 148\\)\\)');
 
@@ -257,7 +257,7 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       // pre-existing send in the suite that the new code actually reaches. It gains the covenant line and
       // keeps every assertion it had, which is the whole claim: annotation, not replacement.
       const refused = await sendError(await oversizedInputBuilder(12_000));
-      expect(refused).toMatch(/^layer3: finalized transaction refused by its covenant and 1 byte rule\(s\)/);
+      expect(refused).toMatch(/^messageBus: finalized transaction refused by its covenant and 1 byte rule\(s\)/);
       expect(refused).toMatch(/\[consensus\] consensus-unlocking-bytes at input 0/);
       expect(refused).toMatch(/12003 unlocking bytecode bytes is 2003 over the 10000-byte per-input script limit/);
       expect(refused).toContain(SENTENCE.leftover);
@@ -325,7 +325,7 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
     // THE COST CLAIM, held structurally because it is a claim about an ordering. Every send that settles -
     // the 1,159 the X126 probe measured accepted through this site, and every one since - takes the early
     // return, so this row is what makes "it cannot cost anything" checkable rather than asserted.
-    const body = readFileSync(`${SRC_ROOT}layer3/preflight.ts`, 'utf8')
+    const body = readFileSync(`${SRC_ROOT}message-bus/preflight.ts`, 'utf8')
       .split('export function assertFinalizedBytesWithCovenant')[1];
     expect(body.indexOf('assessFinalizedTransactionBytes(transaction, subjects)'))
       .toBeLessThan(body.indexOf('if (verdict.admitted) return;'));
@@ -336,7 +336,7 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
   it('5b. STRUCTURAL: the routed sites route, and the bare gate has exactly one caller left outside preflight',
     () => {
       // THE ROW THAT MOVED WITH THE CODE. It was `L4StatefulAdminSiteGate` row 5f, counting one bare call and
-      // four routed sites inside `StatefulContract.ts`; the helper now lives in `layer3/preflight.ts` and
+      // four routed sites inside `StatefulContract.ts`; the helper now lives in `message-bus/preflight.ts` and
       // `TransactionBuilder.send` is its second caller, so the count is per file and lives here.
       //
       // A new broadcast path added later gets whichever gate its author copies from a neighbour. Every
@@ -350,14 +350,14 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       expect(callsTo(stateful, 'assertFinalizedTransactionBytes')).toHaveLength(0);
 
       // Inside `preflight.ts` the bare gate keeps three callers: the covenant-clean branch of the helper
-      // itself, and the two Layer-3 entry points that run `evaluateEveryInput` BEFORE it - a guaranteed
+      // itself, and the two message bus entry points that run `evaluateEveryInput` BEFORE it - a guaranteed
       // covenant verdict ahead of the bytes, which is the same property by a different route.
-      const preflight = read('layer3/preflight.ts');
+      const preflight = read('message-bus/preflight.ts');
       const bare = callsTo(preflight, 'assertFinalizedTransactionBytes');
       expect(bare, `bare calls: ${bare.join(' | ')}`).toHaveLength(3);
       expect(bare[0]).toMatch(/if \(covenant === undefined\)/);
       const text = preflight.join('\n');
-      for (const entry of ['preflightLayer3Transaction', 'sendPreflightedLayer3Transaction']) {
+      for (const entry of ['preflightMessageBusTransaction', 'sendPreflightedMessageBusTransaction']) {
         const body = text.split(entry)[2] ?? text.split(entry)[1];
         expect(body.indexOf('evaluateEveryInput(builder, transaction)'))
           .toBeLessThan(body.indexOf('assertFinalizedTransactionBytes(transaction, options)'));

@@ -12,9 +12,9 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 /**
  * Compile a fixture for direct-route language semantics.
  *
- * General parser/type/codegen tests must not synthesize an unrelated SCB1 route: doing so changes byte-identity
+ * General parser/type/codegen tests must not synthesize an unrelated message-bus batch route: doing so changes byte-identity
  * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
- * runtime. Layer-3 tests import the production compiler directly. An explicit `messageBus: true` still wins.
+ * runtime. message bus tests import the production compiler directly. An explicit `messageBus: true` still wins.
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},

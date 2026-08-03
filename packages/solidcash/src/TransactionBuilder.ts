@@ -50,7 +50,7 @@ import {
   calculateDust,
 } from './utils.js';
 import { FailedTransactionError } from './Errors.js';
-import { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } from './layer3/preflight.js';
+import { assertFinalizedBytesWithCovenant, inputSubjectsOfBuilder } from './message-bus/preflight.js';
 import { DebugResults } from './debugging.js';
 import { debugLibauthTemplate, getLibauthTemplate, getBitauthUri } from './libauth-template/LibauthTemplate.js';
 import { getWcContractInfo, WcSourceOutput, WcTransactionOptions } from './walletconnect-utils.js';
@@ -1170,7 +1170,7 @@ export class TransactionBuilder {
     //
     // MEASURED BEFORE LANDING, not assumed: 1,170 sends through this site across the whole SDK e2e population,
     // 1,159 of which the provider accepted, and the byte rules refuse NONE of them. See
-    // `test/journal-message-bus/e2e/layer3-gatesite-probe.ts` for the per-site table and
+    // `test/journal-message-bus/e2e/message-bus-gatesite-probe.ts` for the per-site table and
     // `test/e2e/X131SendFinalizedBytesGate.test.ts`
     // for the throw census that confirms it after the gate was applied.
     //

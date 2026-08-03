@@ -2,7 +2,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).

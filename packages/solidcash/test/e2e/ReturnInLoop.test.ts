@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // An internal function that returns from INSIDE a loop - previously a codegen bug ("variable does not exist on
 // the stack"), now desugared to flag + break + post-loop return. VM-verifies the desugar is runtime-correct.

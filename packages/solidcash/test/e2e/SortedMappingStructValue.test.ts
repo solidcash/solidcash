@@ -6,7 +6,7 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Struct-valued sorted mapping `mapping(int => P)`. A struct is an encoded blob (its on-stack representation), so
 // it is stored verbatim in the (last) value tail; a field read `pos[k].x` decodes that blob. Present -> the stored

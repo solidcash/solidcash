@@ -19,7 +19,7 @@ import {
   valueChunkSignature,
   Script,
   scriptToBytecode,
-  buildLayer3VerifierCovenantScript,
+  buildMessageBusVerifierCovenantScript,
 } from '@solidcash/utils';
 import { encodeFunctionArgument, FunctionArgument } from '../Argument.js';
 import { AddressType, ContractUnlocker, Utxo } from '../interfaces.js';
@@ -125,25 +125,25 @@ export function getDataNftAddress(contract: Contract<any, any>, categoryId: stri
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
-export function getLayer3VerifierAddress(contract: Contract<any, any>, categoryId: string): string {
+export function getMessageBusVerifierAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
   const program = contract.artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
   return scriptToAddress(
-    buildLayer3VerifierCovenantScript(program),
+    buildMessageBusVerifierCovenantScript(program),
     contract.provider.network,
     'p2sh32',
     true,
   );
 }
 
-export function getLayer3VerifierLockingBytecode(
+export function getMessageBusVerifierLockingBytecode(
   contract: Contract<any, any>, categoryId: string, _addressType: AddressType = 'p2sh32',
 ): Uint8Array {
   validateCategoryId(categoryId);
   const program = contract.artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
-  return scriptToLockingBytecode(buildLayer3VerifierCovenantScript(program), 'p2sh32');
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
+  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(program), 'p2sh32');
 }
 
 export function getEntryNftAddress(
@@ -290,21 +290,21 @@ export async function getContractState(
 // Covenant unlocker factories
 // ---------------------------------------------------------------------------
 
-export function createLayer3VerifierUnlocker(
-  contract: Contract<any, any>, categoryId: string, carrier: Uint8Array, verifierArgs: FunctionArgument[],
+export function createMessageBusVerifierUnlocker(
+  contract: Contract<any, any>, categoryId: string, messageEnvelope: Uint8Array, verifierArgs: FunctionArgument[],
 ): ContractUnlocker {
   validateCategoryId(categoryId);
   const program = contract.artifact.messageBus?.verifierProgram;
-  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
+  if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
   if (verifierArgs.length !== program.inputs.length) {
-    throw new Error(`Layer-3 verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
+    throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }
   return createCovenantContractUnlocker(
     contract,
-    `Layer3Verifier_${categoryId.slice(0, 8)}`,
-    buildLayer3VerifierCovenantScript(program),
-    [{ name: '__internal__densityReserve', type: 'bytes' }, ...program.inputs, { name: 'carrier', type: 'bytes' }],
-    [new Uint8Array(2048), ...verifierArgs, carrier],
+    `MessageBusVerifier_${categoryId.slice(0, 8)}`,
+    buildMessageBusVerifierCovenantScript(program),
+    [{ name: '__internal__densityReserve', type: 'bytes' }, ...program.inputs, { name: 'messageEnvelope', type: 'bytes' }],
+    [new Uint8Array(2048), ...verifierArgs, messageEnvelope],
     'p2sh32',
   );
 }

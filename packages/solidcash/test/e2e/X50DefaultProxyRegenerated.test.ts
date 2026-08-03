@@ -7,7 +7,7 @@ import {
 } from '../../src/index.js';
 import { DEFAULT_PROXY_SOURCE, defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { ProxyContract } from '../../src/stateful/upgrades.js';
-import { classifyDelegateParticipant } from '../../src/layer3/delegate.js';
+import { classifyDelegateParticipant } from '../../src/message-bus/delegate.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { alicePriv } from '../fixture/vars.js';

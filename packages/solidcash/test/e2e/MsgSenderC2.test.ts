@@ -9,7 +9,7 @@ import { alicePriv, alicePub, alicePkh, bobPriv, bobPub } from '../fixture/vars.
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A msg.sender-keyed C2 (sorted) mapping - the ERC20 `_balances[msg.sender]` shape. On BCH msg.sender (direct call) =
 // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The SDK: (1) records a `msgSender` keySource,

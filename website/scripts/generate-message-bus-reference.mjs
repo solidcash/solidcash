@@ -37,10 +37,10 @@ after changing message-bus artifact fields or limits.
 
 | Artifact source | Value |
 | --- | ---: |
-| \`SINGLE_TX_BUS_MAX_PARTICIPANTS\` | ${constant('SINGLE_TX_BUS_MAX_PARTICIPANTS')} |
-| \`SINGLE_TX_BUS_MAX_ROWS\` | ${constant('SINGLE_TX_BUS_MAX_ROWS')} |
+| \`ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS\` | ${constant('ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS')} |
+| \`ATOMIC_MESSAGE_BUS_MAX_ROWS\` | ${constant('ATOMIC_MESSAGE_BUS_MAX_ROWS')} |
 | \`MAX_MESSAGE_BUS_BLOB_BYTES\` | ${constant('MAX_MESSAGE_BUS_BLOB_BYTES')} bytes |
-| \`SINGLE_TX_BUS_DOMAIN_HEX\` | \`${constant('SINGLE_TX_BUS_DOMAIN_HEX')}\` |
+| \`ATOMIC_MESSAGE_BUS_DOMAIN_HEX\` | \`${constant('ATOMIC_MESSAGE_BUS_DOMAIN_HEX')}\` |
 
 These are admission ceilings. Finalized transaction size and BCH-2026 VM preflight can impose a smaller limit for
 a resource-heavy graph.
@@ -51,7 +51,7 @@ a resource-heavy graph.
 | --- | --- |
 ${fields.map(([name, type]) => `| \`${name}\` | \`${type.replaceAll('|', '\\|')}\` |`).join('\n')}
 
-The nested \`singleTransactionBus\` record publishes carrier placement and participant/row bounds. The
+The nested \`atomicMessageBus\` record publishes message-envelope placement and participant/row bounds. The
 \`verifierProgram\` record is deployment material for the artifact-specialized self-preserving verifier; it is not
 an execution controller.
 `;

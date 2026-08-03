@@ -94,6 +94,6 @@ describe('SafeERC20-chain low-level .call with a self-pinned state-chain target 
       caller.pay(payload, alicePub, sig())
         .withExternalCall(echoB.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
-    ).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    ).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

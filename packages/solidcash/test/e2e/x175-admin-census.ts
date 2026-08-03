@@ -6,7 +6,7 @@ import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 /**
  * X175 THROW CENSUS, for the four stateful lifecycle-admin broadcast sites.
  *
- * WHY A SEPARATE INSTRUMENT FROM `layer3-throw-census.ts`. That one wraps `TransactionBuilder.debug/send` and
+ * WHY A SEPARATE INSTRUMENT FROM `message-bus-throw-census.ts`. That one wraps `TransactionBuilder.debug/send` and
  * the provider. These four sites call NEITHER: they call `builder.build()` and hand the hex straight to
  * `provider.sendRawTransaction`, so a refusal at one of them never reaches any method that census observes -
  * the gate throws first and the provider is never called. Their throws are only visible at the public entry

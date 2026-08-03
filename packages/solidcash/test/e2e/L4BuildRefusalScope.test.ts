@@ -3,7 +3,7 @@ import { fileURLToPath } from 'url';
 import { binToHex, decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { describe, expect, it } from 'vitest';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,
+  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, messageBus,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
@@ -37,7 +37,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  * 1. IT WOULD DELETE `allowNonRelayable` (row 2). The gate's policy half is suppressible for the
  *    mineable-but-unrelayable case: a transaction over the 100,000-byte relay ceiling and under the
  *    1,000,000-byte consensus ceiling is VALID, and a caller submitting straight to a miner is not wrong to
- *    build it. `build()` takes no options and is called BY `sendPreflightedLayer3Transaction` before that
+ *    build it. `build()` takes no options and is called BY `sendPreflightedMessageBusTransaction` before that
  *    function applies the caller's, so a gated `build()` would refuse first and the option could never be
  *    reached. A fail-closed boundary with no escape hatch, where every sibling site has one.
  *
@@ -53,7 +53,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *    refusing construction protects nobody who was not already free to assemble the bytes elsewhere.
  *
  * WHAT THE COMPOSER GETS INSTEAD. `assertFinalizedTransactionBytes` and `assessFinalizedTransactionBytes` are
- * both public through the `layer3` namespace, so a composer broadcasting by hand can decide the same bytes
+ * both public through the `messageBus` namespace, so a composer broadcasting by hand can decide the same bytes
  * against the same rules and pass `allowNonRelayable` when they mean it. Row 4 is that path end to end.
  *
  * DELIBERATELY NOT DECIDED HERE: `generateWcTransactionObject`, which hands bytes to a wallet rather than
@@ -119,7 +119,7 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     const decoded = decodeTransactionUnsafe(hexToBin(raw));
     expect(decoded.outputs[0].valueSatoshis, 'the same below-dust output survives `build()`').toBe(100n);
     // And the rules would have refused these exact bytes, so the silence is the hole and not a disagreement.
-    const verdict = layer3.assessFinalizedTransactionBytes(decoded);
+    const verdict = messageBus.assessFinalizedTransactionBytes(decoded);
     expect(verdict.admitted).toBe(false);
     expect(verdict.refusals.map((row) => row.rule)).toEqual(['output-dust']);
   }, 120_000);
@@ -129,7 +129,7 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     // `build()` and `send()` disagreeing on some other property of this shape.
     const builder = await dustBuilder(474n);
     expect(await sendError(builder)).toBe('');
-    expect(layer3.assessFinalizedTransactionBytes(
+    expect(messageBus.assessFinalizedTransactionBytes(
       decodeTransactionUnsafe(hexToBin(builder.build())),
     ).admitted).toBe(true);
   }, 120_000);
@@ -140,24 +140,24 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     const builder = await oversizeRelayBuilder(12, 9_000);
     const raw = builder.build();
     const transaction = decodeTransactionUnsafe(hexToBin(raw));
-    const verdict = layer3.assessFinalizedTransactionBytes(transaction);
+    const verdict = messageBus.assessFinalizedTransactionBytes(transaction);
     expect(verdict.serializedBytes).toBeGreaterThan(100_000);
     expect(verdict.serializedBytes).toBeLessThan(1_000_000);
     expect(verdict.refusals.map((row) => `${row.regime}:${row.rule}`))
       .toEqual(['policy:relay-transaction-size']);
 
     // The suppressible half: refused by default, admitted when the caller says they are going to a miner.
-    expect(() => layer3.assertFinalizedTransactionBytes(transaction)).toThrow(/relay-transaction-size/);
-    expect(layer3.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }).admitted)
+    expect(() => messageBus.assertFinalizedTransactionBytes(transaction)).toThrow(/relay-transaction-size/);
+    expect(messageBus.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }).admitted)
       .toBe(false);
 
-    // AND THE ORDER IS THE PROBLEM. `sendPreflightedLayer3Transaction` calls `builder.build()` and only then
+    // AND THE ORDER IS THE PROBLEM. `sendPreflightedMessageBusTransaction` calls `builder.build()` and only then
     // applies the caller's options, so a gate inside `build()` - which takes no options - would refuse these
     // bytes before the option that admits them could ever be read.
     const source = readFileSync(
-      fileURLToPath(new URL('../../src/layer3/preflight.ts', import.meta.url)), 'utf8',
+      fileURLToPath(new URL('../../src/message-bus/preflight.ts', import.meta.url)), 'utf8',
     );
-    const body = source.slice(source.indexOf('export async function sendPreflightedLayer3Transaction'));
+    const body = source.slice(source.indexOf('export async function sendPreflightedMessageBusTransaction'));
     expect(body.indexOf('builder.build()')).toBeGreaterThan(-1);
     expect(body.indexOf('builder.build()'))
       .toBeLessThan(body.indexOf('assertFinalizedTransactionBytes(transaction, options)'));
@@ -178,11 +178,11 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     // halves are reachable: the default refusal and the explicit policy suppression the gated sites offer.
     const builder = await dustBuilder(100n);
     const transaction = decodeTransactionUnsafe(hexToBin(builder.build()));
-    expect(() => layer3.assertFinalizedTransactionBytes(transaction)).toThrow(
+    expect(() => messageBus.assertFinalizedTransactionBytes(transaction)).toThrow(
       /100 satoshis is 374 short of the 474-satoshi dust threshold/,
     );
     // A policy refusal, so `allowNonRelayable` reaches it; the verdict still reports it as not admitted.
-    const suppressed = layer3.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true });
+    const suppressed = messageBus.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true });
     expect(suppressed.admitted).toBe(false);
     expect(suppressed.refusals.map((row) => row.rule)).toEqual(['output-dust']);
   }, 120_000);
@@ -192,7 +192,7 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
     // off". One input of 12,000 pushed bytes is 2,003 over the per-input consensus ceiling.
     const builder = await oversizeRelayBuilder(1, 12_000);
     const transaction = decodeTransactionUnsafe(hexToBin(builder.build()));
-    expect(() => layer3.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }))
+    expect(() => messageBus.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }))
       .toThrow(/\[consensus\] consensus-unlocking-bytes at input 0/);
   }, 120_000);
 });

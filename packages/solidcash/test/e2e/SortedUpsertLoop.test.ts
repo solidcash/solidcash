@@ -8,7 +8,9 @@ import { alicePriv, alicePub, alicePkh, bobAddress, carolAddress } from '../fixt
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const WRONG_BALANCE_PREFLIGHT = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const WRONG_BALANCE_PREFLIGHT = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 
 // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (the multitransfer CREDIT half to EXISTING recipients). Each
 // iteration co-spends k[i]'s OWN entry at input[master+blockSize+i], verifies its slot == keyToSlot(k[i]), and mints

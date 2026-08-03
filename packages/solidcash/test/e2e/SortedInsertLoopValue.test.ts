@@ -53,11 +53,11 @@ describe('C2 insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is soun
     // Adversarial: a wrong expected value reverts -> the stored value really is 100, and specifically NOT the bool pin 1.
     await fund(contract.address);
     await expect(contract.chk(3n, 1n, alicePub, sig).send()).rejects.toThrow(
-      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
     await fund(contract.address);
     await expect(contract.chk(7n, 99n, alicePub, sig).send()).rejects.toThrow(
-      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
     // An absent key is bracket-proven default (0).
     await fund(contract.address);

@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A bare `return;` (void early exit) in an ENTRY-POINT function: EarlyReturnTransformation nests the rest into
 // an else branch and codegen emits the tail `return;` as a no-op (previously entry-point void returns were

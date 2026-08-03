@@ -45,7 +45,7 @@ interface AbiFunction   { ...; externalLibraries?: readonly string[]; }         
 `KECCAK256 = 'keccak256'` in `GlobalFunction`; `Symbol.function(KECCAK256, bytes32, [ANY])` in the
 global table (same shape as `sha256`).
 
-## Layer 3 - codegen (GenerateTargetTraversal.ts, visitFunctionCall special case)
+## message bus - codegen (GenerateTargetTraversal.ts, visitFunctionCall special case)
 
 Define-once (like the subroutine registry): first `keccak256(...)` emits the loader; each call site is
 `visit(arg)` then `<KECCAK256_LIBRARY_ID> OP_INVOKE`. Loader (reads the side-car = last input; integrity

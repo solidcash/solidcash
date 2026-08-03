@@ -344,7 +344,7 @@ export default class ExpandBoundedPointerTableLoop extends AstTraversal {
    * Nothing about the emitted program changes: the covenant still loops and still emits one row per executed
    * iteration. What changes is that the ceiling the source already proves - a dominating
    * `require(bound <= K)` over the trip count - reaches the artifact, so a consumer choosing a row count has a
-   * compiler-proven number to check it against instead of only the global transcript ceiling. A shape whose
+   * compiler-proven number to check it against instead of only the global callManifest ceiling. A shape whose
    * bound cannot be proven records nothing and stays exactly as unbounded as it was.
    */
   private recordRolledLoopCeiling(

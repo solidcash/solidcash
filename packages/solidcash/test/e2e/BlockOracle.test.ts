@@ -18,7 +18,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
 
 const preflightFailure = (reason: string): string =>
-  `layer3: BCH-2026 preflight failed at input 0: ${reason}`;
+  `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
 const verifyFailure = preflightFailure('Program failed an OP_VERIFY operation.');
 const nullFail = preflightFailure(
   'Program failed a signature verification with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.',

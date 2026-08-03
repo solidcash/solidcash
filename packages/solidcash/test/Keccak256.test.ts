@@ -8,7 +8,9 @@ import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
 import { alicePub, alicePriv } from './fixture/vars.js';
 
-const STATEFUL_OP_VERIFY_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const STATEFUL_OP_VERIFY_INPUT_0 = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
   + '\\(Unable to verify transaction: error in evaluating input index 0: '
   + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '

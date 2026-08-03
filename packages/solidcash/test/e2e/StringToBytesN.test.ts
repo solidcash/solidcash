@@ -23,7 +23,7 @@ describe('string literal -> bytesN (right-padded)', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.check(ABC32).send();
     expect(tx.txid).toBeDefined();
-    await expect(sc.check(hexToBin('00'.repeat(32))).send()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    await expect(sc.check(hexToBin('00'.repeat(32))).send()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('comparison "abc" == bytes3 arg holds for the exact-fit value', async () => {

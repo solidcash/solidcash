@@ -5,7 +5,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Behavioral proof for CoalesceMappingEntryFieldWrites (docs/coalesce-mapping-entry-field-writes.md). Consecutive
 // whole-field writes to the same C2 mapping entry are collapsed to one entry read + one whole-struct write. Each

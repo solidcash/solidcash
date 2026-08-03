@@ -53,7 +53,7 @@ describe('sorted nested mapping (composite key)', () => {
     // read reflects it; a different pair (10,30) is absent (reads 0).
     await expect(call('check', 10n, 20n, 100n)).resolves.toBeDefined();
     await expect(call('check', 10n, 30n, 0n)).resolves.toBeDefined();
-    await expect(call('check', 10n, 20n, 99n)).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    await expect(call('check', 10n, 20n, 99n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
 
     // RMW allow[10][20] += 5 -> 105 (update the same composite entry).
     expect((await call('bump', 10n, 20n, 5n)).txid).toBeDefined();

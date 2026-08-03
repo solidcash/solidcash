@@ -7,7 +7,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // C2 default mode backs every mapping with the authenticated linked-list model, so
 // reads are unforgeable (exclusion-proven on absent) = Solidity storage parity, WITHOUT naming each mapping.

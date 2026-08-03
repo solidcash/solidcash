@@ -50,7 +50,7 @@ describe('sorted bool mapping nullify (Solidity delete parity)', () => {
     expect((await call('set', 30n, true)).txid).toBeDefined();
     await expect(call('needTrue', 30n)).resolves.toBeDefined();
     await expect(call('needFalse', 30n)).rejects.toThrow(
-      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
 
     // set flag[30]=false -> NULLIFY: reads false (entry stays in the list, value emptied), needFalse passes.
@@ -58,7 +58,7 @@ describe('sorted bool mapping nullify (Solidity delete parity)', () => {
     expect(await present(30n)).toBe(true); // still physically present (nullified, not removed)
     await expect(call('needFalse', 30n)).resolves.toBeDefined();
     await expect(call('needTrue', 30n)).rejects.toThrow(
-      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
 
     // set true again, then delete flag[30] -> also NULLIFY to false; entry still present, reads false.
@@ -71,7 +71,7 @@ describe('sorted bool mapping nullify (Solidity delete parity)', () => {
     // An absent key reads false via the C2 bracket (needFalse passes, needTrue reverts) - omission-proof.
     await expect(call('needFalse', 99n)).resolves.toBeDefined();
     await expect(call('needTrue', 99n)).rejects.toThrow(
-      /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
   });
 });

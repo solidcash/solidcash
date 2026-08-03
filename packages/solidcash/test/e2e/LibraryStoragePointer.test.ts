@@ -32,6 +32,6 @@ describe('library function with a struct storage pointer (inlined)', () => {
   it('a wrong expected value fails (the inlined read actually ran)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
     await sc.put(2n, 7n).send();
-    await expect(sc.verify(2n, 9n)).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    await expect(sc.verify(2n, 9n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

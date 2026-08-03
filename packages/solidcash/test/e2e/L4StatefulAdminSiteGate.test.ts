@@ -14,7 +14,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 /**
  * X163 - THE FOUR STATEFUL LIFECYCLE-ADMIN BROADCAST SITES, and the fifth that is deleted.
  *
- * WHAT THE INHERITED MEASUREMENT COULD NOT SETTLE. `layer3-gatesite-probe.ts` attributed every broadcast the
+ * WHAT THE INHERITED MEASUREMENT COULD NOT SETTLE. `message-bus-gatesite-probe.ts` attributed every broadcast the
  * SDK e2e population makes to its `src/` frame. These four sites saw 14 sends across 11 tests, 13 of which the
  * provider accepted, and the byte rules refused none of them. A previous worker declined to gate them on that,
  * correctly: 0% over 13 net-ok sends is not the evidence 2,316 sends gave for the submit path. At that sample
@@ -50,7 +50,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * THE MECHANISM NO LONGER LIVES IN `StatefulContract.ts` (X186). `TransactionBuilder.send` has the same window
  * on two paths - a covenant input is debugged best-effort and SWALLOWED, a custom unlocker is not debugged at
- * all - so `covenantObjectionOf` and the routed gate moved to `layer3/preflight.ts` and `send` now shares them.
+ * all - so `covenantObjectionOf` and the routed gate moved to `message-bus/preflight.ts` and `send` now shares them.
  * Rows 1-5e are unchanged and byte-identical; row 5f keeps only the half whose subject is these four sites,
  * and `X186SendCovenantAbsorption.test.ts` owns the per-file structural count.
  *
@@ -211,7 +211,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       recipient: d.p2pkh.address,
       fee: total - 100n,
     }));
-    expect(message).toMatch(/layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(message).toMatch(/\[policy\] output-dust at output 0/);
     expect(message).toMatch(
       /100 satoshis is 476 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
@@ -295,7 +295,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
   it('2. split REFUSES a below-dust change output, quoting the arithmetic', async () => {
     const d = await deploy();
     const message = await errorOf(() => staticSplit(d, 100n));
-    expect(message).toMatch(/layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(message).toMatch(/\[policy\] output-dust at output 3/);
     expect(message).toMatch(
       /100 satoshis is 476 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
@@ -361,7 +361,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       fee: consumedSats + extra.satoshis - 100n,
       maxFee: 200_000n,
     }));
-    expect(message).toMatch(/layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(message).toMatch(/\[policy\] output-dust at output 1/);
     expect(message).toMatch(
       /100 satoshis is 476 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
@@ -413,7 +413,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
       .withNewMintingAmount(1_200n)
       .withSplitFee(fee)
       .send());
-    expect(message).toMatch(/layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(message).toMatch(/messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(message).toMatch(/\[policy\] output-dust at output 3/);
     expect(message).toMatch(
       /100 satoshis is 476 short of the 576-satoshi dust threshold for a 44-byte output \(3 \* \(44 \+ 148\)\)/,
@@ -502,7 +502,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // covenant line in row 5 is attributable to the signature and to nothing else about that shape.
     const d = await deploy();
     const dustOnly = await errorOf(() => staticSplit(d, 100n, alicePriv));
-    expect(dustOnly).toMatch(/^layer3: finalized transaction refused by 1 byte rule\(s\)/);
+    expect(dustOnly).toMatch(/^messageBus: finalized transaction refused by 1 byte rule\(s\)/);
     expect(dustOnly, 'a covenant objection appeared without a broken covenant').not.toMatch(/\[covenant\]/);
     expect(dustOnly).toMatch(/\[policy\] output-dust at output 3/);
   }, 300_000);
@@ -606,7 +606,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
 
   it('5f. the four sites route through the shared helper, which no longer lives in this file', () => {
     // X186 MOVED THE MECHANISM AND THE FULL STRUCTURAL ROW WITH IT. `covenantObjectionOf` and the routed gate
-    // (now `assertFinalizedBytesWithCovenant`) live in `layer3/preflight.ts` because `TransactionBuilder.send`
+    // (now `assertFinalizedBytesWithCovenant`) live in `message-bus/preflight.ts` because `TransactionBuilder.send`
     // became their second caller, and the per-file call counts are asserted in
     // `X186SendCovenantAbsorption.test.ts` row 5b. What stays here is the half whose subject is these four
     // sites: they route, and none of them calls the bare gate.
@@ -617,7 +617,9 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
         && !/^import|^\s{2}\w+,?$/.test(line));
     expect(call('assertFinalizedBytesWithCovenant'), 'routed sites').toHaveLength(4);
     expect(call('assertFinalizedTransactionBytes'), 'bare gate calls').toHaveLength(0);
-    expect(source).toMatch(/import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/layer3\/preflight\.js'/);
+    expect(source).toMatch(
+      /import \{[\s\S]*?assertFinalizedBytesWithCovenant[\s\S]*?\} from '\.\.\/message-bus\/preflight\.js'/,
+    );
   });
 
   /* ---------------------------------------------------------------------------------------------------- */
@@ -631,7 +633,7 @@ describe('X163 - the stateful lifecycle-admin broadcast sites decide their final
     // test happens to reach; that is exactly how this one stayed invisible.
     const root = fileURLToPath(new URL('../../src/', import.meta.url));
     const files = [
-      'TransactionBuilder.ts', 'layer3/preflight.ts',
+      'TransactionBuilder.ts', 'message-bus/preflight.ts',
       'stateful/StatefulContract.ts', 'stateful/StatefulTransactionBuilder.ts',
     ];
     const callSites: string[] = [];

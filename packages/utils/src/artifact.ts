@@ -7,7 +7,7 @@ export type ImportResolverFn = (importPath: string, currentFile: string) => Reso
 
 export interface CompilerOptions {
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
-  __layer3VerifierProgram?: {
+  __messageBusVerifierProgram?: {
     verifyFunctionId: number;
     inputCount: number;
     inputs: readonly AbiInput[];
@@ -186,7 +186,7 @@ export interface AbiFunction {
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
-  /** Compiler-owned SCB1 graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
+  /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
   graphBlockhashOracle?: {
     inputBaseParameter: '__internal__blockhashInputIndex';
     rowCount: number;
@@ -652,7 +652,7 @@ export interface InvocationAnalysisFunction {
 
 export interface InvocationAnalysisArtifact {
   version: 1;
-  /** Immutable transcript protocols this compiler can summarize. */
+  /** Immutable call-manifest protocols this compiler can summarize. */
   protocolVersions: readonly number[];
   functions: readonly InvocationAnalysisFunction[];
   components: readonly {
@@ -663,11 +663,11 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Largest SCB1 message-bus blob any generated covenant admits, in bytes (X106).
+ * Largest message-bus batch message-bus blob any generated covenant admits, in bytes (X106).
  *
  * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
  * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
- * layer3 graph generator enforces the same bound while framing each participant's carrier rows. Both
+ * messageBus graph generator enforces the same bound while framing each participant's message-envelope rows. Both
  * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
  *
@@ -678,10 +678,10 @@ export interface InvocationAnalysisArtifact {
  */
 export const MAX_MESSAGE_BUS_BLOB_BYTES = 223;
 
-/** Shared wire constants for the controllerless single-transaction message bus. */
-export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
-export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
-export const SINGLE_TX_BUS_MAX_ROWS = 24;
+/** Shared wire constants for the atomic single-transaction message bus. */
+export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
+export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 24;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
 export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
   'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
@@ -716,17 +716,17 @@ export interface Artifact {
     minimumRows?: number;
     maximumRows: number;
     maximumBlobBytes: number;
-    /** Compiler-published admission and carrier contract for controllerless composition. */
-    singleTransactionBus?: {
-      domain: typeof SINGLE_TX_BUS_DOMAIN_HEX;
+    /** Compiler-published admission and message-envelope contract for atomic composition. */
+    atomicMessageBus?: {
+      domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
       /** The final verifier input carries the canonical frame authenticated by every participant binder. */
-      carrier: {
+      messageEnvelope: {
         region: 'participant-verifiers';
         canonicalInput: 'final-participant-verifier';
         unlockingPush: 0;
       };
-      maximumParticipants: typeof SINGLE_TX_BUS_MAX_PARTICIPANTS;
-      maximumRows: typeof SINGLE_TX_BUS_MAX_ROWS;
+      maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
+      maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
     };
     /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
     verifierProgram?: {
@@ -754,13 +754,13 @@ export interface Artifact {
       eligible: boolean;
       rejectionReason?: string;
       rejectionCode?:
-      | 'SCB_UNSUPPORTED_CONSTRUCT'
-      | 'SCB_FUTURE_RESULT_DEPENDENCY'
-      | 'SCB_EXTERNAL_RECURSION_UNBOUNDED'
-      | 'SCB_DUPLICATE_SETTLEMENT_AUTHORITY'
-      | 'SCB_FOREIGN_INTERMEDIATE_STATE_READ'
-      | 'SCB_STACK_CONTEXT_UNPRESERVABLE'
-      | 'SCB_EFFECT_UNSUMMARIZABLE';
+      | 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'
+      | 'MESSAGE_BUS_FUTURE_RESULT_DEPENDENCY'
+      | 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED'
+      | 'MESSAGE_BUS_DUPLICATE_SETTLEMENT_AUTHORITY'
+      | 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ'
+      | 'MESSAGE_BUS_STACK_CONTEXT_UNPRESERVABLE'
+      | 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE';
       rejectionContext?: {
         handlerId?: number;
         functionName: string;
@@ -768,7 +768,7 @@ export interface Artifact {
         sourceLocation?: { line: number; column: number };
         callChain?: readonly string[];
       };
-      /** OP_INVOKE body covered by CHECKSIG when this handler is called from SCB1. */
+      /** OP_INVOKE body covered by CHECKSIG when this handler is called from message-bus batch. */
       signatureBytecode?: string;
       batchKeyWitnesses?: {
         routeInput: string;

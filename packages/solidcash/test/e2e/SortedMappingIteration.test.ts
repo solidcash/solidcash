@@ -23,7 +23,7 @@ const SRC = `contract C() {
 }`;
 
 const ZERO = slotValueToBytes(0n);
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // HEAD + entries chained in ascending-SLOT order (H(key) masked), tail nextKey = 0. Index 0 is the HEAD; 1..N are
 // the entries by ascending slot, each nextKey pointing to the following entry's slot (the last -> 0).

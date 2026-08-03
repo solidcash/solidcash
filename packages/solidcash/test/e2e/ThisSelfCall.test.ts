@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // `this.f(args)` is an external self-call in Solidity; on BCH the covenant is the contract itself, so it
 // resolves to a direct call to the contract's own function `f`. Verified end-to-end: a public helper called

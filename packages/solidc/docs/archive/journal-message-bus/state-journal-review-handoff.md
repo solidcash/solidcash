@@ -2,7 +2,7 @@
 
 > Archived evidence. Here, **journal** means transaction-local deferred state, **message bus** means atomic
 > multi-participant composition, and **carrier** means the canonical per-transaction transcript. Current semantics
-> are in `../../state-journal-protocol.md` and `../../layer3-single-transaction-bus-protocol.md`.
+> are in `../../state-journal-protocol.md` and `../../message-bus-single-transaction-bus-protocol.md`.
 
 Date: 2026-07-24  
 Branch: `codex/state-bus-research`  
@@ -119,7 +119,7 @@ collection/dynamic over-budget build rejection to demonstrate the end-to-end pat
 
 The event and result mutations are covenant-oriented. The value mutation preserves total satoshis
 to avoid a trivial conservation failure. The missing-caller test removes input zero after locating a
-four-byte non-SCB1 selector, but removal also shifts transaction indices. Determine whether this
+four-byte non-message-bus batch selector, but removal also shifts transaction indices. Determine whether this
 adequately proves caller authentication or merely guarantees an unrelated structural failure. If
 weak, replace it with a valid alternate-input/caller forgery that preserves all unrelated structure.
 

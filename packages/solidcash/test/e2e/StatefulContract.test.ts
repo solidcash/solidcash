@@ -1,16 +1,16 @@
 import { compileString } from '../direct-compile.js';
-import { compileString as compileLayer3String } from 'solidc';
+import { compileString as compileMessageBusString } from 'solidc';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
   StateReader, SignatureTemplate, StatefulContract,
   StatefulTransactionBuilder,
   getDataNftAddress, createDataNftUnlocker, createDestroyDataNftUnlocker, getContractState,
-  getLayer3VerifierLockingBytecode,
+  getMessageBusVerifierLockingBytecode,
 } from '../../src/index.js';
 import {
   buildInitialStateCommitments, buildPushdataCommitment, parsePushdataCommitment,
-  buildDataNftCovenantBytecode, layer3VerifierCommitment,
+  buildDataNftCovenantBytecode, messageBusVerifierCommitment,
 } from '@solidcash/utils';
 import {
   alicePkh,
@@ -867,8 +867,8 @@ describe('StatefulContract.deploy()', () => {
   const deployP2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider: deployProvider });
   const zeroLabel = new Uint8Array(4);
 
-  it('mints N independently identified Layer-3 verifier covenants in genesis', async () => {
-    const verifierArtifact = compileLayer3String(`
+  it('mints N independently identified message bus verifier covenants in genesis', async () => {
+    const verifierArtifact = compileMessageBusString(`
       interface IVerifierTarget { function ping(int value) returns (int); }
       contract VerifierPool(address target) {
         function run(int value) public {
@@ -888,10 +888,10 @@ describe('StatefulContract.deploy()', () => {
       fundingUtxo,
       funder: deployP2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
       changeAddress: deployP2pkh.address,
-      layer3VerifierCount: 3,
+      messageBusVerificationInputCount: 3,
     });
 
-    const expected = [0, 1, 2].map((instance) => binToHex(layer3VerifierCommitment(instance)));
+    const expected = [0, 1, 2].map((instance) => binToHex(messageBusVerifierCommitment(instance)));
     const verifiers = getTxOutputs(result.tx).filter((output) =>
       output.token?.category === result.categoryId
       && output.token.nft?.capability === 'mutable'
@@ -899,7 +899,7 @@ describe('StatefulContract.deploy()', () => {
     expect(verifiers.map((output) => output.token!.nft!.commitment)).toEqual(expected);
     expect(new Set(verifiers.map((output) => output.to))).toHaveLength(1);
 
-    const verifierLock = getLayer3VerifierLockingBytecode(
+    const verifierLock = getMessageBusVerifierLockingBytecode(
       result.contract.inner, result.categoryId, result.contract.inner.addressType,
     );
     const [verifierUtxo] = await deployProvider.getUtxosForLockingBytecode(verifierLock);

@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling the value of a parenthesised callee: a ternary selecting a function pointer, then calling it.
 const SRC = `contract C {
   function inc(uint x) internal pure returns (uint) { return x + 1; }

@@ -206,7 +206,7 @@ import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
 // Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
 //
 // X28 measured whether this can be split into a compile-time-sized LOOP leg and a conservative CHUNK leg, and
-// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__scb1`, and every reservation
+// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__message_bus1`, and every reservation
 // measured - 18 of 2,283 layout computations in the compiler suite, 111 of 6,881 in the SDK suite - fired
 // through the chunk term. No loop term fired on any function that reached the reservation. See the note there.
 //
@@ -1122,7 +1122,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
 
     // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
-    // their transcript binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
+    // their callManifest binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
     // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
     // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
     // visited, because both need per-handler metadata assigned during that function's own visit.
@@ -1161,7 +1161,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
       || [
-        '__internal__graphTranscript',
+        '__internal__graphCallManifest',
         '__internal__graphParticipantOffset',
         '__internal__graphFixedSize', '__internal__graphBlockSize',
         '__internal__graphEmissions',
@@ -1564,7 +1564,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.usesMsgSender = true;
         // Graph handlers receive logical msg.sender from the caller vector
         // authenticated by the participant mutual verifier. Neither the cloned
-        // handler nor its compiler-owned SCB1 wrapper may acquire the
+        // handler nor its compiler-owned message-bus batch wrapper may acquire the
         // unrelated direct-route category witness.
         if (!node.graphEmissionHandler && !node.messageBusRoute) {
           const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
@@ -1818,7 +1818,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
       this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
-      // A graph SCB1 route invokes compiler-owned clones whose foreign calls are authenticated against the
+      // A graph message-bus batch route invokes compiler-owned clones whose foreign calls are authenticated against the
       // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
       // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
       if (node.messageBusRoute) {
@@ -1827,7 +1827,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
       if (externalCallSlots.length > 0) {
         const logicalCallSlots = [...externalCallSlots];
-        // A synthesized SCB1 route already assigns physical owner blocks and logical rows. Applying the
+        // A synthesized message-bus batch route already assigns physical owner blocks and logical rows. Applying the
         // owner-local Release-5 collapse while that route is analysed would collapse the source handler's rows
         // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
         // therefore runs on source entry points only; their synthesized local or graph route consumes the
@@ -1848,7 +1848,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
           for (const slot of logicalCallSlots) {
             // Single-method interfaces normally omit selector verification, so
-            // their slots have no baked selector yet. SCB1 rows always carry
+            // their slots have no baked selector yet. message-bus batch rows always carry
             // the original direct selector. Infer it without mutating the slot:
             // discovery must leave every ordinary/unselected call byte-identical.
             if (!slot.compileTimeSelector) {
@@ -1973,7 +1973,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
         if (node.graphEmissionHandler) {
           // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
-          // the imported-file and generated-source caveats. The message text is unchanged: a `__scb_graph_*`
+          // the imported-file and generated-source caveats. The message text is unchanged: a `__message_bus_graph_*`
           // clone keeps the location of the function it was cloned from, so the position names the user's own
           // function even though the name is synthesized.
           if (logicalCallSlots.length < 1
@@ -2347,7 +2347,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
     if (this.hasExplicitDelegatecall(node.body) && !node.isEntryPoint) {
       throw new SolidcDiagnosticError(
-        'SCB_DELEGATE_CONTEXT_UNPRESERVABLE',
+        'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE',
         `internal function '${node.name}' contains delegatecall, whose proxy input witness cannot be preserved `
           + 'across an internal invocation',
         {
@@ -2410,8 +2410,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     //  - 'loop': refused outright. The loop reuses one pinned input and one block slot per iteration, so N source
     //    delegations settle as ONE - a silent miscompile with no honest covenant to emit.
     //  - 'conditional': admitted, but codegen must preserve the proxy's own state on the not-taken path.
-    // Scope: the single-callsite pin only. A compiler-synthesized SCB1 route / graph handler dispatches its rows
-    // through a loop by design and derives each delegate index from its OWN per-row block slot rather than one
+    // Scope: the single-callsite pin only. A compiler-synthesized message-bus route or graph handler dispatches
+    // its rows through a loop and derives each delegate index from its own per-row block slot rather than one
     // shared slot, so neither the collapse nor the not-taken-path hole applies there. Same exclusion as the
     // witness injection above. `L.f()` sugar and split forwarders are NOT excluded: they use one reserved slot
     // per callsite exactly like a hand-written delegatecall, so both hazards apply verbatim (C1/piece-7).
@@ -8994,7 +8994,7 @@ export default class SymbolTableTraversal extends AstTraversal {
    * opaque `__raw__` graph edge the RETURNING spelling already uses, with no result binding.
    *
    * The two spellings of one callsite were represented differently: the returning form became a `__raw__`
-   * external-call slot (a transcript row), the void form stayed a `LowLevelCallStatementNode` whose co-spend is
+   * external-call slot (a callManifest row), the void form stayed a `LowLevelCallStatementNode` whose co-spend is
    * a `lowLevelCall` block slot. A graph emission handler shares the hidden route's PHYSICAL block layout, which
    * reserves no such slot for it, so the void form reached code generation and leaked the internal
    * `Block slot not found: lowLevelCall[0]`.
@@ -9078,7 +9078,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (transfers === 0) continue;
       if (!fn.graphEmissionHandler && fn.messageBusEligible !== true) continue;
       throw new GraphEmissionEffectError(
-        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''), 'a token-container operation',
+        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''), 'a token-container operation',
       );
     }
   }
@@ -9104,7 +9104,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (direct === declared) return true;
     if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {
       throw new GraphEmissionEffectError(
-        fn, fn.name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
         'a value call option alongside an emit or transfer',
       );
     }
@@ -9112,11 +9112,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
-   * X29. Plan the owner-local effect frames the SCB1 route owes its effect-carrying graph emission handlers.
+   * X29. Plan the owner-local effect frames the message-bus batch route owes its effect-carrying graph emission handlers.
    *
    * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
-   * recompute its outgoing edges and compare them against the authenticated transcript. Flattening it makes
-   * `__scb1` the current function at code generation and every edge generates unbound. But a handler carrying
+   * recompute its outgoing edges and compare them against the authenticated callManifest. Flattening it makes
+   * `__message_bus1` the current function at code generation and every edge generates unbound. But a handler carrying
    * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
    * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
    *
@@ -9155,7 +9155,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (count >= (route.messageBusMaximumRows ?? count)) continue;
       throw new GraphEmissionEffectError(
         contract.functions.find((fn) => fn.name === name) ?? route,
-        name.replace(/^__scb_(graph|resource|handler|array)_/, ''),
+        name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
         'an effect on a route with fewer dispatch sites than rows',
       );
     }
@@ -9364,7 +9364,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'returnEvent', offset: offset++ });
     }
 
-    // Low-level call slots. In a balanced SCB1 block, a delegate is a real
+    // Low-level call slots. In a balanced message-bus batch block, a delegate is a real
     // co-spent covenant paired with its preserved output just like other
     // low-level callees; direct wrappers continue to use their positional
     // delegate-input witness.
@@ -9413,9 +9413,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     // body cannot see their dynamic state accesses. Reserve its balanced trailing region whenever the
     // contract has dynamic storage: concrete chunks occupy the leading trailing slots and funding/change
     // pairs fill the remainder, keeping the next participant's block relocatable and index-stable.
-    if (node.name === '__scb1' && dynamicNames.size > 0) touchesDynamicState = true;
-    if (node.name === '__scb1' && !touchesDynamicState) {
-      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__scb_dynamic_'));
+    if (node.name === '__message_bus1' && dynamicNames.size > 0) touchesDynamicState = true;
+    if (node.name === '__message_bus1' && !touchesDynamicState) {
+      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__message_bus_dynamic_'));
       if (dynamicHelpers.length > 0) touchesDynamicState = true;
       for (const helper of dynamicHelpers) {
         scanDynamicState(helper.body);
@@ -9456,7 +9456,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // returnEvent `-1` adjustment and `emitTrailingBlockBase`) that flip the moment the direct route declares a
     // region. Both sides moved the chunk consistently from output 2 to 3 in the measurement, so that pairing is
     // NOT the cause of (2); which covenant check fails was NOT isolated.
-    const needsTrailingRegion = node.name === '__scb1' && (touchesDynamicState
+    const needsTrailingRegion = node.name === '__message_bus1' && (touchesDynamicState
       || (node.dynamicReads?.length ?? 0) > 0
       || (node.dynamicWrites?.length ?? 0) > 0
       || (node.entryLoopWrites?.length ?? 0) > 0

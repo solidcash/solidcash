@@ -12,7 +12,7 @@ export default defineConfig({
     include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
     exclude: ['**/types/**'],
     globals: true,
-    setupFiles: ['./vitest.setup.ts', './test/journal-message-bus/e2e/layer3-broadcast-probe.ts'],
+    setupFiles: ['./vitest.setup.ts', './test/journal-message-bus/e2e/message-bus-broadcast-probe.ts'],
     testTimeout: 900_000,
     hookTimeout: 900_000,
   },

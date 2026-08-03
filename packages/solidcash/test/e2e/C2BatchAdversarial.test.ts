@@ -24,17 +24,17 @@ describe('C2 atomic batch adversarial soundness', () => {
     const wrongProof = await deploy();
     wrongProof._setRawC2BatchWitness(0, { proof: 2n }); // points at the other logical/funder block slot
     await expect(wrongProof.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongNext = await deploy();
     wrongNext._setRawC2BatchWitness(1, { next: new Uint8Array(32) });
     await expect(wrongNext.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongPredOut = await deploy();
     wrongPredOut._setRawC2BatchWitness(0, { predOut: 1n }); // collides with a target output
     await expect(wrongPredOut.getFunction('batch')(1n, 2n).send())
-      .rejects.toThrow(/^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
+      .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
   });
 
   it('rejects link, value, capability, and orphan-output tampering', async () => {

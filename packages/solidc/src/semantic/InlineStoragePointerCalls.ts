@@ -187,10 +187,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
-      // A graph emission handler executes behind OP_INVOKE precisely so its hidden transcript/caller/result
-      // frame authenticates every reached edge. Flattening one into __scb1 makes __scb1 the current function at
-      // code generation, so its external calls take the ordinary-call path and no emission row is ever
-      // recomputed and compared - the transcript can then state any target and any arguments. Same guard, and
+      // A graph emission handler executes behind OP_INVOKE precisely so its hidden callManifest/caller/result
+      // frame authenticates every reached edge. Flattening one into __message_bus1 makes that the current
+      // function at code generation, so its external calls take the ordinary-call path and no emission row is ever
+      // recomputed and compared - the callManifest can then state any target and any arguments. Same guard, and
       // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
       // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
       //
@@ -209,9 +209,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       //
       // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
       // merely reads msg.sender / msg.value in a graph route, and such a clone has no external call for the
-      // transcript to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
+      // callManifest to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
       if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
-        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__scb_(graph|resource)_/, ''),
+        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__message_bus_(graph|resource)_/, ''),
           this.hasTokenContainerEffects(fn) ? 'a token-container operation' : 'a storage-pointer parameter');
       }
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
@@ -326,7 +326,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       return false;
     }
     // Effect-carrying clones are kept ONLY when they have an outgoing edge, which is the whole defect surface:
-    // an edge is what a transcript can misstate. `graphTailHandlers` also admits an edge-free handler that
+    // an edge is what a callManifest can misstate. `graphTailHandlers` also admits an edge-free handler that
     // merely reads msg.value or msg.sender (Release 4's value batch is exactly that), and flattening one loses
     // nothing while un-flattening it moves its transfer covenant behind OP_INVOKE - measured to break the SDK's
     // auto-derivation of the transfer outputs. Keep every edge-free clone on the established path.

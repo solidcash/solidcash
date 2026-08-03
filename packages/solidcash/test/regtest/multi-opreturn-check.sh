@@ -1,6 +1,6 @@
 #!/bin/sh
 # Task 5 regtest check: does the real BCHN node's mempool policy accept a transaction with MULTIPLE
-# OP_RETURN outputs (the layer-3 transcript uses two - msg.sender + result records)?
+# OP_RETURN outputs (the message-bus transcript uses two - msg.sender + result records)?
 # Requires the regtest stack up (docker-compose.regtest.yml). Prints testmempoolaccept -> expect allowed:true.
 set -e
 CTR="${BCHN_CONTAINER:-cashscript-bchn-1}"

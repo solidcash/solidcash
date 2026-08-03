@@ -8,7 +8,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Locks the FLIP: a plain mapping compiled with NO storage options is C2 by DEFAULT (exclusion-proof reads =
 // Solidity storage parity). Exercises the full lifecycle under the default: deploy (HEAD auto-minted) -> write ->

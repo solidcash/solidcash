@@ -63,7 +63,7 @@ describe('whole-struct <-> mapping-entry copies (runtime)', () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.readIntoStateVar().send();
-    await expect(sc.checkStateVarWrong().send()).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    await expect(sc.checkStateVarWrong().send()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
   it('copies a whole entry into another mapping entry', async () => {
     const sc = await mk(SRC);

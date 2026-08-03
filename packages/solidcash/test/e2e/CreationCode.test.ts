@@ -6,7 +6,7 @@ import { hexToBin } from '@bitauth/libauth';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // type(C).creationCode returns the child contract's compiled redeem script (BCH has no separate
 // creation vs runtime code). The factory recomputes against the bytes the child compiles to, so the

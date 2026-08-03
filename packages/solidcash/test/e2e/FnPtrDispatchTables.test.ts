@@ -7,7 +7,9 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 
-const WRONG_DISPATCH_PREFLIGHT = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const WRONG_DISPATCH_PREFLIGHT = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 
 describe('fixed-method table', () => {
   // A permissionless callee (no checkSig) so it can be co-spent by the table covenant.

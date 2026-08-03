@@ -3,7 +3,7 @@ import { asmToBytecode } from '@solidcash/utils';
 import { describe, expect, it, vi } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import {
-  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, layer3,
+  Contract, SignatureTemplate, StatefulContract, TransactionBuilder, messageBus,
 } from '../../src/index.js';
 import MockNetworkProvider from '../../src/network/MockNetworkProvider.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -30,7 +30,7 @@ describe('X210 - the ordinary stateful submit path verifies finalized covenants 
   it('accepts an honest finalized transaction', async () => {
     const builder = await builderFor(Uint8Array.of(0x51));
     const transaction = builder.buildLibauthTransaction(true);
-    layer3.assertFinalizedTransactionCovenants(builder, transaction);
+    messageBus.assertFinalizedTransactionCovenants(builder, transaction);
     expect(transaction.inputs).toHaveLength(1);
     expect(transaction.outputs).toHaveLength(1);
     expect([...transaction.inputs[0].unlockingBytecode]).toEqual([]);
@@ -39,17 +39,17 @@ describe('X210 - the ordinary stateful submit path verifies finalized covenants 
 
   it('refuses a raised VM failure at its input index', async () => {
     const builder = await builderFor(Uint8Array.of(0x00, 0x69));
-    expect(() => layer3.assertFinalizedTransactionCovenants(
+    expect(() => messageBus.assertFinalizedTransactionCovenants(
       builder, builder.buildLibauthTransaction(true),
-    )).toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    )).toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('refuses the non-raised falsy-top failure class', async () => {
     const builder = await builderFor(Uint8Array.of(0x00));
-    expect(() => layer3.assertFinalizedTransactionCovenants(
+    expect(() => messageBus.assertFinalizedTransactionCovenants(
       builder, builder.buildLibauthTransaction(true),
     )).toThrow(
-      'layer3: BCH-2026 preflight failed at input 0: Unsuccessful evaluation: completed with a '
+      'messageBus: BCH-2026 preflight failed at input 0: Unsuccessful evaluation: completed with a '
       + 'non-truthy value on top of the stack. Top stack item: "".',
     );
   });
@@ -79,7 +79,7 @@ describe('X210 - the ordinary stateful submit path verifies finalized covenants 
       const submit = vi.spyOn(network, 'sendRawTransaction');
       submit.mockClear(); // deployment is outside the subject
       await expect(deployed.contract.call.setIf(76n).send()).rejects.toThrow(
-        'layer3: BCH-2026 preflight failed at input 0: Unsuccessful evaluation: completed with a '
+        'messageBus: BCH-2026 preflight failed at input 0: Unsuccessful evaluation: completed with a '
         + 'non-truthy value on top of the stack. Top stack item: "".',
       );
       expect(submit).not.toHaveBeenCalled();

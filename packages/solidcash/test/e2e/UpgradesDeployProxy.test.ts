@@ -338,7 +338,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
 
     const outcome = await (proxy as any).register(5n).send()
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toBe('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    expect(outcome).toBe('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     // Nothing landed: `count` is untouched and the collection still holds only its HEAD node.
     expect((await (proxy.proxy as any).getState()).count).toBe(0n);
     const categoryId = proxy.proxy.categoryId!;

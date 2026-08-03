@@ -5,7 +5,7 @@ import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Solidity-compat narrowing casts: bytes20(address) / uint160(address) extract the embedded 20-byte hash
 // (the P2PKH pubkey-hash) from a variable-length BCH address. See docs/ecrecover.md and the cast warning.

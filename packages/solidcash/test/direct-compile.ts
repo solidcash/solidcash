@@ -9,11 +9,11 @@ type MultiOptions = NonNullable<Parameters<typeof compileStringMultiRaw>[1]>;
 type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 
 /**
- * Compile fixtures which exercise the pre-SCB1 direct transaction APIs.
+ * Compile fixtures which exercise the pre-message-bus batch direct transaction APIs.
  *
- * These suites verify language and SDK behavior outside Layer 3. Controllerless
+ * These suites verify language and SDK behavior outside message bus. Atomic
  * composition tests deliberately import the production compiler instead so the
- * inferred SCB1 route remains under test there.
+ * inferred message-bus batch route remains under test there.
  */
 export const compileString = (
   source: string, options: StringOptions = {},

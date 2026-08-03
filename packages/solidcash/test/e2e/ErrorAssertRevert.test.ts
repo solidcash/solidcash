@@ -3,8 +3,8 @@ import { SignatureTemplate, getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
-const nullFail = 'layer3: BCH-2026 preflight failed at input 0: Program failed a signature verification '
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const nullFail = 'messageBus: BCH-2026 preflight failed at input 0: Program failed a signature verification '
   + 'with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.';
 
 // Each test compiles its inline source with { forceStateful: true } and deploys directly, so the spend is

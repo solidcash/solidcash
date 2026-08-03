@@ -12,7 +12,7 @@ const utxo = (tag: number, token = false): UnlockableUtxo => ({
   ...(token && { token: { category: '11'.repeat(32), amount: 0n, nft: { capability: 'mutable' as const, commitment: '' } } }),
 });
 
-describe('SCB1 graph blockhash physical assembly', () => {
+describe('message-bus batch graph blockhash physical assembly', () => {
   it('places active reads at sparse row-band slots and leaves inactive slots to funders', () => {
     const master = utxo(1, true);
     const active0 = utxo(2, true);

@@ -4,7 +4,7 @@ import { ResolvedImport } from '@solidcash/utils';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const inputZeroVerifyFailure = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // C3 linearization. In a diamond (D is B, C ; B is A ; C is A) the MRO is [D, B, C, A], so `super`
 // in B must reach the *sibling* C before the shared ancestor A - cooperative super. The accumulated

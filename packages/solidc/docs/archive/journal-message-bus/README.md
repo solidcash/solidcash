@@ -4,8 +4,8 @@ These files preserve dated measurements, audit findings, and implementation chro
 current product documentation. Update the canonical documents instead:
 
 - `../../state-journal-protocol.md` for journal semantics;
-- `../../layer3-single-transaction-bus-protocol.md` for the wire protocol;
-- `../../layer3-coverage-matrix.md` for supported behavior and proof obligations;
+- `../../message-bus-single-transaction-bus-protocol.md` for the wire protocol;
+- `../../message-bus-coverage-matrix.md` for supported behavior and proof obligations;
 - `../../journal-and-message-bus.md` and the website guides for user-facing behavior.
 
 The archive intentionally retains obsolete names when quoting historical implementations.

@@ -7,7 +7,7 @@ import {
 } from '@bitauth/libauth';
 import { createTxVerifier } from '@mem-cash/validation';
 import {
-  buildInitialStateCommitments, layer3VerifierCommitment, type StateLayout,
+  buildInitialStateCommitments, messageBusVerifierCommitment, type StateLayout,
 } from '@solidcash/utils';
 import { Output, Network, Utxo } from '../src/interfaces.js';
 import {
@@ -17,7 +17,7 @@ import {
   MockNetworkProvider, RegtestNetworkProvider, Contract, SignatureTemplate,
 } from '../src/index.js';
 import {
-  getDataNftAddress, getEntryNftAddress, getLayer3VerifierAddress, getTokenContainerAddress,
+  getDataNftAddress, getEntryNftAddress, getMessageBusVerifierAddress, getTokenContainerAddress,
 } from '../src/stateful/covenant-helpers.js';
 import { headSentinelCommitment } from '../src/stateful/SortedList.js';
 import {
@@ -56,27 +56,27 @@ export async function genesisStatefulMaster(
 
 /** Genesis an FT token and fund the contract's container address for that category. */
 export async function genesisFtContainer(
-  provider: TestProvider, contract: Contract, masterCategoryId: string, amounts: bigint[],
+  provider: TestProvider, contract: Contract, stateCategoryId: string, amounts: bigint[],
 ): Promise<{ category: string; address: string; utxos: Utxo[] }> {
   const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat) => {
-    const address = getTokenContainerAddress(contract, masterCategoryId, cat);
+    const address = getTokenContainerAddress(contract, stateCategoryId, cat);
     return amounts.map((amount) => ({ address, satoshis: 1200n, token: { amount } }));
   });
-  return { category: categoryId, address: getTokenContainerAddress(contract, masterCategoryId, categoryId), utxos };
+  return { category: categoryId, address: getTokenContainerAddress(contract, stateCategoryId, categoryId), utxos };
 }
 
 /** Genesis NFTs and fund the contract's container address for that category. */
 export async function genesisNftContainer(
-  provider: TestProvider, contract: Contract, masterCategoryId: string,
+  provider: TestProvider, contract: Contract, stateCategoryId: string,
   commitments: string[], capability: 'none' | 'mutable' | 'minting' = 'none',
 ): Promise<{ category: string; address: string; utxos: Utxo[] }> {
   const { categoryId, utxos } = await provider.addTokenUtxosDynamic((cat) => {
-    const address = getTokenContainerAddress(contract, masterCategoryId, cat);
+    const address = getTokenContainerAddress(contract, stateCategoryId, cat);
     return commitments.map((commitment) => ({
       address, satoshis: 1200n, token: { amount: 0n, nft: { capability, commitment } },
     }));
   });
-  return { category: categoryId, address: getTokenContainerAddress(contract, masterCategoryId, categoryId), utxos };
+  return { category: categoryId, address: getTokenContainerAddress(contract, stateCategoryId, categoryId), utxos };
 }
 
 // Unified mem-cash verifier for covenant build() output. skipFeePolicy skips the min-relay/absurd-fee
@@ -316,7 +316,7 @@ export async function setupStatefulUtxos(
   initialState: Record<string, any>,
   opts?: {
     masterSatoshis?: bigint; dataNftSatoshis?: bigint; saltContract?: boolean; categoryOverride?: string;
-    layer3VerifierCount?: number;
+    messageBusVerificationInputCount?: number;
     // Extra token UTXOs to genesis under the SAME category (e.g. a blockhash (n->hash) oracle NFT branded to
     // the contract). Receives the resolved categoryId; the seeded UTXOs are returned as `extraUtxos`.
     extraOutputs?: (categoryId: string) => Array<{ address: string; satoshis: bigint; token: any }>;
@@ -327,7 +327,7 @@ export async function setupStatefulUtxos(
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
   const sortedCollections = (stateLayout.collections ?? []).filter((collection) => collection.sorted);
-  const verifierCount = opts?.layer3VerifierCount ?? (contract.artifact.messageBus?.verifierProgram ? 1 : 0);
+  const verifierCount = opts?.messageBusVerificationInputCount ?? (contract.artifact.messageBus?.verifierProgram ? 1 : 0);
 
   // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
   // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the
@@ -362,11 +362,11 @@ export async function setupStatefulUtxos(
     }
     const verifierUtxos: Utxo[] = [];
     for (let i = 0; i < verifierCount; i++) {
-      verifierUtxos.push(await (provider as any).addUtxo(getLayer3VerifierAddress(pinnedContract, categoryId), {
+      verifierUtxos.push(await (provider as any).addUtxo(getMessageBusVerifierAddress(pinnedContract, categoryId), {
         txid: categoryId, vout: commitments.length + sortedCollections.length + i + 1, satoshis: dataNftSatoshis,
         token: {
           category: categoryId, amount: 0n,
-          nft: { capability: 'mutable', commitment: binToHex(layer3VerifierCommitment(i)) },
+          nft: { capability: 'mutable', commitment: binToHex(messageBusVerifierCommitment(i)) },
         },
       }));
     }
@@ -398,11 +398,11 @@ export async function setupStatefulUtxos(
         },
       })),
       ...Array.from({ length: verifierCount }, (_, i) => ({
-        address: getLayer3VerifierAddress(pinnedContract, categoryId),
+        address: getMessageBusVerifierAddress(pinnedContract, categoryId),
         satoshis: dataNftSatoshis,
         token: {
           amount: 0n,
-          nft: { capability: 'mutable' as const, commitment: binToHex(layer3VerifierCommitment(i)) },
+          nft: { capability: 'mutable' as const, commitment: binToHex(messageBusVerifierCommitment(i)) },
         },
       })),
       ...(opts?.extraOutputs ? opts.extraOutputs(categoryId) : []),

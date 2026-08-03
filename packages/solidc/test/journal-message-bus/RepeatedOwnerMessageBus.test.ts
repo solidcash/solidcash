@@ -17,7 +17,7 @@ describe('inferred message-bus batching for repeated external callees', () => {
     }
   `;
 
-  it('collapses two straight-line calls to the same owner into one physical SCB1 slot', () => {
+  it('collapses two straight-line calls to the same owner into one physical message-bus batch slot', () => {
     const artifact = compileString(SOURCE);
     const run = artifact.abi.find((fn) => fn.name === 'run');
     expect(run?.externalCalls).toHaveLength(1);

@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling a function pointer from an array element (`a[i]()`) dispatches to the element's target at runtime.
 const SRC = `contract C {
   function add1(uint x) internal pure returns (uint) { return x + 1; }

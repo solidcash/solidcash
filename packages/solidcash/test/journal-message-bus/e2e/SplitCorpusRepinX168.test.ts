@@ -3,7 +3,7 @@ import { describe, it } from 'vitest';
 import { compileFileSplit } from 'solidc';
 import {
   reportSplitCase, validateX168Manifest, writeSplitCorpusReport,
-} from './layer3-split-corpus-report-x168.js';
+} from './message-bus-split-corpus-report-x168.js';
 
 describe.skipIf(!process.env.L3_X168_CASES || !process.env.L3_X168_OUT)('X168 split-corpus re-pin', () => {
   it('derives every size and membership from current split artifacts', () => {

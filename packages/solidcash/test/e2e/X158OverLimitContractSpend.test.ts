@@ -3,7 +3,7 @@ import { decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { asmToBytecode } from '@solidcash/utils';
 import {
-  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, layer3,
+  Contract, MockNetworkProvider, SignatureTemplate, TransactionBuilder, messageBus,
 } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
 import type { Unlocker } from '../../src/interfaces.js';
@@ -252,8 +252,8 @@ contract Variadic() {
     // verdict, so no future caller can reach for it as a way to widen or narrow the rule.
     const { raw } = await bulkSpend(UNDER);
     const transaction = decodeTransactionUnsafe(hexToBin(raw));
-    const bare = layer3.assessFinalizedTransactionBytes(transaction);
-    const labelled = layer3.assessFinalizedTransactionBytes(transaction, [
+    const bare = messageBus.assessFinalizedTransactionBytes(transaction);
+    const labelled = messageBus.assessFinalizedTransactionBytes(transaction, [
       { contractName: 'Fabricated', redeemBytes: 99_999 },
     ]);
     expect(bare.admitted).toBe(true);

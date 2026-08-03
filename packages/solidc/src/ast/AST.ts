@@ -241,7 +241,7 @@ export interface TokenContainerAccessInfo {
   transferNftCount: number;   // number of transferNft() calls for this category
 }
 
-// X29. Owner-local effect frames an SCB1 route reserves on behalf of an effect-carrying graph emission handler
+// X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
 // it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
 // kind; the site ordinal rides to the shared subroutine as hidden context.
 export interface GraphEffectFrame {
@@ -354,11 +354,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
    * single entry, so sibling handlers over the same entry resolve to one pending value and one C2 slot. */
   forceCollectionJournalPool?: boolean;
-  // Compiler-only SCB1 physical route; dispatched on the reserved selector but
+  // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
   messageBusRoute?: boolean;
   messageBusMaximumRows?: number;
-  /** Compiler-owned SCB1 blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
   messageBusBlockhashReadWidth?: number;
   messageBusBlockhashReads?: {
     row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
@@ -389,7 +389,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
   // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
   delegatecallIsConditional: boolean = false;
-  /** Block-local delegate covenants reserved by an SCB1 graph clone/route. */
+  /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
   graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
@@ -403,7 +403,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   usesMsgSender?: boolean;
   usesMsgValue?: boolean;
   /**
-   * Compiler-owned SCB1 clone whose one supported tail external call is verified against the authenticated
+   * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
    * participant emission frame instead of performing ordinary physical-call settlement.
    */
   graphEmissionHandler?: boolean;
@@ -1107,7 +1107,7 @@ export class FunctionCallNode extends ExpressionNode {
   // Set when this call was desugared from `this.f(args)` (an external self-call). On BCH the covenant is the
   // contract itself, so calling an `external` function this way is allowed (the internal-call guard is bypassed).
   fromThisCall?: boolean;
-  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the SCB1 route body.
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the message-bus batch route body.
   // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
   // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
   // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
@@ -2016,7 +2016,7 @@ export interface ExternalCallSlot {
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
   // Release 5 repeated-callee grouping: several straight-line logical calls
-  // share this one physical callee block and are bound to its SCB1 blob.
+  // share this one physical callee block and are bound to its message-bus batch blob.
   batchInvocations?: {
     selector: Uint8Array;
     parameters: ExpressionNode[];

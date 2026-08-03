@@ -52,8 +52,8 @@ import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
 
 export type SolidcDiagnosticCode =
-  | 'SCB_RESERVED_SELECTOR_COLLISION'
-  | 'SCB_DELEGATE_CONTEXT_UNPRESERVABLE'
+  | 'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION'
+  | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
   | 'MESSAGE_BUS_REQUIRED'
   | 'INTERFACE_CONTRACT_BASE'
   | 'SPLIT_CLOSURE_CAPACITY'
@@ -79,7 +79,7 @@ export class SolidcDiagnosticError extends Error {
  * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
  * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
  * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
- * `Undefined reference to symbol __scb_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
+ * `Undefined reference to symbol __message_bus_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
  * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
  */
 export function generatedSourceCaveat(location?: Location): string {
@@ -146,7 +146,7 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
  * X119. A graph handler whose call shape route synthesis cannot lower.
  *
  * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
- * SYNTHESIZED handler (`__scb_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * SYNTHESIZED handler (`__message_bus_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
  * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
  * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
  * caveats the same way every other diagnostic here does.
@@ -1270,7 +1270,7 @@ export class UndefinedExternalStateVariableError extends SolidCashError {
 export class UnsupportedExternalOutStateCollectionError extends SolidCashError {
   constructor(node: Node, interfaceName: string, collectionName: string, type: Type) {
     super(node, `External outState collection '${interfaceName}.${collectionName}' has unsupported type '${type}'. `
-      + 'Transcript v1 supports mapping entries; dynamic and fixed arrays require an authenticated '
+      + 'CallManifest v1 supports mapping entries; dynamic and fixed arrays require an authenticated '
       + 'element/chunk reconstruction backend');
   }
 }
@@ -1378,7 +1378,7 @@ export class ContractTypeConstructorArgCountError extends SolidCashError {
  */
 export class UnboundReturnCallError extends SolidCashError {
   constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
-    const routed = /^__scb/.test(functionName);
+    const routed = /^__message_bus/.test(functionName);
     super(
       node,
       `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `
@@ -1388,7 +1388,7 @@ export class UnboundReturnCallError extends SolidCashError {
       + (routed
         ? 'On a message-bus route that is a void helper which both consumes a call result and carries a '
           + 'physical effect: the effect makes the helper ineligible for its own OP_INVOKE subroutine, so it is '
-          + 'inlined into the SCB1 wrapper, and the wrapper owns the block slots. Keep the returning call in a '
+          + 'inlined into the message-bus batch wrapper, and the wrapper owns the block slots. Keep the returning call in a '
           + 'handler whose body carries no other physical effect (event, satoshi transfer, token-container move '
           + 'or deploy), or drop the result and make the call a void tail call.'
         : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
@@ -1407,7 +1407,7 @@ export class GraphEmissionEffectError extends SolidCashError {
       + 'category parameter, which the route only reserves when a handler also READS the container: adding '
       + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '
       + 'routed through the message bus additionally execute behind OP_INVOKE (that is what keeps their outgoing '
-      + 'edges recomputable against the transcript); the route frames their emit and transfer outputs per '
+      + 'edges recomputable against the callManifest); the route frames their emit and transfer outputs per '
       + 'dispatch site (X29), but not a container input.',
     );
   }

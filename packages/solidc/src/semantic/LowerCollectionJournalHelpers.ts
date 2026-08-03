@@ -55,7 +55,7 @@ interface MultiCandidate {
 
 /** Strip the compiler's synthetic batch-clone prefix so a diagnostic names the handler the user wrote. */
 const sourceHandlerName = (name: string): string => name
-  .replace(/^__scb_(?:resource|handler|dynamic|array|graph)_/, '')
+  .replace(/^__message_bus_(?:resource|handler|dynamic|array|graph)_/, '')
   .replace(/_self_alias$/, '');
 
 interface ActiveMultiCache {
@@ -141,7 +141,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // raw inside an OP_INVOKE body: code generation reaches them with no block layout, and a synthesized
     // batch clone reaches them with C2 witness parameters its call site never forwards. Both produced an
     // internal compiler error rather than a diagnostic - 'Block layout not available while compiling ...' and
-    // a parameter-arity mismatch on '__scb_resource_...'. The two journals do not yet share one exit, so
+    // a parameter-arity mismatch on '__message_bus_resource_...'. The two journals do not yet share one exit, so
     // reject the combination with a stable message.
     //
     // The access does not have to be written in the handler. A state-touching callee is inlined into its

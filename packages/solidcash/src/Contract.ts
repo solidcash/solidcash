@@ -384,7 +384,7 @@ export class Contract<
         ? hexToBin(this.artifact.functionBodies[selectorHex])
         : bytecode;
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
-        const match = /^__scb_sig_(\d+)_\d+_r\d+$/.exec(inputName);
+        const match = /^__message_bus_sig_(\d+)_\d+_r\d+$/.exec(inputName);
         if (!match) return signingBytecode;
         const handler = this.artifact.messageBus?.handlers[Number(match[1])];
         const handlerBody = handler?.signatureBytecode;
@@ -442,7 +442,7 @@ export class Contract<
   }
 
   /** @internal Construct an unlocker for a compiler-owned physical route
-   * which is advertised outside the source ABI (for example SCB1). */
+   * which is advertised outside the source ABI (for example message-bus batch). */
   createCompilerRouteUnlocker(
     abiFunction: AbiFunction, selector: Uint8Array,
   ): ContractFunctionUnlocker {
@@ -452,26 +452,26 @@ export class Contract<
     return (...args: FunctionArgument[]) => {
       const unlocker = base(...args);
       const blob = args[batchBlobIndex];
-      if (!(blob instanceof Uint8Array)) throw new Error('SCB1 batchBlob must encode as bytes');
+      if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
       const positionalPush = scriptToBytecode([blob]);
-      // Preserve the historical positional frame without carrying the transcript in the master. The
-      // artifact-specialized verifier inputs carry the canonical transcript.
-      const carrierPlaceholder = scriptToBytecode([new Uint8Array()]);
+      // Preserve the historical positional frame without carrying the callManifest in the master. The
+      // artifact-specialized verifier inputs carry the canonical callManifest.
+      const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
       const generateUnlockingBytecode = (
         options: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
         const ordinary = unlocker.generateUnlockingBytecode(options);
         // The selector is always the minimal push4 frame (5 bytes). Duplicate
         // the executable blob here as the canonical positional second push;
-        // the SCB1 covenant proves this copy equals its decoded batchBlob arg.
+        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg.
         return new Uint8Array([
           ...ordinary.slice(0, 5),
           ...positionalPush,
-          ...carrierPlaceholder,
+          ...messageEnvelopePlaceholder,
           ...ordinary.slice(5),
         ]);
       };
-      // SCB1 is a compiler-owned covenant even when the source handler has no state slots. Mark the master
+      // message-bus batch is a compiler-owned covenant even when the source handler has no state slots. Mark the master
       // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment
       // as routes which happen to include a data/container covenant input; finalized-byte preflight remains the
       // authoritative broadcast gate in both cases.

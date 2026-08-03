@@ -10,7 +10,9 @@ const INPUT_0_PREFIX = '^Transaction verification failed \\[code 16\\]: mandator
 const NON_TRUTHY_INPUT_0 = new RegExp(INPUT_0_PREFIX
   + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
   + 'Top stack item: ""\\.\\)$');
-const STATEFUL_OP_VERIFY_INPUT_0 = /^layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
+const STATEFUL_OP_VERIFY_INPUT_0 = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 
 // Calling a function-POINTER struct field directly: `s.x()`, `t[i].x()`, `s.inner.x()`. These parse as a
 // namespaced function call / method call, not an indirect call; SymbolTableTraversal rewrites them to an

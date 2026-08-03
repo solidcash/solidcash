@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-const verifyFailure = 'layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // 2D (nested) memory arrays: `new uint256[][](n)`, inner alloc `b[i]=new uint256[](m)`, and the nested element
 // write `b[i][j]=v`. The write desugars to a read-modify-write (`tmp=b[i]; tmp[j]=v; b[i]=tmp;`). VM-verifies

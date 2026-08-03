@@ -6,7 +6,7 @@ import {
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 const missingCallFailure = [
-  'layer3: BCH-2026 preflight failed at input 0:',
+  'messageBus: BCH-2026 preflight failed at input 0:',
   'Program called an OP_SPLIT operation with an invalid index.',
   'stack item length: 1; requested split index: 4.',
 ].join(' ');

@@ -10,7 +10,7 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * X6 - stable diagnostics for unadmitted low-level call shapes.
  *
  * The admitted message-bus low-level class is exactly ONE unconditional `address.call(payload)`,
- * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. The transcript row
+ * returning `address.call{value: amount}(payload)`, or `address.staticcall(payload)` per handler. The callManifest row
  * binds mode, target, calldata, result and the value-option bit; the transfer effect separately binds the
  * recipient and amount. No other option and no occurrence count is admitted.
  *
@@ -24,8 +24,8 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * | `addr.staticcall{gas: g}(payload)`             | `Block slot not found: lowLevelCall[0]`                   |
  * | `addr.call(payload)` inside a loop, void form  | `Block slot not found: lowLevelCall[0]`                   |
  * | `addr.call(payload)` inside a branch, void     | `Block slot not found: lowLevelCall[0]`                   |
- * | `addr.call(payload)` inside a loop, returning  | `Runtime graph handler '__scb_graph_run' requires void ...`|
- * | `addr.call(payload)` inside a branch, returning| `Runtime graph handler '__scb_graph_run' requires void ...`|
+ * | `addr.call(payload)` inside a loop, returning  | `Runtime graph handler '__message_bus_graph_run' requires void ...`|
+ * | `addr.call(payload)` inside a branch, returning| `Runtime graph handler '__message_bus_graph_run' requires void ...`|
  *
  * This module produces one stable, named diagnostic per shape instead, against the SOURCE function and the
  * source construct, before any route synthesis renames the handler.
@@ -176,7 +176,7 @@ function collectLowLevelCalls(
  * Reject every low-level call shape the message-bus route does not admit, in one pass over one function.
  *
  * `delegatecall` is deliberately NOT checked here: it is a delegate participant edge with its own class
- * enumeration and its own authority argument, not a transcript-bound low-level row.
+ * enumeration and its own authority argument, not a callManifest-bound low-level row.
  */
 export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): void {
   const found: Callsite[] = [];
@@ -193,7 +193,7 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
       throw new LowLevelCallShapeError(
         node,
         `function '${fn.name}' issues a low-level '${callMode}' carrying the call option(s) `
-        + `${options.map((name) => `'${name}'`).join(', ')}. A transcript row binds mode, target, calldata and `
+        + `${options.map((name) => `'${name}'`).join(', ')}. A callManifest row binds mode, target, calldata and `
         + 'result, and has no field for a call option, so the option would execute unbound. Move the option out '
         + 'of the message-bus handler, or use a typed interface call whose transfer is a block slot',
       );
@@ -208,7 +208,7 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
       if (fixedLoopOccurrences !== undefined && fixedLoopOccurrences > 24) {
         throw new LowLevelCallShapeError(
           node, `function '${fn.name}' issues a low-level '${callMode}' inside a literal loop with `
-          + `${fixedLoopOccurrences} occurrences, exceeding the transcript v1 limit of 24`,
+          + `${fixedLoopOccurrences} occurrences, exceeding the callManifest v1 limit of 24`,
         );
       }
       const admittedLiteralLoop = returnsResult && options.length === 0
@@ -226,7 +226,7 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
     if (context === 'conditional') {
       throw new LowLevelCallShapeError(
         node,
-        `function '${fn.name}' issues a low-level '${callMode}' inside a branch. A transcript row is either `
+        `function '${fn.name}' issues a low-level '${callMode}' inside a branch. A callManifest row is either `
         + 'present or absent for the whole handler, so a conditionally reached callsite has no row that means '
         + '"not taken". Make the callsite unconditional, or split the branch into two handlers',
       );

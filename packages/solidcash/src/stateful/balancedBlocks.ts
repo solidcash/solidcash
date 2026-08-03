@@ -59,7 +59,7 @@ export interface BalancedAssembly {
   blocks: readonly BalancedBlockPlacement[];
   /** Physical verifier region, one artifact-specialized covenant per participant. */
   verifierInputs: readonly number[];
-  /** Final verifier input; it carries the canonical transcript consumed by participant binders. */
+  /** Final verifier input; it carries the canonical callManifest consumed by participant binders. */
   verifierInput: number;
   /** Physical index of the fee-funding input; follows the verifier covenant. */
   feeInput: number;
@@ -176,7 +176,7 @@ export function deriveBalancedAssemblyFromInputs(
     fail(
       `participant region ends at ${cursor}, but ${blocks.length} verifier slots plus fee require tail start `
       + `${totalSlots - blocks.length - 1}; `
-      + 'controllerless compositions permit no auxiliary or padding slots',
+      + 'atomic compositions permit no auxiliary or padding slots',
     );
   }
   const verifierInputs = blocks.map((_block, participant) => cursor + participant);

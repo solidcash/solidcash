@@ -26,6 +26,6 @@ describe('require with custom error', () => {
   it('fails when the condition is false', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f(5n)).rejects.toThrow('layer3: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    await expect(sc.f(5n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

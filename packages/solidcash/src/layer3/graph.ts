@@ -282,13 +282,26 @@ export function finalizeSingleTxInvocationGraph(
   valueEffects: readonly SingleTxValueSlotEffect[] = [],
   tokenEffects: readonly SingleTxTokenSlotEffect[] = [],
   sidecarEffects: readonly SingleTxSidecarSlotEffect[] = [],
+  actualSizes?: readonly number[],
 ): FinalizedSingleTxInvocationGraph {
   if (masterCategories.length !== plan.participants.length) {
     throw new Error('layer3: controllerless master categories must align with participants');
   }
-  const layout = singleTxBusPhysicalLayout(
-    plan.participants.map((participant) => participant.blockLayout!.blockSize),
-  );
+  if (actualSizes !== undefined && actualSizes.length !== plan.participants.length) {
+    throw new Error('layer3: actual participant sizes must align with participants');
+  }
+  const spans = plan.participants.map((participant, index) => {
+    const block = participant.blockLayout!;
+    const fixedSize = block.trailingBase ?? block.blockSize;
+    const actualSize = actualSizes?.[index] ?? block.blockSize;
+    if (!Number.isSafeInteger(actualSize) || actualSize < fixedSize || actualSize > block.blockSize) {
+      throw new Error(
+        `layer3: participant ${index} actual span ${actualSize} is outside [${fixedSize}, ${block.blockSize}]`,
+      );
+    }
+    return actualSize;
+  });
+  const layout = singleTxBusPhysicalLayout(spans);
   const unsupported = plan.participants.find((participant) => {
     const slots = participant.blockLayout!.slots;
     return slots.some((slot) => ![
@@ -309,19 +322,20 @@ export function finalizeSingleTxInvocationGraph(
     if (!/^[0-9a-f]{64}$/.test(category)) {
       throw new Error(`layer3: participant ${index} master category must be 32-byte hex`);
     }
-    const trailingBase = participant.blockLayout!.trailingBase;
+    const maximumSize = participant.blockLayout!.blockSize;
+    const fixedSize = participant.blockLayout!.trailingBase ?? maximumSize;
+    const actualSize = spans[index];
     const returnSlot = participant.blockLayout!.slots.find((slot) => slot.kind === 'returnEvent');
     const lockingBytecode = participant.lockingBytecode.toLowerCase();
     const internalCategory = (category.match(/../g) as string[]).reverse().join('');
     return {
       lockingBytecode, masterCategory: internalCategory,
-      base: layout.participantInputs[index], blockSize: participant.blockLayout!.blockSize,
+      fixedSize, actualSize, maximumSize,
       // The concrete instantiated locking bytecode commits the compiler-authored policy and constructor values.
       // Keeping its hash explicit makes the on-chain participant-table walk constant-space and self-authenticating.
       policyHash: binToHex(sha256.hash(hexToBin(lockingBytecode))),
-      ...(trailingBase === undefined ? {} : { trailingBase }),
-      trailingCapacity: participant.blockLayout!.trailingCapacity ?? 0,
-      returnOutput: returnSlot === undefined ? 0xffff : layout.participantInputs[index] + returnSlot.offset,
+      trailingUsed: actualSize - fixedSize,
+      returnOffset: returnSlot === undefined ? 0xffff : returnSlot.offset,
     };
   });
   const invocationRows = plan.invocations.map((invocation) => {
@@ -346,8 +360,8 @@ export function finalizeSingleTxInvocationGraph(
     return {
       kind: 0, owner: caller === 0xff ? invocation.callee : caller, consumer: invocation.callee,
       slot: invocation.consumerCallsiteId ?? 0xffff, mode: callOptionsByte(invocation),
-      sourceSlot: invocation.caller === null ? 0xffff : layout.participantInputs[invocation.caller],
-      targetSlot: layout.participantInputs[invocation.callee], selectorHex: invocation.selectorHex,
+      sourceOffset: invocation.caller === null ? 0xffff : 0,
+      targetOffset: 0, selectorHex: invocation.selectorHex,
       position: completion, parent: invocation.parent ?? 0xffff, depth: invocation.depth,
       subtreeEnd: invocation.subtreeEnd, subjectHex, argsHex: invocation.argsHex, resultHex: result.toLowerCase(),
       effectHex: '',
@@ -401,10 +415,9 @@ export function finalizeSingleTxInvocationGraph(
           || (effect.mode === 2 && effect.outputCommitmentHex.length !== 0)) {
         throw new Error(`layer3: participant ${effect.participant} resource is not a mutable NFT`);
       }
-      const absolute = layout.participantInputs[effect.participant] + effect.offset;
       return {
         kind: 1, owner: effect.participant, consumer: effect.participant,
-        slot: effect.offset, mode: effect.mode, sourceSlot: absolute, targetSlot: absolute,
+        slot: effect.offset, mode: effect.mode, sourceOffset: effect.offset, targetOffset: effect.offset,
         selectorHex: '00000000', position: effect.offset, parent: 0xffff, depth: 0,
         subtreeEnd: effect.offset, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: satoshiContainer
@@ -452,11 +465,10 @@ export function finalizeSingleTxInvocationGraph(
       }
       if (parent === undefined) throw new Error(`layer3: event participant ${participant.participant} has no invocation`);
       const invocation = plan.invocations[parent];
-      const absolute = layout.participantInputs[participant.participant] + slot.offset;
       return {
         kind: 2, owner: participant.participant, consumer: participant.participant,
         slot: slot.offset, mode: effect.active ? 1 : 0,
-        sourceSlot: absolute, targetSlot: absolute, selectorHex: '00000000',
+        sourceOffset: slot.offset, targetOffset: slot.offset, selectorHex: '00000000',
         position: slot.offset, parent, depth: invocation.depth,
         subtreeEnd: parent, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: '', resultHex: '', effectHex: effect.commitmentHex.toLowerCase(),
@@ -488,10 +500,9 @@ export function finalizeSingleTxInvocationGraph(
       const parent = participant.invocations[Math.floor(slot.slotIndex / frameWidth)];
       if (parent === undefined) throw new Error(`layer3: transfer participant ${effect.participant} has no invocation`);
       const invocation = plan.invocations[parent];
-      const absolute = layout.participantInputs[effect.participant] + effect.offset;
       return {
         kind: 3, owner: effect.participant, consumer: effect.participant,
-        slot: effect.offset, mode: 1, sourceSlot: absolute, targetSlot: absolute,
+        slot: effect.offset, mode: 1, sourceOffset: effect.offset, targetOffset: effect.offset,
         selectorHex: '00000000', position: effect.offset, parent, depth: invocation.depth,
         subtreeEnd: parent, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: '', resultHex: '', effectHex: uint64LeHex(effect.amount, 'value transfer amount'),
@@ -532,11 +543,10 @@ export function finalizeSingleTxInvocationGraph(
         throw new Error(`layer3: token-transfer participant ${effect.participant} has no invocation`);
       }
       const invocation = plan.invocations[parent];
-      const absolute = layout.participantInputs[effect.participant] + effect.offset;
       return {
         kind: 4, owner: effect.participant, consumer: effect.participant,
         slot: effect.offset, mode: { ft: 0, none: 1, mutable: 2, minting: 3 }[effect.capability],
-        sourceSlot: absolute, targetSlot: absolute,
+        sourceOffset: effect.offset, targetOffset: effect.offset,
         selectorHex: '00000000', position: effect.offset, parent, depth: invocation.depth,
         subtreeEnd: parent, subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: effect.tokenCategoryHex.toLowerCase(), resultHex: '',
@@ -565,12 +575,11 @@ export function finalizeSingleTxInvocationGraph(
         || effect.value < 0n) {
         throw new Error(`layer3: participant ${effect.participant} sidecar slot ${effect.offset} is invalid`);
       }
-      const absolute = layout.participantInputs[effect.participant] + effect.offset;
       return {
         kind: 6, owner: effect.participant, consumer: effect.participant,
         slot: effect.offset,
         mode: { blockhashOracle: 0, keccakSideCar: 1, ecrecoverSideCar: 2 }[effect.kind],
-        sourceSlot: absolute, targetSlot: absolute, selectorHex: '00000000',
+        sourceOffset: effect.offset, targetOffset: effect.offset, selectorHex: '00000000',
         position: effect.offset, parent: 0xffff, depth: 0, subtreeEnd: effect.offset,
         subjectHex: effect.lockingBytecodeHex.toLowerCase(),
         argsHex: effect.tokenCategoryHex.toLowerCase() + effect.inputCommitmentHex.toLowerCase(),

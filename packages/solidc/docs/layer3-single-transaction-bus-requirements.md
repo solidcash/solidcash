@@ -6,7 +6,7 @@
 |---|---|---|
 | S1 | One physical transcript | `Layer3SingleTxCodec` pins one carrier at input zero with strict EOF; `Layer3SingleTxCompose` mutates that physical carrier and every participant VM rejects it. |
 | S2 | Exact participant set | `Layer3SingleTxGraph` binds code and category identities; `Layer3SingleTxBalancedAssembly` and compose fan-out/repeated-call hostile cases reject hidden, substituted, duplicated, reordered, or retargeted participants. |
-| S3 | Contiguous blocks | Codec and balanced-assembly tests reject gaps, overlap, zero-size blocks, hidden masters, padding, and a nonterminal fee/change slot. |
+| S3 | Contiguous blocks | Codec and balanced-assembly tests reject gaps, overlap, zero-size blocks, hidden masters, padding, and a nonterminal fee/change slot; variable-span tests prove later bases are prefix sums of authenticated actual use rather than absolute indices or maximum-capacity padding. |
 | S4 | Active membership | Every compose capstone evaluates every framed master input; balanced-assembly hostile cases reject a master inside another block and all unframed auxiliary inputs. |
 | S5 | Exact row consumption | Codec count/EOF tests plus `GraphEmissionVerificationInvariant` and compose drop/duplicate/swap, branch, loop, result, event, resource, value, token, and sidecar mutations prove complete consumption for every row family. |
 | S6 | Call authenticity | Compose VM tests reject caller, selector, mode, calldata, argument, result, target, order, reachability, and occurrence mutations; compiler metadata authors the admitted rows. |
@@ -61,8 +61,10 @@ at 96,302 bytes and 108 balanced slots, inside the 100,000-byte standard relay c
 to completion and asserts that none exceed BCH-2026 operation-cost density. The deployed planner bounds are
 eight participants, 24 invocations, depth seven, and 223 bytes per hidden-batch blob.
 
-The new executable census is `Layer3SingleTxCodec.test.ts`: it pins the controllerless 2/3/1 block layout to
-participant bases `[0,2,5]`, fee input 6, and seven total paired slots. This shows the architectural delta
+The new executable census is `Layer3SingleTxCodec.test.ts`: it pins the controllerless 2/3/1 actual-span layout
+to participant bases `[0,2,5]`, fee input 6, and seven total paired slots. It also proves that changing the
+first participant from one to five trailing chunks relocates the second participant by prefix sum without
+changing either participant's local rows. This shows the architectural delta
 without deleting the old measurements. The first two historical fixtures were deliberately removed in Phase
 6; reproduce their figures only by checking out baseline `aa562953`. The surviving controllerless census runs
 on this branch:

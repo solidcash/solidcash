@@ -676,7 +676,7 @@ export const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
 
 /** Shared wire constants for the controllerless single-transaction message bus. */
 export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
-export const SINGLE_TX_BUS_VERSION = 1;
+export const SINGLE_TX_BUS_VERSION = 2;
 export const SINGLE_TX_BUS_MAX_PARTICIPANTS = 8;
 export const SINGLE_TX_BUS_MAX_ROWS = 24;
 /** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */

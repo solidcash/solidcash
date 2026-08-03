@@ -64,6 +64,7 @@ const mutateInputZero = (
   | 'carrier-satoshi' | 'carrier-satoshi-drop' | 'carrier-token' | 'carrier-token-drop'
   | 'carrier-token-container' | 'carrier-token-container-drop'
   | 'carrier-context-caller' | 'carrier-context-selector' | 'carrier-context-args' | 'carrier-root-origin'
+  | 'carrier-span-shrink' | 'carrier-span-expand' | 'carrier-span-maximum'
   | 'carrier-invocation-swap' | 'carrier-invocation-drop' | 'carrier-invocation-duplicate'
   | 'carrier-invocation-target' | 'carrier-invocation-mode',
 ): void => {
@@ -82,6 +83,7 @@ const mutateInputZero = (
             || target.startsWith('carrier-satoshi')
             || target.startsWith('carrier-token')
             || target.startsWith('carrier-context-') || target === 'carrier-root-origin'
+            || target.startsWith('carrier-span-')
             || target.startsWith('carrier-invocation-')
             ? index === 2 && hex.startsWith('4c334331') && hex.includes(selectorHex)
             : index > 2 && instruction.data.length < 128 && hex.includes(selectorHex);
@@ -92,8 +94,33 @@ const mutateInputZero = (
         if (target === 'carrier-result' || target === 'carrier-event' || target.startsWith('carrier-resource')
           || target.startsWith('carrier-value') || target.startsWith('carrier-satoshi')
           || target.startsWith('carrier-token') || target.startsWith('carrier-context-')
-          || target === 'carrier-root-origin' || target.startsWith('carrier-invocation-')) {
+          || target === 'carrier-root-origin' || target.startsWith('carrier-invocation-')
+          || target.startsWith('carrier-span-')) {
           const transcript = decodeSingleTxCarrier(instruction.data);
+          if (target.startsWith('carrier-span-')) {
+            const participantIndex = transcript.participants.findIndex((participant) =>
+              target === 'carrier-span-shrink' ? participant.trailingUsed > 0
+                : target === 'carrier-span-expand' ? participant.actualSize < participant.maximumSize
+                  : true);
+            if (participantIndex < 0) throw new Error(`test could not locate a ${target} participant`);
+            const participants = transcript.participants.map((participant, index) => index !== participantIndex
+              ? participant
+              : target === 'carrier-span-shrink'
+                ? {
+                  ...participant, actualSize: participant.actualSize - 1,
+                  trailingUsed: participant.trailingUsed - 1,
+                }
+                : target === 'carrier-span-expand'
+                  ? {
+                    ...participant, actualSize: participant.actualSize + 1,
+                    trailingUsed: participant.trailingUsed + 1,
+                  }
+                  : { ...participant, maximumSize: participant.maximumSize + 1 });
+            instructions[instructionIndex] = {
+              ...instruction, data: encodeSingleTxCarrier({ ...transcript, participants }),
+            };
+            return encodeAuthenticationInstructions(instructions);
+          }
           if (target.startsWith('carrier-invocation-')) {
             const invocationIndices = transcript.rows
               .map((row, index) => ({ row, index }))
@@ -183,7 +210,7 @@ const mutateInputZero = (
                 ...candidate,
                 ...(target === 'carrier-resource-mode' ? { mode: 1 } : {}),
                 ...(target === 'carrier-resource-slot'
-                  ? { sourceSlot: candidate.sourceSlot - 1, targetSlot: candidate.targetSlot - 1 } : {}),
+                  ? { sourceOffset: candidate.sourceOffset - 1, targetOffset: candidate.targetOffset - 1 } : {}),
                 ...(target === 'carrier-resource-subject' ? { subjectHex: binToHex(subject) } : {}),
               } : candidate);
             instructions[instructionIndex] = {
@@ -1177,6 +1204,13 @@ describe('layer3.compose controllerless transaction', () => {
     const hostileCarrier = await composition.build();
     mutateInputZero(hostileCarrier, '', 'carrier-resource-create');
     await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+    for (const mutation of [
+      'carrier-span-shrink', 'carrier-span-expand', 'carrier-span-maximum',
+    ] as const) {
+      const hostileSpan = await composition.build();
+      mutateInputZero(hostileSpan, '', mutation);
+      expect(vmRejects(hostileSpan), mutation).toBe(true);
+    }
     const hostileOutput = await composition.build();
     const commitment = hexToBin(hostileOutput.outputs[chunkOutput].token!.nft!.commitment);
     commitment[commitment.length - 1] ^= 0x01;

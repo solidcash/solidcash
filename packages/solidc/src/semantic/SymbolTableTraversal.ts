@@ -1163,7 +1163,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || [
         '__internal__graphTranscript',
         '__internal__graphParticipantOffset',
-        '__internal__graphBlockSize',
+        '__internal__graphFixedSize', '__internal__graphBlockSize',
         '__internal__graphEmissions',
         '__internal__graphCallers',
         '__internal__graphSettlementBoundary',

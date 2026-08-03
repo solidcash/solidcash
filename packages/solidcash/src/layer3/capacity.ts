@@ -9,7 +9,7 @@ import { Layer3DiagnosticError } from './diagnostics.js';
  * Exact finalized-byte and VM preflight remains authoritative for resource-heavy shapes below this ceiling.
  */
 export const SINGLE_TX_BUS_CAPACITY = Object.freeze({
-  profile: 'controllerless-return-chain-bch2026-stock-v1',
+  profile: 'controllerless-return-chain-bch2026-stock-v2',
   maximumParticipants: 5,
   firstRejectedParticipants: 6,
   operationCostBudgetPerByte: 800,

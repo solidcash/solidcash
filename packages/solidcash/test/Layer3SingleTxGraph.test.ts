@@ -50,14 +50,14 @@ describe('controllerless compiled invocation graph', () => {
       plan(), ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },
     );
     expect(finalized.layout).toEqual({ participantInputs: [0, 1], feeInput: 2, totalSlots: 3 });
-    expect(finalized.transcript.participants.map((participant) => participant.base)).toEqual([0, 1]);
+    expect(finalized.transcript.participants.map((participant) => participant.actualSize)).toEqual([1, 1]);
     expect(finalized.transcript.participants.map((participant) => participant.masterCategory)).toEqual([
       'aa'.repeat(32), 'bb'.repeat(32),
     ]);
     expect(finalized.transcript.rows).toMatchObject([
-      { owner: 0, consumer: 0, sourceSlot: 0xffff, targetSlot: 0, subjectHex: '53', position: 2 },
+      { owner: 0, consumer: 0, sourceOffset: 0xffff, targetOffset: 0, subjectHex: '53', position: 2 },
       {
-        owner: 0, consumer: 1, slot: 7, mode: 1, sourceSlot: 0, targetSlot: 1,
+        owner: 0, consumer: 1, slot: 7, mode: 1, sourceOffset: 0, targetOffset: 0,
         selectorHex: '22222222', argsHex: '02', resultHex: '2a', position: 2,
       },
     ]);
@@ -99,7 +99,7 @@ describe('controllerless compiled invocation graph', () => {
         participant: 1, offset: 1, active: true, lockingBytecodeHex: '51', commitmentHex: '012a',
       }],
     ).transcript.rows[2]).toMatchObject({
-      kind: 2, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
+      kind: 2, owner: 1, consumer: 1, sourceOffset: 1, targetOffset: 1,
       subjectHex: '51', effectHex: '012a',
     });
     const valuePlan: layer3.CompiledGraphPlan = {
@@ -116,7 +116,7 @@ describe('controllerless compiled invocation graph', () => {
         participant: 1, offset: 1, lockingBytecodeHex: '52', amount: 900n,
       }],
     ).transcript.rows[2]).toMatchObject({
-      kind: 3, owner: 1, consumer: 1, sourceSlot: 2, targetSlot: 2,
+      kind: 3, owner: 1, consumer: 1, sourceOffset: 1, targetOffset: 1,
       subjectHex: '52', effectHex: '8403000000000000',
     });
     const tokenPlan: layer3.CompiledGraphPlan = {
@@ -143,10 +143,10 @@ describe('controllerless compiled invocation graph', () => {
       }],
     );
     expect(tokenized.transcript.rows.slice(2)).toMatchObject([{
-      kind: 1, mode: 4, sourceSlot: 2, targetSlot: 2, argsHex: 'cc'.repeat(32),
+      kind: 1, mode: 4, sourceOffset: 1, targetOffset: 1, argsHex: 'cc'.repeat(32),
       resultHex: '6400000000000000', effectHex: `20${'cc'.repeat(32)}4b00000000000000`,
     }, {
-      kind: 4, mode: 0, sourceSlot: 3, targetSlot: 3, argsHex: 'cc'.repeat(32),
+      kind: 4, mode: 0, sourceOffset: 2, targetOffset: 2, argsHex: 'cc'.repeat(32),
       effectHex: '1900000000000000',
     }]);
   });

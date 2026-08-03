@@ -52,13 +52,17 @@ const frame = (bytes: Uint8Array, field: string): Uint8Array =>
 export interface SingleTxParticipant {
   lockingBytecode: string;
   masterCategory: string;
-  base: number;
-  blockSize: number;
+  /** Compiler-authored non-variable prefix, including the master at local offset zero. */
+  fixedSize: number;
+  /** Physical span used by this execution. Its absolute base is the sum of preceding actual sizes. */
+  actualSize: number;
+  /** Compiler-authored upper bound for the fixed prefix plus variable trailing resources. */
+  maximumSize: number;
   policyHash: string;
-  trailingBase?: number;
-  trailingCapacity: number;
-  /** Absolute return-event output, or 0xffff when this participant has no returning route. */
-  returnOutput: number;
+  /** Actual number of variable trailing slots: `actualSize - fixedSize`. */
+  trailingUsed: number;
+  /** Local return-event output offset, or 0xffff when this participant has no returning route. */
+  returnOffset: number;
 }
 
 export interface SingleTxRow {
@@ -70,10 +74,10 @@ export interface SingleTxRow {
   slot: number;
   /** Invocation call mode or effect subtype; zero when the row family has no subtype. */
   mode: number;
-  /** Absolute input slot, or 0xffff when the row consumes no distinct input. */
-  sourceSlot: number;
-  /** Absolute output slot, or 0xffff when the row creates no distinct output. */
-  targetSlot: number;
+  /** Participant-local input offset, or 0xffff when the row consumes no distinct input. */
+  sourceOffset: number;
+  /** Participant-local output offset, or 0xffff when the row creates no distinct output. */
+  targetOffset: number;
   /** Four-byte function/event/effect discriminator; zero for resource rows without one. */
   selectorHex: string;
   /** Completion position for invocations, otherwise the compiler-authored settlement position. */
@@ -112,32 +116,29 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
   if (rows.length > SINGLE_TX_BUS_MAX_ROWS) {
     throw new Error(`layer3: transcript row count exceeds ${SINGLE_TX_BUS_MAX_ROWS}`);
   }
-  let expectedBase = 0;
   const participantParts = participants.map((participant, index) => {
-    if (participant.base !== expectedBase || participant.blockSize < 1) {
-      throw new Error(`layer3: participant ${index} does not form a contiguous positive block`);
+    if (!Number.isSafeInteger(participant.fixedSize) || participant.fixedSize < 1
+      || !Number.isSafeInteger(participant.actualSize)
+      || !Number.isSafeInteger(participant.maximumSize)
+      || !Number.isSafeInteger(participant.trailingUsed)
+      || participant.actualSize !== participant.fixedSize + participant.trailingUsed
+      || participant.actualSize > participant.maximumSize) {
+      throw new Error(`layer3: participant ${index} has a non-canonical variable span`);
     }
     const lbc = checkedHex(participant.lockingBytecode, undefined, `participant ${index} locking bytecode`);
     if (lbc.length === 0) throw new Error(`layer3: participant ${index} locking bytecode is empty`);
     const category = checkedHex(participant.masterCategory, 32, `participant ${index} master category`);
     const policy = checkedHex(participant.policyHash, 32, `participant ${index} policy hash`);
-    const trailingBase = participant.trailingBase ?? 0xffff;
-    if (participant.trailingCapacity === 0 ? trailingBase !== 0xffff
-      : trailingBase >= participant.blockSize
-        || trailingBase + participant.trailingCapacity !== participant.blockSize) {
-      throw new Error(`layer3: participant ${index} has a non-canonical trailing region`);
-    }
-    if (participant.returnOutput !== 0xffff
-      && (participant.returnOutput < participant.base
-        || participant.returnOutput >= participant.base + participant.blockSize)) {
+    if (participant.returnOffset !== 0xffff && participant.returnOffset >= participant.fixedSize) {
       throw new Error(`layer3: participant ${index} has an out-of-block return output`);
     }
-    expectedBase += participant.blockSize;
     return concat(
-      uint(participant.base, 2, 'participant base'), uint(participant.blockSize, 2, 'participant block size'),
+      uint(participant.fixedSize, 2, 'participant fixed size'),
+      uint(participant.actualSize, 2, 'participant actual size'),
       frame(lbc, 'locking bytecode'), category, policy,
-      uint(trailingBase, 2, 'trailing base'), uint(participant.trailingCapacity, 2, 'trailing capacity'),
-      uint(participant.returnOutput, 2, 'return output'),
+      uint(participant.maximumSize, 2, 'participant maximum size'),
+      uint(participant.trailingUsed, 2, 'participant trailing use'),
+      uint(participant.returnOffset, 2, 'return output offset'),
     );
   });
   const rowParts = rows.map((row, index) => {
@@ -153,8 +154,8 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
     return concat(
       uint(row.kind, 1, 'row kind'), uint(row.owner, 1, 'row owner'),
       uint(row.consumer, 1, 'row consumer'), uint(row.slot, 2, 'row slot'),
-      uint(row.mode, 1, 'row mode'), uint(row.sourceSlot, 2, 'row source slot'),
-      uint(row.targetSlot, 2, 'row target slot'), selector,
+      uint(row.mode, 1, 'row mode'), uint(row.sourceOffset, 2, 'row source offset'),
+      uint(row.targetOffset, 2, 'row target offset'), selector,
       uint(row.position, 2, 'row position'), uint(row.parent, 2, 'row parent'),
       uint(row.depth, 1, 'row depth'), uint(row.subtreeEnd, 2, 'row subtree end'),
       frame(subject, 'row subject'), frame(args, 'row arguments'),
@@ -185,31 +186,26 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     throw new Error('layer3: controllerless participant count is out of range');
   }
   const participants: SingleTxParticipant[] = [];
-  let expectedBase = 0;
   for (let index = 0; index < participantCount; index += 1) {
-    const base = reader.uint(2, `participant ${index}.base`);
-    const blockSize = reader.uint(2, `participant ${index}.blockSize`);
+    const fixedSize = reader.uint(2, `participant ${index}.fixedSize`);
+    const actualSize = reader.uint(2, `participant ${index}.actualSize`);
     const lockingBytecode = binToHex(reader.frame(`participant ${index}.lockingBytecode`));
     const masterCategory = binToHex(reader.take(32, `participant ${index}.masterCategory`));
     const policyHash = binToHex(reader.take(32, `participant ${index}.policyHash`));
-    const trailing = reader.uint(2, `participant ${index}.trailingBase`);
-    const trailingCapacity = reader.uint(2, `participant ${index}.trailingCapacity`);
-    const returnOutput = reader.uint(2, `participant ${index}.returnOutput`);
-    if (base !== expectedBase || blockSize < 1 || lockingBytecode.length === 0) {
-      throw new Error(`layer3: participant ${index} has a non-contiguous block`);
+    const maximumSize = reader.uint(2, `participant ${index}.maximumSize`);
+    const trailingUsed = reader.uint(2, `participant ${index}.trailingUsed`);
+    const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
+    if (fixedSize < 1 || actualSize !== fixedSize + trailingUsed || actualSize > maximumSize
+      || lockingBytecode.length === 0) {
+      throw new Error(`layer3: participant ${index} has a non-canonical variable span`);
     }
-    if (trailingCapacity === 0 ? trailing !== 0xffff
-      : trailing >= blockSize || trailing + trailingCapacity !== blockSize) {
-      throw new Error(`layer3: participant ${index} has a non-canonical trailing region`);
-    }
-    if (returnOutput !== 0xffff && (returnOutput < base || returnOutput >= base + blockSize)) {
+    if (returnOffset !== 0xffff && returnOffset >= fixedSize) {
       throw new Error(`layer3: participant ${index} has an out-of-block return output`);
     }
     participants.push({
-      base, blockSize, lockingBytecode, masterCategory, policyHash,
-      trailingBase: trailing === 0xffff ? undefined : trailing, trailingCapacity, returnOutput,
+      fixedSize, actualSize, maximumSize, lockingBytecode, masterCategory, policyHash,
+      trailingUsed, returnOffset,
     });
-    expectedBase += blockSize;
   }
   const rowCount = reader.uint(2, 'row count');
   if (rowCount > SINGLE_TX_BUS_MAX_ROWS) throw new Error('layer3: controllerless row count is out of range');
@@ -220,8 +216,8 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const consumer = reader.uint(1, `row ${index}.consumer`);
     const slot = reader.uint(2, `row ${index}.slot`);
     const mode = reader.uint(1, `row ${index}.mode`);
-    const sourceSlot = reader.uint(2, `row ${index}.sourceSlot`);
-    const targetSlot = reader.uint(2, `row ${index}.targetSlot`);
+    const sourceOffset = reader.uint(2, `row ${index}.sourceOffset`);
+    const targetOffset = reader.uint(2, `row ${index}.targetOffset`);
     const selectorHex = binToHex(reader.take(4, `row ${index}.selector`));
     const position = reader.uint(2, `row ${index}.position`);
     const parent = reader.uint(2, `row ${index}.parent`);
@@ -235,7 +231,7 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
       throw new Error(`layer3: row ${index} has an invalid kind or participant`);
     }
     rows.push({
-      kind, owner, consumer, slot, mode, sourceSlot, targetSlot, selectorHex, position,
+      kind, owner, consumer, slot, mode, sourceOffset, targetOffset, selectorHex, position,
       parent, depth, subtreeEnd,
       subjectHex, argsHex, resultHex, effectHex,
     });

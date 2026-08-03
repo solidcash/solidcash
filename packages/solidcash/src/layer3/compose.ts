@@ -86,11 +86,13 @@ const graphRouteContext = (
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
   const blockhashParameter = execution.artifact.hiddenBatch?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
+    __internal__graphFixedSize: BigInt(finalized.transcript.participants[participant].fixedSize),
     __internal__returnOutputIdx: BigInt(
-      finalized.transcript.participants[participant].returnOutput === 0xffff
-        ? -1 : finalized.transcript.participants[participant].returnOutput,
+      finalized.transcript.participants[participant].returnOffset === 0xffff
+        ? -1 : finalized.layout.participantInputs[participant]
+          + finalized.transcript.participants[participant].returnOffset,
     ),
-    __internal__graphBlockSize: BigInt(execution.blockLayout!.blockSize),
+    __internal__graphBlockSize: BigInt(finalized.transcript.participants[participant].maximumSize),
     __internal__graphEmissions: concat(...emissions),
     __internal__graphCallers: concat(...callers),
     __internal__graphSettlementBoundary: BigInt(execution.settlementBoundary),
@@ -270,12 +272,13 @@ export class SingleTxBusComposition {
     const assemble = async (
       graph: ReturnType<typeof finalizeSingleTxInvocationGraph>,
       results: Readonly<Record<number, string>>,
-    ): Promise<TransactionBuilder> => {
+    ): Promise<{ builder: TransactionBuilder; actualSizes: readonly number[] }> => {
       // Resource delete rows authorize exact NFT disappearance at participant-owned slots; the generated
       // covenants still reject any unlisted burn through endpoint cardinality and commitment checks.
       const aggregate = new TransactionBuilder({
         provider, allowImplicitNftBurn: true, skipAutomaticCoSpends: true,
       });
+      const actualSizes: number[] = [];
 
       for (const participant of plan.participants) {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
@@ -307,9 +310,44 @@ export class SingleTxBusComposition {
             + `slots, expected balanced block size ${blockSize}`,
           );
         }
+        const fixedSize = participant.blockLayout!.trailingBase ?? blockSize;
+        let actualSize = blockSize;
+        while (actualSize > fixedSize) {
+          const input = local.inputs[actualSize - 1];
+          const output = local.outputs[actualSize - 1];
+          const outputLockingBytecode = typeof output.to === 'string' ? addressToLockScript(output.to) : output.to;
+          if (input.token !== undefined || output.token !== undefined
+            || binToHex(input.unlocker.generateLockingBytecode()) !== BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX
+            || binToHex(outputLockingBytecode) !== '51') break;
+          actualSize -= 1;
+        }
+        if (actualSize < blockSize) {
+          local.inputs.splice(actualSize, blockSize - actualSize);
+          local.outputs.splice(actualSize, blockSize - actualSize);
+        }
+        const masterUnlocker = local.inputs[0].unlocker as Unlocker & {
+          abiFunction?: { blockLayout?: NonNullable<typeof participant.blockLayout> };
+        };
+        if (masterUnlocker.abiFunction?.blockLayout !== undefined) {
+          masterUnlocker.abiFunction = {
+            ...masterUnlocker.abiFunction,
+            blockLayout: {
+              ...masterUnlocker.abiFunction.blockLayout,
+              blockSize: actualSize,
+              slots: masterUnlocker.abiFunction.blockLayout.slots.filter((slot) => slot.offset < actualSize),
+              trailingCapacity: actualSize - fixedSize,
+            },
+          };
+        }
+        actualSizes.push(actualSize);
         aggregate.addInputs(local.inputs);
         aggregate.addOutputs(local.outputs as Output[]);
       }
+
+      const spansMatch = actualSizes.every(
+        (size, participant) => size === graph.transcript.participants[participant].actualSize,
+      );
+      if (!spansMatch) return { builder: aggregate, actualSizes };
 
       aggregate.inputs[0] = {
         ...aggregate.inputs[0],
@@ -327,11 +365,19 @@ export class SingleTxBusComposition {
           + `(${aggregate.inputs.length} inputs, ${aggregate.outputs.length} outputs)`,
         );
       }
-      return aggregate;
+      return { builder: aggregate, actualSizes };
     };
     const admit = (builder: TransactionBuilder): TransactionBuilder => {
       preflightLayer3Transaction(builder);
       return builder;
+    };
+    const actualSpansMatch = (
+      graph: ReturnType<typeof finalizeSingleTxInvocationGraph>, sizes: readonly number[],
+    ): boolean => {
+      for (let participant = 0; participant < sizes.length; participant += 1) {
+        if (sizes[participant] !== graph.transcript.participants[participant].actualSize) return false;
+      }
+      return true;
     };
 
     if (returning.length > 0 || eventSlots.length > 0 || resourceSlots.length > 0
@@ -349,9 +395,21 @@ export class SingleTxBusComposition {
           claimedTokenEffects,
           claimedSidecarEffects,
         );
-        const provisional = await assemble(finalized, claimedResults);
+        let assembled = await assemble(finalized, claimedResults);
+        if (!actualSpansMatch(finalized, assembled.actualSizes)) {
+          finalized = finalizeSingleTxInvocationGraph(
+            plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
+            claimedTokenEffects, claimedSidecarEffects, assembled.actualSizes,
+          );
+          assembled = await assemble(finalized, claimedResults);
+          if (!actualSpansMatch(finalized, assembled.actualSizes)) {
+            throw new Error('layer3: participant spans did not converge after compact assembly');
+          }
+        }
+        const provisional = assembled.builder;
         const derivedResourceEffects: SingleTxResourceSlotEffect[] = [];
         for (const slot of resourceSlots) {
+          if (slot.offset >= finalized.transcript.participants[slot.participant].actualSize) continue;
           const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
@@ -425,6 +483,7 @@ export class SingleTxBusComposition {
         }
         const derivedValueEffects: SingleTxValueSlotEffect[] = [];
         for (const slot of valueSlots) {
+          if (slot.offset >= finalized.transcript.participants[slot.participant].actualSize) continue;
           const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
@@ -444,6 +503,7 @@ export class SingleTxBusComposition {
         }
         const derivedTokenEffects: SingleTxTokenSlotEffect[] = [];
         for (const slot of tokenSlots) {
+          if (slot.offset >= finalized.transcript.participants[slot.participant].actualSize) continue;
           const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
@@ -471,6 +531,7 @@ export class SingleTxBusComposition {
         }
         const derivedSidecarEffects: SingleTxSidecarSlotEffect[] = [];
         for (const slot of sidecarSlots) {
+          if (slot.offset >= finalized.transcript.participants[slot.participant].actualSize) continue;
           const absolute = finalized.layout.participantInputs[slot.participant] + slot.offset;
           const input = provisional.inputs[absolute];
           const output = provisional.outputs[absolute];
@@ -562,7 +623,18 @@ export class SingleTxBusComposition {
         `layer3: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${maximumPasses} bounded passes`,
       );
     }
-    return admit(await assemble(finalized, provisionalResults));
+    let assembled = await assemble(finalized, provisionalResults);
+    if (!actualSpansMatch(finalized, assembled.actualSizes)) {
+      finalized = finalizeSingleTxInvocationGraph(
+        plan, categories, provisionalResults, provisionalEventEffects, provisionalResourceEffects,
+        provisionalValueEffects, provisionalTokenEffects, provisionalSidecarEffects, assembled.actualSizes,
+      );
+      assembled = await assemble(finalized, provisionalResults);
+      if (!actualSpansMatch(finalized, assembled.actualSizes)) {
+        throw new Error('layer3: participant spans did not converge after compact assembly');
+      }
+    }
+    return admit(assembled.builder);
   }
 
   /** Build the complete transaction without broadcasting; all signatures are generated from this final shape. */

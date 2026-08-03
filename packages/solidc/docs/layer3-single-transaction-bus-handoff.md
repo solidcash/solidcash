@@ -56,7 +56,7 @@ bytecodes, or signatures contained within itself. It commits to semantic facts:
 
 - protocol domain and version;
 - participant count, order, locking bytecodes, and master categories;
-- absolute block bases and compiler-published block sizes;
+- authenticated actual block spans, compiler-published fixed prefixes and maximum capacities;
 - selectors, call modes, arguments, results, callers, and completion positions;
 - resource ownership and exact resource slots;
 - events, value transfers, token effects, and return-event commitments;
@@ -79,9 +79,10 @@ inputs/outputs:
 Rules:
 
 1. `P0` starts at index 0 and carries the transcript.
-2. `Pi.base = P(i-1).base + P(i-1).blockSize`.
+2. `Pi.base = P(i-1).base + P(i-1).actualSize`; bases are derived, never encoded as caller-selected indices.
 3. Each block has exactly one master at local offset 0.
-4. Every published local slot is present exactly once at `base + offset`.
+4. Every fixed slot and every used trailing slot is present exactly once at `base + offset`; unused trailing
+   capacity is physically absent.
 5. No projection or controller slots occur between participants and the fee tail.
 6. The fee input is the first index after the last complete participant block.
 7. Outputs use the same absolute slot model as inputs.

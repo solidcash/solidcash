@@ -4,7 +4,7 @@ import { layer3 } from '../../src/index.js';
 describe('controllerless single-transaction admission limit', () => {
   it('publishes and enforces the adjacent measured BCH-2026 participant bound', () => {
     expect(layer3.SINGLE_TX_BUS_CAPACITY).toMatchObject({
-      profile: 'controllerless-return-chain-bch2026-stock-v1',
+      profile: 'controllerless-return-chain-bch2026-stock-v2',
       maximumParticipants: 5,
       firstRejectedParticipants: 6,
       operationCostBudgetPerByte: 800,

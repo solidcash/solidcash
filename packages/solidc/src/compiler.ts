@@ -2373,6 +2373,7 @@ function synthesizeHiddenBatchRoute(
         : []));
   const graphExecutionContext = graphTailHandlers.size > 0;
   const graphRouteParameters = !graphExecutionContext ? [] : [
+    'bigint __internal__graphFixedSize',
     'bigint __internal__graphBlockSize',
     'bytes __internal__graphEmissions',
     'bytes __internal__graphCallers',
@@ -2469,11 +2470,11 @@ function synthesizeHiddenBatchRoute(
       function __scb_verify_single_tx(
         bytes transcript, bigint expectedLocalRows, bytes localBatch
         ${!graphExecutionContext ? '' : `,
-        bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
+        bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
       ) internal view {
         require(transcript.length >= 16 && transcript.slice(0, 8) == hex"4c33425553310000");
-        require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 1);
+        require(int(bytes.concat(transcript.slice(8, 9), hex"00")) == 2);
         require(int(bytes.concat(transcript.slice(9, 13), hex"00000000")) == transcript.length);
         bigint participantCount = int(bytes.concat(transcript.slice(13, 14), hex"00"));
         require(participantCount >= 2 && participantCount <= 8);
@@ -2481,7 +2482,9 @@ function synthesizeHiddenBatchRoute(
         bigint expectedBase = 0;
         bigint activeMembership = 0;
         bigint activeParticipant = 255;
+        bigint activeFixedSize = 0;
         bigint activeBlockSize = 0;
+        bigint activeMaximumSize = 0;
         bigint activeReturnOutput = 65535;
         bytes activeCategory;
         bytes participantBases = hex"";
@@ -2489,11 +2492,12 @@ function synthesizeHiddenBatchRoute(
         bytes participantLbcs = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
           require(cursor + 77 <= transcript.length);
-          bigint base = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
+          bigint base = expectedBase;
+          bigint fixedSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
           bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
           bigint lbcLength = int(bytes.concat(transcript.slice(cursor + 4, cursor + 6), hex"00"));
           cursor = cursor + 6;
-          require(base == expectedBase && blockSize >= 1 && lbcLength > 0);
+          require(fixedSize >= 1 && blockSize >= fixedSize && lbcLength > 0);
           participantBases = bytes.concat(participantBases, bytes2(base));
           participantSizes = bytes.concat(participantSizes, bytes2(blockSize));
           expectedBase = expectedBase + blockSize;
@@ -2503,9 +2507,10 @@ function synthesizeHiddenBatchRoute(
           participantLbcs = bytes.concat(participantLbcs, bytes2(lbcLength), participantLbc);
           bytes category = transcript.slice(cursor, cursor + 32);
           bytes policyHash = transcript.slice(cursor + 32, cursor + 64);
-          bigint trailingBase = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
-          bigint trailingCapacity = int(bytes.concat(transcript.slice(cursor + 66, cursor + 68), hex"00"));
-          bigint returnOutput = int(bytes.concat(transcript.slice(cursor + 68, cursor + 70), hex"00"));
+          bigint maximumSize = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
+          bigint trailingUsed = int(bytes.concat(transcript.slice(cursor + 66, cursor + 68), hex"00"));
+          bigint returnOffset = int(bytes.concat(transcript.slice(cursor + 68, cursor + 70), hex"00"));
+          bigint returnOutput = returnOffset == 65535 ? 65535 : base + returnOffset;
           cursor = cursor + 70;
           require(base < tx.inputs.length && base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
@@ -2515,13 +2520,14 @@ function synthesizeHiddenBatchRoute(
           require(policyHash == sha256(participantLbc));
           require(tx.outputs[base].lockingBytecode == participantLbc
             && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
-          if (trailingCapacity == 0) { require(trailingBase == 65535); }
-          else { require(trailingBase < blockSize && trailingBase + trailingCapacity == blockSize); }
-          require(returnOutput == 65535 || (returnOutput >= base && returnOutput < expectedBase));
+          require(blockSize == fixedSize + trailingUsed && blockSize <= maximumSize);
+          require(returnOffset == 65535 || returnOffset < fixedSize);
           if (base == this.activeInputIndex) {
             activeMembership = activeMembership + 1;
             activeParticipant = participant;
+            activeFixedSize = fixedSize;
             activeBlockSize = blockSize;
+            activeMaximumSize = maximumSize;
             activeReturnOutput = returnOutput;
             activeCategory = category;
           }
@@ -2573,8 +2579,8 @@ function synthesizeHiddenBatchRoute(
           bigint owner = int(bytes.concat(transcript.slice(cursor + 1, cursor + 2), hex"00"));
           bigint consumer = int(bytes.concat(transcript.slice(cursor + 2, cursor + 3), hex"00"));
           require(kind <= 6 && owner < participantCount && consumer < participantCount);
-          bigint sourceSlot = int(bytes.concat(transcript.slice(cursor + 6, cursor + 8), hex"00"));
-          bigint targetSlot = int(bytes.concat(transcript.slice(cursor + 8, cursor + 10), hex"00"));
+          bigint sourceOffset = int(bytes.concat(transcript.slice(cursor + 6, cursor + 8), hex"00"));
+          bigint targetOffset = int(bytes.concat(transcript.slice(cursor + 8, cursor + 10), hex"00"));
           bigint completion = int(bytes.concat(transcript.slice(cursor + 14, cursor + 16), hex"00"));
           bigint parent = int(bytes.concat(transcript.slice(cursor + 16, cursor + 18), hex"00"));
           bigint depth = int(bytes.concat(transcript.slice(cursor + 18, cursor + 19), hex"00"));
@@ -2585,18 +2591,20 @@ function synthesizeHiddenBatchRoute(
           bigint participantSize = int(bytes.concat(
             participantSizes.slice(consumer * 2, consumer * 2 + 2), hex"00"
           ));
+          bigint targetSlot = participantBase + targetOffset;
+          bigint sourceSlot = sourceOffset == 65535 ? 65535 : int(bytes.concat(
+            participantBases.slice(owner * 2, owner * 2 + 2), hex"00"
+          )) + sourceOffset;
           if (kind == 0) {
-            require(effectsStarted == 0 && targetSlot == participantBase);
+            require(effectsStarted == 0 && targetOffset == 0);
             if (row == 0) {
-              require(parent == 65535 && depth == 0 && sourceSlot == 65535 && owner == consumer);
+              require(parent == 65535 && depth == 0 && sourceOffset == 65535 && owner == consumer);
               rootSubtreeEnd = subtreeEnd;
             } else {
               require(parent < invocationRows && depth >= 1 && depth <= 7);
               require(owner == int(bytes.concat(rowConsumers.slice(parent, parent + 1), hex"00")));
               require(depth == int(bytes.concat(rowDepths.slice(parent, parent + 1), hex"00")) + 1);
-              require(sourceSlot == int(bytes.concat(
-                participantBases.slice(owner * 2, owner * 2 + 2), hex"00"
-              )));
+              require(sourceOffset == 0);
             }
             require(subtreeEnd >= row && subtreeEnd < rowCount && completion == subtreeEnd + 1);
             rowConsumers = bytes.concat(rowConsumers, bytes1(consumer));
@@ -2606,10 +2614,9 @@ function synthesizeHiddenBatchRoute(
             require((kind == 1 || kind == 2 || kind == 3 || kind == 4 || kind == 6)
               && invocationRows > 0);
             effectsStarted = 1;
-            require(owner == consumer && sourceSlot == targetSlot
-              && targetSlot >= participantBase && targetSlot < participantBase + participantSize);
+            require(owner == consumer && sourceOffset == targetOffset && targetOffset < participantSize);
             require(int(bytes.concat(transcript.slice(cursor + 3, cursor + 5), hex"00"))
-              == targetSlot - participantBase);
+              == targetOffset);
             require(transcript.slice(cursor + 10, cursor + 14) == hex"00000000");
             require(completion == int(bytes.concat(transcript.slice(cursor + 3, cursor + 5), hex"00")));
             if (kind == 1) {
@@ -2926,7 +2933,7 @@ function synthesizeHiddenBatchRoute(
         require(cursor == transcript.length && consumedLocalRows == expectedLocalRows
           && batchCursor == localBatch.length);
         ${!graphExecutionContext ? '' : `
-        require(suppliedBlockSize == activeBlockSize);
+        require(suppliedFixedSize == activeFixedSize && suppliedBlockSize == activeMaximumSize);
         require(suppliedEmissions == expectedEmissions);
         require(suppliedCallers == expectedCallers);
         require(suppliedSettlementBoundary == activeSettlementBoundary);
@@ -2963,7 +2970,8 @@ function synthesizeHiddenBatchRoute(
           __scb_verify_single_tx(
             __internal__singleTxTranscript, rowCount, batchBlob
             ${!graphExecutionContext ? '' : `,
-            __internal__graphBlockSize, __internal__graphEmissions, __internal__graphCallers,
+            __internal__graphFixedSize, __internal__graphBlockSize,
+            __internal__graphEmissions, __internal__graphCallers,
             __internal__graphSettlementBoundary, __internal__graphCompletionPositions,
             __internal__graphSettlementTable`}
           );

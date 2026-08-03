@@ -421,7 +421,8 @@ function forwardedWitnessMiss(
     if (!(arg instanceof IdentifierNode)) continue;
     const name = arg.name;
     if (!name.startsWith('__internal__')) continue;
-    if (name === '__internal__graphBlockSize' || name === '__internal__returnOutputIdx') continue;
+    if (name === '__internal__graphFixedSize' || name === '__internal__graphBlockSize'
+      || name === '__internal__returnOutputIdx') continue;
     if (targetFunc.parameters[i]?.name === '__internal__returnOutputIdx') continue;
     if (arg.functionReference || constantExpressions.has(name)) continue;
     // Only a FORWARDED witness: one the target declares as a parameter. An `__internal__*` local the caller
@@ -9666,6 +9667,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitIdentifier(node: IdentifierNode): Node {
+    if (node.name === '__internal__graphFixedSize') {
+      const blockLayout = this.currentFunction.blockLayout;
+      if (!this.currentFunction.hiddenBatchRoute || blockLayout === undefined) {
+        throw new Error('Compiler-owned graph fixed size used outside an SCB1 route');
+      }
+      this.emit(encodeInt(BigInt(blockLayout.trailingBase ?? blockLayout.blockSize)),
+        { location: node.location, positionHint: PositionHint.START });
+      this.pushToStack('(value)');
+      return node;
+    }
     if (node.name === '__internal__graphBlockSize') {
       const blockSize = this.currentFunction.blockLayout?.blockSize;
       if (!this.currentFunction.hiddenBatchRoute || blockSize === undefined) {

@@ -43,7 +43,10 @@ bytecode; every participant verifier reads that physical byte region.
 
 Applications supply calls and ordinary transaction funding—not global indices or protocol identities. The
 compiler publishes admitted selectors, call modes, schemas, occurrence bounds, block slots, and effect bounds;
-the SDK derives the physical layout and transcript from those artifacts.
+the SDK derives the physical layout and transcript from those artifacts. Contract artifacts commit fixed
+prefixes and maximum trailing capacity; each transaction commits actual trailing use. Later participant bases
+are prefix sums of those authenticated actual spans, so chunk cardinality never becomes an application-supplied
+absolute index and unused capacity consumes no transaction slots.
 
 Unsupported recursion, dynamic cardinality, call options, delegate contexts, introspection, or effect shapes
 fail with a named compiler or SDK diagnostic. A refusal must be resolved in the application shape; there is no
@@ -51,7 +54,7 @@ legacy mode or controller-backed fallback.
 
 ## Limits
 
-Version 1 admits at most five physical participants and 24 transcript rows. Repeated invocations of the same
+Version 2 admits at most five physical participants and 24 transcript rows. Repeated invocations of the same
 physical contract do not consume another participant. The five-participant ceiling is the largest measured
 representative returning chain below stock BCH-2026 operation density; the adjacent six-participant chain is
 refused. `layer3.SINGLE_TX_BUS_CAPACITY` publishes this limit. Exact finalized-byte and VM preflight still apply

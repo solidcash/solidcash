@@ -92,4 +92,6 @@ updates cannot be committed.
 - `layer3-single-transaction-bus-protocol.md` defines the canonical protocol.
 - `state-journal-protocol.md` defines normative journal semantics.
 - `layer3-coverage-matrix.md` records stable acceptance and security coverage.
+- `layer3-external-audit-handoff-opus.md` gives an independent reviewer the threat model, code map, and
+  reproducible production gates.
 - `archive/journal-message-bus/` preserves dated implementation, benchmark, and audit evidence.

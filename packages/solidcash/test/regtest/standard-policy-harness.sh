@@ -2,8 +2,10 @@
 # Reproducible live BCHN proof for the controllerless single-transaction bus.
 #
 # The temporary Compose override runs BCHN with mainnet standard relay policy. No tracked file is edited, and
-# the original regtest service is restored on exit. Every selected test creates only participant/resource UTXOs,
-# then broadcasts one controllerless application transaction; none creates or spends a controller/verifier UTXO.
+# the original regtest service is restored on exit. Every selected test deploys participant resources and each
+# participant's static verifier pool once, then broadcasts one controllerless application transaction. That final
+# transaction consumes and recreates a genesis verifier for each participant; it creates no execution-specific
+# controller, verifier, root, or setup UTXO.
 #
 # Usage from the repository root:
 #   bash packages/solidcash/test/regtest/standard-policy-harness.sh

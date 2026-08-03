@@ -142,6 +142,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // ---------------------------------------------------------------------------
 
   private feeFunderPool: Utxo[] = [];
+  private feeFunderRefill: Promise<void> | undefined;
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
@@ -149,7 +150,14 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
     // Fast path: serve pre-created fee funders for the STB dummy pattern
     if (address === RegtestNetworkProvider.DUMMY_FUNDER_LBC && !utxo.token) {
-      if (this.feeFunderPool.length === 0) await this.refillFeeFunderPool();
+      if (this.feeFunderPool.length === 0) {
+        if (!this.feeFunderRefill) {
+          this.feeFunderRefill = this.refillFeeFunderPool().finally(() => {
+            this.feeFunderRefill = undefined;
+          });
+        }
+        await this.feeFunderRefill;
+      }
       if (this.feeFunderPool.length > 0) {
         const pooled = this.feeFunderPool.pop()!;
         utxo.txid = pooled.txid;

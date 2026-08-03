@@ -1615,13 +1615,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
     // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
     const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
-    for (let row = 0; row < rowCount && cursor + (valueMode ? 21 : 12) <= blob.length; row++) {
+    for (let row = 0; row < rowCount; row++) {
+      const header = 12 + (blob[4] === 2 ? 1 : 0) + (valueMode ? 9 : 0);
+      if (cursor + header > blob.length) break;
       const selector = binToHex(blob.slice(cursor, cursor + 4));
       const handler = capability.handlers.find((candidate) => candidate.selector === selector);
       if (handler) reachedHandlers.push(handler);
       const argsLengthOffset = cursor + 10;
       const argsLength = blob[argsLengthOffset] | (blob[argsLengthOffset + 1] << 8);
-      cursor += (valueMode ? 21 : 12) + argsLength;
+      cursor += header + argsLength;
     }
     const reachedFtTransfers = reachedHandlers.reduce((sum, handler) =>
       sum + (handler.tokenContainerAccesses ?? []).reduce((inner, access) =>

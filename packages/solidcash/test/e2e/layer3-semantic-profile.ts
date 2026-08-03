@@ -1,5 +1,7 @@
 import { encodeTransactionOutput } from '@bitauth/libauth';
-import { MockNetworkProvider, type ConsensusLimits, VmTarget } from '../../src/index.js';
+import {
+  MockNetworkProvider, RegtestNetworkProvider, type ConsensusLimits, VmTarget,
+} from '../../src/index.js';
 
 /**
  * BCH-2026 semantic-only Layer-3 test profile.
@@ -50,6 +52,27 @@ export function createLayer3SemanticTestProvider(): MockNetworkProvider {
     consensusLimits: { ...LAYER3_SEMANTIC_TEST_PROFILE.consensusLimits },
     policy: { ...LAYER3_SEMANTIC_TEST_PROFILE.policy },
   });
+}
+
+let liveCapstoneProvider: RegtestNetworkProvider | undefined;
+
+/**
+ * Provider for controllerless capstones. The ordinary suite uses the relaxed semantic profile; an explicit
+ * `TESTS_USE_REGTEST=true` run builds every participant/resource UTXO against BCHN and broadcasts the same
+ * finalized transaction to the node, so the result is live evidence rather than a mock-provider inference.
+ */
+export function createLayer3CapstoneTestProvider(): MockNetworkProvider | RegtestNetworkProvider {
+  if (!process.env.TESTS_USE_REGTEST) return createLayer3SemanticTestProvider();
+  if (!liveCapstoneProvider) {
+    liveCapstoneProvider = new RegtestNetworkProvider({
+      rpcUrl: process.env.REGTEST_RPC_URL ?? 'http://localhost:18443',
+      rpcUser: process.env.REGTEST_RPC_USER ?? 'user',
+      rpcPassword: process.env.REGTEST_RPC_PASSWORD ?? 'password',
+      electrumHost: process.env.REGTEST_ELECTRUM_HOST ?? 'localhost',
+      electrumPort: Number(process.env.REGTEST_ELECTRUM_PORT ?? '50003'),
+    });
+  }
+  return liveCapstoneProvider;
 }
 
 /** BCHN's default dust relay fee, in satoshis per kilobyte. */

@@ -22,7 +22,7 @@ import {
   createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
 } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
-import { createLayer3SemanticTestProvider } from './layer3-semantic-profile.js';
+import { createLayer3CapstoneTestProvider } from './layer3-semantic-profile.js';
 import { generateLibauthSourceOutputs } from '../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -218,7 +218,7 @@ const mutateInputZero = (
 
 describe('layer3.compose controllerless transaction', () => {
   it('reconstructs and authenticates msg.sender, msg.sig, msg.data, and tx.origin', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeContextCallee() {
       function check(address expectedSender, bytes4 expectedSig, address expectedOrigin) public {
         require(msg.sender == expectedSender && msg.sig == expectedSig
@@ -273,7 +273,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('settles repeated callsites through one physical participant in compiler-authored order', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeRepeatedSink() {
       function ping(int value) public { require(value >= 0); }
     }`, { forceStateful: true });
@@ -325,7 +325,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('settles fan-out to two independently authenticated physical participants', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeFanoutSink() {
       function ping(int value) public { require(value >= 0); }
     }`, { forceStateful: true });
@@ -373,7 +373,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates taken and untaken conditional call reachability exactly', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeBranchSink() {
       function ping(int value) public { require(value >= 0); }
     }`, { forceStateful: true });
@@ -430,7 +430,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates bounded-loop occurrence floors, ceilings, and exact row consumption', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeLoopSink() {
       function ping(int value) public { require(value >= 0); }
     }`, { forceStateful: true });
@@ -483,7 +483,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates staticcall mode and enforces a read-only participant snapshot', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const connect = async (artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
       const base = new Contract(artifact, [], { provider });
       const setup = await setupStatefulUtxos(
@@ -568,7 +568,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('decodes and authenticates a low-level target, selector, calldata, and result', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const targetArtifact = compileString(`contract ComposeRawTarget() {
       function echo(int value) public pure returns (int) { return value; }
     }`, { forceStateful: true });
@@ -617,7 +617,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('co-spends a compiler-positioned blockhash oracle in the controllerless participant block', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const before = await provider.getBlockHeight();
     await provider.mine(1);
     const height = before + 1;
@@ -701,7 +701,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('co-spends and recreates a keccak sidecar at its exact controllerless slot', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const callerArtifact = compileString(`
       interface IComposeKeccakSink { function accept(bytes32 value); }
       contract ComposeKeccakCaller() {
@@ -775,7 +775,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('co-spends and recreates an ecrecover A/B pair at exact controllerless slots', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const wallet = new ethers.Wallet(`0x${'11'.repeat(32)}`);
     const message = 'controllerless-single-tx-bus';
     const signature = await wallet.signMessage(message);
@@ -864,7 +864,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('builds and broadcasts one transaction for two existing participants without setup execution', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(CALLEE, { forceStateful: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
@@ -932,7 +932,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('converges nested authenticated returns across an A-to-B-to-C graph', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const leafArtifact = compileString(`contract ComposeLeaf() {
       function leaf(int value) public pure returns (int) { return value * 2; }
     }`, { forceStateful: true });
@@ -989,7 +989,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('binds an emitted event row to its absolute physical output', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeEventCallee() {
       event Settled(int value);
       function settle(int value) public { emit Settled(value); require(true); }
@@ -1039,7 +1039,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('settles an authenticated mapping entry in a later participant block', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeMappingCallee() {
       mapping(bigint => bigint) values;
       function set(bigint key, bigint value) public {
@@ -1111,7 +1111,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates a created dynamic-state chunk inside the trailing region', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeDynamicCallee() {
       bytes note;
       function set(bytes value) public { this.note = value; require(value.length > 0); }
@@ -1165,7 +1165,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates deletion when a dynamic-state chunk run shrinks', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeShrinkCallee() {
       bytes note;
       function set(bytes value) public { this.note = value; require(value.length > 0); }
@@ -1224,7 +1224,7 @@ describe('layer3.compose controllerless transaction', () => {
   }, 120_000);
 
   it('authenticates a BCH transfer and its satoshi-container settlement', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeValueCallee() {
       event Paid(bigint amount);
       function pay(bytes recipient, bigint amount) public {
@@ -1272,21 +1272,23 @@ describe('layer3.compose controllerless transaction', () => {
       output.amount === amount && !output.token
       && typeof output.to !== 'string' && binToHex(output.to) === binToHex(recipient));
     expect(transferOutput).toBeGreaterThan(0);
-    for (const mutation of [
-      'carrier-value', 'carrier-value-drop', 'carrier-satoshi', 'carrier-satoshi-drop',
-    ] as const) {
-      const hostileCarrier = await composition.build();
-      mutateInputZero(hostileCarrier, '', mutation);
-      await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+    if (!process.env.TESTS_USE_REGTEST) {
+      for (const mutation of [
+        'carrier-value', 'carrier-value-drop', 'carrier-satoshi', 'carrier-satoshi-drop',
+      ] as const) {
+        const hostileCarrier = await composition.build();
+        mutateInputZero(hostileCarrier, '', mutation);
+        await expect(provider.sendRawTransaction(raw(hostileCarrier))).rejects.toThrow();
+      }
+      const hostileOutput = await composition.build();
+      hostileOutput.outputs[transferOutput].amount += 1n;
+      await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     }
-    const hostileOutput = await composition.build();
-    hostileOutput.outputs[transferOutput].amount += 1n;
-    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
-  it('authenticates a fungible-token container and recipient settlement', async () => {
-    const provider = createLayer3SemanticTestProvider();
+  it('authenticates repeated fungible-token calls against one container and recipient settlement', async () => {
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeTokenCallee() {
       function send(bytes32 category, bytes20 recipient, bigint amount) public {
         require(this.tokens[category].tokenAmount >= amount);
@@ -1306,6 +1308,7 @@ describe('layer3.compose controllerless transaction', () => {
       contract ComposeTokenCaller(address calleeAddress) {
         function prepare(bytes32 category, bytes20 recipient, bigint amount) public {
           IComposeTokenCallee(calleeAddress).send(category, recipient, amount);
+          IComposeTokenCallee(calleeAddress).send(category, recipient, amount);
           require(true);
         }
       }
@@ -1324,30 +1327,37 @@ describe('layer3.compose controllerless transaction', () => {
       calls: [
         caller.call.prepare(category, alicePkh, amount),
         callee.call.send(category, alicePkh, amount),
+        callee.call.send(category, alicePkh, amount),
       ],
       funder: fee,
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
 
     const built = await composition.build();
-    const tokenOutput = built.outputs.findIndex((output) =>
-      output.token?.category === token.category && output.token.amount === amount && !output.token.nft);
-    expect(tokenOutput).toBeGreaterThan(0);
-    for (const mutation of [
-      'carrier-token', 'carrier-token-drop', 'carrier-token-container', 'carrier-token-container-drop',
-    ] as const) {
-      const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
-      await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
+    const tokenOutputs = built.outputs.map((output, index) => ({ output, index })).filter(({ output }) =>
+      output.token?.category === token.category && output.token.amount === amount && !output.token.nft
+      && typeof output.to !== 'string' && binToHex(output.to) === binToHex(
+        new Uint8Array([0x76, 0xa9, 0x14, ...alicePkh, 0x88, 0xac]),
+      ));
+    expect(tokenOutputs.map(({ index }) => index)).toEqual([3, 4]);
+    const tokenOutput = tokenOutputs[0].index;
+    if (!process.env.TESTS_USE_REGTEST) {
+      for (const mutation of [
+        'carrier-token', 'carrier-token-drop', 'carrier-token-container', 'carrier-token-container-drop',
+      ] as const) {
+        const hostile = await composition.build();
+        mutateInputZero(hostile, '', mutation);
+        await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
+      }
+      const hostileOutput = await composition.build();
+      hostileOutput.outputs[tokenOutput].token!.amount += 1n;
+      await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     }
-    const hostileOutput = await composition.build();
-    hostileOutput.outputs[tokenOutput].token!.amount += 1n;
-    await expect(provider.sendRawTransaction(raw(hostileOutput))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
 
   it('authenticates NFT capability, commitment, recipient, and mixed-container settlement', async () => {
-    const provider = createLayer3SemanticTestProvider();
+    const provider = createLayer3CapstoneTestProvider();
     const calleeArtifact = compileString(`contract ComposeNftCallee() {
       function send(bytes32 category, bytes20 recipient, bytes commitment, int capability) public {
         require(this.tokens[category].tokenAmount >= 0);

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
-import { encodeHiddenBatch } from '../../src/layer3/hidden-batch.js';
+import { encodeMessageBus } from '../../src/layer3/message-bus.js';
 import { alicePkh, bobPkh } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -19,7 +19,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  * scalar row flushes the entry unchanged rather than leaving its post-state unconstrained.
  */
 
-const BUS = { forceStateful: true, hiddenBatch: true };
+const BUS = { forceStateful: true, messageBus: true };
 
 /** Scalar `bump` beside entry-writing `credit`: the shape the gate refused. */
 const MIXED = `pragma solidcash >=0.8.0;
@@ -99,13 +99,13 @@ describe('X94 a scalar handler joins a collection route', () => {
   it('admits the scalar handler and leaves the block layout the collection route already had', () => {
     const mixed = compileString(MIXED, BUS);
     const collectionOnly = compileString(COLLECTION_ONLY, BUS);
-    expect(mixed.hiddenBatch?.handlers.map((handler) => [handler.name, handler.eligible]))
+    expect(mixed.messageBus?.handlers.map((handler) => [handler.name, handler.eligible]))
       .toEqual([['bump', true], ['credit', true], ['checkTotal', true], ['checkBalance', true]]);
     // The soundness claim, in the only place it can be read off a compile: admitting the scalar rows adds no
     // slot and moves none. The entry slot the covenant addresses is the SAME slot at the SAME offset.
-    expect(mixed.hiddenBatch?.route.blockLayout)
-      .toEqual(collectionOnly.hiddenBatch?.route.blockLayout);
-    expect(mixed.hiddenBatch?.route.blockLayout?.slots.map((slot: any) => slot.kind))
+    expect(mixed.messageBus?.route.blockLayout)
+      .toEqual(collectionOnly.messageBus?.route.blockLayout);
+    expect(mixed.messageBus?.route.blockLayout?.slots.map((slot: any) => slot.kind))
       .toEqual(['master', 'dataNft', 'entry']);
   }, 180_000);
 
@@ -125,7 +125,7 @@ describe('X94 a scalar handler joins a collection route', () => {
    * still reserves. The entry must come back UNCHANGED - not merely "the transaction verified" - which is the
    * difference between the slot being flushed from its hoisted cache and being left unconstrained.
    *
-   * The entry witness has to be supplied by hand: no row binds it, which `encodeHiddenBatch` reports rather
+   * The entry witness has to be supplied by hand: no row binds it, which `encodeMessageBus` reports rather
    * than guessing. That is the honest shape of an all-scalar batch on a route that reserves an entry.
    */
   it('settles an ALL-SCALAR batch and flushes the reserved entry unchanged', async () => {
@@ -133,7 +133,7 @@ describe('X94 a scalar handler joins a collection route', () => {
     const contract = await deploy(MIXED);
     await contract.getFunction('credit')(alicePkh, 100n).send();
     await contract.getFunction('credit')(bobPkh, 40n).send();
-    const encoded = encodeHiddenBatch(
+    const encoded = encodeMessageBus(
       artifact,
       [{ function: 'bump', args: [3n] }, { function: 'bump', args: [4n] }],
       { __scb_key_balances_0: alicePkh },
@@ -180,16 +180,16 @@ describe('X94 a scalar handler joins a collection route', () => {
 
     const honest = await deploy(MIXED);
     await honest.getFunction('credit')(alicePkh, 100n).send();
-    const clean = encodeHiddenBatch(artifact, rows);
+    const clean = encodeMessageBus(artifact, rows);
     expect(await failingInput(() => honest._batchRaw(clean.blob, clean.routeWitnesses).send())).toBe(null);
     await honest.getFunction('checkBalance')(alicePkh, 105n).send();
 
     const attacked = await deploy(MIXED);
     await attacked.getFunction('credit')(alicePkh, 100n).send();
-    const forged = encodeHiddenBatch(artifact, rows);
+    const forged = encodeMessageBus(artifact, rows);
     const blob = Uint8Array.from(forged.blob);
-    const scalar = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'bump')!;
-    const entry = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'credit')!;
+    const scalar = artifact.messageBus!.handlers.find((handler) => handler.name === 'bump')!;
+    const entry = artifact.messageBus!.handlers.find((handler) => handler.name === 'credit')!;
     const at = indexOfBytes(blob, hexToBin(scalar.selector));
     expect(at).toBeGreaterThanOrEqual(0);
     blob.set(hexToBin(entry.selector), at);
@@ -205,7 +205,7 @@ describe('X94 a scalar handler joins a collection route', () => {
    */
   it('still refuses the scalar sibling on a per-row entry route', () => {
     const artifact = compileString(PER_ROW, BUS);
-    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.find((handler) => handler.name === 'move')).toMatchObject({ eligible: true });
     expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({
       eligible: false, rejectionReason: 'mixed-scalar-and-collection-route-not-enabled',
@@ -214,7 +214,7 @@ describe('X94 a scalar handler joins a collection route', () => {
     expect(handlers.find((handler) => handler.name === 'move')?.batchKeyWitnesses
       ?.some((witness: any) => witness.perRow)).toBe(true);
     // And the slots that makes unbindable are real route inputs, one per row, with no row to bind them.
-    expect(artifact.hiddenBatch?.route.inputs.map((input: any) => input.name))
+    expect(artifact.messageBus?.route.inputs.map((input: any) => input.name))
       .toEqual(expect.arrayContaining(['__scb_key_balances_0_row_r0', '__scb_key_balances_0_row_r1']));
   }, 180_000);
 
@@ -241,7 +241,7 @@ contract X94Result() {
     this.balances[who] = this.balances[who] + a; emit Moved(a); require(a >= 0);
   }
 }`, BUS);
-    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    const handlers = artifact.messageBus?.handlers ?? [];
     // Admitting `totalSupply` makes the route result-shaped, which refuses BOTH emitters: one handler against
     // the two the route already carried. The guard keeps the two.
     expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
@@ -261,7 +261,7 @@ contract X94Event() {
   function credit(bytes20 who, bigint a) public { this.balances[who] = this.balances[who] + a; require(a >= 0); }
   function debit(bytes20 who, bigint a) public { this.balances[who] = this.balances[who] - a; require(a >= 0); }
 }`, BUS);
-    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
       .toEqual(['credit', 'debit']);
     expect(handlers.find((handler) => handler.name === 'bump')).toMatchObject({
@@ -304,7 +304,7 @@ contract X88Iter() {
   it('compiles the handler that used to crash the generated wrapper, with no route and a named reason', () => {
     for (const body of [scanEntries, scanKeys]) {
       const artifact = compileString(iterating(body), BUS);
-      expect(artifact.hiddenBatch).toBeUndefined();
+      expect(artifact.messageBus).toBeUndefined();
       expect((artifact.diagnostics ?? []).map((entry) => entry.message).join(' '))
         .toContain("'scan': collection-iteration-handler-not-enabled");
     }
@@ -320,12 +320,12 @@ contract X88Iter() {
       scanEntries,
       'function credit(bytes20 who, bigint a) public { this.m[who] = this.m[who] + a; require(a >= 0); }',
     ), BUS);
-    const handlers = artifact.hiddenBatch?.handlers ?? [];
+    const handlers = artifact.messageBus?.handlers ?? [];
     expect(handlers.find((handler) => handler.name === 'scan')).toMatchObject({
       eligible: false, rejectionReason: 'collection-iteration-handler-not-enabled',
     });
     expect(handlers.find((handler) => handler.name === 'credit')).toMatchObject({ eligible: true });
-    expect(artifact.hiddenBatch?.route.entryAccesses)
+    expect(artifact.messageBus?.route.entryAccesses)
       .toEqual([{ collection: 'm', keyParams: ['__scb_key_m_0'], operations: ['read', 'write'] }]);
   }, 240_000);
 });

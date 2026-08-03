@@ -16,7 +16,7 @@ The implementation scope intentionally excludes sharded/faceted contracts. It co
 1. R1 scalar state journaling and callable internal state handlers.
 2. R2 dynamic bytes/string state journaling.
 3. R3 collection/mapping and dynamic-array journaling.
-4. R4 compiler-hidden owner-local SCB1 batching.
+4. R4 inferred owner-local message-bus batching.
 5. R5 repeated calls from one physical caller to one physical external callee, default-off.
 
 The broader multi-participant/cyclic message bus is research only and is not an implemented or
@@ -25,8 +25,8 @@ approved release surface.
 ## Authoritative documents
 
 - `packages/solidc/docs/invocation-transcript-research.md`
-- `packages/solidc/docs/compiler-hidden-batch-v1.md`
-- `packages/solidc/docs/compiler-hidden-batch-v1-audit.md`
+- `packages/solidc/docs/compiler-message-bus-v1.md`
+- `packages/solidc/docs/compiler-message-bus-v1-audit.md`
 - `packages/solidc/docs/state-journal-audit.md`
 
 Treat the first two as design/specification material and the latter two as historical independent
@@ -140,7 +140,7 @@ Focused gates:
 
 ```text
 CollectionJournalRelease3.test.ts: 14/14 pass
-HiddenBatchRelease4.test.ts + RepeatedExternalBatchRelease5.test.ts: 29/29 pass
+MessageBusRelease4.test.ts + RepeatedExternalBatchRelease5.test.ts: 29/29 pass
 ScalarJournal.test.ts + CollectionJournal.test.ts: 16/16 pass
 ```
 
@@ -164,7 +164,7 @@ as passing.
    - Decision 2: sound but specific corrections remain before graduation;
    - Decision 3: implementation defect permits wrong accepted state.
 8. Keep R5 default-off unless the separate graduation gates in
-   `compiler-hidden-batch-v1.md` are independently satisfied. Audit completion alone does not imply
+   `compiler-message-bus-v1.md` are independently satisfied. Audit completion alone does not imply
    default-on approval.
 
 ## Definition of done for the next reviewer

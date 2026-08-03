@@ -2,8 +2,8 @@ export * from './Errors.js';
 export * as utils from '@solidcash/utils';
 export { compileFile, compileFileMulti, compileFileSplit } from './compileFile.js';
 export {
-  assertNoReservedHiddenBatchSelector,
-  classifyHiddenBatchRejection,
+  assertNoReservedMessageBusSelector,
+  classifyMessageBusRejection,
   compileString, compileStringMulti, compileStringSplit, type CompileOptions, type SplitCompileOptions,
 } from './compiler.js';
 export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '@solidcash/utils';

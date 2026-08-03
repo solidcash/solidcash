@@ -221,7 +221,7 @@ export const F3_CENSUS_BUS_FAILURES: Record<string, Record<string, number>> = {
     "UnboundReturnCallError: Function '..' consumes the return value of the external call '..',": 5,
     "AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column ": 3,
     "Error: Expected variable '..' does not exist on the stack": 3,
-    "Error: The hidden-batch route generated for '..' does not parse - Unexpected token '..' at": 3,
+    "Error: The message-bus route generated for '..' does not parse - Unexpected token '..' at": 3,
     "StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line": 2,
     'ReturnTypeMismatchError: Return type mismatch: expected (bytes) but found () at Line N, Co': 2,
     "InvalidParameterTypeError: Found parameters (address) in call to function '..' where param": 1,

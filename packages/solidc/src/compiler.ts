@@ -3,7 +3,7 @@ import { binToHex } from '@bitauth/libauth';
 import {
   Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
-  encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_HIDDEN_BATCH_BLOB_BYTES,
+  encodeComputedBlockhashKey, FunctionType, generateSourceMap, MappingType, MAX_MESSAGE_BUS_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, SINGLE_TX_BUS_DOMAIN_HEX,
   SINGLE_TX_BUS_MAX_PARTICIPANTS, SINGLE_TX_BUS_MAX_ROWS,
@@ -128,7 +128,8 @@ function normalizeCompilerOptions(options: CompilerOptions): CompilerOptions {
   return {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
-    hiddenBatch: options.hiddenBatch === false ? false : true,
+    messageBus: options.messageBus === false ? false : true,
+    __messageBusExplicitlyDisabled: options.__messageBusExplicitlyDisabled === true,
     repeatedExternalBatch: options.repeatedExternalBatch !== false,
     __requireRepeatedExternalBatch: options.repeatedExternalBatch === true,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
@@ -186,7 +187,7 @@ function recordExternalHandlerSpan(
 }
 
 /** Name prefixes of the internal clones route synthesis dispatches a source handler through. */
-const HIDDEN_BATCH_CLONE_PREFIXES = [
+const MESSAGE_BUS_CLONE_PREFIXES = [
   '__scb_resource_', '__scb_handler_', '__scb_graph_', '__scb_array_', '__scb_external_',
 ];
 
@@ -218,7 +219,7 @@ function attributeExternalHandlerRefusal(
   if (candidates.length === 0) return [];
   const message = error instanceof Error ? error.message : '';
   let named: string | undefined;
-  for (const prefix of HIDDEN_BATCH_CLONE_PREFIXES) {
+  for (const prefix of MESSAGE_BUS_CLONE_PREFIXES) {
     for (const span of candidates) {
       if (!message.includes(`${prefix}${span.name}`)) continue;
       if (named === undefined || span.name.length > named.length) named = span.name;
@@ -236,7 +237,7 @@ function attributeExternalHandlerRefusal(
 
 /** Handlers the route actually admitted, or 0 when the artifact carries no route at all. */
 function admittedHandlerCount(artifact: Artifact): number {
-  return (artifact.hiddenBatch?.handlers ?? []).filter((handler) => handler.eligible).length;
+  return (artifact.messageBus?.handlers ?? []).filter((handler) => handler.eligible).length;
 }
 
 /** Rounds of one-handler-at-a-time attribution before the whole-route refusal is reached. */
@@ -282,7 +283,7 @@ function compileWithExternalAdmissionFallback(
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
   };
-  if (!mergedCompilerOptions.hiddenBatch) return compileOnce(true);
+  if (!mergedCompilerOptions.messageBus) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
   // spelling makes the route TRY a handler its refusal used to hide, and the solc corpus turned up four files
   // where that reaches a pre-existing route-generation gap ('Block layout not available while compiling
@@ -390,7 +391,7 @@ function compileWithExternalAdmissionFallback(
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated SCB1
   // clone); if it succeeds, the resolved compiler options truthfully publish the fallback as direct-only.
-  const directOptions = { ...mergedCompilerOptions, hiddenBatch: false };
+  const directOptions = { ...mergedCompilerOptions, messageBus: false };
   try {
     return compileResolvedAst(
       parseAndResolve(code, directOptions, errorListener, primaryContractName),
@@ -412,12 +413,14 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     if (hit) return structuredClone(hit);
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
+  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.__messageBusExplicitlyDisabled
+    ?? (artifactCompilerOptions.messageBus === false);
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
   if (process.env.SOLIDC_SKIP_LAYER3_BINDER !== '1'
-    && !artifactCompilerOptions.__layer3VerifierProgram && artifact.hiddenBatch?.verifierProgram) {
-    const verifierProgram = artifact.hiddenBatch.verifierProgram;
+    && !artifactCompilerOptions.__layer3VerifierProgram && artifact.messageBus?.verifierProgram) {
+    const verifierProgram = artifact.messageBus.verifierProgram;
     const binderOptions = normalizeCompilerOptions({
       ...artifactCompilerOptions,
       __layer3VerifierProgram: verifierProgram,
@@ -426,7 +429,7 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
       parseAndResolve(code, binderOptions, errorListener, primaryContractName),
       code, binderOptions,
     );
-    if (artifact.hiddenBatch) artifact.hiddenBatch.verifierProgram = verifierProgram;
+    if (artifact.messageBus) artifact.messageBus.verifierProgram = verifierProgram;
     if (artifact.compiler.options) delete artifact.compiler.options.__layer3VerifierProgram;
   }
   if (cacheable) compileCache.set(cacheKey, artifact);
@@ -479,7 +482,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 
 const SCB1_SELECTOR_HEX = '53434231';
 
-export function assertNoReservedHiddenBatchSelector(
+export function assertNoReservedMessageBusSelector(
   functions: readonly Pick<FunctionDefinitionNode, 'name' | 'functionSelector' | 'location'>[],
 ): void {
   const collision = functions.find((fn) => fn.functionSelector
@@ -487,7 +490,7 @@ export function assertNoReservedHiddenBatchSelector(
   if (!collision) return;
   throw new SolidcDiagnosticError(
     'SCB_RESERVED_SELECTOR_COLLISION',
-    'source function selector collides with reserved hidden batch selector 0x53434231',
+    'source function selector collides with reserved message-bus selector 0x53434231',
     {
       selector: SCB1_SELECTOR_HEX,
       functionName: collision.name,
@@ -499,12 +502,12 @@ export function assertNoReservedHiddenBatchSelector(
   );
 }
 
-export type HiddenBatchStaticRejectionCode = NonNullable<
-NonNullable<Artifact['hiddenBatch']>['handlers'][number]['rejectionCode']
+export type MessageBusStaticRejectionCode = NonNullable<
+NonNullable<Artifact['messageBus']>['handlers'][number]['rejectionCode']
 >;
 
 /** Classify every published route refusal into one of transcript-v1 section 9.2's stable classes. */
-export function classifyHiddenBatchRejection(reason: string): HiddenBatchStaticRejectionCode {
+export function classifyMessageBusRejection(reason: string): MessageBusStaticRejectionCode {
   if (/foreign-(outstate|intermediate-state)/.test(reason)) return 'SCB_FOREIGN_INTERMEDIATE_STATE_READ';
   if (/(future|ancestor|result-before-use)/.test(reason)) return 'SCB_FUTURE_RESULT_DEPENDENCY';
   if (/(unbounded-recursion|external-recursion)/.test(reason)) return 'SCB_EXTERNAL_RECURSION_UNBOUNDED';
@@ -519,7 +522,7 @@ export function classifyHiddenBatchRejection(reason: string): HiddenBatchStaticR
   }
   return 'SCB_UNSUPPORTED_CONSTRUCT';
 }
-const MAX_HIDDEN_BATCH_ROWS = 8;
+const MAX_MESSAGE_BUS_ROWS = 8;
 const RESOURCE_SHAPED_BATCH_ROWS = 2;
 
 type InvocationExternalCall = NonNullable<Artifact['abi'][number]['externalCalls']>[number];
@@ -605,7 +608,7 @@ function applyRolledLoopCeilings(
  * What a user should do about a rejection reason, for the reasons whose remedy is exact. A reason with no entry
  * is still named; inventing a remedy for one would be worse than stating the refusal alone.
  */
-const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
+const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
   'batched-handler-forward-call-not-enabled':
     'declare a statically bounded call shape supported by the controllerless graph route, '
     + 'or move the call into its own handler',
@@ -645,26 +648,26 @@ const HIDDEN_BATCH_REJECTION_REMEDIES: Record<string, string> = {
 };
 
 /**
- * State, by name, why a requested hidden-batch route does not exist.
+ * State, by name, why a requested message-bus route does not exist.
  *
  * Route synthesis records one stable reason per entry point, but the only channel that publishes those reasons
- * is `hiddenBatch.handlers` - which is never built when no entry point survives. Rendering the same reasons
+ * is `messageBus.handlers` - which is never built when no entry point survives. Rendering the same reasons
  * here makes that outcome a refusal the user can read instead of an absent field.
  */
-function hiddenBatchAbsenceMessage(
+function messageBusAbsenceMessage(
   contractName: string, functions: readonly FunctionDefinitionNode[],
 ): string {
-  const head = `No hidden-batch route was synthesized for '${contractName}': it has no SCB1 entry point and `
+  const head = `No message-bus route was synthesized for '${contractName}': it has no SCB1 entry point and `
     + 'cannot participate in a message bus. Only the direct per-function route exists. ';
-  const entryPoints = functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract && !fn.hiddenBatchRoute);
+  const entryPoints = functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract && !fn.messageBusRoute);
   if (entryPoints.length === 0) return `${head}The contract declares no entry point for a route to admit.`;
-  const reasonOf = (fn: FunctionDefinitionNode): string => fn.hiddenBatchRejectionReason
-    ?? (fn.hiddenBatchEligible === true
+  const reasonOf = (fn: FunctionDefinitionNode): string => fn.messageBusRejectionReason
+    ?? (fn.messageBusEligible === true
       ? 'admitted-but-route-abandoned-before-assembly'
       : 'not-examined-by-route-synthesis');
   const stated = entryPoints.map((fn) => `'${fn.name}': ${reasonOf(fn)}`).join('; ');
   const remedies = [...new Set(entryPoints.map(reasonOf))]
-    .map((reason) => HIDDEN_BATCH_REJECTION_REMEDIES[reason]).filter((remedy) => remedy !== undefined);
+    .map((reason) => MESSAGE_BUS_REJECTION_REMEDIES[reason]).filter((remedy) => remedy !== undefined);
   return `${head}Rejected entry points - ${stated}.${remedies.length ? ` To admit one: ${remedies.join('; ')}.` : ''}`;
 }
 
@@ -734,15 +737,15 @@ function supportsSingleTransactionBus(ast: Ast, compilerOptions: CompilerOptions
     || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
 }
 
-function synthesizeHiddenBatchRoute(
+function synthesizeMessageBusRoute(
   ast: Ast, compilerOptions: CompilerOptions, admitExternalHandlers = true,
   normalizeBareEntries = true, relaxResultRouteEffects = true, admitMixedScalarHandlers = true,
   admitBareForwardingHandlers = true,
   attribution?: ExternalAdmissionAttribution,
 ): void {
-  if (!compilerOptions.hiddenBatch) return;
+  if (!compilerOptions.messageBus) return;
   const contract = ast.contract;
-  assertNoReservedHiddenBatchSelector(contract.functions);
+  assertNoReservedMessageBusSelector(contract.functions);
   const functions = contract.functions.filter((fn) => fn.isEntryPoint && !fn.isAbstract);
   // X100. Record every external entry point's span BEFORE any refusal is decided and before anything downstream
   // can throw, so the fallback can attribute a later route-generation failure to the handler containing it.
@@ -1120,7 +1123,7 @@ function synthesizeHiddenBatchRoute(
         // one looks like a loss for nothing. It is not. The names this clause catches beyond collections are
         // DYNAMIC and PACKED array state variables, which `bareEntryAccessOf` declines precisely because they
         // resolve to `StateArrayAssignNode` - and admitting the handler then puts an unbounded array write on a
-        // route beside collection entries, which is the shape NEGATIVE CONTROL 3 in HiddenBatchGatesX76 pins as
+        // route beside collection entries, which is the shape NEGATIVE CONTROL 3 in MessageBusGatesX76 pins as
         // refused. Measured on the corpus, the narrowing's ONLY subject is `EventSubscription.unsubscribe`,
         // whose blocking bare index is `subscriberList[i]` on `address[] public subscriberList` - that exact
         // shape. So the wider predicate buys one contract and costs the control; it stays as it was.
@@ -1424,9 +1427,9 @@ function synthesizeHiddenBatchRoute(
       || (!graphTailCallEligible && footprint.effects.some((effect) => effect === 'external-call')))) {
       reason = 'unresolved-or-effectful-handler';
     }
-    fn.hiddenBatchEligible = reason === undefined;
-    fn.hiddenBatchRejectionReason = reason;
-    fn.hiddenBatchKeyWitnesses = reason === undefined && keyWitnesses.length > 0
+    fn.messageBusEligible = reason === undefined;
+    fn.messageBusRejectionReason = reason;
+    fn.messageBusKeyWitnesses = reason === undefined && keyWitnesses.length > 0
       ? keyWitnesses : undefined;
     if (!reason) eligible.push(fn);
     if (!reason && (graphTailCallEligible
@@ -1496,16 +1499,16 @@ function synthesizeHiddenBatchRoute(
     // INSIDE the entry handler's dispatch arm, so a hand-supplied key makes the derivation co-spend one entry
     // NFT twice. Both are measured, and neither is reachable by widening this predicate.
     const perRowEntryRoute = survivors.some((fn) =>
-      fn.hiddenBatchKeyWitnesses?.some((binding) => binding.perRow));
+      fn.messageBusKeyWitnesses?.some((binding) => binding.perRow));
     if ((dropMixedScalars || !admitMixedScalarHandlers || perRowEntryRoute)
-      && survivors.some((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0)) {
+      && survivors.some((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0)) {
       for (const fn of survivors) {
-        if ((fn.hiddenBatchKeyWitnesses?.length ?? 0) === 0) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
+        if ((fn.messageBusKeyWitnesses?.length ?? 0) === 0) {
+          fn.messageBusEligible = false;
+          fn.messageBusRejectionReason = 'mixed-scalar-and-collection-route-not-enabled';
         }
       }
-      survivors = survivors.filter((fn) => (fn.hiddenBatchKeyWitnesses?.length ?? 0) > 0);
+      survivors = survivors.filter((fn) => (fn.messageBusKeyWitnesses?.length ?? 0) > 0);
     }
     let eventMode = survivors.some((fn) => eligibleFootprint(fn).effects.includes('events'));
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
@@ -1564,11 +1567,11 @@ function synthesizeHiddenBatchRoute(
         const continuationEffect = false;
         if ((!continuationEffect && eligibleFootprint(fn).effects.length > 0)
           || (!relaxResultRouteEffects && eventMode)) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'result-route-requires-effect-free-handlers';
+          fn.messageBusEligible = false;
+          fn.messageBusRejectionReason = 'result-route-requires-effect-free-handlers';
         }
       }
-      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      survivors = survivors.filter((fn) => fn.messageBusEligible === true);
       // Every effect-carrying handler has just been demoted, so no survivor emits or moves value. Recomputing
       // is what lets the route exist at all here: the blocks below refuse a survivor that carries no event
       // precisely because the flag said the route was event-shaped.
@@ -1592,20 +1595,20 @@ function synthesizeHiddenBatchRoute(
         if (directEmits < 1 || effects.length === 0
           || effects.some((effect) => !['events', 'value'].includes(effect))
           || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
+          fn.messageBusEligible = false;
+          fn.messageBusRejectionReason = 'event-route-requires-uniform-events-and-at-most-one-value-transfer';
         } else {
           directEventWidths.add(directEmits);
         }
       }
-      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      survivors = survivors.filter((fn) => fn.messageBusEligible === true);
       // A graph clone binds the unused suffix of a route-wide maximum event frame at the authenticated call
       // site. A wholly flattened route has no such call-site guard: different direct widths would make the
       // unrolled conditional branches reuse incompatible event indices. Keep that older shape fail-closed.
       if (directEventWidths.size > 1 && !survivors.some((fn) => graphTailHandlers.has(fn))) {
         for (const fn of survivors) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'event-route-requires-uniform-events-per-handler';
+          fn.messageBusEligible = false;
+          fn.messageBusRejectionReason = 'event-route-requires-uniform-events-per-handler';
         }
         survivors = [];
       }
@@ -1621,11 +1624,11 @@ function synthesizeHiddenBatchRoute(
         const hasValue = effects.includes('value');
         if (resultMode || effects.some((effect) => !['events', 'value'].includes(effect))
           || (hasValue ? directTransfers !== 1 : directTransfers !== 0)) {
-          fn.hiddenBatchEligible = false;
-          fn.hiddenBatchRejectionReason = 'value-route-requires-at-most-one-direct-transfer-per-handler';
+          fn.messageBusEligible = false;
+          fn.messageBusRejectionReason = 'value-route-requires-at-most-one-direct-transfer-per-handler';
         }
       }
-      survivors = survivors.filter((fn) => fn.hiddenBatchEligible === true);
+      survivors = survivors.filter((fn) => fn.messageBusEligible === true);
     }
     return { survivors, ...modes() };
   };
@@ -1644,11 +1647,11 @@ function synthesizeHiddenBatchRoute(
    * without external entry points therefore sees byte-identical behaviour.
    */
   const verdictSnapshot = new Map(eligible.map((fn) =>
-    [fn, { admitted: fn.hiddenBatchEligible, reason: fn.hiddenBatchRejectionReason }]));
+    [fn, { admitted: fn.messageBusEligible, reason: fn.messageBusRejectionReason }]));
   const restoreVerdicts = (): void => {
     for (const [fn, state] of verdictSnapshot) {
-      fn.hiddenBatchEligible = state.admitted;
-      fn.hiddenBatchRejectionReason = state.reason;
+      fn.messageBusEligible = state.admitted;
+      fn.messageBusRejectionReason = state.reason;
     }
   };
   /**
@@ -1661,7 +1664,7 @@ function synthesizeHiddenBatchRoute(
   const applyBestUniformity = (candidates: FunctionDefinitionNode[]): ReturnType<typeof applyRouteUniformity> => {
     const wide = applyRouteUniformity(candidates, false);
     if (!admitMixedScalarHandlers) return wide;
-    const wideReasons = new Map(candidates.map((fn) => [fn, fn.hiddenBatchRejectionReason]));
+    const wideReasons = new Map(candidates.map((fn) => [fn, fn.messageBusRejectionReason]));
     const wideCount = wide.survivors.length;
     restoreVerdicts();
     const narrow = applyRouteUniformity(candidates, true);
@@ -1669,8 +1672,8 @@ function synthesizeHiddenBatchRoute(
     restoreVerdicts();
     for (const [fn, reason] of wideReasons) {
       if (reason === undefined) continue;
-      fn.hiddenBatchEligible = false;
-      fn.hiddenBatchRejectionReason = reason;
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = reason;
     }
     return wide;
   };
@@ -1680,21 +1683,21 @@ function synthesizeHiddenBatchRoute(
     const publicCandidates = candidates.filter((fn) => fn.visibility !== 'external');
     let selected = applyBestUniformity(candidates);
     if (publicCandidates.length === candidates.length) return selected;
-    const wide = { ...selected, reasons: new Map(candidates.map((fn) => [fn, fn.hiddenBatchRejectionReason])) };
+    const wide = { ...selected, reasons: new Map(candidates.map((fn) => [fn, fn.messageBusRejectionReason])) };
     restoreVerdicts();
     const narrow = applyBestUniformity(publicCandidates);
     if (narrow.survivors.length > wide.survivors.length) {
       for (const fn of candidates) {
-        if (fn.visibility === 'external') fn.hiddenBatchRejectionReason ??= 'external-handler-would-shrink-the-route';
-        if (fn.hiddenBatchRejectionReason !== undefined) fn.hiddenBatchEligible = false;
+        if (fn.visibility === 'external') fn.messageBusRejectionReason ??= 'external-handler-would-shrink-the-route';
+        if (fn.messageBusRejectionReason !== undefined) fn.messageBusEligible = false;
       }
       selected = narrow;
     } else {
       restoreVerdicts();
       for (const [fn, reason] of wide.reasons) {
         if (reason === undefined) continue;
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = reason;
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = reason;
       }
     }
     return selected;
@@ -1703,7 +1706,7 @@ function synthesizeHiddenBatchRoute(
   if (graphBareTailHandlers.size > 0) {
     const widened = {
       ...selection,
-      reasons: new Map(eligible.map((fn) => [fn, fn.hiddenBatchRejectionReason])),
+      reasons: new Map(eligible.map((fn) => [fn, fn.messageBusRejectionReason])),
     };
     restoreVerdicts();
     const priorCandidates = eligible.filter((fn) => !graphBareTailHandlers.has(fn));
@@ -1711,16 +1714,16 @@ function synthesizeHiddenBatchRoute(
     const displaced = prior.survivors.some((fn) => !widened.survivors.includes(fn));
     if (displaced) {
       for (const fn of graphBareTailHandlers) {
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = 'bare-forwarding-handler-would-shrink-the-route';
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = 'bare-forwarding-handler-would-shrink-the-route';
       }
       selection = prior;
     } else {
       restoreVerdicts();
       for (const [fn, reason] of widened.reasons) {
         if (reason === undefined) continue;
-        fn.hiddenBatchEligible = false;
-        fn.hiddenBatchRejectionReason = reason;
+        fn.messageBusEligible = false;
+        fn.messageBusRejectionReason = reason;
       }
       selection = widened;
     }
@@ -1740,7 +1743,7 @@ function synthesizeHiddenBatchRoute(
     computeFunctionSignature(fn.name, fn.parameters.map((parameter) =>
       parameter.type.toString().replace(/address payable/g, 'address'))),
   ));
-  const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_HIDDEN_BATCH_ROWS;
+  const routeMaximumRows = resourceShapedHandler ? RESOURCE_SHAPED_BATCH_ROWS : MAX_MESSAGE_BUS_ROWS;
   // SCB1 graph handlers share one physical route. Plan blockhash reads before SynthesizeBlockOracle runs:
   // every row gets a fixed band whose width is the widest selectable handler, so a different selector cannot
   // shift any later owner's inputs. Computed reads retain the same stable per-call-site keys as the oracle pass.
@@ -1772,7 +1775,7 @@ function synthesizeHiddenBatchRoute(
   // published handlers nor the final survivors, and a payable handler admitted by pass one and demoted by
   // uniformity still widened every row from 12 to 21 bytes. Intersecting with the survivors is also what makes
   // the flag REPRODUCIBLE off the artifact: `handlers[].eligible && handlers[].usesMsgValue` is the same
-  // predicate, and it is the one the SDK encoder now computes (`layer3/hidden-batch.ts`). Counting every
+  // predicate, and it is the one the SDK encoder now computes (`layer3/message-bus.ts`). Counting every
   // published handler instead would agree just as well, but it lets a handler route synthesis REFUSED size the
   // route that was admitted, and buys no admission - `buildDecodeAndCall` maps over `eligible` only.
   const logicalValueMode = eligible.some((fn) => graphMsgValueHandlers.has(fn));
@@ -1917,9 +1920,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     if (graphTailHandlers.has(resourceShapedHandler)) {
       handler.graphEmissionHandler = true;
       handler.graphRuntimeEmissionHandler = graphRuntimeHandlers.has(resourceShapedHandler);
@@ -1982,9 +1985,9 @@ function synthesizeHiddenBatchRoute(
       handler.modifiers = [FunctionModifier.INTERNAL];
       handler.functionId = undefined;
       handler.functionSelector = undefined;
-      handler.hiddenBatchEligible = undefined;
-      handler.hiddenBatchRejectionReason = undefined;
-      handler.hiddenBatchKeyWitnesses = undefined;
+      handler.messageBusEligible = undefined;
+      handler.messageBusRejectionReason = undefined;
+      handler.messageBusKeyWitnesses = undefined;
       handler.forceCollectionJournalPool = true;
       bindEntryKeyParameters(handler, sourceHandler);
       siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -2009,9 +2012,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
     bindEntryKeyParameters(handler, sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -2032,7 +2035,7 @@ function synthesizeHiddenBatchRoute(
     // Admission has already proven and recorded their collection key witnesses, so use that authoritative
     // result too; otherwise the route calls the public handler directly and later inlining substitutes a
     // branch-local __scb_arg_* into a journal initializer hoisted above the branch.
-    let touchesEntry = (sourceHandler.hiddenBatchKeyWitnesses?.length ?? 0) > 0;
+    let touchesEntry = (sourceHandler.messageBusKeyWitnesses?.length ?? 0) > 0;
     let touchesFixedArray = false;
     const bound = locallyBoundNames(sourceHandler);
     walkInvocationAst(sourceHandler.body, (node) => {
@@ -2058,9 +2061,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
     bindEntryKeyParameters(handler, sourceHandler);
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -2073,9 +2076,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     handler.parameters = handler.parameters.filter((parameter) =>
       parameter.name !== '__internal__returnOutputIdx'
       && !parameter.name.startsWith('__internal__externalCallInput')
@@ -2142,8 +2145,8 @@ function synthesizeHiddenBatchRoute(
       name: routeInput,
       type: new BytesType(32),
     }]);
-    sourceHandler.hiddenBatchKeyWitnesses = [
-      ...(sourceHandler.hiddenBatchKeyWitnesses ?? []),
+    sourceHandler.messageBusKeyWitnesses = [
+      ...(sourceHandler.messageBusKeyWitnesses ?? []),
       { routeInput, inputIndex: categoryInput, source: 'argument' },
     ];
     tokenCategoryInputByHandler.set(sourceHandler, categoryInput);
@@ -2160,9 +2163,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -2185,9 +2188,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     handler.forceCollectionJournalPool = true;
     normalizeBareEntryAccesses(handler);
     fixedArrayHandlerInvokeNames.set(sourceHandler, handler.name);
@@ -2206,9 +2209,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -2228,9 +2231,9 @@ function synthesizeHiddenBatchRoute(
     handler.modifiers = [FunctionModifier.INTERNAL];
     handler.functionId = undefined;
     handler.functionSelector = undefined;
-    handler.hiddenBatchEligible = undefined;
-    handler.hiddenBatchRejectionReason = undefined;
-    handler.hiddenBatchKeyWitnesses = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
     siblingHandlerInvokeNames.set(sourceHandler, handler.name);
     contract.functions.push(handler);
   }
@@ -2269,7 +2272,7 @@ function synthesizeHiddenBatchRoute(
       if (fn.parameters.length === 0) {
         const entryOnly = [...entryKeyArguments(fn), ...(blockhashRowOffset
           ? [blockhashRowOffset, '__internal__blockhashInputIndex'] : [])];
-        const senderChecks = (fn.hiddenBatchKeyWitnesses ?? [])
+        const senderChecks = (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source === 'msgSender')
           .map((binding) => `require(${witnessName(binding)} == __scb_graph_caller);`).join(' ');
         return `${condition} { require(rowArgs.length == 0); ${senderChecks} ${invoke(entryOnly.join(', '))} }`;
@@ -2281,7 +2284,7 @@ function synthesizeHiddenBatchRoute(
       const declarations = decodedParameters.map(({ parameter, index }) =>
         `${parameter.type.toString()} __scb_arg_${handlerIndex}_${index}`);
       const schema = decodedParameters.map(({ parameter }) => parameter.type.toString()).join(', ');
-      const keyChecks = (fn.hiddenBatchKeyWitnesses ?? []).map((binding) =>
+      const keyChecks = (fn.messageBusKeyWitnesses ?? []).map((binding) =>
         binding.source === 'msgSender'
           ? `require(${witnessName(binding)} == __scb_graph_caller);`
           : `require(__scb_arg_${handlerIndex}_${binding.inputIndex} == ${witnessName(binding)});`).join(' ');
@@ -2293,7 +2296,7 @@ function synthesizeHiddenBatchRoute(
       // still be passed as route witnesses, which are wrapper parameters and therefore always in scope.
       const substituteKeyWitnesses = !handlerEntryKeys.has(fn);
       const witnessByInput = new Map(substituteKeyWitnesses
-        ? (fn.hiddenBatchKeyWitnesses ?? [])
+        ? (fn.messageBusKeyWitnesses ?? [])
           .filter((binding) => binding.source !== 'msgSender')
           .map((binding) => [binding.inputIndex, witnessName(binding)] as const)
         : []);
@@ -2374,7 +2377,7 @@ function synthesizeHiddenBatchRoute(
       return `${condition} { ${decode} ${keyChecks} ${invoke(callArgs)} }`;
     }).join(' ');
   const usedRouteInputs = new Set(eligible.flatMap((fn) =>
-    (fn.hiddenBatchKeyWitnesses ?? []).map((binding) => binding.routeInput)));
+    (fn.messageBusKeyWitnesses ?? []).map((binding) => binding.routeInput)));
   const declaredWitnessNames = new Set<string>();
   const routeKeyParameters = [...routeKeyWitnesses.values()].flat()
     .filter((witness) => usedRouteInputs.has(witness.name))
@@ -2384,7 +2387,7 @@ function synthesizeHiddenBatchRoute(
       return true;
     })
     .flatMap((witness) => {
-      const perRow = eligible.some((fn) => fn.hiddenBatchKeyWitnesses?.some((binding) =>
+      const perRow = eligible.some((fn) => fn.messageBusKeyWitnesses?.some((binding) =>
         binding.routeInput === witness.name && binding.perRow));
       return perRow
         ? Array.from({ length: routeMaximumRows }, (_unused, row) =>
@@ -3117,7 +3120,7 @@ function synthesizeHiddenBatchRoute(
     ${routeEnums}
     ${routeTypes}
     ${routeStructs}
-    contract __HiddenBatchHost() {
+    contract __MessageBusHost() {
       ${graphTranscriptLoader}
       ${singleTxTranscriptLoader}
       function __scb_parse_row(
@@ -3211,7 +3214,7 @@ function synthesizeHiddenBatchRoute(
       function __scb1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
-        require(batchBlob.length <= ${MAX_HIDDEN_BATCH_BLOB_BYTES});
+        require(batchBlob.length <= ${MAX_MESSAGE_BUS_BLOB_BYTES});
         bytes __scb_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
         require(__scb_unlock.length >= 7);
         require(__scb_unlock.slice(0, 5) == hex"0453434231");
@@ -3267,19 +3270,19 @@ function synthesizeHiddenBatchRoute(
     // LATER - during semantic analysis of the merged AST - says so too. X71's catch below covers only a
     // failure of the parse itself, which is one of the two sites this class has.
     routeAst = withGeneratedSource(
-      `the hidden-batch route generated for '${contract.name}'`,
+      `the message-bus route generated for '${contract.name}'`,
       () => parseCode(source, undefined, false, compilerOptions.chunkedArrays),
     );
   } catch (error) {
     throw new Error(
-      `The hidden-batch route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
+      `The message-bus route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
       + 'That Line and Column are a position in COMPILER-GENERATED source, not in your file; they shift when '
       + 'an unrelated compile option changes the generated preamble. This is a compiler defect, and no edit to '
       + 'the contract can name that position.',
     );
   }
   const route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
-  route.hiddenBatchRoute = true;
+  route.messageBusRoute = true;
   route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
     let count = 0;
     walkInvocationAst(handler.body, (node) => {
@@ -3287,11 +3290,11 @@ function synthesizeHiddenBatchRoute(
     });
     return Math.max(maximum, count);
   }, 0);
-  route.hiddenBatchMaximumRows = routeMaximumRows;
+  route.messageBusMaximumRows = routeMaximumRows;
   if (graphBlockhashReadWidth > 0) {
-    route.hiddenBatchBlockhashReadWidth = graphBlockhashReadWidth;
+    route.messageBusBlockhashReadWidth = graphBlockhashReadWidth;
     route.blockhashSlotCount = routeMaximumRows * graphBlockhashReadWidth;
-    route.hiddenBatchBlockhashReads = Array.from({ length: routeMaximumRows }, (_unused, row) =>
+    route.messageBusBlockhashReads = Array.from({ length: routeMaximumRows }, (_unused, row) =>
       eligible.flatMap((handler) => (graphBlockhashReads.get(handler) ?? []).map((readKey, readOrdinal) => ({
         row,
         selector: selector(handler),
@@ -3395,7 +3398,7 @@ function compileResolvedAst(
       inferredGraphEdge = true;
     }
   });
-  const messageBusGraphMode = !!mergedCompilerOptions.hiddenBatch
+  const messageBusGraphMode = !!mergedCompilerOptions.messageBus
     && inferredGraphEdge;
   // Reject the low-level call shapes the transcript row cannot bind (call options, iterated and conditional
   // callsites, more than one per handler) against the SOURCE construct, before any bus lowering unrolls a loop
@@ -3461,13 +3464,13 @@ function compileResolvedAst(
   // than the count diagnostic the bus loop expansions would produce for it here.
   if (messageBusGraphMode) validateLowLevelCallShapes(ast.contract);
 
-  // Hidden-batch synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
+  // Message-bus synthesis sometimes runs before the main lowering pipeline so collection/effect footprints are
   // visible to its wrapper. Beta-reduce side-effect-free foreign function-pointer return/pass helpers before that
   // snapshot too; otherwise the source entry point is lowered later to an external edge while its already-cloned
   // SCB1 wrapper still calls the pre-lowering higher-order signature (and lacks the generated edge witnesses).
   // The normal later pass remains: this early application is intentionally idempotent and covers only candidates
   // already visible after modifier expansion.
-  if (mergedCompilerOptions.hiddenBatch) {
+  if (mergedCompilerOptions.messageBus) {
     ast = ast.accept(new InlineForeignFunctionPointerReturns()) as Ast;
   }
 
@@ -3477,7 +3480,7 @@ function compileResolvedAst(
   // expandModifiers so factory uses inside OZ initializer/reinitializer modifiers (now inlined into fn bodies) are
   // rewritten too (else the factory method is dropped with a dangling call left in the modifier body).
   //
-  // X115. This MUST precede the early hidden-batch synthesis below. A storage-slot pointer access is not a
+  // X115. This MUST precede the early message-bus synthesis below. A storage-slot pointer access is not a
   // Mapping* node until this pass runs, so `analyseFunctionFootprint` reported NO `collection:` resource for a
   // handler that reads or writes `__evm_storage`. The route's whole collection-eligibility branch is gated on
   // that resource, so every such handler was admitted with no key witness and no reserved entry slot, and the
@@ -3499,7 +3502,7 @@ function compileResolvedAst(
     });
     return found;
   });
-  if (mergedCompilerOptions.hiddenBatch && hasFixedCollectionIteration) {
+  if (mergedCompilerOptions.messageBus && hasFixedCollectionIteration) {
     ast = ast.accept(new UnrollFixedBoundEntryLoop(false, undefined, true)) as Ast;
   }
 
@@ -3509,11 +3512,11 @@ function compileResolvedAst(
   // physical wrapper before block-layout analysis. Synthesizing it only at the
   // final semantic boundary works for scalar state but makes collection
   // effects invisible to the route.
-  const hiddenBatchFunctionsByName = new Map<string, FunctionDefinitionNode[]>();
+  const messageBusFunctionsByName = new Map<string, FunctionDefinitionNode[]>();
   for (const fn of ast.contract.functions) {
-    const group = hiddenBatchFunctionsByName.get(fn.name) ?? [];
+    const group = messageBusFunctionsByName.get(fn.name) ?? [];
     group.push(fn);
-    hiddenBatchFunctionsByName.set(fn.name, group);
+    messageBusFunctionsByName.set(fn.name, group);
   }
   const collectionNames = new Set(ast.contract.collections.map((collection) => collection.name));
   const loweredFunctionPointerTables = new Set<string>();
@@ -3532,7 +3535,7 @@ function compileResolvedAst(
     }
   }
   for (const fn of ast.contract.functions) {
-    const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
+    const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName);
     for (const resource of [...footprint.reads, ...footprint.writes]) {
       if (!resource.startsWith('collection:__fnsel_')) continue;
       const selectorName = resource.slice('collection:'.length).split(':', 1)[0];
@@ -3540,10 +3543,10 @@ function compileResolvedAst(
       loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
     }
   }
-  const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.hiddenBatch
+  const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsSingleTransactionBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
-      const footprint = analyseFunctionFootprint(fn, hiddenBatchFunctionsByName);
+      const footprint = analyseFunctionFootprint(fn, messageBusFunctionsByName);
       return [...footprint.reads, ...footprint.writes]
         .some((resource) => {
           if (!resource.startsWith('collection:')) return false;
@@ -3557,7 +3560,7 @@ function compileResolvedAst(
         || fn.returnTypes.length > 0;
     });
   if (synthesizeBatchBeforeLowering) {
-    synthesizeHiddenBatchRoute(
+    synthesizeMessageBusRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
@@ -3779,7 +3782,7 @@ function compileResolvedAst(
   }
 
   if (!synthesizeBatchBeforeLowering && supportsSingleTransactionBus(ast, mergedCompilerOptions)) {
-    synthesizeHiddenBatchRoute(
+    synthesizeMessageBusRoute(
       ast, mergedCompilerOptions, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
@@ -3791,7 +3794,7 @@ function compileResolvedAst(
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
   // source ABI argument leaves the SDK trying to read an argument the user-visible handler does not have.
   for (const fn of ast.contract.functions) {
-    if (!fn.hiddenBatchRoute || !fn.entryAccesses) continue;
+    if (!fn.messageBusRoute || !fn.entryAccesses) continue;
     for (const entry of fn.entryAccesses) {
       entry.keySources = entry.keySources.map((source, index) => (
         source.kind === 'param' && /_sender(?:_|$)/.test(entry.keyParams[index] ?? '')
@@ -3806,21 +3809,21 @@ function compileResolvedAst(
   // address the owner's data NFTs and trailing chunks relative to the hidden route's block. Share that physical
   // layout explicitly; otherwise the code generator falls back to activeInput+1 and aliases the first fixed or
   // funding slot rather than the route's canonical trailing region.
-  const hiddenBatchRoute = ast.contract.functions.find((fn) => fn.hiddenBatchRoute);
-  const ecrecoverHandlers = ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute
-    && fn.hiddenBatchEligible && fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0);
-  if (hiddenBatchRoute?.blockLayout && ecrecoverHandlers.length > 0) {
+  const messageBusRoute = ast.contract.functions.find((fn) => fn.messageBusRoute);
+  const ecrecoverHandlers = ast.contract.functions.filter((fn) => !fn.messageBusRoute
+    && fn.messageBusEligible && fn.ecrecoverCompute && (fn.ecrecoverCallCount ?? 0) > 0);
+  if (messageBusRoute?.blockLayout && ecrecoverHandlers.length > 0) {
     const maximumCalls = Math.max(...ecrecoverHandlers.map((fn) => fn.ecrecoverCallCount!));
-    const occupied = hiddenBatchRoute.blockLayout.slots.filter((slot) => slot.kind !== 'master');
+    const occupied = messageBusRoute.blockLayout.slots.filter((slot) => slot.kind !== 'master');
     if (occupied.length > 0) {
       throw new Error('SCB1 ecrecover handlers cannot currently share their participant block with other slots');
     }
-    hiddenBatchRoute.hiddenBatchMaximumRows = 1;
-    hiddenBatchRoute.ecrecoverCompute = true;
-    hiddenBatchRoute.blockLayout = {
-      ...hiddenBatchRoute.blockLayout,
+    messageBusRoute.messageBusMaximumRows = 1;
+    messageBusRoute.ecrecoverCompute = true;
+    messageBusRoute.blockLayout = {
+      ...messageBusRoute.blockLayout,
       slots: [
-        ...hiddenBatchRoute.blockLayout.slots,
+        ...messageBusRoute.blockLayout.slots,
         ...Array.from({ length: maximumCalls * 2 }, (_, index) => ({
           kind: 'ecrecoverSideCar' as const, offset: index + 1, slotIndex: index,
         })),
@@ -3828,10 +3831,10 @@ function compileResolvedAst(
       blockSize: 1 + maximumCalls * 2,
     };
   }
-  if (hiddenBatchRoute?.blockLayout) {
+  if (messageBusRoute?.blockLayout) {
     for (const fn of ast.contract.functions) {
       if (fn.graphEmissionHandler || fn.name.startsWith('__scb_array_')) {
-        fn.blockLayout = hiddenBatchRoute.blockLayout;
+        fn.blockLayout = messageBusRoute.blockLayout;
       }
     }
   }
@@ -3840,7 +3843,7 @@ function compileResolvedAst(
   // covenant generation. The code generator uses this to skip the duplicate slot completely; the SDK funds it
   // rather than attempting to co-spend one entry NFT twice.
   for (const fn of ast.contract.functions) {
-    if (!fn.hiddenBatchRoute || !fn.entryAccesses) continue;
+    if (!fn.messageBusRoute || !fn.entryAccesses) continue;
     for (const entry of fn.entryAccesses) {
       if (!entry.keyParams.some((key) => /_r\d+$/.test(key))) continue;
       entry.runtimeAliasPriorSlots = fn.entryAccesses
@@ -3949,8 +3952,8 @@ function compileResolvedAst(
     // than merely measurable. It is the compiler no longer being the quietest thing in the chain.
     console.warn(`Error: ${message}`);
   }
-  const hiddenBatchRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
-  if (hiddenBatchRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== hiddenBatchRouteAbi);
+  const messageBusRouteAbi = artifact.abi.find((fn) => fn.name === '__scb1');
+  if (messageBusRouteAbi) artifact.abi = artifact.abi.filter((fn) => fn !== messageBusRouteAbi);
   // Message-bus graph expansion reads the source shape of a bounded pointer table: one dispatch site whose
   // reached-row count is runtime with an explicit compiler-proven ceiling. Publish that shape only for a
   // graph-route compilation, so ordinary direct dispatch keeps one ABI row per physical callsite.
@@ -4043,10 +4046,10 @@ function compileResolvedAst(
     }),
     components: invocationAnalysis.components,
   };
-  if (mergedCompilerOptions.hiddenBatch
-    && ast.contract.functions.some((fn) => fn.hiddenBatchRoute)) {
-    const hiddenBatchMaximumRows = ast.contract.functions.find((fn) =>
-      fn.hiddenBatchRoute)?.hiddenBatchMaximumRows ?? MAX_HIDDEN_BATCH_ROWS;
+  if (mergedCompilerOptions.messageBus
+    && ast.contract.functions.some((fn) => fn.messageBusRoute)) {
+    const messageBusMaximumRows = ast.contract.functions.find((fn) =>
+      fn.messageBusRoute)?.messageBusMaximumRows ?? MAX_MESSAGE_BUS_ROWS;
     const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__scb_verify_single_tx');
     const functionNameById = new Map(ast.contract.functions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
@@ -4089,13 +4092,13 @@ function compileResolvedAst(
       name: functionNameById.get(id) ?? `__internal_${id}`,
       bytecode: binToHex(verifierBytecodes.get(id)!),
     }));
-    artifact.hiddenBatch = {
+    artifact.messageBus = {
       version: 1,
       selector: SCB1_SELECTOR_HEX,
-      ...(hiddenBatchMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
+      ...(messageBusMaximumRows === RESOURCE_SHAPED_BATCH_ROWS
         && { minimumRows: RESOURCE_SHAPED_BATCH_ROWS }),
-      maximumRows: hiddenBatchMaximumRows,
-      maximumBlobBytes: MAX_HIDDEN_BATCH_BLOB_BYTES,
+      maximumRows: messageBusMaximumRows,
+      maximumBlobBytes: MAX_MESSAGE_BUS_BLOB_BYTES,
       singleTransactionBus: {
         domain: SINGLE_TX_BUS_DOMAIN_HEX,
         carrier: {
@@ -4118,8 +4121,8 @@ function compileResolvedAst(
           functions: verifierFunctions,
         },
       }),
-      route: hiddenBatchRouteAbi!,
-      handlers: ast.contract.functions.filter((fn) => !fn.hiddenBatchRoute && fn.isEntryPoint).map((fn) => ({
+      route: messageBusRouteAbi!,
+      handlers: ast.contract.functions.filter((fn) => !fn.messageBusRoute && fn.isEntryPoint).map((fn) => ({
         name: fn.name,
         selector: fn.functionSelector ? binToHex(fn.functionSelector) : '',
         inputs: fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__')).map((parameter) => ({
@@ -4153,20 +4156,20 @@ function compileResolvedAst(
               ? { ecrecoverArgParams: sourceAbi.ecrecoverArgParams } : {}),
           };
         })(),
-        eligible: fn.hiddenBatchEligible === true,
+        eligible: fn.messageBusEligible === true,
         // X72. A published refusal must carry a reason. Route synthesis names one for every entry point that
         // exists when it runs, but it can run BEFORE a later pass appends one (SynthesizeBlockOracle's
         // `__updateBlockOracle`), and those reached the artifact as `eligible: false` with the key absent.
-        // Resolve the same way the ABSENCE channel already does (`hiddenBatchAbsenceMessage`'s `reasonOf`).
-        ...(fn.hiddenBatchEligible !== true && {
+        // Resolve the same way the ABSENCE channel already does (`messageBusAbsenceMessage`'s `reasonOf`).
+        ...(fn.messageBusEligible !== true && {
           ...(() => {
-            const reason = fn.hiddenBatchRejectionReason ?? 'not-examined-by-route-synthesis';
+            const reason = fn.messageBusRejectionReason ?? 'not-examined-by-route-synthesis';
             const handlerId = artifact.invocationAnalysis?.functions.find((candidate) =>
               candidate.name === fn.name
               && candidate.selector === (fn.functionSelector ? binToHex(fn.functionSelector) : undefined))?.id;
             const summary = handlerId === undefined ? undefined
               : artifact.invocationAnalysis?.functions.find((candidate) => candidate.id === handlerId);
-            const rejectionCode = classifyHiddenBatchRejection(reason);
+            const rejectionCode = classifyMessageBusRejection(reason);
             const analysisFunctions = artifact.invocationAnalysis?.functions ?? [];
             const target = (candidate: typeof analysisFunctions[number]): boolean => {
               if (rejectionCode === 'SCB_EFFECT_UNSUMMARIZABLE') {
@@ -4212,18 +4215,18 @@ function compileResolvedAst(
             };
           })(),
         }),
-        ...(fn.hiddenBatchKeyWitnesses && { batchKeyWitnesses: fn.hiddenBatchKeyWitnesses }),
+        ...(fn.messageBusKeyWitnesses && { batchKeyWitnesses: fn.messageBusKeyWitnesses }),
       })),
     };
-  } else if (mergedCompilerOptions.hiddenBatch) {
+  } else if (mergedCompilerOptions.messageBus) {
     // X15. Route synthesis names a rejection reason for every entry point, but the ONLY channel that publishes
-    // those names is `hiddenBatch.handlers` - which is not built when no entry point survives. A contract whose
-    // every handler is rejected therefore reached the user as an artifact with no `hiddenBatch` and no
+    // those names is `messageBus.handlers` - which is not built when no entry point survives. A contract whose
+    // every handler is rejected therefore reached the user as an artifact with no `messageBus` and no
     // diagnostic at all. Publish the same names here so the absence is always stated, never merely observed.
     artifact.diagnostics = [...(artifact.diagnostics ?? []), {
       severity: 'error',
-      code: 'hidden-batch-route-not-synthesized',
-      message: hiddenBatchAbsenceMessage(artifact.contractName, ast.contract.functions),
+      code: 'message-bus-route-not-synthesized',
+      message: messageBusAbsenceMessage(artifact.contractName, ast.contract.functions),
     }];
   }
   // Marker for the off-chain keeper: this contract reads blockhash(n) -> maintain the (n->hash) oracle.
@@ -4241,6 +4244,8 @@ function compileResolvedAst(
 export function compileStringMulti(code: string, compilerOptions: CompileOptions = {}): ArtifactMap {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
+  mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.__messageBusExplicitlyDisabled
+    ?? (artifactCompilerOptions.messageBus === false);
 
   // Enumerate the top-level contracts (after import resolution, so imported deps are included). The default
   // parse leaves the last as primary; the full set is [...importedContracts, contract].
@@ -4288,6 +4293,8 @@ const LIFECYCLE_MODIFIERS = new Set([
 export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
   const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
   const merged = normalizeCompilerOptions(artifactOptions);
+  merged.__messageBusExplicitlyDisabled = artifactOptions.__messageBusExplicitlyDisabled
+    ?? (artifactOptions.messageBus === false);
   const baseline = compileString(code, { ...artifactOptions, errorListener });
   const probe = prepareSplitAst(code, merged, errorListener);
   const logicalName = probe.contract.name;

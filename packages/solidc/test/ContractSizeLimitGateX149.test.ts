@@ -73,7 +73,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    * file is measuring something else.
    */
   it('MEASURED: debug.bytecode is the exact byte count and bytecode is a longer listing', () => {
-    const artifact = compileString(bulk(40), { hiddenBatch: false }) as Compiled;
+    const artifact = compileString(bulk(40), { messageBus: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes, 'debug.bytecode is not the same script as bytecode')
       .toBe(artifact.debug.bytecode.length / 2);
@@ -88,7 +88,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('REGRESSION: a contract whose listing is over and whose script is under is NOT diagnosed', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(240), { hiddenBatch: false }) as Compiled;
+    const artifact = compileString(bulk(240), { messageBus: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
 
     expect(listingHalfChars, 'premise: the LISTING must be over the limit, or this is not the false-positive row')
@@ -106,7 +106,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('MEASURED: a contract over the limit in real bytes is diagnosed and announced', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(300), { hiddenBatch: false }) as Compiled;
+    const artifact = compileString(bulk(300), { messageBus: false }) as Compiled;
     const { scriptBytes } = lengths(artifact);
 
     expect(scriptBytes, 'premise: the SCRIPT must be over the limit').toBeGreaterThan(MAX_INPUT_BYTESIZE);
@@ -132,7 +132,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
    */
   it('CONTROL: a contract under the limit on both renderings is silent', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const artifact = compileString(bulk(150), { hiddenBatch: false }) as Compiled;
+    const artifact = compileString(bulk(150), { messageBus: false }) as Compiled;
     const { scriptBytes, listingHalfChars } = lengths(artifact);
     expect(scriptBytes).toBeLessThan(MAX_INPUT_BYTESIZE);
     expect(listingHalfChars, 'premise: this control must be under on the LISTING too')
@@ -144,7 +144,7 @@ describe('X149: the size gate measures the script, not its listing', () => {
   /**
    * THE SIZE DIAGNOSTIC APPENDS. It is the only site on this path that used to ASSIGN `artifact.diagnostics`,
    * which meant the contract most in need of its other diagnostics was the one that would lose them. The
-   * absence channel (`hidden-batch-route-not-synthesized`) is published after it, so an over-limit contract
+   * absence channel (`message-bus-route-not-synthesized`) is published after it, so an over-limit contract
    * with no route must carry BOTH - and the assertion is on the SET, not on either one's index. `unsafe` is
    * what denies this contract a route (`lifecycle-or-unsafe-handler`); without it the sole entry point is
    * admitted and there is no second diagnostic to lose.
@@ -152,9 +152,9 @@ describe('X149: the size gate measures the script, not its listing', () => {
   it('MEASURED: an over-limit contract with no route keeps both diagnostics', () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     const artifact = compileString(
-      bulk(300, 'unsafe '), { forceStateful: true, hiddenBatch: true },
+      bulk(300, 'unsafe '), { forceStateful: true, messageBus: true },
     ) as Compiled;
     const codes = (artifact.diagnostics ?? []).map((entry) => entry.code).sort();
-    expect(codes).toEqual(['contract-size-limit', 'hidden-batch-route-not-synthesized']);
+    expect(codes).toEqual(['contract-size-limit', 'message-bus-route-not-synthesized']);
   }, 120_000);
 });

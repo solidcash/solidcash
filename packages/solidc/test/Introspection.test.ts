@@ -8,7 +8,7 @@ describe('this.categoryId introspection (contract self-category)', () => {
   it('lowers to OP_INPUTINDEX OP_UTXOTOKENCATEGORY (the active input own category)', () => {
     const a = compileString(
       'contract C() { function f(bytes32 expected) { require(this.categoryId == expected); } }',
-      { hiddenBatch: false },
+      { messageBus: false },
     );
     expect(a.bytecode).toContain('OP_INPUTINDEX OP_UTXOTOKENCATEGORY');
   });

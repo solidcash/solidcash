@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
+import { compileString as compileMessageBus } from '../src/compiler.js';
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
 
@@ -99,7 +100,7 @@ describe('SBE-13: void external-call helpers are inlined at internal call sites 
   });
 });
 
-describe('Release 5: compiler-hidden repeated external callee batching', () => {
+describe('Release 5: inferred message-bus batching for repeated external callees', () => {
   const SOURCE = `
     interface ICounter { function add(int amount) external; }
     contract Caller(address counter) {
@@ -112,7 +113,7 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   `;
 
   it('collapses two straight-line calls to the same owner into one physical SCB1 slot', () => {
-    const artifact = compileString(SOURCE, { repeatedExternalBatch: true });
+    const artifact = compileMessageBus(SOURCE, { repeatedExternalBatch: true });
     const run = artifact.abi.find((fn) => fn.name === 'run');
 
     expect(run?.externalCalls).toHaveLength(1);
@@ -137,12 +138,12 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   });
 
   it('collapses the supported repeated-owner shape by default', () => {
-    const artifact = compileString(SOURCE);
+    const artifact = compileMessageBus(SOURCE);
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
   });
 
   it('preserves the two physical call slots when explicitly disabled', () => {
-    const artifact = compileString(SOURCE, { repeatedExternalBatch: false });
+    const artifact = compileMessageBus(SOURCE, { repeatedExternalBatch: false });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(2);
   });
 
@@ -156,15 +157,15 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
         }
       }
     `;
-    const defaultOn = compileString(source);
-    const explicitOff = compileString(source, { repeatedExternalBatch: false });
+    const defaultOn = compileMessageBus(source);
+    const explicitOff = compileMessageBus(source, { repeatedExternalBatch: false });
     expect(defaultOn.bytecode).toBe(explicitOff.bytecode);
     expect(defaultOn.abi.find((fn) => fn.name === 'run')?.externalCalls)
       .toEqual(explicitOff.abi.find((fn) => fn.name === 'run')?.externalCalls);
   });
 
   it('rejects two repeated callee owners instead of constructing two contended transitions', () => {
-    expect(() => compileString(`
+    expect(() => compileMessageBus(`
       interface ICounter { function add(int amount) external; }
       contract Caller(address firstCounter, address secondCounter) {
         function run(int amount) public {
@@ -181,7 +182,7 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   });
 
   it('rejects a conditional repeated-owner chain that cannot be exhaustively accumulated', () => {
-    expect(() => compileString(`
+    expect(() => compileMessageBus(`
       interface ICounter { function add(int amount) external; }
       contract Caller(address counter) {
         function run(bool includeFirst, int amount) public {
@@ -196,14 +197,26 @@ describe('Release 5: compiler-hidden repeated external callee batching', () => {
   });
 
   it('keeps a repeated-call root callable in the inferred controllerless route', () => {
-    const artifact = compileString(SOURCE, {
+    const artifact = compileMessageBus(SOURCE, {
       forceStateful: true,
-      hiddenBatch: true,
+      messageBus: true,
       repeatedExternalBatch: true,
     });
     expect(artifact.abi.find((fn) => fn.name === 'run')?.externalCalls).toHaveLength(1);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'run'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
       .toMatchObject({ eligible: true });
+  });
+
+  it('infers the message bus for a repeated-owner transaction when the option is omitted', () => {
+    const artifact = compileMessageBus(SOURCE, { forceStateful: true });
+    expect(artifact.compiler.options?.messageBus).toBe(true);
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'run'))
+      .toMatchObject({ eligible: true });
+  });
+
+  it('rejects explicit messageBus false when one UTXO owner must serve repeated calls', () => {
+    expect(() => compileMessageBus(SOURCE, { forceStateful: true, messageBus: false }))
+      .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);
   });
 });
 
@@ -221,10 +234,10 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
     const inlined = compileString(`${LIB} contract C() {`
       + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }',
-    { hiddenBatch: false }).bytecode.split(' ');
+    { messageBus: false }).bytecode.split(' ');
     const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
       + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }',
-    { hiddenBatch: false }).bytecode.split(' ');
+    { messageBus: false }).bytecode.split(' ');
     // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
     expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
   });
@@ -327,6 +340,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
 
 describe('external call on a tuple-destructured / copied local interface var', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ccBus = (src: string): string => compileMessageBus(src, { solidityImportCompat: true }).contractName;
   const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
     + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
 
@@ -337,12 +351,12 @@ describe('external call on a tuple-destructured / copied local interface var', (
   });
 
   it('routes a method call on a tuple-ternary-destructured interface var (CSAMM shape)', () => {
-    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+    expect(ccBus(`${iface} contract C { IERC20 token0; IERC20 token1;`
       + ' function swap(bool isToken0, uint256 amt) public {'
       + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
       + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
       + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
-  });
+  }, 60_000);
 });
 
 describe('SBE-21: external call on a state-var target in fallback/receive', () => {

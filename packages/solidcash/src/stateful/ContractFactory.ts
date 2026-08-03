@@ -139,7 +139,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
           + '{ fundingUtxo, funder, changeAddress } override with a NetworkProvider runner.',
         );
       }
-      const verifierCount = overrides.layer3VerifierCount ?? (this.artifact.hiddenBatch?.verifierProgram ? 1 : 0);
+      const verifierCount = overrides.layer3VerifierCount ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
       fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact, new Set(), 1 + verifierCount);
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();

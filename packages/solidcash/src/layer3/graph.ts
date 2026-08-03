@@ -1,11 +1,11 @@
-import { MAX_HIDDEN_BATCH_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
+import { MAX_MESSAGE_BUS_BLOB_BYTES, occurrenceBoundOf, occurrenceCountViolation } from '@solidcash/utils';
 import type {
   AbiFunction, Artifact, ExternalCallAbi, InvocationAnalysisFunction,
 } from '@solidcash/utils';
 import type { FunctionArgument } from '../Argument.js';
 import {
-  encodeHiddenBatch, type EncodedHiddenBatch, type HiddenBatchInvocation,
-} from './hidden-batch.js';
+  encodeMessageBus, type EncodedMessageBus, type MessageBusInvocation,
+} from './message-bus.js';
 import { Layer3DiagnosticError } from './diagnostics.js';
 import {
   encodeSingleTxBusTranscript, encodeSingleTxCarrier, singleTxBusPhysicalLayout,
@@ -91,13 +91,13 @@ export interface CompiledParticipantExecution {
   executorOffset: number | null;
   executorInputIndex: number;
   executorLockingBytecode: string;
-  batch: EncodedHiddenBatch;
+  batch: EncodedMessageBus;
   /** Global invocation indices, in the exact order executed by this owner's SCB1 route. */
   invocations: readonly number[];
   /** Exact compiler-emitted balanced physical block for this owner's SCB1 route. */
-  blockLayout: NonNullable<Artifact['hiddenBatch']>['route']['blockLayout'];
+  blockLayout: NonNullable<Artifact['messageBus']>['route']['blockLayout'];
   /** Exact compiler-owned route ABI, retained so argument derivation cannot silently lose internal witnesses. */
-  routeInputs: NonNullable<Artifact['hiddenBatch']>['route']['inputs'];
+  routeInputs: NonNullable<Artifact['messageBus']>['route']['inputs'];
   /** Exclusive logical position after every invocation owned by this participant has completed. */
   settlementBoundary: number;
   /** Exclusive completion position for each local row, in SCB1 execution order. */
@@ -256,7 +256,7 @@ const uint64LeHex = (value: bigint, field: string): string => {
 
 /** Canonical off-chain commitment to the compiler-authored incoming policy published by an artifact. */
 export function singleTxParticipantPolicyHash(artifact: Artifact): string {
-  const handlers = artifact.hiddenBatch?.handlers;
+  const handlers = artifact.messageBus?.handlers;
   if (!handlers) throw new Error('layer3: controllerless participant has no compiler-published SCB1 policy');
   const policy = handlers.map((handler) => ({
     name: handler.name,
@@ -453,7 +453,7 @@ export function finalizeSingleTxInvocationGraph(
       }
       if (!effect.active) throw new Error('layer3: inactive event slots must not produce transcript rows');
       const eventSlotCount = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'event').length;
-      const maximumRows = participant.artifact.hiddenBatch?.maximumRows ?? 0;
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
       if (maximumRows < 1 || eventSlotCount % maximumRows !== 0 || slot.slotIndex === undefined) {
         throw new Error(`layer3: participant ${effect.participant} has a non-canonical event frame`);
       }
@@ -492,7 +492,7 @@ export function finalizeSingleTxInvocationGraph(
         throw new Error(`layer3: participant ${effect.participant} transfer slot ${effect.offset} is invalid`);
       }
       const transferSlots = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'transfer').length;
-      const maximumRows = participant.artifact.hiddenBatch?.maximumRows ?? 0;
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
       if (maximumRows < 1 || transferSlots % maximumRows !== 0) {
         throw new Error(`layer3: participant ${effect.participant} has a non-canonical transfer frame`);
       }
@@ -533,7 +533,7 @@ export function finalizeSingleTxInvocationGraph(
         throw new Error(`layer3: participant ${effect.participant} token-transfer slot ${effect.offset} is invalid`);
       }
       const transferSlots = participant.blockLayout!.slots.filter((candidate) => candidate.kind === 'tcTransfer').length;
-      const maximumRows = participant.artifact.hiddenBatch?.maximumRows ?? 0;
+      const maximumRows = participant.artifact.messageBus?.maximumRows ?? 0;
       if (maximumRows < 1 || transferSlots % maximumRows !== 0) {
         throw new Error(`layer3: participant ${effect.participant} has a non-canonical token-transfer frame`);
       }
@@ -677,9 +677,9 @@ const MAX_GRAPH_DEPTH = 7;
 /**
  * Largest SCB1 batch blob the controllerless bus admits, in bytes (X106).
  *
- * NOT A SECOND COPY ANY MORE. This is the shared `MAX_HIDDEN_BATCH_BLOB_BYTES` from `@solidcash/utils` under
+ * NOT A SECOND COPY ANY MORE. This is the shared `MAX_MESSAGE_BUS_BLOB_BYTES` from `@solidcash/utils` under
  * the name the SDK's layer3 callers already use, so the carrier's per-participant frame check and the
- * compiler's route check (republished as `artifact.hiddenBatch.maximumBlobBytes`) cannot drift apart. Both were
+ * compiler's route check (republished as `artifact.messageBus.maximumBlobBytes`) cannot drift apart. Both were
  * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
  * only place they can share one literal.
  *
@@ -690,18 +690,18 @@ const MAX_GRAPH_DEPTH = 7;
  *
  * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
  */
-export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_HIDDEN_BATCH_BLOB_BYTES;
+export const GRAPH_MAX_BATCH_BLOB_BYTES = MAX_MESSAGE_BUS_BLOB_BYTES;
 
 /**
  * Refuse a participant whose published blob envelope is wider than the controllerless verifier admits.
  *
  * The direction is not symmetric, and only one side is a defect. A participant publishing a SMALLER maximum is
- * merely tighter: `encodeHiddenBatch` refuses the oversized blob first, by name. A participant publishing a
+ * merely tighter: `encodeMessageBus` refuses the oversized blob first, by name. A participant publishing a
  * LARGER one is the drift that costs: the SDK encodes a blob its own encoder accepts, and the co-spent
  * participant verifier then refuses the whole transaction, naming nothing about blob width.
  */
 export function assertGraphBatchBlobEnvelope(artifact: Artifact, participant: number): void {
-  const published = artifact.hiddenBatch?.maximumBlobBytes;
+  const published = artifact.messageBus?.maximumBlobBytes;
   if (published === undefined || published <= GRAPH_MAX_BATCH_BLOB_BYTES) return;
   throw new Error(
     `layer3: participant ${participant} publishes an SCB1 blob envelope of ${published} bytes, wider than the `
@@ -1142,8 +1142,8 @@ export function resolveGraphAbiFunction(artifact: Artifact, name: string): AbiFu
 export function measureUnboundCallOptions(
   artifact: Artifact, fn: AbiFunction, name: string,
 ): { optionBits: number; detail?: string } {
-  const handler = artifact.hiddenBatch?.handlers.find((candidate) => candidate.name === name);
-  const routeKinds = new Set((artifact.hiddenBatch?.route.blockLayout?.slots ?? [])
+  const handler = artifact.messageBus?.handlers.find((candidate) => candidate.name === name);
+  const routeKinds = new Set((artifact.messageBus?.route.blockLayout?.slots ?? [])
     .map((slot) => slot.kind as string));
   const unboundValue = (fn.transferCount ?? 0) - (handler?.transfers?.length ?? 0);
   const unboundContainer = (fn.tokenContainerAccesses?.length ?? 0)
@@ -1222,7 +1222,7 @@ export function planCompiledGraph(
     }
     identities.add(lbc);
     // X106: the artifact's published blob envelope has to fit the participant verifier's compiled-in bound.
-    // Skipped for an artifact publishing no envelope at all, which fails later by name at `hiddenBatch!`.
+    // Skipped for an artifact publishing no envelope at all, which fails later by name at `messageBus!`.
     assertGraphBatchBlobEnvelope(participant.artifact, index);
   });
   if (invocations.length === 0 || invocations[0].parent !== null
@@ -1230,7 +1230,7 @@ export function planCompiledGraph(
     throw new Error('layer3: compiled graph requires exactly one root invocation at index 0');
   }
 
-  const perOwner: HiddenBatchInvocation[][] = participants.map(() => []);
+  const perOwner: MessageBusInvocation[][] = participants.map(() => []);
   const globalByOwner: number[][] = participants.map(() => []);
   const subtreeEnds = invocations.map((_invocation, index) => index);
   const active: number[] = [];
@@ -1333,7 +1333,7 @@ export function planCompiledGraph(
     if (invocation.parent !== null) {
       const parentInvocation = invocations[invocation.parent];
       const parentParticipant = participants[parentInvocation.callee];
-      const parentHandler = parentParticipant.artifact.hiddenBatch?.handlers
+      const parentHandler = parentParticipant.artifact.messageBus?.handlers
         .find((candidate) => candidate.name === parentInvocation.function);
       if (parentHandler?.transfers?.some((transfer) => transfer.callOption === 'value')) {
         bits |= CALL_OPTION_VALUE;
@@ -1348,7 +1348,7 @@ export function planCompiledGraph(
     }
     const executionKind = participant.executionKind === 'delegate' ? 1 : 0;
     const executorSlots = executionKind === 1
-      ? participant.artifact.hiddenBatch?.route.blockLayout?.slots
+      ? participant.artifact.messageBus?.route.blockLayout?.slots
         .filter((slot) => slot.kind === 'lowLevelCall') ?? []
       : [];
     if (executionKind === 1) {
@@ -1369,16 +1369,16 @@ export function planCompiledGraph(
       executorOffset: executionKind === 1 ? executorSlots[0].offset : null,
       executorInputIndex: executionKind === 1
         ? participants.slice(0, owner).reduce(
-          (base, candidate) => base + candidate.artifact.hiddenBatch!.route.blockLayout!.blockSize,
+          (base, candidate) => base + candidate.artifact.messageBus!.route.blockLayout!.blockSize,
           0,
         ) + executorSlots[0].offset
         : 0xffff,
       executorLockingBytecode: executionKind === 1
         ? participant.executorLockingBytecode!.toLowerCase() : '',
-      batch: encodeHiddenBatch(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
+      batch: encodeMessageBus(participant.artifact, perOwner[owner], participant.unboundRouteWitnesses),
       invocations: Object.freeze(globalByOwner[owner]),
-      blockLayout: participant.artifact.hiddenBatch!.route.blockLayout!,
-      routeInputs: participant.artifact.hiddenBatch!.route.inputs,
+      blockLayout: participant.artifact.messageBus!.route.blockLayout!,
+      routeInputs: participant.artifact.messageBus!.route.inputs,
       settlementBoundary: Math.max(...globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
       completionPositions: Object.freeze(globalByOwner[owner].map((index) => subtreeEnds[index] + 1)),
     });

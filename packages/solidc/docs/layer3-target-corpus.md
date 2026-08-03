@@ -17,8 +17,8 @@ The baseline was rebuilt and tested under the repository's BCH-2026 default:
 | Gate | Result |
 |---|---|
 | monorepo `yarn build` | six packages passed |
-| `packages/solidc` complete suite | 2,302 passed; two heavy `HiddenBatch` cases hit the suite's 5 s timeout |
-| isolated `HiddenBatch` rerun with 30 s timeout | 9/9 passed; the two timed-out shapes completed in 2.88 s and 3.13 s |
+| `packages/solidc` complete suite | 2,302 passed; two heavy `MessageBus` cases hit the suite's 5 s timeout |
+| isolated `MessageBus` rerun with 30 s timeout | 9/9 passed; the two timed-out shapes completed in 2.88 s and 3.13 s |
 | `packages/solidcash` complete suite | 3,261 passed, 24 skipped, 9 todo |
 
 The raw timeout is retained as baseline evidence rather than described as a clean full-suite pass.
@@ -27,7 +27,7 @@ It is the already-documented concurrent-CPU measurement flake, not a different r
 Artifact invariance is pinned by existing tests:
 
 - `InvocationAnalysis.test.ts` proves invocation analysis does not change emitted bytecode.
-- `HiddenBatch.test.ts` proves a disabled experimental capability leaves artifacts byte-identical.
+- `MessageBus.test.ts` proves a disabled experimental capability leaves artifacts byte-identical.
 - `MsgSenderCrossContractC2.test.ts` pins the direct route while the R5 corpus tests exercise the
   experimental route.
 - `Layer3SingleTxCapacity.test.ts` pins finalized controllerless transaction and per-input BCH-2026 costs.
@@ -395,7 +395,7 @@ Test: `packages/solidcash/test/e2e/Layer3ScalingSpike.test.ts`. Two findings.
 
 **Finding A - the hard ceiling is the SCB1 blob cap, not the op budget.** Carrying full identity
 (35-byte owner locking bytecode + 33-byte category) per participant in the SCB1 row makes the blob
-exceed the 223-byte `MAX_HIDDEN_BATCH_BLOB_BYTES` cap at n>=3, so only ~2 full-identity participants
+exceed the 223-byte `MAX_MESSAGE_BUS_BLOB_BYTES` cap at n>=3, so only ~2 full-identity participants
 fit one row. A production layer-3 covenant must either (a) carry only indices in the transcript and
 read each participant's identity from its actual co-spent input (the compact form measured below), or
 (b) use a larger carrier - which is exactly the sidecar/carrier question (rev1 noted a separate

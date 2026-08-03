@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/index.js';
 
-const options = { forceStateful: true, hiddenBatch: true };
+const options = { forceStateful: true, messageBus: true };
 
 const fixed = (bound: number): string => `pragma solidcash >=0.8.0;
 contract FixedIteration() {
@@ -19,11 +19,11 @@ contract FixedIteration() {
 describe('bounded collection iteration route', () => {
   it('admits a fixed array with one ordered entry identity per element', () => {
     const artifact = compileString(fixed(3), options);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'sum'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: true });
-    expect(artifact.hiddenBatch?.route.blockLayout?.slots.map((slot) => slot.kind))
+    expect(artifact.messageBus?.route.blockLayout?.slots.map((slot) => slot.kind))
       .toEqual(['master', 'dataNft', 'entry', 'entry', 'entry']);
-    expect(artifact.hiddenBatch?.route.entryAccesses?.map((access) =>
+    expect(artifact.messageBus?.route.entryAccesses?.map((access) =>
       access.keySources[0].kind === 'constant' ? access.keySources[0].constantValue : undefined))
       .toEqual(['0', '1', '2']);
   }, 180_000);
@@ -35,13 +35,13 @@ describe('bounded collection iteration route', () => {
         function sum() public { bigint n = 0; for (bigint v of this.values) { n = n + v; } require(n >= 0); }
         function ok() public { require(true); }
       }`, options);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'sum'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: false, rejectionReason: 'collection-iteration-handler-not-enabled' });
   }, 180_000);
 
   it('refuses a fixed iteration above the compiler resource expansion ceiling', () => {
     const artifact = compileString(fixed(65), options);
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'sum'))
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'sum'))
       .toMatchObject({ eligible: false, rejectionReason: 'collection-iteration-handler-not-enabled' });
   }, 180_000);
 });

@@ -71,10 +71,10 @@ describe('local array-element delete (int[] d; delete d[i])', () => {
   it('is byte-identical to d[i] = default (sound by reduction)', () => {
     const pre = 'contract C(){function f()external{int[] d=new int[](3);d[0]=5;';
     const del = compileString(`${pre}delete d[0];require(d[0]==0);}}`, {
-      solidityImportCompat: true, hiddenBatch: false,
+      solidityImportCompat: true, messageBus: false,
     });
     const assign = compileString(`${pre}d[0]=0;require(d[0]==0);}}`, {
-      solidityImportCompat: true, hiddenBatch: false,
+      solidityImportCompat: true, messageBus: false,
     });
     expect(del.bytecode).toBe(assign.bytecode);
   });
@@ -107,10 +107,10 @@ describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] 
   });
   it('is byte-identical to the explicit element-wise cast form', () => {
     const whole = compileString('contract C{bytes1[2] d1;bytes2[2] d2;function f()external{d2=d1;require(true);}}',
-      { solidityImportCompat: true, hiddenBatch: false });
+      { solidityImportCompat: true, messageBus: false });
     const explicit = compileString('contract C{bytes1[2] d1;bytes2[2] d2;'
       + 'function f()external{d2[0]=bytes2(d1[0]);d2[1]=bytes2(d1[1]);require(true);}}', {
-      solidityImportCompat: true, hiddenBatch: false,
+      solidityImportCompat: true, messageBus: false,
     });
     expect(whole.bytecode).toBe(explicit.bytecode);
   });

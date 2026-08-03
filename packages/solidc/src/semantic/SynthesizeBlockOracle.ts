@@ -289,14 +289,14 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const updateFn = this.at(
       new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
     ) as FunctionDefinitionNode;
-    // X72. This pass can run AFTER hidden-batch route synthesis (compiler.ts runs route synthesis early
+    // X72. This pass can run AFTER message-bus route synthesis (compiler.ts runs route synthesis early
     // whenever a handler touches a collection, has an effect or returns). Route synthesis only names a
     // rejection reason for the entry points that exist when it runs, so this one reached the artifact as
     // `eligible: false` with the reason key absent - a refusal with no reason. State the reason the absence
-    // channel already uses for the same condition (compiler.ts `hiddenBatchAbsenceMessage`). When route
+    // channel already uses for the same condition (compiler.ts `messageBusAbsenceMessage`). When route
     // synthesis runs after this pass it examines this function like any other and overwrites both fields.
-    updateFn.hiddenBatchEligible = false;
-    updateFn.hiddenBatchRejectionReason = 'not-examined-by-route-synthesis';
+    updateFn.messageBusEligible = false;
+    updateFn.messageBusRejectionReason = 'not-examined-by-route-synthesis';
     node.functions.push(updateFn);
   }
 

@@ -116,7 +116,7 @@ export const defaultProxyArtifact: Artifact = {
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,
       "commitmentLimit": 128,
-      "hiddenBatch": false
+      "messageBus": false
     }
   },
   "invocationAnalysis": {

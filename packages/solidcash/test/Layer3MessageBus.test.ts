@@ -5,7 +5,7 @@ import { compileString } from 'solidc';
 import { layer3 } from '../src/index.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
-contract Layer3HiddenBatch() {
+contract Layer3MessageBus() {
   int counter;
   function add(int n) public { this.counter = this.counter + n; require(n >= 0); }
   function clear() public { this.counter = 0; require(true); }
@@ -20,17 +20,17 @@ contract Layer3ReturningBatch() {
 
 const artifact = compileString(SOURCE, {
   forceStateful: true,
-  hiddenBatch: true,
+  messageBus: true,
 });
 
-describe('layer3.encodeHiddenBatch', () => {
+describe('layer3.encodeMessageBus', () => {
   it('encodes real compiler handlers in canonical execution order', () => {
-    const encoded = layer3.encodeHiddenBatch(artifact, [
+    const encoded = layer3.encodeMessageBus(artifact, [
       { function: 'add', args: [2n] },
       { function: 'clear' },
     ]);
-    const add = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'add')!;
-    const clear = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'clear')!;
+    const add = artifact.messageBus!.handlers.find((handler) => handler.name === 'add')!;
+    const clear = artifact.messageBus!.handlers.find((handler) => handler.name === 'clear')!;
     const hex = binToHex(encoded.blob);
 
     expect(encoded.rowCount).toBe(2);
@@ -45,12 +45,12 @@ describe('layer3.encodeHiddenBatch', () => {
   });
 
   it('authenticates mixed static and ordinary rows for one participant in SCB2 order', () => {
-    const encoded = layer3.encodeHiddenBatch(artifact, [
+    const encoded = layer3.encodeMessageBus(artifact, [
       { function: 'add', args: [2n], callMode: 'staticcall' },
       { function: 'clear', callMode: 'call' },
     ]);
-    const add = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'add')!;
-    const clear = artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'clear')!;
+    const add = artifact.messageBus!.handlers.find((handler) => handler.name === 'add')!;
+    const clear = artifact.messageBus!.handlers.find((handler) => handler.name === 'clear')!;
     const hex = binToHex(encoded.blob);
 
     // Header version 2. Each mode byte follows its row's uint16 args length: 01 then 00.
@@ -61,9 +61,9 @@ describe('layer3.encodeHiddenBatch', () => {
   it('carries the compiler-authored result schema for authenticated return-event decoding', () => {
     const returning = compileString(RETURN_SOURCE, {
       forceStateful: true,
-      hiddenBatch: true,
+      messageBus: true,
     });
-    const encoded = layer3.encodeHiddenBatch(returning, [
+    const encoded = layer3.encodeMessageBus(returning, [
       { function: 'twice', args: [3n] },
       { function: 'positive', args: [8n] },
       { function: 'pair', args: [4n] },
@@ -73,56 +73,56 @@ describe('layer3.encodeHiddenBatch', () => {
       { row: 1, types: ['bool'] },
       { row: 2, types: ['int256', 'bool'] },
     ]);
-    expect(returning.hiddenBatch!.route.outputs).toEqual([{ type: 'bytes' }]);
+    expect(returning.messageBus!.route.outputs).toEqual([{ type: 'bytes' }]);
 
     const packed = scriptToBytecode([
       bigIntToVmNumber(6n), Uint8Array.of(1), bigIntToVmNumber(5n), Uint8Array.of(1),
     ]);
     const commitment = scriptToBytecode([packed]);
-    expect(layer3.decodeHiddenBatchResults(returning, encoded, commitment)).toEqual([
+    expect(layer3.decodeMessageBusResults(returning, encoded, commitment)).toEqual([
       { row: 0, type: 'int256', value: 6n },
       { row: 1, type: 'bool', value: true },
       { row: 2, type: '(int256,bool)', value: [5n, true] },
     ]);
-    expect(() => layer3.decodeHiddenBatchResults(
+    expect(() => layer3.decodeMessageBusResults(
       returning, encoded, scriptToBytecode([Uint8Array.from([...packed, 0])]),
     )).toThrow(/unchecked suffix/);
   });
 
   it('rejects non-advertised, ineligible, and malformed invocation plans', () => {
-    expect(() => layer3.encodeHiddenBatch(
+    expect(() => layer3.encodeMessageBus(
       compileString(
         'pragma solidcash >=0.8.0; contract Plain() { function f() { require(true); } }',
-        { hiddenBatch: false },
+        { messageBus: false },
       ),
       [{ function: 'f' }],
     )).toThrow(/does not advertise/);
-    expect(() => layer3.encodeHiddenBatch(artifact, [])).toThrow(/row count/);
-    expect(() => layer3.encodeHiddenBatch(artifact, [{ function: 'missing' }])).toThrow(/Unknown/);
-    expect(() => layer3.encodeHiddenBatch(artifact, [{ function: 'add' }])).toThrow(/number of arguments/);
+    expect(() => layer3.encodeMessageBus(artifact, [])).toThrow(/row count/);
+    expect(() => layer3.encodeMessageBus(artifact, [{ function: 'missing' }])).toThrow(/Unknown/);
+    expect(() => layer3.encodeMessageBus(artifact, [{ function: 'add' }])).toThrow(/number of arguments/);
 
     const unsupported = {
       ...artifact,
-      hiddenBatch: { ...artifact.hiddenBatch!, version: 2 },
+      messageBus: { ...artifact.messageBus!, version: 2 },
     } as unknown as typeof artifact;
-    expect(() => layer3.encodeHiddenBatch(unsupported, [{ function: 'clear' }])).toThrow(
+    expect(() => layer3.encodeMessageBus(unsupported, [{ function: 'clear' }])).toThrow(
       expect.objectContaining({
         code: 'L3_PROTOCOL_VERSION_UNSUPPORTED',
         context: expect.objectContaining({
-          metadataField: 'hiddenBatch.version', actual: 2, expected: 1,
-          ownerIdentity: 'Layer3HiddenBatch',
+          metadataField: 'messageBus.version', actual: 2, expected: 1,
+          ownerIdentity: 'Layer3MessageBus',
         }),
       }),
     );
 
     const malformed = {
       ...artifact,
-      hiddenBatch: { ...artifact.hiddenBatch!, selector: '00000000' },
+      messageBus: { ...artifact.messageBus!, selector: '00000000' },
     } as unknown as typeof artifact;
-    expect(() => layer3.encodeHiddenBatch(malformed, [{ function: 'clear' }])).toThrow(
+    expect(() => layer3.encodeMessageBus(malformed, [{ function: 'clear' }])).toThrow(
       expect.objectContaining({
         code: 'L3_PROTOCOL_METADATA_MALFORMED',
-        context: expect.objectContaining({ metadataField: 'hiddenBatch' }),
+        context: expect.objectContaining({ metadataField: 'messageBus' }),
       }),
     );
   });

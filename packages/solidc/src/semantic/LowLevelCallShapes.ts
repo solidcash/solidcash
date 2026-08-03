@@ -33,7 +33,7 @@ import { fixedForMaximum } from './FixedForLoop.js';
  * NOT YET WIRED. `validateLowLevelCallShapes` has no call site: the message-bus route is synthesized entirely
  * inside `compiler.ts`, which is a single-writer collision file. The wiring is one call from
  * `compileString`/`compileFile`, immediately after the message-bus graph mode is computed and before
- * `synthesizeHiddenBatchRoute`.
+ * `synthesizeMessageBusRoute`.
  */
 
 /** Stable, exact rejection for a low-level call shape the message-bus route does not admit. */

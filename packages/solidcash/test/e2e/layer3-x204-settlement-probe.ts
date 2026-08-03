@@ -111,7 +111,7 @@ if (OUT !== undefined) {
     const artifact = (this as unknown as { artifact: Record<string, never> }).artifact as never as {
       contractName: string;
       source?: string;
-      hiddenBatch?: { handlers?: { name: string; selector: string; eligible?: boolean }[] };
+      messageBus?: { handlers?: { name: string; selector: string; eligible?: boolean }[] };
     };
     const batchBlobIndex = (abiFunction as unknown as { inputs: { name: string }[] }).inputs
       .findIndex((input) => input.name === 'batchBlob');
@@ -121,7 +121,7 @@ if (OUT !== undefined) {
         const blob = args[batchBlobIndex] as unknown;
         if (!(blob instanceof Uint8Array) || blob.length === 0) return make(...args);
         const blobHex = binToHex(blob);
-        const handlers = artifact.hiddenBatch?.handlers ?? [];
+        const handlers = artifact.messageBus?.handlers ?? [];
         const staged: StagedRoute = {
           contract: artifact.contractName,
           // A direct, non-route spend of this same participant includes its redeem bytecode but not the staged

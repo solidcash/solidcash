@@ -26,8 +26,8 @@ The following inventory is scoped to production source. Test migration is classi
 | Compiler options | `packages/solidc/src/compiler.ts`: `messageBusController`, `messageBusControllerCategory`, `__testLayer3BindingSpike` | Replace controller options with inferred participation; remove test bypass |
 | Semantic admission | `packages/solidc/src/semantic/SymbolTableTraversal.ts`: controller/category validation and hidden-route admission | Preserve handler discovery; replace controller preamble and explicit admission |
 | Code generation | `packages/solidc/src/generation/GenerateTargetTraversal.ts`: SCB1 graph controller index, participant offset, settlement/emission/caller frames | Preserve journals/local frames; emit artifact-specialized verifier program plus compact master binder |
-| Artifact model | `packages/utils/src/Artifact.ts` and compiler artifact construction: hidden-batch route/block metadata and controller-bound fields | Preserve block descriptors; publish versionless carrier placement and verifier program metadata |
-| Graph planner/codec | `packages/solidcash/src/layer3/graph.ts`, `codec.ts`, `hidden-batch.ts` | Preserve planning/local SCB1 encoding; replace `L3GRAPH1`, projection indices, root, and controller argument |
+| Artifact model | `packages/utils/src/Artifact.ts` and compiler artifact construction: message-bus route/block metadata and controller-bound fields | Preserve block descriptors; publish versionless carrier placement and verifier program metadata |
+| Graph planner/codec | `packages/solidcash/src/layer3/graph.ts`, `codec.ts`, `message-bus.ts` | Preserve planning/local SCB1 encoding; replace `L3GRAPH1`, projection indices, root, and controller argument |
 | Controller covenants | `packages/solidcash/src/layer3/covenant.ts`, `graph.ts`: generated root controller and projection verifier | Delete after equivalent participant VM evidence |
 | Assembly | `packages/solidcash/src/layer3/transcript.ts`, `packages/solidcash/src/stateful/balancedBlocks.ts` | Replace controller/projection tail with participant prefix, one verifier per participant, and fee/change |
 | Preflight | `packages/solidcash/src/layer3/preflight.ts`, `TransactionBuilder.ts` | Preserve finalized-byte and capacity gates; remove controller NFT/category scans |
@@ -45,7 +45,7 @@ rg -l 'messageBusController|messageBusControllerCategory|generateGraphProjection
 
 | Class | Corpus | Treatment |
 |---|---|---|
-| Reusable | Compiler journal, pointer-table, occurrence, result-dependency, diagnostic-position, and hidden-batch encoding tests that assert no controller detail | Run unchanged; preserve as local semantic evidence |
+| Reusable | Compiler journal, pointer-table, occurrence, result-dependency, diagnostic-position, and message-bus encoding tests that assert no controller detail | Run unchanged; preserve as local semantic evidence |
 | Adaptable | `Layer3CompiledGraph`, balanced assembly, result graph, mapping/mixed/dynamic journals, context, call options, effects, capacity, and security-review VM suites | Retain scenarios and mutations; rebuild fixtures with carrier plus participant blocks |
 | Obsolete | `Layer3CompiledGraphController`, event subscription controller, controller genesis/burn/contention tests, projection-only parser/cost pins, and `Layer3ParticipantBindingSpike` | Delete only after replacement evidence lands |
 
@@ -59,7 +59,7 @@ projection verifier at 5,820 bytes. Its physical-layout tests pin the old tail a
 controller, then one fee slot. `Layer3BoundedMaximumGraphC3.test.ts` records the eight-participant C3 transaction
 at 96,302 bytes and 108 balanced slots, inside the 100,000-byte standard relay ceiling; it evaluates all inputs
 to completion and asserts that none exceed BCH-2026 operation-cost density. The deployed planner bounds are
-eight participants, 24 invocations, depth seven, and 223 bytes per hidden-batch blob.
+eight participants, 24 invocations, depth seven, and 223 bytes per message-bus blob.
 
 The new executable census is `Layer3SingleTxCodec.test.ts`: it pins the controllerless 2/3/1 actual-span layout
 to participant bases `[0,2,5]`, verifier inputs `[6,7,8]`, fee input 9, and ten total paired slots. It also proves that changing the

@@ -105,7 +105,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
 
   /**
    * A native entry-backed fixed array has a compiler-owned cardinality and identities: `T[N]` is exactly the
-   * entry set 0..N-1. In hidden-batch mode, expand its collection iteration to the same static indexed reads a
+   * entry set 0..N-1. In message-bus mode, expand its collection iteration to the same static indexed reads a
    * user could write by hand. The ordinary entry-slot machinery then authenticates the exact count, source
    * order, and every index identity. Enumerable mappings and dynamic arrays deliberately retain their runtime
    * CollectionIterationNode and the route's named fail-closed refusal.

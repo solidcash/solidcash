@@ -3,8 +3,8 @@
 Reviewer: Claude (adversarial soundness + security audit)
 Baseline: branch `codex/state-bus-research`, HEAD `4cff1624`, forked from `d36116aa` (62 commits, ~5.2k
 inserted lines). Scope: **all** work added since the fork, with emphasis on the previously
-un-audited R1-R3 journal-lowering layer. The R4-R5 hidden-batch surface is covered in the companion
-`compiler-hidden-batch-v1-audit.md`; this document adds the journal layer beneath it and the
+un-audited R1-R3 journal-lowering layer. The R4-R5 message-bus surface is covered in the companion
+`compiler-message-bus-v1-audit.md`; this document adds the journal layer beneath it and the
 cross-cutting result.
 
 Method: five parallel adversarial code traces (scalar/recursion, collection/mapping, dynamic-state,
@@ -51,14 +51,14 @@ are the substantive open items; J3/J4 residuals are fail-closed robustness only.
 | J6 recursive budget | **VERIFIED end-to-end** | VM: a mutually-recursive *collection* handler carries `recursiveStateHandler=true`; within-budget `run` settles; over-budget `run` is rejected at the SDK concrete-VM preflight ("does not fit or fails its concrete BCH VM preflight"), not an unrelated failure. Closes the metadata-only gap. |
 
 Validation reproduced this pass (single-threaded): `CollectionJournalRelease3` 14/14; `ScalarJournal`
-+ `CollectionJournal` 16/16; `HiddenBatchRelease4` + `RepeatedExternalBatchRelease5` 29/29; full
-compiler suite 2,302 pass (the one "failure" was `HiddenBatch > allocates one exact two-row resource
++ `CollectionJournal` 16/16; `MessageBusRelease4` + `RepeatedExternalBatchRelease5` 29/29; full
+compiler suite 2,302 pass (the one "failure" was `MessageBus > allocates one exact two-row resource
 shape` timing out under concurrent probe load - it passes isolated in ~15s; commit `357157ad` already
 raised its timeout). Full SDK suite: see batch doc.
 
 Remaining before graduation (Decision 1): fix J5 (transitive-emit event loss); strengthen F5 (batch
 doc); optionally give J3/J4 clean diagnostics instead of confusing internal errors. R5 stays
-default-off regardless per `compiler-hidden-batch-v1.md` graduation gates.
+default-off regardless per `compiler-message-bus-v1.md` graduation gates.
 
 ### Post-review J5 closure (2026-07-24)
 
@@ -302,7 +302,7 @@ not corruption. Same gap noted for collection value handlers.
   over-read); writes coalesce to one pending write per var; chunk count is orphan-bounded and old
   chunks force-consumed. Corruption only arises via J4, which is fail-closed.
 - **Batch positional binding, whole-blob equality, parser exhaustion, eligibility fail-closed, entry
-  key-binding**: see companion `compiler-hidden-batch-v1-audit.md` (findings F1-F6 there:
+  key-binding**: see companion `compiler-message-bus-v1-audit.md` (findings F1-F6 there:
   overstated "real ERC-20" claim, SDK-only alias/cold tests, metadata-dependent cold gate, missing
   library-path size gate, test over-attestation, load-bearing route bifurcation).
   X125: F4 was named "225-byte size wall" in this list. There is no size wall - the route has 5,100

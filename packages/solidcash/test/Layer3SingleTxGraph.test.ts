@@ -3,7 +3,7 @@ import type { Artifact } from '@solidcash/utils';
 import { layer3 } from '../src/index.js';
 
 const artifact = (selector: string, inputType = 'int'): Artifact => ({
-  hiddenBatch: {
+  messageBus: {
     maximumRows: 1,
     handlers: [{
       name: 'run', selector, inputs: [{ name: 'n', type: inputType }], outputs: [], eligible: true,

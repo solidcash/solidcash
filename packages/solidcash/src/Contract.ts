@@ -386,7 +386,7 @@ export class Contract<
       const signingBytecodeForArgument = (inputName: string): Uint8Array => {
         const match = /^__scb_sig_(\d+)_\d+_r\d+$/.exec(inputName);
         if (!match) return signingBytecode;
-        const handler = this.artifact.hiddenBatch?.handlers[Number(match[1])];
+        const handler = this.artifact.messageBus?.handlers[Number(match[1])];
         const handlerBody = handler?.signatureBytecode;
         if (!handlerBody) {
           // A signature parameter may only be forwarded by this participant;

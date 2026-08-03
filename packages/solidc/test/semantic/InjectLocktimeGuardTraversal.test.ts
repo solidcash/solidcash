@@ -24,7 +24,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(x >= 100);
         }
       }`;
-    expect(compileString(src, { hiddenBatch: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject when a top-level require(tx.time >= ...) is already present', () => {
@@ -74,7 +74,7 @@ describe('InjectLocktimeGuardTraversal', () => {
         }
       }`;
     // bigint param (no H6 bounds check) so the guard stays at the very start.
-    expect(compileString(src, { hiddenBatch: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('injects guard when tx.locktime is used only in a branch condition', () => {
@@ -88,7 +88,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           }
         }
       }`;
-    expect(compileString(src, { hiddenBatch: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject guard when tx.locktime is used in a branch body and tx.time check is already present', () => {
@@ -150,7 +150,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(sum >= 0);
         }
       }`;
-    expect(compileString(src, { hiddenBatch: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
 
@@ -186,7 +186,7 @@ describe('InjectLocktimeGuardTraversal', () => {
           require(x >= 0);
         }
       }`;
-    const bytecode = compileString(src, { hiddenBatch: false }).bytecode;
+    const bytecode = compileString(src, { messageBus: false }).bytecode;
     expect(bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
@@ -212,7 +212,7 @@ describe('InjectLocktimeGuardTraversal', () => {
         }
       }`;
     // bigint param (no H6 bounds check) so the guard stays at the very start.
-    expect(compileString(src, { hiddenBatch: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
+    expect(compileString(src, { messageBus: false }).bytecode.startsWith(GUARD_PREFIX)).toBe(true);
   });
 
   it('does not inject when enforceLocktimeGuard is disabled', () => {

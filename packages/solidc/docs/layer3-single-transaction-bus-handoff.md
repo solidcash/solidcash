@@ -46,7 +46,7 @@ The SDK must not expose or require:
 Use compiler-specialized, self-preserved verifier covenants deployed at contract genesis.
 
 Each contract deploys a configurable pool of `N` mutable verifier NFTs locked by the
-verifier program generated from that contract's hidden-batch route. A composition consumes
+verifier program generated from that contract's message-bus route. A composition consumes
 and exactly recreates one verifier for every participant. The verifier carries the canonical
 framed graph transcript as the first push in its unlocking bytecode and performs the heavy
 global and local verification. The participant master retains only a compact binder which
@@ -155,7 +155,7 @@ The implementation is incomplete until VM tests prove all of these:
 
 ### Preserve and adapt
 
-- compiler hidden-batch handler discovery and SCB1 local row encoding;
+- compiler message-bus handler discovery and SCB1 local row encoding;
 - scalar, collection, and dynamic journals;
 - balanced participant block descriptors and trailing-region metadata;
 - compiler-derived call occurrence, caller, calldata, result, and effect tables;

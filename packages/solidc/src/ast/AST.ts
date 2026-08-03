@@ -224,7 +224,7 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
-  // Hidden-batch runtime alias canonicalization: this conditional slot is inactive when its complete key equals
+  // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
   // A sorted (C2) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
@@ -356,20 +356,20 @@ export class FunctionDefinitionNode extends Node implements Named {
   forceCollectionJournalPool?: boolean;
   // Compiler-only SCB1 physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
-  hiddenBatchRoute?: boolean;
-  hiddenBatchMaximumRows?: number;
+  messageBusRoute?: boolean;
+  messageBusMaximumRows?: number;
   /** Compiler-owned SCB1 blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
-  hiddenBatchBlockhashReadWidth?: number;
-  hiddenBatchBlockhashReads?: {
+  messageBusBlockhashReadWidth?: number;
+  messageBusBlockhashReads?: {
     row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
   }[];
 
-  hiddenBatchEligible?: boolean;
-  hiddenBatchRejectionReason?: string;
+  messageBusEligible?: boolean;
+  messageBusRejectionReason?: string;
   // Release 4 collection rows bind source argument positions to hidden
   // physical-route key witnesses. The SDK derives these from canonical rows;
   // the route compares decoded row arguments before any handler executes.
-  hiddenBatchKeyWitnesses?: {
+  messageBusKeyWitnesses?: {
     routeInput: string;
     inputIndex: number;
     source?: 'argument' | 'msgSender';
@@ -1914,7 +1914,7 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
-  /** Ordered row identity within one compiler-hidden repeated-callee batch. */
+  /** Ordered row identity within one inferred repeated-callee message-bus batch. */
   externalBatchLogicalIndex?: number;
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;

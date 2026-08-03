@@ -6,6 +6,8 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
+  /** Internal marker preserving whether the caller explicitly disabled inferred message-bus generation. */
+  __messageBusExplicitlyDisabled?: boolean;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __layer3VerifierProgram?: {
     verifyFunctionId: number;
@@ -58,10 +60,10 @@ export interface CompilerOptions {
   // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
   // See docs/ecrecover.md.
   ecrecover?: 'p2pkh' | 'evm';
-  // Compiler-hidden owner-local batch route and write-back journal. Eligibility is inferred from the
-  // contract. `false` remains as a compatibility opt-out for direct-route-only compilation. `true` is accepted
-  // for source compatibility but has no opt-in or strictness semantics; callers should omit this option.
-  hiddenBatch?: boolean;
+  // Compiler-generated atomic composition route and write-back journal. Eligibility is inferred from the
+  // contract when omitted. Explicit `false` requests direct-only compilation and is rejected when semantic
+  // analysis finds a transaction shape that cannot be built without one shared message bus.
+  messageBus?: boolean;
   // Group one repeated external callee into the compiler-owned batch route. Enabled by default;
   // set explicitly to false to retain one-call-per-owner lowering.
   repeatedExternalBatch?: boolean;
@@ -666,10 +668,10 @@ export interface InvocationAnalysisArtifact {
 }
 
 /**
- * Largest SCB1 hidden-batch blob any generated covenant admits, in bytes (X106).
+ * Largest SCB1 message-bus blob any generated covenant admits, in bytes (X106).
  *
- * ONE home for a value with two enforcers. The compiler compiles this bound into every hidden-batch route
- * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.hiddenBatch.maximumBlobBytes`; the SDK's
+ * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
+ * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
  * layer3 graph generator enforces the same bound while framing each participant's carrier rows. Both
  * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
@@ -679,7 +681,7 @@ export interface InvocationAnalysisArtifact {
  * bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than
  * the region. Silent drift between the copies would therefore move a real limit.
  */
-export const MAX_HIDDEN_BATCH_BLOB_BYTES = 223;
+export const MAX_MESSAGE_BUS_BLOB_BYTES = 223;
 
 /** Shared wire constants for the controllerless single-transaction message bus. */
 export const SINGLE_TX_BUS_DOMAIN_HEX = '4c33425553310000';
@@ -710,10 +712,10 @@ export interface Artifact {
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   /** Compiler-only call graph/resource summary shared by splitting, journal
-   * eligibility, diagnostics, and hidden-batch planning. No covenant capability
+   * eligibility, diagnostics, and message-bus planning. No covenant capability
    * is implied by its presence. */
   invocationAnalysis?: InvocationAnalysisArtifact;
-  hiddenBatch?: {
+  messageBus?: {
     version: 1;
     selector: '53434231';
     minimumRows?: number;
@@ -722,7 +724,7 @@ export interface Artifact {
     /** Compiler-published admission and carrier contract for controllerless composition. */
     singleTransactionBus?: {
       domain: typeof SINGLE_TX_BUS_DOMAIN_HEX;
-      /** Every verifier carries the same canonical frame; participant binders read the final verifier. */
+      /** The final verifier input carries the canonical frame authenticated by every participant binder. */
       carrier: {
         region: 'participant-verifiers';
         canonicalInput: 'final-participant-verifier';

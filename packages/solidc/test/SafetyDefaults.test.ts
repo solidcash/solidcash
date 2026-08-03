@@ -96,7 +96,7 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
     // private state var: a public one synthesizes a getter that pushes the contract over the subroutine-extraction
     // threshold, hex-encoding these opcodes (still present, just not as names). Visibility is irrelevant here.
     const empty = compileString('contract C() { int private n; function f() {} }', {
-      solidityImportCompat: true, hiddenBatch: false,
+      solidityImportCompat: true, messageBus: false,
     });
     expect(empty.bytecode).toContain('OP_UTXOBYTECODE');
     expect(empty.bytecode).toContain('OP_OUTPUTBYTECODE');

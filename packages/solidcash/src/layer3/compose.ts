@@ -19,7 +19,7 @@ import {
   finalizeSingleTxInvocationGraph, type SingleTxEventSlotEffect, type SingleTxResourceSlotEffect,
   type SingleTxSidecarSlotEffect, type SingleTxTokenSlotEffect, type SingleTxValueSlotEffect,
 } from './graph.js';
-import { encodeHiddenBatch } from './hidden-batch.js';
+import { encodeMessageBus } from './message-bus.js';
 import { preflightLayer3Transaction } from './preflight.js';
 import { deriveCompiledGraphPlan, type WorklistParticipant } from './worklist.js';
 
@@ -89,7 +89,7 @@ const graphRouteContext = (
     uint16(owner.settlementBoundary),
   ]);
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
-  const blockhashParameter = execution.artifact.hiddenBatch?.route.graphBlockhashOracle?.inputBaseParameter;
+  const blockhashParameter = execution.artifact.messageBus?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
     __internal__singleTxTranscript: includeTranscript
       ? encodeSingleTxBusTranscript(finalized.transcript) : Uint8Array.of(),
@@ -197,7 +197,7 @@ export class SingleTxBusComposition {
           + `expected '${invocation.function}'`,
         );
       }
-      const suppliedRow = encodeHiddenBatch(supplied.contract.inner.artifact, [{
+      const suppliedRow = encodeMessageBus(supplied.contract.inner.artifact, [{
         function: supplied.functionName,
         args: supplied.args,
         callMode: invocation.callMode,
@@ -383,7 +383,7 @@ export class SingleTxBusComposition {
           throw new Error(`layer3: compact master route omits its compiler-owned transcript witness (${masterUnlocker.abiFunction.inputs.map((input) => input.name).join(', ')})`);
         }
         masterUnlocker.params[transcriptParameter] = transcript;
-        const verifierProgram = contract.inner.artifact.hiddenBatch!.verifierProgram!;
+        const verifierProgram = contract.inner.artifact.messageBus!.verifierProgram!;
         const batchBlob = masterUnlocker.params[0] as Uint8Array;
         const routeContext = graphRouteContext(graph, participant.participant);
         const verifierGraphArgumentNames = [

@@ -59,7 +59,7 @@ import {
 } from '@solidcash/utils';
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
-import { encodeHiddenBatch } from '../layer3/hidden-batch.js';
+import { encodeMessageBus } from '../layer3/message-bus.js';
 // X186. The covenant-annotating gate moved to `layer3/preflight.ts` when `TransactionBuilder.send` became its
 // second caller. The four lifecycle-admin sites below route through it; none calls the bare gate.
 import {
@@ -140,7 +140,7 @@ type GraphEcrecoverCall = readonly [
 function selectGraphBlockhashReads(
   artifact: Artifact, blob: Uint8Array,
 ): GraphBlockhashSelection[] {
-  const route = artifact.hiddenBatch?.route;
+  const route = artifact.messageBus?.route;
   const plan = route?.graphBlockhashOracle;
   if (!plan) return [];
   if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
@@ -164,7 +164,7 @@ function selectGraphBlockhashReads(
     const argsStart = cursor + header;
     const argsEnd = argsStart + argsLength;
     if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
-    const handlerInfo = artifact.hiddenBatch!.handlers.find((h) => h.selector === selector && h.eligible);
+    const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
     const handler = artifact.abi.find((f) => f.name === handlerInfo?.name);
     if (!handlerInfo || !handler) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
     const rowArgs: FunctionArgument[] = [];
@@ -189,15 +189,15 @@ function selectGraphBlockhashReads(
 /** Decode the authenticated ecrecover arguments selected by an SCB1 envelope. Hidden-route ABI arguments
  * describe the envelope itself, so compute sidecars must be derived from each selected handler row. */
 function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphEcrecoverCall[] {
-  const route = artifact.hiddenBatch?.route;
+  const route = artifact.messageBus?.route;
   if (!route?.ecrecoverCompute
-    || !artifact.hiddenBatch?.handlers.some((handler) => handler.ecrecoverArgParams?.length)) return [];
+    || !artifact.messageBus?.handlers.some((handler) => handler.ecrecoverArgParams?.length)) return [];
   if (blob.length < 7 || binToHex(blob.slice(0, 4)) !== '53434231'
     || (blob[4] !== 1 && blob[4] !== 2)) {
     throw new Error('SCB1 graph ecrecover route requires a canonical version-1 or version-2 envelope');
   }
   const rowCount = blob[6];
-  if (rowCount > artifact.hiddenBatch!.maximumRows) {
+  if (rowCount > artifact.messageBus!.maximumRows) {
     throw new Error('SCB1 graph ecrecover row count exceeds the route limit');
   }
   const valueMode = blob[5] === 1;
@@ -215,7 +215,7 @@ function selectGraphEcrecoverCalls(artifact: Artifact, blob: Uint8Array): GraphE
     const argsStart = cursor + header;
     const argsEnd = argsStart + argsLength;
     if (argsEnd > blob.length) throw new Error(`SCB1 row ${row} arguments are truncated`);
-    const handlerInfo = artifact.hiddenBatch!.handlers.find((h) => h.selector === selector && h.eligible);
+    const handlerInfo = artifact.messageBus!.handlers.find((h) => h.selector === selector && h.eligible);
     if (!handlerInfo) throw new Error(`SCB1 row ${row} selects an ineligible handler`);
     const decoded = new Map<string, FunctionArgument>();
     let argCursor = argsStart;
@@ -1569,7 +1569,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   batch(
     invocations: readonly { function: string; args?: readonly FunctionArgument[] }[],
   ): StatefulFunctionCall {
-    const { blob, routeWitnesses } = encodeHiddenBatch(this.inner.artifact, invocations);
+    const { blob, routeWitnesses } = encodeMessageBus(this.inner.artifact, invocations);
     return this._batchRaw(blob, routeWitnesses);
   }
 
@@ -1584,8 +1584,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     returnBlob?: Uint8Array,
     omitLocalFeeTail = false,
   ): StatefulFunctionCall {
-    const capability = this.inner.artifact.hiddenBatch;
-    if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+    const capability = this.inner.artifact.messageBus;
+    if (!capability) throw new Error('This artifact does not advertise a message-bus route');
     const expectedWitnesses = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__')).length;
     if (routeWitnesses.length !== expectedWitnesses) {
@@ -1941,7 +1941,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (threadCount < 1 || !Number.isInteger(threadCount)) {
       throw new Error(`threadCount must be a positive integer, got ${threadCount}`);
     }
-    const layer3VerifierCount = options.layer3VerifierCount ?? (artifact.hiddenBatch?.verifierProgram ? 1 : 0);
+    const layer3VerifierCount = options.layer3VerifierCount ?? (artifact.messageBus?.verifierProgram ? 1 : 0);
     if (!Number.isSafeInteger(layer3VerifierCount) || layer3VerifierCount < 0 || layer3VerifierCount > 0xffff) {
       throw new Error(`layer3VerifierCount must be an unsigned 16-bit integer, got ${layer3VerifierCount}`);
     }
@@ -2140,7 +2140,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // commitment ordinal as a stable identity. A composed transaction consumes one instance and recreates it at
     // the same input/output index, so N instances permit N independently in-flight root compositions.
     if (layer3VerifierCount > 0) {
-      const verifierProgram = artifact.hiddenBatch?.verifierProgram;
+      const verifierProgram = artifact.messageBus?.verifierProgram;
       if (!verifierProgram) {
         throw new Error(`Contract '${artifact.contractName}' publishes no Layer-3 verifier program`);
       }
@@ -10470,10 +10470,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (!rows) return undefined;
     if (rows.length < 2) throw new Error('Repeated external SCB1 batch must contain at least two rows');
 
-    const capability = externalContract.inner.artifact.hiddenBatch;
+    const capability = externalContract.inner.artifact.messageBus;
     if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
       throw new Error(
-        `${externalCall.interfaceName} does not advertise the compatible compiler-hidden SCB1 route`,
+        `${externalCall.interfaceName} does not advertise a compatible message-bus route`,
       );
     }
     const minimumRows = capability.minimumRows ?? 1;

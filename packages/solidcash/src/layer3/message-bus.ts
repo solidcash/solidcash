@@ -6,7 +6,7 @@ import { encodeFunctionArgument, isSignatureTemplateArray, type FunctionArgument
 import SignatureTemplate from '../SignatureTemplate.js';
 import { Layer3DiagnosticError } from './diagnostics.js';
 
-export interface HiddenBatchInvocation {
+export interface MessageBusInvocation {
   function: string;
   /** Authenticated graph call mode. Presence selects the SCB2 per-row mode framing. */
   callMode?: 'call' | 'staticcall';
@@ -17,7 +17,7 @@ export interface HiddenBatchInvocation {
   logicalCaller?: FunctionArgument;
 }
 
-export interface EncodedHiddenBatch {
+export interface EncodedMessageBus {
   /** Exact SCB1 blob consumed by the compiler-owned route. */
   blob: Uint8Array;
   /** Non-internal route arguments following `batchBlob`, in artifact order. */
@@ -40,7 +40,7 @@ export interface EncodedHiddenBatch {
   }[];
 }
 
-export interface DecodedHiddenBatchResult {
+export interface DecodedMessageBusResult {
   row: number;
   type: string;
   value: StateValue;
@@ -85,9 +85,9 @@ const signedValue = (value: bigint): Uint8Array => {
  * parses and executes the same bytes. No parallel application DSL or hand-authored selector table is
  * involved.
  */
-export function encodeHiddenBatch(
+export function encodeMessageBus(
   artifact: Artifact,
-  invocations: readonly HiddenBatchInvocation[],
+  invocations: readonly MessageBusInvocation[],
   /**
    * Values for route key witnesses no invocation binds. A mixed batch produces these by construction: a handler
    * with a single mapping access binds only the shared entry, so the other row's row-local slot stays unbound
@@ -95,18 +95,18 @@ export function encodeHiddenBatch(
    * caller names that entry; the SDK cannot derive it, because no row touches it.
    */
   unboundRouteWitnesses: Readonly<Record<string, FunctionArgument>> = {},
-): EncodedHiddenBatch {
-  const capability = artifact.hiddenBatch;
+): EncodedMessageBus {
+  const capability = artifact.messageBus;
   if (!capability) {
     throw new Error(
-      `Artifact '${artifact.contractName}' does not advertise the compiler-hidden SCB1 batch route`,
+      `Artifact '${artifact.contractName}' does not advertise a message-bus route`,
     );
   }
   if (capability.version !== 1) {
     throw new Layer3DiagnosticError(
       'L3_PROTOCOL_VERSION_UNSUPPORTED',
       `artifact '${artifact.contractName}' advertises unsupported SCB version ${String(capability.version)}`,
-      { metadataField: 'hiddenBatch.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
+      { metadataField: 'messageBus.version', actual: capability.version, expected: 1, ownerIdentity: artifact.contractName },
     );
   }
   if (capability.selector !== '53434231'
@@ -116,7 +116,7 @@ export function encodeHiddenBatch(
       'L3_PROTOCOL_METADATA_MALFORMED',
       `artifact '${artifact.contractName}' publishes malformed SCB1 capability metadata`,
       {
-        metadataField: 'hiddenBatch',
+        metadataField: 'messageBus',
         actual: {
           selector: capability.selector,
           maximumRows: capability.maximumRows,
@@ -317,13 +317,13 @@ export function encodeHiddenBatch(
  * supplies the exact ordered type vector, so decoding is deterministic even when rows return different types
  * or tuples. Complete consumption rejects both omitted fields and attacker-controlled suffixes.
  */
-export function decodeHiddenBatchResults(
+export function decodeMessageBusResults(
   artifact: Artifact,
-  plan: EncodedHiddenBatch,
+  plan: EncodedMessageBus,
   commitment: Uint8Array,
-): readonly DecodedHiddenBatchResult[] {
-  const capability = artifact.hiddenBatch;
-  if (!capability) throw new Error('This artifact does not advertise the compiler-hidden SCB1 batch route');
+): readonly DecodedMessageBusResult[] {
+  const capability = artifact.messageBus;
+  if (!capability) throw new Error('This artifact does not advertise a message-bus route');
   if (plan.results.length === 0) {
     if (commitment.length !== 0) throw new Error('Non-returning SCB1 plan has an unexpected result commitment');
     return [];

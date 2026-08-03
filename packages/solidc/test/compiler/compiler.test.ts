@@ -39,32 +39,32 @@ describe('Compiler', () => {
         }
       }`);
 
-      expect(artifact.hiddenBatch).toBeUndefined();
-      expect(artifact.compiler.options?.hiddenBatch).toBe(true);
+      expect(artifact.messageBus).toBeUndefined();
+      expect(artifact.compiler.options?.messageBus).toBe(true);
     });
 
-    it('infers hidden-batch synthesis without an opt-in flag', () => {
+    it('infers message-bus synthesis without an opt-in flag', () => {
       const source = `contract Counter() {
         int counter;
         function increment() { this.counter = this.counter + 1; }
       }`;
 
       const inferred = _csRawSolidc(source);
-      const legacyExplicit = _csRawSolidc(source, { hiddenBatch: true });
+      const legacyExplicit = _csRawSolidc(source, { messageBus: true });
 
-      expect(inferred.hiddenBatch).toBeDefined();
+      expect(inferred.messageBus).toBeDefined();
       expect(legacyExplicit.bytecode).toBe(inferred.bytecode);
-      expect(legacyExplicit.hiddenBatch).toEqual(inferred.hiddenBatch);
+      expect(legacyExplicit.messageBus).toEqual(inferred.messageBus);
       expect(legacyExplicit.compiler.options).toEqual(inferred.compiler.options);
     });
 
     it('does not advertise a participant route without a stateful master identity', () => {
       const source = 'contract Stateless() { function check(int x) { require(x > 0); } }';
       const inferred = _csRawSolidc(source);
-      const direct = _csRawSolidc(source, { hiddenBatch: false });
+      const direct = _csRawSolidc(source, { messageBus: false });
 
       expect(inferred.stateLayout).toBeUndefined();
-      expect(inferred.hiddenBatch).toBeUndefined();
+      expect(inferred.messageBus).toBeUndefined();
       expect(inferred.bytecode).toBe(direct.bytecode);
       expect(inferred.functionBodies).toEqual(direct.functionBodies);
     });
@@ -128,7 +128,7 @@ describe('Compiler', () => {
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
         commitmentLimit: 128,
-        hiddenBatch: true,
+        messageBus: true,
       });
     });
   });

@@ -127,7 +127,7 @@ export function getDataNftAddress(contract: Contract<any, any>, categoryId: stri
 
 export function getLayer3VerifierAddress(contract: Contract<any, any>, categoryId: string): string {
   validateCategoryId(categoryId);
-  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
   return scriptToAddress(
     buildLayer3VerifierCovenantScript(program),
@@ -141,7 +141,7 @@ export function getLayer3VerifierLockingBytecode(
   contract: Contract<any, any>, categoryId: string, _addressType: AddressType = 'p2sh32',
 ): Uint8Array {
   validateCategoryId(categoryId);
-  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
   return scriptToLockingBytecode(buildLayer3VerifierCovenantScript(program), 'p2sh32');
 }
@@ -294,7 +294,7 @@ export function createLayer3VerifierUnlocker(
   contract: Contract<any, any>, categoryId: string, carrier: Uint8Array, verifierArgs: FunctionArgument[],
 ): ContractUnlocker {
   validateCategoryId(categoryId);
-  const program = contract.artifact.hiddenBatch?.verifierProgram;
+  const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no Layer-3 verifier program`);
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`Layer-3 verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);

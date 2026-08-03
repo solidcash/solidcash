@@ -2,9 +2,9 @@ import { asmToBytecode, layer3VerifierCovenantBytecode } from '@solidcash/utils'
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../src/compiler.js';
 
-const bytes = (source: string, hiddenBatch: boolean): number => asmToBytecode(compileString(source, {
+const bytes = (source: string, messageBus: boolean): number => asmToBytecode(compileString(source, {
   forceStateful: true,
-  hiddenBatch,
+  messageBus,
 }).bytecode).length;
 
 describe('controllerless verifier bytecode specialization', () => {
@@ -14,8 +14,8 @@ describe('controllerless verifier bytecode specialization', () => {
     }`;
     const direct = bytes(source, false);
     const composed = bytes(source, true);
-    const artifact = compileString(source, { forceStateful: true, hiddenBatch: true });
-    const verifierProgram = artifact.hiddenBatch?.verifierProgram;
+    const artifact = compileString(source, { forceStateful: true, messageBus: true });
+    const verifierProgram = artifact.messageBus?.verifierProgram;
     expect(verifierProgram).toBeDefined();
     const sidecar = layer3VerifierCovenantBytecode(verifierProgram!).length;
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({

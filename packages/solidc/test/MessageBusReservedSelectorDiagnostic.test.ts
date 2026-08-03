@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import {
-  assertNoReservedHiddenBatchSelector, classifyHiddenBatchRejection, compileString, SolidcDiagnosticError,
+  assertNoReservedMessageBusSelector, classifyMessageBusRejection, compileString, SolidcDiagnosticError,
 } from '../src/index.js';
 import { Location, Point } from '../src/ast/Location.js';
 
@@ -13,7 +13,7 @@ describe('SCB1 reserved-selector diagnostic', () => {
       location: new Location(new Point(7, 4), new Point(7, 23)),
     }];
     try {
-      assertNoReservedHiddenBatchSelector(functions);
+      assertNoReservedMessageBusSelector(functions);
       throw new Error('expected selector collision');
     } catch (error) {
       expect(error).toBeInstanceOf(SolidcDiagnosticError);
@@ -25,7 +25,7 @@ describe('SCB1 reserved-selector diagnostic', () => {
           sourceLocation: { line: 7, column: 4 },
         },
       });
-      expect((error as Error).message).toContain('reserved hidden batch selector 0x53434231');
+      expect((error as Error).message).toContain('reserved message-bus selector 0x53434231');
     }
   });
 });
@@ -40,7 +40,7 @@ describe('transcript-v1 static refusal classes', () => {
     ['direct-versus-batch-introspection-divergence', 'SCB_STACK_CONTEXT_UNPRESERVABLE'],
     ['transaction-signature-route-binding-required', 'SCB_EFFECT_UNSUMMARIZABLE'],
   ] as const)('classifies %s as %s', (reason, code) => {
-    expect(classifyHiddenBatchRejection(reason)).toBe(code);
+    expect(classifyMessageBusRejection(reason)).toBe(code);
   });
 
   it('publishes the stable class and handler identity beside the detailed reason', () => {
@@ -48,8 +48,8 @@ describe('transcript-v1 static refusal classes', () => {
       contract SignatureRefusal() {
         function signed(sig s, pubkey pk) public { require(checkSig(s, pk)); }
         function open() public { require(true); }
-      }`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
+      }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'signed')).toMatchObject({
       eligible: false,
       rejectionReason: 'transaction-signature-route-binding-required',
       rejectionCode: 'SCB_EFFECT_UNSUMMARIZABLE',

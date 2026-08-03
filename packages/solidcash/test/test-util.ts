@@ -327,7 +327,7 @@ export async function setupStatefulUtxos(
   const commitments = buildInitialStateCommitments(stateLayout, initialState);
   const dataNftCount = commitments.length;
   const sortedCollections = (stateLayout.collections ?? []).filter((collection) => collection.sorted);
-  const verifierCount = opts?.layer3VerifierCount ?? (contract.artifact.hiddenBatch?.verifierProgram ? 1 : 0);
+  const verifierCount = opts?.layer3VerifierCount ?? (contract.artifact.messageBus?.verifierProgram ? 1 : 0);
 
   // Chosen-category genesis (mock only): seed master+data at txid=categoryId via addUtxo. Needed when a
   // category must be known BEFORE building a dependent contract - e.g. a branded library whose __brand is the

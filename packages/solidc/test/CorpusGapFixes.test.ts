@@ -154,10 +154,10 @@ describe('bare state-struct field write (Solidity form of this.s.field = v)', ()
   it('bare s.field = v matches this.s.field = v bytecode', () => {
     const bare = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
       function f(uint256 e) { s.x = 13; s.y = 4; require(s.x == e); }
-    }`, { solidityImportCompat: true, hiddenBatch: false }).bytecode;
+    }`, { solidityImportCompat: true, messageBus: false }).bytecode;
     const thisPrefixed = compileString(`contract C() { struct S { uint256 x; uint256 y; } S s;
       function f(uint256 e) { this.s.x = 13; this.s.y = 4; require(this.s.x == e); }
-    }`, { solidityImportCompat: true, hiddenBatch: false }).bytecode;
+    }`, { solidityImportCompat: true, messageBus: false }).bytecode;
     expect(bare).toBe(thisPrefixed);
   });
 
@@ -332,7 +332,7 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
   // correct because a state read always reads the input commitment.
   const bc = (body: string): string => compileString(
     `contract C() { uint256 x; uint256 y; function f(uint256 a, uint256 b) { ${body} } }`,
-    { solidityImportCompat: true, forceStateful: true, hiddenBatch: false },
+    { solidityImportCompat: true, forceStateful: true, messageBus: false },
   ).bytecode;
 
   it('(x, y) = (a, b) matches x = a; y = b', () => {
@@ -494,9 +494,9 @@ describe('user-defined value type default (unnamed UDVT return fall-through)', (
 
   it('matches the named-return default byte-for-byte', () => {
     const unnamed = compileString('contract C() { type I8 is int8; function f() returns (I8) {} }',
-      { solidityImportCompat: true, hiddenBatch: false }).bytecode;
+      { solidityImportCompat: true, messageBus: false }).bytecode;
     const named = compileString('contract C() { type I8 is int8; function f() returns (I8 r) {} }',
-      { solidityImportCompat: true, hiddenBatch: false }).bytecode;
+      { solidityImportCompat: true, messageBus: false }).bytecode;
     expect(unnamed).toBe(named);
   });
 });
@@ -711,10 +711,10 @@ describe('bytes state-var element write (data[i] = v)', () => {
   });
   it('is byte-identical to the hand-written slice+concat reassignment', () => {
     const sugar = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] = v; require(true); } }',
-      { solidityImportCompat: true, hiddenBatch: false });
+      { solidityImportCompat: true, messageBus: false });
     const hand = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + v + data[i+1:data.length]; require(true); } }',
-    { solidityImportCompat: true, hiddenBatch: false });
+    { solidityImportCompat: true, messageBus: false });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -906,10 +906,10 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
   });
   it('is byte-identical to the hand-written read-modify-slice-concat', () => {
     const s = compileString('contract C { bytes data; function f(uint256 i, bytes1 v) external { data[i] |= v; require(true); } }',
-      { solidityImportCompat: true, hiddenBatch: false });
+      { solidityImportCompat: true, messageBus: false });
     const h = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external { data = data[0:i] + (data[i] | v) + data[i+1:data.length]; require(true); } }',
-    { solidityImportCompat: true, hiddenBatch: false });
+    { solidityImportCompat: true, messageBus: false });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
@@ -1067,7 +1067,7 @@ describe('imported/sibling contracts with their own inheritance are flattened', 
 describe('whole fixed-array copy with differing length/element (desugar by reduction)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const bc = (src: string): string => compileString(src, {
-    solidityImportCompat: true, hiddenBatch: false,
+    solidityImportCompat: true, messageBus: false,
   }).bytecode;
   it('compiles a diff-length same-element fixed-array copy (copy prefix + zero-fill leftover)', () => {
     expect(cc('contract C { uint256[4] a; uint256[2] b; function f() external { a = b; require(true); } }')).toBe('C');
@@ -2333,7 +2333,7 @@ describe('inlined value helper: local sharing a struct-field name does not corru
 // packages/solidcash/test/FnPtrStructFieldCall.test.ts; here we byte-check equivalence to the hoist form.
 describe('call a function-pointer struct field directly (s.x(), t[i].x(), m[k].x())', () => {
   const bc = (src: string): string => compileString(src, {
-    solidityImportCompat: true, hiddenBatch: false,
+    solidityImportCompat: true, messageBus: false,
   }).bytecode;
   const H = 'function h() internal pure returns (uint) { return 7; }';
   const HA = 'function h(uint a) internal pure returns (uint) { return a + 1; }';
@@ -3165,7 +3165,7 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
   // Error(string) selector. On BCH bytes are values, so it lowers to the slice `_returnData[4:]` (VM-proven
   // byte-exact in solidcash RevertMsgSlice.test.ts). This unblocks BoringBatchable-derived contracts
   // (BentoBoxV1, MasterChefV2) at the _getRevertMsg wall.
-  const opts = { solidityImportCompat: true, hiddenBatch: false };
+  const opts = { solidityImportCompat: true, messageBus: false };
   it('lowers add(bytesMemory, N) to a slice so _getRevertMsg compiles', () => {
     expect(() => compileString('pragma solidity ^0.8.0; contract C {'
       + ' function f(bytes memory _returnData) public pure returns (string memory) {'

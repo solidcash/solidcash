@@ -50,7 +50,7 @@ import { assessFinalizedTransactionBytes } from '../../src/layer3/preflight.js';
  * was deleted rather than gated because the reason it existed had been removed. See X126/X172/X175.
  *
  * The original verdict below is kept because its reasoning was right for what it had. Gating
- * `StatefulTransactionBuilder.send` costs exactly TWO tests, both in `HiddenBatchRelease4.test.ts`, MEASURED
+ * `StatefulTransactionBuilder.send` costs exactly TWO tests, both in `MessageBusRelease4.test.ts`, MEASURED
  * by applying the hunk rather than predicted: that fixture transfers 100/200/300 satoshis to a one-byte
  * `OP_1` recipient, and the gate answers `100 satoshis is 374 short of the 474-satoshi dust threshold for a
  * 10-byte output (3 * (10 + 148))`. 474 is the same threshold BCHN used to refuse C1 `64: dust`, so the gate
@@ -59,8 +59,8 @@ import { assessFinalizedTransactionBytes } from '../../src/layer3/preflight.js';
  *
  * THE PROBE UNDERCOUNTS, and by how much is known. It patches the PROTOTYPE, so a fixture that replaces
  * `provider.sendRawTransaction` on the INSTANCE is invisible to it - 13 e2e files do that, and the second
- * `HiddenBatchRelease4` failure is exactly one of them. All 13 were re-run with the hunk applied: 12 pass,
- * only `HiddenBatchRelease4` fails. No fixture uses `vi.spyOn` or subclasses the provider, so that closes it.
+ * `MessageBusRelease4` failure is exactly one of them. All 13 were re-run with the hunk applied: 12 pass,
+ * only `MessageBusRelease4` fails. No fixture uses `vi.spyOn` or subclasses the provider, so that closes it.
  */
 
 const OUT = process.env.L3_GATESITE_OUT;

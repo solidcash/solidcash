@@ -788,7 +788,7 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
-    const sidecarOffset = callerArtifact.hiddenBatch!.route.blockLayout!.slots.find(
+    const sidecarOffset = callerArtifact.messageBus!.route.blockLayout!.slots.find(
       (slot) => slot.kind === 'keccakSideCar',
     )?.offset;
     if (sidecarOffset === undefined) throw new Error('test caller published no keccak sidecar slot');
@@ -874,8 +874,8 @@ describe('layer3.compose controllerless transaction', () => {
       changeAddress: fee.unlocker.generateLockingBytecode(),
     });
     const canonical = await composition.build();
-    const sinkBaseOffset = callerArtifact.hiddenBatch!.route.blockLayout!.blockSize;
-    const offsets = sinkArtifact.hiddenBatch!.route.blockLayout!.slots
+    const sinkBaseOffset = callerArtifact.messageBus!.route.blockLayout!.blockSize;
+    const offsets = sinkArtifact.messageBus!.route.blockLayout!.slots
       .filter((slot) => slot.kind === 'ecrecoverSideCar')
       .map((slot) => sinkBaseOffset + slot.offset);
     expect(offsets).toHaveLength(2);

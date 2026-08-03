@@ -819,13 +819,13 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
-    ...(func.hiddenBatchBlockhashReadWidth && func.hiddenBatchBlockhashReads && {
+    ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
       graphBlockhashOracle: {
         inputBaseParameter: '__internal__blockhashInputIndex' as const,
-        rowCount: func.hiddenBatchMaximumRows!,
-        readWidth: func.hiddenBatchBlockhashReadWidth,
-        slotCount: func.hiddenBatchMaximumRows! * func.hiddenBatchBlockhashReadWidth,
-        reads: [...func.hiddenBatchBlockhashReads],
+        rowCount: func.messageBusMaximumRows!,
+        readWidth: func.messageBusBlockhashReadWidth,
+        slotCount: func.messageBusMaximumRows! * func.messageBusBlockhashReadWidth,
+        reads: [...func.messageBusBlockhashReads],
       },
     }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
@@ -1239,7 +1239,7 @@ export function generateArtifact(
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         commitmentLimit: compilerOptions.commitmentLimit,
-        hiddenBatch: compilerOptions.hiddenBatch,
+        messageBus: compilerOptions.messageBus,
       },
     },
     updatedAt: new Date().toISOString(),

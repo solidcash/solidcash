@@ -14,20 +14,28 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
  *
  * General parser/type/codegen tests must not synthesize an unrelated SCB1 route: doing so changes byte-identity
  * assertions, can replace the source diagnostic with a generated-route diagnostic, and multiplies full-suite
- * runtime. Layer-3 tests import the production compiler directly. An explicit `hiddenBatch: true` still wins.
+ * runtime. Layer-3 tests import the production compiler directly. An explicit `messageBus: true` still wins.
  */
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},
-): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, { hiddenBatch: false, ...options });
+): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, {
+  messageBus: false, __messageBusExplicitlyDisabled: false, ...options,
+});
 
 export const compileString = (
   source: string, options: StringOptions = {},
-): ReturnType<typeof compileStringRaw> => compileStringRaw(source, { hiddenBatch: false, ...options });
+): ReturnType<typeof compileStringRaw> => compileStringRaw(source, {
+  messageBus: false, __messageBusExplicitlyDisabled: false, ...options,
+});
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
-): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, { hiddenBatch: false, ...options });
+): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, {
+  messageBus: false, __messageBusExplicitlyDisabled: false, ...options,
+});
 
 export const compileStringSplit = (
   source: string, options: SplitOptions = {},
-): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, { hiddenBatch: false, ...options });
+): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, {
+  messageBus: false, __messageBusExplicitlyDisabled: false, ...options,
+});

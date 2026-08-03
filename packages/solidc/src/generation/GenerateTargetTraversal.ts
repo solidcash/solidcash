@@ -61,7 +61,7 @@ import {
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
   isChunkableValueType,
-  MAX_HIDDEN_BATCH_BLOB_BYTES,
+  MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
 } from '@solidcash/utils';
 import {
@@ -336,7 +336,7 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  * X91. A synthetic witness an internal call forwards but the CALLER does not carry, refused by name.
  *
  * X42's `blockhash` half at its real origin. That guard fires on `graphEmissionHandler`, which is only the
- * subset of hidden-batch handlers that also make a tail-form external call. The failure is not a property of
+ * subset of message-bus handlers that also make a tail-form external call. The failure is not a property of
  * the handler's effects at all - it is a property of the CALL EDGE:
  *
  *   1. `SymbolTableTraversal` appends `__internal__blockhashInputIndex` to any function with `usesBlockhash`.
@@ -349,11 +349,11 @@ const KECCAK_SIDE_CAR_DETAIL: Record<string, string> = {
  *      `Expected variable '__internal__blockhashInputIndex' does not exist on the stack`.
  *
  * So a route-eligible handler that reads `blockhash(n)` and makes NO external call escaped X42 entirely, on
- * the plain hidden-batch route and on the graph route alike. The refusal below sits on the edge instead of on
+ * the plain message-bus route and on the graph route alike. The refusal below sits on the edge instead of on
  * an effect list, and is checked against the caller's own stack - the exact condition the identifier read
  * would abort on - so it names any forwarded witness the caller cannot supply, not only this one.
  *
- * The class is WIDER than the hidden batch, which is why the edge is the right place: an ordinary function that
+ * The class is WIDER than the message bus, which is why the edge is the right place: an ordinary function that
  * does NOT read blockhash itself, calling one that does, misses the same witness on the plain DIRECT route with
  * no route in the picture. That is a second, pre-existing crash the same predicate covers, and it has a
  * different remedy - the caller can be given a witness, whereas the route can never have one - so the two are
@@ -373,11 +373,11 @@ export class ForwardedWitnessError extends SolidCashError {
 
 const FORWARDED_WITNESS_DETAIL: Record<string, string> = {
   'route-cannot-carry-blockhash-oracle-index':
-    'reading blockhash(n) is not admitted in a function the hidden-batch route invokes. The block-oracle '
+    'reading blockhash(n) is not admitted in a function the message-bus route invokes. The block-oracle '
     + 'co-spend is located through a synthesized __internal__blockhashInputIndex witness that the compiler '
     + 'forwards from the caller; the generated __scb1 route neither declares it nor appears in the ABI, so the '
     + 'SDK has nowhere to fill it and the handler would read an unlocated input. The read itself is fine off the '
-    + 'route: compile without the hidden-batch option, or keep the blockhash read in a function the route does '
+    + 'route: compile without the message-bus option, or keep the blockhash read in a function the route does '
     + 'not admit, and it compiles unchanged',
   'caller-cannot-forward-blockhash-oracle-index':
     'a function that does not itself read blockhash(n) cannot call one that does. The block-oracle co-spend is '
@@ -434,7 +434,7 @@ function forwardedWitnessMiss(
     // caller simply was not given one, because it does not read blockhash itself - and reading it there fixes
     // the call. Both remedies were verified by compiling them, not inferred.
     const reason = name === '__internal__blockhashInputIndex'
-      ? (callerFunc?.hiddenBatchRoute
+      ? (callerFunc?.messageBusRoute
         ? 'route-cannot-carry-blockhash-oracle-index'
         : 'caller-cannot-forward-blockhash-oracle-index')
       : 'forwarded-witness-not-carried-by-caller';
@@ -2041,7 +2041,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // X105. A handler which only READS a journalled slot was dropped from the closure entirely. Reached from
-    // the hidden-batch route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
+    // the message-bus route as an OP_INVOKE subroutine it therefore re-read the authenticated PRE-state
     // commitment while an earlier row's write was live in the wrapper's frame - a stale read that settled.
     // Admit every function the route can reach, so all rows of one route load through one journal. Scoped to
     // the route's own call closure: a contract with no `__scb1` produces the same map as before, and a
@@ -2068,7 +2068,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // variable only where the AST does, and a foreign function-pointer table's target and selector arrays are
     // named on the external-call SLOT. Completing it above puts both back in the basis, and the widening below
     // then costs nothing.
-    const routeFunctionId = functions.find((fn) => fn.hiddenBatchRoute)?.functionId;
+    const routeFunctionId = functions.find((fn) => fn.messageBusRoute)?.functionId;
     const emissionClones = new Set(functions
       .filter((fn) => fn.graphEmissionHandler && fn.functionId !== undefined)
       .map((fn) => fn.functionId!));
@@ -3517,7 +3517,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // SCB1 unlocking bytecode retains its positional batch copy and historical reserved slot below the ordinary
     // ABI argument stack. Remove both untracked bottom items before executing the route. Composition transcripts
     // now live exclusively in artifact-specialized verifier inputs.
-    if (node.hiddenBatchRoute) {
+    if (node.messageBusRoute) {
       const loc = { location: node.location, positionHint: PositionHint.START };
       for (let positional = 0; positional < 2; positional += 1) {
         this.emit(Op.OP_DEPTH, loc);
@@ -3592,7 +3592,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // container inside its OP_INVOKE subroutine, which only runs on a reached dispatch site - and a route may
     // admit a transfer-FREE sibling handler, so a batch of rows selecting only that sibling reaches no site.
     // The flag lets the epilogue preserve the container on exactly that path.
-    this.graphTransferFlagActive = !this.isDefineSubTraversal && node.hiddenBatchRoute === true
+    this.graphTransferFlagActive = !this.isDefineSubTraversal && node.messageBusRoute === true
       && (node.graphEffectFrame?.transferWidth ?? 0) > 0;
     if (this.graphTransferFlagActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
@@ -3601,7 +3601,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Reached-site bit mask for event frames. Each occurrence settles its own window; the epilogue binds every
     // window whose bit remains clear. A mask (rather than the former last-site ordinal) supports repetition.
-    this.graphEventSiteActive = !this.isDefineSubTraversal && node.hiddenBatchRoute === true
+    this.graphEventSiteActive = !this.isDefineSubTraversal && node.messageBusRoute === true
       && (node.graphEffectFrame?.eventWidth ?? 0) > 0;
     if (this.graphEventSiteActive) {
       this.emit(encodeInt(0n), { location: node.location, positionHint: PositionHint.START });
@@ -3640,7 +3640,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     node.body = this.visit(node.body) as BlockNode;
 
-    if (!this.isDefineSubTraversal && node.hiddenBatchRoute === true
+    if (!this.isDefineSubTraversal && node.messageBusRoute === true
       && this.stack.includes('__internal__graphEmissions')) {
       const loc = { location: node.body.location, positionHint: PositionHint.END };
       this.emit(encodeInt(BigInt(this.getStackIndex('__internal__graphEmissions'))), loc);
@@ -9670,7 +9670,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitIdentifier(node: IdentifierNode): Node {
     if (node.name === '__internal__graphFixedSize') {
       const blockLayout = this.currentFunction.blockLayout;
-      if (!this.currentFunction.hiddenBatchRoute || blockLayout === undefined) {
+      if (!this.currentFunction.messageBusRoute || blockLayout === undefined) {
         throw new Error('Compiler-owned graph fixed size used outside an SCB1 route');
       }
       this.emit(encodeInt(BigInt(blockLayout.trailingBase ?? blockLayout.blockSize)),
@@ -9680,7 +9680,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (node.name === '__internal__graphBlockSize') {
       const blockSize = this.currentFunction.blockLayout?.blockSize;
-      if (!this.currentFunction.hiddenBatchRoute || blockSize === undefined) {
+      if (!this.currentFunction.messageBusRoute || blockSize === undefined) {
         throw new Error('Compiler-owned graph block size used outside an SCB1 route');
       }
       this.emit(encodeInt(BigInt(blockSize)),
@@ -17531,7 +17531,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (this.entrySlots[slotIdx] === undefined) {
         throw new Error(
           `Function '${node.name}' writes a resource at entry slot ${slotIdx} that has no entry descriptor; `
-          + 'this resource shape is not supported by the hidden-batch journal',
+          + 'this resource shape is not supported by the message-bus journal',
         );
       }
       if (this.sortedWrittenCollections.has(this.entrySlots[slotIdx].collection)) continue;
@@ -19339,7 +19339,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // The per-slot form needs the reached site's ordinal on the stack. If it is ever absent - a route compiled
     // on a path that did not allocate it - fall back to the unshadowed SEC-10 binding rather than skipping:
     // that over-refuses (it is the measured ablation) but never leaves a slot unbound, and never throws.
-    const frameShadowed = node.hiddenBatchRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0
+    const frameShadowed = node.messageBusRoute === true && (node.graphEffectFrame?.eventWidth ?? 0) > 0
       && this.stack.includes(GRAPH_EVENT_SITE);
 
     for (const pendingEmit of this.pendingEmits) {
@@ -20742,7 +20742,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SIZE, locationData);
     this.emit(Op.OP_NIP, locationData);
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(BigInt(MAX_HIDDEN_BATCH_BLOB_BYTES)), locationData);
+    this.emit(encodeInt(BigInt(MAX_MESSAGE_BUS_BLOB_BYTES)), locationData);
     this.emit(Op.OP_LESSTHANOREQUAL, locationData);
     this.emit(Op.OP_VERIFY, locationData); // [idx, remainder, expected, expectedLen]
 

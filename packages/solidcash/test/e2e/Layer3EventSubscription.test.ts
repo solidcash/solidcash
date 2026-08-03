@@ -23,7 +23,7 @@ describe('EventSubscription mixed collection journal', () => {
     const provider = createTestProvider();
     const artifact = compileString(SOURCE, {
       forceStateful: true,
-      hiddenBatch: true,
+      messageBus: true,
     });
     const inner = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {});

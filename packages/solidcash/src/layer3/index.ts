@@ -6,6 +6,6 @@ export * from './controllerless.js';
 export * from './delegate.js';
 export * from './diagnostics.js';
 export * from './graph.js';
-export * from './hidden-batch.js';
+export * from './message-bus.js';
 export * from './preflight.js';
 export * from './worklist.js';

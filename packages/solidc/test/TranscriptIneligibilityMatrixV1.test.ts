@@ -2,7 +2,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { classifyHiddenBatchRejection } from '../src/compiler.js';
+import { classifyMessageBusRejection } from '../src/compiler.js';
 import { compileString } from '../src/index.js';
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
@@ -22,7 +22,7 @@ describe('controllerless route ineligibility matrix', () => {
   it('pins compiler-owned exclusions to exact reasons and structured classes', () => {
     for (const [, reason, code] of MATRIX.slice(0, 5)) {
       expect(compiler, `compiler does not publish '${reason}'`).toContain(`'${reason}'`);
-      expect(classifyHiddenBatchRejection(reason)).toBe(code);
+      expect(classifyMessageBusRejection(reason)).toBe(code);
     }
   });
 
@@ -35,8 +35,8 @@ describe('controllerless route ineligibility matrix', () => {
     const artifact = compileString(`contract C() {
       function bound(bytes expected) public { require(this.activeBytecode == expected); }
       function control() public { require(true); }
-    }`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'bound')).toMatchObject({
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'bound')).toMatchObject({
       eligible: false,
       rejectionReason: 'direct-versus-batch-introspection-divergence',
       rejectionCode: 'SCB_STACK_CONTEXT_UNPRESERVABLE',
@@ -58,9 +58,9 @@ describe('controllerless route ineligibility matrix', () => {
       function control() public { require(true); }
     }`, {
       forceStateful: true,
-      hiddenBatch: true,
+      messageBus: true,
     });
-    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'lifecycle-or-unsafe-handler',
       rejectionCode: 'SCB_UNSUPPORTED_CONSTRUCT',
@@ -76,13 +76,13 @@ describe('controllerless route ineligibility matrix', () => {
           require(true);
         }
         function control() public { require(true); }
-      }`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'guarded')).toMatchObject({
+      }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'guarded')).toMatchObject({
       eligible: false,
       rejectionReason: 'foreign-try-catch-transcript-ineligible',
       rejectionCode: 'SCB_UNSUPPORTED_CONSTRUCT',
     });
-    expect(artifact.hiddenBatch!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
       .toEqual(['control']);
   });
 
@@ -91,13 +91,13 @@ describe('controllerless route ineligibility matrix', () => {
       contract C() {
         function opaque() public { assembly { OP_1 OP_DROP } require(true); }
         function control() public { require(true); }
-      }`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'opaque')).toMatchObject({
+      }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'opaque')).toMatchObject({
       eligible: false,
       rejectionReason: 'opaque-assembly-effects-transcript-ineligible',
       rejectionCode: 'SCB_EFFECT_UNSUMMARIZABLE',
     });
-    expect(artifact.hiddenBatch!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
       .toEqual(['control']);
   });
 
@@ -108,8 +108,8 @@ describe('controllerless route ineligibility matrix', () => {
         require(true);
       }
       function control() public { require(true); }
-    }`, { forceStateful: true, hiddenBatch: true });
-    expect(artifact.hiddenBatch!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'denied')).toMatchObject({
       eligible: false,
       rejectionReason: 'controllerless-delegate-context-unpreservable',
       rejectionCode: 'SCB_STACK_CONTEXT_UNPRESERVABLE',
@@ -119,7 +119,7 @@ describe('controllerless route ineligibility matrix', () => {
         sourceLocation: { line: expect.any(Number), column: expect.any(Number) },
       },
     });
-    expect(artifact.hiddenBatch!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
       .toEqual(['control']);
   });
 
@@ -128,7 +128,7 @@ describe('controllerless route ineligibility matrix', () => {
       function hop(bytes input) internal { impl.delegatecall(input); }
       function denied(bytes input) public { hop(input); require(true); }
       function control() public { require(true); }
-    }`, { forceStateful: true, hiddenBatch: true })).toThrowError(expect.objectContaining({
+    }`, { forceStateful: true, messageBus: true })).toThrowError(expect.objectContaining({
       code: 'SCB_DELEGATE_CONTEXT_UNPRESERVABLE',
       context: {
         functionName: 'hop',

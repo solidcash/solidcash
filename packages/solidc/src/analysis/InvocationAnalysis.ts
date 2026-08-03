@@ -115,7 +115,7 @@ export function analyseFunctionFootprint(
         // X19: a BARE element write `m[k] = v` / `delete m[k]` is an ArrayAssign/ArrayDelete until symbol
         // resolution decides state-vs-local (only the `this.`-prefixed spelling is a MappingAssign from the
         // parser). This analysis runs BOTH before and after that resolution, so omitting the bare forms made one
-        // spelling of the same write invisible to every pre-semantic caller - notably the hidden-batch route's
+        // spelling of the same write invisible to every pre-semantic caller - notably the message-bus route's
         // synthesis point, which then produced a route carrying a write it had reserved no entry descriptor for.
         // A name bound locally in this function is a LOCAL array element write and stays out of the footprint;
         // the same test is what symbol resolution later applies to choose MappingAssign over ArrayAssign.
@@ -145,7 +145,7 @@ export function analyseFunctionFootprint(
  * a local exactly as a parameter or a `var` declaration does, and symbol resolution resolves an element access
  * on either to that local. Omitting them made the bare-element branches below read `amounts[i]` in
  * UniswapV2Router02 as a collection access and publish `collection:amounts:*` for a name the contract never
- * declares; the hidden-batch route is gated on this footprint, so every such handler was refused
+ * declares; the message-bus route is gated on this footprint, so every such handler was refused
  * 'collection-helper-route-not-enabled' with no collection involved at all. Only tuple elements that DECLARE
  * (they carry a type) are bound here - an `existing` element names a variable bound at its own declaration,
  * and treating one as local would hide a genuine state write from the footprint.
@@ -179,7 +179,7 @@ export function collectionResourceName(name: string, keys: Node[] | undefined): 
 }
 
 /** Build one deterministic resolved call graph for diagnostics, recursion
- * preflight, splitting, and later hidden-batch eligibility. */
+ * preflight, splitting, and later message-bus eligibility. */
 export function analyseContractInvocations(contract: ContractNode): InvocationAnalysis {
   const functions = [
     ...contract.functions,

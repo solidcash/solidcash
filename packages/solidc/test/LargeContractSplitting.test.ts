@@ -142,7 +142,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // This test derives a shard limit from direct physical facet sizes; keep the default hidden route out of
     // that ruler so it measures only call-closure partitioning.
-    const options = { solidityImportCompat: true, forceSplit: true, hiddenBatch: false };
+    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
     const union = compileStringSplit(source, options);
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateWhitelist']);
@@ -217,7 +217,7 @@ describe('large-contract state-local splitting', () => {
       }`;
     // Storage-layout agreement is independent of the hidden route, while the historical 1,100-byte threshold
     // is a direct-facet size fixture.
-    const options = { solidityImportCompat: true, forceSplit: true, hiddenBatch: false };
+    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
     const slots = (layout: any): string[] => (layout?.variables ?? [])
       .map((v: any) => `${v.name}@${v.nftIndex}.${v.fieldIndex}`);
     // One facet holds every entry: the case that always agreed, so the divided case below is compared
@@ -233,7 +233,7 @@ describe('large-contract state-local splitting', () => {
     const divided = compileStringSplit(source, { ...options, maxShardBytes: 1100 });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
     const expected = slots(compileString(source, {
-      solidityImportCompat: true, hiddenBatch: false,
+      solidityImportCompat: true, messageBus: false,
     }).stateLayout);
     expect(expected).toEqual(slots(together.root.stateLayout));
     expect(slots(divided.root.stateLayout)).toEqual(expected);

@@ -71,7 +71,7 @@ describe('external library inlining', () => {
   it('auto-inlines a small single-call library', () => {
     // Pin the direct artifact's one-call heuristic: the default hidden route intentionally adds another
     // executable call site and therefore must not be used to measure direct-route call cardinality.
-    const artifact = compileString(SOURCE, { userLibraries: [INC_LIBRARY], hiddenBatch: false });
+    const artifact = compileString(SOURCE, { userLibraries: [INC_LIBRARY], messageBus: false });
     expect(artifact.externalLibraries![0].inline).toBe(true);
   });
 

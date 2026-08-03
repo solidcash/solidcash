@@ -331,9 +331,6 @@ export function finalizeSingleTxInvocationGraph(
     return {
       lockingBytecode, masterCategory: internalCategory,
       fixedSize, actualSize, maximumSize,
-      // The concrete instantiated locking bytecode commits the compiler-authored policy and constructor values.
-      // Keeping its hash explicit makes the on-chain participant-table walk constant-space and self-authenticating.
-      policyHash: binToHex(sha256.hash(hexToBin(lockingBytecode))),
       trailingUsed: actualSize - fixedSize,
       returnOffset: returnSlot === undefined ? 0xffff : returnSlot.offset,
     };

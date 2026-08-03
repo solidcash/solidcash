@@ -20,8 +20,8 @@ describe('controllerless verifier bytecode specialization', () => {
     const sidecar = layer3VerifierCovenantBytecode(verifierProgram!).length;
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 219,
-      composed: 1129,
-      frameworkTax: 910,
+      composed: 1185,
+      frameworkTax: 966,
     });
     expect(composed).toBeLessThanOrEqual(1200);
     expect(composed - direct).toBeLessThanOrEqual(1000);

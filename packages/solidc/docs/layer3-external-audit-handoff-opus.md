@@ -1,5 +1,16 @@
 # External security audit handoff: controllerless single-transaction message bus
 
+> **2026-08-03 audit result and repair:** The first independent review correctly found two release-blocking
+> authentication defects: the master transcript argument was eagerly encoded as empty before a later ineffective
+> `params` mutation (L3-01), and verifiers had no shared carrier-identity source (L3-02). It also showed that merely
+> enabling the old binder exceeded the eight-party relay ceiling (L3-03), and that hostile tests mutated only the
+> first verifier (L3-04). The implementation now loads the transcript from the final verifier input in every master
+> and verifier, removes the duplicate transcript ABI argument and all post-build transcript mutation, and includes
+> direct forged-result and divergent-carrier VM regressions. The redundant `policyHash` wire field was removed and
+> reserved row kind 5 now fails in the codec. Local derivation uses an impossible `vout=ffffffff` probe sentinel,
+> restores it before assembly, and finalized preflight rejects leakage. All evidence below predating this repair is historical and must be
+> regenerated before merge.
+
 Audience: an independent Opus reviewer. Do not accept the implementation record, test names, or this handoff as
 proof. Reproduce the commands, read the covenant paths, and try to construct accepted transactions that violate
 the invariants below.
@@ -100,7 +111,7 @@ Start at the trust boundaries, not the tests:
 | Compiler policy/layout | `SymbolTableTraversal.ts`: message-bus discovery, effect-frame planning, block layout | Are all transitive effects and repeated owners classified? Can a route advertise fewer slots/rows than execution uses? |
 | Covenant generation | `GenerateTargetTraversal.ts`: graph row/effect consumers and verifier/binder code | Does every branch consume exactly its rows and bind actual inputs/outputs, not caller claims? |
 | Codec/layout | `packages/solidcash/src/layer3/controllerless.ts` | Are integers/lengths canonical, bounds checked before allocation, and EOF/domain checks complete? |
-| Graph finalization | `packages/solidcash/src/layer3/graph.ts`: `finalizeSingleTxInvocationGraph`, policy hash, trailing capacity | Can owner/consumer/slot identities collide or drift with variable spans? |
+| Graph finalization | `packages/solidcash/src/layer3/graph.ts`: `finalizeSingleTxInvocationGraph`, participant identity, trailing capacity | Can owner/consumer/slot identities collide or drift with variable spans? |
 | Composer | `packages/solidcash/src/layer3/compose.ts`: `_build`, convergence loop, `assemble`, `admit` | Can SDK claims diverge from compiler policy? Are signatures generated only after final carrier/layout? |
 | Verifier deployment/spend | `StatefulContract.ts`, `ContractFactory.ts`, `stateful/covenant-helpers.ts` | Are pools minted only at genesis, uniquely committed, selected correctly, and exactly recreated? |
 | Final preflight | `layer3/preflight.ts`, `TransactionBuilder.ts` | Is the exact signed/finalized transaction evaluated under the intended VM and policy limits? |
@@ -111,7 +122,7 @@ detail, has equivalent controllerless evidence. Large deletion volume is not its
 
 ## High-value adversarial review order
 
-1. Mutate the carrier independently in a non-final verifier and in its master argument.
+1. Mutate the carrier independently in a non-final verifier and forge the result consumed by its master.
 2. Swap two same-artifact/different-category participants; then two different-artifact/same-layout participants.
 3. Change an early participant's `actualSize` and chunk run while retaining later local rows.
 4. Duplicate an owner with two physical masters or make two rows claim one resource/effect slot.
@@ -130,9 +141,11 @@ detail, has equivalent controllerless evidence. Large deletion volume is not its
   compilation refusals, journals, and verifier-size bounds.
 - `Layer3SingleTxCodec`, `Layer3SingleTxGraph`, and `Layer3SingleTxBalancedAssembly` cover pure framing/layout and
   mutation cases without a node.
-- `Layer3SingleTxCompose` evaluates canonical and hostile semantic/effect transactions in BCH-2026 VM tests.
-- `Layer3SingleTxCapacity` evaluates every finalized input for 2/4/5/8 participants. The measured eight-party
-  transaction is 92,705 bytes; its worst operation-density ratio is 0.9943185811, leaving little margin.
+- `Layer3SingleTxCompose` evaluates canonical and hostile semantic/effect transactions in BCH-2026 VM tests;
+  `Layer3CarrierBindingAudit` directly pins the L3-01 and L3-02 accepted-transaction reproducers.
+- `Layer3SingleTxCapacity` evaluates every finalized input for 2/4/5/8 participants. After authentication repair
+  and wire compaction, the measured eight-party transaction is 92,126 bytes; its worst operation-density ratio is
+  0.9845248035. Exact finalized-transaction preflight remains authoritative.
 - `standard-policy-harness.sh` broadcasts five semantic capstones and the eight-party maximum to BCHN v29 with
   `acceptnonstdtxn=0`, then restores the default node.
 
@@ -178,26 +191,26 @@ node --input-type=module -e "
 (cd packages/solidc && npm pack --dry-run --json)
 ```
 
-## Evidence captured immediately before handoff
+## Repaired release evidence
 
-On 2026-08-03, from the branch containing this file:
+On 2026-08-03, after the L3-01 through L3-04 repairs on the branch containing this file:
 
 - monorepo build and lint passed in all six packages;
 - SolidC passed 64 files and 2,408 tests;
-- SolidCash passed 429 files and 3,729 tests; its reported skips/placeholders are environment-gated or unrelated
+- SolidCash passed 430 files and 3,731 tests; its reported skips/placeholders are environment-gated or unrelated
   to this feature;
 - the dedicated compiler suite passed 65 tests;
-- the dedicated SDK suite passed 253 tests, with ten environment-gated probe cases skipped;
+- the dedicated SDK suite passed 255 tests, with ten environment-gated probe cases skipped;
 - the Docusaurus production build and deterministic generated artifact reference passed;
 - the built package exports `layer3.compose`, the capacity object, and verifier helpers; npm dry-run packs include
   their JavaScript and declarations;
-- BCHN v29 under `acceptnonstdtxn=0` accepted the no-setup two-party transaction, transitive three-party return,
-  event, BCH transfer, repeated FT settlement, and the 92,705-byte eight-party transaction;
+- BCHN v29 under `acceptnonstdtxn=0` accepted the repaired no-setup two-party transaction, transitive three-party
+  return, event, BCH transfer, repeated FT settlement, and the authenticated 92,126-byte eight-party transaction;
 - the harness restored BCHN to its default healthy regtest command afterward;
 - the production residue search above returned no matches.
 
-Reproduce these claims. If the audit is performed after any code change, discard the captured results and rerun the
-relevant gates.
+The dedicated hostile tests additionally demonstrate rejection of the forged caller-only result from L3-01 and the
+split-transcript construction from L3-02 while keeping the eight-party transaction below the 100,000-byte relay limit.
 
 ## Expected reviewer output
 

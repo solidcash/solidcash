@@ -303,8 +303,8 @@ export function createLayer3VerifierUnlocker(
     contract,
     `Layer3Verifier_${categoryId.slice(0, 8)}`,
     buildLayer3VerifierCovenantScript(program),
-    [...program.inputs, { name: 'carrier', type: 'bytes' }],
-    [...verifierArgs, carrier],
+    [{ name: '__internal__densityReserve', type: 'bytes' }, ...program.inputs, { name: 'carrier', type: 'bytes' }],
+    [new Uint8Array(2048), ...verifierArgs, carrier],
     'p2sh32',
   );
 }

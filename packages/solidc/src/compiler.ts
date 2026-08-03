@@ -2426,7 +2426,7 @@ function synthesizeMessageBusRoute(
     ...(graphBlockhashReadWidth > 0 ? ['bigint __internal__blockhashInputIndex'] : []),
   ];
   const verifierBinderRouteParameters = compilerOptions.__layer3VerifierProgram
-    ? ['bytes __internal__singleTxTranscript', 'bigint __internal__activeVerifierIndex'] : [];
+    ? ['bigint __internal__activeVerifierIndex'] : [];
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...routeSignatureParameters, ...routeKeyParameters,
@@ -2505,55 +2505,18 @@ function synthesizeMessageBusRoute(
           sha256(suppliedCallers), bytes2(suppliedSettlementBoundary),
           sha256(suppliedCompletionPositions), sha256(suppliedSettlementTable)`;
   const singleTxTranscriptLoader = `
-      ${offloadedVerifier ? '' : `
-      function __scb_single_tx_push(bytes script, bigint at) internal pure returns (bigint, bigint) {
-        require(at >= 0 && at < script.length);
-        bigint opcode = int(bytes.concat(script.slice(at, at + 1), hex"00"));
-        if (opcode <= 75) {
-          require(at + 1 + opcode <= script.length);
-          return (at + 1, opcode);
-        }
-        if (opcode == 76) {
-          require(at + 2 <= script.length);
-          bigint length = int(bytes.concat(script.slice(at + 1, at + 2), hex"00"));
-          require(length >= 76 && at + 2 + length <= script.length);
-          return (at + 2, length);
-        }
-        require(opcode == 77 && at + 3 <= script.length);
-        bigint length = int(bytes.concat(script.slice(at + 1, at + 3), hex"00"));
-        require(length >= 256 && at + 3 + length <= script.length);
-        return (at + 3, length);
-      }
-      function __scb_single_tx_transcript_at(bigint verifier) internal view returns (bytes) {
-        if (tx.inputs.length < 4 || verifier < 0 || verifier >= tx.inputs.length) { return hex""; }
-        bytes unlocking = tx.inputs[verifier].unlockingBytecode;
-        if (unlocking.length < 2) { return hex""; }
-        bigint at;
-        bigint length;
-        (at, length) = __scb_single_tx_push(unlocking, 0);
-        bytes carrier = unlocking.slice(at, at + length);
-        if (carrier.length < 8 || carrier.slice(0, 4) != hex"4c334331") { return hex""; }
-        bigint transcriptLength = int(bytes.concat(carrier.slice(4, 8), hex"00000000"));
-        require(transcriptLength > 0 && transcriptLength + 8 == carrier.length);
-        require(tx.inputs[verifier].tokenCategory.length == 33
-          && tx.inputs[verifier].tokenCategory.slice(32, 33) == hex"01");
-        require(tx.outputs[verifier].lockingBytecode == tx.inputs[verifier].lockingBytecode
-          && tx.outputs[verifier].tokenCategory == tx.inputs[verifier].tokenCategory
-          && tx.outputs[verifier].tokenAmount == tx.inputs[verifier].tokenAmount
-          && tx.outputs[verifier].value == tx.inputs[verifier].value);
-        return carrier.slice(8, carrier.length);
-      }
-      function __scb_single_tx_transcript() internal view returns (bytes) {
-        return __scb_single_tx_transcript_at(tx.inputs.length - 2);
-      }
-      `}
       function __scb_verify_single_tx(
-        bytes transcript, bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
+        bigint activeInputIndex, bigint expectedLocalRows, bytes localBatch
         ${!offloadedVerifier ? '' : ', bigint __internal__activeVerifierIndex'}
         ${!graphExecutionContext ? '' : `,
         bigint suppliedFixedSize, bigint suppliedBlockSize, bytes suppliedEmissions, bytes suppliedCallers,
         bigint suppliedSettlementBoundary, bytes suppliedCompletionPositions, bytes suppliedSettlementTable`}
       ) internal view returns (bytes) {
+        bytes unlocking = tx.inputs[tx.inputs.length - 2].unlockingBytecode;
+        require(unlocking.slice(0, 1) == hex"4d");
+        bigint carrierLength = int(bytes.concat(unlocking.slice(1, 3), hex"00"));
+        bytes carrier = unlocking.slice(3, 3 + carrierLength);
+        bytes transcript = carrier.slice(8, carrier.length);
         bytes bindingDigest = sha256(bytes.concat(
           sha256(transcript), bytes2(activeInputIndex), bytes2(expectedLocalRows), sha256(localBatch)
           ${bindingDigestGraphValues}
@@ -2576,7 +2539,7 @@ function synthesizeMessageBusRoute(
         bytes participantSizes = hex"";
         bytes participantLbcs = hex"";
         for (bigint participant = 0; participant < participantCount; participant = participant + 1) {
-          require(cursor + 77 <= transcript.length);
+          require(cursor + 45 <= transcript.length);
           bigint base = expectedBase;
           bigint fixedSize = int(bytes.concat(transcript.slice(cursor, cursor + 2), hex"00"));
           bigint blockSize = int(bytes.concat(transcript.slice(cursor + 2, cursor + 4), hex"00"));
@@ -2586,23 +2549,21 @@ function synthesizeMessageBusRoute(
           participantBases = bytes.concat(participantBases, bytes2(base));
           participantSizes = bytes.concat(participantSizes, bytes2(blockSize));
           expectedBase = expectedBase + blockSize;
-          require(expectedBase < tx.inputs.length && cursor + lbcLength + 70 <= transcript.length);
+          require(expectedBase < tx.inputs.length && cursor + lbcLength + 38 <= transcript.length);
           bytes participantLbc = transcript.slice(cursor, cursor + lbcLength);
           cursor = cursor + lbcLength;
           participantLbcs = bytes.concat(participantLbcs, bytes2(lbcLength), participantLbc);
           bytes category = transcript.slice(cursor, cursor + 32);
-          bytes policyHash = transcript.slice(cursor + 32, cursor + 64);
-          bigint maximumSize = int(bytes.concat(transcript.slice(cursor + 64, cursor + 66), hex"00"));
-          bigint trailingUsed = int(bytes.concat(transcript.slice(cursor + 66, cursor + 68), hex"00"));
-          bigint returnOffset = int(bytes.concat(transcript.slice(cursor + 68, cursor + 70), hex"00"));
+          bigint maximumSize = int(bytes.concat(transcript.slice(cursor + 32, cursor + 34), hex"00"));
+          bigint trailingUsed = int(bytes.concat(transcript.slice(cursor + 34, cursor + 36), hex"00"));
+          bigint returnOffset = int(bytes.concat(transcript.slice(cursor + 36, cursor + 38), hex"00"));
           bigint returnOutput = returnOffset == 65535 ? 65535 : base + returnOffset;
-          cursor = cursor + 70;
+          cursor = cursor + 38;
           require(base < tx.inputs.length && base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
           require(tx.inputs[base].tokenCategory.length >= 33
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
-          require(policyHash == sha256(participantLbc));
           require(tx.outputs[base].lockingBytecode == participantLbc
             && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
           require(blockSize == fixedSize + trailingUsed && blockSize <= maximumSize);
@@ -3071,10 +3032,10 @@ function synthesizeMessageBusRoute(
       }
   `;
   const singleTxPrologue = `
-        ${offloadedVerifier ? '' : 'bytes __internal__singleTxTranscript = __scb_single_tx_transcript();'}
-        if (__internal__singleTxTranscript.length > 0) {
+        if (${offloadedVerifier && !graphExecutionContext ? '__internal__activeVerifierIndex >= 0 && ' : ''}
+          tx.inputs[this.activeInputIndex].outpointIndex != 4294967295) {
           bytes __internal__singleTxBindingDigest = __scb_verify_single_tx(
-            __internal__singleTxTranscript, this.activeInputIndex, rowCount, batchBlob
+            this.activeInputIndex, rowCount, batchBlob
             ${!offloadedVerifier ? '' : ', __internal__activeVerifierIndex'}
             ${!graphExecutionContext ? '' : `,
             __internal__graphFixedSize, __internal__graphBlockSize,

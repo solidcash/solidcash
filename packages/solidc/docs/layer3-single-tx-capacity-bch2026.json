@@ -1,5 +1,5 @@
 {
-  "schema": "solidcash-layer3-self-preserved-verifier-capacity-v4",
+  "schema": "solidcash-layer3-self-preserved-verifier-capacity-v5",
   "measuredAt": "2026-08-03",
   "profile": {
     "vm": "libauth createVirtualMachineBch2026(false)",
@@ -17,38 +17,38 @@
     {
       "participants": 2,
       "slots": 6,
-      "transactionBytes": 16485,
-      "transcriptBytes": 358,
-      "inputOperationCosts": [234742, 219428, 695, 1823701, 1943070, 27321],
-      "inputMaximumOperationCosts": [1552000, 1395200, 34400, 4799200, 4903200, 112800],
-      "worstOperationRatio": 0.39628609887420463
+      "transactionBytes": 18798,
+      "transcriptBytes": 294,
+      "inputOperationCosts": [320795, 302488, 695, 1863609, 1982886, 27321],
+      "inputMaximumOperationCosts": [1593600, 1439200, 34400, 5648000, 5819200, 112800],
+      "worstOperationRatio": 0.34074890019246634
     },
     {
       "participants": 4,
       "slots": 12,
-      "transactionBytes": 38397,
-      "transcriptBytes": 712,
-      "inputOperationCosts": [287448, 336384, 695, 336384, 695, 290414, 695, 3199433, 3312326, 3311788, 3368897, 27321],
-      "inputMaximumOperationCosts": [1617600, 1931200, 34400, 1931200, 34400, 1395200, 34400, 5431200, 5970400, 5970400, 5469600, 112800],
-      "worstOperationRatio": 0.6159311467017697
+      "transactionBytes": 41418,
+      "transcriptBytes": 584,
+      "inputOperationCosts": [379009, 427847, 695, 427847, 695, 378754, 695, 3206184, 3453698, 3453160, 3369538, 27321],
+      "inputMaximumOperationCosts": [1659200, 1970400, 34400, 1970400, 34400, 1439200, 34400, 5945600, 6548800, 6548800, 6051200, 112800],
+      "worstOperationRatio": 0.5568379825489159
     },
     {
       "participants": 5,
       "slots": 15,
-      "transactionBytes": 50661,
-      "transcriptBytes": 889,
-      "inputOperationCosts": [313801, 372246, 695, 372246, 695, 372246, 695, 325907, 695, 3931371, 4050435, 4049897, 4049340, 4124872, 27321],
-      "inputMaximumOperationCosts": [1650400, 1964000, 34400, 1964000, 34400, 1964000, 34400, 1395200, 34400, 5747200, 6286400, 6286400, 6286400, 5752800, 112800],
-      "worstOperationRatio": 0.7170198859685718
+      "transactionBytes": 53409,
+      "transcriptBytes": 729,
+      "inputOperationCosts": [408084, 466431, 695, 466431, 695, 466431, 695, 416823, 695, 3912347, 4193986, 4193448, 4192891, 4096729, 27321],
+      "inputMaximumOperationCosts": [1692000, 2003200, 34400, 2003200, 34400, 2003200, 34400, 1439200, 34400, 6094400, 6697600, 6697600, 6697600, 6167200, 112800],
+      "worstOperationRatio": 0.6642769814502529
     },
     {
       "participants": 8,
       "slots": 24,
-      "transactionBytes": 92705,
-      "transcriptBytes": 1420,
-      "inputOperationCosts": [392868, 479840, 695, 479848, 695, 479848, 695, 479848, 695, 479848, 695, 479848, 695, 432394, 695, 6303029, 6440606, 6440068, 6439511, 6438954, 6438397, 6437840, 6564889, 27321],
-      "inputMaximumOperationCosts": [1749600, 2063200, 34400, 2064000, 34400, 2064000, 34400, 2064000, 34400, 2064000, 34400, 2064000, 34400, 1396000, 34400, 6696000, 7235200, 7235200, 7235200, 7235200, 7235200, 7235200, 6602400, 112800],
-      "worstOperationRatio": 0.9943185811220162
+      "transactionBytes": 92126,
+      "transcriptBytes": 1164,
+      "inputOperationCosts": [495381, 582255, 695, 582263, 695, 582263, 695, 582263, 695, 582263, 695, 582263, 695, 531166, 695, 6170662, 6554676, 6554138, 6553581, 6553024, 6552467, 6551910, 6414376, 27321],
+      "inputMaximumOperationCosts": [1791200, 2102400, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 2103200, 34400, 1440000, 34400, 6541600, 7144800, 7144800, 7144800, 7144800, 7144800, 7144800, 6515200, 112800],
+      "worstOperationRatio": 0.9845248035363457
     }
   ],
   "rejected": [
@@ -60,8 +60,8 @@
   ],
   "costAttribution": {
     "method": "Compare master binders and artifact-specialized verifier inputs across the two-, four-, five-, and eight-participant chains.",
-    "masterBinderWorstOperationCostAtEightParticipants": 479848,
-    "largestVerifierOperationCostAtEightParticipants": 6564889,
+    "masterBinderWorstOperationCostAtEightParticipants": 582263,
+    "largestVerifierOperationCostAtEightParticipants": 6554676,
     "localReturnEventOperationCost": 695,
     "terminalP2pkhFeeOperationCost": 27321,
     "conclusion": "Global verification and its BCH-2026 density reserve live in one artifact-specialized verifier per participant. Compact masters bind a 32-byte attestation, an exact verifier index, and the participant category. Exact per-shape VM preflight remains authoritative."

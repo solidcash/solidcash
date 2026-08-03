@@ -23,20 +23,27 @@ slots. The SDK derives all absolute indices; application code supplies none.
 
 ## Carrier
 
-Every verifier unlocking bytecode carries the same transcript as its first canonical push. Arguments follow in
+Every verifier unlocking bytecode carries the same transcript as its first canonical `PUSHDATA2` push (the minimum
+two-participant carrier is already larger than 255 bytes). Arguments follow in
 reverse ABI order, followed by the verifier redeem program:
 
 ```text
 push(carrier) ...reversed verifier ABI pushes... push(verifierProgram)
 ```
 
-The SDK supplies the same transcript to each master and verifier. The artifact-specialized verifier validates
-the transcript, returns `bindingDigest || expectedCarrierHash`, and the preserving covenant authenticates the
-actual first push without parsing it. The verifier output commitment is
+Every verifier covenant authenticates its own first push against the transcript loaded from the final verifier
+input. Both artifact-specialized verifiers and compact masters load that same final-verifier transcript directly;
+it is not duplicated as an ABI argument. The verifier validates the transcript, returns
+`bindingDigest || expectedCarrierHash`, and the preserving covenant authenticates its actual first push without
+parsing it. This makes divergent per-participant transcripts fail. The verifier output commitment is
 `"L3V1" || instance:u16le || bindingDigest`, where `bindingDigest` hashes the transcript, local batch, active
 input, row count, and graph witnesses. Each compact master recomputes that one digest and pins the exact verifier
 lock, category, index, and commitment. Signatures and complete unlocking bytecodes are excluded, so there is no
 transaction-signature circularity.
+
+SDK-only effect/return derivation probes temporarily use master outpoint index `ffffffff`, which cannot name a
+real transaction output. The route skips its final binder only for that impossible probe outpoint; the SDK restores
+the real outpoint before assembly, and finalized preflight explicitly rejects any leaked probe sentinel.
 
 The carrier payload is:
 
@@ -47,8 +54,8 @@ transcript[transcriptLength]
 EOF
 ```
 
-The eventual route ABI fixes the carrier argument's position and requires its minimally encoded Bitcoin
-Script push. The codec already rejects a wrong domain, length, truncation, or suffix. The transcript excludes
+The verifier covenant fixes the carrier's first-push position and requires its minimally encoded Bitcoin Script
+push. The codec already rejects a wrong domain, length, truncation, or suffix. The transcript excludes
 the transaction ID, signatures, and unlocking bytecodes, avoiding a circular commitment.
 
 ## Transcript grammar
@@ -64,7 +71,6 @@ participant[participantCount] =
   fixedSize:u16 actualSize:u16
   lockingBytecode:bytes
   masterCategory[32]
-  policyHash[32]
   maximumSize:u16 trailingUsed:u16
   returnOffset:u16                          # ffff or participant-local fixed-prefix slot
 rowCount:u16                                # 0..24
@@ -76,21 +82,21 @@ row[rowCount] =
 EOF
 ```
 
-Row kinds are 0 invocation, 1 resource, 2 event, 3 value transfer, 4 token effect, 5 return event, and 6
-sidecar. `mode` is the call mode or effect subtype. Source/target offsets are local to the named owner and
+Row kinds are 0 invocation, 1 resource, 2 event, 3 value transfer, and 4 token effect; kind 5 is reserved and
+rejected, and kind 6 is a sidecar. `mode` is the call mode or effect subtype. Source/target offsets are local to the named owner and
 consumer and use `ffff` when absent. `selector` is
 the function, event, or effect discriminator (zero when none applies); `position` is the completion or
 settlement position. The four frames respectively bind identity/caller/topic, arguments, returned bytes, and
 the resulting state/event/transfer/sidecar effect. Empty frames are encoded as a zero `u16` length, never
-omitted. `policyHash` commits to the compiler's admitted selectors, modes, schemas, occurrence bounds, and
-effect bounds. A row's owner is the participant whose compiler emission creates it; consumer is the
+omitted. Participant locking bytecode and the mutually checked typed rows commit the executable policy without
+repeating `sha256(lockingBytecode)` in the wire format. A row's owner is the participant whose compiler emission creates it; consumer is the
 participant or effect owner that exhausts it; slot is its exact compiler-authored occurrence/resource ordinal.
 Unknown row kinds fail closed.
 
 ## Authorization
 
 Transcript integrity is structural, not conferred by a reusable token. Each artifact-specialized verifier checks
-the participant table, identity `(lockingBytecode, masterCategory)`, active master position, policy hash, and every
+the participant table, identity `(lockingBytecode, masterCategory)`, active master position, and every
 row its participant owns or consumes. The master binder pins the verifier's code, category, recreation,
 attestation, carrier, and exact ABI arguments. Concrete participant UTXOs are consumed by the transaction. An
 application that restricts counterpart selection must publish an explicit state policy or data-signature proof in

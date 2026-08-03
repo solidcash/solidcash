@@ -1600,7 +1600,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (input.name.startsWith('__internal__')) {
         const value = internalRouteWitnesses[input.name];
         if (value !== undefined) return value;
-        if (input.name === '__internal__singleTxTranscript') return Uint8Array.of();
         if (input.name === '__internal__activeVerifierIndex') return -1n;
         throw new Error(`SCB1 route requires compiler-owned witness '${input.name}'`);
       }
@@ -6505,6 +6504,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     const masterUtxo = overrides?.masterUtxo ?? onChainState.masterUtxo!;
+    // Controllerless local VM probes run before the canonical verifier region is assembled. An output index of
+    // 0xffffffff cannot identify a real UTXO, so generated SCB1 code may bypass only its final binder during these
+    // probes; the real outpoint is restored before the participant block leaves this builder.
+    const derivationMasterUtxo = overrides?.omitLocalFeeTail
+      ? { ...masterUtxo, vout: 0xffffffff }
+      : masterUtxo;
     const allDataNftUtxos = overrides?.dataNftUtxos ?? onChainState.dataNftUtxos;
 
     // Filter data NFT UTXOs to only those required by this function
@@ -9627,14 +9632,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (abiFunction?.keccakLoopReads && this.categoryId) {
       // Dynamic loop: N (runtime) trailing side-cars, N + preimages found by a progressive VM probe.
       const loop = await this._resolveStatefulKeccakLoop(
-        abiFunction, masterUtxo, masterUnlocker, filteredDataNftUtxos, dataNftUnlockers,
+        abiFunction, derivationMasterUtxo, masterUnlocker, filteredDataNftUtxos, dataNftUnlockers,
         keccakFrontRegion, maxBhLocktime,
       );
       keccakLoopSideCars = loop.sideCars;
       keccakLoopRecreates = loop.recreates;
     } else if (abiFunction?.keccakCompute && this.categoryId) {
       const resolved = await this._resolveKeccakComputeCoSpends(abiFunction, args, {
-        masterUtxo, masterUnlocker, dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
+        masterUtxo: derivationMasterUtxo, masterUnlocker,
+        dataNftUtxos: filteredDataNftUtxos, dataNftUnlockers,
         frontRegionInputs: keccakFrontRegion, locktime: maxBhLocktime,
       });
       keccakComputeCoSpendUtxos = resolved.map((cs) => ({ ...cs.utxo, unlocker: cs.unlocker }));
@@ -9649,7 +9655,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     const unlockableMaster = {
-      ...masterUtxo,
+      ...derivationMasterUtxo,
       unlocker: masterUnlocker,
     };
 
@@ -9851,6 +9857,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(insertLoopPredecessors.length > 0 && { insertLoopPredecessorInputs: insertLoopPredecessors }),
       ...(effectiveBlockLayout && { blockLayout: effectiveBlockLayout }),
     });
+    if (overrides?.omitLocalFeeTail) builder._setLayer3ProbeMasterVout(masterUtxo.vout);
 
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
@@ -12256,6 +12263,7 @@ export class StatefulFunctionCall {
       builder.emitDetachedEvent(event.name, ...event.args);
     }
 
+    builder._restoreLayer3ProbeMasterOutpoint();
     return builder;
   }
 

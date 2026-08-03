@@ -4,9 +4,9 @@ import { layer3 } from '../../src/index.js';
 const sample = (): layer3.SingleTxBusTranscript => ({
   participants: [
     { lockingBytecode: '51', masterCategory: '11'.repeat(32), fixedSize: 2, actualSize: 2,
-      maximumSize: 2, policyHash: 'aa'.repeat(32), trailingUsed: 0, returnOffset: 0xffff },
+      maximumSize: 2, trailingUsed: 0, returnOffset: 0xffff },
     { lockingBytecode: '52', masterCategory: '22'.repeat(32), fixedSize: 2, actualSize: 3,
-      maximumSize: 7, policyHash: 'bb'.repeat(32), trailingUsed: 1, returnOffset: 1 },
+      maximumSize: 7, trailingUsed: 1, returnOffset: 1 },
   ],
   rows: [
     {
@@ -64,6 +64,9 @@ describe('controllerless single-transaction codec', () => {
     expect(() => layer3.encodeSingleTxBusTranscript({ ...decoded, rows: [
       { ...decoded.rows[0], kind: 7 }, ...decoded.rows.slice(1),
     ] })).toThrow(/unknown kind/);
+    expect(() => layer3.encodeSingleTxBusTranscript({ ...decoded, rows: [
+      { ...decoded.rows[0], kind: 5 }, ...decoded.rows.slice(1),
+    ] })).toThrow(/reserved/);
     expect(() => layer3.encodeSingleTxBusTranscript({ ...decoded, rows: [
       { ...decoded.rows[0], owner: 2 }, ...decoded.rows.slice(1),
     ] })).toThrow(/unknown participant/);

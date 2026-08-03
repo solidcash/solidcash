@@ -67,7 +67,6 @@ const semanticJson = (value: unknown): string => JSON.stringify(
 
 const graphRouteContext = (
   finalized: ReturnType<typeof finalizeSingleTxInvocationGraph>, participant: number,
-  includeTranscript = false,
 ): Readonly<Record<string, FunctionArgument>> => {
   const execution = finalized.plan.participants[participant];
   const rows = finalized.transcript.rows;
@@ -91,8 +90,6 @@ const graphRouteContext = (
   const blockhashSlot = execution.blockLayout?.slots.find((slot) => slot.kind === 'blockhashOracle');
   const blockhashParameter = execution.artifact.messageBus?.route.graphBlockhashOracle?.inputBaseParameter;
   return Object.freeze({
-    __internal__singleTxTranscript: includeTranscript
-      ? encodeSingleTxBusTranscript(finalized.transcript) : Uint8Array.of(),
     __internal__activeVerifierIndex: BigInt(finalized.layout.verifierInputs[participant]),
     __internal__graphFixedSize: BigInt(finalized.transcript.participants[participant].fixedSize),
     __internal__returnOutputIdx: BigInt(
@@ -377,12 +374,6 @@ export class SingleTxBusComposition {
           );
         }
         const masterUnlocker = masterUnlockers[participant.participant];
-        const transcriptParameter = masterUnlocker.abiFunction.inputs
-          .findIndex((input) => input.name === '__internal__singleTxTranscript');
-        if (transcriptParameter < 0) {
-          throw new Error(`layer3: compact master route omits its compiler-owned transcript witness (${masterUnlocker.abiFunction.inputs.map((input) => input.name).join(', ')})`);
-        }
-        masterUnlocker.params[transcriptParameter] = transcript;
         const verifierProgram = contract.inner.artifact.messageBus!.verifierProgram!;
         const batchBlob = masterUnlocker.params[0] as Uint8Array;
         const routeContext = graphRouteContext(graph, participant.participant);
@@ -391,7 +382,7 @@ export class SingleTxBusComposition {
           '__internal__graphCallers', '__internal__graphSettlementBoundary',
           '__internal__graphCompletionPositions', '__internal__graphSettlementTable',
         ] as const;
-        const graphArguments = verifierProgram.inputs.slice(4).map((input, index) => {
+        const graphArguments = verifierProgram.inputs.slice(3).map((input, index) => {
           const argument = routeContext[verifierGraphArgumentNames[index]];
           if (argument === undefined) {
             throw new Error(`layer3: verifier argument '${input.name}' has no compiler-authored value`);
@@ -399,7 +390,6 @@ export class SingleTxBusComposition {
           return argument;
         });
         const verifierArgs: FunctionArgument[] = [
-          transcript,
           BigInt(graph.layout.participantInputs[participant.participant]),
           BigInt(batchBlob[6]),
           batchBlob,

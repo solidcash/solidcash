@@ -56,7 +56,6 @@ export interface SingleTxParticipant {
   actualSize: number;
   /** Compiler-authored upper bound for the fixed prefix plus variable trailing resources. */
   maximumSize: number;
-  policyHash: string;
   /** Actual number of variable trailing slots: `actualSize - fixedSize`. */
   trailingUsed: number;
   /** Local return-event output offset, or 0xffff when this participant has no returning route. */
@@ -64,7 +63,7 @@ export interface SingleTxParticipant {
 }
 
 export interface SingleTxRow {
-  /** Stable row kind. 0 invocation, 1 resource, 2 event, 3 value, 4 token, 5 return-event, 6 sidecar. */
+  /** Stable row kind. 0 invocation, 1 resource, 2 event, 3 value, 4 token, 6 sidecar. Kind 5 is reserved. */
   kind: number;
   owner: number;
   consumer: number;
@@ -126,21 +125,22 @@ export function encodeSingleTxBusTranscript(transcript: SingleTxBusTranscript): 
     const lbc = checkedHex(participant.lockingBytecode, undefined, `participant ${index} locking bytecode`);
     if (lbc.length === 0) throw new Error(`layer3: participant ${index} locking bytecode is empty`);
     const category = checkedHex(participant.masterCategory, 32, `participant ${index} master category`);
-    const policy = checkedHex(participant.policyHash, 32, `participant ${index} policy hash`);
     if (participant.returnOffset !== 0xffff && participant.returnOffset >= participant.fixedSize) {
       throw new Error(`layer3: participant ${index} has an out-of-block return output`);
     }
     return concat(
       uint(participant.fixedSize, 2, 'participant fixed size'),
       uint(participant.actualSize, 2, 'participant actual size'),
-      frame(lbc, 'locking bytecode'), category, policy,
+      frame(lbc, 'locking bytecode'), category,
       uint(participant.maximumSize, 2, 'participant maximum size'),
       uint(participant.trailingUsed, 2, 'participant trailing use'),
       uint(participant.returnOffset, 2, 'return output offset'),
     );
   });
   const rowParts = rows.map((row, index) => {
-    if (row.kind < 0 || row.kind > 6) throw new Error(`layer3: row ${index} has an unknown kind`);
+    if (row.kind < 0 || row.kind > 6 || row.kind === 5) {
+      throw new Error(`layer3: row ${index} has an unknown kind (5 is reserved)`);
+    }
     if (row.owner >= participants.length || row.consumer >= participants.length) {
       throw new Error(`layer3: row ${index} names an unknown participant`);
     }
@@ -185,7 +185,6 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const actualSize = reader.uint(2, `participant ${index}.actualSize`);
     const lockingBytecode = binToHex(reader.frame(`participant ${index}.lockingBytecode`));
     const masterCategory = binToHex(reader.take(32, `participant ${index}.masterCategory`));
-    const policyHash = binToHex(reader.take(32, `participant ${index}.policyHash`));
     const maximumSize = reader.uint(2, `participant ${index}.maximumSize`);
     const trailingUsed = reader.uint(2, `participant ${index}.trailingUsed`);
     const returnOffset = reader.uint(2, `participant ${index}.returnOffset`);
@@ -197,7 +196,7 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
       throw new Error(`layer3: participant ${index} has an out-of-block return output`);
     }
     participants.push({
-      fixedSize, actualSize, maximumSize, lockingBytecode, masterCategory, policyHash,
+      fixedSize, actualSize, maximumSize, lockingBytecode, masterCategory,
       trailingUsed, returnOffset,
     });
   }
@@ -221,7 +220,7 @@ export function decodeSingleTxBusTranscript(bytes: Uint8Array): SingleTxBusTrans
     const argsHex = binToHex(reader.frame(`row ${index}.arguments`));
     const resultHex = binToHex(reader.frame(`row ${index}.result`));
     const effectHex = binToHex(reader.frame(`row ${index}.effect`));
-    if (kind > 6 || owner >= participantCount || consumer >= participantCount) {
+    if (kind > 6 || kind === 5 || owner >= participantCount || consumer >= participantCount) {
       throw new Error(`layer3: row ${index} has an invalid kind or participant`);
     }
     rows.push({
@@ -267,7 +266,7 @@ export function singleTxBusPhysicalLayout(blockSizes: readonly number[]): Single
   });
 }
 
-/** Bytes carried as one canonical SCB1 argument in participant zero's unlocking bytecode. */
+/** Bytes carried by each verifier; the final participant verifier is the canonical transcript source. */
 export function encodeSingleTxCarrier(transcript: SingleTxBusTranscript): Uint8Array {
   const encoded = encodeSingleTxBusTranscript(transcript);
   return concat(hexToBin('4c334331'), uint(encoded.length, 4, 'carrier length'), encoded);

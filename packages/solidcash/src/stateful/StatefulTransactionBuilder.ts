@@ -217,6 +217,7 @@ export class StatefulTransactionBuilder {
   private sidecarUtxo?: UnlockableUtxo;
   private stateLayout: StateLayout;
   private masterUtxo: UnlockableUtxo;
+  private layer3ProbeMasterVout?: number;
   private dataNftUtxos: UnlockableUtxo[];
   private categoryId: string;
   private requiredNftIndices: readonly number[];
@@ -405,6 +406,18 @@ export class StatefulTransactionBuilder {
       externalOutStateInputs, externalCallInputs,
       lowLevelCallInputs,
     );
+  }
+
+  /** @internal Mark an impossible-output-index master used only by controllerless VM derivation probes. */
+  _setLayer3ProbeMasterVout(realVout: number): void {
+    this.layer3ProbeMasterVout = realVout;
+  }
+
+  /** @internal Restore the real spend before a controllerless participant block leaves SDK construction. */
+  _restoreLayer3ProbeMasterOutpoint(): void {
+    if (this.layer3ProbeMasterVout === undefined) return;
+    this.masterUtxo.vout = this.layer3ProbeMasterVout;
+    this.layer3ProbeMasterVout = undefined;
   }
 
   /** Require the fully funded and signed transaction to pass the artifact's

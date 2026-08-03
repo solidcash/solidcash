@@ -45,12 +45,9 @@ export function buildLayer3VerifierCovenantScript(program: Layer3VerifierProgram
     throw new Error('Layer-3 verifier program contains duplicate function identifiers');
   }
   const script: Script = [
-    // BCH-2026 covered-bytecode density reserve belongs in the deployed verifier, never in each master.
-    // The branch is unreachable and performs no data manipulation at runtime.
-    Op.OP_0,
-    Op.OP_IF,
-    new Uint8Array(512),
-    Op.OP_ENDIF,
+    // The SDK places one covered-bytecode density reserve on top of the verifier stack. Dropping an unlocking
+    // push is substantially cheaper than embedding unreachable bytes in every redeemed covenant script.
+    Op.OP_DROP,
     // Unlocking stack: <carrier> <verify arguments...>. The verifier consumes only its arguments, leaving the
     // carrier. Never park it on the altstack: compiled verifier frames use that stack internally.
     ...program.functions.flatMap((fn): Script => [

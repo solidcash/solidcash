@@ -911,6 +911,9 @@ export const assertFinalizedTransactionCovenants = (
 export const preflightLayer3Transaction = (
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,
 ): Transaction => {
+  if (builder.inputs.some((input) => input.vout === 0xffffffff)) {
+    throw new Error('layer3: finalized transactions cannot contain the internal derivation-probe outpoint');
+  }
   // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
   requireLayer3BlockAssembly(builder);
   const transaction = builder.buildLibauthTransaction();

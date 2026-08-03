@@ -2,8 +2,8 @@
 
 Last updated: 2026-08-03
 Branch: `codex/layer3-single-tx-bus`  
-Verified implementation revision: working tree after `3c8929cc`
-Overall verified progress: **92 / 100 points (92%)**
+Verified implementation revision: `b8a3611f` (`test(layer3): allow live hostile broadcast latency`)
+Overall verified progress: **100 / 100 points (100%)**
 
 This is the durable progress ledger for
 [`layer3-single-transaction-bus-handoff.md`](./layer3-single-transaction-bus-handoff.md).
@@ -30,8 +30,8 @@ Update it whenever a checklist item gains or loses authoritative evidence.
 | 4. Semantic completeness | 30 | 30 | Complete |
 | 5. Capacity and optimization | 8 | 8 | Complete |
 | 6. Removal and API stabilization | 7 | 7 | Complete |
-| 7. Completion audit | 10 | 2 | In progress |
-| **Total** | **100** | **92** | **92%** |
+| 7. Completion audit | 10 | 10 | Complete |
+| **Total** | **100** | **100** | **100%** |
 
 ## Phase 0 — baseline and requirements (5/5)
 
@@ -146,39 +146,41 @@ layouts continue to publish and enforce per-participant resource capacity. Contr
 
 ## Phase 7 — completion audit (10/10)
 
-### Repository gates (2/4)
+### Repository gates (4/4)
 
 - [x] **1 point:** Fresh `yarn build` passes at the verified implementation revision.
 - [x] **1 point:** Fresh `yarn lint` passes at the verified implementation revision.
-- [ ] **1 point:** Full `packages/solidc` test suite passes without relevant skips.
-- [ ] **1 point:** Full `packages/solidcash` test suite passes without relevant skips.
+- [x] **1 point:** Full `packages/solidc` test suite passes without relevant skips.
+- [x] **1 point:** Full `packages/solidcash` test suite passes without relevant skips.
 
-The v1 audit at `095517ca` is historical. Fresh v2 codec/layout/assembly tests, the 19-case composition VM
-suite, and 2/4/5 capacity measurements pass; the complete repository suites remain to be rerun.
+Evidence recorded 2026-08-03: build and lint passed in all six packages; SolidC passed 62 files and 2,405
+tests; SolidCash passed 429 files and 3,729 tests. Its 8 skipped files/38 skipped tests and 9 todos are the
+pre-existing opt-in network, regtest, envelope, and unrelated split-corpus fixtures. The controllerless codec,
+graph, balanced assembly, 19-case composition, and 2/4/5 capacity tests all ran.
 
-### Live BCH-2026/regtest capstones (0/4)
+### Live BCH-2026/regtest capstones (4/4)
 
-- [ ] **1 point:** Heterogeneous returning call with state settlement completes live.
-- [ ] **1 point:** Three-contract transitive chain completes live.
-- [ ] **1 point:** Repeated ERC-20-style resources plus event/value/token effects complete live.
-- [ ] **1 point:** Maximum admitted participant/resource shape completes live.
+- [x] **1 point:** Heterogeneous returning call with state settlement completes live.
+- [x] **1 point:** Three-contract transitive chain completes live.
+- [x] **1 point:** Repeated ERC-20-style resources plus event/value/token effects complete live.
+- [x] **1 point:** Maximum admitted participant/resource shape completes live.
 
 Evidence recorded 2026-08-03 with `test/regtest/standard-policy-harness.sh`: BCHN ran with
 `acceptnonstdtxn=0`; heterogeneous state/return, three-party transitive return, event, BCH settlement, repeated
 FT settlement, and the maximum five-participant shape all broadcast successfully. The capacity capstone also
 proved the exact finalized transaction is rejected on second submission. The harness restored default policy.
 
-### Final proof (0/2)
+### Final proof (2/2)
 
-- [ ] **1 point:** Production-tree residue search justifies every retained controller-era match.
-- [ ] **1 point:** Requirement-by-requirement audit directly proves all twelve security invariants and no setup transaction.
+- [x] **1 point:** Production-tree residue search justifies every retained controller-era match.
+- [x] **1 point:** Requirement-by-requirement audit directly proves all twelve security invariants and no setup transaction.
 
 The production search over `packages/solidc/src`, `packages/solidcash/src`, and `packages/utils/src` has zero
-matches for generic controller terminology and every concrete removed symbol/domain. Retained matches are only
-historical baseline/migration statements and explicit negative guarantees in the handoff, requirements,
-protocol, and production API documents. The verified evidence for S1 through S12 is recorded in the security
-requirements matrix. Every live application transaction uses existing participant/resource UTXOs plus one
-ordinary P2PKH fee input; the harness creates no execution authority, verifier, projection, or setup transaction.
+matches for controller terminology and every concrete removed symbol/domain. Remaining uses of “projection”
+describe ordinary row/data projections, not projection inputs or verifier artifacts. Historical migration terms
+remain only in documentation. The verified evidence for S1 through S12 is recorded in the security requirements
+matrix. Every live application transaction uses existing participant/resource UTXOs plus one ordinary P2PKH fee
+input; the harness creates no execution authority, verifier, projection, or setup transaction.
 
 ## Update log
 
@@ -199,7 +201,9 @@ ordinary P2PKH fee input; the harness creates no execution authority, verifier, 
 | 2026-08-02 | `9020d5cf` | 90% | Measured stock BCH-2026 capacity at 2/4/5 participants, proved 6 as the adjacent failing bound, published/enforced the ceiling, and broadcast the maximum under standard policy. |
 | 2026-08-03 | `095517ca` | 100% | Added direct signature-stability and live replay-rejection proofs, passed all repository and standard-policy live gates, completed residue review, and audited S1-S12. |
 | 2026-08-03 | working tree | 92% | Replaced maximum-capacity padding and absolute row endpoints with v2 authenticated actual spans and participant-local offsets; targeted VM/capacity suites plus fresh build/lint pass. |
+| 2026-08-03 | `b8a3611f` | 100% | Passed full compiler/SDK suites and live standard-policy capstones, restored BCHN policy, completed residue review, and audited v2 S1-S12. |
 
 ## Next percentage milestones
 
-- **100% next:** rerun fresh repository and live-regtest gates, then audit S1-S12 against the v2 flexible-span wire.
+- **100% achieved:** flexible spans, semantic coverage, measured capacity, controller removal, public API
+  stabilization, repository gates, live-regtest capstones, residue review, and the v2 S1-S12 audit all pass.

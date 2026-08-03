@@ -2,20 +2,20 @@
 
 ## Security requirements matrix
 
-| ID | Requirement | Planned direct evidence |
+| ID | Requirement | Verified direct evidence |
 |---|---|---|
-| S1 | One physical transcript | Pure carrier EOF/mutation tests; VM mutation of input-zero carrier while all participant routes execute |
-| S2 | Exact participant set | Codec identity mutations; VM omit/duplicate/substitute/reorder cases |
-| S3 | Contiguous blocks | Pure gap/overlap/zero-size tests; VM block-base and block-size mutations |
-| S4 | Active membership | VM wrong active input, non-master offset, duplicate master, and absent master cases |
-| S5 | Exact row consumption | Pure count/EOF tests; VM mutation and appended-suffix cases for every row family |
-| S6 | Call authenticity | Compiler policy tests plus selector/mode/args/result/caller/order/occurrence hostile VM cases |
-| S7 | State authenticity | Existing scalar, mapping, array, dynamic chunk, satoshi, and token hostile fixtures adapted without projections |
-| S8 | Effect authenticity | Existing value/token/event/return-event mutation fixtures adapted to mutual verification |
-| S9 | No replay authority | Assembly assertion that only participant/resource/fee inputs exist; live double-spend rejection |
-| S10 | No circular commitment | Offline build-before-sign test and byte-stability assertion after every signature |
-| S11 | Fail closed | Named positioned compiler diagnostics for recursion, aliases, cardinality, delegate, introspection, and effects |
-| S12 | Capacity | Run-to-completion cost/size measurements at 2, 4, and 8 participants; artifact and SDK limit tests |
+| S1 | One physical transcript | `Layer3SingleTxCodec` pins one carrier at input zero with strict EOF; `Layer3SingleTxCompose` mutates that physical carrier and every participant VM rejects it. |
+| S2 | Exact participant set | `Layer3SingleTxGraph` binds code and category identities; `Layer3SingleTxBalancedAssembly` and compose fan-out/repeated-call hostile cases reject hidden, substituted, duplicated, reordered, or retargeted participants. |
+| S3 | Contiguous blocks | Codec and balanced-assembly tests reject gaps, overlap, zero-size blocks, hidden masters, padding, and a nonterminal fee/change slot. |
+| S4 | Active membership | Every compose capstone evaluates every framed master input; balanced-assembly hostile cases reject a master inside another block and all unframed auxiliary inputs. |
+| S5 | Exact row consumption | Codec count/EOF tests plus `GraphEmissionVerificationInvariant` and compose drop/duplicate/swap, branch, loop, result, event, resource, value, token, and sidecar mutations prove complete consumption for every row family. |
+| S6 | Call authenticity | Compose VM tests reject caller, selector, mode, calldata, argument, result, target, order, reachability, and occurrence mutations; compiler metadata authors the admitted rows. |
+| S7 | State authenticity | Compose VM tests cover scalar masters, mapping entries, dynamic chunk create/delete, satoshi containers, FT containers, and NFT capability/commitment transitions at exact slots. |
+| S8 | Effect authenticity | Compose event, BCH, repeated FT, and NFT capstones reject forged, redirected, dropped, or physically mutated effect rows and outputs. |
+| S9 | No replay authority | Balanced assembly admits only participant/resource inputs plus one fee tail; the live five-participant capacity test broadcasts exact finalized bytes once and proves BCHN rejects their second submission. |
+| S10 | No circular commitment | `Layer3SingleTxGraph` constructs canonical carrier bytes without a transaction or signer; the two-party compose test asserts the exact carrier push stays byte-stable after each finalized input signature is regenerated. |
+| S11 | Fail closed | `TranscriptIneligibilityMatrixV1`, bounded-collection tests, and delegate tests prove named/positioned refusal of unsupported introspection, lifecycle/unsafe, opaque effects, foreign try/catch, dynamic cardinality, static descendants, and delegate context. |
+| S12 | Capacity | `Layer3SingleTxCapacity` evaluates and pins all inputs at 2/4/5 participants, the adjacent six-party failure fixes the bound, the live five-party shape broadcasts, and `Layer3SingleTxCapacityLimit` publishes/enforces five. |
 
 ## Controller-era production dependencies
 

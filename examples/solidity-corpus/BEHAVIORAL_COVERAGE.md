@@ -15,8 +15,8 @@ Set `SOLC_CORPUS` when the Solidity checkout is not at `/Code/solidity`. The gen
 equivalent runtime coverage. Generic SolidCash tests can exercise the same behavior without naming its upstream
 fixture.
 
-The current baseline contains 1,504 successfully compiled semantic fixtures with executable expectations. Only 16
-are explicitly traced to an e2e or conformance test, leaving 1,488 without a durable fixture-to-runtime link. The
+The current baseline contains 1,504 successfully compiled semantic fixtures with executable expectations. Of those,
+24 are explicitly traced to an e2e or conformance test, leaving 1,480 without a durable fixture-to-runtime link. The
 largest untraced topics include arrays, ABI coding, via-IR/Yul, inline assembly, function calls, libraries, operators,
 structs, and inheritance.
 
@@ -28,7 +28,6 @@ When adding behavioral parity coverage:
 - Prefer representative high-risk semantics over mechanically porting all 1,504 fixtures; many fixtures overlap.
 - Keep negative compiler diagnostics in `packages/solidc/test/solidity-compat` unless runtime behavior is involved.
 
-An attempted runtime adaptation of `semanticTests/enums/enum_referencing.sol` exposed why this distinction matters:
-making `L.g()` reachable found an interface-qualified enum resolution bug hidden by dead-code pruning. The compiler
-regression is retained. A full e2e port should wait until its stateful return/covenant behavior can be isolated from
-the enum semantics, rather than checking in a failing or ambiguous runtime test.
+A runtime adaptation of `semanticTests/enums/enum_referencing.sol` exposed why this distinction matters: making
+`L.g()` reachable found namespace erasure that rebound same-named interface and library enums to the wrong ordinal.
+The compiler fix is now guarded by both focused compilation coverage and an actual successful/failed spend pair.

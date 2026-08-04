@@ -28,21 +28,35 @@ function hasExecutableExpectation(source) {
   return /^\/\/\s*[^\n]*(?:->|FAILURE|SUCCESS)/m.test(trailer);
 }
 
-const fixtures = results
+const executableResults = results
   .filter((result) => result.status === 'OK' && result.rel.startsWith('test/libsolidity/semanticTests/'))
-  .flatMap((result) => {
-    const source = readFileSync(join(CORPUS_ROOT, result.rel), 'utf8');
-    if (!hasExecutableExpectation(source)) return [];
+  .filter((result) => hasExecutableExpectation(readFileSync(join(CORPUS_ROOT, result.rel), 'utf8')));
+const basenameCounts = new Map();
+for (const result of executableResults) {
+  const filename = basename(result.rel);
+  basenameCounts.set(filename, (basenameCounts.get(filename) ?? 0) + 1);
+}
+
+function mentionsUniqueFilename(source, filename, stem) {
+  const escaped = filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[\\s/'"(])${escaped}(?=$|[\\s/'"),:])`, 'm').test(source)
+    || source.includes(`corpus ${stem}`);
+}
+
+const fixtures = executableResults
+  .map((result) => {
     const filename = basename(result.rel);
     const stem = filename.slice(0, -'.sol'.length);
     const references = behavioralTests
-      .filter((test) => test.source.includes(filename) || test.source.includes(`corpus ${stem}`))
+      .filter((test) => test.source.includes(result.rel)
+        || (basenameCounts.get(filename) === 1
+          && mentionsUniqueFilename(test.source, filename, stem)))
       .map((test) => test.path.slice(REPO_ROOT.length + 1));
-    return [{
+    return {
       fixture: result.rel,
       topic: result.rel.split('/')[3] ?? 'root',
       explicitRuntimeTests: references,
-    }];
+    };
   });
 
 const byTopic = Object.create(null);

@@ -10,7 +10,6 @@ export class ImportResolver {
   constructor(
     private resolver: ImportResolverFn,
     private solidityImportCompat = false,
-    private allowOmittedFunctionVisibility = false,
   ) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
@@ -64,7 +63,6 @@ export class ImportResolver {
           undefined,
           this.solidityImportCompat,
           true,
-          this.allowOmittedFunctionVisibility,
         );
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);

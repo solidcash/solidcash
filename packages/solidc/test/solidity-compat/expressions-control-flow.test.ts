@@ -720,7 +720,6 @@ describe('Solidity <0.7 `now` aliases block.timestamp (shadowing respected)', ()
 describe('Solidity for-loop lexical scoping', () => {
   const cc = (src: string): string => compileString(src, {
     solidityImportCompat: true,
-    allowOmittedFunctionVisibility: false,
   }).contractName;
 
   it('does not expose an initializer declaration after the loop', () => {

@@ -5293,9 +5293,8 @@ The focused suite is **1088/1088**. The full corpus remains **4443/4587**, 144 f
 
 - Solidity-compatible implemented contract functions now require explicit visibility unless the source selects a
   pre-0.5 compiler range.
-- Native SolidCash keeps its implicit external/public behavior. An explicit
-  `allowOmittedFunctionVisibility` compiler option preserves the legacy shorthand for known old sources and terse
-  compiler fixtures without weakening the strict production default.
+- Native and unversioned SolidCash sources keep their implicit external/public behavior. Once a source explicitly
+  selects Solidity, only a pre-0.5 pragma retains the historical shorthand.
 
 The focused suite is **1090/1090**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 357, plus 275 multifile and 289 cmdline fixtures excluded.

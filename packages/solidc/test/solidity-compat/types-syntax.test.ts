@@ -241,7 +241,7 @@ describe('underscores in hexadecimal number literals', () => {
 describe('pragma directives after file-level declarations', () => {
   it('accepts a pragma between a user-defined value type and a contract', () => {
     expect(compileString(
-      'type T is int224; pragma solidity >=0.0.0; contract C { function f() pure returns (T) {'
+      'type T is int224; pragma solidity >=0.0.0; contract C { function f() public pure returns (T) {'
       + ' return T.wrap(1); } }',
       { solidityImportCompat: true },
     ).contractName).toBe('C');
@@ -726,8 +726,8 @@ describe('contract constant scope and numeric type introspection', () => {
 describe('Solidity function visibility version boundary', () => {
   it('requires explicit visibility in current Solidity compatibility mode', () => {
     expect(() => compileString(
-      'contract C { function f() pure {} }',
-      { solidityImportCompat: true, allowOmittedFunctionVisibility: false },
+      'pragma solidity ^0.8.0; contract C { function f() pure {} }',
+      { solidityImportCompat: true },
     )).toThrow(/No visibility specified.*public/i);
   });
 

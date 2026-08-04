@@ -375,6 +375,13 @@ describe('qualified interface enum references', () => {
       + ' function g() public pure returns (I.Direction) { return I.Direction.B; } }',
     { solidityImportCompat: true }).contractName).toBe('C');
   });
+
+  it('resolves an interface-qualified enum inside a reachable library helper', () => {
+    expect(compileString('interface I { enum Direction { A, B } } library L {'
+      + ' function g() public pure returns (I.Direction) { return I.Direction.B; } }'
+      + ' contract C { function f() public pure returns (I.Direction) { return L.g(); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
 });
 
 describe('inline deploy receiver in a file-level free function', () => {

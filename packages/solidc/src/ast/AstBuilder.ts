@@ -431,7 +431,6 @@ export default class AstBuilder
     private solidityImportCompat = false,
     private chunkedArrays = true,
     private sourceCode = '',
-    private allowOmittedFunctionVisibility = false,
   ) {
     super();
   }
@@ -449,7 +448,10 @@ export default class AstBuilder
   }
 
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
-    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
+    // Unversioned sources retain SolidCash's native implicit-public shorthand. Once a source explicitly selects
+    // Solidity, follow its version boundary: visibility became mandatory in Solidity 0.5.
+    return !/pragma\s+solidity\b/.test(this.sourceCode)
+      || /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-4](?:\.|\s|;)/.test(this.sourceCode);
   }
 
   private validateFunctionTypeModifiers(root: ParseTree): void {
@@ -707,6 +709,12 @@ export default class AstBuilder
       (e) => this.visitErrorDefinition(e),
     );
     this.fileErrorNames = new Set(errorDefinitions.map((definition) => definition.name));
+
+    // Collect contract + interface names before visiting library bodies. A library may use a qualified type from
+    // an interface or contract declared elsewhere in the same source unit (`returns (I.Direction)` and
+    // `I.Direction.Right`), and reachable library helpers must resolve that qualifier just like contract bodies.
+    for (const cc of ctx.contractDefinition_list()) this.contractInterfaceNames.add(cc.anyIdentifier().getText());
+    for (const ic of ctx.interfaceDefinition_list()) this.contractInterfaceNames.add(ic.Identifier(0).getText());
 
     const interfaceDefinitions = ctx.interfaceDefinition_list().map(
       (i) => this.visitInterfaceDefinition(i),
@@ -1099,11 +1107,6 @@ export default class AstBuilder
     }
 
     const contractCtxs = ctx.contractDefinition_list();
-
-    // Collect contract + interface names before visiting bodies, so a namespaced type access inside a body
-    // (`C.T.unwrap`, `I.Enum.Member`) can strip the qualifier to the bare type.
-    for (const cc of contractCtxs) this.contractInterfaceNames.add(cc.anyIdentifier().getText());
-    for (const idef of interfaceDefinitions) this.contractInterfaceNames.add(idef.name);
 
     // No contract definition (library-only, or interface/type-only file): return a definitions-only node,
     // existing only to be imported.
@@ -1937,7 +1940,7 @@ export default class AstBuilder
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
     }
-    if (this.solidityImportCompat && !this.allowOmittedFunctionVisibility
+    if (this.solidityImportCompat
       && !this.usesLegacySolidityDefaultFunctionVisibility()
       && !functionDefinition.modifiers.some((modifier) => [
         FunctionModifier.PUBLIC,

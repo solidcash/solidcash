@@ -10,9 +10,9 @@ Run this suite with:
 yarn workspace solidc test test/solidity-compat
 ```
 
-Most historical fixtures omit function visibility. Use the wrappers from `helpers.ts`, which preserve that legacy
-shorthand. Tests for visibility diagnostics should use `compileStringRaw` or explicitly set
-`allowOmittedFunctionVisibility: false`.
+Compatibility fixtures with an explicit Solidity 0.5-or-newer pragma must specify function visibility. Unversioned
+fixtures retain SolidCash's native implicit-public shorthand, while explicit pre-0.5 sources retain Solidity's
+historical rule. `helpers.ts` only centralizes compiler imports and does not alter compiler options.
 
 ## Redundancy and runtime audit
 

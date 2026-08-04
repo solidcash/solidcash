@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 53,
-  "untracedFixtures": 1451,
+  "explicitlyCoveredFixtures": 61,
+  "untracedFixtures": 1443,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -35,7 +35,7 @@
     },
     "constants": {
       "compiledExecutable": 9,
-      "explicitlyCovered": 1
+      "explicitlyCovered": 2
     },
     "constructor": {
       "compiledExecutable": 20,
@@ -67,7 +67,7 @@
     },
     "exponentiation": {
       "compiledExecutable": 3,
-      "explicitlyCovered": 1
+      "explicitlyCovered": 2
     },
     "expressions": {
       "compiledExecutable": 18,
@@ -115,7 +115,7 @@
     },
     "integer": {
       "compiledExecutable": 5,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "interfaceID": {
       "compiledExecutable": 6,
@@ -159,7 +159,7 @@
     },
     "receive": {
       "compiledExecutable": 3,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "revertStrings": {
       "compiledExecutable": 24,
@@ -187,7 +187,7 @@
     },
     "specialFunctions": {
       "compiledExecutable": 3,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "state": {
       "compiledExecutable": 22,
@@ -219,7 +219,7 @@
     },
     "types": {
       "compiledExecutable": 33,
-      "explicitlyCovered": 1
+      "explicitlyCovered": 4
     },
     "underscore": {
       "compiledExecutable": 1,
@@ -333,6 +333,13 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol",
+      "topic": "constants",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory.sol",
       "topic": "conversions",
       "explicitRuntimeTests": [
@@ -363,6 +370,13 @@
     {
       "fixture": "test/libsolidity/semanticTests/events/emit_two_identical_events.sol",
       "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/exponentiation/literal_base.sol",
+      "topic": "exponentiation",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
@@ -501,6 +515,13 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/integer/basic.sol",
+      "topic": "integer",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/conformance/numbers.conformance.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata.sol",
       "topic": "libraries",
       "explicitRuntimeTests": [
@@ -529,6 +550,13 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/receive/empty_calldata_calls_receive.sol",
+      "topic": "receive",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/PortingRuntime.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/reverts/assert_require.sol",
       "topic": "reverts",
       "explicitRuntimeTests": [
@@ -540,6 +568,13 @@
       "topic": "reverts",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/specialFunctions/abi_encode_with_signature_from_string.sol",
+      "topic": "specialFunctions",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/AbiEncodeAdvanced.test.ts"
       ]
     },
     {
@@ -596,6 +631,27 @@
       "topic": "types",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol",
+      "topic": "types",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/PortingFeatures.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol",
+      "topic": "types",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/PortingFeatures.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol",
+      "topic": "types",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/PortingFeatures.test.ts"
       ]
     },
     {
@@ -672,8 +728,8 @@
       "test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol",
       "test/libsolidity/semanticTests/constants/asm_constant_file_level.sol",
       "test/libsolidity/semanticTests/constants/assign_type_info.sol",
-      "test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol",
-      "test/libsolidity/semanticTests/constants/constant_variables.sol"
+      "test/libsolidity/semanticTests/constants/constant_variables.sol",
+      "test/libsolidity/semanticTests/constants/consteval_array_length.sol"
     ],
     "constructor": [
       "test/libsolidity/semanticTests/constructor/base_constructor_arguments.sol",
@@ -721,7 +777,6 @@
       "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision.sol"
     ],
     "exponentiation": [
-      "test/libsolidity/semanticTests/exponentiation/literal_base.sol",
       "test/libsolidity/semanticTests/exponentiation/small_exp.sol"
     ],
     "expressions": [
@@ -792,7 +847,6 @@
       "test/libsolidity/semanticTests/inlineAssembly/blobhash_pre_cancun.sol"
     ],
     "integer": [
-      "test/libsolidity/semanticTests/integer/basic.sol",
       "test/libsolidity/semanticTests/integer/int.sol",
       "test/libsolidity/semanticTests/integer/many_local_variables.sol",
       "test/libsolidity/semanticTests/integer/small_signed_types.sol",
@@ -856,7 +910,6 @@
       "test/libsolidity/semanticTests/payable/no_nonpayable_circumvention_by_modifier.sol"
     ],
     "receive": [
-      "test/libsolidity/semanticTests/receive/empty_calldata_calls_receive.sol",
       "test/libsolidity/semanticTests/receive/ether_and_data.sol",
       "test/libsolidity/semanticTests/receive/inherited.sol"
     ],
@@ -893,7 +946,6 @@
       "test/libsolidity/semanticTests/smoke/constructor.sol"
     ],
     "specialFunctions": [
-      "test/libsolidity/semanticTests/specialFunctions/abi_encode_with_signature_from_string.sol",
       "test/libsolidity/semanticTests/specialFunctions/abi_functions_member_access.sol",
       "test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol"
     ],
@@ -941,11 +993,11 @@
       "test/libsolidity/semanticTests/tryCatch/lowLevel.sol"
     ],
     "types": [
-      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol",
-      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol",
-      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol",
       "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol",
-      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_min_size.sol"
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_min_size.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_type.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_smaller_size.sol",
+      "test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_greater_size.sol"
     ],
     "underscore": [
       "test/libsolidity/semanticTests/underscore/as_function.sol"

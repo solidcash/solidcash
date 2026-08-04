@@ -9,6 +9,24 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // test/libsolidity/semanticTests/exponentiation/literal_base.sol
+  // Literal-base sign and precedence execute for the upstream fixture's representative exponents.
+  it('executes literal-base exponentiation', async () => {
+    const contract = await deploy(`contract C {
+      function power(uint x, uint expectedUnsigned, int expectedSigned) public {
+        unchecked {
+          uint a = 2 ** x;
+          int b = -2 ** x;
+          require(a == expectedUnsigned && b == expectedSigned);
+        }
+      }
+    }`);
+    await expect(contract.power(0n, 1n, 1n)).resolves.toBeDefined();
+    await expect(contract.power(1n, 2n, -2n)).resolves.toBeDefined();
+    await expect(contract.power(2n, 4n, 4n)).resolves.toBeDefined();
+    await expect(contract.power(13n, 8192n, -8192n)).resolves.toBeDefined();
+  });
+
   // test/libsolidity/semanticTests/statements/empty_for_loop.sol
   // test/libsolidity/semanticTests/functionSelector/function_selector_via_contract_name.sol
   // test/libsolidity/semanticTests/metaTypes/name_other_contract.sol
@@ -247,13 +265,21 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // test/libsolidity/semanticTests/constants/constant_string.sol
+  // test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol
   // The upstream getters return identical 0x030102 byte constants and the bytes of "hello".
   it('executes byte and string constants without changing their contents', async () => {
-    const contract = await deploy(`contract C {
-      bytes constant a = "\\x03\\x01\\x02";
-      bytes constant b = hex"030102";
-      string constant c = "hello";
-      function verify() public { require(a == b && bytes(c) == hex"68656c6c6f"); }
+    const contract = await deploy(`bytes constant a = "\\x03\\x01\\x02";
+    bytes constant b = hex"030102";
+    string constant c = "hello";
+    uint256 constant x = 56;
+    enum ActionChoices { GoLeft, GoRight, GoStraight, Sit }
+    ActionChoices constant choices = ActionChoices.GoRight;
+    bytes32 constant st = "abc\\x00\\xff__";
+    contract C {
+      function verify() public {
+        require(a == b && bytes(c) == hex"68656c6c6f");
+        require(x == 56 && choices == ActionChoices.GoRight && st == bytes32("abc\\x00\\xff__"));
+      }
       function verifyWrong() public { require(a == hex"030103"); }
     }`);
     await expect(contract.verify()).resolves.toBeDefined();

@@ -6,6 +6,8 @@ import { assertConformant, exprCase } from './harness.js';
 const MAX_UINT256 = (1n << 256n) - 1n;
 
 describe('EVM number conformance', () => {
+  // test/libsolidity/semanticTests/integer/basic.sol
+  // The min/max cases below prove the fixture's uint256 and int256 boundary values against the EVM.
   it('checked add (int)', async () => {
     await assertConformant(exprCase({ params: 'int a, int b', retType: 'int', expr: 'a + b', args: [3n, 4n] }));
   });

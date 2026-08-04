@@ -169,6 +169,7 @@ describe('panics/short-circuit', () => {
       await expect(sc.modZero(10n, 0n)).rejects.toThrow();
     });
 
+    // test/libsolidity/semanticTests/reverts/assert_require.sol
     it('assert(false) reverts, assert(true) does not', async () => {
       const art = compileString(`contract C {
         function assertF() public returns (bool) { assert(false); return true; }

@@ -361,6 +361,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   blockhashSlotCount?: number;
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
+  // Number of base-constructor evaluation/body statements prepended during inheritance expansion. Solidity runs
+  // these before evaluating the derived constructor's modifier arguments.
+  constructorPreludeLength = 0;
   returnTypes: Type[] = [];
   // Data-location annotations parallel to returnTypes. Retained for semantic validation and source fidelity;
   // unlike ABI types, storage/memory/calldata affect whether a source declaration is legal.

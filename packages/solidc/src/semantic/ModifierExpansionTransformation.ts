@@ -302,6 +302,18 @@ export default function expandModifiers(ast: SourceFileNode): SourceFileNode {
     func.body.statements = removeFunctionPlaceholdersDeep(func.body.statements ?? []);
   }
 
+  // Base constructor arguments/bodies run before the derived constructor's modifier arguments. Inheritance
+  // expansion records the prepended prefix so modifier wrapping applies only to the derived constructor body.
+  if (contract.constructorDef) {
+    const constructor = contract.constructorDef;
+    const prefixLength = constructor.constructorPreludeLength;
+    const prefix = (constructor.body.statements ?? []).slice(0, prefixLength);
+    constructor.body.statements = (constructor.body.statements ?? []).slice(prefixLength);
+    expandFunctionModifiers(constructor, modifierMap, libraryQualifiers);
+    constructor.body.statements = [...prefix, ...(constructor.body.statements ?? [])];
+    constructor.customModifiers = [];
+  }
+
   // Library functions are represented as namespaced free functions (`L.f`) until they are inlined/deployed.
   for (const func of ast.freeFunctions) {
     if (func.customModifiers.length === 0) continue;

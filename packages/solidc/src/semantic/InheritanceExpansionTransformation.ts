@@ -68,6 +68,7 @@ import {
   ExpressionStatementNode,
   PlaceholderStatementNode,
   AssignmentExpressionNode,
+  ParentInvocation,
 } from '../ast/AST.js';
 import { ArrayType, IntType, MappingType, StructType, Type } from '@solidcash/utils';
 import {
@@ -979,6 +980,46 @@ function inlineParentConstructors(
   linearization: string[],
 ): void {
   const parentStmts: StatementNode[] = [];
+  let baseArgumentBindingIndex = 0;
+  const hasArgumentSideEffects = (expression: ExpressionNode): boolean => {
+    let found = false;
+    const walk = (node: Node): void => {
+      if (node instanceof FunctionCallNode || node instanceof LowLevelCallNode
+        || node instanceof InstantiationNode || node instanceof AssignmentExpressionNode) {
+        found = true;
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(expression);
+    return found;
+  };
+
+  const bindInvocationArgs = (
+    invocation: ParentInvocation,
+    parameters: ParameterNode[],
+    ownerName: string,
+  ): ExpressionNode[] => {
+    parentStmts.push(...(invocation.argumentPrelude ?? []));
+    return invocation.args.map((argument, index) => {
+      // A storage parameter aliases the original lvalue; materializing it as a value local would lose its mapping
+      // entry path (and storage argument evaluation itself has no runtime side effect).
+      if (parameters[index].modifier.includes('storage')) return cloneNode(argument);
+      if (!hasArgumentSideEffects(argument)) return cloneNode(argument);
+      const name = `__basearg_${ownerName}_${index}_${baseArgumentBindingIndex++}`;
+      const binding = new VariableDefinitionNode(parameters[index].type, [], name, cloneNode(argument));
+      // Base arguments are evaluated even when the base constructor never reads its parameter.
+      binding.allowUnused = true;
+      binding.location = argument.location;
+      parentStmts.push(binding);
+      const reference = new IdentifierNode(name);
+      reference.location = argument.location;
+      return reference;
+    });
+  };
 
   // Invocations naming INDIRECT ancestors (grandparent ctor args, e.g. `contract D is C { constructor() B(5) }`)
   // inline that ancestor's (already expanded) ctor first - most-base-first among themselves - since an
@@ -991,7 +1032,7 @@ function inlineParentConstructors(
     if (!invocation) continue;
     const ancestor = contractMap.get(ancestorName);
     if (!ancestor) continue;
-    if (!ancestor.constructorDef && !invocation.argumentPrelude?.length) continue;
+    if (!ancestor.constructorDef && invocation.args.length === 0 && !invocation.argumentPrelude?.length) continue;
     const ctorParams = effectiveConstructorParams(ancestor);
     if (ctorParams.length === 0) continue; // parameterless: chain-inlined already
     const chainInvoked = linearization.some((name) => name !== contract.name
@@ -1000,20 +1041,22 @@ function inlineParentConstructors(
     if (invocation.args.length !== ctorParams.length) {
       throw new ParentInvocationArgCountError(contract, ancestorName, ctorParams.length, invocation.args.length);
     }
+    const evaluatedArgs = bindInvocationArgs(invocation, ctorParams, ancestorName);
     const clonedCtor = ancestor.constructorDef ? cloneNode(ancestor.constructorDef) : undefined;
     if (clonedCtor) {
-      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]])));
     }
     // The ancestor constructor (incl. inlined state-var initializers) legitimately touches the ancestor's OWN
     // private state; tag its accesses so the flattened child does not trip the private-access check.
     if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], ancestorName);
-    parentStmts.push(...(invocation.argumentPrelude ?? []), ...(clonedCtor?.body.statements ?? []));
+    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
 
-  for (const parentName of parentNames) {
+  // Solidity evaluates/runs sibling base constructors from right to left (`is A, B, C` -> C, B, A).
+  for (const parentName of [...parentNames].reverse()) {
     const invocation = contract.parentInvocations.find((pi) => pi.parentName === parentName);
     const parent = contractMap.get(parentName)!;
-    if (!parent.constructorDef && !invocation?.argumentPrelude?.length) continue;
+    if (!parent.constructorDef && !invocation?.args.length && !invocation?.argumentPrelude?.length) continue;
     const ctorParams = effectiveConstructorParams(parent);
     // MD4: a parent constructor runs even without an explicit `is Parent(args)` invocation - Solidity's implicit
     // base-constructor call - otherwise guard-relevant init (e.g. owner = ...) silently stays at the zero default.
@@ -1021,11 +1064,12 @@ function inlineParentConstructors(
     // which Solidity requires); skip a parameterized, un-invoked parent as before.
     if (!invocation && ctorParams.length > 0) continue;
     const clonedCtor = parent.constructorDef ? cloneNode(parent.constructorDef) : undefined;
+    const evaluatedArgs = invocation ? bindInvocationArgs(invocation, ctorParams, parentName) : [];
     if (invocation && clonedCtor) {
-      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, invocation.args[i]])));
+      substituteInFunction(clonedCtor, new Map(ctorParams.map((p, i) => [p.name, evaluatedArgs[i]])));
     }
     if (clonedCtor) tagModifierStateAccess(clonedCtor.body.statements ?? [], parentName);
-    parentStmts.push(...(invocation?.argumentPrelude ?? []), ...(clonedCtor?.body.statements ?? []));
+    parentStmts.push(...(clonedCtor?.body.statements ?? []));
   }
   if (parentStmts.length === 0) return;
 
@@ -1036,6 +1080,7 @@ function inlineParentConstructors(
     contract.constructorDef.location = contract.location;
   }
   contract.constructorDef.body.statements = [...parentStmts, ...(contract.constructorDef.body.statements ?? [])];
+  contract.constructorDef.constructorPreludeLength += parentStmts.length;
 }
 
 /**

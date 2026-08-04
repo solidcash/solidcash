@@ -25,7 +25,7 @@ export function compileTimeOp(op: TimeOp): Script {
   return mapping[op];
 }
 
-export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
+export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCompat = false): Script {
   // INT (integer literal/generic) shares the unbounded VM representation of BIGINT.
   if (from === PrimitiveType.INT) from = PrimitiveType.BIGINT;
   if (to === PrimitiveType.INT) to = PrimitiveType.BIGINT;
@@ -36,8 +36,8 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   if (isUnsafe) return [];
 
   // ValueType wrapping/unwrapping is zero-cost (no-op at VM level)
-  if (from instanceof ValueType) return compileCast(from.underlyingType, to, isUnsafe);
-  if (to instanceof ValueType) return compileCast(from, to.underlyingType, isUnsafe);
+  if (from instanceof ValueType) return compileCast(from.underlyingType, to, isUnsafe, solidityCompat);
+  if (to instanceof ValueType) return compileCast(from, to.underlyingType, isUnsafe, solidityCompat);
 
   // string -> bytes: no-op (already bytes at VM level)
   if (from === PrimitiveType.STRING && to instanceof BytesType) return [];
@@ -45,7 +45,7 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   if (from instanceof BytesType && to === PrimitiveType.STRING) return [];
 
   if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound !== undefined) {
-    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
+    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
   }
   // int -> unbounded bytes: no-op (VM number is already bytes)
   if (from === PrimitiveType.BIGINT && to instanceof BytesType && to.bound === undefined) return [];
@@ -58,24 +58,33 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean): Script {
   if (from === PrimitiveType.BOOL && to === PrimitiveType.BIGINT) return [];
 
   if (from instanceof BytesType && to === PrimitiveType.BIGINT) {
-    return [Op.OP_BIN2NUM];
+    return [...(solidityCompat && from.bound !== undefined ? [Op.OP_REVERSEBYTES] : []), Op.OP_BIN2NUM];
   }
 
   // int -> IntType: no opcode needed, bounds check emitted by caller
   if (from === PrimitiveType.BIGINT && to instanceof IntType) return [];
   // IntType -> int: no-op (already a valid VM number)
   if (from instanceof IntType && to === PrimitiveType.BIGINT) return [];
-  // IntType -> IntType: no-op, bounds check emitted by caller
-  if (from instanceof IntType && to instanceof IntType) return [];
+  // Solidity explicit unsigned narrowing keeps the low N bits. Native SolidCash casts retain their historical
+  // checked semantics; compatibility mode performs the truncation before the caller's target bounds check.
+  if (from instanceof IntType && to instanceof IntType) {
+    if (solidityCompat && !from.signed && !to.signed && to.bits < from.bits) {
+      return [encodeInt(1n << BigInt(to.bits)), Op.OP_MOD];
+    }
+    return [];
+  }
   // IntType -> BytesType: same as int -> bytes
   if (from instanceof IntType && to instanceof BytesType && to.bound !== undefined) {
-    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN];
+    return [encodeInt(BigInt(to.bound)), Op.OP_NUM2BIN, ...(solidityCompat ? [Op.OP_REVERSEBYTES] : [])];
   }
   // BytesType -> IntType: bytes are read as a script number. For an UNSIGNED target, sign-pad a 0x00 high byte
   // first so a value with the top bit set (e.g. uint256(keccak256(...))) reads as positive, not negative - a bare
   // BIN2NUM would read it as a negative number and fail the caller's >= 0 bounds check. Signed targets read as-is.
   if (from instanceof BytesType && to instanceof IntType) {
-    return to.signed ? [Op.OP_BIN2NUM] : [new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM];
+    const endian = solidityCompat && from.bound !== undefined ? [Op.OP_REVERSEBYTES] : [];
+    return to.signed
+      ? [...endian, Op.OP_BIN2NUM]
+      : [...endian, new Uint8Array([0x00]), Op.OP_CAT, Op.OP_BIN2NUM];
   }
   // IntType -> bool: same as int -> bool
   if (from instanceof IntType && to === PrimitiveType.BOOL) return [Op.OP_0NOTEQUAL];

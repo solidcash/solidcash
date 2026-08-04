@@ -4666,7 +4666,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.expression = this.visit(node.expression);
 
     this.emit(
-      compileCast(node.expression.type as Type, node.type, node.isUnsafe),
+      compileCast(
+        node.expression.type as Type,
+        node.type,
+        node.isUnsafe,
+        this.compilerOptions.solidityImportCompat ?? false,
+      ),
       { location: node.location, positionHint: PositionHint.END },
     );
     this.popFromStack();

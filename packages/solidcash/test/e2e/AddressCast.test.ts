@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../../../solidc/src/index.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
@@ -13,6 +13,23 @@ contract AddrCast() {
   function checkUint160(address a, int expected) { require(uint160(a) == expected); }
   function uint160NonNegative(address a) { require(uint160(a) >= 0); }
   function checkUint256(bytes32 b, uint256 expected) { require(uint256(b) == expected); }
+}`;
+
+const SOLIDITY_FIXED_BYTES_CASTS = `
+contract FixedBytesCasts {
+  function checkBytesToUint(bytes4 b4, bytes1 b1, bytes32 b32) public {
+    require(uint64(uint32(b4)) == 0x61626364);
+    require(uint8(b1) == 0x61);
+    require(uint(b32) == 0x6162633200000000000000000000000000000000000000000000000000000000);
+    require(uint16(uint32(b4)) == 0x6364);
+  }
+  function checkUintToBytes() public {
+    require(bytes8(uint64(uint16(0x6162))) == hex"0000000000006162");
+    require(bytes1(uint8(0x61)) == hex"61");
+    require(bytes32(uint256(0x6162630000000000000000000000000000000000000000000000000000000000))
+      == hex"6162630000000000000000000000000000000000000000000000000000000000");
+    require(bytes2(uint16(uint32(0x61626364))) == hex"6364");
+  }
 }`;
 
 const p2pkh = (pkh: Uint8Array): Uint8Array => hexToBin(`76a914${binToHex(pkh)}88ac`);
@@ -66,5 +83,28 @@ describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => 
     const highBit = hexToBin(`${'00'.repeat(31)}ff`);
     const txid = await sc.checkUint256(highBit, leUint(highBit));
     expect(txid).toBeDefined();
+  });
+});
+
+describe('Solidity fixed-bytes/integer casts (runtime)', () => {
+  // Exact runtime adaptations of the eight widening/narrowing fixtures below.
+  // Each require checks the value from the corresponding upstream `// ----` expectation.
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_min_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_type.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_smaller_size.sol
+  // test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_greater_size.sol
+  // test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_same_min_size.sol
+  // test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_same_size.sol
+  // test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_smaller_size.sol
+  it('matches Solidity big-endian widening and low-byte narrowing', async () => {
+    const compatArtifact = compileString(SOLIDITY_FIXED_BYTES_CASTS, {
+      forceStateful: true,
+      solidityImportCompat: true,
+    });
+    const sc = await getContractFactory(compatArtifact, await fundedSigner()).deploy();
+    const padded = hexToBin(`61626332${'00'.repeat(28)}`);
+    await expect(sc.checkBytesToUint(hexToBin('61626364'), hexToBin('61'), padded)).resolves.toBeDefined();
+    await expect(sc.checkUintToBytes()).resolves.toBeDefined();
   });
 });

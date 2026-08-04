@@ -9,6 +9,74 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // Exact runtime adaptations of scalar/tuple expectations:
+  // test/libsolidity/semanticTests/types/nested_tuples.sol
+  // test/libsolidity/semanticTests/constants/simple_constant_variables_test.sol
+  // test/libsolidity/semanticTests/constantEvaluator/negative_fractional_mod.sol
+  // test/libsolidity/semanticTests/constantEvaluator/rounding.sol
+  // test/libsolidity/semanticTests/literals/denominations.sol
+  // test/libsolidity/semanticTests/literals/fractional_denominations.sol
+  // test/libsolidity/semanticTests/strings/string_escapes.sol
+  // test/libsolidity/semanticTests/strings/unicode_escapes.sol
+  // test/libsolidity/semanticTests/strings/unicode_string.sol
+  it('executes exact scalar, tuple, constant, and denomination results', async () => {
+    const contract = await deploy(`contract C {
+      uint256 constant x = 56; int constant c = 7 / 3; int constant d = (-7) / 3;
+      function tuples() public {
+        int a; bool b; ((a, b)) = (2, true); require(a == 2 && b);
+        (((a, ), )) = ((1, 2), 3); require(a == 1);
+        (((, a),)) = ((1, 2), 3); require(a == 2);
+        a = 3; ((, ), ) = ((7, 8), 9); require(a == 3);
+        (a, ) = (4, (8, 16, 32)); require(a == 4);
+      }
+      function constants() public { require(x == 56); }
+      function fractions() public {
+        int value = int((-(-5.2 % 3)) * 5); int t = 5;
+        require(value == 11 && (-(-t % 3)) * 5 == 10);
+        uint[c] memory p; uint[-d] memory q;
+        require(p.length == 2 && c == 2 && q.length == 2 && -d == 2);
+      }
+      function denominations() public {
+        require(1 ether + 1 gwei + 1 wei == 1000000001000000001);
+        require(1.5 gwei == 1500000000 && 1.5 ether == 1500000000000000000);
+        require(1.5 minutes == 90 && 1.5 hours == 5400);
+        require(1.5 days == 129600 && 1.5 weeks == 907200);
+      }
+      function strings() public {
+        bytes32 escaped = "\\t\\n\\r\\'\\\"\\\\";
+        require(escaped == hex"090a0d27225c0000000000000000000000000000000000000000000000000000");
+        require("aaa\\u0024aaa" == "aaa$aaa");
+        require("aaa\\u00A2aaa" == hex"616161c2a2616161");
+        require("aaa\\u20ACaaa" == hex"616161e282ac616161");
+        require("\\u0024\\u00A2\\u20AC" == hex"24c2a2e282ac");
+        require(unicode"😃, 😭, and 😈" == hex"f09f98832c20f09f98ad2c20616e6420f09f9888");
+      }
+    }`);
+    await expect(contract.tuples()).resolves.toBeDefined();
+    await expect(contract.constants()).resolves.toBeDefined();
+    await expect(contract.fractions()).resolves.toBeDefined();
+    await expect(contract.denominations()).resolves.toBeDefined();
+    await expect(contract.strings()).resolves.toBeDefined();
+  });
+
+  // Exact runtime adaptations of memory-array allocation expectations:
+  // test/libsolidity/semanticTests/array/create_dynamic_array_with_zero_length.sol
+  // test/libsolidity/semanticTests/array/create_memory_byte_array.sol
+  it('executes zero and large-byte array allocations', async () => {
+    const contract = await deploy(`contract C {
+      function zeroLength() public {
+        uint256[][] memory a = new uint256[][](0); require(a.length == 0 && 7 == 7);
+      }
+    }`);
+    await expect(contract.zeroLength()).resolves.toBeDefined();
+    const bytesContract = await deploy(`contract B {
+      function byteArray() public {
+        bytes memory x = new bytes(35); require(x.length == 35);
+        x[34] = "A"; require(x[34] == "A");
+      }
+    }`);
+    await expect(bytesContract.byteArray()).resolves.toBeDefined();
+  });
   // Passes 1-5:
   // test/libsolidity/semanticTests/expressions/conditional_expression_false_literal.sol
   // test/libsolidity/semanticTests/expressions/conditional_expression_true_literal.sol

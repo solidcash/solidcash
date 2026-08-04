@@ -288,6 +288,8 @@ export default class AstBuilder
   private parsingModifierBody = false;
   private structMap: Map<string, StructType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
+  // Keep interface/library enum identities qualified when another scope declares the same short enum name.
+  private qualifiedEnumMap: Map<string, EnumType> = new Map();
   // Library names, so a library-namespaced enum access `L.E.Member` can strip the `L.` to the bare enum.
   private libraryNames: Set<string> = new Set();
   private sourceHasImports = false;
@@ -719,6 +721,14 @@ export default class AstBuilder
     const interfaceDefinitions = ctx.interfaceDefinition_list().map(
       (i) => this.visitInterfaceDefinition(i),
     );
+    for (const iface of interfaceDefinitions) {
+      for (const definition of iface.enumDefinitions) {
+        this.qualifiedEnumMap.set(
+          `${iface.name}.${definition.name}`,
+          new EnumType(definition.name, definition.members),
+        );
+      }
+    }
 
     const freeFunctions = ctx.freeFunctionDefinition_list().map(
       (f) => this.visitFreeFunctionDefinition(f),
@@ -754,7 +764,13 @@ export default class AstBuilder
 
       // Library enum definitions
       for (const edCtx of libCtx.enumDefinition_list()) {
-        enumDefinitions.push(this.visitEnumDefinition(edCtx));
+        const definition = this.visitEnumDefinition(edCtx);
+        definition.inheritedFrom = libName;
+        this.qualifiedEnumMap.set(
+          `${libName}.${definition.name}`,
+          new EnumType(definition.name, definition.members),
+        );
+        enumDefinitions.push(definition);
       }
 
       // Library struct definitions
@@ -4135,7 +4151,7 @@ export default class AstBuilder
       ? this.enumMap.get(name)
       : (identifiers.length === 2
         && (this.libraryNames.has(identifiers[0].getText()) || this.contractInterfaceNames.has(identifiers[0].getText()))
-        ? this.enumMap.get(identifiers[1].getText()) : undefined);
+        ? (this.qualifiedEnumMap.get(name) ?? this.enumMap.get(identifiers[1].getText())) : undefined);
     if (enumType && parameters.length === 1) {
       const cast = new CastNode(enumType, parameters[0] as ExpressionNode, false);
       cast.sourceCast = true;
@@ -6810,6 +6826,15 @@ export default class AstBuilder
         acc = next;
       }
       return acc;
+    }
+
+    // Preserve scoped enum qualification. Erasing `I.`/`L.` would silently bind `Q.E.Member` to whichever bare
+    // enum named `E` happened to be registered last.
+    if (expression instanceof IdentifierNode
+      && this.qualifiedEnumMap.has(`${expression.name}.${fieldName}`)) {
+      const qualified = new IdentifierNode(`${expression.name}.${fieldName}`);
+      qualified.location = Location.fromCtx(ctx);
+      return qualified;
     }
 
     // Namespaced TYPE access `Q.T` where Q is a library / contract / interface and T is a globally-registered

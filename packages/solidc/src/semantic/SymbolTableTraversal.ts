@@ -648,6 +648,27 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.contractMap.set(node.name, node);
     this.currentContract = node;
 
+    // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
+    // the same short name must not win merely because it was registered earlier (`contract C is I`, where both
+    // `I.Direction` and `L.Direction` exist in the source unit).
+    const inheritedInterfaceEnums = new Map<string, EnumType>();
+    const collectInterfaceEnums = (interfaceName: string, seen = new Set<string>()): void => {
+      if (seen.has(interfaceName)) return;
+      seen.add(interfaceName);
+      const iface = this.interfaceMap.get(interfaceName);
+      if (!iface) return;
+      for (const definition of iface.enumDefinitions) {
+        inheritedInterfaceEnums.set(definition.name, new EnumType(definition.name, definition.members));
+      }
+      for (const parent of iface.parents) collectInterfaceEnums(parent, seen);
+    };
+    for (const parent of node.implements) collectInterfaceEnums(parent);
+    for (const [name, enumType] of inheritedInterfaceEnums) {
+      if (node.enumDefinitions.some((definition) => definition.name === name)) continue;
+      this.enumMap.set(name, enumType);
+      this.symbolTables[0].set(Symbol.enumType(name, enumType));
+    }
+
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
@@ -8047,6 +8068,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private registerEnum(ed: EnumDefinitionNode): void {
+    if (ed.inheritedFrom) {
+      const qualified = `${ed.inheritedFrom}.${ed.name}`;
+      const qualifiedType = new EnumType(ed.name, ed.members);
+      this.enumMap.set(qualified, qualifiedType);
+      this.symbolTables[0].set(Symbol.enumType(qualified, qualifiedType));
+    }
     if (this.enumMap.has(ed.name)) {
       throw new EnumRedefinitionError(ed);
     }

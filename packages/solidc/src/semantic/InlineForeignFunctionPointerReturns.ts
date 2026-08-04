@@ -31,8 +31,11 @@ import { cloneNode } from '../ast/clone.js';
  */
 export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   // helper name -> { param names, external-fn-ptr param positions, the single returned expression, isPublic }
-  private candidates = new Map<string,
-    { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }>();
+  private candidates = new Map<
+  string,
+  { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }
+  >();
+
   private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -119,7 +122,12 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     if (node.identifier instanceof IdentifierNode) {
       const cand = this.candidates.get(node.identifier.name);
-      if (cand && node.parameters.length === cand.params.length) {
+      // A synthesized public getter can share its name with the external-function state variable it exposes.
+      // `this.g()` is the getter read, but bare `g()` invokes the stored pointer; do not beta-reduce the latter
+      // into the getter's returned pointer value.
+      const bareStatePointerCall = cand?.isPublic && this.fnPtrStateVars.has(node.identifier.name)
+        && !node.fromThisCall;
+      if (cand && !bareStatePointerCall && node.parameters.length === cand.params.length) {
         const subst = new Map<string, ExpressionNode>();
         cand.params.forEach((p, i) => subst.set(p, this.visit(node.parameters[i]) as ExpressionNode));
         return this.substExpr(cloneNode(cand.returnExpr) as ExpressionNode, subst);
@@ -154,9 +162,12 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     }
     for (const key of Object.keys(expr)) {
       const val = (expr as unknown as Record<string, unknown>)[key];
-      if (val instanceof Node) (expr as unknown as Record<string, unknown>)[key] = this.substExpr(val as ExpressionNode, subst);
-      else if (Array.isArray(val)) {
-        (expr as unknown as Record<string, unknown>)[key] = val.map((v) => v instanceof Node ? this.substExpr(v as ExpressionNode, subst) : v);
+      if (val instanceof Node) {
+        (expr as unknown as Record<string, unknown>)[key] = this.substExpr(val as ExpressionNode, subst);
+      } else if (Array.isArray(val)) {
+        (expr as unknown as Record<string, unknown>)[key] = val.map(
+          (v) => v instanceof Node ? this.substExpr(v as ExpressionNode, subst) : v,
+        );
       }
     }
     return expr;

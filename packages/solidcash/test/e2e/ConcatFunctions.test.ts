@@ -1,11 +1,13 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';
 import { alicePriv, alicePub } from '../fixture/vars.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // --- Helpers ----------------------------------------------------------------
 
@@ -21,6 +23,13 @@ function loadCash(name: string): string {
 // --- Tests ------------------------------------------------------------------
 
 describe('Concat Functions', () => {
+  // Solidity corpus parity exercised below:
+  // test/libsolidity/semanticTests/strings/concat/string_concat_2_args.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_empty_argument_list.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_empty_strings.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_nested.sol
+  // The runtime cases cover two-argument, zero-argument, empty-string, and nested/multi-argument concatenation.
+
   // --- bytes.concat() from fixture file ------------------------------------
 
   describe('bytes_concat.scash - bytes.concat() built-in', () => {
@@ -146,7 +155,7 @@ describe('Concat Functions', () => {
       `;
       const factory = getContractFactory(compileString(source, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow();
+      await expect(sc.test(hexToBin('aa'), hexToBin('bb'))).rejects.toThrow(verifyFailure);
     });
   });
 

@@ -1,11 +1,15 @@
 // Function-pointer ARRAY dispatch tables: fixed-method, state-selected, varying-method, received-value;
 // broadcast (loop spelling) + Solidity single-element call semantics.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
+
+const WRONG_DISPATCH_PREFLIGHT = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 
 describe('fixed-method table', () => {
   // A permissionless callee (no checkSig) so it can be co-spent by the table covenant.
@@ -63,7 +67,7 @@ describe('fixed-method table', () => {
 
       tableSc.registerExternalArray('ICounter', [c0Sc, c1Sc]);
       const tx = await tableSc.fireAll(3n, alicePub, sig()).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       // The array call broadcasts: EVERY registered callee is co-spent + increment(3) is called on each.
       expect((await c0Sc.getState()).counter).toBe(8n);   // 5 + 3
       expect((await c1Sc.getState()).counter).toBe(23n);  // 20 + 3
@@ -120,7 +124,7 @@ describe('state-selected method', () => {
       const tx = await callerSc.run(alicePub, sig())
         .withExternalCall(calleeSc, method, [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await calleeSc.getState()).counter).toBe(expected);
     };
 
@@ -192,7 +196,7 @@ describe('varying-method table', () => {
 
       tableSc.registerExternalArray('IH', [c0Sc, c1Sc], ['inc', 'dec']);
       const tx = await tableSc.fireAll(3n, alicePub, sig()).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
 
       // Broadcast: c0's OWN method inc(3) -> 5 + 3; c1's OWN method dec(3) -> 20 - 3.
       expect((await c0Sc.getState()).counter).toBe(8n);
@@ -211,7 +215,7 @@ describe('varying-method table', () => {
       // Provision c0 with dec (wrong): the on-chain selector for element 0 is inc's, so the co-spent dec method
       // fails the covenant's per-element selector check.
       tableSc.registerExternalArray('IH', [c0Sc], ['dec']);
-      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow();
+      await expect(tableSc.fireAll(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
   });
 });
@@ -277,7 +281,7 @@ describe('received-value table', () => {
 
       tableSc.registerExternalArray(fnPtrIface, [c0Sc, c1Sc], ['inc', 'dec']);
       const tx = await tableSc.fire(3n, alicePub, sig()).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
 
       expect((await c0Sc.getState()).counter).toBe(8n);   // c0.inc(3): 5 + 3
       expect((await c1Sc.getState()).counter).toBe(17n);  // c1.dec(3): 20 - 3
@@ -312,7 +316,7 @@ describe('received-value table', () => {
 
       tableSc.registerExternalArray(fnPtrIface, [c0Sc, fatSc], ['inc', 'inc']);
       const tx = await tableSc.fire(7n, alicePub, sig()).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
 
       expect((await c0Sc.getState()).counter).toBe(12n);    // 5 + 7
       expect((await fatSc.getState()).counter).toBe(107n);  // 100 + 7
@@ -324,7 +328,7 @@ describe('received-value table', () => {
       await tableSc.reg(hexToBin(c0Addr), incSel, alicePub, sig()).send();  // fns[0] carries inc's selector
 
       tableSc.registerExternalArray(fnPtrIface, [c0Sc], ['dec']);
-      await expect(tableSc.fire(3n, alicePub, sig()).send()).rejects.toThrow();
+      await expect(tableSc.fire(3n, alicePub, sig()).send()).rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
   });
 });
@@ -383,7 +387,8 @@ describe('single-element calls', () => {
       await tableSc.reg(hexToBin(c0Addr), alicePub, sig()).send();
       await tableSc.reg(hexToBin(c1Addr), alicePub, sig()).send();
 
-      await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'inc', [3n]).send();
+      const settled = await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'inc', [3n]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c0Sc.getState()).counter).toBe(5n);   // element 0 untouched
       expect((await c1Sc.getState()).counter).toBe(23n);  // only element 1 called
     });
@@ -400,13 +405,14 @@ describe('single-element calls', () => {
       await tableSc.regInc(hexToBin(c0Addr), alicePub, sig()).send();
       await tableSc.regDec(hexToBin(c1Addr), alicePub, sig()).send();
 
-      await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      const settled = await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c0Sc.getState()).counter).toBe(5n);   // untouched
       expect((await c1Sc.getState()).counter).toBe(17n);  // element 1's OWN method (dec)
 
       // Element 0 carries inc's selector: co-spending dec against it must fail (runtime selector binding).
       await expect(tableSc.fire(0n, 3n, alicePub, sig()).withExternalCall(c0Sc, 'dec', [3n]).send())
-        .rejects.toThrow();
+        .rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
 
     it('RECEIVED table: value-RETURNING single call returns the callee result', async () => {
@@ -426,7 +432,8 @@ describe('single-element calls', () => {
       { fns: [], __fnsel_fns: [], last: 0n });
       await tableSc.reg(hexToBin(rhAddr), rIncSel, alicePub, sig()).send();
 
-      await tableSc.fire(0n, 2n, alicePub, sig()).withExternalCall(rhSc, 'inc', [2n]).send();
+      const settled = await tableSc.fire(0n, 2n, alicePub, sig()).withExternalCall(rhSc, 'inc', [2n]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await rhSc.getState()).counter).toBe(42n);
       expect((await tableSc.getState()).last).toBe(42n);  // returned value landed in the caller's state
     });
@@ -444,13 +451,14 @@ describe('single-element calls', () => {
       await tableSc.regInc(hexToBin(c0Addr), alicePub, sig()).send();      // fns[0] = (c0, inc)
       await tableSc.upd(0n, hexToBin(c1Addr), alicePub, sig()).send();     // fns[0] = (c1, dec) - both arrays
 
-      await tableSc.fire(0n, 4n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [4n]).send();
+      const settled = await tableSc.fire(0n, 4n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [4n]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c1Sc.getState()).counter).toBe(16n);  // 20 - 4: new address AND new selector
       expect((await c0Sc.getState()).counter).toBe(5n);   // old target untouched
 
       // The old (address, selector) pair must no longer verify.
       await expect(tableSc.fire(0n, 4n, alicePub, sig()).withExternalCall(c0Sc, 'inc', [4n]).send())
-        .rejects.toThrow();
+        .rejects.toThrow(WRONG_DISPATCH_PREFLIGHT);
     });
 
     it('MIXED table (inline + received pushes) + state-var pointer push: single calls dispatch', async () => {
@@ -468,9 +476,11 @@ describe('single-element calls', () => {
       await tableSc.setP(hexToBin(c1Addr), decSel, alicePub, sig()).send();  // stored = (c1, dec)
       await tableSc.regStored(alicePub, sig()).send();                       // fns[1] from the state pointer
 
-      await tableSc.fire(0n, 3n, alicePub, sig()).withExternalCall(c0Sc, 'inc', [3n]).send();
+      const incResult = await tableSc.fire(0n, 3n, alicePub, sig()).withExternalCall(c0Sc, 'inc', [3n]).send();
+      expect(incResult).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c0Sc.getState()).counter).toBe(8n);
-      await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      const decResult = await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      expect(decResult).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c1Sc.getState()).counter).toBe(17n);
       expect(incSel.length).toBe(4); // silence unused warnings
       expect(ta.stateLayout!.variables.some((v: any) => v.name === '__fnsel_fns')).toBe(true);
@@ -493,7 +503,8 @@ describe('single-element calls', () => {
       await tableSc.regDec(hexToBin(c1Sc.inner.lockingBytecode), alicePub, sig()).send(); // fns[1] = (c1, dec)
 
       // If pop had desynced the selector array, fns[1] would still pair with inc's selector.
-      await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      const settled = await tableSc.fire(1n, 3n, alicePub, sig()).withExternalCall(c1Sc, 'dec', [3n]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await c1Sc.getState()).counter).toBe(17n);  // 20 - 3 via the RE-pushed dec
       expect((await c0Sc.getState()).counter).toBe(5n);
     });

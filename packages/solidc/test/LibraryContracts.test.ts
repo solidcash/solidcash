@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { parseCode, compileString } from '../src/compiler.js';
+import { parseCode } from '../src/compiler.js';
+import { compileString } from './direct-compile.js';
 import type { SourceFileNode, FunctionDefinitionNode } from '../src/ast/AST.js';
 
 // Library-contract-class feature - docs/library-contracts.md.
@@ -88,14 +89,14 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
     expect(lib.abi.map((f) => f.name)).toContain('inc');
   });
 
-  it('auto-delegates with the same ABI modifier and state layout as an inferred contract variant', () => {
-    const contract = 'contract Counter() { bigint count; function inc() public { this.count = this.count + 1; } }';
+  it('auto-delegates with the same ABI modifier and state layout as a hand-written `public delegate` contract', () => {
+    const contract = 'contract Counter() { bigint count; function inc() public delegate { this.count = this.count + 1; } }';
     const automatic = compileString(LIB);
-    const inferred = compileString(contract).delegateArtifact!;
+    const explicit = compileString(contract);
     expect(automatic.abi.find((f) => f.name === 'inc')?.modifiers).toEqual(
-      inferred.abi.find((f) => f.name === 'inc')?.modifiers,
+      explicit.abi.find((f) => f.name === 'inc')?.modifiers,
     );
-    expect(automatic.stateLayout?.variables).toEqual(inferred.stateLayout?.variables);
+    expect(automatic.stateLayout?.variables).toEqual(explicit.stateLayout?.variables);
   });
 
   // 3b `L.f()` sugar, piece 1: the auto-delegate also applies on the import/free-function path, so a consumer
@@ -128,7 +129,11 @@ describe('delegate libraries lower to a delegate contract (3b step 2)', () => {
 
     expect(art.constructorInputs.map((i) => i.name)).toContain('__libAddr_Counter');
     const bump = art.abi.find((f) => f.name === 'bump')!;
-    expect(bump.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+    // The synthesized library address is a constructor argument, so the desugared edge publishes a target the
+    // contract's own p2sh32 commits to - a caller cannot substitute a library.
+    expect(bump.lowLevelCalls).toEqual([
+      { callMode: 'delegatecall', target: { kind: 'constructorArg', name: '__libAddr_Counter' } },
+    ]);
     // The target library+function is recorded so the SDK auto-wires the delegatecall co-spend (no manual
     // withDelegatecall). The delegate's selector/args are supplied by the SDK at spend time, not baked in.
     expect(bump.libraryDelegateCalls).toEqual([{ library: 'Counter', functionName: 'increment' }]);

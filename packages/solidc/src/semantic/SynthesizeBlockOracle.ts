@@ -18,6 +18,7 @@ import {
   BinaryOpNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
+import { DeprecatedNowError } from '../Errors.js';
 import { IntType, AddressType, Type, PrimitiveType, encodeComputedBlockhashKey } from '@solidcash/utils';
 import { NullaryOperator, BinaryOperator } from '../ast/Operator.js';
 import { TimeOp, GlobalFunction } from '../ast/Globals.js';
@@ -54,7 +55,8 @@ const UPDATE_FN = '__updateBlockOracle';
 // coinbase is the full coinbase-output-0 locking bytecode (variable length, inline address/pushdata
 // encoding); every other field is a uint32.
 function registerType(varName: string): Type {
-  return varName === '__block_coinbase' ? new AddressType() : new IntType(false, 32);
+  // Solidity declares block.coinbase as address payable.
+  return varName === '__block_coinbase' ? new AddressType(true) : new IntType(false, 32);
 }
 
 // param name written into register `__block_<field>` by the update function.
@@ -63,6 +65,7 @@ function setterParam(varName: string): string {
 }
 
 export default class SynthesizeBlockOracle extends AstTraversal {
+  private legacyNow = false;
   private used = new Set<string>();
   private loc: unknown;
   // Set when the contract references blockhash(n): surfaced to the artifact so the keeper knows to
@@ -79,7 +82,11 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   private stateVarNames = new Set<string>();
   private fnDeclaredNames = new Set<string>();
   private warnedShims = new Set<string>();
+  private userGasleft = false;
 
+  constructor(private strictSolidityValidation = false) {
+    super();
+  }
 
   // One-time compiler warning for an EVM primitive that has no BCH analogue and is lowered as a shim.
   private warnShim(key: string, message: string): void {
@@ -91,7 +98,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     // gasleft() -> fixed 1000000: BCH has no gas metering. A literal (not a revert) so ported code that
     // gates on a gas budget keeps running; warn it is a shim.
-    if (node.identifier.name === 'gasleft' && node.parameters.length === 0) {
+    if (node.identifier.name === 'gasleft' && node.parameters.length === 0 && !this.userGasleft) {
       this.warnShim('gasleft', 'Warning: gasleft() has no BCH analogue (no gas metering); SolidCash lowers '
         + 'it as a fixed shim (1000000). Do not rely on its value.');
       const lit = new IntLiteralNode(1_000_000n);
@@ -163,6 +170,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   // a NON-shadowed bare `now` and re-visit so it flows through the same block.timestamp lowering as an explicit ref.
   visitIdentifier(node: IdentifierNode): Node {
     if (node.name === 'now' && !this.fnDeclaredNames.has('now')) {
+      if (this.strictSolidityValidation && !this.legacyNow) throw new DeprecatedNowError(node);
       const ts = new NullaryOpNode(NullaryOperator.BLOCK_TIMESTAMP);
       ts.location = node.location;
       return this.visit(ts);
@@ -171,6 +179,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.legacyNow = node.solidityLegacyNow;
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
@@ -179,6 +188,9 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     this.used = new Set();
     this.loc = node.location;
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    // Solidity permits a contract function to shadow the gasleft builtin (with a compiler warning). Preserve
+    // that ordinary call for semantic overload resolution rather than replacing it with the BCH gas shim.
+    this.userGasleft = node.functions.some((fn) => fn.name === 'gasleft' && fn.parameters.length === 0);
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
@@ -289,6 +301,14 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     const updateFn = this.at(
       new FunctionDefinitionNode(UPDATE_FN, params, this.at(new BlockNode(body)) as BlockNode),
     ) as FunctionDefinitionNode;
+    // X72. This pass can run AFTER message-bus route synthesis (compiler.ts runs route synthesis early
+    // whenever a handler touches a collection, has an effect or returns). Route synthesis only names a
+    // rejection reason for the entry points that exist when it runs, so this one reached the artifact as
+    // `eligible: false` with the reason key absent - a refusal with no reason. State the reason the absence
+    // channel already uses for the same condition (compiler.ts `messageBusAbsenceMessage`). When route
+    // synthesis runs after this pass it examines this function like any other and overwrites both fields.
+    updateFn.messageBusEligible = false;
+    updateFn.messageBusRejectionReason = 'not-examined-by-route-synthesis';
     node.functions.push(updateFn);
   }
 

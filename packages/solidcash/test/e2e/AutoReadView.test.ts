@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { StatefulContract, MockNetworkProvider } from '../../src/index.js';
 
 // ethers view semantics: awaiting a pure single-output view function (writesState:false, no send-intent config)

@@ -1,9 +1,15 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
 } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+const missingCallFailure = [
+  'messageBus: BCH-2026 preflight failed at input 0:',
+  'Program called an OP_SPLIT operation with an invalid index.',
+  'stack item length: 1; requested split index: 4.',
+].join(' ');
 
 // =============================================================================
 // Contract Sources
@@ -269,7 +275,7 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
 
       // With a validating mock (mem-cash), the send fails because no target
       // contract was provided via .withCall(), so the covenant verification fails.
-      await expect(tx.send()).rejects.toThrow();
+      await expect(tx.send()).rejects.toThrow(missingCallFailure);
     });
   });
 });

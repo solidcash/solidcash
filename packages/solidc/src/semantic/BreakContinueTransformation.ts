@@ -133,6 +133,17 @@ function transformStatementList(
 function transformDoWhileLoop(loop: DoWhileNode): StatementNode[] {
   if (!loop.block.statements) return [loop];
 
+  // A top-level unconditional break terminates the first (and only) execution of a do-while body, so neither
+  // the remaining body nor the condition is evaluated. Collapse it to the straight-line prefix. Besides being
+  // smaller, this preserves conditional side effects exactly: `do { break; } while (++x < n)` must not mutate x.
+  const directBreak = loop.block.statements.findIndex((statement) => statement instanceof BreakNode);
+  if (directBreak >= 0) {
+    const prefix = loop.block.statements.slice(0, directBreak);
+    const priorHasControl = containsBreakOrContinue(prefix, 'break')
+      || containsBreakOrContinue(prefix, 'continue');
+    if (!priorHasControl) return transformStatementList(prefix, false);
+  }
+
   const hasBreak = containsBreakOrContinue(loop.block.statements, 'break');
   const hasContinue = containsBreakOrContinue(loop.block.statements, 'continue');
 
@@ -368,6 +379,25 @@ function nestBreakContinue(
       continue;
     }
 
+    // Modifier expansion and return-in-loop lowering can leave a lexical block inside this loop with a
+    // synthesized break. Preserve the block (and therefore its variable scope), but guard all following
+    // statements with the loop's break flag. Without this case the outer loop scan notices no break in a
+    // BlockNode, recurses through transformStatementList, and incorrectly reports the valid break as top-level.
+    if (stmt instanceof BlockNode && blockContainsBreakContinue(stmt, 'break')) {
+      const block = new BlockNode(nestBreakContinue(stmt.statements ?? [], breakFlagName));
+      block.location = stmt.location;
+      result.push(block);
+      if (remaining.length > 0 && breakFlagName) {
+        const guard = createNot(createIdentifier(breakFlagName, stmt.location), stmt.location);
+        const tail = new BlockNode(nestBreakContinue(remaining, breakFlagName));
+        tail.location = stmt.location;
+        const branch = new BranchNode(guard, tail);
+        branch.location = stmt.location;
+        result.push(branch);
+      }
+      break;
+    }
+
     result.push(stmt);
   }
 
@@ -391,6 +421,7 @@ function containsBreakOrContinue(
       // Only check try block - catch blocks are dead code
       if (blockContainsBreakContinue(s.tryBlock, kind)) return true;
     }
+    if (s instanceof BlockNode && blockContainsBreakContinue(s, kind)) return true;
     // Don't recurse into nested loops - their break/continue is scoped to them
   }
   return false;

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   deriveSeedFromBip39Mnemonic, deriveHdPrivateNodeFromSeed, deriveHdPath,
 } from '@bitauth/libauth';

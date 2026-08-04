@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // State variables and constants: init/zero-init, transient, override, compound assign, bare access.
 
@@ -292,8 +292,10 @@ describe('bare `delete x` on a state variable routes to a state delete', () => {
   });
   it('is byte-identical to `delete this.y` (sound - actually deletes the state var)', () => {
     const explicit = 'contract C{uint16 y;uint8 x;function f()external returns(uint){this.y=2;if(x!=1)return 2;delete this.y;return 1;}}';
-    expect(compileString(bareSrc, { solidityImportCompat: true }).bytecode)
-      .toBe(compileString(explicit, { solidityImportCompat: true }).bytecode);
+    expect(compileString(bareSrc, { solidityImportCompat: true, messageBus: false }).bytecode)
+      .toBe(compileString(explicit, {
+        solidityImportCompat: true, messageBus: false,
+      }).bytecode);
   });
   it('leaves a genuine local delete alone', () => {
     expect(compileString('contract C{function f(uint x)external returns(uint){uint y=5;if(x!=1)return 2;delete y;return y;}}',

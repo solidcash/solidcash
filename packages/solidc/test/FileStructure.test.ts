@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // File structure and imports: pragma, declaration order, multiple top-level defs, interface/declaration-only files.
 
@@ -78,7 +78,10 @@ describe('Solidity-compat features (from the minimal Sablier port)', () => {
   });
 
   it('compiles address(this) to OP_INPUTINDEX OP_UTXOBYTECODE (the spent UTXO locking script)', () => {
-    const a = compileString('contract C() { int n; function f(address r) { require(r != address(this)); this.n = 1; } }');
+    const a = compileString(
+      'contract C() { int n; function f(address r) { require(r != address(this)); this.n = 1; } }',
+      { messageBus: false },
+    );
     expect(a.bytecode).toContain('OP_INPUTINDEX');
     expect(a.bytecode).toContain('OP_UTXOBYTECODE');
   });

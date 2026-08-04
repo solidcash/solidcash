@@ -8,6 +8,7 @@ import {
   FunctionCallStatementNode,
   VariableDefinitionNode,
   IdentifierNode,
+  IntLiteralNode,
   ExpressionNode,
   BranchNode,
   WhileNode,
@@ -15,18 +16,30 @@ import {
   UncheckedNode,
   MappingAccessNode,
   ArrayAccessNode,
+  TupleIndexOpNode,
   AssignNode,
   StateAssignNode,
   StateAccessNode,
+  DeleteStateNode,
   MappingAssignNode,
   MappingDeleteNode,
   ArrayAssignNode,
+  StateArrayPushNode,
+  StateArrayPopNode,
   StateArrayAssignNode,
+  StateArrayDeleteNode,
   MappingFieldAssignNode,
+  TupleAssignmentNode,
   ReturnNode,
   FunctionCallNode,
   ConsoleStatementNode,
-  TupleAssignmentNode,
+  EmitStatementNode,
+  TokenContainerMethodStatementNode,
+  TransferStatementNode,
+  LowLevelCallNode,
+  LowLevelCallStatementNode,
+  MethodCallNode,
+  InstantiationNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -35,7 +48,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError } from '../Errors.js';
+import { AmbiguousInlineOverloadError, GraphEmissionEffectError } from '../Errors.js';
 
 /**
  * Inlines internal calls to void functions that take `storage` reference parameters
@@ -79,11 +92,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   private transitiveSortedWriters: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
+  private constructorCalledFns: Set<string> = new Set();
+  private journalEffectFns: Set<string> = new Set();
   private freeFns: FunctionDefinitionNode[] = [];
   private counter = 0;
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
   // EXPRESSION position (they have no standalone value representation). exprStack guards against recursion.
   private exprInlinableFns: Map<string, FunctionDefinitionNode> = new Map();
+  // Ambiguity among the expression-inlinable subset only. A same-arity overload with no reducible single-return
+  // body cannot be selected by this path and therefore must not make the one eligible overload ambiguous.
+  private exprAmbiguousInlineKeys: Set<string> = new Set();
   private exprStack: string[] = [];
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -129,6 +147,47 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const allFns = [...node.functions, ...(node.fallbackDef ? [node.fallbackDef] : [])];
     this.transitiveSortedWriters = this.computeTransitiveSortedWriters(allFns);
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    this.constructorCalledFns = new Set();
+    if (node.constructorDef?.body) {
+      this.walk(node.constructorDef.body, (candidate) => {
+        if (candidate instanceof FunctionCallNode) this.constructorCalledFns.add(candidate.identifier.name);
+      });
+    }
+    // Effect metadata is populated after this pass. Build the equivalent pre-semantic call-graph closure so a
+    // scalar writer which deploys/calls externally through an internal helper stays on the established inline
+    // path rather than becoming an OP_INVOKE journal with missing physical effect context.
+    this.journalEffectFns = new Set();
+    const directEffect = (fn: FunctionDefinitionNode): boolean => {
+      if (!fn.body) return false;
+      let found = false;
+      this.walk(fn.body, (candidate) => {
+        if (candidate instanceof InstantiationNode || candidate instanceof MethodCallNode
+          || candidate instanceof LowLevelCallNode || candidate instanceof LowLevelCallStatementNode) found = true;
+        else if (candidate instanceof FunctionCallNode) {
+          const name = candidate.identifier.name;
+          const dot = name.lastIndexOf('.');
+          if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) found = true;
+        }
+      });
+      return found;
+    };
+    for (const fn of node.functions) if (fn.body && directEffect(fn)) this.journalEffectFns.add(fn.name);
+    let effectClosureChanged = true;
+    while (effectClosureChanged) {
+      effectClosureChanged = false;
+      for (const fn of node.functions) {
+        if (!fn.body || this.journalEffectFns.has(fn.name)) continue;
+        let reachesEffect = false;
+        this.walk(fn.body, (candidate) => {
+          if (candidate instanceof FunctionCallNode
+            && this.journalEffectFns.has(candidate.identifier.name)) reachesEffect = true;
+        });
+        if (reachesEffect) {
+          this.journalEffectFns.add(fn.name);
+          effectClosureChanged = true;
+        }
+      }
+    }
 
     this.inlinedFns = new Set();
     this.keepDefFns = new Set();
@@ -136,19 +195,60 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // not safely droppable-after-inline; exclude such names from the state-touching criteria.
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
+      // A graph emission handler executes behind OP_INVOKE precisely so its hidden callManifest/caller/result
+      // frame authenticates every reached edge. Flattening one into __message_bus1 makes that the current
+      // function at code generation, so its external calls take the ordinary-call path and no emission row is ever
+      // recomputed and compared - the callManifest can then state any target and any arguments. Same guard, and
+      // the same reason, as InlineExternalCallHelpers and InlineReturningStateHelpers. Reachable only when
+      // route synthesis ran BEFORE this pass (compiler.ts synthesizeBatchBeforeLowering).
+      //
+      // X29 replaced SEC-6's refusal for the `emit` / `transfer` carrying clones: they stay behind OP_INVOKE
+      // too, which is what keeps their edges bound, and their effect is no longer dropped because the ROUTE now
+      // reserves an owner-local frame per dispatch site on their behalf (SymbolTableTraversal
+      // planGraphEffectFrames) and pushes the site ordinal as hidden context, against which the subroutine
+      // resolves its own event/transfer OUTPUT indices (GenerateTargetTraversal emitGraphEffectSlotIndex).
+      if (this.keepsGraphEmissionBinding(fn)) continue;
+      // SEC-7. A TOKEN-CONTAINER operation is still refused, and for the reason X29 removed for events and
+      // transfers rather than an unexamined one: `this.tokens[c].transfer(..)` needs a co-spent tokenContainer
+      // INPUT slot as well as its tcTransfer outputs, and an input slot is not a per-site output frame - it
+      // shifts every later input index in the block and is co-spent once for the whole route, not once per
+      // dispatch site. Flattening the clone instead is exactly what SEC-6 measured forgeable, so the shape is
+      // refused rather than published with unbound edges.
+      //
+      // Scoped to a clone that actually HAS an outgoing edge. `graphTailHandlers` also admits a handler that
+      // merely reads msg.sender / msg.value in a graph route, and such a clone has no external call for the
+      // callManifest to misstate - flattening it loses nothing and refusing it would refuse a sound shape.
+      if (fn.graphEmissionHandler && this.hasOutgoingCall(fn)) {
+        throw new GraphEmissionEffectError(fn, fn.name.replace(/^__message_bus_(graph|resource)_/, ''),
+          this.hasTokenContainerEffects(fn) ? 'a token-container operation' : 'a storage-pointer parameter');
+      }
       // Any state access disqualifies an OP_INVOKE subroutine: entry reads need block-layout slots, and
       // scalar reads/writes live in the ENTRY traversal's commitment model (a subroutine's are invisible
       // to it). Inline all state-touching void callees; entry points keep their definition (still
       // dispatchable), internal helpers are dropped below.
+      const scalarJournalEligible = this.isScalarJournalEligible(fn);
+      // CashToken-container transfers are transaction effects rather than
+      // value-like state: their authenticated input/output slots and transfer
+      // occurrence indices belong to the physical entry point. Until an
+      // independently verified effect journal exists, inline these helpers so
+      // every operation remains visible to the ordinary sequential covenant
+      // pre-scan. This is Release 3's sound, non-aggregating token path.
+      const hasTokenContainerEffects = this.hasTokenContainerEffects(fn);
+      const hasPhysicalEffects = this.hasPhysicalEffects(fn);
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
-            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name)
+            && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
+              || hasTokenContainerEffects
+              || hasPhysicalEffects
+              || this.transitiveSortedWriters.has(fn.name)
               || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
         && !valueReferenced.has(fn.name)
-        && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))) {
+        && (this.readsEntry(fn) || (this.touchesScalarState(fn) && !scalarJournalEligible)
+          || hasPhysicalEffects
+          || this.transitiveSortedWriters.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
       }
@@ -161,7 +261,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       addedWrapper = false;
       for (const fn of node.functions) {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
-          || valueReferenced.has(fn.name)) continue;
+          || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
         this.walk(fn.body, (candidate) => {
           if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
@@ -184,11 +284,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
     }
-    // Library free-functions (`Lib.fn`) taking a STRUCT storage pointer are inlined too, but ONLY struct ones:
-    // array/mapping storage-pointer library fns (the `using Lib for T[]` path) have their own machinery a broad
-    // inlining would wrongly intercept. Scoping to StructType keeps that path intact (SBE-23).
+    // Library free-functions (`Lib.fn`) taking any storage pointer must inline too. A mapping/array pointer has
+    // no standalone stack representation any more than a struct pointer does; leaving a void `L.set(mapping
+    // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
+    // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
     for (const fn of this.freeFns) {
-      if (fn.body && fn.returnTypes.length === 0 && this.hasStructStoragePointerParam(fn)) {
+      if (fn.body && fn.returnTypes.length === 0 && this.hasStoragePointerParam(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -196,9 +297,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // mapping` helper `at(mapping storage a, uint i) returns (uint) { return a[i]; }`) are inlined in expression
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
+    const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
+      if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
+    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys(exprEligible);
     if (this.inlinedFns.size === 0 && this.exprInlinableFns.size === 0) return node;
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
@@ -223,6 +327,82 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // which stay dispatchable.
     node.functions = node.functions.filter((fn) => !this.inlinedFns.has(fn.name) || this.keepDefFns.has(fn.name));
     return node;
+  }
+
+  // A graph emission handler clone that must stay behind OP_INVOKE to keep its emission binding. Since X29 that
+  // includes clones carrying an `emit` or a `transfer`: the route reserves their OUTPUT frames, one per dispatch
+  // site, so leaving them subroutines no longer loses the effect. A token-container operation still needs a
+  // co-spent INPUT slot, which no per-site output frame can express, so it stays excluded (refused above).
+  private keepsGraphEmissionBinding(fn: FunctionDefinitionNode): boolean {
+    if (!fn.graphEmissionHandler || this.hasTokenContainerEffects(fn) || this.hasStoragePointerParam(fn)) {
+      return false;
+    }
+    // Effect-carrying clones are kept ONLY when they have an outgoing edge, which is the whole defect surface:
+    // an edge is what a callManifest can misstate. `graphTailHandlers` also admits an edge-free handler that
+    // merely reads msg.value or msg.sender (Release 4's value batch is exactly that), and flattening one loses
+    // nothing while un-flattening it moves its transfer covenant behind OP_INVOKE - measured to break the SDK's
+    // auto-derivation of the transfer outputs. Keep every edge-free clone on the established path.
+    return !this.hasPhysicalEffects(fn) || this.hasOutgoingCall(fn);
+  }
+
+  // An outgoing external edge, in the pre-semantic shapes this pass sees: `IFoo(a).m()` is a MethodCall until
+  // LowerExternalCalls runs, and `a.call/staticcall/delegatecall(..)` is either a LowLevelCall or a dotted
+  // FunctionCall. Mirrors the `methodCallCount` test compiler.ts applies at route synthesis.
+  private hasOutgoingCall(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (found) return;
+      if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) found = true;
+      else if (node instanceof FunctionCallNode
+        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) found = true;
+    });
+    return found;
+  }
+
+  private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
+    if (!fn.body || fn.returnTypes.length > 0 || this.hasStoragePointerParam(fn) || this.readsEntry(fn)
+      || this.transitiveSortedWriters.has(fn.name) || this.constructorCalledFns.has(fn.name)
+      || this.journalEffectFns.has(fn.name)) return false;
+    if ((fn.externalCalls?.length ?? 0) > 0 || (fn.externalReads?.length ?? 0) > 0
+      || (fn.externalOutStateReads?.length ?? 0) > 0 || (fn.lowLevelCalls?.length ?? 0) > 0
+      || (fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
+      || (fn.tokenContainerAccesses?.length ?? 0) > 0 || (fn.deployTargets?.length ?? 0) > 0) return false;
+    let unsupported = false;
+    this.walk(fn.body, (candidate) => {
+      const maybeState = candidate as Node & { stateVariable?: { isDynamic?: boolean } };
+      if (maybeState.stateVariable?.isDynamic) unsupported = true;
+      // This transform runs before emitInfos is populated. Inspect the source AST
+      // directly so event-producing helpers remain inlined and their event metadata
+      // is retained on every physical entry point that can execute the emit.
+      if (candidate instanceof EmitStatementNode) unsupported = true;
+      // The semantic effect metadata is populated after this lowering pass.
+      // Inspect pre-semantic call shapes directly so external/low-level calls
+      // never enter an OP_INVOKE handler which lacks their covenant context.
+      if (candidate instanceof LowLevelCallNode
+        || candidate instanceof LowLevelCallStatementNode
+        || candidate instanceof MethodCallNode) unsupported = true;
+      if (candidate instanceof FunctionCallNode) {
+        const name = candidate.identifier.name;
+        const dot = name.lastIndexOf('.');
+        if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) unsupported = true;
+      }
+      if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+        || candidate instanceof MappingDeleteNode || candidate instanceof MappingFieldAssignNode
+        || candidate instanceof ArrayAccessNode || candidate instanceof ArrayAssignNode
+        || candidate instanceof StateArrayAssignNode
+        || candidate.constructor.name.startsWith('StateArray')) unsupported = true;
+    });
+    return !unsupported && this.writesScalarState(fn);
+  }
+
+  private writesScalarState(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body!, (candidate) => {
+      if ((candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode)
+        && this.stateVarNames.has(candidate.name)) found = true;
+    });
+    return found;
   }
 
   // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.
@@ -306,7 +486,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     if (callee) this.reorderNamedTail(visited, callee);
     if (callee && !this.exprStack.includes(callee.name)
       && visited.parameters.length === callee.parameters.length) {
-      if (this.ambiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
+      if (this.exprAmbiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
         throw new AmbiguousInlineOverloadError(node, callee.name, callee.parameters.length);
       }
       this.exprStack.push(callee.name);
@@ -397,6 +577,23 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
+  private hasTokenContainerEffects(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof TokenContainerMethodStatementNode) found = true;
+    });
+    return found;
+  }
+
+  private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
+        || node instanceof TokenContainerMethodStatementNode) found = true;
+    });
+    return found;
+  }
+
   // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
   // state-touching helper becomes state-touching after that helper is inlined, so selecting only direct readers
   // leaves wrapper chains such as OZ ERC20 `_transfer -> _update -> _balances[...]` as layout-less subroutines.
@@ -412,6 +609,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     };
     const result = new Set<string>(fns.filter((f) => (
       this.readsEntry(f) || this.touchesScalarState(f) || this.directlyWritesSortedEntry(f)
+      || this.hasTokenContainerEffects(f) || this.hasPhysicalEffects(f)
     )).map((f) => f.name));
     let changed = true;
     while (changed) {
@@ -476,6 +674,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
+    const collectionPaths = new Map<string, { name: string; keys: ExpressionNode[] }>();
+    const flattenedStructPaths = new Map<string, { name: string; keys: ExpressionNode[] }>();
     const inlinedArg = new Set<string>();
     const rmwPrologue: StatementNode[] = [];
     const rmwEpilogue: StatementNode[] = [];
@@ -495,10 +695,27 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           decl.location = arg.location ?? callee.location;
           rmwPrologue.push(decl as StatementNode);
           rmwEpilogue.push(acc.writeBack(local));
+        } else if (p.type instanceof StructType && callee.isLibraryFunction) {
+          const path = this.flattenedStructCollectionPath(arg, p.name, callee.body);
+          if (path) {
+            flattenedStructPaths.set(p.name, path);
+            rename.set(p.name, path.name);
+          } else if (arg instanceof IdentifierNode) {
+            rename.set(p.name, arg.name);
+          } else {
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          }
         } else if (arg instanceof IdentifierNode) {
           // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
           // targets whose container is a string field).
           rename.set(p.name, arg.name);
+        } else if (p.type instanceof MappingType) {
+          const path = this.collectionPath(arg);
+          if (path) {
+            collectionPaths.set(p.name, path);
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          }
+          else subs.set(p.name, cloneNode(arg) as ExpressionNode);
         } else {
           // A complex read-only access path is substituted by expression.
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
@@ -515,9 +732,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         rename.set(p.name, `${PREFIX}${n}_${p.name}`);
       }
     });
+    cloned.body = this.rewriteCollectionPointerWrites(
+      cloned.body, collectionPaths, flattenedStructPaths,
+    ) as BlockNode;
     this.walk(cloned.body, (node) => {
       if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
+      } else if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (!element.skip && !element.existing && element.name
+            && !rename.has(element.name) && !subs.has(element.name)) {
+            rename.set(element.name, `${PREFIX}${n}_${element.name}`);
+          }
+        }
       }
     });
     // Rename value params/locals first (storage-param refs are untouched), then substitute storage
@@ -538,6 +765,186 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const inlined = this.inlineStatements(cloned.body.statements ?? [],
       [...stack, inlineKey(callee.name, callee.parameters.length)]);
     return [...bindings, ...rmwPrologue, ...inlined, ...rmwEpilogue];
+  }
+
+  // Resolve a storage-pointer argument like `fixedMaps[x]` to its root collection and captured prefix keys.
+  private collectionPath(arg: Node): { name: string; keys: ExpressionNode[] } | undefined {
+    if (arg instanceof MappingAccessNode) {
+      return { name: arg.name, keys: arg.keys.map((key) => cloneNode(key) as ExpressionNode) };
+    }
+    const keys: ExpressionNode[] = [];
+    let current: Node = arg;
+    while (current instanceof ArrayAccessNode || current instanceof TupleIndexOpNode) {
+      if (current instanceof ArrayAccessNode) {
+        keys.unshift(cloneNode(current.index) as ExpressionNode);
+        current = current.array;
+      } else {
+        const index = new IntLiteralNode(BigInt(current.index));
+        index.location = current.location;
+        keys.unshift(index);
+        current = current.tuple;
+      }
+    }
+    return current instanceof IdentifierNode && this.collectionNames.has(current.name)
+      ? { name: current.name, keys } : undefined;
+  }
+
+  // A struct containing a mapping/dynamic-array field is flattened into sibling collections (`data__a`,
+  // `data__b`, ...), so its original root `data` is deliberately absent from collectionNames. Recover the
+  // root+key path for `Lib.f(data[k])` when at least one flattened field collection proves that root exists.
+  private flattenedStructCollectionPath(
+    arg: Node, parameterName: string, body: Node,
+  ): { name: string; keys: ExpressionNode[] } | undefined {
+    const keys: ExpressionNode[] = [];
+    let current = arg;
+    while (current instanceof ArrayAccessNode || current instanceof TupleIndexOpNode) {
+      if (current instanceof ArrayAccessNode) {
+        keys.unshift(cloneNode(current.index) as ExpressionNode);
+        current = current.array;
+      } else {
+        const index = new IntLiteralNode(BigInt(current.index));
+        index.location = current.location;
+        keys.unshift(index);
+        current = current.tuple;
+      }
+    }
+    if (!(current instanceof IdentifierNode) || keys.length === 0) return undefined;
+    const prefix = `${current.name}__`;
+    if (![...this.collectionNames].some((name) => name.startsWith(prefix))) return undefined;
+    // Do not infer a flattened root merely because an unrelated sibling collection shares its prefix. Every
+    // flattened field name used by this helper must have a concrete caller-side field collection/state slot.
+    const usedSuffixes = new Set<string>();
+    this.walk(body, (item) => {
+      const name = (item as unknown as { name?: unknown }).name;
+      if (typeof name === 'string' && name.startsWith(`${parameterName}__`)) {
+        usedSuffixes.add(name.slice(parameterName.length));
+      }
+    });
+    if ([...usedSuffixes].some((suffix) =>
+      !this.collectionNames.has(`${current.name}${suffix}`)
+      && !this.stateVarNames.has(`${current.name}${suffix}`))) return undefined;
+    return { name: current.name, keys };
+  }
+
+  // AstBuilder represents `mapping storage p; p[k] = v` as ArrayAssignNode because `p` is a local pointer name,
+  // not a declared state collection. Once p binds to `root[prefix...]`, replace those writes with the concrete
+  // MappingAssign path. Reads remain expression nodes and are handled by ordinary identifier substitution.
+  private rewriteCollectionPointerWrites(
+    node: Node, paths: Map<string, { name: string; keys: ExpressionNode[] }>,
+    flattenedStructPaths: Map<string, { name: string; keys: ExpressionNode[] }> = new Map(),
+  ): Node {
+    const rooted = (
+      path: { name: string; keys: ExpressionNode[] }, tail: ExpressionNode, location: Node['location'],
+    ): ExpressionNode => {
+      let expression: ExpressionNode = new IdentifierNode(path.name);
+      expression.location = location;
+      for (const key of [...path.keys, tail]) {
+        const access = new ArrayAccessNode(expression, cloneNode(key) as ExpressionNode);
+        access.location = location;
+        expression = access;
+      }
+      return expression;
+    };
+    const flattened = (name: string): { name: string; keys: ExpressionNode[] } | undefined => {
+      const separator = name.indexOf('__');
+      if (separator <= 0) return undefined;
+      const path = flattenedStructPaths.get(name.slice(0, separator));
+      return path ? { name: `${path.name}${name.slice(separator)}`, keys: path.keys } : undefined;
+    };
+    const keys = (path: { keys: ExpressionNode[] }): ExpressionNode[] =>
+      path.keys.map((key) => cloneNode(key) as ExpressionNode);
+
+    const flattenedName = (node as unknown as { name?: unknown }).name;
+    const fieldPath = typeof flattenedName === 'string' ? flattened(flattenedName) : undefined;
+    if (fieldPath) {
+      if (node instanceof StateAssignNode) {
+        const replacement = new MappingAssignNode(fieldPath.name, keys(fieldPath), node.expression);
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayPushNode) {
+        const replacement = new MappingAssignNode(fieldPath.name, keys(fieldPath), node.value);
+        replacement.arrayPush = true;
+        replacement.noArg = node.noArg;
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayPopNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name, keys(fieldPath), new IntLiteralNode(0n),
+        );
+        replacement.arrayPop = true;
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayAssignNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name, [...keys(fieldPath), node.index], node.value,
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayDeleteNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name,
+          [...keys(fieldPath), node.index],
+          new IntLiteralNode(0n),
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof MappingAssignNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof MappingAccessNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof MappingDeleteNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof IdentifierNode || node instanceof StateAccessNode) {
+        const replacement = new MappingAccessNode(fieldPath.name, keys(fieldPath));
+        replacement.location = node.location;
+        return replacement;
+      }
+    }
+    if (node instanceof ArrayAssignNode) {
+      const path = paths.get(node.name);
+      if (path) {
+        const replacement = new MappingAssignNode(
+          path.name,
+          [...path.keys.map((key) => cloneNode(key) as ExpressionNode), node.index],
+          node.value,
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+    }
+    if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode) {
+      const path = paths.get(node.array.name);
+      if (path) return rooted(path, node.index, node.location);
+    }
+    if (node instanceof TupleIndexOpNode && node.tuple instanceof IdentifierNode) {
+      const path = paths.get(node.tuple.name);
+      if (path) {
+        const index = new IntLiteralNode(BigInt(node.index));
+        index.location = node.location;
+        return rooted(path, index, node.location);
+      }
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) {
+        (node as unknown as Record<string, unknown>)[key] = this.rewriteCollectionPointerWrites(
+          value, paths, flattenedStructPaths,
+        );
+      } else if (Array.isArray(value)) {
+        (node as unknown as Record<string, unknown>)[key] = value.map((item) =>
+          item instanceof Node ? this.rewriteCollectionPointerWrites(item, paths, flattenedStructPaths) : item);
+      }
+    }
+    return node;
   }
 
   // Normalized element READ node + write-back builder for a struct storage-pointer bound to a mapping/array
@@ -596,10 +1003,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
       } else if (n instanceof TupleAssignmentNode) {
-        // Tuple target names are stored as plain element records rather than
-        // IdentifierNodes. They must follow the same alpha-renaming as the
-        // declarations they assign, including nested inliner aliases such as
-        // `__rh5_reserveA` inside a storage-pointer-inlined library body.
+        // Tuple lvalues are plain element descriptors rather than
+        // IdentifierNodes. Keep an existing-variable capture aligned with
+        // the alpha-renamed declaration when a journal-bearing wrapper is
+        // itself inlined into an entry point.
         n.elements = n.elements.map((element) => (
           element.name ? { ...element, name: rn(element.name) } : element
         ));
@@ -618,7 +1025,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) this.walk(v, visit);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      else if (Array.isArray(v)) {
+        for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      }
+      else if (key === 'callOptions' && v && typeof v === 'object') {
+        // Call/deploy options are a plain object rather than an AST Node. They can still refer to helper
+        // parameters (`new D{value: amount}()`), so descend into each expression during alpha-renaming.
+        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+          if (opt instanceof Node) this.walk(opt, visit);
+        }
+      }
     }
   }
 }

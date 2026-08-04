@@ -16,9 +16,10 @@ import {
   IntLiteralNode,
   ContractNode,
   StatementNode,
+  StateAssignNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
-import { ArrayType, StructType } from '@solidcash/utils';
+import { AddressType, ArrayType, StructType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
@@ -41,11 +42,26 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   // storage-pointer write inlines to `jobs[id].field = v`, mis-built as MappingFieldAssign(jobs, [id], field, v)
   // when JobPost is imported. Resolve it to a read-modify-write of the array element (the EACC MarketplaceV2/V3).
   private stateArrayStructs: Map<string, StructType> = new Map();
+  private stateStructs: Map<string, StructType> = new Map();
+  private structTypes: Map<string, StructType> = new Map();
 
   visitSourceFile(node: SourceFileNode): Node {
     const contract = node.contract;
     if (!contract) return node;
+    this.structTypes = new Map(
+      [...node.structDefinitions, ...contract.structDefinitions]
+        .map((definition) => [definition.name, new StructType(definition.name, definition.fields)]),
+    );
     this.stateArrayStructs = this.collectStateArrayStructs(contract);
+    this.stateStructs = new Map();
+    for (const variable of contract.stateVariables) {
+      let type: StructType | undefined;
+      if (variable.type instanceof StructType) type = variable.type;
+      else if (variable.type instanceof AddressType && variable.type.interfaceName) {
+        type = this.structTypes.get(variable.type.interfaceName);
+      }
+      if (type) this.stateStructs.set(variable.name, type);
+    }
     const fns: (FunctionDefinitionNode | undefined)[] = [
       ...contract.functions, contract.constructorDef, contract.fallbackDef, contract.receiveDef,
       ...(node.freeFunctions ?? []),
@@ -73,7 +89,7 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     });
     // A storage-pointer `S storage p = arr[id]` is inlined+dropped, so there is no local struct - the state-array
     // rebuild path still applies, so run whenever there are local structs OR state arrays.
-    if (localStructs.size === 0 && this.stateArrayStructs.size === 0) return;
+    if (localStructs.size === 0 && this.stateArrayStructs.size === 0 && this.stateStructs.size === 0) return;
     this.transform(fn.body, localStructs);
   }
 
@@ -107,6 +123,9 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     const arrStruct = node.keys.length === 1 && !localStructs.has(node.name)
       ? this.stateArrayStructs.get(node.name) : undefined;
     if (arrStruct) return this.rebuildStateArrayElem(node, arrStruct);
+    const stateStruct = node.keys.length === 0 && !localStructs.has(node.name)
+      ? this.stateStructs.get(node.name) : undefined;
+    if (stateStruct) return this.rebuildStateStruct(node, stateStruct);
     const structT = localStructs.get(node.name);
     if (!structT) return undefined;
     const field = structT.fields.find((f) => f.name === node.fieldName);
@@ -116,7 +135,11 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
 
     const loc = node.location;
     const id = (n: string): IdentifierNode => { const x = new IdentifierNode(n); x.location = loc; return x; };
-    const fieldOf = (v: string, f: string): FieldAccessNode => { const fa = new FieldAccessNode(id(v), f); fa.location = loc; return fa; };
+    const fieldOf = (v: string, f: string): FieldAccessNode => {
+      const fa = new FieldAccessNode(id(v), f);
+      fa.location = loc;
+      return fa;
+    };
 
     // Scalar `struct.field = v`: the field's new value is v directly. Array `struct.field[i] = v`: read the field
     // into a tmp, write the element, then use the tmp as the field's new value.
@@ -126,14 +149,27 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
       const tmp = `__inlv_${this.counter++}`;
       const decl = new VariableDefinitionNode(field.type, [], tmp, fieldOf(node.name, node.fieldName));
       decl.location = loc;
-      const elemAssign = new ArrayAssignNode(tmp, node.keys[0], node.expression);
+      let elementValue = node.expression;
+      // `s.rows[i].field = v`: the indexed target is a struct element, not the whole `rows[i]` value.
+      // Rebuild that selected element before writing it into the temporary array.
+      if (node.trailingMembers?.length && field.type instanceof ArrayType
+        && field.type.elementType instanceof StructType) {
+        const selected = new ArrayAccessNode(id(tmp), cloneNode(node.keys[0]) as ExpressionNode);
+        selected.location = loc;
+        elementValue = this.rebuildNestedExpr(
+          selected, field.type.elementType, node.trailingMembers, node.expression,
+        );
+      }
+      const elemAssign = new ArrayAssignNode(tmp, node.keys[0], elementValue);
       elemAssign.location = loc;
       stmts.push(decl as StatementNode, elemAssign);
       newFieldValue = id(tmp);
     } else if (node.trailingMembers && node.trailingMembers.length > 0) {
       // Nested field write `struct.a.b = v`: the new value of field `a` is `a` rebuilt with `b = v` (recursively).
       if (!(field.type instanceof StructType)) return undefined; // `a.b` requires `a` to be a struct
-      newFieldValue = this.rebuildNestedExpr(fieldOf(node.name, node.fieldName), field.type, node.trailingMembers, node.expression);
+      newFieldValue = this.rebuildNestedExpr(
+        fieldOf(node.name, node.fieldName), field.type, node.trailingMembers, node.expression,
+      );
     } else {
       newFieldValue = node.expression;
     }
@@ -144,6 +180,43 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     back.location = loc;
     stmts.push(back);
     const block = new BlockNode(stmts);
+    block.location = loc;
+    return block;
+  }
+
+  // An inherited state-struct type is unknown while the derived body is parsed, so `s.field = v` initially
+  // becomes a MappingFieldAssign. After inheritance expansion, rebuild the whole state struct exactly like the
+  // same-contract AstBuilder path.
+  private rebuildStateStruct(node: MappingFieldAssignNode, structT: StructType): BlockNode | undefined {
+    const field = structT.fields.find((candidate) => candidate.name === node.fieldName);
+    if (!field) return undefined;
+    const loc = node.location;
+    const id = (name: string): IdentifierNode => {
+      const identifier = new IdentifierNode(name);
+      identifier.location = loc;
+      return identifier;
+    };
+    const fieldRead = (name: string): FieldAccessNode => {
+      const access = new FieldAccessNode(id(node.name), name);
+      access.location = loc;
+      return access;
+    };
+    let replacement = node.expression;
+    if (node.trailingMembers?.length) {
+      if (!(field.type instanceof StructType)) return undefined;
+      replacement = this.rebuildNestedExpr(
+        fieldRead(node.fieldName), field.type, node.trailingMembers, node.expression,
+      );
+    }
+    const constructor = new FunctionCallNode(
+      id(structT.name),
+      structT.fields.map((candidate) =>
+        candidate.name === node.fieldName ? replacement : fieldRead(candidate.name)),
+    );
+    constructor.location = loc;
+    const assignment = new StateAssignNode(node.name, constructor);
+    assignment.location = loc;
+    const block = new BlockNode([assignment]);
     block.location = loc;
     return block;
   }
@@ -176,17 +249,28 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   // Rebuild a struct expression with the field at `chain` replaced by `value`, recursively (mirrors the AstBuilder's
   // rebuildStructWithChain): `S(f0, .., <rebuild of head with rest=value>, .., fN)`. Used for a nested imported-struct
   // field write `struct.a.b = v` whose deeper members the AstBuilder preserved as trailingMembers.
-  private rebuildNestedExpr(structExpr: ExpressionNode, structT: StructType, chain: string[], value: ExpressionNode): ExpressionNode {
+  private rebuildNestedExpr(
+    structExpr: ExpressionNode, structT: StructType, chain: string[], value: ExpressionNode,
+  ): ExpressionNode {
     const loc = structExpr.location;
-    const fieldAccess = (e: ExpressionNode, f: string): FieldAccessNode => { const fa = new FieldAccessNode(e, f); fa.location = loc; return fa; };
+    const fieldAccess = (e: ExpressionNode, f: string): FieldAccessNode => {
+      const fa = new FieldAccessNode(e, f);
+      fa.location = loc;
+      return fa;
+    };
     const [head, ...rest] = chain;
     const headType = structT.fields.find((f) => f.name === head)?.type;
     if (rest.length > 0 && !(headType instanceof StructType)) return value; // malformed chain: fail closed downstream
     const newField = rest.length === 0 ? value
-      : this.rebuildNestedExpr(fieldAccess(cloneNode(structExpr) as ExpressionNode, head), headType as StructType, rest, value);
+      : this.rebuildNestedExpr(
+        fieldAccess(cloneNode(structExpr) as ExpressionNode, head), headType as StructType, rest, value,
+      );
     const ctorId = new IdentifierNode(structT.name); ctorId.location = loc;
     const ctor = new FunctionCallNode(ctorId,
-      structT.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name))));
+      structT.fields.map((f) => (
+        f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name)
+      )),
+    );
     ctor.location = loc;
     return ctor;
   }

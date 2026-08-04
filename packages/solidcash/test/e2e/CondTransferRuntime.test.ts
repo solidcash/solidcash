@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { describe, it, expect } from 'vitest';
 import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import {

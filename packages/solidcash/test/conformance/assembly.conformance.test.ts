@@ -45,6 +45,6 @@ describe('assembly KNOWN DIVERGENCE: arithmetic is checked (add/sub/mul overflow
 describe('assembly KNOWN DIVERGENCE: sign / byte-order', () => {
   it.fails('sar(1, -1) == -1 (arithmetic shift, twos-complement)', () => asm('r := sar(sh, v)', 'uint sh, uint v', [1n, MAX]));
   it.fails('slt(-1, 1) == 1 (signed less-than, twos-complement)', () => asm('r := slt(a, b)', 'uint a, uint b', [MAX, 1n]));
-  it.fails('byte(31, 0xab) == 0xab (big-endian byte index)', () => asm('r := byte(n, x)', 'uint n, uint x', [31n, 0xabn]));
+  it('byte(31, 0xab) == 0xab (big-endian byte index)', () => asm('r := byte(n, x)', 'uint n, uint x', [31n, 0xabn]));
   it.fails('signextend(0, 0xff) == -1 (unsupported / diverges)', () => asm('r := signextend(n, x)', 'uint n, uint x', [0n, 0xffn]));
 });

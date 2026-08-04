@@ -10,12 +10,16 @@ import {
   MethodCallStatementNode,
   FunctionCallNode,
   FunctionCallStatementNode,
+  FunctionDefinitionNode,
   ExpressionNode,
   InstantiationNode,
   TernaryOpNode,
   WhileNode,
   DoWhileNode,
   BinaryOpNode,
+  ArrayPushNode,
+  StateArrayPushNode,
+  CastNode,
 } from '../ast/AST.js';
 import { AddressType } from '@solidcash/utils';
 import { BinaryOperator } from '../ast/Operator.js';
@@ -38,7 +42,13 @@ export default class HoistInlineDeployCalls extends AstTraversal {
   private hoists: StatementNode[] = [];
 
   visitSourceFile(node: SourceFileNode): Node {
+    node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
+    return node;
+  }
+
+  visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    if (node.body) node.body = this.visit(node.body) as BlockNode;
     return node;
   }
 
@@ -87,6 +97,43 @@ export default class HoistInlineDeployCalls extends AstTraversal {
       visited.object = read;
     }
     return visited;
+  }
+
+  // A deploy used directly as a state-array push value leaves its pending covenant stack items between the
+  // array blob and the encoded element. Hoist the deploy to a local first, exactly as the inline-call case:
+  // `a.push(new C())` -> `C __newcall_N = new C(); a.push(__newcall_N)`. Casts and one-argument struct
+  // constructors preserve the same eager evaluation order and cover `a.push(address(new C()))` /
+  // `rows.push(S(address(new C())))`.
+  visitArrayPush(node: ArrayPushNode): Node {
+    node.value = this.hoistPushDeploy(node.value);
+    return super.visitArrayPush(node);
+  }
+
+  visitStateArrayPush(node: StateArrayPushNode): Node {
+    node.value = this.hoistPushDeploy(node.value);
+    return super.visitStateArrayPush(node);
+  }
+
+  private hoistPushDeploy(expr: ExpressionNode): ExpressionNode {
+    if (expr instanceof InstantiationNode) {
+      const tmpName = `${PREFIX}${this.counter++}`;
+      const contractName = expr.identifier.name;
+      const def = new VariableDefinitionNode(new AddressType(false, contractName), [], tmpName, expr);
+      def.location = expr.location;
+      this.hoists.push(def);
+      const id = new IdentifierNode(tmpName);
+      id.location = expr.location;
+      return id;
+    }
+    if (expr instanceof CastNode) {
+      expr.expression = this.hoistPushDeploy(expr.expression);
+      return expr;
+    }
+    if (expr instanceof FunctionCallNode && expr.parameters.length === 1) {
+      expr.parameters[0] = this.hoistPushDeploy(expr.parameters[0] as ExpressionNode);
+      return expr;
+    }
+    return expr;
   }
 
   // A hoisted call replaces its MethodCallNode with a FunctionCallNode; re-wrap the statement to match.

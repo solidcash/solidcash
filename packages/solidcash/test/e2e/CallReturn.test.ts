@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, SignatureTemplate,
@@ -112,7 +112,9 @@ describe('low-level call with integrity-bound return ((bool,bytes) = addr.call(p
       caller.sc.go(caller.addr, payloadFor(echoArt, 'setAndReturn'), alicePub, sig())
         .withExternalCall(echo.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });
 

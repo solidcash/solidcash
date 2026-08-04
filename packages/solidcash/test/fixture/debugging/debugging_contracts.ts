@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../../direct-compile.js';
 
 const CONTRACT_TEST_REQUIRES = `
 contract Test() {

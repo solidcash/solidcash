@@ -1,9 +1,12 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // type(C).creationCode returns the child contract's compiled redeem script (BCH has no separate
 // creation vs runtime code). The factory recomputes against the bytes the child compiles to, so the
@@ -66,18 +69,18 @@ describe('type(C).creationCode', () => {
   it('embeds the child contract bytecode (matches the child compilation)', async () => {
     const factory = getContractFactory(factoryArtifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(childBytecode)).resolves.toBeDefined();
+    expect(await sc.check(childBytecode)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('runtimeCode returns the same bytecode on BCH', async () => {
     const factory = getContractFactory(factoryArtifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkRuntime(childBytecode)).resolves.toBeDefined();
+    expect(await sc.checkRuntime(childBytecode)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('rejects a mismatched bytecode', async () => {
     const factory = getContractFactory(factoryArtifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(Uint8Array.from([0x00, 0x11]))).rejects.toThrow();
+    await expect(sc.check(Uint8Array.from([0x00, 0x11]))).rejects.toThrow(inputZeroVerifyFailure);
   });
 });

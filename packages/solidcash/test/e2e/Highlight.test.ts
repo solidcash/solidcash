@@ -15,7 +15,7 @@
  * - Guarded transitions (require checks on balances)
  * - Deploy from source with initial state + initial satoshi balance
  */
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, StatefulContract, SignatureTemplate,
 } from '../../src/index.js';

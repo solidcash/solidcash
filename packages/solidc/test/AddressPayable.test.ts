@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 const compile = (body: string): ReturnType<typeof compileString> =>
   compileString(`contract C { ${body} }`, { solidityImportCompat: true });

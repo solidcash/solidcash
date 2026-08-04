@@ -8,15 +8,18 @@ import { WildcardImportContext } from "./SolidCashParser.js";
 import { NamespaceImportContext } from "./SolidCashParser.js";
 import { SelectiveImportContext } from "./SolidCashParser.js";
 import { ImportBindingContext } from "./SolidCashParser.js";
+import { ExperimentalStdImportContext } from "./SolidCashParser.js";
 import { FreeFunctionDefinitionContext } from "./SolidCashParser.js";
 import { UsingLibraryForContext } from "./SolidCashParser.js";
 import { UsingFunctionsForContext } from "./SolidCashParser.js";
 import { UsingFunctionBindingContext } from "./SolidCashParser.js";
 import { UserDefinableOperatorContext } from "./SolidCashParser.js";
 import { AnyIdentifierContext } from "./SolidCashParser.js";
+import { FunctionNameContext } from "./SolidCashParser.js";
 import { PragmaDirectiveContext } from "./SolidCashParser.js";
 import { PragmaNameContext } from "./SolidCashParser.js";
 import { PragmaValueContext } from "./SolidCashParser.js";
+import { VersionAlternativeContext } from "./SolidCashParser.js";
 import { VersionConstraintContext } from "./SolidCashParser.js";
 import { VersionOperatorContext } from "./SolidCashParser.js";
 import { InterfaceDefinitionContext } from "./SolidCashParser.js";
@@ -24,6 +27,7 @@ import { InterfaceCollectionContext } from "./SolidCashParser.js";
 import { InterfaceStateVariableContext } from "./SolidCashParser.js";
 import { InterfaceStateVariableVisibilityContext } from "./SolidCashParser.js";
 import { InterfaceFunctionContext } from "./SolidCashParser.js";
+import { InterfaceFallbackDefinitionContext } from "./SolidCashParser.js";
 import { LibraryDefinitionContext } from "./SolidCashParser.js";
 import { ContractDefinitionContext } from "./SolidCashParser.js";
 import { InheritanceSpecifierContext } from "./SolidCashParser.js";
@@ -64,6 +68,14 @@ import { ParameterContext } from "./SolidCashParser.js";
 import { BlockContext } from "./SolidCashParser.js";
 import { BlockStatementContext } from "./SolidCashParser.js";
 import { StatementContext } from "./SolidCashParser.js";
+import { PrimitiveTypeReferenceStatementContext } from "./SolidCashParser.js";
+import { UserDefinedArrayTypeReferenceStatementContext } from "./SolidCashParser.js";
+import { ElementaryTypeTokenContext } from "./SolidCashParser.js";
+import { BareTypeExpressionStatementContext } from "./SolidCashParser.js";
+import { BareCallOptionsStatementContext } from "./SolidCashParser.js";
+import { CallOptionsFunctionMemberContext } from "./SolidCashParser.js";
+import { BareNewWithOptionsStatementContext } from "./SolidCashParser.js";
+import { ParenthesizedArrayPopStatementContext } from "./SolidCashParser.js";
 import { ExpressionStatementContext } from "./SolidCashParser.js";
 import { AssignChainContext } from "./SolidCashParser.js";
 import { PrefixIncDecStatementContext } from "./SolidCashParser.js";
@@ -71,12 +83,19 @@ import { ReturnStatementContext } from "./SolidCashParser.js";
 import { SelfdestructStatementContext } from "./SolidCashParser.js";
 import { EmitStatementContext } from "./SolidCashParser.js";
 import { VariableDefinitionContext } from "./SolidCashParser.js";
+import { FunctionArrayTypeContext } from "./SolidCashParser.js";
 import { TupleAssignmentContext } from "./SolidCashParser.js";
+import { NestedTupleAssignmentContext } from "./SolidCashParser.js";
+import { NestedTuplePatternContext } from "./SolidCashParser.js";
+import { NestedTuplePatternItemContext } from "./SolidCashParser.js";
 import { TupleSlotContext } from "./SolidCashParser.js";
 import { PushArgumentContext } from "./SolidCashParser.js";
+import { DeletePushContext } from "./SolidCashParser.js";
 import { DeleteLocalContext } from "./SolidCashParser.js";
+import { DeleteParenthesizedContext } from "./SolidCashParser.js";
 import { DeleteStateContext } from "./SolidCashParser.js";
 import { DeleteMappingEntryContext } from "./SolidCashParser.js";
+import { DeleteDeepMemberEntryContext } from "./SolidCashParser.js";
 import { DeleteIndexedContext } from "./SolidCashParser.js";
 import { DeleteMemberEntryContext } from "./SolidCashParser.js";
 import { DeleteMemberContext } from "./SolidCashParser.js";
@@ -120,6 +139,7 @@ import { YulFunctionDefinitionContext } from "./SolidCashParser.js";
 import { YulExpressionContext } from "./SolidCashParser.js";
 import { YulFunctionCallContext } from "./SolidCashParser.js";
 import { YulFunctionNameContext } from "./SolidCashParser.js";
+import { YulIdentifierContext } from "./SolidCashParser.js";
 import { YulPathContext } from "./SolidCashParser.js";
 import { YulLiteralContext } from "./SolidCashParser.js";
 import { UncheckedStatementContext } from "./SolidCashParser.js";
@@ -147,8 +167,10 @@ import { TypeListItemContext } from "./SolidCashParser.js";
 import { CastContext } from "./SolidCashParser.js";
 import { AbiEncodeContext } from "./SolidCashParser.js";
 import { LegacyCallOptionCallContext } from "./SolidCashParser.js";
+import { ChainedMethodCallContext } from "./SolidCashParser.js";
 import { TypeIntrospectionContext } from "./SolidCashParser.js";
 import { OutStateMappingFieldAccessContext } from "./SolidCashParser.js";
+import { ChainedFunctionCallContext } from "./SolidCashParser.js";
 import { TupleExpressionContext } from "./SolidCashParser.js";
 import { AbiDecodeAtContext } from "./SolidCashParser.js";
 import { MethodCallContext } from "./SolidCashParser.js";
@@ -180,6 +202,7 @@ import { ArrayContext } from "./SolidCashParser.js";
 import { StateAccessContext } from "./SolidCashParser.js";
 import { NewArrayContext } from "./SolidCashParser.js";
 import { SliceContext } from "./SolidCashParser.js";
+import { BareAbiReferenceExpressionContext } from "./SolidCashParser.js";
 import { TupleIndexOpContext } from "./SolidCashParser.js";
 import { MethodCallNamedContext } from "./SolidCashParser.js";
 import { FieldAccessContext } from "./SolidCashParser.js";
@@ -188,6 +211,10 @@ import { AbiEncodePackedContext } from "./SolidCashParser.js";
 import { AbiEncodeCallContext } from "./SolidCashParser.js";
 import { ParenthesisedContext } from "./SolidCashParser.js";
 import { PrefixOpContext } from "./SolidCashParser.js";
+import { CallOptionsMemberContext } from "./SolidCashParser.js";
+import { TypeIntrospectionBaseContext } from "./SolidCashParser.js";
+import { AbiEncodeCallArgumentsContext } from "./SolidCashParser.js";
+import { BareAbiFunctionReferenceStatementContext } from "./SolidCashParser.js";
 import { MemberNameContext } from "./SolidCashParser.js";
 import { ModifierContext } from "./SolidCashParser.js";
 import { DataLocationContext } from "./SolidCashParser.js";
@@ -195,7 +222,11 @@ import { LiteralContext } from "./SolidCashParser.js";
 import { NumberLiteralContext } from "./SolidCashParser.js";
 import { DecimalLiteralContext } from "./SolidCashParser.js";
 import { TypeNameContext } from "./SolidCashParser.js";
+import { FunctionTypeContext } from "./SolidCashParser.js";
+import { FunctionTypeParameterContext } from "./SolidCashParser.js";
+import { FunctionTypeReturnParameterContext } from "./SolidCashParser.js";
 import { TypeCastContext } from "./SolidCashParser.js";
+import { ArrayCastTypeContext } from "./SolidCashParser.js";
 
 
 /**
@@ -240,6 +271,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitImportBinding?: (ctx: ImportBindingContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.experimentalStdImport`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitExperimentalStdImport?: (ctx: ExperimentalStdImportContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.freeFunctionDefinition`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -278,6 +315,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitAnyIdentifier?: (ctx: AnyIdentifierContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionName`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionName?: (ctx: FunctionNameContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.pragmaDirective`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -295,6 +338,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitPragmaValue?: (ctx: PragmaValueContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.versionAlternative`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitVersionAlternative?: (ctx: VersionAlternativeContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.versionConstraint`.
 	 * @param ctx the parse tree
@@ -337,6 +386,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitInterfaceFunction?: (ctx: InterfaceFunctionContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.interfaceFallbackDefinition`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitInterfaceFallbackDefinition?: (ctx: InterfaceFallbackDefinitionContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.libraryDefinition`.
 	 * @param ctx the parse tree
@@ -578,6 +633,54 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitStatement?: (ctx: StatementContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.primitiveTypeReferenceStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitPrimitiveTypeReferenceStatement?: (ctx: PrimitiveTypeReferenceStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.userDefinedArrayTypeReferenceStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitUserDefinedArrayTypeReferenceStatement?: (ctx: UserDefinedArrayTypeReferenceStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.elementaryTypeToken`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitElementaryTypeToken?: (ctx: ElementaryTypeTokenContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.bareTypeExpressionStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitBareTypeExpressionStatement?: (ctx: BareTypeExpressionStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.bareCallOptionsStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitBareCallOptionsStatement?: (ctx: BareCallOptionsStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.callOptionsFunctionMember`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitCallOptionsFunctionMember?: (ctx: CallOptionsFunctionMemberContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.bareNewWithOptionsStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitBareNewWithOptionsStatement?: (ctx: BareNewWithOptionsStatementContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.parenthesizedArrayPopStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitParenthesizedArrayPopStatement?: (ctx: ParenthesizedArrayPopStatementContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.expressionStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -620,11 +723,35 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitVariableDefinition?: (ctx: VariableDefinitionContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionArrayType`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionArrayType?: (ctx: FunctionArrayTypeContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.tupleAssignment`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitTupleAssignment?: (ctx: TupleAssignmentContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.nestedTupleAssignment`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNestedTupleAssignment?: (ctx: NestedTupleAssignmentContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.nestedTuplePattern`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNestedTuplePattern?: (ctx: NestedTuplePatternContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.nestedTuplePatternItem`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitNestedTuplePatternItem?: (ctx: NestedTuplePatternItemContext) => Result;
 	/**
 	 * Visit a parse tree produced by `SolidCashParser.tupleSlot`.
 	 * @param ctx the parse tree
@@ -638,12 +765,26 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitPushArgument?: (ctx: PushArgumentContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `DeletePush`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeletePush?: (ctx: DeletePushContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `DeleteLocal`
 	 * labeled alternative in `SolidCashParser.deleteStatement`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitDeleteLocal?: (ctx: DeleteLocalContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `DeleteParenthesized`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeleteParenthesized?: (ctx: DeleteParenthesizedContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `DeleteState`
 	 * labeled alternative in `SolidCashParser.deleteStatement`.
@@ -658,6 +799,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitDeleteMappingEntry?: (ctx: DeleteMappingEntryContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `DeleteDeepMemberEntry`
+	 * labeled alternative in `SolidCashParser.deleteStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitDeleteDeepMemberEntry?: (ctx: DeleteDeepMemberEntryContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `DeleteIndexed`
 	 * labeled alternative in `SolidCashParser.deleteStatement`.
@@ -933,6 +1081,12 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitYulFunctionName?: (ctx: YulFunctionNameContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.yulIdentifier`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitYulIdentifier?: (ctx: YulIdentifierContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.yulPath`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -1098,6 +1252,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitLegacyCallOptionCall?: (ctx: LegacyCallOptionCallContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `ChainedMethodCall`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitChainedMethodCall?: (ctx: ChainedMethodCallContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `TypeIntrospection`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1111,6 +1272,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 * @return the visitor result
 	 */
 	visitOutStateMappingFieldAccess?: (ctx: OutStateMappingFieldAccessContext) => Result;
+	/**
+	 * Visit a parse tree produced by the `ChainedFunctionCall`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitChainedFunctionCall?: (ctx: ChainedFunctionCallContext) => Result;
 	/**
 	 * Visit a parse tree produced by the `TupleExpression`
 	 * labeled alternative in `SolidCashParser.expression`.
@@ -1329,6 +1497,13 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitSlice?: (ctx: SliceContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `BareAbiReferenceExpression`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitBareAbiReferenceExpression?: (ctx: BareAbiReferenceExpressionContext) => Result;
+	/**
 	 * Visit a parse tree produced by the `TupleIndexOp`
 	 * labeled alternative in `SolidCashParser.expression`.
 	 * @param ctx the parse tree
@@ -1385,6 +1560,31 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitPrefixOp?: (ctx: PrefixOpContext) => Result;
 	/**
+	 * Visit a parse tree produced by the `CallOptionsMember`
+	 * labeled alternative in `SolidCashParser.expression`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitCallOptionsMember?: (ctx: CallOptionsMemberContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.typeIntrospectionBase`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitTypeIntrospectionBase?: (ctx: TypeIntrospectionBaseContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.abiEncodeCallArguments`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitAbiEncodeCallArguments?: (ctx: AbiEncodeCallArgumentsContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.bareAbiFunctionReferenceStatement`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitBareAbiFunctionReferenceStatement?: (ctx: BareAbiFunctionReferenceStatementContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.memberName`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
@@ -1427,10 +1627,34 @@ export default class SolidCashVisitor<Result> extends ParseTreeVisitor<Result> {
 	 */
 	visitTypeName?: (ctx: TypeNameContext) => Result;
 	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionType`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionType?: (ctx: FunctionTypeContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionTypeParameter`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionTypeParameter?: (ctx: FunctionTypeParameterContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.functionTypeReturnParameter`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitFunctionTypeReturnParameter?: (ctx: FunctionTypeReturnParameterContext) => Result;
+	/**
 	 * Visit a parse tree produced by `SolidCashParser.typeCast`.
 	 * @param ctx the parse tree
 	 * @return the visitor result
 	 */
 	visitTypeCast?: (ctx: TypeCastContext) => Result;
+	/**
+	 * Visit a parse tree produced by `SolidCashParser.arrayCastType`.
+	 * @param ctx the parse tree
+	 * @return the visitor result
+	 */
+	visitArrayCastType?: (ctx: ArrayCastTypeContext) => Result;
 }
 

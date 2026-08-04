@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // bytes.concat in a constant initializer folds to the concatenation of its (constant) args.
 const SRC = `
 bytes constant aaaa = hex"aaaa";
@@ -21,6 +23,6 @@ describe('const bytes.concat fold (runtime)', () => {
   });
   it('a wrong expectation reverts (value really is aaaabbbbcccc)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.wrong()).rejects.toThrow();
+    await expect(sc.wrong()).rejects.toThrow(verifyFailure);
   });
 });

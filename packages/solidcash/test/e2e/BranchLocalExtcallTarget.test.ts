@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
@@ -86,6 +86,8 @@ describe('branch-local external-call target pinning', () => {
 
     await expect(
       readerSc.bump(0n, alicePub, sig()).withExternalCall(counterBSc, 'increment', [alicePub, sig()]).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow(
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

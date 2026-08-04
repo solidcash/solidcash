@@ -92,7 +92,7 @@ Concept check: event NFTs are strictly historical markers, not live state. Nothi
 
 #### 1.4.4 Token Container
 
-*Custody UTXO for a foreign token category held on behalf of the contract. Address is derived from `(masterCategory, containedCategory)`.*
+*Custody UTXO for a foreign token category held on behalf of the contract. Address is derived from `(stateCategory, containedCategory)`.*
 
 Invariants (`state.ts:1253-1326`):
 

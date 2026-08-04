@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { getContractFactory } from '../src/index.js';
 import { fundedSigner } from './test-util.js';
 
@@ -50,6 +50,8 @@ describe('library function with return-in-loop (VM-verified)', () => {
       compileString(SOURCE, { solidityImportCompat: true }), await fundedSigner(),
     ).deploy();
     await sc.seed();
-    await expect(sc.checkWrong()).rejects.toThrow();
+    await expect(sc.checkWrong()).rejects.toThrow(
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
+import { compileString as _csRawSolidc } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -41,6 +41,8 @@ contract C() {
 }`;
 
 describe('IterableMapping remove() - swap-remove with computed-key index update', () => {
+  const ALIAS_REFUSAL =
+    /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   const provider = createTestProvider();
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
   const a1 = hexToBin(`aa20${'11'.repeat(32)}87`);
@@ -123,12 +125,12 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
   it('rejects an alias transition without the authenticated alias sentinel', async () => {
     const sc = await seed3();
     sc._setRawC2BatchWitness(3, { predOut: -1n });
-    await expect(sc.remove(a3, alicePub, sig()).send()).rejects.toThrow();
+    await expect(sc.remove(a3, alicePub, sig()).send()).rejects.toThrow(ALIAS_REFUSAL);
   });
 
   it('rejects the alias sentinel when the runtime keys do not alias', async () => {
     const sc = await seed3();
     sc._setRawC2BatchWitness(3, { predOut: -2n });
-    await expect(sc.remove(a1, alicePub, sig()).send()).rejects.toThrow();
+    await expect(sc.remove(a1, alicePub, sig()).send()).rejects.toThrow(ALIAS_REFUSAL);
   });
 });

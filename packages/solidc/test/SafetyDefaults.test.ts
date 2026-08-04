@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 import * as Errors from '../src/Errors.js';
 
 // Behaviours that used to be gated behind solidityImportCompat but are now plain SolidCash defaults.
@@ -95,7 +95,9 @@ describe('Synthesized empty bodies are self-preserving no-ops', () => {
   it('the synthesized no-op carries the state self-preservation covenant', () => {
     // private state var: a public one synthesizes a getter that pushes the contract over the subroutine-extraction
     // threshold, hex-encoding these opcodes (still present, just not as names). Visibility is irrelevant here.
-    const empty = compileString('contract C() { int private n; function f() {} }', { solidityImportCompat: true });
+    const empty = compileString('contract C() { int private n; function f() {} }', {
+      solidityImportCompat: true, messageBus: false,
+    });
     expect(empty.bytecode).toContain('OP_UTXOBYTECODE');
     expect(empty.bytecode).toContain('OP_OUTPUTBYTECODE');
   });

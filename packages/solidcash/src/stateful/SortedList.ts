@@ -66,7 +66,9 @@ export function keyToSlotValue(key: Uint8Array): bigint {
   return bytesToSlotValue(keyToSlot(key));
 }
 
-export function encodeEntryCommitment(slot: Uint8Array, nextKey: Uint8Array, value: Uint8Array = new Uint8Array()): Uint8Array {
+export function encodeEntryCommitment(
+  slot: Uint8Array, nextKey: Uint8Array, value: Uint8Array = new Uint8Array(),
+): Uint8Array {
   const out = new Uint8Array(SLOT_BYTES * 2 + value.length);
   out.set(slot, 0);
   out.set(nextKey, SLOT_BYTES);

@@ -1,7 +1,7 @@
 // Foreign external function-pointer VALUE forms: param, return, state var, storage, struct field,
 // single-method callee, cross-contract pass/return, blob struct, contract-member, member-to-internal.
 import { describe, it, expect } from 'vitest';
-import { compileString, compileStringMulti } from 'solidc';
+import { compileString, compileStringMulti } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv, alicePkh } from '../fixture/vars.js';
@@ -46,7 +46,7 @@ describe('param', () => {
       const cSc = StatefulContract.withCategory(caller, cc); const hSc = StatefulContract.withCategory(handler, hc);
       const tx = await cSc.relay(hexToBin(hAddr), inc, alicePub, sig())
         .withExternalCall(hSc, 'inc', [alicePub, sig()]).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await cSc.getState()).bumps).toBe(1n);
       expect((await hSc.getState()).counter).toBe(6n);
     });
@@ -94,7 +94,7 @@ describe('param', () => {
         .withExternalCall(aSc, 'inc', [alicePub, sig()])
         .withExternalCall(bSc, 'dec', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await aSc.getState()).counter).toBe(11n);
       expect((await bSc.getState()).counter).toBe(19n);
     });
@@ -148,7 +148,7 @@ describe('returned pointer', () => {
       const tx = await userSc.use(hexToBin(cAddr), alicePub, sig())
         .withExternalCall(counterSc, 'increment', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await userSc.getState()).bumps).toBe(1n);
       expect((await counterSc.getState()).counter).toBe(6n);
     });
@@ -197,7 +197,7 @@ describe('returned pointer', () => {
       const tx = await passerSc.use(hexToBin(cAddr), alicePub, sig())
         .withExternalCall(counterSc, 'bump', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await counterSc.getState()).counter).toBe(6n);
       expect((await passerSc.getState()).last).toBe(6n); // returned via the return-event NFT
     });
@@ -241,7 +241,7 @@ describe('returned pointer', () => {
       const tx = await returnerSc.use(hexToBin(cAddr), alicePub, sig())
         .withExternalCall(counterSc, 'increment', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await returnerSc.getState()).bumps).toBe(1n);
       expect((await counterSc.getState()).counter).toBe(6n);
     });
@@ -294,7 +294,7 @@ describe('state var (fixed method)', () => {
       const tx = await readerSc.bump(alicePub, sig())
         .withExternalCall(counterSc, 'increment', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await readerSc.getState()).bumps).toBe(1n);
       expect((await counterSc.getState()).counter).toBe(6n);
     });
@@ -350,7 +350,7 @@ describe('storage (received value)', () => {
       const tx = await storeSc.run(alicePub, sig())
         .withExternalCall(handlerSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await storeSc.getState()).bumps).toBe(1n);
       expect((await handlerSc.getState()).counter).toBe(6n);
     });
@@ -383,7 +383,7 @@ describe('storage (received value)', () => {
       const runTx = await storeSc.run(alicePub, sig())
         .withExternalCall(handlerSc, 'inc', [alicePub, sig()])
         .send();
-      expect(runTx.txid).toBeDefined();
+      expect(runTx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await storeSc.getState()).bumps).toBe(2n);
       expect((await handlerSc.getState()).counter).toBe(6n);
     });
@@ -435,7 +435,7 @@ describe('storage (received value)', () => {
       const tx = await storeSc.run(alicePub, sig())
         .withExternalCall(handlerSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       // inc bumped counter 5 -> 6 and returned 6; the return-event NFT carried 6 back into lastResult.
       expect((await handlerSc.getState()).counter).toBe(6n);
       expect((await storeSc.getState()).lastResult).toBe(6n);
@@ -487,7 +487,7 @@ describe('struct field', () => {
       const tx = await holderSc.bump(alicePub, sig())
         .withExternalCall(counterSc, 'increment', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await holderSc.getState()).s.bumps).toBe(1n);
       expect((await counterSc.getState()).counter).toBe(6n);
     });
@@ -514,7 +514,7 @@ describe('struct field', () => {
       const tx = await holderSc.bump(alicePub, sig())
         .withExternalCall(counterSc, 'increment', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await holderSc.getState()).s.bumps).toBe(1n);
       expect((await counterSc.getState()).counter).toBe(6n);
     });
@@ -561,7 +561,7 @@ describe('single-method callee', () => {
 
       const tx = await cSc.relay(hexToBin(hAddr), inc, alicePub, sig())
         .withExternalCall(hSc, 'inc', [alicePub, sig()]).send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await cSc.getState()).bumps).toBe(1n);
       expect((await hSc.getState()).counter).toBe(6n);
     });
@@ -625,7 +625,7 @@ describe('cross-contract', () => {
       const tx1 = await aSc.go(hexToBin(bAddr), hexToBin(tAddr), alicePub, sig())
         .withExternalCall(bSc, 'register', [hexToBin(tAddr), incSel, alicePub, sig()])
         .send();
-      expect(tx1.txid).toBeDefined();
+      expect(tx1).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await aSc.getState()).calls).toBe(1n);
       expect((await bSc.getState()).n).toBe(1n);
 
@@ -633,7 +633,7 @@ describe('cross-contract', () => {
       const tx2 = await bSc.fire(alicePub, sig())
         .withExternalCall(targetSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx2.txid).toBeDefined();
+      expect(tx2).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await targetSc.getState()).counter).toBe(6n);
       expect((await bSc.getState()).n).toBe(2n);
     });
@@ -691,7 +691,7 @@ describe('cross-contract', () => {
         .withExternalCall(aSc, 'getPtr', [hexToBin(tAddr)])
         .withExternalCall(targetSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await bSc.getState()).n).toBe(1n);
       expect((await targetSc.getState()).counter).toBe(6n);
     });
@@ -744,7 +744,7 @@ describe('blob struct', () => {
       const tx = await holderSc.run(alicePub, sig())
         .withExternalCall(handlerSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await holderSc.getState()).s.bumps).toBe(1n);
       expect((await handlerSc.getState()).counter).toBe(6n);
     });
@@ -771,7 +771,7 @@ describe('blob struct', () => {
       const tx = await holderSc.run(alicePub, sig())
         .withExternalCall(handlerSc, 'inc', [alicePub, sig()])
         .send();
-      expect(tx.txid).toBeDefined();
+      expect(tx).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await holderSc.getState()).s.bumps).toBe(1n);
       expect((await handlerSc.getState()).counter).toBe(6n);
     });
@@ -828,7 +828,8 @@ describe('contract member', () => {
         .toBe(otherChild.inner.lockingBytecode);
 
       await provider.addUtxo(c.address, { txid: 'ee03'.repeat(16), vout: 0, satoshis: 100000n });
-      await c.run().withExternalCall(otherChild, 'bump', []).send();
+      const settled = await c.run().withExternalCall(otherChild, 'bump', []).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await otherChild.getState()).c).toBe(1n);
       expect((await c.getState()).bumps).toBe(1n);
     });
@@ -877,7 +878,8 @@ describe('member to internal', () => {
       expect(Buffer.from((await cSc.getState()).stored as Uint8Array).toString('hex')).toBe(tAddr);
 
       // tx2: fire() co-spends Other through the stored pointer.
-      await cSc.fire(alicePub, sig()).withExternalCall(otherSc, 'bump', [alicePub, sig()]).send();
+      const settled = await cSc.fire(alicePub, sig()).withExternalCall(otherSc, 'bump', [alicePub, sig()]).send();
+      expect(settled).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
       expect((await otherSc.getState()).counter).toBe(6n);
       expect((await cSc.getState()).n).toBe(2n);
     });

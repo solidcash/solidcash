@@ -98,7 +98,10 @@ describe('utils', () => {
     });
 
     it('should accept zero satoshis', () => {
-      expect(() => validateInput({ txid: 'aa'.repeat(32), vout: 0, satoshis: 0n })).not.toThrow();
+      const input = { txid: 'aa'.repeat(32), vout: 0, satoshis: 0n };
+      validateInput(input);
+      expect(input).toEqual({ txid: 'aa'.repeat(32), vout: 0, satoshis: 0n });
+      expect(() => validateInput({ ...input, satoshis: -1n })).toThrow('Invalid input satoshis');
     });
 
     it('should throw for invalid token category', () => {
@@ -123,10 +126,14 @@ describe('utils', () => {
     });
 
     it('should accept a valid input with token and NFT', () => {
-      expect(() => validateInput({
+      const input = {
         txid: 'aa'.repeat(32), vout: 0, satoshis: 100n,
         token: { category: 'bb'.repeat(32), amount: 10n, nft: { capability: 'mutable', commitment: 'aabb' } },
-      })).not.toThrow();
+      } as const;
+      validateInput(input);
+      expect(input.token).toMatchObject({ amount: 10n, nft: { capability: 'mutable', commitment: 'aabb' } });
+      expect(() => validateInput({ ...input, token: { ...input.token, category: 'short' } }))
+        .toThrow('Invalid input token category');
     });
   });
 
@@ -143,7 +150,12 @@ describe('utils', () => {
     });
 
     it('should accept zero amount bytecode output (OP_RETURN-like)', () => {
-      expect(() => validateOutput({ to: new Uint8Array([0x6a]), amount: 0n })).not.toThrow();
+      const output = { to: new Uint8Array([0x6a]), amount: 0n };
+      validateOutput(output);
+      expect([...output.to]).toEqual([0x6a]);
+      expect(output.amount).toBe(0n);
+      expect(() => validateOutput({ ...output, amount: -1n }))
+        .toThrow('Tried to add an output with -1 satoshis');
     });
   });
 

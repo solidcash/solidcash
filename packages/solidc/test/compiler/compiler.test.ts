@@ -9,7 +9,7 @@ import { URL } from 'url';
 import { getSubdirectories, readCashFiles } from '../test-utils.js';
 import * as Errors from '../../src/Errors.js';
 import { compileString as _csRawSolidc } from '../../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
+import { compileString } from '../direct-compile.js';
 import type { SolidCashErrorListener } from '../../src/index.js';
 
 const VALID_SOURCE = `
@@ -27,6 +27,46 @@ describe('Compiler', () => {
       it(`${file.fn} should succeed`, () => {
         expect(() => compileString(file.contents)).not.toThrow();
       });
+    });
+
+    it('keeps the default enabled while omitting a handler whose effects cannot be settled', () => {
+      const artifact = _csRawSolidc(`contract ConditionalTokenContainerSend() {
+        int counter;
+        function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
+          if (flag) this.tokens[category].transfer(a, amount);
+          else this.tokens[category].transfer(b, amount);
+          this.counter = this.counter + 1;
+        }
+      }`);
+
+      expect(artifact.messageBus).toBeUndefined();
+      expect(artifact.compiler.options?.messageBus).toBe(true);
+    });
+
+    it('infers message-bus synthesis without an opt-in flag', () => {
+      const source = `contract Counter() {
+        int counter;
+        function increment() { this.counter = this.counter + 1; }
+      }`;
+
+      const inferred = _csRawSolidc(source);
+      const legacyExplicit = _csRawSolidc(source, { messageBus: true });
+
+      expect(inferred.messageBus).toBeDefined();
+      expect(legacyExplicit.bytecode).toBe(inferred.bytecode);
+      expect(legacyExplicit.messageBus).toEqual(inferred.messageBus);
+      expect(legacyExplicit.compiler.options).toEqual(inferred.compiler.options);
+    });
+
+    it('does not advertise a participant route without a stateful master identity', () => {
+      const source = 'contract Stateless() { function check(int x) { require(x > 0); } }';
+      const inferred = _csRawSolidc(source);
+      const direct = _csRawSolidc(source, { messageBus: false });
+
+      expect(inferred.stateLayout).toBeUndefined();
+      expect(inferred.messageBus).toBeUndefined();
+      expect(inferred.bytecode).toBe(direct.bytecode);
+      expect(inferred.functionBodies).toEqual(direct.functionBodies);
     });
   });
 
@@ -82,12 +122,13 @@ describe('Compiler', () => {
         },
       };
 
-      const artifact = compileString(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
+      const artifact = _csRawSolidc(VALID_SOURCE, { enforceLocktimeGuard: false, errorListener });
 
       expect(artifact.compiler.options).toEqual({
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
         commitmentLimit: 128,
+        messageBus: true,
       });
     });
   });

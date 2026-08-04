@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -133,7 +133,8 @@ describe('Operator Overloading - SDK e2e', () => {
     it('equality check fails for different values', async () => {
       const factory = getContractFactory(artifact, await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.testEquality(42n, 99n)).rejects.toThrow();
+      await expect(sc.testEquality(42n, 99n))
+        .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     });
 
     it('inequality check passes for different values', async () => {

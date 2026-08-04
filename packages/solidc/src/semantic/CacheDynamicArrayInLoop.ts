@@ -15,6 +15,8 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  DeleteStateNode,
+  DeleteLocalNode,
   ArrayPushNode,
   ArrayPopNode,
   ArrayAssignNode,
@@ -26,6 +28,7 @@ import {
   StateAssignNode,
   StateVariableNode,
   ReturnNode,
+  AssignNode,
 } from '../ast/AST.js';
 import { ArrayType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -204,6 +207,24 @@ export default class CacheDynamicArrayInLoop extends AstTraversal {
       }
       if (stmt instanceof StateArrayDeleteNode && stmt.name === name) {
         return this.copyLoc(new ArrayDeleteNode(local, stmt.index), stmt);
+      }
+      // X167. WHOLE-array `delete arr` (StateArrayDeleteNode above is the ELEMENT delete `delete arr[i]`).
+      // The cache read is prepended at function top and the flush appended, so a state-level delete left
+      // between them is overwritten by the flush of the PRE-delete contents. `d2 = d1` desugars to
+      // `delete d2; while (..) d2.push(..)`, so the delete was neutralized and the copy APPENDED. Reset the
+      // local instead, which the flush then writes back.
+      if (stmt instanceof DeleteStateNode && stmt.name === name) {
+        const ident = new IdentifierNode(local);
+        ident.location = stmt.location;
+        return this.copyLoc(new DeleteLocalNode(ident), stmt);
+      }
+      // X171. WHOLE-array ASSIGN `this.arr = <expr>`, the delete's sibling. Same neutralization: the flush of
+      // the PRE-assign cache overwrites it, so the assigned value is dropped and the old contents kept.
+      // Assign the local instead, which the flush then writes back.
+      if (stmt instanceof StateAssignNode && stmt.name === name) {
+        const ident = new IdentifierNode(local);
+        ident.location = stmt.location;
+        return this.copyLoc(new AssignNode(ident, stmt.expression), stmt);
       }
       if (stmt instanceof WhileNode || stmt instanceof DoWhileNode) {
         stmt.block.statements = this.convertWrites(stmt.block.statements ?? [], name, local);

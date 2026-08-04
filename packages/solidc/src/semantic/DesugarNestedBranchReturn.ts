@@ -2,6 +2,7 @@ import {
   FunctionDefinitionNode, BlockNode, StatementNode, Node, WhileNode, DoWhileNode, BranchNode,
   ReturnNode, RevertNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
   UnaryOpNode, SourceFileNode, ContractNode, ConsoleStatementNode, SwitchNode, TryCatchNode,
+  MappingAccessNode, ArrayAccessNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
@@ -30,6 +31,7 @@ const VAL = (k: number): string => `__internal__bretval_${k}`;
 
 export default class DesugarNestedBranchReturn extends AstTraversal {
   private retCount = 0;
+  private collectionNames = new Set<string>();
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -39,6 +41,7 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.collectionNames = new Set(node.collections.map((collection) => collection.name));
     node.functions = node.functions.map((f) => this.visit(f) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     if (node.fallbackDef) node.fallbackDef = this.visit(node.fallbackDef) as FunctionDefinitionNode;
@@ -50,7 +53,7 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     if (!node.body || node.returnTypes.length === 0) return node;
     // Entry points have the non-corrupting blob-stash return path; only internal/private raw returns break.
     if (node.isEntryPoint) return node;
-    if (!this.needsFlagRewrite(node.body)) return node;
+    if (!this.needsFlagRewrite(node.body) && !this.needsReturningStateRewrite(node.body)) return node;
 
     this.retCount = node.returnTypes.length;
     const decls: StatementNode[] = [new VariableDefinitionNode(PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false))];
@@ -61,7 +64,48 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     const rets: IdentifierNode[] = [];
     for (let k = 0; k < this.retCount; k++) rets.push(new IdentifierNode(VAL(k)));
     node.body.statements = [...decls, ...stmts, new ReturnNode(rets)];
+    for (const statement of node.body.statements) this.stampMissingLocations(statement, node.location);
     return node;
+  }
+
+  private stampMissingLocations(root: Node, location: Node['location']): void {
+    const seen = new WeakSet<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (!node.location) node.location = location;
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(root);
+  }
+
+  // Entry-slot layouts belong to dispatched functions. An internal helper that touches a collection and has
+  // multiple returns cannot remain a subroutine: InlineReturningStateHelpers can inline it once those returns
+  // have been reduced to this pass's single flag-backed tail return. Keep this narrowly scoped to declared
+  // collections; unrelated branching helpers retain their established lowering.
+  private needsReturningStateRewrite(body: BlockNode): boolean {
+    let returns = 0;
+    let touchesCollection = false;
+    const walk = (node: Node | undefined): void => {
+      if (!node) return;
+      if (node instanceof ReturnNode) returns += 1;
+      if (node instanceof MappingAccessNode && this.collectionNames.has(node.name)) touchesCollection = true;
+      if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
+        && this.collectionNames.has(node.array.name)) touchesCollection = true;
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return returns > 1 && touchesCollection;
   }
 
   // Trigger: some branch arm contains a (non-loop) return but does not END on a terminal statement on

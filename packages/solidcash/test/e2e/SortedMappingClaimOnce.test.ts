@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
@@ -60,6 +61,7 @@ class ListModel {
     for (const slot of this.links.keys()) if (slot < k && slot >= best) best = slot;
     return best;
   }
+
   has(k: number): boolean { return this.links.has(k); }
   insert(k: number): void { const p = this.predecessorOf(k); const s = this.links.get(p)!; this.links.set(p, k); this.links.set(k, s); }
 }

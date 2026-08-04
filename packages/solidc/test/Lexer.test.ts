@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Lexer: identifier / keyword / number-literal edge cases (exponents, units, soft keywords, literal-0 coercion).
 
@@ -65,6 +65,21 @@ describe('BCH crypto types + number units usable as identifiers (lexer split)', 
 
   it('still parses the crypto types + number units (no regression)', () => {
     expect(compileString('contract C(){ int n; function f(sig s, pubkey pk, datasig d, bytes32 m) { require(checkSig(s, pk)); require(checkDataSig(d, m, pk)); this.n = 5 bits; } }').contractName).toBe('C');
+  });
+});
+
+describe('malformed bounded-type spellings are identifiers', () => {
+  it('accepts non-canonical uint/bytes/fixed spellings as variable names', () => {
+    expect(compileString(
+      'contract C { uint uint7; uint bytes01; uint uint300; uint fixed1x01; uint ufixed0x0; }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('keeps canonical bounded types reserved in identifier positions', () => {
+    for (const name of ['uint8', 'int256', 'bytes32', 'fixed8x0', 'ufixed256x80']) {
+      expect(() => compileString(`contract C { uint ${name}; }`, { solidityImportCompat: true })).toThrow();
+    }
   });
 });
 

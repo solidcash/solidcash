@@ -1,34 +1,43 @@
+  ...500/7343
+  ...1000/7343
+  ...1500/7343
+  ...2000/7343
+  ...2500/7343
+  ...3000/7343
+  ...3500/7343
+  ...4500/7343
+  ...5500/7343
 
-=== SOLC-CORPUS SCORECARD: 2349/4876 single-file in-scope compiled (2527 failed) | 1694 negative (correctly rejected) | 496 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 4443/4587 single-file in-scope compiled (144 failed) | 2192 negative-skipped (solc rejects; 337 of them we also accept, diagnostic) | 275 multifile-skipped | 289 cmdline-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-  672  ParseError: Unexpected token '..' at Line N, Column N
-  241  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-  189  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
-  160  MethodCallNotSupportedError: Method calls are only supported on interface or contract inst
-  132  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): Yul code generation is 
-   74  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
-   56  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
-   47  ParseError: Mismatched input '..' expecting {'..', '..', '..'} at Line N, Column N
-   39  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
-   38  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
-   33  ParseError: Missing '..' at '..' at Line N, Column N
-   30  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function defi
-   30  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ide
-   27  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
-   27  UnsupportedTypeError: Found type '..' where type '..' was expected at Line N, Column N
-   26  StatefulContractDeploymentError: Cannot use '..' for stateful contracts outside a '..' fun
-   25  UndefinedReferenceError: Undefined reference to symbol uint at Line N, Column N
-   23  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line
-   22  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expre
-   20  UndefinedReferenceError: Undefined reference to symbol ercN at Line N, Column N
-   20  TypeError: Cannot read properties of undefined (reading '..')
-   20  UnsupportedTypeError: Tried to apply operator '..' to unsupported type '..' at Line N, Col
-   19  Error: external call target address must be a constructor/function parameter
-   19  Error: Type definition '..' has unsupported underlying type '..'. User-defined value types
-   19  UndefinedReferenceError: Undefined reference to symbol L at Line N, Column N
-   18  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
-   18  UnresolvedImportError: Cannot resolve import '..' from '..'
-   17  Error: Expected variable '..' does not exist on the stack
-   16  ParseError: Mismatched input '..' expecting Identifier at Line N, Column N
-   14  UndefinedEventError: Undefined event '..' at Line N, Column N
+   19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y
+   16  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..'
+   11  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
+    9  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code
+    8  Error: Expected variable '..' does not exist on the stack
+    7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equival
+    7  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
+    6  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+    6  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column
+    4  UnresolvedImportError: Cannot resolve import '..' from '..'
+    4  Error: recursive struct types are not supported (no finite inline encoding on BCH)
+    3  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (
+    2  Error: Block layout not available for function '..'
+    2  Error: Block slot not found: transfer[N]
+    2  ParseError: Unexpected token '..' at Line N, Column N
+    2  CastTypeError: Type '..' is not castable to type '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol a at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line
+    2  UndefinedReferenceError: Undefined reference to symbol severalMaps at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol A at Line N, Column N
+    1  InvalidParameterTypeError: Found parameters (uintN,bool) in call to function '..' where pa
+    1  ReturnTypeMismatchError: Return type mismatch: expected (bool) but found () at Line N, Col
+    1  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
+    1  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
+    1  UnimplementedAbstractFunctionError: Concrete contract '..' must implement abstract functio
+    1  UnknownContractTypeError: Unknown contract or interface type '..' at Line N, Column N
+    1  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
+    1  UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
+    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column
+    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot y

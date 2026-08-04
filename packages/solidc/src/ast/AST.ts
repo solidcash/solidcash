@@ -38,6 +38,9 @@ export enum StateVariableVisibility {
 export interface ParentInvocation {
   parentName: string;
   args: ExpressionNode[];
+  // Assignment expressions in constructor arguments execute before the base constructor call. They are
+  // extracted during inheritance expansion so parameter substitution receives the assigned value expression.
+  argumentPrelude?: StatementNode[];
   location: Location;
 }
 
@@ -56,6 +59,9 @@ export interface Typed {
 
 export class ConstantDefinitionNode extends Node implements Named, Typed {
   inheritedFrom?: string;
+  // Present when parsed from a state-variable declaration (`uint public constant X = ...`). File-level and
+  // dedicated constant declarations have no externally callable visibility.
+  visibility?: StateVariableVisibility;
 
   constructor(
     public type: Type,
@@ -88,6 +94,11 @@ export class ImportNode extends Node {
 }
 
 export class SourceFileNode extends Node {
+  // Solidity versions before 0.7 expose the deprecated global `now` alias for block.timestamp.
+  solidityLegacyNow = false;
+  // Explicit source-unit ABI coder selection. Undefined means the compiler/default coder; only explicit v1
+  // requires the legacy ABI type restrictions.
+  abiCoderVersion?: 'v1' | 'v2';
   importedContracts: ContractNode[] = [];
   isLibrary: boolean = false;
   libraryName?: string;
@@ -108,6 +119,12 @@ export class SourceFileNode extends Node {
   // register under bare names (same-name events in different libraries collide), so `L.E.selector` folds from
   // this parse-time record instead.
   libraryEventSignatures: Map<string, string[]> = new Map();
+  libraryAnonymousEvents: Set<string> = new Set();
+  libraryErrorSignatures: Map<string, string[]> = new Map();
+  libraryErrorDefinitions: Set<ErrorDefinitionNode> = new Set();
+  // Library modifiers are namespaced (`L.onlyOwner`) and expanded on the corresponding lowered free/library
+  // functions before semantic traversal. Kept on the source file so imports can merge them with library helpers.
+  libraryModifierDefinitions: ModifierDefinitionNode[] = [];
 
   constructor(
     public contract: ContractNode,
@@ -149,6 +166,11 @@ export class ContractNode extends Node implements Named {
   // spent only alongside its owning consumer's master - it rides that one master's serialization (zero marginal
   // contention). See docs/library-contracts.md (3b contention).
   isBrandedLibrary: boolean = false;
+  // X12. Set for a SPLIT FACET (compileStringSplit): every entry point is a `delegate` function and the artifact
+  // is published `delegateOnly`, so the SDK never co-spends or materializes the facet's OWN data NFTs. Its
+  // output-only block slots are therefore one position lower per data NFT than the layout offset says. A plain
+  // contract that merely HAS `delegate` functions is not delegate-only and keeps its data-NFT positions.
+  isSplitFacet: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
@@ -157,6 +179,8 @@ export class ContractNode extends Node implements Named {
   // so this contract is made stateful to host the (implied) deploy covenant. Read by both the symbol-table pass
   // (block-layout allocation) and artifact generation (so the SDK sees a zero-state stateful contract).
   deploysStatefulChild: boolean = false;
+  // Set when `new T{value: ...}` requires a parent value-transfer covenant even if neither contract has storage.
+  deploysWithValue: boolean = false;
   // Set when the contract emits ANY event (including a foreign/library event it does not itself declare): the
   // event commitment rides a state NFT, so emitting forces the contract stateful. Read by the symbol-table pass
   // (statefulness) and codegen (block-layout gates).
@@ -164,13 +188,31 @@ export class ContractNode extends Node implements Named {
   // Events this contract emits that are declared in a sibling/imported contract (`emit C.E(...)`). Recorded so
   // artifact generation lists them (Solidity puts emitted foreign events in the emitter's ABI). Deduped by sig.
   emittedForeignEvents: EventDefinitionNode[] = [];
+  // Set by inheritance expansion when two distinct inheritance branches/scopes declare the same event type
+  // signature. The list itself stays deduplicated for dispatch/artifact generation; semantic validation uses this
+  // marker to retain Solidity's redeclaration diagnostic.
+  hasDuplicateInheritedEventSignature = false;
   implements: string[] = [];
   parentInvocations: ParentInvocation[] = [];
   fallbackDef: FunctionDefinitionNode | undefined;
   receiveDef: FunctionDefinitionNode | undefined;
+  // Validation-only provenance for inherited fallback/receive declarations.
+  // These special functions historically are not copied into the flattened BCH
+  // entry points, so retain only override metadata rather than cloning bodies.
+  inheritedSpecialFunctions: Partial<Record<'fallback' | 'receive', {
+    origin: string;
+    isVirtual: boolean;
+  }>> = {};
   // Constructor external reads hoisted to deploy inputs by PromoteConstructorExternalReads. Surfaced as
   // stateLayout.deployReads so the SDK can auto-resolve them (read the target's state at deploy).
   deployReads: { input: string; addressInput: string; contractType: string; read: string }[] = [];
+  // Original public struct declarations consumed by AstBuilder's per-field state flattening. Retained so the
+  // Solidity-compat getter pass can reconstruct the getter ABI from `root__field` state leaves.
+  flattenedPublicStructGetters: {
+    name: string;
+    type: StructType;
+    visibility: StateVariableVisibility;
+  }[] = [];
 
   constructor(
     public name: string,
@@ -219,6 +261,9 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
+  // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
+  // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
+  runtimeAliasPriorSlots?: number[];
   // A sorted (C2) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
@@ -233,6 +278,17 @@ export interface TokenContainerAccessInfo {
   transferNftCount: number;   // number of transferNft() calls for this category
 }
 
+// X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
+// it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
+// kind; the site ordinal rides to the shared subroutine as hidden context.
+export interface GraphEffectFrame {
+  sites: number;
+  eventBase: number;
+  eventWidth: number;
+  transferBase: number;
+  transferWidth: number;
+}
+
 export interface CustomModifierInvocation {
   name: string;
   args: ExpressionNode[];
@@ -242,6 +298,14 @@ export interface CustomModifierInvocation {
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
   opRolls: Map<string, IdentifierNode> = new Map();
+  // Direct whole-state storage-pointer aliases erased by AstBuilder (`mapping storage p = m`,
+  // `S storage p = s`). Retained as metadata so inline assembly can resolve p.slot/p.offset later.
+  storagePointerAliases?: Record<string, string>;
+  // Fixed foreign external-function aliases erased before Yul lowering. Their original member expression is
+  // retained so assembly can still read the EVM `p.address` component without materializing a two-word local.
+  externalPointerAliases?: Record<string, ExpressionNode>;
+  // Fixed self external-function aliases retained after their source declaration is erased.
+  selfExternalFunctionAliases?: Record<string, string>;
   requiredNftIndices?: number[];
   entryAccesses?: EntryAccessInfo[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
@@ -284,6 +348,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedInsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
   }>;
+
   // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
   // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
   // commitment (value = oldValue op v, v for 'set', or the type default for 'delete') at output[master+blockSize+i].
@@ -292,8 +357,6 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
-    valueRuntimeLocal?: string;
-    valueRuntimeExpression?: boolean;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
@@ -301,6 +364,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     oldValuesWitnessParam?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+
   // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
@@ -313,12 +377,18 @@ export class FunctionDefinitionNode extends Node implements Named {
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
   hadInlineAssembly?: boolean;
+  // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
+  // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
+  returnedSelfFunctionName?: string;
   // Distinct identifier-arg blockhash(n) reads in the function (counted by SynthesizeBlockOracle before
   // codegen). Each rides its OWN consecutive blockhashOracle block-layout slot; the k-th read reads
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).
   blockhashSlotCount?: number;
   modifiers: FunctionModifier[] = [];
   customModifiers: CustomModifierInvocation[] = [];
+  // Number of base-constructor evaluation/body statements prepended during inheritance expansion. Solidity runs
+  // these before evaluating the derived constructor's modifier arguments.
+  constructorPreludeLength = 0;
   returnTypes: Type[] = [];
   // Data-location annotations parallel to returnTypes. Retained for semantic validation and source fidelity;
   // unlike ABI types, storage/memory/calldata affect whether a source declaration is legal.
@@ -326,39 +396,118 @@ export class FunctionDefinitionNode extends Node implements Named {
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
+  // Compiler-owned: this physical wrapper/subroutine participates in the scalar write-back journal.
+  scalarJournal?: boolean;
+  /** Number of compiler-owned value-threaded state context items accepted
+   * and returned by this reusable handler. Excluded from the source ABI. */
+  journalContextArity?: number;
+  // Compiler-owned: this entry's reachable scalar-handler call graph contains
+  // a direct or mutual recursion cycle and requires SDK VM preflight.
+  scalarJournalRecursive?: boolean;
+  // Release 3: helper was lowered to a value-threaded collection journal.
+  collectionJournal?: boolean;
+  /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
+   * single entry, so sibling handlers over the same entry resolve to one pending value and one C2 slot. */
+  forceCollectionJournalPool?: boolean;
+  // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
+  // omitted from the source ABI.
+  messageBusRoute?: boolean;
+  messageBusMaximumRows?: number;
+  /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  messageBusBlockhashReadWidth?: number;
+  messageBusBlockhashReads?: {
+    row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
+  }[];
+
+  messageBusEligible?: boolean;
+  messageBusRejectionReason?: string;
+  // Release 4 collection rows bind source argument positions to hidden
+  // physical-route key witnesses. The SDK derives these from canonical rows;
+  // the route compares decoded row arguments before any handler executes.
+  messageBusKeyWitnesses?: {
+    routeInput: string;
+    inputIndex: number;
+    source?: 'argument' | 'msgSender';
+    perRow?: boolean;
+  }[];
+
   isFreeFunction: boolean = false;
+  // True for a function declared inside a Solidity library, including the lowered primary-library contract
+  // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external
+  // visibility, so this cannot be inferred from isFreeFunction alone.
+  isLibraryFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
+  /**
+   * C1/piece-7: the pin's delegate input index is DERIVED from this function's own block layout (the reserved
+   * `lowLevelCall` slot) instead of the caller-supplied `__internal__delegateInputIndex` witness. Used by the
+   * compiler-synthesized delegatecall forms - `L.f()` library sugar and split-facet forwarders - which carry no
+   * witness parameter. Derivation is also the stronger source: nothing caller-supplied selects the input.
+   */
+  delegateIndexFromBlockSlot: boolean = false;
+  // C1/piece-5: the delegatecall sits on a conditional path, so the co-spend pin is not reached on every path
+  // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
+  // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
+  delegatecallIsConditional: boolean = false;
+  /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
+  graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;
   inheritedFrom?: string;
+  // Contract names through which this function may explicitly qualify a modifier (`A.m`). Captured from the
+  // function's declaring contract before inheritance flattening so a later sibling base cannot become visible.
+  allowedModifierQualifiers?: string[];
   // The contract that defined this function body, set during inheritance flattening. Used to resolve
   // `super.f()` relative to the right point in the linearization.
   definingContract?: string;
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
+  usesMsgValue?: boolean;
+  /**
+   * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
+   * participant emission frame instead of performing ordinary physical-call settlement.
+   */
+  graphEmissionHandler?: boolean;
+  /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
+  graphRuntimeEmissionHandler?: boolean;
+  /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
+  graphRuntimeEmissionThreaded?: boolean;
+  // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
+  // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
+  graphEffectFrame?: GraphEffectFrame;
+  /**
+   * SEC-8. Does THIS handler's subroutine settle the co-spent satoshi container?
+   *
+   * `graphEffectFrame` is ONE object shared by every framed handler, so its `transferWidth` is the group
+   * maximum and says nothing about the handler reached at a given dispatch site. The route's not-reached
+   * container preservation is skipped on the strength of a reached flag, so that flag must be written from a
+   * PER-HANDLER fact - otherwise an emit-only sibling suppresses a guard it never replaces and the co-spent
+   * container gets no identity check and no value check. Set only where frame membership is decided.
+   */
+  graphEffectSettlesTransfers?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
-                                            // (SDK transparent co-spend); null = not a direct param
+  // (SDK transparent co-spend); null = not a direct param
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
-                                // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
-                                // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
+  // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
-                                // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
+  // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
-                                // auto-co-spends them and the contract reads the recovered pubkey from B's output
+  // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
-                                // param names feeding it (SDK transparent co-spend); null entry = not a direct param
+  // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
-                                // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
+  // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
+  impliedSelfdestruct = false;  // body-level selfdestruct(...) inferred the lifecycle modifier
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count
   blockLayout?: FunctionBlockLayout;  // 1:1 input/output block layout (compile-time offsets)
@@ -423,11 +572,17 @@ export class StateVariableNode extends Node implements Named, Typed {
   // user-facing `external` storage semantics.
   isolatedNft: boolean = false;
   initializer?: ExpressionNode; // inline `= expr` init, lowered into the constructor by the AstBuilder
+  // Side effects of a right-associative inline initializer (`T x = y = value`). These execute immediately
+  // before the outer `x = y` initialization when the declaration is lowered into the constructor.
+  initializerPrelude: StatementNode[] = [];
   contractTypeName?: string;
   nftIndex: number = 0;
   fieldIndex: number = 0;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
+  visibilityExplicit: boolean = false;
   inheritedFrom?: string;
+  isOverride: boolean = false;
+  overrideBases: string[] = [];
 
   constructor(
     public type: Type,
@@ -445,6 +600,7 @@ export abstract class StatementNode extends Node { }
 
 export class StateAssignNode extends StatementNode {
   stateVariable?: StateVariableNode;
+  qualifiedBaseAccess?: boolean;
   // Set when this access comes from an inlined modifier body: the contract that DEFINED the modifier. A private
   // var is accessible from code written in its own contract even after that code is inlined into a derived one.
   fromModifier?: string;
@@ -471,7 +627,10 @@ export class CollectionNode extends Node implements Named {
   // enumerable. See docs/evm-storage-parity.md.
   enumerable: boolean = false;
   visibility: StateVariableVisibility = StateVariableVisibility.PUBLIC;
+  visibilityExplicit: boolean = false;
   inheritedFrom?: string;
+  isOverride: boolean = false;
+  overrideBases: string[] = [];
 
   constructor(
     public type: MappingType | ArrayType,
@@ -490,24 +649,42 @@ export class CollectionNode extends Node implements Named {
     return this.type.valueType;
   }
 
-  /** Recursively collect all key types from nested MappingType. */
+  /** Recursively collect the complete key path through nested mappings and array dimensions. */
   get allKeyTypes(): Type[] {
-    if (this.type instanceof ArrayType) return [PrimitiveType.BIGINT];
     const keys: Type[] = [];
     let current: Type = this.type;
-    while (current instanceof MappingType) {
-      keys.push(current.keyType);
-      current = current.valueType;
+    // A mapping whose VALUE is an array stores that array as the entry value blob; its trailing indices are
+    // handled by MappingAccess.arrayIndex / the nested-array RMW lowering, not as collection keys.
+    if (current instanceof MappingType) {
+      while (current instanceof MappingType) {
+        keys.push(current.keyType);
+        current = current.valueType;
+      }
+      return keys;
+    }
+    // Conversely, an ARRAY whose element is a mapping has no whole mapping value to materialize. A fixed outer
+    // array is represented as one sparse collection keyed by every array index and mapping key.
+    while (current instanceof MappingType || current instanceof ArrayType) {
+      if (current instanceof MappingType) {
+        keys.push(current.keyType);
+        current = current.valueType;
+      } else {
+        keys.push(PrimitiveType.BIGINT);
+        current = current.elementType;
+      }
     }
     return keys;
   }
 
-  /** The leaf value type (innermost non-mapping type). */
+  /** The leaf value type after every mapping key and array index. */
   get innermostValueType(): Type {
-    if (this.type instanceof ArrayType) return this.type.elementType;
     let current: Type = this.type;
-    while (current instanceof MappingType) {
-      current = current.valueType;
+    if (current instanceof MappingType) {
+      while (current instanceof MappingType) current = current.valueType;
+      return current;
+    }
+    while (current instanceof MappingType || current instanceof ArrayType) {
+      current = current instanceof MappingType ? current.valueType : current.elementType;
     }
     return current;
   }
@@ -529,6 +706,12 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // The init of a C-style `for` loop. Block-scoped in Solidity but the for desugars to a flattened
   // `{ init; while }`, so a sequential loop reusing the same name may re-declare (overwrite) it.
   isLoopVariable?: boolean;
+  // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
+  // itself a direct function reference (for example `function() external f = callbacks[1]`).
+  functionPointerMethodAlias?: string;
+  // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
+  // Yul create-address lowering still needs the compile-time blob after that representation change.
+  memoryLiteralValue?: Uint8Array;
 
   constructor(
     public type: Type,
@@ -568,6 +751,7 @@ export class TupleAssignmentNode extends StatementNode {
 
 export class AssignNode extends StatementNode {
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state assign)
+  qualifiedBaseAccess?: boolean;
   // True when AstBuilder lowered a write through a reference (for example `s.field = v` or `b[i] = v`)
   // into a whole-value assignment. This must not be confused with a user-authored calldata pointer rebind.
   isReferenceDataWrite = false;
@@ -651,6 +835,10 @@ export class BranchNode extends StatementNode {
 }
 
 export class TryCatchNode extends StatementNode {
+  // Preserves the source spelling when compatibility lowering rewrites `this.f(...)`
+  // (notably a synthesized public collection getter) into a direct state read.
+  fromExternalSelfCall?: boolean;
+
   constructor(
     public expression: ExpressionNode,
     public tryBlock: BlockNode,
@@ -834,11 +1022,20 @@ export class BlockNode extends StatementNode {
 
 export abstract class ExpressionNode extends Node {
   type?: Type;
+  // Preserves the source provenance of `this.f(...)` when an early inline pass replaces the call with its
+  // returned expression. Try/catch validation still needs to distinguish this external self-call spelling
+  // from an internal call after getter/helper inlining.
+  fromExternalSelfCall?: boolean;
 }
 
 // `(x op= rhs)` used as an expression: performs the assignment to local `x` and yields its new value
 // (Solidity's assignment-as-expression, e.g. `while ((n >>= 1) > 0)`). Wraps the desugared AssignNode.
 export class AssignmentExpressionNode extends ExpressionNode {
+  // General expression-prelude bridge used by source forms whose value requires statements first (currently
+  // `f(array.push())`). DesugarPostfixExpressions consumes these before semantic analysis.
+  prelude?: StatementNode[];
+  result?: ExpressionNode;
+
   constructor(
     public assign: AssignNode,
   ) {
@@ -870,6 +1067,10 @@ export class ContractReferenceNode extends ExpressionNode {
 
 export class StateAccessNode extends ExpressionNode implements Named {
   stateVariable?: StateVariableNode;
+  qualifiedBaseAccess?: boolean;
+  // This access was synthesized from a Yul `.slot` assignment to a named storage return. It selects a storage
+  // pointer but does not load the state value, so Solidity permits it in a pure function.
+  storagePointerOnly?: boolean;
   fromModifier?: string; // see StateAssignNode.fromModifier
 
   constructor(
@@ -890,6 +1091,10 @@ export class MappingAccessNode extends ExpressionNode implements Named {
   isOutStateTokenContainerAccess?: boolean;
   isPackedStateArrayAccess?: boolean;
   packedStateVariable?: StateVariableNode;
+  // Preserve the logical outer element type even if later journal/storage lowerings rewrite the state variable's
+  // physical representation before code generation.
+  packedElementType?: Type;
+
   tokenContainerSlotIndex: number = -1;
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
   // A mapping read in the constructor: genesis has no input entry NFTs, so it resolves to the type default
@@ -998,6 +1203,12 @@ export class MappingDeleteNode extends StatementNode implements Named {
 }
 
 export class CastNode extends ExpressionNode implements Typed {
+  // True only for a cast written by the user. Lowering passes also use
+  // CastNode for EVM-word normalization and intentionally have wider rules.
+  sourceCast: boolean = false;
+  // Set when this identity cast came from `T.unwrap(x)`: the runtime target is
+  // T's underlying type, but source validation must still require x to be T.
+  sourceUdvtUnwrap?: ValueType;
   constructor(
     public type: Type,
     public expression: ExpressionNode,
@@ -1014,6 +1225,12 @@ export class CastNode extends ExpressionNode implements Typed {
 export class FunctionCallNode extends ExpressionNode {
   resolvedFunction?: FunctionDefinitionNode;
   fieldNames?: string[];
+  // Call options are retained here for calls through a function-pointer identifier, then transferred to the
+  // MethodCallNode synthesized by the external-function-pointer lowering.
+  callOptions?: CallOptions;
+  // Candidate set retained until type checking for named calls whose overloads share the same field-name set.
+  // Each candidate must be checked with arguments mapped by name, since its declaration order may differ.
+  namedOverloadCandidates?: FunctionDefinitionNode[];
   // Set by SynthesizeBlockOracle on a blockhash(<computed n>) call: a stable per-function index for this call
   // site (codegen runs twice, so the key must not depend on a codegen-visit counter). Keys the read as
   // <computed:i>; the SDK resolves n from the auto-derivation probe trace.
@@ -1021,6 +1238,14 @@ export class FunctionCallNode extends ExpressionNode {
   // Set when this call was desugared from `this.f(args)` (an external self-call). On BCH the covenant is the
   // contract itself, so calling an `external` function this way is allowed (the internal-call guard is bypassed).
   fromThisCall?: boolean;
+  // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
+  // marks that exceptional call so type checking does not consult the contract-wide overload map.
+  lexicalIndirectCall?: boolean;
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the message-bus batch route body.
+  // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
+  // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
+  // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
+  graphEffectSite?: number;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1038,6 +1263,8 @@ export class FunctionCallNode extends ExpressionNode {
 // `arr[i]()`, `x()()`), not a plain name. Dispatched indirectly: evaluate the callee to its integer functionId
 // then OP_INVOKE (the same mechanism as calling a function-pointer variable).
 export class IndirectCallNode extends ExpressionNode {
+  callOptions?: CallOptions;
+
   constructor(
     public callee: ExpressionNode,
     public parameters: ExpressionNode[],
@@ -1090,7 +1317,28 @@ export class TupleIndexOpNode extends ExpressionNode {
   }
 }
 
+// Evaluate `discarded`, remove its single stack value, then evaluate and return `value`. This models Solidity
+// expressions that extract compile-time metadata from a runtime value (for example `getContract().f.selector`):
+// the receiver's side effects are preserved even though only the declaration selector is returned.
+export class SequenceExpressionNode extends ExpressionNode {
+  constructor(
+    public discarded: ExpressionNode,
+    public value: ExpressionNode,
+  ) {
+    super();
+    this.type = value.type;
+  }
+
+  accept<T>(visitor: AstVisitor<T>): T {
+    return visitor.visitSequenceExpression(this);
+  }
+}
+
 export class SliceNode extends ExpressionNode {
+  // True only for Solidity's `x[a:b]` syntax in compatibility mode. The native `.slice(a, b)` member is a
+  // separate SolidCash operation and intentionally does not carry Solidity's calldata-only restriction.
+  isSolidityIndexRange = false;
+
   constructor(
     public element: ExpressionNode,
     public start: ExpressionNode,
@@ -1132,10 +1380,9 @@ export class UnaryOpNode extends ExpressionNode {
 }
 
 export class NullaryOpNode extends ExpressionNode {
-  // Solidity before 0.8 typed msg.sender and tx.origin as address payable.
-  // This is recorded per source file by AstBuilder because an import graph can
-  // mix pragma generations and TypeCheckTraversal runs after those graphs merge.
-  legacyPayableAddress = false;
+  // Solidity permits msg.value in state-variable initializers even when the synthesized constructor is
+  // nonpayable; preserve that source context after the initializer is lowered into a constructor assignment.
+  fromStateInitializer: boolean = false;
 
   constructor(
     public operator: NullaryOperator,
@@ -1343,6 +1590,7 @@ export class IdentifierNode extends ExpressionNode implements Named {
   // types it `function(...) external`, but on BCH a self external-call is a direct call to the own function,
   // so it routes through the internal functionId + OP_INVOKE path. Drives FunctionType.isExternal in typing.
   isExternalSelfRef?: boolean;
+  storagePointerOnly?: boolean;
   fromModifier?: string; // see StateAssignNode.fromModifier (propagated when this resolves to a state access)
 
   constructor(
@@ -1420,6 +1668,12 @@ export class DecimalLiteralNode extends LiteralNode<string> {
 }
 
 export class StringLiteralNode extends LiteralNode<string> {
+  // Exact byte spelling of a Solidity-compatible ordinary string literal. `\xNN` escapes are raw bytes, so this
+  // can differ from UTF-8 encoding `value` (e.g. "\xff"). Type checking uses it for bytes destinations and to
+  // reject malformed UTF-8 only when the destination is actually string.
+  solidityBytes?: Uint8Array;
+  solidityInvalidUtf8 = false;
+
   constructor(
     public value: string,
     public quote: string,
@@ -1434,6 +1688,14 @@ export class StringLiteralNode extends LiteralNode<string> {
 }
 
 export class HexLiteralNode extends LiteralNode<Uint8Array> {
+  // Exact Solidity hex-NUMBER value. Odd-nibble literals need this because their native SolidCash byte form
+  // zero-extends the final nibble (`0x123` -> bytes 0x1203), while numeric context means integer 0x123.
+  numericValue?: bigint;
+  // Number of hexadecimal digits in a numeric `0x...` source spelling (excluding separators). Solidity permits
+  // a non-zero numeric literal to cast to bytesN only when this width is exactly N bytes.
+  sourceHexDigits?: number;
+  // Distinguishes a source `hex"..."` literal from compiler-synthesized byte constants (e.g. a folded hash).
+  isHexStringLiteral = false;
   // Set when this literal is a placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a
   // runtime length): it type-checks as bytes so a NON-primary contract using it does not fail the file, but
   // codegen throws this message if a compiled contract actually reaches it. See visitHexLiteral.
@@ -1624,6 +1886,9 @@ export interface UsingForBinding {
 }
 
 export class UsingForDirectiveNode extends Node {
+  // Set when a library-body directive is lifted to file scope for semantic registration.
+  declaringLibraryName?: string;
+
   constructor(
     // "SafeMath" (Form 1: whole library) or undefined (Form 2: specific functions)
     public libraryName: string | undefined,
@@ -1646,6 +1911,7 @@ export class InterfaceFunctionNode extends Node implements Named {
     public name: string,
     public parameters: ParameterNode[],
     public returnTypes: Type[],
+    public stateMutability: 'pure' | 'view' | 'payable' | 'nonpayable' = 'nonpayable',
   ) {
     super();
   }
@@ -1715,6 +1981,7 @@ export class InterfaceCollectionNode extends Node implements Named, Typed {
 
 export class InterfaceNode extends Node implements Named {
   parents: string[] = [];
+  hasFallback: boolean = false;
 
   constructor(
     public name: string,
@@ -1769,6 +2036,9 @@ export interface ExternalCollectionReadInfo {
   keyTypes: Type[];
   valueType: Type;
   externalReadSlotIndex: number;
+  /** Read the final transaction output state rather than the co-spent input state. */
+  outputState?: boolean;
+  externalOutStateSlotIndex?: number;
 }
 
 export class ExternalMappingAccessNode extends ExpressionNode {
@@ -1825,6 +2095,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** Ordered row identity within one inferred repeated-callee message-bus batch. */
+  externalBatchLogicalIndex?: number;
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -1947,6 +2219,17 @@ export interface ExternalCallSlot {
   // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
+  // Release 5 repeated-callee grouping: several straight-line logical calls
+  // share this one physical callee block and are bound to its message-bus batch blob.
+  batchInvocations?: {
+    selector: Uint8Array;
+    parameters: ExpressionNode[];
+    parameterTypes: Type[];
+    logicalIndex: number;
+    argSources?: ExternalCallArgSource[];
+  }[];
+  /** @internal Source node retained until Release 5 grouping/codegen. */
+  sourceCallNode?: ExternalFunctionCallNode;
 }
 
 export interface ExternalOutputStateAccessInfo {
@@ -1958,6 +2241,8 @@ export interface ExternalOutputStateAccessInfo {
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
   calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
+  dynamic: boolean;
 }
 
 export class ExternalOutputStateNode extends ExpressionNode {
@@ -2003,6 +2288,10 @@ export class MethodCallNode extends ExpressionNode {
   // Set by LowerForeignFunctionPointerArrayElements for a varying-method array dispatch table: the parallel
   // `bytes4[]` state array of per-element selectors; threaded to the external call slot in semantic analysis.
   selectorArrayVar?: string;
+  // Set when InlineReturningStateHelpers copies a supported global operator implementation into an entry point.
+  // SynthesizeExternalAddressLocals uses it to materialize the operator's pure helper-return receiver without
+  // broadening computed-receiver acceptance for unrelated Solidity-negative fixtures.
+  inlinedOperatorReceiver: boolean = false;
 
   constructor(
     public object: ExpressionNode,
@@ -2052,6 +2341,7 @@ export class ErrorDefinitionNode extends Node implements Named {
 
 export class RevertNode extends StatementNode {
   errorDefinition?: ErrorDefinitionNode;
+  errorQualifier?: string; // `D` in `revert D.E(...)`; retained for scoped declaration resolution
   fieldNames?: string[]; // set for named-arg reverts revert E({a: x}); reordered against the error's params
 
   constructor(
@@ -2106,6 +2396,7 @@ export interface CollectionIterationInfo {
 export class EmitStatementNode extends StatementNode {
   eventDefinition?: EventDefinitionNode;
   eventCandidates?: EventDefinitionNode[];
+  eventQualifier?: string;
   emitIndex: number = 0;
   fieldNames?: string[]; // set for named-arg emits emit E({a: x}); reordered against the event's params
 
@@ -2232,6 +2523,16 @@ export class TokenContainerMethodStatementNode extends StatementNode {
 }
 
 export class ReturnNode extends StatementNode {
+  // Set by Yul lowering for `return(ptr, size)`: this is an EVM halt with a raw byte region, not a Solidity
+  // source-level return whose expressions must match the enclosing function's declared ABI returns.
+  isYulReturn: boolean = false;
+  // A bare `return;` in a modifier is valid regardless of the decorated function's return tuple: it exits the
+  // modifier continuation while preserving the function result produced by `_`.
+  fromModifier?: string;
+  // A Solidity-generated public struct getter may expose an external-function member. Storage lowering
+  // represents that member as bytes (selector + address), while the generated ABI retains its FunctionType.
+  externalFunctionGetterBridge?: boolean;
+
   constructor(
     public expressions: ExpressionNode[],
   ) {
@@ -2286,6 +2587,10 @@ export class MethodCallStatementNode extends StatementNode {
 
 export class ModifierDefinitionNode extends Node implements Named {
   inheritedFrom?: string;
+  isAbstract: boolean = false;
+  isVirtual: boolean = false;
+  isOverride: boolean = false;
+  overrideBases: string[] = [];
 
   constructor(
     public name: string,
@@ -2332,6 +2637,10 @@ export class LowLevelCallStatementNode extends StatementNode {
   // Set when synthesized from `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls): the user wrote a
   // typed library call, not a raw delegatecall, so suppress the low-level-call warning.
   synthesizedFromLibraryCall = false;
+  // C1/piece-7: the delegate library this call targets is selector-dispatched (>= 2 public functions), so the
+  // co-spend pin can also verify WHICH library function ran. A single-public-function library has no selector
+  // in its unlocking script and nothing to choose, so the selector half is skipped there.
+  librarySelectorDispatched = false;
 
   constructor(
     public targetExpression: ExpressionNode,

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // delete on a nested array element resets it to the type default (Solidity semantics).
 const SRC = `contract C {
   function memDelete() public pure {
@@ -27,6 +29,6 @@ describe('nested array element delete (runtime)', () => {
   });
   it('a wrong post-delete expectation reverts (the delete really zeroed it)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.memDeleteWrong()).rejects.toThrow();
+    await expect(sc.memDeleteWrong()).rejects.toThrow(verifyFailure);
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { bigIntToVmNumber, binToHex, hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, getDataNftAddress, getEntryNftAddress,

@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider,
@@ -350,7 +350,9 @@ describe('External Call Auto-Derivation via Convenience API', () => {
 
       // No argSources for sig-type params -> registry passes args=[]
       // B's guarded(pubkey, sig) expects 2 args -> fails
-      await expect(scA.triggerGuarded().send()).rejects.toThrow();
+      await expect(scA.triggerGuarded().send()).rejects.toThrow(
+        'Incorrect number of arguments passed to function guarded. Expected 2 arguments (pubkey,sig) but got 0',
+      );
     });
 
     it('connect-time binding + withExternalCall override should work', async () => {

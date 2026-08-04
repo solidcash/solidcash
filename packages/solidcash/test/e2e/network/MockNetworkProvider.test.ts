@@ -54,8 +54,9 @@ describe.skipIf(Boolean(process.env.TESTS_USE_CHIPNET))('MockNetworkProvider', (
       // try to send invalid transaction
       await expect(provider.sendRawTransaction(tx.slice(0, -2))).rejects.toThrow('TX decode failed');
 
-      // send valid transaction
-      await expect(provider.sendRawTransaction(tx)).resolves.not.toThrow();
+      // Send the valid transaction and pin the successful resolution value.
+      const txid = await provider.sendRawTransaction(tx);
+      expect(txid).toMatch(/^[0-9a-f]{64}$/);
 
       // utxos should be removed from the provider
       expect(await provider.getUtxos(aliceAddress)).toHaveLength(0);
@@ -107,7 +108,8 @@ describe.skipIf(Boolean(process.env.TESTS_USE_CHIPNET))('MockNetworkProvider', (
 
       const tx = builder.build();
 
-      await expect(provider.sendRawTransaction(tx)).resolves.not.toThrow();
+      const txid = await provider.sendRawTransaction(tx);
+      expect(txid).toMatch(/^[0-9a-f]{64}$/);
 
       // utxos should not be removed from the provider
       expect(await provider.getUtxos(aliceAddress)).toHaveLength(1);

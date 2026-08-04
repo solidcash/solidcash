@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Custom errors and revert (qualified/named-arg, unnamed params).
 

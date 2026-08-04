@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 
 const EVENT_INDEXED_CONTRACT = `
 contract EventIndexed(pubkey owner) {

@@ -34,6 +34,7 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
   TupleIndexOpNode,
+  SequenceExpressionNode,
   RequireNode,
   InstantiationNode,
   TupleAssignmentNode,
@@ -294,6 +295,9 @@ export default class AstTraversal extends AstVisitor<Node> {
   visitFunctionCall(node: FunctionCallNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
+    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
+    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    if (node.callOptions?.salt) node.callOptions.salt = this.visit(node.callOptions.salt) as ExpressionNode;
     return node;
   }
 
@@ -317,6 +321,13 @@ export default class AstTraversal extends AstVisitor<Node> {
 
   visitTupleIndexOp(node: TupleIndexOpNode): Node {
     node.tuple = this.visit(node.tuple);
+    return node;
+  }
+
+  visitSequenceExpression(node: SequenceExpressionNode): Node {
+    node.discarded = this.visit(node.discarded) as ExpressionNode;
+    node.value = this.visit(node.value) as ExpressionNode;
+    node.type = node.value.type;
     return node;
   }
 

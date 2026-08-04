@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // A plain `mapping` is NOT enumerable (Solidity parity - mappings are not iterable in Solidity). Only an
 // `enumerable mapping(...)` may be iterated. See docs/evm-storage-parity.md.
@@ -49,7 +49,10 @@ describe('enumerable mapping: iteration is gated behind the enumerable type', ()
     const art = compileString('pragma solidcash >=0.8.0;\ncontract C() {\n  mapping(bytes20 => int) m;\n'
       + '  function f(bytes20 k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); this.m[k] = v; }\n}', {});
     const col = art.stateLayout?.collections?.find((c) => c.name === 'm') as { enumerable?: boolean } | undefined;
-    expect(col?.enumerable ?? false).toBe(false);
+    // `col?.x ?? false` reads `false` for a collection that is not published AT ALL, which is the same answer
+    // this case wants for "published and not enumerable". The subject is asserted before the flag is read.
+    expect(col, 'the collection is not published, so the flag below has no subject').toBeDefined();
+    expect(col!.enumerable ?? false).toBe(false);
   });
 
   it('`enumerable` still works as an ordinary identifier (soft keyword)', () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // receive() / fallback() (Solidity porting: empty bodies, return types, forwarding proxies).
 
@@ -49,9 +49,9 @@ describe('fallback with input + return type (forwarding proxy)', () => {
     expect(fb?.isFallback).toBe(true);
     expect(fb?.lowLevelCalls?.[0]?.callMode).toBe('call');
   });
-  it('still accepts a fallback with params but no return type (no regression)', () => {
-    expect(compileString('contract C { int n; fallback(bytes calldata data) external payable {'
+  it('rejects Solidity fallback(bytes) without its required bytes return type', () => {
+    expect(() => compileString('contract C { int n; fallback(bytes calldata data) external payable {'
       + ' (bool ok, bytes memory res) = msg.sender.call{value: msg.value}(data); require(ok); this.n = res.length; } }',
-    { solidityImportCompat: true }).contractName).toBe('C');
+    { solidityImportCompat: true })).toThrow(/Fallback function either has to have the signature/);
   });
 });

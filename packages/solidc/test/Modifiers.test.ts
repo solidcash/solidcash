@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Function modifiers: the `_;` placeholder and modifier / custom-modifier interleaving.
 
@@ -36,7 +36,7 @@ describe('`_;` modifier placeholder inside a for-loop', () => {
   it('break inside the modifier loop expands identically', () => {
     eq('contract C { modifier run(){ for(int i=0;i<10;i++){ _; if(i==1){break;} } }'
       + ' function f(int a) run { require(a > 0); } }',
-      'contract C { function f(int a) { for(int i=0;i<10;i++){ require(a > 0); if(i==1){break;} } } }');
+    'contract C { function f(int a) { for(int i=0;i<10;i++){ require(a > 0); if(i==1){break;} } } }');
   });
 });
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Control flow: loops, break/continue, ternary, assignment-as-expression, ++/--.
 
@@ -44,6 +44,18 @@ describe('SBE-5: for-loop flexibility + prefix increment statements', () => {
   it('for-loop with an empty update clause compiles', () => {
     const a = compileString('contract C() { function f() { int s = 0; for (int i = 0; i < 3;) { s = s + i; unchecked { i = i + 1; } } require(s >= 0); } }');
     expect(a.contractName).toBe('C');
+  });
+
+  it('accepts arbitrary expressions in the update clause', () => {
+    expect(compileString(
+      'contract C { function f() public { for (uint i = 0; i < 3; true) { i++; } require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString(
+      'contract C { function tick() internal {} function f() public {'
+      + ' for (uint i = 0; i < 3; tick()) { i++; } require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
   });
 
   it('accepts prefix ++ and -- as statements (same effect as postfix)', () => {

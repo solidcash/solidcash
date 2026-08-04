@@ -137,10 +137,9 @@ export function isDelegateEligible(
   // A delegate impl is reached through the proxy's own fallback dispatch, never through its own.
   if (fn.isFallback || fn.isReceive) return false;
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
-  // touchesProxyState reads this body only, and does not need more: state-touching internal functions are
-  // force-inlined before this pass, so a helper-only state write is already visible here. The disqualifying
-  // checks below DO follow calls - a transfer is not inlined, and missing one ships a build that reverts.
-  if (!touchesProxyState(fn)) return false;
+  // Corpus-compatible lowering may leave internal helpers intact until after this pass. State reached through
+  // that closure belongs to the proxy just as state touched directly by the entry point does.
+  if (!reachableFrom(fn, callables).some(touchesProxyState)) return false;
   if (hasUnsupportedDelegateOperation(fn, callables)) return false;
   if (hasDelegatecall(fn, callables)) return false;
   return true;

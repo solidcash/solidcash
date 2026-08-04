@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 
 // C2 (sorted) array WRITE shapes that are not yet implemented must fail CLOSED at compile - never crash with an
 // internal error, and never silently degrade to the omittable default-on-absent entry model. The supported shapes
@@ -18,15 +18,11 @@ describe('sorted C2 array writes: fail-close boundary', () => {
     expect(() => compileString(K('for (int j = 1; j < 3; j++) { m[k][j] = m[k][j - 1] + 1; }'))).not.toThrow();
   });
 
-  it('a DIFFERENT-key mutation loop compiles as an authenticated per-entry RMW', () => {
-    const art = compileString(
+  it('a DIFFERENT-key array mutation loop fails closed until per-entry RMW is supported', () => {
+    expect(() => compileString(
       `contract C() { mapping(int => int[]) m;
         function f(int[] ks, int v, pubkey pk, sig s) { require(checkSig(s, pk)); for (int j = 0; j < ks.length; j++) { m[ks[j]].push(v); } } }`,
-    );
-    const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
-    expect(info?.mutation).toBe('push');
-    expect(info?.mutationValueScalarParam).toBe('v');
-    expect(info?.oldValuesWitnessParam).toMatch(/^__internal__valueWitness_/);
+    )).toThrow(/cannot be represented|supported scalar or fixed-batch/i);
   });
 
   it('multi-dimensional array element write `m[k][i][j]` now COMPILES (whole-value RMW desugar)', () => {

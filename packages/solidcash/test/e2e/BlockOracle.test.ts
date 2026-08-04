@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, TransactionBuilder, SignatureTemplate, resolveBlockhashCoSpend, getContractFactory,
@@ -16,6 +16,17 @@ import {
 } from '@solidcash/utils';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { BlockOracleUpdater, fetchBlockOracleFields, RpcLike } from '../../src/oracle/blockOracleUpdater.js';
+
+const preflightFailure = (reason: string): string =>
+  `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
+const verifyFailure = preflightFailure('Program failed an OP_VERIFY operation.');
+const nullFail = preflightFailure(
+  'Program failed a signature verification with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.',
+);
+const finalCltvFailure = new RegExp(
+  'mandatory-script-verify-flag-failed .*error in evaluating input index 0: '
+  + 'Program called an OP_CHECKLOCKTIMEVERIFY operation',
+);
 
 // A fixed category used only where the oracle address is expected to be EMPTY (no NFT seeded), so its value is
 // immaterial. Seeded NFTs get a real genesis category (see seedOracleNfts) which the reader is compiled with.
@@ -107,7 +118,7 @@ describe('block.chainid e2e', () => {
         compileString(SOURCE, { chainId: net.chainId, forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expect(sc.check(BigInt(net.expected === 0 ? 1 : 0))).rejects.toThrow();
+      await expect(sc.check(BigInt(net.expected === 0 ? 1 : 0))).rejects.toThrow(verifyFailure);
     });
   }
 
@@ -123,7 +134,7 @@ describe('block.chainid e2e', () => {
       compileString(LITERAL_SRC, { chainId: 1, forceStateful: true }), await fundedSigner(),
     );
     const sc = await factory.deploy();
-    await expect(sc.f()).rejects.toThrow();
+    await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -208,14 +219,14 @@ describe('block.* oracle reads e2e', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(
       999999n, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee, BLOCK.coinbase,
-    ).send()).rejects.toThrow();
+    ).send()).rejects.toThrow(verifyFailure);
   });
 
   it('rejects a wrong derived basefee', async () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     await expect(sc.check(
       BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, 3504n, BLOCK.coinbase,
-    ).send()).rejects.toThrow();
+    ).send()).rejects.toThrow(verifyFailure);
   });
 
   it('rejects a wrong block.coinbase', async () => {
@@ -223,7 +234,7 @@ describe('block.* oracle reads e2e', () => {
     await expect(sc.check(
       BLOCK.number, BLOCK.timestamp, BLOCK.difficulty, BLOCK.size, BLOCK.totalFees, BLOCK.basefee,
       hexToBin('76a914000000000000000000000000000000000000000088ac'),
-    ).send()).rejects.toThrow();
+    ).send()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -280,7 +291,7 @@ describe('block.* owner-update path e2e', () => {
     await expect(sc.__updateBlockOracle(new SignatureTemplate(bobPriv), 100000n, 1700000000n)
       .setState({ __block_number: 100000n, __block_timestamp: 1700000000n })
       .setLocktime(100000)
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(nullFail);
   });
 
   it('rejects an over-reported height (nLocktime < number violates the freshness bound)', async () => {
@@ -288,7 +299,10 @@ describe('block.* owner-update path e2e', () => {
     await expect(sc.__updateBlockOracle(new SignatureTemplate(alicePriv), 100001n, 1700000000n)
       .setState({ __block_number: 100001n, __block_timestamp: 1700000000n })
       .setLocktime(100000) // < number -> require(tx.time >= number) fails (and 100000 <= tip, so final)
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(preflightFailure(
+      "Program called an OP_CHECKLOCKTIMEVERIFY operation that requires a locktime greater than the transaction's "
+      + 'locktime. Transaction locktime: 100000; required locktime: 100001.',
+    ));
   });
 });
 
@@ -368,7 +382,7 @@ describe('block.* off-chain keeper (updater)', () => {
     }, { saltContract: true });
 
     const impostor = new BlockOracleUpdater({ contract, categoryId, keeperKey: bobPriv, rpc: fakeRpc(100000) });
-    await expect(impostor.syncOnce()).rejects.toThrow();
+    await expect(impostor.syncOnce()).rejects.toThrow(nullFail);
   });
 });
 
@@ -424,7 +438,9 @@ describe('blobhash / blockhash', () => {
   });
 
   it('blobhash rejects a non-zero expectation', async () => {
-    await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow();
+    await expect(spendBlob(`0x01${'00'.repeat(31)}`)).rejects.toThrow(
+      'Blob.scash:1 Require statement failed at input 0 in contract Blob.scash at line 1.',
+    );
   });
 
   it('blockhash(n) compiles with no oracle option and forces the contract stateful', () => {
@@ -510,13 +526,15 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
   it('rejects a wrong expected hash', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    await expect(spendBlockhash(provider, n, n, hash, hexToBin('bb'.repeat(32)))).rejects.toThrow();
+    await expect(spendBlockhash(provider, n, n, hash, hexToBin('bb'.repeat(32))))
+      .rejects.toThrow(verifyFailure);
   });
 
   it('rejects an oracle UTXO whose commitment.n != the requested n', async () => {
     const provider = createTestProvider();
     const { n, hash } = await allocHeight(provider);
-    await expect(spendBlockhash(provider, n, n - 1, hash, hash)).rejects.toThrow(); // stored at n-1, requested n
+    await expect(spendBlockhash(provider, n, n - 1, hash, hash))
+      .rejects.toThrow(/blockhash\((\d+)\): no \(n->hash\) oracle UTXO at addr\(\1\)/); // stored at n-1, requested n
   });
 
   it('anyone may wipe the (n->hash) UTXO at or after n+256', async () => {
@@ -528,7 +546,7 @@ describe('blockhash(n) e2e (real (n->hash) covenant)', () => {
   it('rejects a wipe before n+256 (CLTV blocks early cleanup)', async () => {
     const provider = createTestProvider();
     const { n } = await allocHeight(provider, 256);
-    await expect(wipeBlockhash(provider, n, n + 255)).rejects.toThrow();
+    await expect(wipeBlockhash(provider, n, n + 255)).rejects.toThrow(finalCltvFailure);
   });
 
   it('resolveBlockhashCoSpend returns null when no UTXO sits at addr(n)', async () => {

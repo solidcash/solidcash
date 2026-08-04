@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Contract deployment: new C(...), create/create2 options, type(C).creationCode, selfdestruct, parent ctor.
 
@@ -161,7 +161,7 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
       + ' function kill(bytes20 to) { require(true); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
   });
 
-  it('does not warn when authenticated with a signature check', () => {
+  it('does not warn when authenticated against a key the caller cannot choose (constructor key)', () => {
     expect(warns('contract C(pubkey admin) { int n;'
       + ' function kill(sig s, address to) { require(checkSig(s, admin)); selfdestruct(to); } }')).toBe(false);
   });
@@ -169,6 +169,217 @@ describe('selfdestruct caller-controlled destination warning (no-auth footgun, n
   it('does not warn when the destination comes from contract state', () => {
     expect(warns('contract C(pubkey admin) { address beneficiary; int n;'
       + ' function kill() { require(true); selfdestruct(this.beneficiary); } }')).toBe(false);
+  });
+
+  // SEC-16: "there is a checkSig somewhere in this body" is the wrong question. A signature check authenticates
+  // only the holder of the KEY it checks, so `require(checkSig(s, pk))` with a CALLER-SUPPLIED pk proves the
+  // spender signed with a key they chose - it authorizes nobody and must not silence the diagnostic. Measured on
+  // dbb15944: all three hostile rows below compiled silent. The pairs share every incidental feature (a `sig`
+  // param, a `pubkey` param, an `address` param) and differ only in where the checked key comes from, so the
+  // warning is credited to the key rather than to "this function has a pubkey parameter".
+  describe('SEC-16: the signature check must authorize a key the caller cannot choose', () => {
+    it('WARNS on checkSig against a caller-supplied pubkey', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, pk)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('stays silent on the same shape when the key is the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('stays silent on the same shape when the key is a state variable', () => {
+      expect(warns('contract C(pubkey admin) { pubkey owner; int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' require(checkSig(s, this.owner)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS when an alias is rebound to a caller key after being declared from the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, address to) external {'
+        + ' pubkey k = admin; k = pk; require(checkSig(s, k)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('WARNS on checkDataSig, whose key is argument 2', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(datasig ds, bytes m, pubkey pk, address to) external {'
+        + ' require(checkDataSig(ds, m, pk)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('stays silent on checkDataSig against the constructor key', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(datasig ds, bytes m, pubkey pk, address to) external {'
+        + ' require(checkDataSig(ds, m, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS on checkMultiSig against a caller-supplied key list', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig[2] ss, pubkey[2] pks, address to) external {'
+        + ' require(checkMultiSig(ss, pks)); selfdestruct(to); } }')).toBe(true);
+    });
+
+    it('WARNS when the caller key is only reached through a cast', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, bytes33 raw, address to) external {'
+        + ' require(checkSig(s, pubkey(raw))); selfdestruct(to); } }')).toBe(true);
+    });
+
+    // An index only SELECTS among stored keys, so the CONTAINER decides the bytes: the ordinary multi-owner
+    // shape must not start warning just because the caller picks `i`.
+    it('stays silent when a caller-chosen index selects among keys held in state', () => {
+      expect(warns('contract C(pubkey admin) { pubkey[3] owners; int n;'
+        + ' function kill(sig s, pubkey pk, int i, address to) external {'
+        + ' require(checkSig(s, this.owners[i])); selfdestruct(to); } }')).toBe(false);
+    });
+
+    // One genuine guard is enough; the hostile check alongside it neither adds nor removes authority.
+    it('stays silent when a hostile check sits beside a genuine one', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, sig s2, pubkey pk, address to) external {'
+        + ' require(checkSig(s, pk)); require(checkSig(s2, admin)); selfdestruct(to); } }')).toBe(false);
+    });
+
+    it('WARNS when the caller-supplied destination is wrapped and the key is caller-supplied', () => {
+      expect(warns('contract C(pubkey admin) { int n;'
+        + ' function kill(sig s, pubkey pk, bytes20 to) external {'
+        + ' require(checkSig(s, pk)); selfdestruct(new LockingBytecodeP2PKH(to)); } }')).toBe(true);
+    });
+  });
+
+  /**
+   * SEC-17. Reading the key's provenance alone makes the standard BCH admin-upgrade idiom look self-authorizing:
+   * the caller passes `pk` in and commits it in the same breath with `require(hash160(pk) == this.pkh)`, so the
+   * only key they may supply is the one whose hash is already stored. Measured: 7 spellings warned here and the
+   * same 7 at the delegatecall site, 14 false positives. Every row below keeps the parameter list of the
+   * warning cases above, so a silence is attributable to the commitment rather than to the signature's shape.
+   */
+  describe('SEC-17: a key committed by a sibling require is not caller-chosen', () => {
+    const sd = (decls: string, guard: string): string => 'contract C(pubkey admin, bytes20 adminPkh) {'
+      + ` ${decls} int n; function kill(sig s, pubkey pk, address to, bytes20 otherPkh) external {`
+      + ` ${guard} selfdestruct(to); } }`;
+
+    it('stays silent when hash160(key) is committed to a state variable', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent with the operands reversed', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(this.pkh == hash160(pk)); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when committed to a constructor argument', () => {
+      expect(warns(sd('', 'require(hash160(pk) == adminPkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent through a bytes20 cast and inside an && conjunction', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'require(bytes20(hash160(pk)) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'require(n > 0 && hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when the commitment or the check goes through an alias', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'pubkey k = pk; require(hash160(k) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'pubkey k = pk; require(hash160(pk) == this.pkh); require(checkSig(s, k));'))).toBe(false);
+    });
+
+    // Negative controls: each has a hash160 call inside an equality inside a require, exactly like the silent
+    // rows, and differs only in what the hash is committed TO or in whether the commitment always runs.
+    it('WARNS when the hash is committed to another caller parameter', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) == otherPkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the commitment is conditional (an if-arm or an || branch)', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'if (n > 0) { require(hash160(pk) == this.pkh); } require(checkSig(s, pk));'))).toBe(true);
+      expect(warns(sd('bytes20 pkh;',
+        'require(n > 0 || hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS on an inequality and on a self-referential commitment', () => {
+      expect(warns(sd('bytes20 pkh;', 'require(hash160(pk) != this.pkh); require(checkSig(s, pk));'))).toBe(true);
+      expect(warns(sd('bytes20 pkh;',
+        'require(hash160(pk) == hash160(pk)); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    // The commitment decision is memoized per name. Before that, the cycle marker set on the first visit made
+    // the SECOND occurrence of the same committed key resolve the other way, so one key expression answered
+    // twice and the idiom warned regardless - measured on the first version of this fix.
+    it('resolves a committed key the same way each time it appears in one key expression', () => {
+      expect(warns('contract C(pubkey admin) { bytes20 pkh; int n;'
+        + ' function kill(sig[2] ss, pubkey pk, address to) external {'
+        + ' require(hash160(pk) == this.pkh); require(checkMultiSig(ss, [pk, pk])); selfdestruct(to); } }'))
+        .toBe(false);
+    });
+  });
+
+  /**
+   * X46. SEC-17 read the key's BINDING and stopped there: `this.pkh` is a state variable, and a state variable
+   * is not caller-chosen, so the commitment was credited however that variable came to hold its value. Scalar
+   * state is read after write - measured on the BCH-2026 VM, `this.pkh = a; require(this.pkh == a)` settles for
+   * an arbitrary `a` while the same require without the write rejects at input 0 - so writing the key hash from
+   * a caller parameter one statement earlier makes the commitment compare `pk` against bytes the caller just
+   * supplied. That is not a theoretical gap: `packages/solidcash/test/e2e/X46CommitmentWriter.test.ts` drains an
+   * alice-owned contract to bob through exactly this shape, and this diagnostic was silent on it.
+   *
+   * Only writes BEFORE the commitment count. The key-ROTATION idiom (commit, authenticate, then store the new
+   * hash) writes after, and must stay silent or the fix trades one false positive for another.
+   */
+  describe('X46: the commitment reads the WRITER of what the key is bound to', () => {
+    const sd = (decls: string, guard: string): string => 'contract C(pubkey admin, bytes20 adminPkh) {'
+      + ` ${decls} int n; function kill(sig s, pubkey pk, address to, bytes20 otherPkh) external {`
+      + ` ${guard} selfdestruct(to); } }`;
+
+    it('WARNS when the committed state variable is written from a caller parameter first', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = otherPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the write is hash160 of the caller key itself', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = hash160(pk); require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(true);
+    });
+
+    it('WARNS when the tainted read reaches the commitment through a local alias', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = otherPkh; bytes20 z = this.pkh; require(hash160(pk) == z); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    it('WARNS when the write sits in an if-arm that may run', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'if (n > 0) { this.pkh = otherPkh; } require(hash160(pk) == this.pkh); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    it('WARNS for a mapping entry written from a caller parameter and then committed against', () => {
+      expect(warns(sd('mapping(int => bytes20) admins;',
+        'this.admins[1] = otherPkh; require(hash160(pk) == this.admins[1]); require(checkSig(s, pk));')))
+        .toBe(true);
+    });
+
+    // Controls. Each has a state write and the same commitment; they differ only in WHEN the write happens or
+    // in whether its value is caller-chosen, so a silence is attributable to the writer and not to "any state
+    // write in the body silences/fires this".
+    it('stays silent for the key-ROTATION idiom, which writes AFTER the commitment', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'require(hash160(pk) == this.pkh); require(checkSig(s, pk)); this.pkh = otherPkh;'))).toBe(false);
+    });
+
+    it('stays silent when the preceding write takes its value from a constructor argument', () => {
+      expect(warns(sd('bytes20 pkh;',
+        'this.pkh = adminPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
+
+    it('stays silent when the preceding write is to an unrelated state variable', () => {
+      expect(warns(sd('bytes20 pkh; bytes20 spare;',
+        'this.spare = otherPkh; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+      expect(warns(sd('bytes20 pkh;',
+        'this.n = this.n + 1; require(hash160(pk) == this.pkh); require(checkSig(s, pk));'))).toBe(false);
+    });
   });
 });
 
@@ -280,7 +491,9 @@ describe('type(X).creationCode constructor-args warning', () => {
     + ' return abi.encodePacked(type(Child).creationCode, abi.encode(v)); } }';
   it('warns when the child has constructor parameters', () => {
     const spy = vi.spyOn(console, 'log').mockImplementation(() => {});
-    compileString(child('constructor(uint _x) { x = _x; }') + use, { solidityImportCompat: true });
+    compileString(child('constructor(uint _x) { x = _x; }') + use, {
+      solidityImportCompat: true, messageBus: false,
+    });
     const w = spy.mock.calls.filter((c) => String(c[0]).includes('does not include constructor'));
     spy.mockRestore();
     expect(w.length).toBe(1);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { sidecarLockingBytecode, SHARED_LIBRARY_SALT, resolveLibraryBlob } from '@solidcash/utils';
 import { Contract, TransactionBuilder } from '../src/index.js';
@@ -74,7 +74,9 @@ describe('user external library (inlined) e2e', () => {
   });
 
   it('rejects a wrong expected value (inlined)', async () => {
-    await expect(spendInlined(5n, 7n)).rejects.toThrow();
+    await expect(spendInlined(5n, 7n)).rejects.toThrow(
+      /UserLib\.scash:4 Require statement failed at input 0/,
+    );
   });
 });
 
@@ -85,6 +87,8 @@ describe('user external library (side-car) e2e', () => {
   });
 
   it('rejects a wrong expected value (side-car)', async () => {
-    await expect(spendViaSidecar(5n, 7n)).rejects.toThrow();
+    await expect(spendViaSidecar(5n, 7n)).rejects.toThrow(
+      /mandatory-script-verify-flag-failed .*input index 0: Unsuccessful evaluation/,
+    );
   });
 });

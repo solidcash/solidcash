@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -46,7 +46,7 @@ describe('sorted mapping compiled write / claim-once (C2 end-to-end)', () => {
 
     // Re-claim 30: require(!claimed[30]) reverts (already claimed).
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.claim(30n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.claim(30n, alicePub, sig).send()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
 
     // A different key still claims.
     sc = StatefulContract.withCategory(contract, categoryId);

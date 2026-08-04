@@ -162,17 +162,24 @@ upgrade mechanism; v1 links are immutable. Existing small-contract
 All limits fail closed. They should be lifted only with a protocol and tests that
 preserve the security invariants above.
 
-The Solidity-import Unicrow corpus now passes the split size gate because `pay`
-and its authenticated return channel can move. Against the 23,931.5-byte
-monolith, the oracle-safe affinity/best-fit planner measured a 7,483.5-byte root
-and four facets of 9,696.5, 9,787, 9,450.5, and 3,647.5 bytes: 40,065 bytes
-deployed in total, or 67.42% aggregate bytecode overhead. The earlier
-affinity-only planner emitted seven facets totaling 46,609 bytes (94.76%
-overhead), so packing removes three facet masters and 6,544 deployed bytes. These are regression observations rather
-than stable ABI promises: optimization changes can move the exact figures, while
-every emitted artifact is remeasured against the configured limit. The largest
-default-limit facet has 213 bytes of consensus headroom; production policy
-should choose a lower `maxShardBytes` if upgrade/compiler-growth margin matters.
+The Solidity-import Unicrow corpus **no longer needs to split at all**. Measured
+today: `Unicrow.sol` is **8,935 real bytes** against the configured 10,000-byte
+limit, with **1,065 bytes of headroom**, and `compileFileSplit` returns the unsplit
+bundle - **0 facets**.
+
+Two changes account for it. X149 corrected the planner's ruler: `artifact.bytecode`
+is an ASM LISTING, in which one 1-byte opcode occupies `OP_CHECKSIGVERIFY `, so
+`.length / 2` was half a CHARACTER count - which is why the figures this paragraph
+used to carry ended in `.5`. And X154 measured that cross-function outlining, which
+runs unconditionally, cuts the emitted script by **70.2%**.
+
+The figures previously recorded here - a 23,931.5-byte monolith, a 7,483.5-byte
+root, four facets of 9,696.5 / 9,787 / 9,450.5 / 3,647.5, 40,065 bytes deployed at
+67.42% overhead, and 213 bytes of headroom on the largest facet - are stale in both
+UNIT and MAGNITUDE, and are kept here only so the correction is legible. These are
+regression observations rather than stable ABI promises: optimization changes can
+move the exact figures, while every emitted artifact is remeasured against the
+configured limit.
 
 The exact imported Unicrow monolith cannot deploy, as expected: its 23.8 KB redeem
 script is embedded in the constructor input and exceeds BCH's 10 KB unlocking

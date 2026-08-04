@@ -52,7 +52,9 @@ describe('BigInt', () => {
         .send();
 
       // then
-      await expect(txPromise).resolves.not.toThrow();
+      const sent = await txPromise;
+      expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+      expect(sent.hex).not.toHaveLength(0);
     });
 
     it.todo('should fail when contract exceeds the maximum compute budget');

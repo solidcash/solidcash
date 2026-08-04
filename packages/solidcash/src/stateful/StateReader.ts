@@ -289,6 +289,10 @@ export function parseEventCommitment(
   const data = hexToBin(commitmentHex);
   const result: Record<string, StateValue> = {};
   let offset = 0;
+  // SEC-14. A zero-parameter event carries one ACTIVE marker byte instead of an empty commitment, so that a
+  // reached emit is distinguishable from a reserved-but-not-taken slot (and so that the conditional emit's own
+  // covenant verification is reachable at all). It encodes no parameter; consume it.
+  if (eventDef.parameters.length === 0) return result;
 
   for (const param of eventDef.parameters) {
     const { value, bytesConsumed } = parseArrayTypeString(param.type)

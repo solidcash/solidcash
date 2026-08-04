@@ -6,6 +6,13 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
+  /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
+  __messageBusVerifierProgram?: {
+    verifyFunctionId: number;
+    inputCount: number;
+    inputs: readonly AbiInput[];
+    functions: readonly { id: number; name: string; bytecode: string }[];
+  };
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
@@ -55,6 +62,10 @@ export interface CompilerOptions {
   // proxy-implementable functions `delegate` so source never needs the keyword (Solidity has none). Not a user
   // option; setting it yields the delegate variant as the primary artifact.
   autoDelegate?: boolean;
+  // Compiler-generated atomic composition route and write-back journal. Eligibility is inferred from the
+  // contract when omitted. Explicit `false` requests direct-only compilation and is rejected when semantic
+  // analysis finds a transaction shape that cannot be built without one shared message bus.
+  messageBus?: boolean;
 }
 
 export interface AbiInput {
@@ -103,7 +114,8 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
-  | 'lowLevelCall';
+  | 'lowLevelCall'
+  | 'trailing';
 
 /** A single slot in the function's block layout. */
 export interface BlockLayoutSlot {
@@ -120,6 +132,33 @@ export interface BlockLayoutSlot {
 export interface FunctionBlockLayout {
   blockSize: number;         // total number of slots in this contract's block
   slots: readonly BlockLayoutSlot[];
+  /** First local slot of the bounded runtime-variable resource region. */
+  trailingBase?: number;
+  /** Number of balanced slots reserved for chunks, loop entries, and loop sidecars. */
+  trailingCapacity?: number;
+}
+
+/**
+ * Where a value the covenant depends on came from in the source the artifact was compiled from.
+ *
+ * The published TYPE of a value answers nothing about who chose it: `address t = address(target)` with
+ * `target` a `bytes` parameter reaches a delegatecall as an `address`, and every admitted delegate class
+ * carries a `bytes` calldata parameter, so refusing the type is not available. This is the semantic answer.
+ *
+ * - `constructorArg` - a contract constructor parameter. Committed into the contract's p2sh32, so it is fixed
+ *   for a given address and no spender can vary it.
+ * - `stateVar` - a persisted state variable. Varies only through the contract's own authorized writes.
+ * - `literal` - a compile-time constant baked into the script.
+ * - `parameter` - a function parameter the CALLER supplies at spend time. Nothing about it is committed.
+ * - `computed` - anything else: an expression, an external read, a reassigned local, an alias chain the
+ *   compiler could not follow. Unknown, never a proof of safety.
+ */
+export type ValueProvenanceKind = 'constructorArg' | 'parameter' | 'stateVar' | 'literal' | 'computed';
+
+export interface ValueProvenance {
+  kind: ValueProvenanceKind;
+  /** Source name, present for `constructorArg` / `parameter` / `stateVar` and absent otherwise. */
+  name?: string;
 }
 
 export interface AbiFunction {
@@ -129,16 +168,56 @@ export interface AbiFunction {
   outputs?: readonly AbiOutput[];       // return types (omitted for void functions)
   modifiers?: readonly string[];        // function modifiers (omitted if default external)
   requiredNftIndices?: readonly number[];  // sorted NFT indices this function accesses (absent = all)
-  // Stateful contracts only: false = provably read-only (no state/entry write, transfer, emit, deploy, external
-  // call, delegate, dynamic write, split/merge, or covenant-bypass modifier). Lets the SDK skip the multi-pass
-  // derivation probe for getters (output state == input state). Absent = unknown/stateless (treat as writing).
+  /**
+   * Stateful contracts only. X176: THIS IS NOT "the handler changes a state variable", and it is read that way.
+   *
+   * `false` is the compiler's PROOF of read-only: no state or entry write, transfer, emit, deploy, external
+   * call, delegate, dynamic write, split/merge, or covenant-bypass modifier. That is the reading an SDK may
+   * act on - it lets a getter skip the multi-pass derivation probe (output state == input state), and
+   * misclassifying a writer as read-only there fails CLOSED, because the covenant rejects the mismatched
+   * output state.
+   *
+   * `true` is only the NEGATION of that proof - "not provably read-only", which in SDK terms is "needs the
+   * state machinery". An external call sets it exactly as readily as an assignment does. MEASURED: at least
+   * 2 of 7 handlers classified as explicit writers write nothing at all; one publishes `true` for a body of
+   * `bar.log();`. Absent means unknown or stateless and is treated as writing.
+   *
+   * Do not re-derive this toward "mutates": the only consumer keys on `=== false` and needs the conservative
+   * direction, so a narrower flag would make it fail OPEN. Use `StatefulContract.readWritesState` to get the
+   * published evidence split into own-state versus other-effect causes.
+   */
   writesState?: boolean;
+  /** The state-handler closure contains direct or mutual recursion. SDKs must
+   * resource-preflight the concrete invocation before returning a builder. */
+  recursiveStateHandler?: boolean;
+  /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
+  graphBlockhashOracle?: {
+    inputBaseParameter: '__internal__blockhashInputIndex';
+    rowCount: number;
+    readWidth: number;
+    slotCount: number;
+    reads: readonly {
+      row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
+    }[];
+  };
   entryAccesses?: readonly EntryAccessAbi[];
   externalReads?: readonly ExternalReadAbi[];
   externalCalls?: readonly ExternalCallAbi[];
+  /** Local call-result values forwarded as arguments into later external callsites. */
+  resultConsumers?: readonly {
+    consumerCallsiteId: number;
+    argument: number;
+    producerCallsiteId: number;
+  }[];
   externalOutStateReads?: readonly ExternalOutStateAbi[];
   emits?: readonly EmitAbi[];
   transferCount?: number;
+  transfers?: readonly {
+    transferIndex: number;
+    recipient: ArgSource;
+    amount: ArgSource;
+    callOption?: 'value';
+  }[];
   deployTargets?: readonly {
     contractName: string; dataNftCount: number;
     // Per child constructor argument: the deploy-function parameter name it forwards (direct `new C(param)`),
@@ -150,10 +229,42 @@ export interface AbiFunction {
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
+  /**
+   * The signature check that authorizes this function, described by the key it is checked against.
+   *
+   * `key` is the WEAKEST key of every `checkSig` / `checkDataSig` / `checkMultiSig` in the body, ordered
+   * `parameter` (the caller picks it outright) < `computed` (the compiler could not say) < `stateVar` <
+   * `constructorArg` < `literal`. Weakest is the sound reading: guards in different branches are alternatives,
+   * so the authority a spender actually has to defeat is the cheapest one. Two guards that BOTH have to pass
+   * therefore read weaker than they are - a refusal, never an admission.
+   *
+   * Absent means no signature check was proven, whether because the body has none or because the artifact
+   * predates this field. Both readings are "unguarded"; absent is never a proof of authority. Read it with
+   * `signatureGuardKeyProvenance`.
+   *
+   * `keyCommitment` (X51) answers the question `key` alone cannot: a `parameter` key that an unconditional
+   * top-level `require(hash160(key) == <x>)` pins is only as choosable as `<x>` is, so P2PKH-shaped authority
+   * publishes `{key: {parameter, pk}, keyCommitment: {constructorArg, pkh}}` and an unpinned parameter key
+   * publishes no `keyCommitment` at all. Read it with `signatureGuardKeyCommitment`; absent reads back as
+   * `unknown`, never as "unconstrained".
+   */
+  signatureGuard?: { key: ValueProvenance; keyCommitment?: ValueProvenance };
+  /** True only when a required signature check dominates every delegatecall in this function. */
+  signatureGuardDominatesDelegatecalls?: boolean;
   unsafeTier?: number;
   splitCountParam?: string;
   mergeCountParam?: string;
-  lowLevelCalls?: readonly { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
+  lowLevelCalls?: readonly {
+    callMode: 'call' | 'staticcall' | 'delegatecall';
+    dataParamIndex?: number;
+    /**
+     * Where the call's TARGET address came from. Published by every compiler that knows how to answer, with
+     * `computed` as the always-available fallback, so an absent `target` identifies an artifact compiled
+     * before the field existed - it is never a claim that the target is fixed. Read it with
+     * `lowLevelCallTargetProvenance`, which makes that unknown leg explicit.
+     */
+    target?: ValueProvenance;
+  }[];
   // Delegate-library calls (`L.f()`); the SDK auto-wires each one's delegatecall co-spend from a registered
   // library instance (registerLibrary). `args` are positional: a forwarded enclosing-function parameter (the SDK
   // reads its value from the consumer call) or a compile-time literal. See docs/library-contracts.md (3b).
@@ -343,6 +454,7 @@ export interface EntryAccessAbi {
   operations: readonly string[];
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
+  runtimeAliasPriorSlots?: readonly number[];
   // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
@@ -386,6 +498,27 @@ export interface ExternalCallExpression {
 }
 
 export interface ExternalCallAbi {
+  /** Stable compiler-assigned physical callsite/slot identifier within the containing function. */
+  callsiteId?: number;
+  /** Source start of the call expression, retained for deterministic SDK derivation diagnostics. */
+  sourceLocation?: { line: number; column: number };
+  /** Source reachability class; loop/conditional rows require runtime occurrence proof. */
+  occurrence?: 'once' | 'conditional' | 'loop';
+  /** Compiler-proven ceiling on reached rows. Absent means no ceiling was proven for this callsite. */
+  maximumOccurrences?: number;
+  /**
+   * Compiler-proven FLOOR on reached rows, published only where the compiler can prove one. When it equals
+   * `maximumOccurrences` the reached count is exact and a consumer that plans any other count is wrong before
+   * a transaction exists. Absent means the floor is unknown: only the ceiling binds, and an under-count stays
+   * fail-closed on chain rather than being rejected at plan time.
+   */
+  minimumOccurrences?: number;
+  /**
+   * Provenance of the published bound: `literal` = a compile-time trip count, `guard` = a dominating
+   * `require` ceiling over a runtime trip count, `structural` = a single-reach branch. Absent when no bound
+   * is published.
+   */
+  occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
   interfaceName: string;
   functionName: string;
   addressParam?: string;
@@ -395,6 +528,8 @@ export interface ExternalCallAbi {
   // varying-method dispatch table: parallel `bytes[]` state array of per-element selectors. The covenant reads
   // sel[i] from it (not a witness), so the SDK resolves each element's method from its selector + skips the witness.
   selectorArrayVar?: string;
+  /** Compiler-bounded method alternatives for a varying-selector table with a declared interface. */
+  possibleTargets?: readonly { functionName: string; selector: string }[];
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
   addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
   // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
@@ -411,6 +546,12 @@ export interface ExternalCallAbi {
   argSources?: readonly ArgSource[];
   rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
   rawArgSources?: readonly ArgSource[];
+  batchInvocations?: readonly {
+    selector: string;
+    logicalIndex: number;
+    inputs: readonly AbiInput[];
+    argSources?: readonly ArgSource[];
+  }[];
 }
 
 export interface ExternalOutStateAbi {
@@ -495,6 +636,93 @@ export interface ExternalLibraryAbi {
   // real need is the loop's runtime count, so provision extra side-cars
 }
 
+export interface InvocationAnalysisFunction {
+  id: number;
+  name: string;
+  arity: number;
+  entryPoint: boolean;
+  selector?: string;
+  calls: readonly number[];
+  closure: readonly number[];
+  component: number;
+  recursive: boolean;
+  reads: readonly string[];
+  writes: readonly string[];
+  effects: readonly string[];
+  unknown: boolean;
+  /** ABI result schema produced by this handler, in canonical tuple order. */
+  outputs?: readonly AbiOutput[];
+  /** Calls whose authenticated result must be available before this handler can resume. */
+  resultDependencies?: readonly {
+    callsiteId: number;
+    returnTypes: readonly string[];
+    opaque: boolean;
+  }[];
+  resultConsumers?: readonly {
+    consumerCallsiteId: number;
+    argument: number;
+    producerCallsiteId: number;
+  }[];
+  /**
+   * True only when every external-call occurrence is statically singular. Conditional and loop callsites
+   * require a runtime occurrence proof and therefore remain explicitly unbounded in this summary.
+   */
+  bounded: boolean;
+  /** Maximum direct external invocations when `bounded` is true. */
+  maximumDirectInvocations?: number;
+  /** Ordered compiler-resolved external callsites used by graph expansion. */
+  externalCalls?: readonly ExternalCallAbi[];
+  externalOutStateReads?: readonly ExternalOutStateAbi[];
+  emits?: readonly EmitAbi[];
+  transferCount?: number;
+  transfers?: readonly {
+    transferIndex: number;
+    recipient: ArgSource;
+    amount: ArgSource;
+    callOption?: 'value';
+  }[];
+  tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+  dynamicReads?: readonly string[];
+  dynamicWrites?: readonly string[];
+  blockLayout?: FunctionBlockLayout;
+}
+
+export interface InvocationAnalysisArtifact {
+  version: 1;
+  /** Immutable call-manifest protocols this compiler can summarize. */
+  protocolVersions: readonly number[];
+  functions: readonly InvocationAnalysisFunction[];
+  components: readonly {
+    id: number;
+    functions: readonly number[];
+    recursive: boolean;
+  }[];
+}
+
+/**
+ * Largest message-bus batch message-bus blob any generated covenant admits, in bytes (X106).
+ *
+ * ONE home for a value with two enforcers. The compiler compiles this bound into every message-bus route
+ * (`require(batchBlob.length <= N)`) and republishes it as `Artifact.messageBus.maximumBlobBytes`; the SDK's
+ * messageBus graph generator enforces the same bound while framing each participant's message-envelope rows. Both
+ * carried a bare `223` and nothing made them move together. `@solidcash/utils` is the only package both the
+ * compiler and the SDK already depend on, so it is the only place the two can share a literal.
+ *
+ * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
+ * blob envelope, NOT the trailing region, is the binding constraint - an argument-carried value caps at 202
+ * bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than
+ * the region. Silent drift between the copies would therefore move a real limit.
+ */
+export const MAX_MESSAGE_BUS_BLOB_BYTES = 223;
+
+/** Shared wire constants for the atomic single-transaction message bus. */
+export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
+export const ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS = 8;
+export const ATOMIC_MESSAGE_BUS_MAX_ROWS = 24;
+/** P2SH32(OP_TRUE) used only to balance compiler-published output-only participant slots. */
+export const BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX =
+  'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
+
 export interface Artifact {
   contractName: string;
   constructorInputs: readonly AbiInput[];
@@ -519,6 +747,83 @@ export interface Artifact {
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
   // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
   delegateArtifact?: Artifact;
+  /** Compiler-only call graph/resource summary shared by splitting, journal
+   * eligibility, diagnostics, and message-bus planning. No covenant capability
+   * is implied by its presence. */
+  invocationAnalysis?: InvocationAnalysisArtifact;
+  messageBus?: {
+    version: 1;
+    selector: '53434231';
+    minimumRows?: number;
+    maximumRows: number;
+    maximumBlobBytes: number;
+    /** Compiler-published admission and message-envelope contract for atomic composition. */
+    atomicMessageBus?: {
+      domain: typeof ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
+      /** The final verifier input carries the canonical frame authenticated by every participant binder. */
+      messageEnvelope: {
+        region: 'participant-verifiers';
+        canonicalInput: 'final-participant-verifier';
+        unlockingPush: 0;
+      };
+      maximumParticipants: typeof ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS;
+      maximumRows: typeof ATOMIC_MESSAGE_BUS_MAX_ROWS;
+    };
+    /** Compiler-emitted OP_INVOKE program moved into genesis-deployed verifier covenants. */
+    verifierProgram?: {
+      verifyFunctionId: number;
+      inputCount: number;
+      inputs: readonly AbiInput[];
+      functions: readonly { id: number; name: string; bytecode: string }[];
+    };
+    route: AbiFunction;
+    handlers: {
+      name: string;
+      selector: string;
+      inputs: AbiInput[];
+      outputs?: AbiOutput[];
+      usesMsgValue?: boolean;
+      emits?: readonly EmitAbi[];
+      tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
+      ecrecoverArgParams?: readonly (readonly (string | null)[])[];
+      transfers?: readonly {
+        transferIndex: number;
+        recipient: ArgSource;
+        amount: ArgSource;
+        callOption?: 'value';
+      }[];
+      eligible: boolean;
+      rejectionReason?: string;
+      rejectionCode?:
+      | 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'
+      | 'MESSAGE_BUS_FUTURE_RESULT_DEPENDENCY'
+      | 'MESSAGE_BUS_EXTERNAL_RECURSION_UNBOUNDED'
+      | 'MESSAGE_BUS_DUPLICATE_SETTLEMENT_AUTHORITY'
+      | 'MESSAGE_BUS_FOREIGN_INTERMEDIATE_STATE_READ'
+      | 'MESSAGE_BUS_STACK_CONTEXT_UNPRESERVABLE'
+      | 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE';
+      rejectionContext?: {
+        handlerId?: number;
+        functionName: string;
+        reason: string;
+        sourceLocation?: { line: number; column: number };
+        callChain?: readonly string[];
+      };
+      /** OP_INVOKE body covered by CHECKSIG when this handler is called from message-bus batch. */
+      signatureBytecode?: string;
+      batchKeyWitnesses?: {
+        routeInput: string;
+        inputIndex: number;
+        source?: 'argument' | 'msgSender';
+        perRow?: boolean;
+      }[];
+    }[];
+  };
+  diagnostics?: readonly {
+    severity: 'warning' | 'error';
+    code: string;
+    message: string;
+  }[];
   compiler: {
     name: string;
     version: string;
@@ -578,6 +883,165 @@ export interface SplitArtifactBundle {
   root: Artifact;
   facets: ArtifactMap;
   manifest: SplitManifest;
+}
+
+/** How a published occurrence bound reads back, with the unknown legs made explicit. */
+export interface OccurrenceBound {
+  kind: 'once' | 'conditional' | 'loop';
+  /** Proven floor on reached rows, or undefined when the compiler proved none. */
+  minimum?: number;
+  /** Proven ceiling on reached rows, or undefined when the compiler proved none. */
+  maximum?: number;
+  /** True when floor and ceiling coincide, so exactly one count can ever be honest. */
+  exact: boolean;
+  source?: 'literal' | 'guard' | 'structural';
+}
+
+/**
+ * Read one callsite's published occurrence bound.
+ *
+ * `once` is a straight-line callsite, so its count is structurally one whether or not the compiler wrote a
+ * bound down. Every other class reports exactly what the artifact carries: an absent leg means the compiler
+ * proved nothing there, never that any count is admissible.
+ */
+export function occurrenceBoundOf(call: ExternalCallAbi): OccurrenceBound {
+  const kind = call.occurrence ?? 'once';
+  if (kind === 'once') {
+    return { kind, minimum: 1, maximum: 1, exact: true, source: call.occurrenceBoundSource ?? 'structural' };
+  }
+  const minimum = call.minimumOccurrences;
+  const maximum = call.maximumOccurrences;
+  return {
+    kind,
+    ...(minimum !== undefined && { minimum }),
+    ...(maximum !== undefined && { maximum }),
+    exact: minimum !== undefined && minimum === maximum,
+    // A conditional callsite's ceiling of one is a property of the branch, not of any written-down bound, so
+    // its provenance is structural even when the compiler spent no bytes saying so.
+    source: call.occurrenceBoundSource ?? (kind === 'conditional' ? 'structural' : undefined),
+  };
+}
+
+const boundProvenance = (bound: OccurrenceBound): string =>
+  bound.source === 'literal' ? 'a compile-time trip count'
+    : bound.source === 'guard' ? 'a dominating require guard'
+      : bound.source === 'structural' ? 'a single-reach branch'
+        : 'the compiler';
+
+/**
+ * Validate a chosen reached-occurrence count against the compiler-published bound.
+ *
+ * Returns undefined when the count is admitted, otherwise a precise diagnostic naming the callsite, the
+ * chosen count, the bound it violates and where that bound came from. A consumer that plans a count outside
+ * the published bound builds a transaction the caller covenant rejects; this turns that into a plan-time
+ * error. An absent bound leg is never treated as permission - callers decide separately whether an unproven
+ * ceiling is admissible at all.
+ */
+export function occurrenceCountViolation(call: ExternalCallAbi, count: number): string | undefined {
+  const bound = occurrenceBoundOf(call);
+  const where = `callsite ${call.callsiteId ?? '?'}`;
+  if (!Number.isInteger(count) || count < 0) {
+    return `${where} was planned with ${count} occurrences, which is not a reached-row count`;
+  }
+  if (bound.kind !== 'loop' && count > 1) {
+    return `${where} is a ${bound.kind} callsite reached at most once, but ${count} occurrences were planned`;
+  }
+  if (bound.maximum !== undefined && count > bound.maximum) {
+    return `${where} was planned with ${count} occurrences, above the ${bound.maximum} `
+      + `proven by ${boundProvenance(bound)}`;
+  }
+  if (bound.minimum !== undefined && count < bound.minimum) {
+    return `${where} was planned with ${count} occurrences, below the ${bound.minimum} `
+      + `proven by ${boundProvenance(bound)}`
+      + (bound.exact ? `; this callsite reaches exactly ${bound.minimum} rows` : '');
+  }
+  return undefined;
+}
+
+/**
+ * A provenance as a consumer must read it, with the unpublished leg made explicit.
+ *
+ * `unknown` is not one of the compiler's five answers: it is what an artifact that carries no answer at all
+ * has to be read as. It exists so a consumer can never spell "the field was absent" and "the compiler proved
+ * the value is fixed" the same way.
+ */
+export type ReadValueProvenance =
+  | ValueProvenance
+  | { kind: 'unknown'; name?: undefined };
+
+const UNKNOWN_PROVENANCE: ReadValueProvenance = Object.freeze({ kind: 'unknown' as const });
+
+/**
+ * Read a low-level call's published target provenance.
+ *
+ * Returns `unknown` when the artifact publishes none, which is every artifact compiled before the field
+ * existed. A consumer must treat `unknown` exactly as it treats `parameter`: not fixed, not proven, refuse.
+ */
+export function lowLevelCallTargetProvenance(
+  call: { target?: ValueProvenance },
+): ReadValueProvenance {
+  return call.target ?? UNKNOWN_PROVENANCE;
+}
+
+/**
+ * Read a function's published signature-guard key provenance.
+ *
+ * Returns `unknown` when the artifact publishes no guard - the body has none, or the artifact predates the
+ * field. Both mean the same thing to a consumer: no authority is proven here.
+ */
+export function signatureGuardKeyProvenance(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
+  return fn.signatureGuard?.key ?? UNKNOWN_PROVENANCE;
+}
+
+/**
+ * Read what a function's signature-guard KEY is pinned to (X51).
+ *
+ * `signatureGuardKeyProvenance` says where the checked key came from. A `parameter` key is not the same as an
+ * uncontrolled one: `require(hash160(pk) == <x>); require(checkSig(s, pk))` lets the caller supply only the one
+ * key whose hash the contract already fixed, so the authority in force is `<x>`'s, not `pk`'s. This returns
+ * `<x>`'s provenance when the compiler proved such a pin over EVERY signature check in the body, folded to the
+ * weakest, and `unknown` otherwise.
+ *
+ * `unknown` covers three different situations on purpose - no pin was proven, no signature check exists, or the
+ * artifact predates the field - because a consumer must treat all three identically: nothing is proven here.
+ * Pair it with an explicit allow-list of admitted kinds, so `unknown` and any kind a later compiler adds fall
+ * closed rather than being admitted by omission.
+ */
+export function signatureGuardKeyCommitment(fn: Pick<AbiFunction, 'signatureGuard'>): ReadValueProvenance {
+  return fn.signatureGuard?.keyCommitment ?? UNKNOWN_PROVENANCE;
+}
+
+/** Old artifacts and guards that do not publish control-flow evidence fail closed. */
+export function signatureGuardDominatesDelegatecalls(
+  fn: Pick<AbiFunction, 'signatureGuardDominatesDelegatecalls'>,
+): boolean {
+  return fn.signatureGuardDominatesDelegatecalls === true;
+}
+
+/**
+ * Is this value fixed for a given contract address - committed into the p2sh32 or into the script itself?
+ *
+ * True for `constructorArg` and `literal` only. `stateVar` is fixed only relative to the contract's own
+ * authorized writes, which is a different question a consumer has to answer for itself; `parameter`,
+ * `computed` and `unknown` are all "a spender may vary this". Anything not on the true list is refused, so a
+ * kind added by a later compiler falls closed here rather than being admitted by omission.
+ */
+export function isAddressCommittedProvenance(provenance: ReadValueProvenance): boolean {
+  return provenance.kind === 'constructorArg' || provenance.kind === 'literal';
+}
+
+/** Human-readable provenance, for diagnostics that have to say why a value was refused. */
+export function describeProvenance(provenance: ReadValueProvenance): string {
+  switch (provenance.kind) {
+    case 'constructorArg': return `constructor argument '${provenance.name}'`;
+    case 'parameter': return `caller-supplied parameter '${provenance.name}'`;
+    case 'stateVar': return `state variable '${provenance.name}'`;
+    case 'literal': return 'a compile-time literal';
+    case 'computed': return 'a computed expression';
+    // Either the body carried nothing to describe or the artifact predates the field; a consumer must not
+    // distinguish them, because both mean the artifact proves nothing here.
+    default: return 'a source this artifact does not name';
+  }
 }
 
 export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {

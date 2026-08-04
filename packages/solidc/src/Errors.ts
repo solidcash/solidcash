@@ -6,6 +6,7 @@ import {
   ParameterNode,
   Node,
   FunctionCallNode,
+  MethodCallNode,
   IndirectCallNode,
   BinaryOpNode,
   UnaryOpNode,
@@ -48,8 +49,74 @@ import {
   RevertNode,
 } from './ast/AST.js';
 import { Symbol, SymbolType } from './ast/SymbolTable.js';
-import { Location } from './ast/Location.js';
+import { Location, generatedOriginOf, sourceFileOf } from './ast/Location.js';
 import { BinaryOperator } from './ast/Operator.js';
+
+export type SolidcDiagnosticCode =
+  | 'MESSAGE_BUS_RESERVED_SELECTOR_COLLISION'
+  | 'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE'
+  | 'MESSAGE_BUS_REQUIRED'
+  | 'INTERFACE_CONTRACT_BASE'
+  | 'SPLIT_CLOSURE_CAPACITY'
+  | 'SPLIT_ROOT_CAPACITY'
+  | 'SPLIT_LAYOUT_CONFLICT';
+
+/** Machine-stable compiler refusal with source-owned context. */
+export class SolidcDiagnosticError extends Error {
+  readonly name = 'SolidcDiagnosticError';
+
+  constructor(
+    public readonly code: SolidcDiagnosticCode,
+    message: string,
+    public readonly context: Readonly<Record<string, unknown>>,
+  ) {
+    super(`solidc [${code}]: ${message}`);
+  }
+}
+
+/**
+ * X92. Say so when a Line/Column is a position in COMPILER-GENERATED source.
+ *
+ * X71 named the synthetic position for the route PARSE. The same class has a second site the parse guard cannot
+ * reach: a diagnostic raised during SEMANTIC ANALYSIS of the merged AST, on a node the route parse built.
+ * Measured on `SushiMakerKashi.sol` (169 lines) during generated graph-route analysis:
+ * `Undefined reference to symbol __message_bus_arg_0_0 at Line 42, Column 6`, where line 42 of that file is
+ * `address private immutable sushi;`. The position is INSIDE the file, so nothing signals it is wrong.
+ */
+export function generatedSourceCaveat(location?: Location): string {
+  const origin = generatedOriginOf(location);
+  if (!origin) return '';
+  return ` - a position in ${origin}, NOT in your file. It shifts when an unrelated compile option changes the`
+    + ' generated preamble, and no edit to the contract can name it. This is a compiler defect';
+}
+
+/**
+ * X107. Name the imported file a HARD error's Line/Column belongs to.
+ *
+ * Warnings learned to do this; every error class here still printed a bare `Line N, Column M`, which cites a line
+ * that is real in an IMPORTED file and impossible in the file the user named. Measured: `ERC20Mock.sol` (15 lines)
+ * reports `Type 'address' can not be assigned to variable of type 'address payable' at Line 16` - line 16 of the
+ * ERC20 base it inherits.
+ *
+ * X92 rule, unchanged: a position can look both imported and generated, and GENERATED WINS. The imported label
+ * asserts "line N is real in file F on disk"; a generated position is in a string no file holds, so labelling it
+ * would be a SPECIFIC FALSE label naming a real file - worse than none.
+ *
+ * Measured over mistswap + solidity-by-example + eacc + a bus-mode solidity-by-example pass, 7394 diagnostics:
+ * hard-error positions naming a file too short to hold the line went 21 -> 4, and no diagnostic anywhere names a
+ * file that does not exist. WHAT THE STAMP DOES NOT REACH, so the next reader does not have to re-measure it:
+ *  - The 4 that remain are ANTLR error-listener SYNTAX errors. Their Location is built by the listener during
+ *    lexing/parsing, before `AstBuilder.build()` opens the stamped scope, so they are unstamped and print bare.
+ *    Moving the scope up to cover the lexer/parser phase in `parseCode` would cover them.
+ *  - Warnings raised from SymbolTableTraversal still print 39 bare positions that are imported lines, because its
+ *    private `diagLine` consults only its own reachability map, and one site (the revert-is-a-no-op warning) does
+ *    not even call it. Those exact Locations DO carry the stamp, measured.
+ */
+export function importedFileCaveat(location?: Location): string {
+  if (generatedOriginOf(location)) return '';
+  const file = sourceFileOf(location);
+  return file ? ` of imported "${file}"` : '';
+}
 
 export class SolidCashError extends Error {
   node: Node;
@@ -60,6 +127,8 @@ export class SolidCashError extends Error {
   ) {
     if (node.location) {
       message += ` at ${node.location.start}`;
+      message += importedFileCaveat(node.location);
+      message += generatedSourceCaveat(node.location);
     }
 
     super(message);
@@ -74,6 +143,51 @@ export class UnsupportedMemoryAliasingError extends SolidCashError {
   }
 }
 
+/**
+ * X119. A graph handler whose call shape route synthesis cannot lower.
+ *
+ * Six sites in `SymbolTableTraversal` raised a bare `throw new Error`, so the user got a message naming a
+ * SYNTHESIZED handler (`__message_bus_graph_swap`) and nothing to look at - no class name, no line, and no way to tell
+ * which of their own functions it was cloned from. The stamp cannot reach these: they need a NODE. Carrying the
+ * handler's definition node routes them through `SolidCashError`, so each one gains a Line/Column plus both file
+ * caveats the same way every other diagnostic here does.
+ *
+ * Only in bus/participant mode. Measured at `0103ce9d` over the full 152-file solidity-by-example denominator:
+ * SIX firings - four of `requires call/staticcall edges ..` (TokenSwap, TokenLock, UniswapV2Liquidity, Optimal)
+ * and two of `currently requires forwarded identifier arguments` (DiscreteStakingRewards, UniswapV2FlashSwap) -
+ * and ZERO in direct mode. Counting only the 141 files the SBE bench keeps in its denominator gives 3, which is
+ * the same measurement over a smaller corpus, not a different one.
+ *
+ * FOUR OF THE SIX SITES HAVE NO SUBJECT in mistswap + eacc + solidity-by-example, either mode: the runtime-graph,
+ * pinned-parameter-target, raw-calldata and unresolved-target-method refusals never fire. They share this class
+ * and therefore the position mechanism, but nothing here exercises them.
+ */
+export class GraphHandlerShapeError extends SolidCashError {
+  // Inherits `SolidCashError(node, message)`: the six sites already compose their own message, and the value this
+  // class adds is the position, the two file caveats and a name that is not `Error`.
+}
+
+/**
+ * X118. A value-returning, internally-invoked helper that emits an event.
+ *
+ * Such a helper compiles to an OP_INVOKE subroutine whose epilogue returns before emit settlement, so the event
+ * would be silently dropped; code generation refuses it. It refused with a bare internal `Error` carrying no class
+ * name, no position and no remedy, which is what the user saw on the canonical solidity-by-example `ERC20.sol` in
+ * PLAIN direct-mode compilation. `_mint` there is VOID as written - `LowerCollectionJournalHelpers` is what makes
+ * it returning - so `collectionJournal` is reported when that is the cause, because otherwise the message names a
+ * return value the source does not have.
+ */
+export class EmittingStateHelperEventError extends SolidCashError {
+  constructor(node: Node, name: string, viaCollectionJournal: boolean) {
+    super(node, `Helper '${name}' emits an event and is invoked internally as a value-returning subroutine, whose `
+      + 'event would be dropped at its exit'
+      + (viaCollectionJournal
+        ? ' (it is void as written; its single mapping entry made it a value-threaded collection-journal handler)'
+        : '')
+      + '. Move the emit into the calling entry point, or split the emit and the state write into separate helpers');
+  }
+}
+
 export class ParseError extends Error {
   constructor(
     message: string,
@@ -81,6 +195,11 @@ export class ParseError extends Error {
   ) {
     if (location) {
       message += ` at ${location.start}`;
+      // 39 of the 40 ParseError sites are raised BY AstBuilder, so the position is a line in whatever file that
+      // parse was reading - an import as often as the root. The listener-built positions (syntax errors) carry no
+      // stamp, so they print unchanged.
+      message += importedFileCaveat(location);
+      message += generatedSourceCaveat(location);
     }
 
     super(message);
@@ -148,6 +267,15 @@ export class EmptyContractError extends SolidCashError {
     public node: ContractNode,
   ) {
     super(node, `Contract ${node.name} contains no functions`);
+  }
+}
+
+export class NegativeExponentError extends SolidCashError {
+  constructor(
+    public node: Node,
+    exponent: bigint,
+  ) {
+    super(node, `Negative exponent ${exponent} in exponentiation`);
   }
 }
 
@@ -432,6 +560,15 @@ export class BitshiftBitcountNegativeError extends SolidCashError {
     bitcount: number,
   ) {
     super(node, `Bitshift bitcount cannot be negative: ${bitcount}`);
+  }
+}
+
+export class BitshiftBitcountTooLargeError extends SolidCashError {
+  constructor(
+    node: BinaryOpNode,
+    bitcount: bigint,
+  ) {
+    super(node, `Bitshift bitcount exceeds Solidity's uint32 constant limit: ${bitcount}`);
   }
 }
 
@@ -732,6 +869,33 @@ export class ErrorRedefinitionError extends RedefinitionError {
   }
 }
 
+export class ReservedErrorSelectorError extends SolidCashError {
+  constructor(node: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' uses reserved selector 0x${selectorHex}`);
+  }
+}
+
+export class ErrorSelectorCollisionError extends RedefinitionError {
+  constructor(node: ErrorDefinitionNode, existing: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' has the same 4-byte selector (0x${selectorHex}) as error '${existing.name}'`);
+  }
+}
+
+export class AnonymousEventSelectorError extends SolidCashError {
+  constructor(node: Node, eventName: string) {
+    super(node, `Anonymous event '${eventName}' does not have a selector`);
+  }
+}
+
+export class InvalidErrorUsageError extends SolidCashError {
+  constructor(node: FunctionCallNode, errorName: string) {
+    super(
+      node,
+      `Error '${errorName}' can only be used with a revert statement or as a require error`,
+    );
+  }
+}
+
 export class UndefinedErrorError extends SolidCashError {
   constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);
@@ -807,10 +971,39 @@ export class InvalidModifierCombinationError extends SolidCashError {
   }
 }
 
+export class InvalidImmutableTypeError extends SolidCashError {
+  constructor(node: Node, functionType = false) {
+    super(
+      node,
+      functionType
+        ? 'Immutable variables of external function type are not supported'
+        : 'Immutable variables cannot have a non-value type',
+    );
+  }
+}
+
+export class InvalidCallOptionError extends SolidCashError {
+  constructor(node: Node, option: string, target: string) {
+    super(node, `Cannot set call option '${option}' on ${target}`);
+  }
+}
+
 export class InternalCallToExternalError extends SolidCashError {
   constructor(node: FunctionCallNode | FunctionCallStatementNode) {
     const name = node instanceof FunctionCallNode ? node.identifier.name : node.call.identifier.name;
     super(node, `Cannot call external function '${name}' from within another function`);
+  }
+}
+
+export class LibrarySelfExternalCallError extends SolidCashError {
+  constructor(node: FunctionCallNode | MethodCallNode, name: string) {
+    super(node, `Library cannot call its own function '${name}' externally`);
+  }
+}
+
+export class InvalidBaseFunctionCallError extends SolidCashError {
+  constructor(node: FunctionCallNode, reason: 'external' | 'unimplemented') {
+    super(node, `Cannot call ${reason} base function '${node.identifier.name}'`);
   }
 }
 
@@ -924,6 +1117,12 @@ export class AmbiguousOverloadError extends SolidCashError {
   }
 }
 
+export class AmbiguousEventOverloadError extends SolidCashError {
+  constructor(node: EmitStatementNode) {
+    super(node, `No unique declaration found for overloaded event '${node.eventName}'`);
+  }
+}
+
 export class CircularImportError extends Error {
   constructor(filePath: string) {
     super(`Circular import detected: ${filePath}`);
@@ -989,6 +1188,23 @@ export class UndefinedInterfaceError extends SolidCashError {
   }
 }
 
+export class InterfaceContractBaseError extends SolidcDiagnosticError {
+  constructor(public readonly node: InterfaceNode, baseName: string) {
+    const sourceFile = sourceFileOf(node.location);
+    super(
+      'INTERFACE_CONTRACT_BASE',
+      `interface '${node.name}' cannot inherit contract '${baseName}'; interfaces can only inherit interfaces`,
+      {
+        interfaceName: node.name,
+        baseName,
+        baseKind: 'contract',
+        sourceLocation: { line: node.location.start.line, column: node.location.start.column },
+        ...(sourceFile ? { sourceFile } : {}),
+      },
+    );
+  }
+}
+
 export class CircularInterfaceInheritanceError extends SolidCashError {
   constructor(public node: InterfaceNode) {
     super(node, `Circular inheritance detected for interface '${node.name}'`);
@@ -1019,9 +1235,51 @@ export class NonVirtualOverrideError extends SolidCashError {
   }
 }
 
+export class OverrideMutabilityError extends SolidCashError {
+  constructor(node: Node, from: string, to: string) {
+    super(node, `Overriding function changes state mutability from '${from}' to '${to}'`);
+  }
+}
+
+export class AbstractOverrideOfImplementedError extends SolidCashError {
+  constructor(node: Node, functionName: string, parentName: string) {
+    super(node, `Unimplemented function '${functionName}' cannot override implemented function from '${parentName}'`);
+  }
+}
+
 export class OverrideBaseListError extends SolidCashError {
   constructor(node: Node, functionName: string, baseName: string) {
     super(node, `override(${baseName}) on '${functionName}': '${baseName}' is not a base contract that declares it`);
+  }
+}
+
+export class DuplicateOverrideBaseError extends SolidCashError {
+  constructor(node: Node, declarationName: string, baseName: string) {
+    super(node, `Duplicate contract '${baseName}' in override list of '${declarationName}'`);
+  }
+}
+
+export class OverrideNothingError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Declaration '${declarationName}' has override specified but does not override anything`);
+  }
+}
+
+export class GetterOverrideMismatchError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Public getter '${declarationName}' does not match the overridden function return type`);
+  }
+}
+
+export class MissingOverrideBasesError extends SolidCashError {
+  constructor(node: Node, declarationName: string, bases: string[]) {
+    super(node, `Override of '${declarationName}' must specify bases ${bases.join(', ')}`);
+  }
+}
+
+export class InvalidModifierOverrideError extends SolidCashError {
+  constructor(node: Node, modifierName: string, reason: string) {
+    super(node, `Invalid override of modifier '${modifierName}': ${reason}`);
   }
 }
 
@@ -1047,6 +1305,12 @@ export class AbstractContractNotCompilableError extends Error {
   constructor(contractName: string) {
     super(`Cannot compile abstract contract '${contractName}' - abstract contracts do not produce artifacts. Extend it with a concrete contract instead.`);
     this.name = this.constructor.name;
+  }
+}
+
+export class AbstractContractInstantiationError extends SolidCashError {
+  constructor(node: InstantiationNode, contractName: string) {
+    super(node, `Cannot instantiate abstract contract '${contractName}'`);
   }
 }
 
@@ -1080,6 +1344,12 @@ export class DeployValueInNonStatefulError extends SolidCashError {
   }
 }
 
+export class InvalidDeploymentValueError extends SolidCashError {
+  constructor(public node: Node, message: string) {
+    super(node, message);
+  }
+}
+
 export class LibraryNotCompilableError extends Error {
   constructor(libraryName: string) {
     super(`Cannot compile library '${libraryName}' - libraries do not produce artifacts. Import library functions into a contract instead.`);
@@ -1090,6 +1360,18 @@ export class LibraryNotCompilableError extends Error {
 export class ParentInvocationArgCountError extends SolidCashError {
   constructor(node: Node, parentName: string, expected: number, actual: number) {
     super(node, `Parent constructor invocation '${parentName}' expects ${expected} arguments but got ${actual}`);
+  }
+}
+
+export class ModifierStyleBaseConstructorError extends SolidCashError {
+  constructor(node: Node, parentName: string) {
+    super(node, `Base constructor invocation '${parentName}' must use parentheses`);
+  }
+}
+
+export class InvalidBaseConstructorArgumentError extends SolidCashError {
+  constructor(node: ExpressionNode, reference: string) {
+    super(node, `Invalid base constructor argument: '${reference}' is a declaration, not a value`);
   }
 }
 
@@ -1120,6 +1402,14 @@ export class PrivateCollectionAccessError extends SolidCashError {
 export class UndefinedExternalStateVariableError extends SolidCashError {
   constructor(node: Node, interfaceName: string, varName: string) {
     super(node, `Interface '${interfaceName}' does not declare state variable or collection '${varName}'`);
+  }
+}
+
+export class UnsupportedExternalOutStateCollectionError extends SolidCashError {
+  constructor(node: Node, interfaceName: string, collectionName: string, type: Type) {
+    super(node, `External outState collection '${interfaceName}.${collectionName}' has unsupported type '${type}'. `
+      + 'CallManifest v1 supports mapping entries; dynamic and fixed arrays require an authenticated '
+      + 'element/chunk reconstruction backend');
   }
 }
 
@@ -1179,6 +1469,49 @@ export class UsingForUndefinedFunctionError extends SolidCashError {
   }
 }
 
+export class UsingForInvalidFunctionReferenceError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(node, `Identifier '${functionName}' in 'using for' directive is not a function name or not unique`);
+  }
+}
+
+export class UsingForIncompatibleTargetError extends SolidCashError {
+  constructor(node: Node, functionName: string, targetType: string, parameterType: string) {
+    super(
+      node,
+      `Function '${functionName}' cannot be attached to '${targetType}' because it cannot be implicitly converted `
+      + `to the function's first parameter type '${parameterType}'`,
+    );
+  }
+}
+
+export class UsingForPrivateFunctionError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(
+      node,
+      `Function '${functionName}' is private and cannot be attached to a type outside its declaring library`,
+    );
+  }
+}
+
+export class DeprecatedNowError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '"now" has been deprecated. Use "block.timestamp" instead');
+  }
+}
+
+export class GlobalUsingForNonUDVTError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);
+  }
+}
+
+export class UnsupportedAbiV1TypeError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Type '${typeName}' is only supported in ABI coder v2; use 'pragma abicoder v2;'`);
+  }
+}
+
 export class OperatorOverloadNonUDVTError extends SolidCashError {
   constructor(node: Node, operator: string, typeName: string) {
     super(node, `Operator '${operator}' overloading is only allowed on user-defined value types, but '${typeName}' is not a UDVT`);
@@ -1212,5 +1545,51 @@ export class ExternalAccessOnUnconnectedError extends SolidCashError {
 export class ContractTypeConstructorArgCountError extends SolidCashError {
   constructor(node: Node, typeName: string) {
     super(node, `Contract type constructor '${typeName}()' expects 1 or 2 arguments (locking bytecode[, address])`);
+  }
+}
+
+/**
+ * A returning external edge reached code generation in a function whose compiled external-call layout has no
+ * slot for it, so there is no return-event output to read the result from.
+ *
+ * Code generation aborted here with a bare internal sentinel (`Unbound return call in <fn>; graph=<flag>`) -
+ * no error name, no position and no remedy, which is the shape the message-bus board treats as a defect in
+ * its own right. X22 closed one instance by refusing the shape in route synthesis; this is the gate in front
+ * of every shape that still reaches the generator, whichever upstream gate missed it.
+ */
+export class UnboundReturnCallError extends SolidCashError {
+  constructor(node: Node, functionName: string, edge: string, slotIndex: number, slotCount: number) {
+    const routed = /^__message_bus/.test(functionName);
+    super(
+      node,
+      `Function '${functionName}' consumes the return value of the external call '${edge}', but no return-event `
+      + `slot is reserved for it in that function's compiled layout (${slotCount} external-call slot`
+      + `${slotCount === 1 ? '' : 's'}; the call carries index ${slotIndex}), so there is no authenticated `
+      + 'output to read the result from. The call was relocated into this function after its layout was fixed. '
+      + (routed
+        ? 'On a message-bus route that is a void helper which both consumes a call result and carries a '
+          + 'physical effect: the effect makes the helper ineligible for its own OP_INVOKE subroutine, so it is '
+          + 'inlined into the message-bus batch wrapper, and the wrapper owns the block slots. Keep the returning call in a '
+          + 'handler whose body carries no other physical effect (event, satoshi transfer, token-container move '
+          + 'or deploy), or drop the result and make the call a void tail call.'
+        : 'Keep the returning call in the function whose layout owns its return-event slot, or drop the result '
+          + 'and make the call a void tail call.'),
+    );
+  }
+}
+
+export class GraphEmissionEffectError extends SolidCashError {
+  constructor(node: Node, handlerName: string, effect: string) {
+    super(
+      node,
+      `Batched handler '${handlerName}' performs ${effect}, which the route reserves no output slot for, so it `
+      + 'would settle WITHOUT the effect while the same function called directly enforces it - and the spender chooses '
+      + 'which entry to use. A token-container transfer needs a co-spent container INPUT slot bound to its '
+      + 'category parameter, which the route only reserves when a handler also READS the container: adding '
+      + '`require(this.tokens[<category>].tokenAmount >= <amount>)` makes the route settle the transfer. Handlers '
+      + 'routed through the message bus additionally execute behind OP_INVOKE (that is what keeps their outgoing '
+      + 'edges recomputable against the callManifest); the route frames their emit and transfer outputs per '
+      + 'dispatch site (X29), but not a container input.',
+    );
   }
 }

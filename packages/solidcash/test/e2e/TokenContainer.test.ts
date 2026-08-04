@@ -1,4 +1,8 @@
-import { compileString } from 'solidc';
+/* eslint-disable @typescript-eslint/no-shadow */
+import { compileString } from '../direct-compile.js';
+const providerInputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
 import {
   Contract, StatefulContract,
   StatefulTransactionBuilder,
@@ -1937,12 +1941,12 @@ contract C() {
       // Attack first (live utxos, a rejected tx spends nothing): rejected by the covenant, not a utxo error.
       let msg = '';
       await expect(provider.sendRawTransaction(attackRaw).catch((e) => { msg = (e as Error).message; throw e; }))
-        .rejects.toThrow();
+        .rejects.toThrow(providerInputZeroVerifyFailure);
       expect(/missingorspent|inputs/i.test(msg)).toBe(false);
       expect(/verify|script/i.test(msg)).toBe(true);
 
       // The honest, container-preserving tx (built before the mutation) IS accepted against the same utxos.
-      await expect(provider.sendRawTransaction(honestRaw)).resolves.toBeDefined();
+      await expect(provider.sendRawTransaction(honestRaw)).resolves.toMatch(/^[0-9a-f]{64}$/);
     });
   });
 });

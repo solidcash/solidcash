@@ -1,4 +1,4 @@
-import { decodeTransactionUnsafe, hexToBin, stringify } from '@bitauth/libauth';
+import { binToHex, decodeTransactionUnsafe, hexToBin, stringify } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, placeholderP2PKHUnlocker, placeholderPublicKey, placeholderSignature } from '../src/index.js';
 import {
   bobAddress,
@@ -18,6 +18,10 @@ import twtArtifact from './fixture/transfer_with_timeout.artifact.js';
 import { TransactionBuilder } from '../src/TransactionBuilder.js';
 import { createTestProvider, getTxOutputs } from './test-util.js';
 import { generateWcTransactionObjectFixture } from './fixture/walletconnect/fixtures.js';
+
+const WRONG_P2PKH_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)$');
 
 describe('Transaction Builder', () => {
   const provider = createTestProvider();
@@ -254,13 +258,16 @@ describe('Transaction Builder', () => {
       const nftUtxo = randomUtxo({ token: randomNFT() });
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
-      expect(() => {
-        new TransactionBuilder({ provider })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          // use the real (post-addUtxo) token so the preserved category matches on regtest
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftUtxo.token })
-          .build();
-      }).not.toThrow();
+      const raw = new TransactionBuilder({ provider })
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+      // use the real (post-addUtxo) token so the preserved category matches on regtest
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: nftUtxo.token })
+        .build();
+      const built = decodeTransactionUnsafe(hexToBin(raw));
+      expect(built.inputs).toHaveLength(1);
+      expect(built.outputs).toHaveLength(1);
+      expect(binToHex(built.outputs[0].token?.category ?? new Uint8Array())).toBe(nftUtxo.token.category);
+      expect(built.outputs[0].token?.nft?.commitment).toEqual(hexToBin(nftUtxo.token.nft!.commitment));
     });
 
     it('should succeed when mutable NFT commitment changes in output', async () => {
@@ -273,12 +280,13 @@ describe('Transaction Builder', () => {
         nft: { capability: 'mutable' as const, commitment: 'ccdd' },
       };
 
-      expect(() => {
-        new TransactionBuilder({ provider })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: updatedToken })
-          .build();
-      }).not.toThrow();
+      const raw = new TransactionBuilder({ provider })
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n, token: updatedToken })
+        .build();
+      const built = decodeTransactionUnsafe(hexToBin(raw));
+      expect(binToHex(built.outputs[0].token?.nft?.commitment ?? new Uint8Array())).toBe('ccdd');
+      expect(built.outputs[0].token?.nft?.capability).toBe('mutable');
     });
 
     it('should succeed when allowImplicitNftBurn is true', async () => {
@@ -286,12 +294,18 @@ describe('Transaction Builder', () => {
       const nftUtxo = randomUtxo({ token: nftToken });
       await provider.addUtxo(p2pkhInstance.tokenAddress, nftUtxo);
 
-      expect(() => {
-        new TransactionBuilder({ provider, allowImplicitNftBurn: true })
-          .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
-          .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n })
-          .build();
-      }).not.toThrow();
+      const raw = new TransactionBuilder({ provider, allowImplicitNftBurn: true })
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n })
+        .build();
+      const built = decodeTransactionUnsafe(hexToBin(raw));
+      expect(built.inputs).toHaveLength(1);
+      expect(built.outputs).toHaveLength(1);
+      expect(built.outputs[0].token).toBeUndefined();
+      expect(() => new TransactionBuilder({ provider })
+        .addInput(nftUtxo, p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
+        .addOutput({ to: bobTokenAddress, amount: nftUtxo.satoshis - 1000n })
+        .build()).toThrow('Implicit burning of NFT');
     });
 
     it('should fail when adding a duplicate input (same txid:vout)', async () => {
@@ -428,11 +442,14 @@ describe('Transaction Builder', () => {
       .addInput(aliceUtxos[1], sigTemplate.unlockP2PKH())
       .addOutput({ to: aliceAddress, amount: change });
 
-    await expect(transaction.send()).resolves.not.toThrow();
+    const sent = await transaction.send();
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex).not.toHaveLength(0);
   });
 
-  // TODO: Currently, P2PKH inputs are not evaluated at all
-  it.skip('should fail when invalidly spending from only P2PKH inputs', async () => {
+  it('should fail when invalidly spending from only P2PKH inputs', async () => {
+    await provider.addUtxo(aliceAddress, randomUtxo());
+    await provider.addUtxo(aliceAddress, randomUtxo());
     const aliceUtxos = (await provider.getUtxos(aliceAddress)).filter(isNonTokenUtxo);
     const incorrectSigTemplate = new SignatureTemplate(bobPriv);
 
@@ -445,24 +462,27 @@ describe('Transaction Builder', () => {
       .addInput(aliceUtxos[1], incorrectSigTemplate.unlockP2PKH())
       .addOutput({ to: aliceAddress, amount: change });
 
-    await expect(transaction.send()).rejects.toThrow();
+    await expect(transaction.send()).rejects.toThrow(WRONG_P2PKH_INPUT_0);
   });
 
-  // TODO: Currently, P2PKH inputs are not evaluated at all
-  it.skip('should fail when invalidly spending from P2PKH and correctly from contract inputs', async () => {
+  it('should fail when invalidly spending from P2PKH and correctly from contract inputs', async () => {
+    await provider.addUtxo(aliceAddress, randomUtxo());
+    await provider.addUtxo(aliceAddress, randomUtxo());
     const aliceUtxos = (await provider.getUtxos(aliceAddress)).filter(isNonTokenUtxo);
     const p2pkhUtxos = (await p2pkhInstance.getUtxos()).filter(isNonTokenUtxo).sort(utxoComparator).reverse();
     const incorrectSigTemplate = new SignatureTemplate(bobPriv);
 
     expect(aliceUtxos.length).toBeGreaterThan(2);
 
-    const change = aliceUtxos[0].satoshis + aliceUtxos[1].satoshis - 1000n;
+    // Price the output from the inputs this transaction actually spends. Using aliceUtxos[1]
+    // made the fixture random: it could fail balance validation before reaching the bad signature.
+    const change = aliceUtxos[0].satoshis + p2pkhUtxos[0].satoshis - 1000n;
 
     const transaction = new TransactionBuilder({ provider })
       .addInput(aliceUtxos[0], incorrectSigTemplate.unlockP2PKH())
       .addInput(p2pkhUtxos[0], p2pkhInstance.unlock.spend(carolPub, new SignatureTemplate(carolPriv)))
       .addOutput({ to: aliceAddress, amount: change });
 
-    await expect(transaction.send()).rejects.toThrow();
+    await expect(transaction.send()).rejects.toThrow(WRONG_P2PKH_INPUT_0);
   });
 });

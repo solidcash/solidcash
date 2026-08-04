@@ -19,17 +19,23 @@ import {
   MappingAssignNode,
   MappingFieldAssignNode,
   MappingDeleteNode,
+  TupleAssignmentNode,
   BreakNode,
   ContinueNode,
   ReturnNode,
   FunctionCallNode,
+  IndirectCallNode,
+  MethodCallNode,
   NewArrayNode,
+  CollectionIterationNode,
+  ArrayAccessNode,
 } from '../ast/AST.js';
 import { GlobalFunction } from '../ast/Globals.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, Type } from '@solidcash/utils';
 import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
+import { PointerTableExpansionMap, recordPointerTableExpansion } from './PointerTableBound.js';
 
 const MAX_UNROLL = 64;
 
@@ -41,8 +47,9 @@ const MAX_UNROLL = 64;
  * by EntryWriteInLoopError, because one fixed entry slot can't hold N runtime entries). Distinct constant-index
  * keys get distinct entry slots, so the unrolled form is equivalent to hand-written static writes.
  *
- * Restricted to be sound: only fires when the body contains a mapping write OR a keccak256 call (else unrolling
- * is needless), never when the body has break/continue/return (unrolling changes their control flow), and
+ * Restricted to be sound: only fires when the body contains a mapping write, a keccak256 call, or an indirect
+ * external function-pointer call (else unrolling is needless), never when the body has break/continue/return
+ * (unrolling changes their control flow), and
  * N <= MAX_UNROLL (avoid code blow-up). Runs before break/continue expansion + SymbolTableTraversal so the static
  * writes / keccak calls get their slots. A fixed-bound keccak256 loop unrolls to N syntactic calls (N compute
  * side-cars, each resolved by the complex-arg probe); a runtime-bound keccak loop stays flagged keccakInLoop.
@@ -51,6 +58,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   private mappingNames = new Set<string>();
   private varTypes = new Map<string, Type>();
   private stateVarTypes = new Map<string, Type>();
+  private collectionTypes = new Map<string, Type>();
   // Locals initialized to a `new T[](N)` literal (N compile-time), for folding `local.length`. Populated
   // post-inline: `_updateJobWhitelist(id, allowed, new address[](0))` binds the arg to an inline local
   // `__inlN_disallowed_ = new address[](0)`, so the loop's `disallowed_.length` bound is constant. Only names
@@ -58,6 +66,16 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // size always holds - the length can't change out from under the fold.
   private newArrayLocalSizes = new Map<string, bigint>();
   private mutatedNames = new Set<string>(); // names ever reassigned / push / pop / element-written in the fn
+
+  private currentFunction = '';
+
+  constructor(
+    private readonly indirectCallsOnly = false,
+    private readonly expansions?: PointerTableExpansionMap,
+    private readonly fixedCollectionIterations = false,
+  ) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -75,14 +93,65 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     ]);
     const prevState = this.stateVarTypes;
     this.stateVarTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
+    const prevCollections = this.collectionTypes;
+    this.collectionTypes = new Map(node.collections.map((collection) => [collection.name, collection.type]));
     node.functions = node.functions.map((f) => this.visit(f) as FunctionDefinitionNode);
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     this.mappingNames = prev;
     this.stateVarTypes = prevState;
+    this.collectionTypes = prevCollections;
     return node;
   }
 
+  /**
+   * A native entry-backed fixed array has a compiler-owned cardinality and identities: `T[N]` is exactly the
+   * entry set 0..N-1. In message-bus mode, expand its collection iteration to the same static indexed reads a
+   * user could write by hand. The ordinary entry-slot machinery then authenticates the exact count, source
+   * order, and every index identity. Enumerable mappings and dynamic arrays deliberately retain their runtime
+   * CollectionIterationNode and the route's named fail-closed refusal.
+   *
+   * MAX_UNROLL is also the existing fixed-resource expansion ceiling. Leaving a larger fixed array rolled makes
+   * it hit `collection-iteration-handler-not-enabled`, rather than manufacturing a route beyond that ceiling.
+   */
+  visitCollectionIteration(node: CollectionIterationNode): Node {
+    if (!this.fixedCollectionIterations) return super.visitCollectionIteration(node);
+    const type = this.collectionTypes.get(node.collectionName);
+    if (!(type instanceof ArrayType) || type.bound === undefined || type.bound > MAX_UNROLL) {
+      return super.visitCollectionIteration(node);
+    }
+
+    const iterations: StatementNode[] = [];
+    for (let index = 0; index < type.bound; index++) {
+      const statements: StatementNode[] = [];
+      if (node.keyName && node.keyType) {
+        const key = new VariableDefinitionNode(
+          node.keyType, [], node.keyName, new IntLiteralNode(BigInt(index)),
+        );
+        key.location = node.location;
+        statements.push(key);
+      }
+      if (node.valueName && node.valueType) {
+        const access = new ArrayAccessNode(
+          new IdentifierNode(node.collectionName), new IntLiteralNode(BigInt(index)),
+        );
+        access.location = node.location;
+        const value = new VariableDefinitionNode(node.valueType, [], node.valueName, access);
+        value.location = node.location;
+        statements.push(value);
+      }
+      statements.push(...(cloneNode(node.body).statements ?? []));
+      const block = new BlockNode(statements);
+      block.location = node.body.location;
+      iterations.push(this.visit(block) as StatementNode);
+    }
+    const expanded = new BlockNode(iterations);
+    expanded.location = node.location;
+    return expanded;
+  }
+
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const prevName = this.currentFunction;
+    this.currentFunction = node.name;
     const prev = this.varTypes;
     this.varTypes = new Map(prev);
     const prevNewArr = this.newArrayLocalSizes;
@@ -94,6 +163,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     this.varTypes = prev;
     this.newArrayLocalSizes = prevNewArr;
     this.mutatedNames = prevMutated;
+    this.currentFunction = prevName;
     return node;
   }
 
@@ -108,6 +178,11 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof AssignNode && n.identifier instanceof IdentifierNode) names.add(n.identifier.name);
+      // A tuple assignment rebinds every non-skip slot. `(a, b) = (b, a)` swaps whole array values, so a
+      // `new T[](N)` size recorded for `a` would otherwise stay trusted while `a` now holds b's array.
+      if (n instanceof TupleAssignmentNode) {
+        for (const element of n.elements) if (!element.skip && element.name) names.add(element.name);
+      }
       if (n instanceof ArrayPushNode || n instanceof ArrayPopNode) names.add(n.name);
       if (n instanceof DeleteLocalNode) names.add(n.identifier.name);
       for (const key of Object.keys(n)) {
@@ -194,8 +269,24 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // a runtime loop needs one compute side-car per RUNTIME call, but the block layout allocates one per SYNTACTIC
     // call; unrolling a fixed-bound loop turns the N runtime calls into N syntactic calls (each an independent
     // slot, resolved by the complex-arg probe). Never unroll with break/continue/return (changes control flow).
-    if (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts)) return undefined;
+    // A function-pointer loop is ONLY an unroll trigger in indirectCallsOnly (message-bus route) mode.
+    // Outside it, `fns[i](v)` in a loop is the ordinary broadcast idiom: its covenant reads and verifies the
+    // WHOLE table from one index-independent receiver, and unrolling it into N single-element callsites changes
+    // the direct ABI (per-element selector and master-index witnesses) that shipped broadcast callers use.
+    const hasIndirectCall = this.hasIndirectCall(bodyStmts);
+    if (this.indirectCallsOnly ? !hasIndirectCall
+      : (!this.hasMappingWrite(bodyStmts) && !this.hasKeccakCall(bodyStmts))) return undefined;
     if (this.hasControlFlowEscape(bodyStmts)) return undefined;
+
+    // A pointer-table dispatch loop with a FIXED literal trip count reaches exactly `values.length` rows. Record
+    // that ceiling so the artifact can publish one bounded loop callsite instead of N indistinguishable rows.
+    if (hasIndirectCall
+      && this.countNodes(bodyStmts, (n) => n instanceof IndirectCallNode
+        || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined)) === 1) {
+      recordPointerTableExpansion(
+        this.expansions, this.currentFunction, { count: values.length, guarded: false },
+      );
+    }
 
     // Each iteration is wrapped in its own block so body-local declarations (`address user = ...`) don't collide
     // across the N copies (Solidity block scoping). The loop variable is substituted by its per-iteration literal.
@@ -267,15 +358,20 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     return this.anyNode(stmts, (n) => n instanceof FunctionCallNode && n.identifier.name === GlobalFunction.KECCAK256);
   }
 
+  private hasIndirectCall(stmts: Node[]): boolean {
+    return this.anyNode(stmts, (n) => n instanceof IndirectCallNode
+      || (n instanceof MethodCallNode && n.selectorArrayVar !== undefined));
+  }
+
   private hasControlFlowEscape(stmts: Node[]): boolean {
     return this.anyNode(stmts, (n) => n instanceof BreakNode || n instanceof ContinueNode || n instanceof ReturnNode);
   }
 
-  private anyNode(stmts: Node[], pred: (n: Node) => boolean): boolean {
-    let found = false;
+  private countNodes(stmts: Node[], pred: (n: Node) => boolean): number {
+    let found = 0;
     const walk = (n: Node): void => {
-      if (found || !n) return;
-      if (pred(n)) { found = true; return; }
+      if (!n) return;
+      if (pred(n)) found += 1;
       for (const key of Object.keys(n)) {
         if (key === 'location') continue;
         const v = (n as unknown as Record<string, unknown>)[key];
@@ -285,6 +381,10 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     };
     for (const s of stmts) walk(s);
     return found;
+  }
+
+  private anyNode(stmts: Node[], pred: (n: Node) => boolean): boolean {
+    return this.countNodes(stmts, pred) > 0;
   }
 
   private substituteVar(node: Node, varName: string, value: bigint): void {

@@ -176,7 +176,7 @@ describe('X51: the artifact publishes the key commitment SEC-17 credits', () => 
    */
   it('resolves a committed key the same way each time it appears in one key expression', () => {
     const source = 'contract C(pubkey admin) { bytes20 pkh; int n;'
-      + ' function kill(sig[2] ss, pubkey pk, address to) external {'
+      + ' function kill(sig[2] ss, pubkey pk, address payable to) external {'
       + ' require(hash160(pk) == this.pkh); require(checkMultiSig(ss, [pk, pk])); selfdestruct(to); } }';
     expect(guardOf(source, 'kill')).toEqual({ key: PK_KEY, keyCommitment: { kind: 'stateVar', name: 'pkh' } });
   });
@@ -252,7 +252,7 @@ describe('X51: the artifact publishes the key commitment SEC-17 credits', () => 
  * a cruder rule breaks.
  */
 const sd = (decls: string, guard: string): string => 'contract C(pubkey admin, bytes20 adminPkh) {'
-  + ` ${decls} int n; function kill(sig s, pubkey pk, address to, bytes20 otherPkh) external {`
+  + ` ${decls} int n; function kill(sig s, pubkey pk, address payable to, bytes20 otherPkh) external {`
   + ` ${guard} selfdestruct(to); } }`;
 
 function selfdestructWarns(source: string): boolean {

@@ -22,7 +22,6 @@ import {
   splitValueIntoValueChunks,
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
-  joinChunks,
   joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
@@ -6113,7 +6112,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const existing = stb.getChunkRawCommitments(dv.name);
               const range = { min: chunkOffset, max: chunkOffset + existing.length };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -6129,7 +6129,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length },
                 true,
               );
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -6261,7 +6262,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
               );
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -6479,7 +6481,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 cleanedTrace, { min: chunkOffset, max: chunkOffset + existing.length }, true,
               );
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 changed = true;
@@ -6804,7 +6807,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
     const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
-    const loopValueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
+    const loopValueChunkMints: Array<{
+      collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[];
+    }> = [];
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
     const computedValueChunkCollections = new Set<string>();
@@ -7917,7 +7922,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .sort((a, b) => a.chunkIndex - b.chunkIndex);
           const raw = joinValueChunks(headData, chunks, len);
           if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-            throw new Error(`C2 value chunks do not match the authenticated root`);
+            throw new Error('C2 value chunks do not match the authenticated root');
           }
           return raw;
         };
@@ -9808,6 +9813,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 && selectedLayout && selectedLayout.blockSize > 1) {
                 childBlockInputs = [];
                 let dataIndex = 0;
+                // This closure is awaited synchronously and owns the monotonically increasing local counter.
+                // eslint-disable-next-line @typescript-eslint/no-loop-func
                 const takeFunder = async (): Promise<UnlockableUtxo> => {
                   const funder = sharedFunderPool?.shift();
                   if (funder) return funder;
@@ -9987,9 +9994,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue;
         }
         nestedMasterIndices[groupIdx] = nestedInputBase;
+        const childMasterIndex = nestedInputBase;
         child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
           ...utxo,
-          unlocker: createDataNftUnlocker(child.externalContract.inner, nestedInputBase, child.categoryId),
+          unlocker: createDataNftUnlocker(child.externalContract.inner, childMasterIndex, child.categoryId),
         }));
         nestedInputBase += child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
       }
@@ -10109,16 +10117,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const denseCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
-      // A plain send intentionally materializes no returnEvent input/output; .emitReturn() materializes both.
-      // Keep the facet master aligned at the same input/output index in either mode. All other fixed block slots
-      // are materialized, so blockSize minus an inactive return slot remains authoritative for positional gaps.
-      const inactiveReturnSlots = returnEmitOutputIndex < 0
-        ? (abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'returnEvent').length ?? 0) : 0;
-      const materializedBlockSize = (abiFunction?.blockLayout?.blockSize ?? 0) - inactiveReturnSlots;
       const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
-      const explicitLowLevelCallOffset = abiFunction?.blockLayout?.slots
-        .find((slot) => slot.kind === 'lowLevelCall')?.offset
-        ?? delegateEventSlots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
       lowLevelCallInputBase = hasDelegatecallGroup
         // Delegate bytecode binds its proxy-master witness to the physical relation
         // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.
@@ -10161,7 +10160,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const encodedArgs: any[] = bFunc.inputs.map((inp) => {
             if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
             if (inp.name === '__internal__returnOutputIdx') {
-              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
               return BigInt(proxyExternalGroup === undefined
                 ? returnEmitOutputIndex
                 : returnIndexForGroup.get(proxyExternalGroup) ?? -1);
@@ -10172,7 +10170,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 : new Uint8Array(32);
             }
             if (inp.name === '__internal__proxyMasterIndex') {
-              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
               return BigInt(proxyExternalGroup === undefined
                 ? groupProxyMasterIndices[groupLocalIdx] ?? 0
                 : nestedMasterIndices[proxyExternalGroup]);

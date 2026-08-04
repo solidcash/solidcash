@@ -302,6 +302,7 @@ export class StatefulTransactionBuilder {
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string;
   }> = [];
+
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];

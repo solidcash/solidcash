@@ -519,7 +519,7 @@ describe('EventAnonymousE2E', () => {
   describe('toEmit matcher', () => {
     const artifact = compileString(NAMED_EVENT_CONTRACT);
     const stateLayout = artifact.stateLayout!;
-    const fresh = async () => {
+    const fresh = async (): Promise<StatefulContract> => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       const { categoryId } = await setupStatefulUtxos(
@@ -709,7 +709,7 @@ contract TargetWithEvent() {
     } as const satisfies Artifact;
 
     const stateLayout = artifact.stateLayout!;
-    const fresh = async () => {
+    const fresh = async (): Promise<StatefulContract> => {
       const provider = createTestProvider();
       const contract = new Contract(artifact, [], { provider });
       const { categoryId } = await setupStatefulUtxos(

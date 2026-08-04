@@ -3824,8 +3824,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop, seen)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) {
+        if (this.keccakCallInLoop(value, nowInLoop, seen)) return true;
+      } else if (Array.isArray(value)) {
         for (const item of value) {
           if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop, seen)) return true;
         }
@@ -7832,7 +7833,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && msgValueForbidden) {
       throw new InvalidModifierCombinationError(
         this.currentFunction,
-        `'msg.value' can only be read by payable constructors or payable public/external functions`,
+        '\'msg.value\' can only be read by payable constructors or payable public/external functions',
       );
     }
     if (node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN) {

@@ -1119,17 +1119,17 @@ function collectCalldataPointers(node: Node): void {
       ? node.expression.index.value
       : node.expression instanceof TupleIndexOpNode ? BigInt(node.expression.index) : undefined;
     if (array instanceof IdentifierNode && index !== undefined) {
-    const base = currentCalldataPointers.get(array.name);
-    const baseType = currentVars.get(array.name);
-    const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
-    const words = elementType ? compositeSlotWords(elementType) : 0;
-    if (base && words > 0) {
-      const delta = new IntLiteralNode(index * BigInt(words) * 32n);
-      delta.location = node.location;
-      const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
-      ptr.location = node.location;
-      currentCalldataPointers.set(node.name, ptr);
-    }
+      const base = currentCalldataPointers.get(array.name);
+      const baseType = currentVars.get(array.name);
+      const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
+      const words = elementType ? compositeSlotWords(elementType) : 0;
+      if (base && words > 0) {
+        const delta = new IntLiteralNode(index * BigInt(words) * 32n);
+        delta.location = node.location;
+        const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
+        ptr.location = node.location;
+        currentCalldataPointers.set(node.name, ptr);
+      }
     }
   }
   for (const key of Object.keys(node)) {

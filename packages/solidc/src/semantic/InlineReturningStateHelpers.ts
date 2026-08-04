@@ -353,12 +353,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // chain can then be dropped even when they reference one another.
         this.inlinedFns.add(fn.name);
         this.rawSlotFreeFns.add(fn.name);
-      }
       // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too.
-      else if (this.eligibleShape(fn)
+      } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
       }

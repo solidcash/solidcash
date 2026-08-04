@@ -241,7 +241,6 @@ import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
 import { findReservedYulIdentifier, isBchAsmBlock } from './YulAST.js';
-import AstTraversal from './AstTraversal.js';
 import {
   Modifier,
   NumberUnit,
@@ -417,9 +416,11 @@ export default class AstBuilder
   private simpleStorageReturnAliases: Map<string, {
     name: string; type: Type; keys: ExpressionNode[]; prefix: StatementNode[];
   }> = new Map();
+
   private pendingStorageReturnPushes: Map<string, Array<{
     block: BlockNode; value: ExpressionNode | undefined; noArg: boolean; ctx: ParserRuleContext;
   }>> = new Map();
+
   // True while building the body of a function/constructor/modifier with NO return values, so `return f();`
   // (Solidity's void tail form) can desugar to `f(); return;`. undefined = unknown scope (do not desugar).
   private currentFnIsVoid: boolean | undefined = undefined;
@@ -1094,7 +1095,7 @@ export default class AstBuilder
             }
             if (node.callOptions && freeFunctionNames.has(node.identifier.name)) {
               throw new ParseError(
-                `Function call options can only be set on external function calls or contract creations`,
+                'Function call options can only be set on external function calls or contract creations',
                 node.location,
               );
             }
@@ -2015,8 +2016,8 @@ export default class AstBuilder
     }
     if (parameters.length === 0 && functionDefinition.returnTypes.length === 1
       && functionDefinition.returnModifiers?.[0]?.includes(Modifier.STORAGE)) {
-      const statements = functionDefinition.body.statements ?? [];
-      const tail = statements[statements.length - 1];
+      const bodyStatements = functionDefinition.body.statements ?? [];
+      const tail = bodyStatements[bodyStatements.length - 1];
       const returned = tail instanceof ReturnNode && tail.expressions.length === 1 ? tail.expressions[0] : undefined;
       let targetName = returned instanceof IdentifierNode ? returned.name
         : returned instanceof StateAccessNode ? returned.name : undefined;
@@ -2549,7 +2550,7 @@ export default class AstBuilder
       const defName = `__pushPtr_def_${uid}`;
       // uint __idx = arr.length;  (pre-push length = the appended element's index)
       const idxDef = stamp(new VariableDefinitionNode(
-        this.solidityImportCompat ? new IntType(256, false) : PrimitiveType.BIGINT,
+        this.solidityImportCompat ? new IntType(false, 256) : PrimitiveType.BIGINT,
         [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
       // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
@@ -2561,7 +2562,7 @@ export default class AstBuilder
         const push = this.buildArrayPush(arrName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx);
         return stamp(new BlockNode([idxDef, push]));
       }
-    // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
+      // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
       const defDef = stamp(new VariableDefinitionNode(type, [], defName, undefined));
       defDef.allowUnused = true;
       const push = this.buildArrayPush(arrName, false, [], undefined, ident(defName), false, ctx);
@@ -7287,7 +7288,6 @@ export default class AstBuilder
   }
 
   visitAbiEncodeCall(ctx: AbiEncodeCallContext): AbiEncodeCallNode {
-    const ids = ctx.Identifier_list();
     const targetText = ctx.getText().slice('abi.encodeCall('.length).split(',')[0];
     let interfaceName: string;
     let functionName: string;
@@ -8423,8 +8423,8 @@ export default class AstBuilder
       stmts.push(iDef);
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
       if (hasThird) {
-        const rootType = this.resolvePushReceiverArrayType(lv);
-        const secondType = rootType?.elementType;
+        const nestedRootType = this.resolvePushReceiverArrayType(lv);
+        const secondType = nestedRootType?.elementType;
         const thirdType = secondType instanceof ArrayType ? secondType.elementType : undefined;
         if (!(secondType instanceof ArrayType) || !(thirdType instanceof ArrayType)) {
           throw new ParseError('Three chained .push() calls require a three-dimensional array', loc);

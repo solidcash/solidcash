@@ -203,6 +203,7 @@ export class ContractNode extends Node implements Named {
     origin: string;
     isVirtual: boolean;
   }>> = {};
+
   // Constructor external reads hoisted to deploy inputs by PromoteConstructorExternalReads. Surfaced as
   // stateLayout.deployReads so the SDK can auto-resolve them (read the target's state at deploy).
   deployReads: { input: string; addressInput: string; contractType: string; read: string }[] = [];

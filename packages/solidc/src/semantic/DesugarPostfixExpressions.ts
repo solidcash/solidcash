@@ -203,13 +203,13 @@ export default class DesugarPostfixExpressions extends AstTraversal {
   }
 
   private visitBlockStatement(stmt: StatementNode, out: StatementNode[]): void {
-      const savedAfter = this.after; const savedBefore = this.before; const savedStmt = this.currentStmt;
-      this.after = []; this.before = []; this.currentStmt = stmt;
-      const visited = this.visit(stmt) as StatementNode;
-      const before = this.before; const after = this.after;
-      this.after = savedAfter; this.before = savedBefore; this.currentStmt = savedStmt;
-      // Prefix increments hoist BEFORE the statement (they read the post-mutation value); postfix AFTER.
-      out.push(...before, visited, ...after);
+    const savedAfter = this.after; const savedBefore = this.before; const savedStmt = this.currentStmt;
+    this.after = []; this.before = []; this.currentStmt = stmt;
+    const visited = this.visit(stmt) as StatementNode;
+    const before = this.before; const after = this.after;
+    this.after = savedAfter; this.before = savedBefore; this.currentStmt = savedStmt;
+    // Prefix increments hoist BEFORE the statement (they read the post-mutation value); postfix AFTER.
+    out.push(...before, visited, ...after);
   }
 
   // `T x = c ? a : b` / `x = c ? a : b` cannot pull mutations in `a` or `b` to statement scope: only the

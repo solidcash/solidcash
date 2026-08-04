@@ -630,7 +630,7 @@ describe('using-for external-call library method on an interface-typed struct FI
     + ' require(token.transfer(to, v), "f"); } }';
   const ok = (body: string): void => {
     expect(() => compileString(`pragma solidity ^0.8.0; ${lib} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
-      + ` Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)`
+      + ' Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)'
       + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { solidityImportCompat: true })).not.toThrow();
   };
   it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));
@@ -764,12 +764,12 @@ describe('parenthesized using-for calls with named arguments', () => {
 describe('experimental standard-library imports', () => {
   it('accepts direct, aliased, and namespace std.module imports as compiler-provided no-ops', () => {
     for (const directive of [
-        'import std.stub;',
-        'import std.stub as stub;',
-        'import * as stub from std.stub;',
-        'import { identity } from std.stub;',
-        'import { identity as id, other } from std.stub;',
-      ]) {
+      'import std.stub;',
+      'import std.stub as stub;',
+      'import * as stub from std.stub;',
+      'import { identity } from std.stub;',
+      'import { identity as id, other } from std.stub;',
+    ]) {
       expect(() => compileString(`pragma experimental solidity; ${directive}`,
         { solidityImportCompat: true })).not.toThrow();
     }

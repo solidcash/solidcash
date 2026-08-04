@@ -3,7 +3,7 @@ import { binToHex } from '@bitauth/libauth';
 import {
   Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
-  encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, IntType, MappingType,
+  encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
@@ -5523,8 +5523,7 @@ function countSpdxIdentifiersInComments(code: string): number {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) { i += 1; break; }
-        else i += 1;
+        else if (code[i] === quote) { i += 1; break; } else i += 1;
       }
       continue;
     }
@@ -5576,8 +5575,7 @@ function validateUnicodeDirectionMarkers(code: string): void {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) { i += 1; break; }
-        else i += 1;
+        else if (code[i] === quote) { i += 1; break; } else i += 1;
       }
       validateToken(code.slice(start, i));
       continue;
@@ -5713,6 +5711,7 @@ export function parseCode(
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted.
   code = code.replace(
+    // eslint-disable-next-line max-len
     /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
     (_m, header, layoutPrefix, expr, inheritance) => {
       if (/\berc7201\b/.test(expr)) {
@@ -5723,6 +5722,7 @@ export function parseCode(
     },
   );
   code = code.replace(
+    // eslint-disable-next-line max-len
     /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
     (_m, header, clause, expr) => {
       if (/\berc7201\b/.test(expr)) {

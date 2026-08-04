@@ -8,6 +8,7 @@ import {
   FunctionCallStatementNode,
   VariableDefinitionNode,
   IdentifierNode,
+  IntLiteralNode,
   ExpressionNode,
   BranchNode,
   WhileNode,
@@ -15,6 +16,7 @@ import {
   UncheckedNode,
   MappingAccessNode,
   ArrayAccessNode,
+  TupleIndexOpNode,
   AssignNode,
   StateAssignNode,
   StateAccessNode,
@@ -22,11 +24,14 @@ import {
   MappingAssignNode,
   MappingDeleteNode,
   ArrayAssignNode,
+  StateArrayPushNode,
+  StateArrayPopNode,
   StateArrayAssignNode,
+  StateArrayDeleteNode,
   MappingFieldAssignNode,
+  TupleAssignmentNode,
   ReturnNode,
   FunctionCallNode,
-  TupleAssignmentNode,
   ConsoleStatementNode,
   EmitStatementNode,
   TokenContainerMethodStatementNode,
@@ -94,6 +99,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // Value-returning functions with a single `return <expr>` body and a storage-pointer param: inlined in
   // EXPRESSION position (they have no standalone value representation). exprStack guards against recursion.
   private exprInlinableFns: Map<string, FunctionDefinitionNode> = new Map();
+  // Ambiguity among the expression-inlinable subset only. A same-arity overload with no reducible single-return
+  // body cannot be selected by this path and therefore must not make the one eligible overload ambiguous.
+  private exprAmbiguousInlineKeys: Set<string> = new Set();
   private exprStack: string[] = [];
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -276,11 +284,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       this.inlinedFns.add(node.fallbackDef.name);
       this.keepDefFns.add(node.fallbackDef.name);
     }
-    // Library free-functions (`Lib.fn`) taking a STRUCT storage pointer are inlined too, but ONLY struct ones:
-    // array/mapping storage-pointer library fns (the `using Lib for T[]` path) have their own machinery a broad
-    // inlining would wrongly intercept. Scoping to StructType keeps that path intact (SBE-23).
+    // Library free-functions (`Lib.fn`) taking any storage pointer must inline too. A mapping/array pointer has
+    // no standalone stack representation any more than a struct pointer does; leaving a void `L.set(mapping
+    // storage, ...)` body behind makes its `table[k]` look like an ordinary local ArrayAssign and loses the
+    // declared mapping key type. The substitution below already routes mapping writes to the caller collection.
     for (const fn of this.freeFns) {
-      if (fn.body && fn.returnTypes.length === 0 && this.hasStructStoragePointerParam(fn)) {
+      if (fn.body && fn.returnTypes.length === 0 && this.hasStoragePointerParam(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -288,9 +297,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // mapping` helper `at(mapping storage a, uint i) returns (uint) { return a[i]; }`) are inlined in expression
     // position: the call is replaced by the substituted return expression (`m.at(k)` -> `L.at(m, k)` -> `m[k]`).
     this.exprInlinableFns = new Map();
+    const exprEligible: FunctionDefinitionNode[] = [];
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (this.isSingleReturnStoragePointerFn(fn)) this.exprInlinableFns.set(fn.name, fn);
+      if (this.isSingleReturnStoragePointerFn(fn)) exprEligible.push(fn);
     }
+    this.exprAmbiguousInlineKeys = collectAmbiguousInlineKeys(exprEligible);
     if (this.inlinedFns.size === 0 && this.exprInlinableFns.size === 0) return node;
 
     // Inline calls in every function body AND the constructor/fallback/receive - a constructor calling an
@@ -474,7 +486,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     if (callee) this.reorderNamedTail(visited, callee);
     if (callee && !this.exprStack.includes(callee.name)
       && visited.parameters.length === callee.parameters.length) {
-      if (this.ambiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
+      if (this.exprAmbiguousInlineKeys.has(inlineKey(callee.name, callee.parameters.length))) {
         throw new AmbiguousInlineOverloadError(node, callee.name, callee.parameters.length);
       }
       this.exprStack.push(callee.name);
@@ -662,6 +674,8 @@ export default class InlineStoragePointerCalls extends AstTraversal {
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
+    const collectionPaths = new Map<string, { name: string; keys: ExpressionNode[] }>();
+    const flattenedStructPaths = new Map<string, { name: string; keys: ExpressionNode[] }>();
     const inlinedArg = new Set<string>();
     const rmwPrologue: StatementNode[] = [];
     const rmwEpilogue: StatementNode[] = [];
@@ -681,10 +695,27 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           decl.location = arg.location ?? callee.location;
           rmwPrologue.push(decl as StatementNode);
           rmwEpilogue.push(acc.writeBack(local));
+        } else if (p.type instanceof StructType && callee.isLibraryFunction) {
+          const path = this.flattenedStructCollectionPath(arg, p.name, callee.body);
+          if (path) {
+            flattenedStructPaths.set(p.name, path);
+            rename.set(p.name, path.name);
+          } else if (arg instanceof IdentifierNode) {
+            rename.set(p.name, arg.name);
+          } else {
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          }
         } else if (arg instanceof IdentifierNode) {
           // A bare state-var argument is aliased by NAME (covers reads and writes, incl. mapping-assign
           // targets whose container is a string field).
           rename.set(p.name, arg.name);
+        } else if (p.type instanceof MappingType) {
+          const path = this.collectionPath(arg);
+          if (path) {
+            collectionPaths.set(p.name, path);
+            subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          }
+          else subs.set(p.name, cloneNode(arg) as ExpressionNode);
         } else {
           // A complex read-only access path is substituted by expression.
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
@@ -701,9 +732,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         rename.set(p.name, `${PREFIX}${n}_${p.name}`);
       }
     });
+    cloned.body = this.rewriteCollectionPointerWrites(
+      cloned.body, collectionPaths, flattenedStructPaths,
+    ) as BlockNode;
     this.walk(cloned.body, (node) => {
       if (node instanceof VariableDefinitionNode && !rename.has(node.name) && !subs.has(node.name)) {
         rename.set(node.name, `${PREFIX}${n}_${node.name}`);
+      } else if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (!element.skip && !element.existing && element.name
+            && !rename.has(element.name) && !subs.has(element.name)) {
+            rename.set(element.name, `${PREFIX}${n}_${element.name}`);
+          }
+        }
       }
     });
     // Rename value params/locals first (storage-param refs are untouched), then substitute storage
@@ -724,6 +765,186 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const inlined = this.inlineStatements(cloned.body.statements ?? [],
       [...stack, inlineKey(callee.name, callee.parameters.length)]);
     return [...bindings, ...rmwPrologue, ...inlined, ...rmwEpilogue];
+  }
+
+  // Resolve a storage-pointer argument like `fixedMaps[x]` to its root collection and captured prefix keys.
+  private collectionPath(arg: Node): { name: string; keys: ExpressionNode[] } | undefined {
+    if (arg instanceof MappingAccessNode) {
+      return { name: arg.name, keys: arg.keys.map((key) => cloneNode(key) as ExpressionNode) };
+    }
+    const keys: ExpressionNode[] = [];
+    let current: Node = arg;
+    while (current instanceof ArrayAccessNode || current instanceof TupleIndexOpNode) {
+      if (current instanceof ArrayAccessNode) {
+        keys.unshift(cloneNode(current.index) as ExpressionNode);
+        current = current.array;
+      } else {
+        const index = new IntLiteralNode(BigInt(current.index));
+        index.location = current.location;
+        keys.unshift(index);
+        current = current.tuple;
+      }
+    }
+    return current instanceof IdentifierNode && this.collectionNames.has(current.name)
+      ? { name: current.name, keys } : undefined;
+  }
+
+  // A struct containing a mapping/dynamic-array field is flattened into sibling collections (`data__a`,
+  // `data__b`, ...), so its original root `data` is deliberately absent from collectionNames. Recover the
+  // root+key path for `Lib.f(data[k])` when at least one flattened field collection proves that root exists.
+  private flattenedStructCollectionPath(
+    arg: Node, parameterName: string, body: Node,
+  ): { name: string; keys: ExpressionNode[] } | undefined {
+    const keys: ExpressionNode[] = [];
+    let current = arg;
+    while (current instanceof ArrayAccessNode || current instanceof TupleIndexOpNode) {
+      if (current instanceof ArrayAccessNode) {
+        keys.unshift(cloneNode(current.index) as ExpressionNode);
+        current = current.array;
+      } else {
+        const index = new IntLiteralNode(BigInt(current.index));
+        index.location = current.location;
+        keys.unshift(index);
+        current = current.tuple;
+      }
+    }
+    if (!(current instanceof IdentifierNode) || keys.length === 0) return undefined;
+    const prefix = `${current.name}__`;
+    if (![...this.collectionNames].some((name) => name.startsWith(prefix))) return undefined;
+    // Do not infer a flattened root merely because an unrelated sibling collection shares its prefix. Every
+    // flattened field name used by this helper must have a concrete caller-side field collection/state slot.
+    const usedSuffixes = new Set<string>();
+    this.walk(body, (item) => {
+      const name = (item as unknown as { name?: unknown }).name;
+      if (typeof name === 'string' && name.startsWith(`${parameterName}__`)) {
+        usedSuffixes.add(name.slice(parameterName.length));
+      }
+    });
+    if ([...usedSuffixes].some((suffix) =>
+      !this.collectionNames.has(`${current.name}${suffix}`)
+      && !this.stateVarNames.has(`${current.name}${suffix}`))) return undefined;
+    return { name: current.name, keys };
+  }
+
+  // AstBuilder represents `mapping storage p; p[k] = v` as ArrayAssignNode because `p` is a local pointer name,
+  // not a declared state collection. Once p binds to `root[prefix...]`, replace those writes with the concrete
+  // MappingAssign path. Reads remain expression nodes and are handled by ordinary identifier substitution.
+  private rewriteCollectionPointerWrites(
+    node: Node, paths: Map<string, { name: string; keys: ExpressionNode[] }>,
+    flattenedStructPaths: Map<string, { name: string; keys: ExpressionNode[] }> = new Map(),
+  ): Node {
+    const rooted = (
+      path: { name: string; keys: ExpressionNode[] }, tail: ExpressionNode, location: Node['location'],
+    ): ExpressionNode => {
+      let expression: ExpressionNode = new IdentifierNode(path.name);
+      expression.location = location;
+      for (const key of [...path.keys, tail]) {
+        const access = new ArrayAccessNode(expression, cloneNode(key) as ExpressionNode);
+        access.location = location;
+        expression = access;
+      }
+      return expression;
+    };
+    const flattened = (name: string): { name: string; keys: ExpressionNode[] } | undefined => {
+      const separator = name.indexOf('__');
+      if (separator <= 0) return undefined;
+      const path = flattenedStructPaths.get(name.slice(0, separator));
+      return path ? { name: `${path.name}${name.slice(separator)}`, keys: path.keys } : undefined;
+    };
+    const keys = (path: { keys: ExpressionNode[] }): ExpressionNode[] =>
+      path.keys.map((key) => cloneNode(key) as ExpressionNode);
+
+    const flattenedName = (node as unknown as { name?: unknown }).name;
+    const fieldPath = typeof flattenedName === 'string' ? flattened(flattenedName) : undefined;
+    if (fieldPath) {
+      if (node instanceof StateAssignNode) {
+        const replacement = new MappingAssignNode(fieldPath.name, keys(fieldPath), node.expression);
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayPushNode) {
+        const replacement = new MappingAssignNode(fieldPath.name, keys(fieldPath), node.value);
+        replacement.arrayPush = true;
+        replacement.noArg = node.noArg;
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayPopNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name, keys(fieldPath), new IntLiteralNode(0n),
+        );
+        replacement.arrayPop = true;
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayAssignNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name, [...keys(fieldPath), node.index], node.value,
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof StateArrayDeleteNode) {
+        const replacement = new MappingAssignNode(
+          fieldPath.name,
+          [...keys(fieldPath), node.index],
+          new IntLiteralNode(0n),
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+      if (node instanceof MappingAssignNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof MappingAccessNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof MappingDeleteNode) {
+        node.name = fieldPath.name;
+        node.keys = [...keys(fieldPath), ...node.keys];
+      } else if (node instanceof IdentifierNode || node instanceof StateAccessNode) {
+        const replacement = new MappingAccessNode(fieldPath.name, keys(fieldPath));
+        replacement.location = node.location;
+        return replacement;
+      }
+    }
+    if (node instanceof ArrayAssignNode) {
+      const path = paths.get(node.name);
+      if (path) {
+        const replacement = new MappingAssignNode(
+          path.name,
+          [...path.keys.map((key) => cloneNode(key) as ExpressionNode), node.index],
+          node.value,
+        );
+        replacement.location = node.location;
+        return replacement;
+      }
+    }
+    if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode) {
+      const path = paths.get(node.array.name);
+      if (path) return rooted(path, node.index, node.location);
+    }
+    if (node instanceof TupleIndexOpNode && node.tuple instanceof IdentifierNode) {
+      const path = paths.get(node.tuple.name);
+      if (path) {
+        const index = new IntLiteralNode(BigInt(node.index));
+        index.location = node.location;
+        return rooted(path, index, node.location);
+      }
+    }
+    for (const key of Object.keys(node)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      const value = (node as unknown as Record<string, unknown>)[key];
+      if (value instanceof Node) {
+        (node as unknown as Record<string, unknown>)[key] = this.rewriteCollectionPointerWrites(
+          value, paths, flattenedStructPaths,
+        );
+      } else if (Array.isArray(value)) {
+        (node as unknown as Record<string, unknown>)[key] = value.map((item) =>
+          item instanceof Node ? this.rewriteCollectionPointerWrites(item, paths, flattenedStructPaths) : item);
+      }
+    }
+    return node;
   }
 
   // Normalized element READ node + write-back builder for a struct storage-pointer bound to a mapping/array
@@ -804,7 +1025,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) this.walk(v, visit);
-      else if (Array.isArray(v)) for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      else if (Array.isArray(v)) {
+        for (const it of v) if (it instanceof Node) this.walk(it, visit);
+      }
+      else if (key === 'callOptions' && v && typeof v === 'object') {
+        // Call/deploy options are a plain object rather than an AST Node. They can still refer to helper
+        // parameters (`new D{value: amount}()`), so descend into each expression during alpha-renaming.
+        for (const opt of Object.values(v as unknown as Record<string, unknown>)) {
+          if (opt instanceof Node) this.walk(opt, visit);
+        }
+      }
     }
   }
 }

@@ -102,6 +102,16 @@ export interface ExternalCallUtxoGroup {
   functionArgs: any[];
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   callMode?: 'call' | 'staticcall' | 'delegatecall';
+  /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
+  delegateCallGroupIndex?: number;
+  /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
+  sharedGroupIndex?: number;
+  /** Honest SDK probe result for a read fused into another call sharing this master input. */
+  precomputedReturnCommitment?: Uint8Array;
+  /** Return slot owned by the state-writing call fused into this physical group. */
+  fusedReturnGroupIndex?: number;
+  /** Absolute output index verified by this physical call's return covenant. */
+  returnOutputIndex?: number;
   /** Compiler-owned hidden route used for a grouped logical invocation. */
   compilerRoute?: {
     abiFunction: AbiFunction;
@@ -135,6 +145,11 @@ export interface ExternalCallUtxoGroup {
   entryLoopStart?: number;
   /** B's collection signature for the loop entries (for the derive-time master-index unlocker patch). */
   entryLoopCollection?: string;
+  /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
+   * outputs let the first derivation pass reach and reveal both commitments. */
+  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number }>;
+  /** Internal handles for the placeholders above. */
+  plannedEntryInsertHandles?: number[];
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
 }
@@ -284,7 +299,9 @@ export class StatefulTransactionBuilder {
   // placed right after the group's block (B's covenant mints the NEW at masterInputIndex + blockSize).
   private externalCallEntryInserts: Array<{ categoryId: string; to: Uint8Array; commitment: string }> = [];
 
-  private pendingReturnEventOutputs: Array<{ categoryId: string; commitment: Uint8Array }> = [];
+  private pendingReturnEventOutputs: Array<{
+    categoryId: string; commitment: Uint8Array; identity: string;
+  }> = [];
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
@@ -303,6 +320,7 @@ export class StatefulTransactionBuilder {
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
   private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
+  private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
   private valueChunkVars: Map<string, Uint8Array> = new Map(); // collection -> chunk-address locking bytecode
@@ -369,7 +387,8 @@ export class StatefulTransactionBuilder {
     // Flatten external call inputs - use full block when available
     const externalCallInputs: UnlockableUtxo[] = [];
     for (const group of this.externalCallUtxoGroups) {
-      if (group.blockInputs && group.blockInputs.length > 0) {
+      if (group.sharedGroupIndex !== undefined) continue;
+      if (group.blockInputs) {
         // Full block: master + dataNfts + entries + SC + TCs + funders (all ordered by blockLayout)
         externalCallInputs.push(...group.blockInputs);
       } else {
@@ -657,7 +676,8 @@ export class StatefulTransactionBuilder {
     }
     const externalCallInputs: UnlockableUtxo[] = [];
     for (const g of this.externalCallUtxoGroups) {
-      if (g.blockInputs && g.blockInputs.length > 0) {
+      if (g.sharedGroupIndex !== undefined) continue;
+      if (g.blockInputs) {
         externalCallInputs.push(...g.blockInputs);
       } else {
         externalCallInputs.push(g.masterUtxo as UnlockableUtxo, ...g.dataNftUtxos);
@@ -937,6 +957,26 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
+  /**
+   * Runtime-loop value chunks occupy the region immediately before one terminal suffix output. The builder
+   * guarantees that suffix is either the required external-library sidecar recreation or a zero-value OP_RETURN
+   * anchor, and inserts fee change before this region.
+   */
+  addLateValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
+    this.lateValueChunkOutputs.push(output);
+    return this;
+  }
+
+  /** Insert a non-covenant output before the authenticated [late chunks][terminal suffix] region. */
+  private insertBeforeLateValueSuffix(builder: TransactionBuilder, output: Output): void {
+    if (this.lateValueChunkOutputs.length === 0) {
+      builder.addOutput(output);
+      return;
+    }
+    const suffixLength = this.lateValueChunkOutputs.length + 1;
+    builder.outputs.splice(builder.outputs.length - suffixLength, 0, output);
+  }
+
   /** Pin a collection's loop-entry (NEW) commitment as known-exactly, so auto-derivation skips re-deriving it. */
   pinLoopEntry(collection: string): this {
     this.pinnedLoopEntries.add(collection);
@@ -975,6 +1015,9 @@ export class StatefulTransactionBuilder {
 
   /** Output index where value chunks begin: after the block, dynamic chunks, and loop-entry (NEW) outputs. */
   getValueChunkOutputBase(): number {
+    if (this.delegateEntriesAfterLowLevel) {
+      return this.getLoopEntryOutputBase() + this._loopEntryOutputCount();
+    }
     let base = this.getChunkOutputBase();
     for (const dv of this.dynamicChunkVars) base += (this.chunkRawCommitments.get(dv.name) ?? []).length;
     if (!this.batchEntriesBeforeDynamicChunks) {
@@ -989,14 +1032,14 @@ export class StatefulTransactionBuilder {
   /**
    * Set a return event output for a cross-contract call.
    */
-  setReturnEventOutput(categoryId: string, commitment: Uint8Array): this {
-    // Upsert: replace existing entry for this categoryId, or append.
-    // For multiple return events with the same categoryId (rare), this replaces the first match.
-    const existing = this.pendingReturnEventOutputs.findIndex((r) => r.categoryId === categoryId);
+  setReturnEventOutput(categoryId: string, commitment: Uint8Array, identity = categoryId): this {
+    // A contract may be called more than once in one composed transaction.
+    // Category identifies the token; identity identifies the call/return slot.
+    const existing = this.pendingReturnEventOutputs.findIndex((r) => r.identity === identity);
     if (existing >= 0) {
-      this.pendingReturnEventOutputs[existing] = { categoryId, commitment };
+      this.pendingReturnEventOutputs[existing] = { categoryId, commitment, identity };
     } else {
-      this.pendingReturnEventOutputs.push({ categoryId, commitment });
+      this.pendingReturnEventOutputs.push({ categoryId, commitment, identity });
     }
     return this;
   }
@@ -1071,14 +1114,23 @@ export class StatefulTransactionBuilder {
       : this.lowLevelCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       ) + this.lowLevelCallRawInputs.length;
-    return base + lowLevelCallOutputCount + this.iterationEntryInputs.length
-      + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
+    const trailingBase = base + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+    if (this.delegateEntriesAfterLowLevel) {
+      return trailingBase + this._loopEntryOutputCount() + this._valueChunkOutputCount()
+        + this.pendingOutputs.length;
+    }
+    return trailingBase + (this.batchEntriesBeforeDynamicChunks ? this._loopEntryOutputCount() : 0);
   }
 
   private _dynamicChunkOutputCount(): number {
     let n = 0;
     for (const dv of this.dynamicChunkVars) n += (this.chunkRawCommitments.get(dv.name) ?? []).length;
     return n;
+  }
+
+  private _valueChunkOutputCount(): number {
+    return this.valueChunkOutputs.length
+      + [...this.valueChunkRawCommitments.values()].reduce((sum, commitments) => sum + commitments.length, 0);
   }
 
   getLoopEntryVars(): Array<{ collection: string; lockingBytecode: Uint8Array }> {
@@ -1094,12 +1146,15 @@ export class StatefulTransactionBuilder {
    * determines how many trailing entry NFT outputs are created (the runtime iteration count N).
    */
   setLoopEntryCommitments(collection: string, commitments: string[]): this {
-    this.loopEntryCommitments.set(collection, commitments);
+    const required = this.requiredLoopEntryCounts.get(collection);
+    this.loopEntryCommitments.set(collection, required === undefined ? commitments : commitments.slice(0, required));
     return this;
   }
 
   requireLoopEntryCount(collection: string, count: number): this {
     this.requiredLoopEntryCounts.set(collection, count);
+    const existing = this.loopEntryCommitments.get(collection);
+    if (existing && existing.length > count) this.loopEntryCommitments.set(collection, existing.slice(0, count));
     return this;
   }
 
@@ -1119,6 +1174,10 @@ export class StatefulTransactionBuilder {
    */
   getLoopEntryOutputBase(): number {
     if (this.batchEntriesBeforeDynamicChunks) return this.getChunkOutputBase() - this._loopEntryOutputCount();
+    if (this.delegateEntriesAfterLowLevel) {
+      return this.getChunkOutputBase() - this.pendingOutputs.length
+        - this._valueChunkOutputCount() - this._loopEntryOutputCount();
+    }
     return this.getChunkOutputBase() + this._dynamicChunkOutputCount();
   }
 
@@ -1317,6 +1376,44 @@ export class StatefulTransactionBuilder {
     // `delegateReturnEventAfterEvents` is set, i.e. unless the co-spent implementation emits AND returns.
     let deferredDelegateReturnEvents: Array<{ categoryId: string; commitment: Uint8Array }> = [];
     if (this.locktimeOverride !== undefined) builder.locktime = this.locktimeOverride;
+    const seenInputs = new Map<string, number>();
+    for (let index = 0; index < this.allInputs.length; index++) {
+      const input = this.allInputs[index];
+      const id = `${input.txid.toLowerCase()}:${input.vout}`;
+      const first = seenInputs.get(id);
+      if (first !== undefined) {
+        const roles = (candidate: UnlockableUtxo): string[] => {
+          const out: string[] = [];
+          const matches = (utxo: Utxo | undefined): boolean => !!utxo
+            && utxo.txid.toLowerCase() === candidate.txid.toLowerCase() && utxo.vout === candidate.vout;
+          if (matches(this.masterUtxo)) out.push('master');
+          this.dataNftUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`dataNft:${i}`); });
+          this.iterationEntryInputs.forEach((utxo, i) => {
+            if (matches(utxo)) out.push(`iterationEntry:${i}`);
+          });
+          this.externalCallUtxoGroups.forEach((group, groupIndex) => {
+            if (matches(group.masterUtxo)) out.push(`external:${groupIndex}:master`);
+            group.dataNftUtxos.forEach((utxo, nftIndex) => {
+              if (matches(utxo)) out.push(`external:${groupIndex}:dataNft:${nftIndex}`);
+            });
+          });
+          this.lowLevelCallUtxoGroups.forEach((group, groupIndex) => {
+            if (matches(group.masterUtxo)) out.push(`lowLevel:${groupIndex}:master`);
+            group.dataNftUtxos.forEach((utxo, nftIndex) => {
+              if (matches(utxo)) out.push(`lowLevel:${groupIndex}:dataNft:${nftIndex}`);
+            });
+          });
+          this.funderUtxos.forEach((utxo, i) => { if (matches(utxo)) out.push(`funder:${i}`); });
+          this.entryNfts.forEach((entry, i) => { if (matches(entry.utxo)) out.push(`entry:${i}`); });
+          return out;
+        };
+        throw new Error(
+          `Duplicate stateful input ${id} at ${first}/${index}; roles `
+          + `${roles(this.allInputs[first]).join(',') || 'other'} / ${roles(input).join(',') || 'other'}`,
+        );
+      }
+      seenInputs.set(id, index);
+    }
     builder.addInputs(this.allInputs);
     // Co-spend the external-library side-car as the LAST input (the covenant's library loader reads it via
     // OP_INPUTBYTECODE of the last input). Present in derivation probes and the final tx alike.
@@ -1492,6 +1589,7 @@ export class StatefulTransactionBuilder {
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
     for (const group of this.externalCallUtxoGroups) {
+      if (group.sharedGroupIndex !== undefined) continue;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;
       builder.addOutput({
@@ -1616,6 +1714,29 @@ export class StatefulTransactionBuilder {
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+          const plannedInsertIndex = group.plannedEntryInserts
+            ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
+
+          if (plannedInsertIndex >= 0) {
+            const handle = group.plannedEntryInsertHandles?.[plannedInsertIndex];
+            const insert = handle === undefined ? undefined : this.externalCallEntryInserts[handle];
+            builder.addOutput(insert && insert.commitment !== ''
+              ? {
+                to: insert.to,
+                amount: 1000n,
+                token: {
+                  amount: 0n,
+                  category: group.categoryId,
+                  nft: { capability: 'mutable', commitment: insert.commitment },
+                },
+              }
+              : {
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: input.token,
+              });
+            continue;
+          }
 
           // Trailing cross-contract callee LOOP entry (no block-layout slot, si >= entryLoopStart): mint B's
           // SDK-computed updated commitment. B's covenant pins output[master+blockSize+counter] == coSlot|coNext|newVal,
@@ -1753,6 +1874,8 @@ export class StatefulTransactionBuilder {
       // NEW at masterInputIndex + blockSize, right after B's block. Placed here in group order (skip cleared handles).
       for (const ins of this.externalCallEntryInserts) {
         if (ins.categoryId !== group.categoryId || ins.commitment === '') continue;
+        const handle = this.externalCallEntryInserts.indexOf(ins);
+        if (group.plannedEntryInsertHandles?.includes(handle)) continue;
         builder.addOutput({
           to: ins.to,
           amount: 1000n,
@@ -1766,6 +1889,21 @@ export class StatefulTransactionBuilder {
     // `OP_INPUTINDEX - (1 + dataNftCount)`. Emit the facet preservation output there FIRST, then the proxy's
     // return channel, so the output side matches the reserved input side instead of claiming its slot.
     if (this.delegateEntriesAfterLowLevel) {
+      // A return emitted by the proxy itself belongs in the proxy block, before
+      // the facet. Returns emitted by an external callee of the facet must follow
+      // the facet preservation outputs; otherwise the return NFT occupies the
+      // facet's absolute output index and its self-preservation check fails.
+      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId)) {
+        builder.addOutput({
+          to: new Uint8Array([0x51]),
+          amount: 800n,
+          token: {
+            amount: 0n,
+            category: re.categoryId,
+            nft: { capability: 'none', commitment: binToHex(re.commitment) },
+          },
+        });
+      }
       for (const group of this.lowLevelCallUtxoGroups.filter((g) => g.callMode === 'delegatecall')) {
         const bMaster = group.masterUtxo as UnlockableUtxo;
         builder.addOutput({
@@ -1782,8 +1920,9 @@ export class StatefulTransactionBuilder {
       // used to hand the return event - and computeBlockLayout always orders events before the returnEvent, so
       // deferring the return channel past the event outputs is what makes the two agree. `deferred` is empty
       // for every implementation without an event slot, so a plain returning delegate keeps this exact index.
-      if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents = this.pendingReturnEventOutputs;
-      for (const re of (this.delegateReturnEventAfterEvents ? [] : this.pendingReturnEventOutputs)) {
+      const externalReturnEvents = this.pendingReturnEventOutputs.filter((r) => r.categoryId !== this.categoryId);
+      if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents = externalReturnEvents;
+      for (const re of (this.delegateReturnEventAfterEvents ? [] : externalReturnEvents)) {
         builder.addOutput({
           to: new Uint8Array([0x51]),
           amount: 800n,
@@ -2220,7 +2359,7 @@ export class StatefulTransactionBuilder {
       });
     }
 
-    if (this.batchEntriesBeforeDynamicChunks) {
+    if (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel) {
       for (const lv of this.loopEntryVars) {
         for (const commitment of this.loopEntryCommitments.get(lv.collection) ?? []) {
           const entryOutput = {
@@ -2234,29 +2373,50 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // Dynamic-storage chunk outputs (trailing, after the preserved iteration-entry outputs). One mutable NFT
-    // per chunk of each dynamic var; commitments come from auto-derivation (the covenant builds them on-chain).
-    for (const dv of this.dynamicChunkVars) {
-      const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
-      for (const commitment of commitments) {
-        const chunkOutput = {
-          to: dv.lockingBytecode,
-          amount: 1200n,
-          token: {
-            amount: 0n,
-            category: this.categoryId,
-            nft: { capability: 'mutable' as const, commitment },
-          },
-        };
-        // Larger chunk commitments need more than the 1200-sat floor to clear the dust threshold.
+    const appendValueChunks = (): void => {
+      for (const vco of this.valueChunkOutputs) {
+        const chunkOutput = { ...vco };
         chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
         builder.addOutput(chunkOutput);
       }
-    }
+      for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
+        for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
+          const chunkOutput = {
+            to: lockingBytecode, amount: 1200n,
+            token: { amount: 0n, category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment } },
+          };
+          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+          builder.addOutput(chunkOutput);
+        }
+      }
+    };
+    if (this.delegateEntriesAfterLowLevel) appendValueChunks();
+
+    const appendDynamicChunks = (): void => {
+      for (const dv of this.dynamicChunkVars) {
+        const commitments = this.chunkRawCommitments.get(dv.name) ?? [];
+        for (const commitment of commitments) {
+          const chunkOutput = {
+            to: dv.lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n,
+              category: this.categoryId,
+              nft: { capability: 'mutable' as const, commitment },
+            },
+          };
+          chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+          builder.addOutput(chunkOutput);
+        }
+      }
+    };
+    if (!this.delegateEntriesAfterLowLevel) appendDynamicChunks();
 
     // Loop mapping-write entry outputs (trailing, after any chunks). One new mutable entry NFT per loop iteration;
     // commitments (key_enc||value_enc) come from auto-derivation (the covenant builds them on-chain per iteration).
-    for (const lv of (this.batchEntriesBeforeDynamicChunks ? [] : this.loopEntryVars)) {
+    for (const lv of (this.batchEntriesBeforeDynamicChunks || this.delegateEntriesAfterLowLevel
+      ? [] : this.loopEntryVars)) {
       const commitments = this.loopEntryCommitments.get(lv.collection) ?? [];
       for (const commitment of commitments) {
         const entryOutput = {
@@ -2276,21 +2436,7 @@ export class StatefulTransactionBuilder {
     // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
     // NEW nodes), matching the covenant's base masterInput+blockSize+isInsert. DIRECT values are injected exactly
     // (valueChunkOutputs); COMPUTED values are trace-derived (valueChunkVars, commitments filled by auto-derivation).
-    for (const vco of this.valueChunkOutputs) {
-      const chunkOutput = { ...vco };
-      chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-      builder.addOutput(chunkOutput);
-    }
-    for (const { collection, lockingBytecode } of this.getValueChunkVars()) {
-      for (const commitment of this.valueChunkRawCommitments.get(collection) ?? []) {
-        const chunkOutput = {
-          to: lockingBytecode, amount: 1200n,
-          token: { amount: 0n, category: this.categoryId, nft: { capability: 'mutable' as const, commitment } },
-        };
-        chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
-        builder.addOutput(chunkOutput);
-      }
-    }
+    if (!this.delegateEntriesAfterLowLevel) appendValueChunks();
 
     const trailingCapacity = this.blockLayout?.trailingCapacity ?? 0;
     if (trailingCapacity > 0) {
@@ -2316,6 +2462,27 @@ export class StatefulTransactionBuilder {
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
+    }
+    if (this.delegateEntriesAfterLowLevel) appendDynamicChunks();
+
+    for (const vco of this.lateValueChunkOutputs) {
+      const chunkOutput = { ...vco };
+      chunkOutput.amount = BigInt(Math.max(1200, calculateDust(chunkOutput)));
+      builder.addOutput(chunkOutput);
+    }
+
+    // Reverse-suffix chunk indexing requires exactly ONE output after the late chunk region in every build,
+    // including covenant-only probes and direct build() calls. A sidecar must be last for its self-preservation
+    // covenant; otherwise use a zero-value OP_RETURN anchor. send() inserts any fee change BEFORE this suffix.
+    if (this.lateValueChunkOutputs.length > 0) {
+      if (this.sidecarUtxo) {
+        builder.addOutput({
+          to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
+          amount: this.sidecarUtxo.satoshis,
+        });
+      } else {
+        builder.addOutput({ to: new Uint8Array([0x6a]), amount: 0n }); // OP_RETURN suffix anchor
+      }
     }
     // The final unused funder input of a bounded balanced layout remains after
     // the owner block; the outer transaction builder pairs it with change.
@@ -2520,6 +2687,23 @@ export class StatefulTransactionBuilder {
    * Compute the output index where return event outputs start.
    */
   getReturnEventOutputBase(): number {
+    if (this.delegateEntriesAfterLowLevel) {
+      let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length
+        + this.blockhashCoSpendUtxos.length + this.keccakComputeCoSpendUtxos.length
+        + this.ecrecoverComputeCoSpendUtxos.length;
+      for (const g of this.externalOutStateUtxoGroups) {
+        base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);
+      }
+      base += this.iterationEntryInputs.length;
+      for (const g of this.externalCallUtxoGroups) {
+        base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      }
+      base += this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId).length;
+      for (const g of this.lowLevelCallUtxoGroups.filter((candidate) => candidate.callMode === 'delegatecall')) {
+        base += 1 + g.dataNftUtxos.length;
+      }
+      return base;
+    }
     const layoutOffset = this.getBlockSlotOffset('returnEvent');
     if (layoutOffset !== undefined) return layoutOffset;
     return this.getEventOutputBase() + this.getEventOutputCount();
@@ -2643,6 +2827,8 @@ export class StatefulTransactionBuilder {
       + this._dynamicChunkOutputCount()
       + iterationEntryOutputCount
       + this.pendingOutputs.length
+      + this.lateValueChunkOutputs.length
+      + (this.lateValueChunkOutputs.length > 0 ? 1 : 0)
       + changeOutputCount;
   }
 
@@ -2843,9 +3029,9 @@ export class StatefulTransactionBuilder {
     const changeLockingSize = this.funderChangeAddress?.length ?? 35; // P2SH32 default
     const changeOutputOverhead = 8 + (changeLockingSize < 253 ? 1 : 3) + changeLockingSize;
 
-    // covenantSize already includes the side-car input (build() appends it); account for the recreation
-    // output added below (value 8 + scriptLen 1 + P2SH32 35), with a small margin.
-    const sidecarOutputOverhead = this.sidecarUtxo ? 50n : 0n;
+    // With late chunks, build() already includes the terminal sidecar recreation (or OP_RETURN anchor). Without
+    // late chunks, the sidecar recreation is still appended below and must be included in the estimate.
+    const sidecarOutputOverhead = this.sidecarUtxo && this.lateValueChunkOutputs.length === 0 ? 50n : 0n;
     const totalEstimatedSize = covenantSize + BigInt(feeInputOverhead) + BigInt(changeOutputOverhead)
       + sidecarOutputOverhead;
     const neededFee = this.computeMinFee(totalEstimatedSize);
@@ -2922,13 +3108,16 @@ export class StatefulTransactionBuilder {
       const changeAmount = available - neededFee;
 
       if (changeAmount >= DUST_MINIMUM) {
-        finalBuilder.addOutput({ to: changeTo, amount: changeAmount });
+        const changeOutput = { to: changeTo, amount: changeAmount };
+        // Keep [late chunks][one terminal suffix] contiguous at the end. The compiler authenticates chunk i by
+        // counting backward from OP_TXOUTPUTCOUNT, so fee change must precede the entire suffix region.
+        this.insertBeforeLateValueSuffix(finalBuilder, changeOutput);
       }
     }
 
     // Recreate the side-car as the LAST output (its self-preservation verifies the last output).
-    // Value-preserving (recreation amount == side-car input amount), so it is fee-neutral.
-    if (this.sidecarUtxo) {
+    // With late chunks it was already emitted by build() as their single terminal suffix.
+    if (this.sidecarUtxo && this.lateValueChunkOutputs.length === 0) {
       finalBuilder.addOutput({
         to: this.sidecarUtxo.unlocker.generateLockingBytecode(),
         amount: this.sidecarUtxo.satoshis,

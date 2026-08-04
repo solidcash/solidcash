@@ -24,11 +24,13 @@ import {
   StateArrayPopNode,
   StateArrayDeleteNode,
   MappingFieldAssignNode,
+  BranchNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
   TernaryOpNode,
   BinaryOpNode,
+  UnaryOpNode,
   TupleAssignmentNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
@@ -36,12 +38,17 @@ import {
   CastNode,
   AbiEncodeCallNode,
   NullaryOpNode,
+  FunctionModifier,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
-import { AmbiguousInlineOverloadError } from '../Errors.js';
-import { StructType, AddressType, MappingType } from '@solidcash/utils';
+import {
+  AmbiguousInlineOverloadError, OperatorOverloadSignatureError, UsingForInvalidFunctionReferenceError,
+} from '../Errors.js';
+import {
+  StructType, AddressType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
+} from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
-import { BinaryOperator, NullaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
@@ -82,23 +89,152 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private freeFnRefs: Set<string> = new Set(); // names called from within another free-function body
+  private rawSlotFreeFns: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
+  private usingBoundFns: Set<string> = new Set();
+  private operatorBindings: Map<string, string> = new Map(); // `${UDVT}/${operator}/${arity}` -> helper name
+  private operatorFns: Set<string> = new Set();
   private counter = 0;
   private hoists: StatementNode[] = [];
   private stack: string[] = [];
   private suppress = false;
+  private stateValueTypes: Map<string, Type> = new Map();
+  private currentValueTypes: Map<string, Type> = new Map();
+
+  constructor(private solidityImportCompat = false) {
+    super();
+  }
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
+    if (this.solidityImportCompat) {
+      const functionCounts = new Map<string, number>();
+      for (const fn of this.freeFns) {
+        functionCounts.set(fn.name, (functionCounts.get(fn.name) ?? 0) + 1);
+      }
+      for (const directive of [
+        ...(node.usingForDirectives ?? []),
+        ...node.importedContracts.flatMap((contract) => contract.usingForDirectives ?? []),
+        ...(node.contract.usingForDirectives ?? []),
+      ]) {
+        for (const binding of directive.functionBindings ?? []) {
+          if (functionCounts.get(binding.funcName) !== 1) {
+            throw new UsingForInvalidFunctionReferenceError(directive, binding.funcName);
+          }
+        }
+      }
+    }
+    this.usingBoundFns = new Set((node.usingForDirectives ?? [])
+      .flatMap((directive) => directive.functionBindings?.map((binding) => binding.funcName) ?? []));
+    this.operatorBindings = new Map();
+    this.operatorFns = new Set();
+    this.validatePreloweredOperators(node);
+    for (const directive of node.usingForDirectives ?? []) {
+      if (!directive.isGlobal || !directive.targetTypeName) continue;
+      for (const binding of directive.functionBindings ?? []) {
+        if (!binding.operator) continue;
+        const fn = (node.freeFunctions ?? []).find((candidate) => candidate.name === binding.funcName);
+        if (!fn) continue;
+        // Only the computed-pure-helper receiver shape needs its retained definition removed: semantic external-
+        // call analysis would otherwise add covenant parameters to that standalone operator subroutine. Keep every
+        // other operator definition so Solidity-negative body diagnostics (deploy/event/error/non-pure effects)
+        // are still checked normally.
+        if (this.containsPureInterfaceHelperReceiver(fn, node.freeFunctions ?? [])) {
+          this.operatorBindings.set(
+            `${directive.targetTypeName}/${binding.operator}/${fn.parameters.length}`, binding.funcName,
+          );
+          this.operatorFns.add(binding.funcName);
+        }
+      }
+    }
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
-    // A struct storage-pointer value helper (`get`/`size`) is inlined at every expression call site and cannot
+    // A storage-pointer value helper (`get`/`size`) is inlined at every expression call site and cannot
     // stand alone (its `map__field` accesses are dangling until renamed to the caller's `<arg>__field`), so drop
     // the fully-inlined ones. Kept if a call remained in a suppressed (conditionally-evaluated) position, OR if it
     // is still referenced from another free-function body (freeFnRefs, qualified+bare) - a low-level-call helper in
     // an un-inlined chain (functionCall -> functionCallWithValue) must stay a subroutine there, not dangle.
     node.freeFunctions = (node.freeFunctions ?? [])
-      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name) || this.freeFnRefs.has(f.name));
+      .filter((f) => !this.inlinedFns.has(f.name) || this.stillCalled.has(f.name)
+        || (this.usingBoundFns.has(f.name) && !this.operatorFns.has(f.name))
+        || (this.freeFnRefs.has(f.name) && !this.rawSlotFreeFns.has(f.name)));
+    const remaining = new Set(node.freeFunctions.map((f) => f.name));
+    for (const directive of node.usingForDirectives ?? []) {
+      if (!directive.functionBindings) continue;
+      directive.functionBindings = directive.functionBindings.filter(
+        (binding) => !binding.operator || remaining.has(binding.funcName),
+      );
+    }
+    node.usingForDirectives = (node.usingForDirectives ?? []).filter(
+      (directive) => directive.libraryName || !directive.functionBindings || directive.functionBindings.length > 0,
+    );
     return node;
+  }
+
+  // Pre-lowered operator helpers are removed before SymbolTableTraversal, so preserve the declaration checks that
+  // pass would otherwise perform. This is intentionally the same signature subset: global UDVT target, pure
+  // free-function implementation, correct unary/binary arity and matching parameter/return types.
+  private validatePreloweredOperators(node: SourceFileNode): void {
+    for (const directive of node.usingForDirectives ?? []) {
+      if (!directive.isGlobal || !directive.targetTypeName) continue; // semantic pass validates other directives
+      const targetName = directive.targetTypeName;
+      const seen = new Map<string, string>();
+      for (const binding of directive.functionBindings ?? []) {
+        if (!binding.operator) continue;
+        const fn = (node.freeFunctions ?? []).find((candidate) => candidate.name === binding.funcName);
+        if (!fn) continue; // semantic pass reports the undefined binding
+        const params = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
+        const unary = params.length === 1;
+        const binary = params.length === 2;
+        if ((!unary && !binary) || (unary && binding.operator !== '-' && binding.operator !== '~')) {
+          throw new OperatorOverloadSignatureError(
+            directive, binding.funcName, `invalid parameter count ${params.length} for '${binding.operator}'`,
+          );
+        }
+        if (!fn.isFreeFunction || !fn.modifiers.includes(FunctionModifier.PURE)) {
+          throw new OperatorOverloadSignatureError(
+            directive, binding.funcName, 'operator implementations must be pure free functions',
+          );
+        }
+        if (params.some((p) => !(p.type instanceof ValueType) || p.type.toString() !== targetName)) {
+          throw new OperatorOverloadSignatureError(
+            directive, binding.funcName, `all parameters must be '${targetName}'`,
+          );
+        }
+        const comparison = ['==', '!=', '<', '<=', '>', '>='].includes(binding.operator);
+        const ret = fn.returnTypes[0];
+        const validReturn = comparison ? ret === PrimitiveType.BOOL
+          : ret instanceof ValueType && ret.toString() === targetName;
+        if (!validReturn) {
+          throw new OperatorOverloadSignatureError(
+            directive, binding.funcName, `invalid return type '${ret?.toString() ?? 'void'}'`,
+          );
+        }
+        const key = `${binding.operator}/${unary ? 1 : 2}`;
+        const existingDefinition = seen.get(key);
+        if (existingDefinition && existingDefinition !== binding.funcName) {
+          throw new OperatorOverloadSignatureError(
+            directive, binding.funcName, `operator '${binding.operator}' already has a definition`,
+          );
+        }
+        seen.set(key, binding.funcName);
+      }
+    }
+  }
+
+  private containsPureInterfaceHelperReceiver(
+    fn: FunctionDefinitionNode, freeFns: FunctionDefinitionNode[],
+  ): boolean {
+    const pureIfaceHelpers = new Set(freeFns.filter((candidate) =>
+      candidate.modifiers.includes(FunctionModifier.PURE)
+      && candidate.returnTypes.length === 1
+      && candidate.returnTypes[0] instanceof AddressType
+      && candidate.returnTypes[0].interfaceName).map((candidate) => candidate.name));
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
+        && pureIfaceHelpers.has(n.object.identifier.name)) found = true;
+    });
+    return found;
   }
 
   visitContract(node: ContractNode): Node {
@@ -112,19 +248,30 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       (this.overloadsByKey.get(key) ?? this.overloadsByKey.set(key, []).get(key)!).push(fn);
     }
     this.qualifySiblingCalls();
+    // Canonicalize the common single early-return tail before testing inline eligibility:
+    // `if (c) return a; return b;` -> `return c ? a : b;`. This is evaluation-equivalent and lets a helper that
+    // transitively performs a low-level/external call inline into its entry point instead of becoming an
+    // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
+    for (const fn of [...node.functions, ...this.freeFns]) {
+      if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+        this.normalizeSimpleEarlyReturn(fn);
+      }
+    }
     this.ambiguousInlineKeys = collectAmbiguousInlineKeys([...node.functions, ...this.freeFns]);
     this.collectionNames = new Set(node.collections.map((c) => c.name));
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
+    this.stateValueTypes = new Map(node.stateVariables.map((sv) => [sv.name, sv.type]));
 
     this.inlinedFns = new Set();
+    this.rawSlotFreeFns = new Set();
     this.keepDefFns = new Set();
     // A function used as a VALUE (function pointer) must keep a real definition; exclude such names from
     // the state-touching criteria (its call SITES stay subroutine calls, matching prior behavior).
     const valueReferenced = this.collectValueReferencedNames(node);
     for (const fn of node.functions) {
       if (fn.graphEmissionHandler) continue;
-      if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStructPtr(fn)) {
+      if ((this.eligible(fn) && !valueReferenced.has(fn.name)) || this.eligibleStoragePtr(fn)) {
         this.inlinedFns.add(fn.name);
       }
     }
@@ -192,11 +339,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         }
       });
     }
-    // Library free-functions are inlined here as struct storage-pointer value helpers, or (like OZ Address's
+    // Library free-functions are inlined here as storage-pointer value helpers, or (like OZ Address's
     // `functionCall`) as single-tail-return helpers containing a low-level call; other library functions keep
     // their own (delegate) machinery.
     for (const fn of this.freeFns) {
-      if (this.eligibleStructPtr(fn)) this.inlinedFns.add(fn.name);
+      if (this.eligibleStoragePtr(fn)) this.inlinedFns.add(fn.name);
+      else if (this.eligibleShape(fn) && this.transitivelyTouchesRawEvmStorage(fn)) {
+        // A file-level assembly helper lowered to __evm_storage has the same block-layout constraint as any
+        // returning mapping helper. Inline the complete wrapper chain into the entry point; definitions in that
+        // chain can then be dropped even when they reference one another.
+        this.inlinedFns.add(fn.name);
+        this.rawSlotFreeFns.add(fn.name);
+      }
       // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
@@ -216,6 +370,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
       if (fn?.body) {
+        this.currentValueTypes = new Map(this.stateValueTypes);
+        for (const p of fn.parameters) this.currentValueTypes.set(p.name, p.type);
         this.stack = [inlineKey(fn.name, fn.parameters.length)];
         fn.body = this.visit(fn.body) as BlockNode;
       }
@@ -247,6 +403,23 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return stmts;
   }
 
+  private normalizeSimpleEarlyReturn(fn: FunctionDefinitionNode): void {
+    if (!fn.body || fn.returnTypes.length !== 1) return;
+    const stmts = fn.body.statements ?? [];
+    if (stmts.length < 2) return;
+    const branch = stmts[stmts.length - 2];
+    const tail = stmts[stmts.length - 1];
+    if (!(branch instanceof BranchNode) || branch.elseBlock || !(tail instanceof ReturnNode)
+      || tail.expressions.length !== 1) return;
+    const arm = branch.ifBlock.statements ?? [];
+    if (arm.length !== 1 || !(arm[0] instanceof ReturnNode) || arm[0].expressions.length !== 1) return;
+    const conditional = new TernaryOpNode(branch.condition, arm[0].expressions[0], tail.expressions[0]);
+    conditional.location = branch.location;
+    const ret = new ReturnNode([conditional]);
+    ret.location = tail.location;
+    fn.body.statements = [...stmts.slice(0, -2), ret];
+  }
+
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
   private eligibleShape(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length < 1) return false;
@@ -254,13 +427,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const stmts = this.effectiveStmts(fn.body.statements ?? []);
     const last = stmts[stmts.length - 1];
     if (!(last instanceof ReturnNode)) return false;
-    // The final return must be 1:1 with the declared return types, so a multi-value helper returns `(a, b)` (each
-    // split into a temp) rather than a nested tuple-forward `return g()` which can't be split.
     if (last.expressions.length !== fn.returnTypes.length) return false;
     let returns = 0;
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
-    if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
-    return true;
+    return returns === 1;
   }
 
   private eligible(fn: FunctionDefinitionNode): boolean {
@@ -345,9 +515,23 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // 1-return overload, a K-tuple inline needs the K-return overload (RebaseLibrary.add - `(t,b)=t.add(x,true)` picks
   // the 2-return overload, `t=t.add(x,y)` the 1-return one). Returns the UNIQUE overload with `want` return values,
   // or undefined when zero/several match (stay ambiguous - fail closed). `want<0` means "any multi-value" (>=2).
-  private pickOverloadByReturnArity(name: string, arity: number, want: number): FunctionDefinitionNode | undefined {
+  private pickOverloadByReturnArity(
+    name: string, arity: number, want: number, args?: ExpressionNode[],
+  ): FunctionDefinitionNode | undefined {
     const all = this.overloadsByKey.get(inlineKey(name, arity)) ?? [];
-    const matches = all.filter((f) => (want < 0 ? f.returnTypes.length >= 2 : f.returnTypes.length === want));
+    // Only overloads this pass can actually inline participate. A declaration/body that has the requested
+    // return arity but no linearizable tail return is not a competing candidate (e.g. an empty bytes32 overload
+    // beside a reducible uint storage-pointer helper).
+    let matches = all.filter((f) => (this.eligible(f) || this.eligibleStoragePtr(f))
+      && (want < 0 ? f.returnTypes.length >= 2 : f.returnTypes.length === want));
+    if (args) {
+      const typed = matches.filter((f) => args.every((arg, i) => {
+        if (!(arg instanceof IdentifierNode)) return true;
+        const actual = this.currentValueTypes.get(arg.name);
+        return !actual || actual.toString() === f.parameters[i]?.type.toString();
+      }));
+      if (typed.length > 0) matches = typed;
+    }
     return matches.length === 1 ? matches[0] : undefined;
   }
 
@@ -401,6 +585,25 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
       if (callee && callee !== fn && this.eligibleShape(callee)
         && this.transitivelyContainsExternalCall(callee, seen)) found = true;
+    });
+    return found;
+  }
+
+  private transitivelyTouchesRawEvmStorage(fn: FunctionDefinitionNode, seen: Set<string> = new Set()): boolean {
+    let direct = false;
+    this.walk(fn.body, (n) => {
+      if (n instanceof MappingAccessNode && n.name === '__evm_storage') direct = true;
+    });
+    if (direct) return true;
+    const key = inlineKey(fn.name, fn.parameters.length);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    let found = false;
+    this.walk(fn.body, (n) => {
+      if (found || !(n instanceof FunctionCallNode)) return;
+      const callee = this.lookupOverload(n.identifier.name, n.parameters.length);
+      if (callee && callee !== fn && this.eligibleShape(callee)
+        && this.transitivelyTouchesRawEvmStorage(callee, seen)) found = true;
     });
     return found;
   }
@@ -512,13 +715,22 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     return found;
   }
 
-  // A single-tail-return value helper taking a STRUCT storage pointer (`get`/`size` on a `Map storage map`). It
-  // reads state via the pointer (`map.values[k]` -> the caller's `<arg>__values` collection), so like a plain
-  // entry-reading helper it cannot be an OP_INVOKE subroutine and must inline at its expression call site.
-  private eligibleStructPtr(fn: FunctionDefinitionNode): boolean {
+  // A single-tail-return value helper taking a struct, mapping, or array storage pointer. Struct pointers rewrite
+  // flattened fields (`map.values[k]` -> the caller's `<arg>__values`); mapping pointers rewrite direct element
+  // accesses (`m[k]` -> `<arg>[k]`). Neither has an on-stack value representation, so the helper must inline.
+  // Mapping support is deliberately scoped to internal/private contract helpers: library and public mapping
+  // helpers use separate dispatch/lowering paths, and intercepting them here changes existing call semantics.
+  // Fixed arrays containing mappings use the same name-substitution scheme as mappings: their full
+  // `(arrayIndex, mappingKey, ...)` path is one collection key path, with no runtime pointer value.
+  private eligibleStoragePtr(fn: FunctionDefinitionNode): boolean {
     if (fn.collectionJournal) return false;
     if (!fn.body || fn.returnTypes.length < 1) return false;
-    if (!fn.parameters.some((p) => p.modifier.includes(Modifier.STORAGE) && p.type instanceof StructType)) return false;
+    const storageParams = fn.parameters.filter((p) => p.modifier.includes(Modifier.STORAGE));
+    const hasStruct = storageParams.some((p) => p.type instanceof StructType);
+    const hasMapping = storageParams.some((p) => p.type instanceof MappingType);
+    const hasArray = storageParams.some((p) => p.type instanceof ArrayType);
+    if (!hasStruct && !((hasMapping || hasArray) && !fn.isFreeFunction
+      && (fn.visibility === 'internal' || fn.visibility === 'private'))) return false;
     const stmts = fn.body.statements ?? [];
     const last = stmts[stmts.length - 1];
     if (!(last instanceof ReturnNode)) return false;
@@ -595,19 +807,22 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // overload, and a wrong (2-return) pick would fail the `returnTypes.length === 1` gate before disambiguation.
     let callee = this.lookupOverload(name, arity) ?? this.funcByName.get(name);
     if (callee && this.inlinedFns.has(name) && this.ambiguousInlineKeys.has(inlineKey(name, arity))) {
-      callee = this.pickOverloadByReturnArity(name, arity, 1) ?? callee;
+      callee = this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[]) ?? callee;
     }
     if (callee) this.reorderNamedTail(node, callee);
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity))
       && arity === callee.parameters.length
       && callee.returnTypes.length === 1) {
-      if (this.ambiguousInlineKeys.has(inlineKey(name, arity)) && !this.pickOverloadByReturnArity(name, arity, 1)) {
+      if (this.ambiguousInlineKeys.has(inlineKey(name, arity))
+        && !this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[])) {
         throw new AmbiguousInlineOverloadError(node, name, arity);
       }
       // A scalar helper inlines at an expression position, replaced by its single return temp. A multi-value
       // helper can't (one temp can't carry >1 value) - it is inlined only at a statement position, below.
-      return this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      const result = this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
+      if (node.fromThisCall) result.fromExternalSelfCall = true;
+      return result;
     }
     return node;
   }
@@ -675,7 +890,41 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     } else {
       node.right = this.visit(node.right);
     }
+    const type = this.expressionValueType(node.left);
+    const helper = type instanceof ValueType
+      ? this.operatorBindings.get(`${type.toString()}/${node.operator}/2`) : undefined;
+    if (helper) {
+      if (!this.suppress) {
+        const call = new FunctionCallNode(new IdentifierNode(helper), [node.left, node.right]);
+        call.location = node.location;
+        return this.visitFunctionCall(call);
+      }
+    }
     return node;
+  }
+
+  visitUnaryOp(node: UnaryOpNode): Node {
+    node.expression = this.visit(node.expression);
+    const spelling = node.operator === UnaryOperator.NEGATE ? '-'
+      : node.operator === UnaryOperator.INVERT ? '~' : undefined;
+    const type = spelling ? this.expressionValueType(node.expression) : undefined;
+    const helper = type instanceof ValueType
+      ? this.operatorBindings.get(`${type.toString()}/${spelling}/1`) : undefined;
+    if (helper) {
+      if (!this.suppress) {
+        const call = new FunctionCallNode(new IdentifierNode(helper), [node.expression]);
+        call.location = node.location;
+        return this.visitFunctionCall(call);
+      }
+    }
+    return node;
+  }
+
+  private expressionValueType(node: ExpressionNode): Type | undefined {
+    if (node.type) return node.type;
+    if (node instanceof IdentifierNode) return this.currentValueTypes.get(node.name) ?? node.definition?.type;
+    if (node instanceof FunctionCallNode) return node.resolvedFunction?.returnTypes?.[0];
+    return undefined;
   }
 
   private withSuppressed<T>(fn: () => T): T {
@@ -691,6 +940,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private inlineCall(callee: FunctionDefinitionNode, args: ExpressionNode[]): IdentifierNode[] {
     const n = this.counter++;
     const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    if (this.operatorFns.has(callee.name)) {
+      this.walk(cloned.body, (node) => {
+        if (node instanceof MethodCallNode && node.object instanceof FunctionCallNode) {
+          node.inlinedOperatorReceiver = true;
+        }
+      });
+    }
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();

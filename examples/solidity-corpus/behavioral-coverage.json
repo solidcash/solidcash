@@ -1,0 +1,757 @@
+{
+  "generatedFrom": "examples/solidity-corpus/results.json",
+  "corpusRoot": "/Code/solidity",
+  "compiledExecutableFixtures": 1504,
+  "explicitlyCoveredFixtures": 16,
+  "untracedFixtures": 1488,
+  "byTopic": {
+    "abicoder": {
+      "compiledExecutable": 128,
+      "explicitlyCovered": 0
+    },
+    "accessor": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "arithmetics": {
+      "compiledExecutable": 12,
+      "explicitlyCovered": 0
+    },
+    "array": {
+      "compiledExecutable": 210,
+      "explicitlyCovered": 6
+    },
+    "builtinFunctions": {
+      "compiledExecutable": 38,
+      "explicitlyCovered": 0
+    },
+    "cleanup": {
+      "compiledExecutable": 19,
+      "explicitlyCovered": 0
+    },
+    "constantEvaluator": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "constants": {
+      "compiledExecutable": 9,
+      "explicitlyCovered": 0
+    },
+    "constructor": {
+      "compiledExecutable": 20,
+      "explicitlyCovered": 0
+    },
+    "conversions": {
+      "compiledExecutable": 3,
+      "explicitlyCovered": 0
+    },
+    "deployedCodeExclusion": {
+      "compiledExecutable": 10,
+      "explicitlyCovered": 0
+    },
+    "ecrecover": {
+      "compiledExecutable": 5,
+      "explicitlyCovered": 0
+    },
+    "enums": {
+      "compiledExecutable": 11,
+      "explicitlyCovered": 0
+    },
+    "errors": {
+      "compiledExecutable": 34,
+      "explicitlyCovered": 0
+    },
+    "events": {
+      "compiledExecutable": 41,
+      "explicitlyCovered": 0
+    },
+    "exponentiation": {
+      "compiledExecutable": 3,
+      "explicitlyCovered": 0
+    },
+    "expressions": {
+      "compiledExecutable": 18,
+      "explicitlyCovered": 0
+    },
+    "externalContracts": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "fallback": {
+      "compiledExecutable": 11,
+      "explicitlyCovered": 0
+    },
+    "freeFunctions": {
+      "compiledExecutable": 8,
+      "explicitlyCovered": 0
+    },
+    "functionCall": {
+      "compiledExecutable": 65,
+      "explicitlyCovered": 0
+    },
+    "functionSelector": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "functionTypes": {
+      "compiledExecutable": 29,
+      "explicitlyCovered": 6
+    },
+    "getters": {
+      "compiledExecutable": 13,
+      "explicitlyCovered": 0
+    },
+    "immutable": {
+      "compiledExecutable": 18,
+      "explicitlyCovered": 0
+    },
+    "inheritance": {
+      "compiledExecutable": 38,
+      "explicitlyCovered": 0
+    },
+    "inlineAssembly": {
+      "compiledExecutable": 73,
+      "explicitlyCovered": 2
+    },
+    "integer": {
+      "compiledExecutable": 5,
+      "explicitlyCovered": 0
+    },
+    "interfaceID": {
+      "compiledExecutable": 6,
+      "explicitlyCovered": 0
+    },
+    "isoltestTesting": {
+      "compiledExecutable": 14,
+      "explicitlyCovered": 0
+    },
+    "libraries": {
+      "compiledExecutable": 63,
+      "explicitlyCovered": 0
+    },
+    "literals": {
+      "compiledExecutable": 11,
+      "explicitlyCovered": 0
+    },
+    "memoryManagement": {
+      "compiledExecutable": 5,
+      "explicitlyCovered": 0
+    },
+    "metaTypes": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "modifiers": {
+      "compiledExecutable": 30,
+      "explicitlyCovered": 0
+    },
+    "operators": {
+      "compiledExecutable": 63,
+      "explicitlyCovered": 0
+    },
+    "optimizer": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "payable": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "receive": {
+      "compiledExecutable": 3,
+      "explicitlyCovered": 0
+    },
+    "revertStrings": {
+      "compiledExecutable": 24,
+      "explicitlyCovered": 0
+    },
+    "reverts": {
+      "compiledExecutable": 10,
+      "explicitlyCovered": 0
+    },
+    "saltedCreate": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "scoping": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "shanghai": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "smoke": {
+      "compiledExecutable": 10,
+      "explicitlyCovered": 0
+    },
+    "specialFunctions": {
+      "compiledExecutable": 3,
+      "explicitlyCovered": 0
+    },
+    "state": {
+      "compiledExecutable": 22,
+      "explicitlyCovered": 0
+    },
+    "statements": {
+      "compiledExecutable": 2,
+      "explicitlyCovered": 0
+    },
+    "storage": {
+      "compiledExecutable": 30,
+      "explicitlyCovered": 0
+    },
+    "storageLayoutSpecifier": {
+      "compiledExecutable": 33,
+      "explicitlyCovered": 0
+    },
+    "strings": {
+      "compiledExecutable": 13,
+      "explicitlyCovered": 0
+    },
+    "structs": {
+      "compiledExecutable": 51,
+      "explicitlyCovered": 0
+    },
+    "tryCatch": {
+      "compiledExecutable": 20,
+      "explicitlyCovered": 0
+    },
+    "types": {
+      "compiledExecutable": 33,
+      "explicitlyCovered": 0
+    },
+    "underscore": {
+      "compiledExecutable": 1,
+      "explicitlyCovered": 0
+    },
+    "uninitializedFunctionPointer": {
+      "compiledExecutable": 6,
+      "explicitlyCovered": 0
+    },
+    "userDefinedValueType": {
+      "compiledExecutable": 28,
+      "explicitlyCovered": 1
+    },
+    "using": {
+      "compiledExecutable": 7,
+      "explicitlyCovered": 0
+    },
+    "variables": {
+      "compiledExecutable": 21,
+      "explicitlyCovered": 0
+    },
+    "various": {
+      "compiledExecutable": 62,
+      "explicitlyCovered": 0
+    },
+    "viaYul": {
+      "compiledExecutable": 91,
+      "explicitlyCovered": 1
+    },
+    "virtualFunctions": {
+      "compiledExecutable": 6,
+      "explicitlyCovered": 0
+    }
+  },
+  "explicitlyCovered": [
+    {
+      "fixture": "test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_zeroed_memory_index_access.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/array_storage_index_zeroed_test.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/array_storage_pop_zero_length.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/array_storage_push_pop.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/function_memory_array.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/indexAccess/index_access.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/function_delete_stack.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/function_delete_storage.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/pass_function_types_internally.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/same_function_in_construction_and_runtime_equality_check.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/ternary_contract_internal_function.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/ternary_contract_public_function.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/inlineAssembly/calldata_offset_read.sol",
+      "topic": "inlineAssembly",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/inlineAssembly/calldata_offset_read_write.sol",
+      "topic": "inlineAssembly",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/userDefinedValueType/calldata.sol",
+      "topic": "userDefinedValueType",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/viaYul/storage/dirty_storage_static_array.sol",
+      "topic": "viaYul",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    }
+  ],
+  "untracedExamplesByTopic": {
+    "abicoder": [
+      "test/libsolidity/semanticTests/abicoder/abi_decode_from_calldata.sol",
+      "test/libsolidity/semanticTests/abicoder/abi_decode_from_calldata_dynamic_array.sol",
+      "test/libsolidity/semanticTests/abicoder/abi_decode_from_calldata_static_array.sol",
+      "test/libsolidity/semanticTests/abicoder/abi_decode_from_calldata_struct_v2.sol",
+      "test/libsolidity/semanticTests/abicoder/abi_decode_from_memory_struct_v2.sol"
+    ],
+    "accessor": [
+      "test/libsolidity/semanticTests/accessor/accessor_for_const_state_variable.sol",
+      "test/libsolidity/semanticTests/accessor/accessor_for_state_variable.sol"
+    ],
+    "arithmetics": [
+      "test/libsolidity/semanticTests/arithmetics/addmod_mulmod.sol",
+      "test/libsolidity/semanticTests/arithmetics/addmod_mulmod_zero.sol",
+      "test/libsolidity/semanticTests/arithmetics/block_inside_unchecked.sol",
+      "test/libsolidity/semanticTests/arithmetics/checked_add_v1.sol",
+      "test/libsolidity/semanticTests/arithmetics/checked_add_v2.sol"
+    ],
+    "array": [
+      "test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_2d_zeroed_memory_index_access.sol",
+      "test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_array_static.sol",
+      "test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_return_param_zeroed_memory_index_access.sol",
+      "test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_zeroed_memory_index_access.sol",
+      "test/libsolidity/semanticTests/array/array_2d_assignment.sol"
+    ],
+    "builtinFunctions": [
+      "test/libsolidity/semanticTests/builtinFunctions/assignment_to_const_var_involving_keccak.sol",
+      "test/libsolidity/semanticTests/builtinFunctions/blobhash.sol",
+      "test/libsolidity/semanticTests/builtinFunctions/blobhash_shadow_resolution.sol",
+      "test/libsolidity/semanticTests/builtinFunctions/blockhash.sol",
+      "test/libsolidity/semanticTests/builtinFunctions/blockhash_shadow_resolution.sol"
+    ],
+    "cleanup": [
+      "test/libsolidity/semanticTests/cleanup/bool_conversion_v1.sol",
+      "test/libsolidity/semanticTests/cleanup/bool_conversion_v2.sol",
+      "test/libsolidity/semanticTests/cleanup/byte_array_to_storage_cleanup.sol",
+      "test/libsolidity/semanticTests/cleanup/cleanup_address_types_shortening.sol",
+      "test/libsolidity/semanticTests/cleanup/cleanup_address_types_v1.sol"
+    ],
+    "constantEvaluator": [
+      "test/libsolidity/semanticTests/constantEvaluator/negative_fractional_mod.sol",
+      "test/libsolidity/semanticTests/constantEvaluator/rounding.sol"
+    ],
+    "constants": [
+      "test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol",
+      "test/libsolidity/semanticTests/constants/asm_constant_file_level.sol",
+      "test/libsolidity/semanticTests/constants/assign_type_info.sol",
+      "test/libsolidity/semanticTests/constants/constant_string.sol",
+      "test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol"
+    ],
+    "constructor": [
+      "test/libsolidity/semanticTests/constructor/base_constructor_arguments.sol",
+      "test/libsolidity/semanticTests/constructor/bytes_in_constructors_unpacker.sol",
+      "test/libsolidity/semanticTests/constructor/constructor_arguments_external.sol",
+      "test/libsolidity/semanticTests/constructor/constructor_arguments_internal.sol",
+      "test/libsolidity/semanticTests/constructor/constructor_function_argument.sol"
+    ],
+    "conversions": [
+      "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory.sol",
+      "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory_reencode.sol",
+      "test/libsolidity/semanticTests/conversions/string_to_bytes.sol"
+    ],
+    "deployedCodeExclusion": [
+      "test/libsolidity/semanticTests/deployedCodeExclusion/bound_function.sol",
+      "test/libsolidity/semanticTests/deployedCodeExclusion/library_function.sol",
+      "test/libsolidity/semanticTests/deployedCodeExclusion/library_function_deployed.sol",
+      "test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function.sol",
+      "test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol"
+    ],
+    "ecrecover": [
+      "test/libsolidity/semanticTests/ecrecover/ecrecover.sol",
+      "test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol",
+      "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input.sol",
+      "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input_asm.sol",
+      "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input_proper.sol"
+    ],
+    "enums": [
+      "test/libsolidity/semanticTests/enums/constructing_enums_from_ints.sol",
+      "test/libsolidity/semanticTests/enums/enum_explicit_overflow.sol",
+      "test/libsolidity/semanticTests/enums/enum_explicit_overflow_homestead.sol",
+      "test/libsolidity/semanticTests/enums/enum_referencing.sol",
+      "test/libsolidity/semanticTests/enums/enum_with_256_members.sol"
+    ],
+    "errors": [
+      "test/libsolidity/semanticTests/errors/error_in_library_and_interface.sol",
+      "test/libsolidity/semanticTests/errors/error_selector.sol",
+      "test/libsolidity/semanticTests/errors/error_static_calldata_uint_array_and_dynamic_array.sol",
+      "test/libsolidity/semanticTests/errors/errors_by_parameter_type.sol",
+      "test/libsolidity/semanticTests/errors/named_error_args.sol"
+    ],
+    "events": [
+      "test/libsolidity/semanticTests/events/emit_three_identical_events.sol",
+      "test/libsolidity/semanticTests/events/emit_two_identical_events.sol",
+      "test/libsolidity/semanticTests/events/event.sol",
+      "test/libsolidity/semanticTests/events/event_access_through_base_name_emit.sol",
+      "test/libsolidity/semanticTests/events/event_anonymous.sol"
+    ],
+    "exponentiation": [
+      "test/libsolidity/semanticTests/exponentiation/literal_base.sol",
+      "test/libsolidity/semanticTests/exponentiation/signed_base.sol",
+      "test/libsolidity/semanticTests/exponentiation/small_exp.sol"
+    ],
+    "expressions": [
+      "test/libsolidity/semanticTests/expressions/bit_operators.sol",
+      "test/libsolidity/semanticTests/expressions/bytes_comparison.sol",
+      "test/libsolidity/semanticTests/expressions/conditional_expression_different_types.sol",
+      "test/libsolidity/semanticTests/expressions/conditional_expression_false_literal.sol",
+      "test/libsolidity/semanticTests/expressions/conditional_expression_functions.sol"
+    ],
+    "externalContracts": [
+      "test/libsolidity/semanticTests/externalContracts/deposit_contract.sol"
+    ],
+    "fallback": [
+      "test/libsolidity/semanticTests/fallback/call_forward_bytes.sol",
+      "test/libsolidity/semanticTests/fallback/falback_return.sol",
+      "test/libsolidity/semanticTests/fallback/fallback_argument.sol",
+      "test/libsolidity/semanticTests/fallback/fallback_argument_to_storage.sol",
+      "test/libsolidity/semanticTests/fallback/fallback_or_receive.sol"
+    ],
+    "freeFunctions": [
+      "test/libsolidity/semanticTests/freeFunctions/easy.sol",
+      "test/libsolidity/semanticTests/freeFunctions/free_namesake_contract_function.sol",
+      "test/libsolidity/semanticTests/freeFunctions/free_runtimecode.sol",
+      "test/libsolidity/semanticTests/freeFunctions/libraries_from_free.sol",
+      "test/libsolidity/semanticTests/freeFunctions/new_operator.sol"
+    ],
+    "functionCall": [
+      "test/libsolidity/semanticTests/functionCall/array_multiple_local_vars.sol",
+      "test/libsolidity/semanticTests/functionCall/bare_call_no_returndatacopy.sol",
+      "test/libsolidity/semanticTests/functionCall/call_attached_library_function_on_function.sol",
+      "test/libsolidity/semanticTests/functionCall/call_attached_library_function_on_storage_variable.sol",
+      "test/libsolidity/semanticTests/functionCall/call_attached_library_function_on_string.sol"
+    ],
+    "functionSelector": [
+      "test/libsolidity/semanticTests/functionSelector/function_selector_via_contract_name.sol"
+    ],
+    "functionTypes": [
+      "test/libsolidity/semanticTests/functionTypes/address_member.sol",
+      "test/libsolidity/semanticTests/functionTypes/call_to_zero_initialized_function_type_ir.sol",
+      "test/libsolidity/semanticTests/functionTypes/call_to_zero_initialized_function_type_legacy.sol",
+      "test/libsolidity/semanticTests/functionTypes/comparison_operator_for_external_function_cleans_dirty_bits.sol",
+      "test/libsolidity/semanticTests/functionTypes/comparison_operators_for_external_functions.sol"
+    ],
+    "getters": [
+      "test/libsolidity/semanticTests/getters/arrays.sol",
+      "test/libsolidity/semanticTests/getters/bytes.sol",
+      "test/libsolidity/semanticTests/getters/mapping.sol",
+      "test/libsolidity/semanticTests/getters/mapping_array_struct.sol",
+      "test/libsolidity/semanticTests/getters/mapping_of_string.sol"
+    ],
+    "immutable": [
+      "test/libsolidity/semanticTests/immutable/assign_at_declaration.sol",
+      "test/libsolidity/semanticTests/immutable/assign_from_immutables.sol",
+      "test/libsolidity/semanticTests/immutable/delete.sol",
+      "test/libsolidity/semanticTests/immutable/fun_read_in_ctor.sol",
+      "test/libsolidity/semanticTests/immutable/getter.sol"
+    ],
+    "inheritance": [
+      "test/libsolidity/semanticTests/inheritance/access_base_storage.sol",
+      "test/libsolidity/semanticTests/inheritance/address_overload_resolution.sol",
+      "test/libsolidity/semanticTests/inheritance/base_access_to_function_type_variables.sol",
+      "test/libsolidity/semanticTests/inheritance/constructor_inheritance_init_order.sol",
+      "test/libsolidity/semanticTests/inheritance/constructor_inheritance_init_order_2.sol"
+    ],
+    "inlineAssembly": [
+      "test/libsolidity/semanticTests/inlineAssembly/basefee_berlin_function.sol",
+      "test/libsolidity/semanticTests/inlineAssembly/blobbasefee_shanghai_function.sol",
+      "test/libsolidity/semanticTests/inlineAssembly/blobhash.sol",
+      "test/libsolidity/semanticTests/inlineAssembly/blobhash_index_exceeding_blob_count.sol",
+      "test/libsolidity/semanticTests/inlineAssembly/blobhash_pre_cancun.sol"
+    ],
+    "integer": [
+      "test/libsolidity/semanticTests/integer/basic.sol",
+      "test/libsolidity/semanticTests/integer/int.sol",
+      "test/libsolidity/semanticTests/integer/many_local_variables.sol",
+      "test/libsolidity/semanticTests/integer/small_signed_types.sol",
+      "test/libsolidity/semanticTests/integer/uint.sol"
+    ],
+    "interfaceID": [
+      "test/libsolidity/semanticTests/interfaceID/homer.sol",
+      "test/libsolidity/semanticTests/interfaceID/homer_interfaceId.sol",
+      "test/libsolidity/semanticTests/interfaceID/interfaceId_events.sol",
+      "test/libsolidity/semanticTests/interfaceID/interfaces.sol",
+      "test/libsolidity/semanticTests/interfaceID/lisa.sol"
+    ],
+    "isoltestTesting": [
+      "test/libsolidity/semanticTests/isoltestTesting/account.sol",
+      "test/libsolidity/semanticTests/isoltestTesting/balance_other_contract.sol",
+      "test/libsolidity/semanticTests/isoltestTesting/balance_with_balance.sol",
+      "test/libsolidity/semanticTests/isoltestTesting/balance_with_balance2.sol",
+      "test/libsolidity/semanticTests/isoltestTesting/balance_without_balance.sol"
+    ],
+    "libraries": [
+      "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata.sol",
+      "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata_dynamic_array_or_slice_v2.sol",
+      "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata_static_array_v2.sol",
+      "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata_struct_v2.sol",
+      "test/libsolidity/semanticTests/libraries/attached_internal_library_function_accepting_calldata_v2.sol"
+    ],
+    "literals": [
+      "test/libsolidity/semanticTests/literals/denominations.sol",
+      "test/libsolidity/semanticTests/literals/denominations_in_array_sizes.sol",
+      "test/libsolidity/semanticTests/literals/escape.sol",
+      "test/libsolidity/semanticTests/literals/ether.sol",
+      "test/libsolidity/semanticTests/literals/fractional_denominations.sol"
+    ],
+    "memoryManagement": [
+      "test/libsolidity/semanticTests/memoryManagement/assembly_access.sol",
+      "test/libsolidity/semanticTests/memoryManagement/memory_types_initialisation.sol",
+      "test/libsolidity/semanticTests/memoryManagement/return_variable.sol",
+      "test/libsolidity/semanticTests/memoryManagement/static_memory_array_allocation.sol",
+      "test/libsolidity/semanticTests/memoryManagement/struct_allocation.sol"
+    ],
+    "metaTypes": [
+      "test/libsolidity/semanticTests/metaTypes/name_other_contract.sol"
+    ],
+    "modifiers": [
+      "test/libsolidity/semanticTests/modifiers/access_through_contract_name.sol",
+      "test/libsolidity/semanticTests/modifiers/break_in_modifier.sol",
+      "test/libsolidity/semanticTests/modifiers/continue_in_modifier.sol",
+      "test/libsolidity/semanticTests/modifiers/evaluation_order.sol",
+      "test/libsolidity/semanticTests/modifiers/function_modifier.sol"
+    ],
+    "operators": [
+      "test/libsolidity/semanticTests/operators/compound_assign.sol",
+      "test/libsolidity/semanticTests/operators/compound_assign_transient_storage.sol",
+      "test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople.sol",
+      "test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constantinople_combined.sol",
+      "test/libsolidity/semanticTests/operators/shifts/bitwise_shifting_constants_constantinople.sol"
+    ],
+    "optimizer": [
+      "test/libsolidity/semanticTests/optimizer/shift_bytes.sol",
+      "test/libsolidity/semanticTests/optimizer/unused_store_storage_removal_bug.sol"
+    ],
+    "payable": [
+      "test/libsolidity/semanticTests/payable/no_nonpayable_circumvention_by_modifier.sol"
+    ],
+    "receive": [
+      "test/libsolidity/semanticTests/receive/empty_calldata_calls_receive.sol",
+      "test/libsolidity/semanticTests/receive/ether_and_data.sol",
+      "test/libsolidity/semanticTests/receive/inherited.sol"
+    ],
+    "revertStrings": [
+      "test/libsolidity/semanticTests/revertStrings/array_slices.sol",
+      "test/libsolidity/semanticTests/revertStrings/bubble.sol",
+      "test/libsolidity/semanticTests/revertStrings/calldata_array_dynamic_invalid.sol",
+      "test/libsolidity/semanticTests/revertStrings/calldata_array_dynamic_static_short_decode.sol",
+      "test/libsolidity/semanticTests/revertStrings/calldata_array_dynamic_static_short_reencode.sol"
+    ],
+    "reverts": [
+      "test/libsolidity/semanticTests/reverts/assert_require.sol",
+      "test/libsolidity/semanticTests/reverts/error_struct.sol",
+      "test/libsolidity/semanticTests/reverts/invalid_enum_as_external_arg.sol",
+      "test/libsolidity/semanticTests/reverts/invalid_enum_as_external_ret.sol",
+      "test/libsolidity/semanticTests/reverts/invalid_enum_compared.sol"
+    ],
+    "saltedCreate": [
+      "test/libsolidity/semanticTests/saltedCreate/prediction_example.sol",
+      "test/libsolidity/semanticTests/saltedCreate/salted_create.sol"
+    ],
+    "scoping": [
+      "test/libsolidity/semanticTests/scoping/c99_scoping_activation.sol"
+    ],
+    "shanghai": [
+      "test/libsolidity/semanticTests/shanghai/evmone_support.sol",
+      "test/libsolidity/semanticTests/shanghai/push0.sol"
+    ],
+    "smoke": [
+      "test/libsolidity/semanticTests/smoke/alignment.sol",
+      "test/libsolidity/semanticTests/smoke/arrays.sol",
+      "test/libsolidity/semanticTests/smoke/basic.sol",
+      "test/libsolidity/semanticTests/smoke/bytes_and_strings.sol",
+      "test/libsolidity/semanticTests/smoke/constructor.sol"
+    ],
+    "specialFunctions": [
+      "test/libsolidity/semanticTests/specialFunctions/abi_encode_with_signature_from_string.sol",
+      "test/libsolidity/semanticTests/specialFunctions/abi_functions_member_access.sol",
+      "test/libsolidity/semanticTests/specialFunctions/keccak256_optimized.sol"
+    ],
+    "state": [
+      "test/libsolidity/semanticTests/state/blobhash.sol",
+      "test/libsolidity/semanticTests/state/block_basefee.sol",
+      "test/libsolidity/semanticTests/state/block_blobbasefee.sol",
+      "test/libsolidity/semanticTests/state/block_chainid.sol",
+      "test/libsolidity/semanticTests/state/block_coinbase.sol"
+    ],
+    "statements": [
+      "test/libsolidity/semanticTests/statements/do_while_loop_continue.sol",
+      "test/libsolidity/semanticTests/statements/empty_for_loop.sol"
+    ],
+    "storage": [
+      "test/libsolidity/semanticTests/storage/accessors_mapping_for_array.sol",
+      "test/libsolidity/semanticTests/storage/array_accessor.sol",
+      "test/libsolidity/semanticTests/storage/chop_sign_bits.sol",
+      "test/libsolidity/semanticTests/storage/complex_accessors.sol",
+      "test/libsolidity/semanticTests/storage/delete_overlapping_transient_after_inherited_storage_same_value_type.sol"
+    ],
+    "storageLayoutSpecifier": [
+      "test/libsolidity/semanticTests/storageLayoutSpecifier/base_slot_max_value.sol",
+      "test/libsolidity/semanticTests/storageLayoutSpecifier/constructor.sol",
+      "test/libsolidity/semanticTests/storageLayoutSpecifier/delete.sol",
+      "test/libsolidity/semanticTests/storageLayoutSpecifier/delete_transient_storage.sol",
+      "test/libsolidity/semanticTests/storageLayoutSpecifier/dynamic_array_storage_end.sol"
+    ],
+    "strings": [
+      "test/libsolidity/semanticTests/strings/concat/string_concat_2_args.sol",
+      "test/libsolidity/semanticTests/strings/concat/string_concat_different_types.sol",
+      "test/libsolidity/semanticTests/strings/concat/string_concat_empty_argument_list.sol",
+      "test/libsolidity/semanticTests/strings/concat/string_concat_empty_strings.sol",
+      "test/libsolidity/semanticTests/strings/concat/string_concat_nested.sol"
+    ],
+    "structs": [
+      "test/libsolidity/semanticTests/structs/copy_from_mapping.sol",
+      "test/libsolidity/semanticTests/structs/copy_from_storage.sol",
+      "test/libsolidity/semanticTests/structs/copy_struct_array_from_storage.sol",
+      "test/libsolidity/semanticTests/structs/copy_struct_with_nested_array_from_calldata_to_memory.sol",
+      "test/libsolidity/semanticTests/structs/copy_struct_with_nested_array_from_memory_to_memory.sol"
+    ],
+    "tryCatch": [
+      "test/libsolidity/semanticTests/tryCatch/assert.sol",
+      "test/libsolidity/semanticTests/tryCatch/assert_pre_byzantium.sol",
+      "test/libsolidity/semanticTests/tryCatch/create.sol",
+      "test/libsolidity/semanticTests/tryCatch/invalid_error_encoding.sol",
+      "test/libsolidity/semanticTests/tryCatch/lowLevel.sol"
+    ],
+    "types": [
+      "test/libsolidity/semanticTests/types/assign_calldata_value_type.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol"
+    ],
+    "underscore": [
+      "test/libsolidity/semanticTests/underscore/as_function.sol"
+    ],
+    "uninitializedFunctionPointer": [
+      "test/libsolidity/semanticTests/uninitializedFunctionPointer/invalidInConstructor.sol",
+      "test/libsolidity/semanticTests/uninitializedFunctionPointer/invalidStoredInConstructor.sol",
+      "test/libsolidity/semanticTests/uninitializedFunctionPointer/store2.sol",
+      "test/libsolidity/semanticTests/uninitializedFunctionPointer/storeInConstructor.sol",
+      "test/libsolidity/semanticTests/uninitializedFunctionPointer/uninitialized_internal_storage_function_legacy.sol"
+    ],
+    "userDefinedValueType": [
+      "test/libsolidity/semanticTests/userDefinedValueType/abicodec.sol",
+      "test/libsolidity/semanticTests/userDefinedValueType/assembly_access_bytes2_abicoder_v1.sol",
+      "test/libsolidity/semanticTests/userDefinedValueType/assembly_access_bytes2_abicoder_v2.sol",
+      "test/libsolidity/semanticTests/userDefinedValueType/calldata_to_storage.sol",
+      "test/libsolidity/semanticTests/userDefinedValueType/cleanup.sol"
+    ],
+    "using": [
+      "test/libsolidity/semanticTests/using/calldata_memory_copy.sol",
+      "test/libsolidity/semanticTests/using/free_function_braces.sol",
+      "test/libsolidity/semanticTests/using/free_function_multi.sol",
+      "test/libsolidity/semanticTests/using/free_functions_individual.sol",
+      "test/libsolidity/semanticTests/using/library_functions_inside_contract.sol"
+    ],
+    "variables": [
+      "test/libsolidity/semanticTests/variables/delete_local.sol",
+      "test/libsolidity/semanticTests/variables/delete_locals.sol",
+      "test/libsolidity/semanticTests/variables/delete_transient_state_variable.sol",
+      "test/libsolidity/semanticTests/variables/delete_transient_state_variable_non_zero_offset.sol",
+      "test/libsolidity/semanticTests/variables/mapping_local_assignment.sol"
+    ],
+    "various": [
+      "test/libsolidity/semanticTests/various/address_code.sol",
+      "test/libsolidity/semanticTests/various/address_code_complex.sol",
+      "test/libsolidity/semanticTests/various/assignment_to_const_var_involving_expression.sol",
+      "test/libsolidity/semanticTests/various/balance.sol",
+      "test/libsolidity/semanticTests/various/byte_optimization_bug.sol"
+    ],
+    "viaYul": [
+      "test/libsolidity/semanticTests/viaYul/assert.sol",
+      "test/libsolidity/semanticTests/viaYul/assert_and_require.sol",
+      "test/libsolidity/semanticTests/viaYul/assign_tuple_from_function_call.sol",
+      "test/libsolidity/semanticTests/viaYul/cleanup/checked_arithmetic.sol",
+      "test/libsolidity/semanticTests/viaYul/cleanup/comparison.sol"
+    ],
+    "virtualFunctions": [
+      "test/libsolidity/semanticTests/virtualFunctions/internal_virtual_function_calls.sol",
+      "test/libsolidity/semanticTests/virtualFunctions/internal_virtual_function_calls_through_dispatch.sol",
+      "test/libsolidity/semanticTests/virtualFunctions/virtual_function_calls.sol",
+      "test/libsolidity/semanticTests/virtualFunctions/virtual_function_usage_in_constructor_arguments.sol",
+      "test/libsolidity/semanticTests/virtualFunctions/virtual_override_changing_mutability_internal.sol"
+    ]
+  }
+}

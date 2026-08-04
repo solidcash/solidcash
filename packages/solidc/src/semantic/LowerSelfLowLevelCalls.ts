@@ -117,7 +117,7 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
   }
 
   // Resolve the self-call into the synthesized internal call + value factories, or undefined when it cannot
-  // be lowered (no fallback for a raw payload, or an unloweable msg.data-reading fallback shape).
+  // be lowered (no fallback for a raw payload, or an unlowerable msg.data-reading fallback shape).
   private lower(call: MethodCallNode): {
     stmts: StatementNode[]; success: () => ExpressionNode; retval: () => ExpressionNode;
   } | undefined {

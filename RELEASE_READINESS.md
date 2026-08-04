@@ -11,7 +11,9 @@ basic release gates. A fresh 2026-08-04 run found:
 
 - `yarn build` and `yarn lint` failed at baseline; both are fixed and pass on the findings-fix worktree as of
   2026-08-04;
-- `yarn spellcheck` fails with 7,615 issues in 701 files;
+- baseline `yarn spellcheck` failed with 7,615 occurrences; the findings-fix worktree now passes after recording
+  the existing 890-term technical/corpus vocabulary in a reviewed project dictionary and fixing a first-party
+  misspelling;
 - the current corpus scorecard compiles 4,443/4,587 in-scope fixtures, but still includes eight raw missing-stack
   failures, two unavailable-block-layout failures, and two missing-block-slot failures;
 - 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
@@ -283,7 +285,7 @@ Update this table whenever a release candidate is cut.
 | Build | **PASS** in findings-fix worktree (baseline failed with TS2345) | `codex/release-readiness-fixes` | 2026-08-04 |
 | Unit tests | Incomplete — utils passed (295 tests, 1 TODO); full run stopped amid heavy concurrent test load | `1a533c88` | 2026-08-04 |
 | Lint | **PASS** in findings-fix worktree (baseline failures fixed across compiler and SDK) | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **FAIL** — 7,615 issues in 701 files | `1a533c88` | 2026-08-04 |
+| Spellcheck | **PASS** — 2,073 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-04 |
 | SDK e2e/mocknet | Not run | — | — |
 | BCHN regtest | Not run | — | — |
 | Testing-suite golden path | Not run | — | — |

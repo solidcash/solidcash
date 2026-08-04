@@ -1,6 +1,14 @@
 {
     "version": "0.1",
     "language": "en,en-GB",
+    "dictionaryDefinitions": [
+        {
+            "name": "solidcash-project-terms",
+            "path": "./.cspell-project-terms.txt",
+            "addWords": true
+        }
+    ],
+    "dictionaries": ["solidcash-project-terms"],
     "words": [
         "ALLOWALL",
         "Arith",

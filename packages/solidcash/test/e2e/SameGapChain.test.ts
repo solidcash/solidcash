@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { vmNumberToBigInt, bigIntToVmNumber } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList, bytesToSlotValue } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
+
+const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // SAME-GAP CHAIN: 2+ NEW recipients landing in ONE gap (a forward reference the single re-point can't express).
 // Handled by chain-defer: each new node is DEFERRED after re-pointing its predecessor, so the next new key folds into
@@ -88,7 +90,7 @@ describe('SAME-GAP CHAIN: 2+ new recipients in one gap (chain-defer)', () => {
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     await expect(call('chk', K1, 20n, alicePub, sig).send()).resolves.toBeDefined(); // K1 reachable through HEAD -> K0
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
-    await expect(call('chk', K1, 99n, alicePub, sig).send()).rejects.toThrow(); // wrong value reverts
+    await expect(call('chk', K1, 99n, alicePub, sig).send()).rejects.toThrow(verifyPreflight); // wrong value reverts
   });
 
   it('is ORDER-INDEPENDENT for a fresh-map chain: [K1, K0] (descending) reorders to [K0, K1]', async () => {

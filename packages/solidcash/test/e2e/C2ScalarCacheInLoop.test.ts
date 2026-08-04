@@ -1,10 +1,13 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A C2 (sorted) SCALAR mapping entry written more than once to the SAME (loop-invariant) key -
 // `for(i) balance[owner] -= amts[i]` - is now cached by CacheMappingEntryInLoop: read balance[owner] ONCE into a
@@ -49,6 +52,6 @@ describe('C2 scalar same-key cache-in-loop is sound (accumulates then one upsert
     const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
     expect(vmNumberToBigInt(e!.value)).toBe(40n);
     await fund(contract.address);
-    await expect(sc.chkval(owner, 60n, alicePub, sig).send()).rejects.toThrow(); // adversarial: not the intermediate 60
+    await expect(sc.chkval(owner, 60n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 });

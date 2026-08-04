@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -46,6 +46,7 @@ describe('sorted mapping bytes32 value', () => {
     sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.check(30n, H, alicePub, sig).send()).txid).toBeDefined();
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(30n, hexToBin('bb'.repeat(32)), alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(30n, hexToBin('bb'.repeat(32)), alicePub, sig).send())
+      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

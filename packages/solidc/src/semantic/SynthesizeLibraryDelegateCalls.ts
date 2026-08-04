@@ -143,6 +143,11 @@ export default class SynthesizeLibraryDelegateCalls extends AstTraversal {
     data.location = node.location;
     const ll = new LowLevelCallStatementNode(addr, data, 'delegatecall');
     ll.synthesizedFromLibraryCall = true;
+    // C1/piece-7: a library with >= 2 public functions compiles to a selector-dispatched contract, so its
+    // unlocking script leads with the selector and the co-spend pin can verify it. With one public function
+    // there is no selector and nothing to choose.
+    ll.librarySelectorDispatched = [...this.delegateLibFns.values()]
+      .filter((candidate) => candidate.libName === info.libName).length > 1;
     ll.location = node.location;
     return ll;
   }

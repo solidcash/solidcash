@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { hexToBin } from '@bitauth/libauth';
@@ -23,7 +23,7 @@ describe('string literal -> bytesN (right-padded)', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.check(ABC32).send();
     expect(tx.txid).toBeDefined();
-    await expect(sc.check(hexToBin('00'.repeat(32))).send()).rejects.toThrow();
+    await expect(sc.check(hexToBin('00'.repeat(32))).send()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('comparison "abc" == bytes3 arg holds for the exact-fit value', async () => {

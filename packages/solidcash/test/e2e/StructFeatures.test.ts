@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, resolve } from 'path';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,
   StateRecord, StatefulContract, SignatureTemplate,

@@ -166,6 +166,11 @@ export class ContractNode extends Node implements Named {
   // spent only alongside its owning consumer's master - it rides that one master's serialization (zero marginal
   // contention). See docs/library-contracts.md (3b contention).
   isBrandedLibrary: boolean = false;
+  // X12. Set for a SPLIT FACET (compileStringSplit): every entry point is a `delegate` function and the artifact
+  // is published `delegateOnly`, so the SDK never co-spends or materializes the facet's OWN data NFTs. Its
+  // output-only block slots are therefore one position lower per data NFT than the layout offset says. A plain
+  // contract that merely HAS `delegate` functions is not delegate-only and keeps its data-NFT positions.
+  isSplitFacet: boolean = false;
   // Set by SynthesizeBlockOracle when any function reads blockhash(n). The (n->hash) oracle is branded to the
   // contract's OWN category (master-bound, per docs/block-and-transaction-properties.md s3), so a blockhash
   // reader MUST be stateful (have a master/category to co-spend + anchor the oracle against).
@@ -256,6 +261,9 @@ export interface EntryAccessInfo {
   // (the delete wins), and the single entry NFT can't be co-spent by both slots. Set to the delete slot's
   // index: the covenant gates this write off when its key == that slot's key, and the SDK funds it instead.
   aliasCondDeleteSlot?: number;
+  // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
+  // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
+  runtimeAliasPriorSlots?: number[];
   // A sorted (C2) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
@@ -268,6 +276,17 @@ export interface TokenContainerAccessInfo {
   slotIndex: number;
   transferCount: number;      // number of transfer() calls for this category
   transferNftCount: number;   // number of transferNft() calls for this category
+}
+
+// X29. Owner-local effect frames an message-bus batch route reserves on behalf of an effect-carrying graph emission handler
+// it invokes behind OP_INVOKE. Dispatch site `s` owns `[base + s * width, base + s * width + width)` of each
+// kind; the site ordinal rides to the shared subroutine as hidden context.
+export interface GraphEffectFrame {
+  sites: number;
+  eventBase: number;
+  eventWidth: number;
+  transferBase: number;
+  transferWidth: number;
 }
 
 export interface CustomModifierInvocation {
@@ -329,6 +348,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedInsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
   }>;
+
   // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
   // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
   // commitment (value = oldValue op v, v for 'set', or the type default for 'delete') at output[master+blockSize+i].
@@ -344,6 +364,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     oldValuesWitnessParam?: string;
     op: '+' | '-' | 'set' | 'delete';
   }>;
+
   // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
@@ -375,12 +396,60 @@ export class FunctionDefinitionNode extends Node implements Named {
   returnNames: string[] = []; // named returns (empty unless all return values are named)
   functionId?: number;
   functionSelector?: Uint8Array;  // 4-byte hash selector for entry-point functions
+  // Compiler-owned: this physical wrapper/subroutine participates in the scalar write-back journal.
+  scalarJournal?: boolean;
+  /** Number of compiler-owned value-threaded state context items accepted
+   * and returned by this reusable handler. Excluded from the source ABI. */
+  journalContextArity?: number;
+  // Compiler-owned: this entry's reachable scalar-handler call graph contains
+  // a direct or mutual recursion cycle and requires SDK VM preflight.
+  scalarJournalRecursive?: boolean;
+  // Release 3: helper was lowered to a value-threaded collection journal.
+  collectionJournal?: boolean;
+  /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
+   * single entry, so sibling handlers over the same entry resolve to one pending value and one C2 slot. */
+  forceCollectionJournalPool?: boolean;
+  // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
+  // omitted from the source ABI.
+  messageBusRoute?: boolean;
+  messageBusMaximumRows?: number;
+  /** Compiler-owned message-bus batch blockhash band. Each logical row owns `readWidth` consecutive oracle slots. */
+  messageBusBlockhashReadWidth?: number;
+  messageBusBlockhashReads?: {
+    row: number; selector: string; readOrdinal: number; readKey: string; slotOffset: number;
+  }[];
+
+  messageBusEligible?: boolean;
+  messageBusRejectionReason?: string;
+  // Release 4 collection rows bind source argument positions to hidden
+  // physical-route key witnesses. The SDK derives these from canonical rows;
+  // the route compares decoded row arguments before any handler executes.
+  messageBusKeyWitnesses?: {
+    routeInput: string;
+    inputIndex: number;
+    source?: 'argument' | 'msgSender';
+    perRow?: boolean;
+  }[];
+
   isFreeFunction: boolean = false;
   // True for a function declared inside a Solidity library, including the lowered primary-library contract
   // form. Library ABI rules uniquely permit storage-reference parameters and returns at public/external
   // visibility, so this cannot be inferred from isFreeFunction alone.
   isLibraryFunction: boolean = false;
   pinsDelegateCoSpend: boolean = false; // C1/piece-3: delegatecall pins UTXOBYTECODE[delegateInputIndex] == impl
+  /**
+   * C1/piece-7: the pin's delegate input index is DERIVED from this function's own block layout (the reserved
+   * `lowLevelCall` slot) instead of the caller-supplied `__internal__delegateInputIndex` witness. Used by the
+   * compiler-synthesized delegatecall forms - `L.f()` library sugar and split-facet forwarders - which carry no
+   * witness parameter. Derivation is also the stronger source: nothing caller-supplied selects the input.
+   */
+  delegateIndexFromBlockSlot: boolean = false;
+  // C1/piece-5: the delegatecall sits on a conditional path, so the co-spend pin is not reached on every path
+  // while the state-covenant skip (!functionHasDelegatecall) is per-function. Codegen compensates with a
+  // runtime "delegate reached" flag; see emitConditionalDelegateStatePreservation.
+  delegatecallIsConditional: boolean = false;
+  /** Block-local delegate covenants reserved by an message-bus batch graph clone/route. */
+  graphDelegateSlotCount?: number;
   isFallback: boolean = false;
   isReceive: boolean = false;
   isAbstract: boolean = false;
@@ -394,25 +463,48 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Base contracts named in an explicit `override(A, B)` specifier (empty for a bare `override`).
   overrideBases: string[] = [];
   usesMsgSender?: boolean;
+  usesMsgValue?: boolean;
+  /**
+   * Compiler-owned message-bus batch clone whose one supported tail external call is verified against the authenticated
+   * participant emission frame instead of performing ordinary physical-call settlement.
+   */
+  graphEmissionHandler?: boolean;
+  /** Graph handler whose conditional/loop calls consume the authenticated emission vector at runtime. */
+  graphRuntimeEmissionHandler?: boolean;
+  /** Runtime emission vector is returned and threaded across this route's repeated local rows. */
+  graphRuntimeEmissionThreaded?: boolean;
+  // X29. Effect frame this graph emission handler owns in the ROUTE's block; also set on the route itself.
+  // Assigned by the route's layout computation, the only place both are visible. See GraphEffectFrame.
+  graphEffectFrame?: GraphEffectFrame;
+  /**
+   * SEC-8. Does THIS handler's subroutine settle the co-spent satoshi container?
+   *
+   * `graphEffectFrame` is ONE object shared by every framed handler, so its `transferWidth` is the group
+   * maximum and says nothing about the handler reached at a given dispatch site. The route's not-reached
+   * container preservation is skipped on the strength of a reached flag, so that flag must be written from a
+   * PER-HANDLER fact - otherwise an emit-only sibling suppresses a guard it never replaces and the co-spent
+   * container gets no identity check and no value check. Set only where frame membership is decided.
+   */
+  graphEffectSettlesTransfers?: boolean;
   usedLibraries?: string[];     // external libraries this function calls (e.g. ['keccak256']) -> load each
   inlinedLibraries?: string[];  // subset of usedLibraries inlined into the contract bytecode (no side-car)
   libraryCallCounts?: Map<string, number>; // per-library call-site count (drives the inline decision)
   keccakCompute?: boolean;      // keccak256 uses the compute-and-commit result-NFT model (side-car computes it)
   keccakPreimageParams?: (string | null)[]; // per keccak256 call (codegen emission order): the param feeding it
-                                            // (SDK transparent co-spend); null = not a direct param
+  // (SDK transparent co-spend); null = not a direct param
   keccakInLoop?: boolean;       // a keccak256 call is inside a loop -> runtime count exceeds the static count;
-                                // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
+  // the SDK should foresee extra side-car strain (deploy more than the syntactic count)
   keccakLoopReads?: boolean;    // a stateful dynamic keccak loop reads N trailing side-cars (SDK progressively
-                                // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
+  // co-spends N = runtime iteration count into the trailing region [blockSize, ..))
   ecrecoverLoopReads?: boolean; // a dynamic ecrecoverPubKey loop reads one recovery PAIR per iteration from the
-                                // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
+  // forward region [master+1+2k]; the SDK co-spends N pairs (N = the sig-array length)
   ecrecoverCompute?: boolean;   // ecrecoverPubKey uses a co-spent recovery side-car PAIR (A+B) per call; the SDK
-                                // auto-co-spends them and the contract reads the recovered pubkey from B's output
+  // auto-co-spends them and the contract reads the recovered pubkey from B's output
   ecrecoverArgParams?: ((string | null)[])[]; // per ecrecoverPubKey call (codegen emission order): the [hash,v,r,s]
-                                // param names feeding it (SDK transparent co-spend); null entry = not a direct param
+  // param names feeding it (SDK transparent co-spend); null entry = not a direct param
   ecrecoverCallCount?: number;  // number of ecrecoverPubKey calls (stateless count-relative side-car indexing)
   ecrecoverEvmCallCount?: number; // number of ecrecoverEvm calls; each ALSO co-spends a keccak side-car (over the
-                                // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
+  // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
   splitCountParam?: string;     // parameter name for split count
@@ -1141,6 +1233,11 @@ export class FunctionCallNode extends ExpressionNode {
   // A lexical function-pointer variable/parameter may shadow a same-named contract function. Symbol resolution
   // marks that exceptional call so type checking does not consult the contract-wide overload map.
   lexicalIndirectCall?: boolean;
+  // X29. Dispatch-site ordinal of a call to an effect-carrying graph emission handler in the message-bus batch route body.
+  // The handler is one shared OP_INVOKE subroutine, so its event / transfer OUTPUT indices cannot be compile-time
+  // constants; the route pushes this ordinal as hidden context and the subroutine derives its own owner-local
+  // slots from it. Assigned once during symbol-table analysis so codegen never has to re-derive walk order.
+  graphEffectSite?: number;
 
   constructor(
     public identifier: IdentifierNode,
@@ -1931,6 +2028,9 @@ export interface ExternalCollectionReadInfo {
   keyTypes: Type[];
   valueType: Type;
   externalReadSlotIndex: number;
+  /** Read the final transaction output state rather than the co-spent input state. */
+  outputState?: boolean;
+  externalOutStateSlotIndex?: number;
 }
 
 export class ExternalMappingAccessNode extends ExpressionNode {
@@ -1987,6 +2087,8 @@ export interface CallOptions {
 
 export class ExternalFunctionCallNode extends ExpressionNode {
   callInfo?: ExternalFunctionCallInfo;
+  /** Ordered row identity within one inferred repeated-callee message-bus batch. */
+  externalBatchLogicalIndex?: number;
   callMode?: ExternalCallMode;
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
@@ -2109,6 +2211,17 @@ export interface ExternalCallSlot {
   // across many fn-ptr calls (each call reads its own index). Identity + runtime selector + preservation are the
   // normal checks. See emitExternalCallVerification.
   fnPtrCall?: boolean;
+  // Release 5 repeated-callee grouping: several straight-line logical calls
+  // share this one physical callee block and are bound to its message-bus batch blob.
+  batchInvocations?: {
+    selector: Uint8Array;
+    parameters: ExpressionNode[];
+    parameterTypes: Type[];
+    logicalIndex: number;
+    argSources?: ExternalCallArgSource[];
+  }[];
+  /** @internal Source node retained until Release 5 grouping/codegen. */
+  sourceCallNode?: ExternalFunctionCallNode;
 }
 
 export interface ExternalOutputStateAccessInfo {
@@ -2120,6 +2233,8 @@ export interface ExternalOutputStateAccessInfo {
   fieldsInNft: { type: Type; fieldIndex: number }[];
   externalOutStateSlotIndex: number;
   calleeMultiNft: boolean; // callee spans >1 data NFT -> its commitments carry an nftIndex tag to verify
+  /** The data-NFT field is a uint32 length header; the value is reconstructed from owner-branded chunks. */
+  dynamic: boolean;
 }
 
 export class ExternalOutputStateNode extends ExpressionNode {
@@ -2514,6 +2629,10 @@ export class LowLevelCallStatementNode extends StatementNode {
   // Set when synthesized from `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls): the user wrote a
   // typed library call, not a raw delegatecall, so suppress the low-level-call warning.
   synthesizedFromLibraryCall = false;
+  // C1/piece-7: the delegate library this call targets is selector-dispatched (>= 2 public functions), so the
+  // co-spend pin can also verify WHICH library function ran. A single-public-function library has no selector
+  // in its unlocking script and nothing to choose, so the selector half is skipped there.
+  librarySelectorDispatched = false;
 
   constructor(
     public targetExpression: ExpressionNode,

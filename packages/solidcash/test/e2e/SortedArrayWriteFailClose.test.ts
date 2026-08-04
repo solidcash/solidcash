@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 
 // C2 (sorted) array WRITE shapes that are not yet implemented must fail CLOSED at compile - never crash with an
 // internal error, and never silently degrade to the omittable default-on-absent entry model. The supported shapes

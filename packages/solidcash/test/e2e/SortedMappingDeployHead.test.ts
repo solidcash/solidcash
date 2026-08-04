@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { getEntryNftAddress, SortedList, bytesToSlotValue, keyToSlot } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';

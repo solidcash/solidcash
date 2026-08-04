@@ -1,7 +1,10 @@
+/* eslint-disable max-len -- exact VM refusal evidence is intentionally kept on one line */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Compound assignment operators desugar to `x = x <op> e` and inherit the binary operator's type
 // rules (arithmetic/shift on int; bitwise on bytes). Each function computes a known result and
@@ -34,19 +37,19 @@ describe('Compound assignment operators', () => {
   it('arithmetic/shift compound ops on int compute the expected result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.arith(10n)).resolves.toBeDefined();
+    expect(await sc.arith(10n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 
   it('arithmetic compound ops fail when the result differs', async () => {
     // x=0 -> 5,2,4,1,1,8,4 -> a==4, not 8
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.arith(0n)).rejects.toThrow();
+    await expect(sc.arith(0n)).rejects.toThrow(verifyFailure);
   });
 
   it('bitwise compound ops on bytes compute the expected result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.bitwise(Uint8Array.from([0xff]))).resolves.toBeDefined();
+    expect(await sc.bitwise(Uint8Array.from([0xff]))).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

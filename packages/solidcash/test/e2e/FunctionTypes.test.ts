@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -106,7 +106,8 @@ describe('internal function types', () => {
   it('rejects when the pointer yields the wrong result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.viaLocal(21n, false, 63n)).rejects.toThrow();
+    await expect(sc.viaLocal(21n, false, 63n))
+      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 
   it('rejects function-type parameters on an external/public function', () => {

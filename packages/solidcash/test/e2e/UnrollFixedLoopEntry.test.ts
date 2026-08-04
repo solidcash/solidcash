@@ -39,6 +39,7 @@ describe('fixed-bound loop mapping write (unrolled to N static entry writes)', (
     expect((await sc.check(20n, 222n, alicePub, sig).send()).txid).toBeDefined();
     // A wrong value is rejected (the entry genuinely holds 111/222, not a stale/last-only value).
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(10n, 999n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(10n, 999n, alicePub, sig).send())
+      .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

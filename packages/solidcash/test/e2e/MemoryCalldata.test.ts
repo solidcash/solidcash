@@ -1,6 +1,8 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 const MEMORY_CALLDATA_CONTRACT = `
 contract MemoryCalldata() {
@@ -32,7 +34,7 @@ describe('MemoryCalldata', () => {
         compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expect(sc.test(new Uint8Array([]), 100n)).rejects.toThrow();
+      await expect(sc.test(new Uint8Array([]), 100n)).rejects.toThrow(verifyFailure);
     });
 
     it('should fail with non-positive value (value > 0 fails)', async () => {
@@ -40,7 +42,7 @@ describe('MemoryCalldata', () => {
         compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expect(sc.test(new Uint8Array([1]), 0n)).rejects.toThrow();
+      await expect(sc.test(new Uint8Array([1]), 0n)).rejects.toThrow(verifyFailure);
     });
 
     it('should fail with negative value', async () => {
@@ -48,7 +50,7 @@ describe('MemoryCalldata', () => {
         compileString(MEMORY_CALLDATA_CONTRACT, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expect(sc.test(new Uint8Array([1]), -5n)).rejects.toThrow();
+      await expect(sc.test(new Uint8Array([1]), -5n)).rejects.toThrow(verifyFailure);
     });
   });
 

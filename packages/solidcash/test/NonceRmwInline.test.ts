@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { hash160 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../src/index.js';
 import { alicePriv, alicePub } from './fixture/vars.js';
@@ -59,14 +59,27 @@ describe('value-returning C2 mapping RMW helper (OZ Nonces._useNonce) inlines so
       return [
         { address: pinned.tokenAddress, satoshis: 10000n, token: { amount: 0n, nft: { capability: 'minting', commitment: '' } } },
         { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(ZERO, slot)) } } },
-        { address: ea, satoshis: 1500n, token: { amount: 0n, nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(slot, ZERO, bigIntToVmNumber(5n))) } } },
+        {
+          address: ea,
+          satoshis: 1500n,
+          token: {
+            amount: 0n,
+            nft: {
+              capability: 'mutable',
+              commitment: binToHex(encodeEntryCommitment(slot, ZERO, bigIntToVmNumber(5n))),
+            },
+          },
+        },
       ];
     });
     const categoryId = result.categoryId;
     const ea = getEntryNftAddress(contract.withCategory(hexToBin(categoryId)), categoryId, 'nonces');
     const sc = StatefulContract.withCategory(contract, categoryId);
     try {
-      await (sc as unknown as Record<string, (...a: unknown[]) => { send(): Promise<unknown> }>)[method](alicePub, sig, expected).send();
+      const call = (sc as unknown as Record<
+      string, (...a: unknown[]) => { send(): Promise<unknown> }
+      >)[method];
+      await call(alicePub, sig, expected).send();
     } catch {
       return 'revert';
     }

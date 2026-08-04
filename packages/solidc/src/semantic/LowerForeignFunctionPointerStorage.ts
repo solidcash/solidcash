@@ -94,6 +94,8 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
       let hasAssign = false;
       for (const fn of bodies) {
         this.currentFn = fn;
+        // The callback is invoked synchronously before this loop advances.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
         this.forEachAssignTo(fn.body!, sv.name, (rhs) => {
           hasAssign = true;
           if (!this.valueSources(rhs)) ok = false;

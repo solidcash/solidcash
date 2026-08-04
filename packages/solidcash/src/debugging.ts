@@ -1,9 +1,11 @@
-import { AuthenticationErrorCommon, AuthenticationInstruction, AuthenticationProgramCommon, AuthenticationProgramStateCommon, AuthenticationVirtualMachine, ResolvedTransactionCommon, WalletTemplate, WalletTemplateScriptUnlocking, binToHex, createCompiler, createVirtualMachineBch2023, createVirtualMachineBch2025, createVirtualMachineBch2026, createVirtualMachineBchSpec, decodeAuthenticationInstructions, encodeAuthenticationInstruction, walletTemplateToCompilerConfiguration } from '@bitauth/libauth';
+import { AuthenticationErrorCommon, AuthenticationInstruction, AuthenticationProgramCommon, AuthenticationProgramStateCommon, AuthenticationVirtualMachine, ResolvedTransactionCommon, WalletTemplate, WalletTemplateScriptUnlocking, binToHex, createCompiler, createVirtualMachineBch2023, createVirtualMachineBch2025, createVirtualMachineBchSpec, decodeAuthenticationInstructions, encodeAuthenticationInstruction, walletTemplateToCompilerConfiguration } from '@bitauth/libauth';
 import { Artifact, LogData, LogEntry, Op, PrimitiveType, RequireStatement, StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
 import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
 import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
+import { createVirtualMachineBch2026ForProvider } from './network/createVirtualMachine.js';
 import { VmTarget } from './interfaces.js';
+import type NetworkProvider from './network/NetworkProvider.js';
 
 export type DebugResult = AuthenticationProgramStateCommon[];
 export type DebugResults = Record<string, DebugResult>;
@@ -16,14 +18,38 @@ type VM = AuthenticationVirtualMachine<
 >;
 /* eslint-enable @typescript-eslint/indent */
 
-const createVirtualMachine = (vmTarget: VmTarget): VM => {
+/**
+ * X130: this VM reads the network provider's consensus limits, because it DECIDES.
+ *
+ * `StatefulContract._preflightRecursiveBuilder` calls `builder.debug()` and rethrows, so this VM is the
+ * accept/reject gate for `.build()` on a `recursiveStateHandler` function, and `TransactionBuilder.send()`
+ * propagates it for a standard non-covenant transaction.
+ *
+ * At `@mem-cash/validation` 0.0.8 - the version `packages/solidcash/package.json` declares - MockNetworkProvider's
+ * `consensusLimits` reach the decider, so a bare VM here was wrong in BOTH directions. Measured:
+ *
+ * - FAIL-OPEN: `decrement(3).build()` was ADMITTED under `operationCostBudgetPerByte: 150` while the decider
+ *   refuses that shape at 150 x density. This is the direction that mattered.
+ * - FAIL-CLOSED: `decrement(24)/(40).build()` were REFUSED at the stock 800 x density on the relaxed default
+ *   profile, which the decider accepts.
+ *
+ * BOTH HALVES LANDED TOGETHER, deliberately. `debugTemplate` takes a provider and `LibauthTemplate.ts` supplies
+ * `transaction.provider`; an optional parameter nobody supplies would read as provider-aware while behaving
+ * bare, so the parameter and its only call site move as one. `X130DebugVmProviderFaithful` carries the
+ * verdicts; `X121StrictPreflightDecision` rows 2, 4 and 6 carry the history.
+ *
+ * NOT WIDENED: a provider that publishes no `consensusLimits` - which is every live network - takes
+ * `createVirtualMachineBch2026ForProvider`'s early return and gets byte-identically the VM this built before.
+ * Only the mock's declared profile changes anything, and changing it is the point.
+ */
+const createVirtualMachine = (vmTarget: VmTarget, provider?: NetworkProvider): VM => {
   switch (vmTarget) {
     case 'BCH_2023_05':
       return createVirtualMachineBch2023();
     case 'BCH_2025_05':
       return createVirtualMachineBch2025();
     case 'BCH_2026_05':
-      return createVirtualMachineBch2026();
+      return createVirtualMachineBch2026ForProvider(provider);
     case 'BCH_SPEC':
       // TODO: This typecast is shitty, but it's hard to fix
       return createVirtualMachineBchSpec() as unknown as VM;
@@ -37,6 +63,7 @@ export const debugTemplate = (
   template: WalletTemplate,
   artifacts: Artifact[],
   verifyTransaction: boolean = true,
+  provider?: NetworkProvider,
 ): DebugResults => {
   const unlockingScriptIds = Object.keys(template.scripts).filter((key) =>
     'unlocks' in template.scripts[key] && !key.includes('_body_'),
@@ -78,7 +105,7 @@ export const debugTemplate = (
     for (const scenarioId of scenarioIds) {
       try {
         results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(
-          template, matchingArtifact, unlockingScriptId, scenarioId,
+          template, matchingArtifact, unlockingScriptId, scenarioId, provider,
         );
       } catch (error) {
         // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
@@ -96,15 +123,16 @@ export const debugTemplate = (
       ?? evaluationErrors[0];
   }
 
-  if (verifyTransaction) verifyFullTransaction(template);
+  if (verifyTransaction) verifyFullTransaction(template, provider);
 
   return results;
 };
 
 const debugSingleScenario = (
   template: WalletTemplate, artifact: Artifact | undefined, unlockingScriptId: string, scenarioId: string,
+  provider?: NetworkProvider,
 ): DebugResult => {
-  const { vm, program } = createProgram(template, unlockingScriptId, scenarioId);
+  const { vm, program } = createProgram(template, unlockingScriptId, scenarioId, provider);
 
   const fullDebugSteps = vm.debug(program);
 
@@ -140,6 +168,17 @@ const debugSingleScenario = (
     return func?.selector;
   })();
 
+  // An instruction pointer only means something relative to the bytecode that is active. OP_INVOKE restarts the
+  // pointer inside the invoked body, and only frames are objects on the control stack (OP_IF pushes a boolean,
+  // OP_BEGIN pushes an integer), so a step inside this function's own body carries exactly one frame: the
+  // dispatcher's. Shared bodies produced by cross-function outlining sit one frame deeper, and main-script steps
+  // (OP_DEFINE, dispatcher) carry none - matching either against this function's require/log pointers would
+  // attribute the wrong statement.
+  const isEntryPointBodyStep = (step: AuthenticationProgramStateCommon): boolean => {
+    if (entryPointFuncSelector === undefined) return true;
+    return step.controlStack.filter((item) => typeof item === 'object' && item !== null).length === 1;
+  };
+
   // Returns the logs array for a debug step - either from the function body's debug info
   // or from the main artifact debug info. For steps inside the main script (before OP_INVOKE),
   // the main logs are empty, so this is safe to use for all steps.
@@ -152,14 +191,7 @@ const debugSingleScenario = (
 
   // P2PKH inputs do not have an artifact, so we skip the console.log handling
   if (artifact) {
-    // For OP_INVOKE contracts, only match logs against debug steps that are inside the function body.
-    // Function body steps always have at least one function frame on the control stack (from OP_INVOKE),
-    // while main script steps (OP_DEFINE, dispatcher) have an empty control stack.
-    // Without this filter, main script steps at IPs that coincidentally match function body log IPs
-    // would incorrectly trigger log output (e.g., logs from non-executed if/else branches).
-    const logMatchingSteps = entryPointFuncSelector !== undefined
-      ? executedDebugSteps.filter((step) => step.controlStack.length > 0)
-      : executedDebugSteps;
+    const logMatchingSteps = executedDebugSteps.filter(isEntryPointBodyStep);
 
     // Try to match each executed debug step to a log entry if it exists. Note that inside loops,
     // the same log statement may be executed multiple times in different debug steps
@@ -213,8 +245,11 @@ const debugSingleScenario = (
       throw new FailedTransactionError(error, getBitauthUri(template));
     }
 
-    // Use entryPointFuncSelector to search the correct function's debug info
-    let requireStatement = findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector);
+    // Use entryPointFuncSelector to search the correct function's debug info. A failure raised inside a shared
+    // body has an unrelated instruction pointer, so it must not be resolved against this function's requires.
+    let requireStatement = isEntryPointBodyStep(lastExecutedDebugStep)
+      ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
+      : undefined;
     let functionSourceMap = getFunctionSourceMap(artifact, entryPointFuncSelector);
 
     if (requireStatement) {
@@ -238,7 +273,8 @@ const debugSingleScenario = (
 
   // Check if the evaluation failed matches any of the possible failure cases
   if (failedFinalVerify(evaluationResult)) {
-    const finalExecutedVerifyIp = getFinalExecutedVerifyIp(executedDebugSteps);
+    // Only this function's own body shares an instruction-pointer space with its recorded requires.
+    const finalExecutedVerifyIp = getFinalExecutedVerifyIp(executedDebugSteps.filter(isEntryPointBodyStep));
 
     // The final executed verify instruction points to the "implicit" VERIFY that is added at the end of the script.
     // This instruction does not exist in the sourcemap, so we need to decrement the instruction pointer to get the
@@ -283,9 +319,11 @@ type Program = AuthenticationProgramCommon;
 type CreateProgramResult = { vm: VM, program: Program };
 
 // internal util. instantiates the virtual machine and compiles the template into a program
-const createProgram = (template: WalletTemplate, unlockingScriptId: string, scenarioId: string): CreateProgramResult => {
+const createProgram = (
+  template: WalletTemplate, unlockingScriptId: string, scenarioId: string, provider?: NetworkProvider,
+): CreateProgramResult => {
   const configuration = walletTemplateToCompilerConfiguration(template);
-  const vm = createVirtualMachine(template.supported[0] as VmTarget);
+  const vm = createVirtualMachine(template.supported[0] as VmTarget, provider);
   const compiler = createCompiler(configuration);
 
   if (!template.scripts[unlockingScriptId]) {
@@ -499,7 +537,7 @@ const getFunctionSourceMap = (
 
 // After debugging, we want to verify the full transaction to ensure it is valid (this catches any errors that are not
 // necessarily script errors)
-const verifyFullTransaction = (template: WalletTemplate): void => {
+const verifyFullTransaction = (template: WalletTemplate, provider?: NetworkProvider): void => {
   const placeholderScriptId = Object.keys(template.scripts).find((key) =>
     'unlocks' in template.scripts[key] && !key.includes('_body_'),
   );
@@ -509,7 +547,7 @@ const verifyFullTransaction = (template: WalletTemplate): void => {
     throw new Error('No placeholder scenario ID or script ID found');
   }
 
-  const { vm, program } = createProgram(template, placeholderScriptId, placeholderScenarioId);
+  const { vm, program } = createProgram(template, placeholderScriptId, placeholderScenarioId, provider);
 
   const verificationResult = vm.verify({
     sourceOutputs: program.sourceOutputs,

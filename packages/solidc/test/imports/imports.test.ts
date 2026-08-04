@@ -6,7 +6,8 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { compileFile, compileString, createMapResolver } from '../../src/index.js';
+import { createMapResolver } from '../../src/index.js';
+import { compileFile, compileString } from '../direct-compile.js';
 import type { ResolvedImport } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,
@@ -19,7 +20,6 @@ import {
   CircularInterfaceInheritanceError,
   MissingOverrideError,
   InheritanceNameCollisionError,
-  LibraryNotCompilableError,
   ParentInvocationArgCountError,
   UndefinedParentInvocationError,
   PrivateStateVariableAccessError,
@@ -30,7 +30,6 @@ import {
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   DiamondInheritanceError,
-  StatefulContractDeploymentError,
   DeployValueInNonStatefulError,
 } from '../../src/Errors.js';
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Phase-2 chunk-packed arrays (docs/arrays.md). Behind the `chunkedArrays` compiler flag (default off)
 // until the codegen/SDK land. This covers the layout/desugar step: an unbounded fixed-width `T[]` becomes

@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Runtime (e2e) coverage for recent porting features: ++/-- on element lvalues, the empty-void function
 // no-op synthesis, and `transient` state vars (lowered to zero-init locals). Each contract asserts its own
@@ -22,7 +24,9 @@ describe('++ / -- on element lvalues (runtime)', () => {
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).resolves.toBeDefined();
+    expect(await sc.f()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('rejects when the post-increment value is wrong (the ++ really runs)', async () => {
@@ -31,7 +35,7 @@ describe('++ / -- on element lvalues (runtime)', () => {
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).rejects.toThrow();
+    await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 });
 
@@ -43,7 +47,9 @@ describe('empty void functions (runtime; Solidity porting)', () => {
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.ping()).resolves.toBeDefined();
+    expect(await sc.ping()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('spends a contract whose only spend path is an empty receive()', async () => {
@@ -54,7 +60,9 @@ describe('empty void functions (runtime; Solidity porting)', () => {
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.__receive()).resolves.toBeDefined();
+    expect(await sc.__receive()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 });
 
@@ -66,7 +74,9 @@ describe('hex literals as Solidity numbers (runtime)', () => {
     );
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).resolves.toBeDefined();
+    expect(await sc.f()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 });
 
@@ -83,7 +93,9 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
       }`, { solidityImportCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.enter()).resolves.toBeDefined();
+    expect(await sc.enter()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('always reads 0 - transient does not persist, so code assuming persistence can never spend', async () => {
@@ -94,7 +106,7 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
       }`, { solidityImportCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkPersisted()).rejects.toThrow();
+    await expect(sc.checkPersisted()).rejects.toThrow(verifyFailure);
   });
 
   it('uses a transient var as scratch within a function', async () => {
@@ -109,7 +121,9 @@ describe('transient state variables (runtime; EIP-1153 porting)', () => {
       }`, { solidityImportCompat: true, forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.add(3n, 4n)).resolves.toBeDefined();
+    expect(await sc.add(3n, 4n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 });
 
@@ -127,18 +141,22 @@ describe('tuple ternary (runtime; Solidity porting)', () => {
   it('selects the true-branch tuple (sel==1 -> (1, 2))', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(1n, 1n, 2n)).resolves.toBeDefined();
+    expect(await sc.check(1n, 1n, 2n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('selects the false-branch tuple (sel!=1 -> (3, 4))', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(0n, 3n, 4n)).resolves.toBeDefined();
+    expect(await sc.check(0n, 3n, 4n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('rejects when the wrong branch values are expected (the ternary really selects)', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(1n, 3n, 4n)).rejects.toThrow();
+    await expect(sc.check(1n, 3n, 4n)).rejects.toThrow(verifyFailure);
   });
 });

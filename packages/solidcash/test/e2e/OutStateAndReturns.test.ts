@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, StatefulContract, StatefulTransactionBuilder,
@@ -9,13 +9,13 @@ import {
   buildInitialStateCommitments,
 } from '@solidcash/utils';
 import {
-  alicePub,
+  alicePkh, alicePub, bobPkh,
   alicePriv,
 } from '../fixture/vars.js';
 import { Utxo } from '../../src/interfaces.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // ===== Contract Sources =====
 
@@ -54,6 +54,104 @@ contract OutStateReader(bytes counterAddr) {
         require(checkSig(s, pk));
         bigint newVal = ICounter(counterAddr).outState.counter;
         this.lastSeen = newVal;
+    }
+}
+`;
+
+const DYNAMIC_OUTSTATE_READER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface IDynamicState {
+    public string message;
+}
+
+contract DynamicOutStateReader(bytes target) {
+    function requireOutput(string expected) public {
+        require(IDynamicState(target).outState.message == expected);
+    }
+}
+`;
+
+const DYNAMIC_OUTSTATE_CALLER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface IDynamicState {
+    public string message;
+    function set(string next);
+}
+
+contract DynamicOutStateCaller(bytes target) {
+    function updateAndCheck(string next) public {
+        IDynamicState(target).set(next);
+        require(IDynamicState(target).outState.message == next);
+    }
+}
+`;
+
+const DYNAMIC_OUTSTATE_TARGET_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+contract DynamicOutStateTarget() {
+    string message;
+    function set(string next) public {
+        this.message = next;
+        require(next.length >= 0);
+    }
+}
+`;
+
+const BYTES_OUTSTATE_CALLER_CONTRACT = DYNAMIC_OUTSTATE_CALLER_CONTRACT
+  .replaceAll('string', 'bytes')
+  .replaceAll('IDynamicState', 'IBytesState')
+  .replaceAll('DynamicOutStateCaller', 'BytesOutStateCaller');
+
+const BYTES_OUTSTATE_TARGET_CONTRACT = DYNAMIC_OUTSTATE_TARGET_CONTRACT
+  .replaceAll('string', 'bytes')
+  .replaceAll('DynamicOutStateTarget', 'BytesOutStateTarget');
+
+const COLLECTION_OUTSTATE_READER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface ICollectionState {
+    public mapping(bytes20 => int) balances;
+}
+
+contract CollectionOutStateReader(bytes target) {
+    function requireOutput(bytes20 holder, int expected) public {
+        require(ICollectionState(target).outState.balances[holder] == expected);
+    }
+}
+`;
+
+const COLLECTION_OUTSTATE_CALLER_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+interface ICollectionState {
+    public mapping(bytes20 => int) balances;
+    function set(bytes20 holder, int value);
+}
+
+contract CollectionOutStateCaller(bytes target) {
+    function updateAndCheck(bytes20 holder, int value) public {
+        ICollectionState(target).set(holder, value);
+        require(ICollectionState(target).outState.balances[holder] == value);
+    }
+
+    function insertAndCheckMissing(bytes20 inserted, bytes20 missing, int value) public {
+        ICollectionState(target).set(inserted, value);
+        require(ICollectionState(target).outState.balances[missing] == 0);
+    }
+}
+`;
+
+const COLLECTION_OUTSTATE_TARGET_CONTRACT = `
+pragma solidcash >=0.8.0;
+
+contract CollectionOutStateTarget() {
+    mapping(bytes20 => int) balances;
+    function set(bytes20 holder, int value) public {
+        this.balances[holder] = value;
+        require(value >= 0);
     }
 }
 `;
@@ -250,6 +348,31 @@ describe('outState Accessor and Function Returns', () => {
 
       // outState reads should NOT appear as externalCalls - they are a separate mechanism
       expect(fn!.externalCalls).toBeUndefined();
+    });
+
+    it('compiles a dynamic outState read as an authenticated output-chunk scan', () => {
+      const artifact = compileString(DYNAMIC_OUTSTATE_READER_CONTRACT);
+      const fn = artifact.abi.find((candidate) => candidate.name === 'requireOutput')!;
+      expect(fn.externalOutStateReads).toEqual([
+        expect.objectContaining({
+          interfaceName: 'IDynamicState',
+          addressParam: 'target',
+          requiredDataNftIndices: [0],
+        }),
+      ]);
+      expect(artifact.bytecode.length / 2).toBeLessThan(10_000);
+    });
+
+    it('compiles an existing collection-entry outState read as an authenticated output scan', () => {
+      const artifact = compileString(COLLECTION_OUTSTATE_READER_CONTRACT, { forceStateful: true });
+      const fn = artifact.abi.find((candidate) => candidate.name === 'requireOutput')!;
+      expect(fn.externalOutStateReads).toEqual([
+        expect.objectContaining({
+          interfaceName: 'ICollectionState',
+          addressParam: 'target',
+          requiredDataNftIndices: [],
+        }),
+      ]);
     });
   });
 
@@ -485,6 +608,212 @@ contract Reader(bytes32 counterCategory) {
       const sc = StatefulContract.withCategory(readerContract, readerCategoryId);
       const call = sc.readOutputState(alicePub, new SignatureTemplate(alicePriv));
       expect(call).toBeInstanceOf(StatefulFunctionCall);
+    });
+  });
+
+  describe('dynamic outState reconstruction', () => {
+    it('reads the callee final multi-chunk value and rejects no honest chunks', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(DYNAMIC_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider,
+        targetBase,
+        targetArtifact.stateLayout!,
+        { message: '' },
+        { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(DYNAMIC_OUTSTATE_CALLER_CONTRACT, { forceStateful: true });
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const next = 'x'.repeat(241);
+
+      await expect(
+        caller.updateAndCheck(next).withExternalCall(targetStateful, 'set', [next]).send(),
+      ).resolves.toBeDefined();
+      await expect(targetStateful.getState()).resolves.toEqual(
+        expect.objectContaining({ message: next }),
+      );
+    });
+
+    it('reads final multi-chunk bytes and rejects one forged chunk byte at caller input 0', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(BYTES_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, { message: new Uint8Array() },
+        { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(BYTES_OUTSTATE_CALLER_CONTRACT, { forceStateful: true });
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const next = new Uint8Array(241).fill(0x5a);
+
+      await expect(
+        caller.updateAndCheck(next).withExternalCall(targetStateful, 'set', [next]).send(),
+      ).resolves.toBeDefined();
+
+      const hostile = await caller.updateAndCheck(next)
+        .withExternalCall(targetStateful, 'set', [next])
+        .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      hostile.addInput(feeFunder.utxo, feeFunder.unlocker);
+      const chunk = hostile.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && (output.token.nft.commitment?.length ?? 0) > 200);
+      expect(chunk?.token?.nft?.commitment, 'bytes hostile found no final chunk output').toBeDefined();
+      const commitment = chunk!.token!.nft!.commitment!;
+      chunk!.token = {
+        ...chunk!.token!,
+        nft: { ...chunk!.token!.nft!, commitment: `${commitment.slice(0, -2)}5b` },
+      };
+      await expect(hostile.send()).rejects.toThrow(
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+      );
+    });
+  });
+
+  describe('collection outState reconstruction', () => {
+    it('reads an existing final C2 entry written by the callee', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+
+      await expect(
+        caller.updateAndCheck(alicePkh, 17n)
+          .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+          .send(),
+      ).resolves.toBeDefined();
+      await expect(targetStateful.getState()).resolves.toEqual(expect.any(Object));
+    });
+
+    it('rejects a forged final C2 entry value', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const builder = await caller.updateAndCheck(alicePkh, 17n)
+        .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+        .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      builder.addInput(feeFunder.utxo, feeFunder.unlocker);
+      const entry = builder.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && (output.token.nft.commitment?.length ?? 0) >= 130);
+      expect(entry?.token?.nft?.commitment).toBeDefined();
+      entry!.token = {
+        ...entry!.token!,
+        nft: {
+          ...entry!.token!.nft!,
+          commitment: `${entry!.token!.nft!.commitment!.slice(0, -2)}12`,
+        },
+      };
+
+      await expect(builder.send()).rejects.toThrow(
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+      );
+    });
+
+    it('returns the default only with an authenticated final C2 predecessor', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+
+      await expect(
+        caller.insertAndCheckMissing(alicePkh, bobPkh, 17n)
+          .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+          .send(),
+      ).resolves.toBeDefined();
+    });
+
+    it('rejects a forged final C2 predecessor link for an absent key', async () => {
+      const provider = createTestProvider();
+      const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
+      const targetBase = new Contract(targetArtifact, [], { provider });
+      const targetSetup = await setupStatefulUtxos(
+        provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const target = targetBase.withCategory(hexToBin(targetSetup.categoryId));
+      const callerArtifact = compileString(
+        COLLECTION_OUTSTATE_CALLER_CONTRACT, { forceStateful: true },
+      );
+      const callerBase = new Contract(callerArtifact, [target.lockingBytecode], { provider });
+      const callerSetup = await setupStatefulUtxos(
+        provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
+      );
+      const caller = StatefulContract.withCategory(callerBase, callerSetup.categoryId);
+      const targetStateful = StatefulContract.withCategory(targetBase, targetSetup.categoryId);
+      const builder = await caller.insertAndCheckMissing(alicePkh, bobPkh, 17n)
+        .withExternalCall(targetStateful, 'set', [alicePkh, 17n])
+        .build();
+      const feeFunder = await createFeeFunder(provider, 20_000n);
+      builder.addInput(feeFunder.utxo, feeFunder.unlocker);
+      const predecessor = builder.outputs.find((output) =>
+        output.token?.category === targetSetup.categoryId
+        && output.token.nft?.capability === 'mutable'
+        && output.token.nft.commitment?.startsWith('00'.repeat(32)));
+      expect(predecessor?.token?.nft?.commitment).toBeDefined();
+      predecessor!.token = {
+        ...predecessor!.token!,
+        nft: {
+          ...predecessor!.token!.nft!,
+          commitment: `${predecessor!.token!.nft!.commitment!.slice(0, 64)}${'ff'.repeat(32)}`,
+        },
+      };
+
+      await expect(builder.send()).rejects.toThrow(
+        /error in evaluating input index 1: Program failed an OP_VERIFY operation/,
+      );
     });
   });
 

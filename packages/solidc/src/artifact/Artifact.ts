@@ -2,14 +2,22 @@ import {
   AbiFunction, Artifact, CompilerOptions, DebugInformation, Script, scriptToAsm, StateLayout, ArrayType,
   computeCollectionSignature, computeFunctionSelectorHex, ExternalInterfaceInfo, MappingType, Type, ValueType,
   EnumType, ExternalLibraryAbi, BUILTIN_LIBRARIES, resolveLibraries, sidecarCodeRange, isChunkableValueType,
+  ValueProvenance, ValueProvenanceKind,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
 import { version } from '../index.js';
 import {
   Ast, StateVariableVisibility, InterfaceNode, InterfaceCollectionNode, ExternalCallMode,
-  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier,
+  StructDefinitionNode, FunctionDefinitionNode, FunctionModifier, Node, ContractNode,
+  ExpressionNode, TransferStatementNode, BlockNode, WhileNode, VariableDefinitionNode,
+  BinaryOpNode, IdentifierNode, AssignNode, TupleAssignmentNode,
+  ArrayNode, CastNode, FunctionCallNode, LiteralNode, LowLevelCallNode,
+  LowLevelCallStatementNode, StateAccessNode, RequireNode, ExternalFunctionCallNode,
 } from '../ast/AST.js';
+import { BinaryOperator } from '../ast/Operator.js';
 import { containsStatefulOperation } from '../semantic/EnsureFinalRequireTraversal.js';
+import { fixedForMaximum } from '../semantic/FixedForLoop.js';
+import { parameterCommitmentSource } from '../semantic/SymbolTableTraversal.js';
 
 /** The mapping key type as the SDK must ENCODE it. An enum key is int-backed (the compiler stores/derives it as
  * its integer member value), so it encodes as 'bigint' - its VM representation - not the enum name. The enum
@@ -29,8 +37,223 @@ function abiTypeString(type: Type | undefined): string {
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
 const STATE_WRITING_MODIFIERS = [
-  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
+  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
 ];
+
+/** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */
+const composeCount = (outer: number | undefined, inner: number | undefined): number | undefined =>
+  outer === undefined || inner === undefined ? undefined : outer * inner;
+
+/**
+ * True when a loop body can stop short of its trip count.
+ *
+ * `continue` is rewritten into a branch before this runs, so it is caught by the branch rule, but a `return`
+ * inside a loop survives to artifact generation as a plain sibling of the callsite: without this check
+ * `for (i < 3) { if (flag) { return; } m(); }` would publish a floor of three while reaching zero.
+ */
+const loopCanExitEarly = (loop: WhileNode): boolean => {
+  let found = false;
+  const walk = (value: unknown): void => {
+    if (found || !(value instanceof Node)) return;
+    if (/^(ReturnNode|BreakNode|ContinueNode)$/.test(value.constructor.name)) {
+      found = true;
+      return;
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if (key === 'location') continue;
+      if (child instanceof Node) walk(child);
+      else if (Array.isArray(child)) for (const item of child) walk(item);
+    }
+  };
+  walk(loop.block);
+  return found;
+};
+
+type OccurrenceInfo = {
+  occurrence: 'once' | 'conditional' | 'loop';
+  maximumOccurrences?: number;
+  minimumOccurrences?: number;
+  occurrenceBoundSource?: 'literal' | 'guard' | 'structural';
+};
+
+/**
+ * Classify one callsite's reached-occurrence count inside its function.
+ *
+ * Two independent quantities are tracked down every path to the callsite. `reachedMaximum` is the product of
+ * the trip counts of every enclosing loop and is the published CEILING; one unproven loop poisons it, and
+ * nesting multiplies rather than replaces - an inner literal loop under an outer one reaches
+ * `outer * inner` rows, not `inner`. `reachedExact` is the same product restricted to paths that cross no
+ * branch at all, so it is a FLOOR as well as a ceiling: it survives only when every enclosing loop has a
+ * compile-time trip count and nothing conditional stands between the function entry and the callsite.
+ */
+const occurrenceInfoOf = (
+  fn: FunctionDefinitionNode, target: Node | undefined,
+): OccurrenceInfo => {
+  if (!target) return { occurrence: 'once' };
+  let found: 'once' | 'conditional' | 'loop' = 'once';
+  let maximumOccurrences: number | undefined;
+  let minimumOccurrences: number | undefined;
+  let literalBound = false;
+  const seen = new Set<object>();
+  // Loops whose trip count the enclosing block already folded in, so the generic walk does not re-enter them.
+  const counted = new Set<Node>();
+  const visit = (
+    value: unknown, context: 'once' | 'conditional' | 'loop',
+    reachedMaximum: number | undefined, reachedExact: number | undefined,
+  ): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value === target) {
+      found = context;
+      maximumOccurrences = context === 'loop' ? reachedMaximum : 1;
+      minimumOccurrences = context === 'loop' ? reachedExact : undefined;
+      // `once`/`conditional` carry their provenance in the class itself, so only a loop bound - which could
+      // also have come from a require guard - spends artifact bytes recording where it came from.
+      literalBound = context === 'loop' && reachedMaximum !== undefined;
+      return;
+    }
+    if (value instanceof BlockNode) {
+      const statements = value.statements ?? [];
+      statements.forEach((statement, index) => {
+        if (statement instanceof WhileNode) {
+          const trips = fixedForMaximum(statements[index - 1], statement);
+          counted.add(statement);
+          const exactTrips = loopCanExitEarly(statement) ? undefined : trips;
+          visit(statement, 'loop', composeCount(reachedMaximum, trips), composeCount(reachedExact, exactTrips));
+        } else {
+          visit(statement, context, reachedMaximum, reachedExact);
+        }
+      });
+      return;
+    }
+    const kind = value.constructor.name;
+    const isLoop = /^(WhileNode|DoWhileNode)$/.test(kind);
+    const nested = isLoop
+      ? 'loop'
+      : /^(BranchNode|SwitchNode|SwitchCaseNode)$/.test(kind) && context === 'once'
+        ? 'conditional'
+        : context;
+    // A loop the enclosing block did not fold in (a do-while, or a while whose header is not a canonical
+    // literal for-loop) contributes an unproven number of trips, so both quantities stop being proven.
+    const childMaximum = isLoop && !counted.has(value) ? undefined : reachedMaximum;
+    // Anything that can skip the callsite kills the FLOOR while leaving the ceiling intact. A ternary arm is
+    // listed here but deliberately not in the `conditional` classification above: it can skip a reach, but
+    // changing which class a callsite reports would change published behaviour rather than tighten a bound.
+    const childExact = (isLoop && !counted.has(value))
+      || /^(BranchNode|SwitchNode|SwitchCaseNode|TernaryOpNode)$/.test(kind) ? undefined : reachedExact;
+    for (const [key, child] of Object.entries(value)) {
+      if ([
+        'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection',
+      ].includes(key)) continue;
+      if (child instanceof Node) visit(child, nested, childMaximum, childExact);
+      else if (Array.isArray(child)) for (const item of child) visit(item, nested, childMaximum, childExact);
+    }
+  };
+  visit(fn.body, 'once', 1, 1);
+  return {
+    occurrence: found,
+    ...(maximumOccurrences !== undefined && { maximumOccurrences }),
+    ...(minimumOccurrences !== undefined && { minimumOccurrences }),
+    ...(literalBound ? { occurrenceBoundSource: 'literal' as const } : {}),
+  };
+};
+
+const expressionSource = (
+  expression: ExpressionNode, fn: FunctionDefinitionNode, contract: ContractNode,
+): { kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  paramIndex?: number; paramName?: string; value?: string; type?: string } => {
+  const shaped = expression as unknown as { name?: string; value?: unknown; type?: Type };
+  if (expression.constructor.name === 'IdentifierNode' && shaped.name) {
+    const visible = fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const parameterIndex = visible.findIndex((parameter) => parameter.name === shaped.name);
+    if (parameterIndex >= 0) return { kind: 'forward', paramIndex: parameterIndex };
+    if (contract.parameters.some((parameter) => parameter.name === shaped.name)) {
+      return { kind: 'constructorArg', paramName: shaped.name };
+    }
+  }
+  const kind = expression.constructor.name;
+  if (kind === 'BoolLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: 'bool' };
+  }
+  if (kind === 'IntLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: shaped.type?.toString() ?? 'bigint' };
+  }
+  if (kind === 'StringLiteralNode') {
+    return { kind: 'literal', value: String(shaped.value), type: 'string' };
+  }
+  if (kind === 'HexLiteralNode' && shaped.value instanceof Uint8Array) {
+    return {
+      kind: 'literal', value: binToHex(shaped.value), type: shaped.type?.toString() ?? 'bytes',
+    };
+  }
+  return { kind: 'expression' };
+};
+
+const transferEffects = (
+  fn: FunctionDefinitionNode, contract: ContractNode,
+): readonly { transferIndex: number; recipient: ReturnType<typeof expressionSource>;
+  amount: ReturnType<typeof expressionSource>; callOption?: 'value' }[] => {
+  const transfers: {
+    transferIndex: number; recipient: ExpressionNode; amount: ExpressionNode; callOption?: 'value';
+  }[] = [];
+  const seen = new Set<object>();
+  const visit = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof TransferStatementNode) transfers.push({
+      transferIndex: value.transferIndex, recipient: value.lockingBytecode, amount: value.amount,
+    });
+    if (value instanceof ExternalFunctionCallNode && value.interfaceName === '__raw__'
+      && value.callOptions?.value
+      && value.valueTransferIndex >= 0) {
+      transfers.push({
+        transferIndex: value.valueTransferIndex,
+        recipient: value.addressExpression,
+        amount: value.callOptions.value,
+        callOption: 'value',
+      });
+    }
+    for (const [key, child] of Object.entries(value)) {
+      if ([
+        'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+        'referencedContract', 'stateVariable', 'collection',
+      ].includes(key)) continue;
+      if (child instanceof Node) visit(child);
+      else if (Array.isArray(child)) for (const item of child) visit(item);
+    }
+  };
+  visit(fn.body);
+  return transfers.sort((a, b) => a.transferIndex - b.transferIndex).map((transfer) => ({
+    transferIndex: transfer.transferIndex,
+    recipient: expressionSource(transfer.recipient, fn, contract),
+    amount: expressionSource(transfer.amount, fn, contract),
+    ...(transfer.callOption && { callOption: transfer.callOption }),
+  }));
+};
+
+/**
+ * X135. True when every dynamic (chunk-backed) write this function publishes was RESERVED by the route's
+ * journal rather than performed by the function.
+ *
+ * `GenerateTargetTraversal` pre-allocates one chunk slot per dynamic journal slot a handler HOLDS, and a
+ * handler holds a slot it only READS: the epilogue then writes the pre-state value back unchanged, which is a
+ * real co-spend of the chunk UTXOs and no state change at all. `dynamicWrites` stays published because the
+ * build shape needs it - the SDK consumes and recreates those chunks - but a write-back is not a mutation,
+ * and `writesState` is the flag that answers "output state == input state".
+ *
+ * Measured: ERC-20 `name()` / `symbol()` are `writesState: false` compiled DIRECT and were `true` compiled in
+ * bus mode, from the same unchanged body. `decimals()` / `totalSupply()` never moved, because their journal
+ * slots are scalar and X105 already gated the scalar sibling of this leak.
+ *
+ * SOUNDNESS. `scalarJournal` is set at GTT:2711 exactly when journal context is live AND the writer closure
+ * reached this function, and that closure is transitive over internal calls (GTT:1745-1755) and over function
+ * pointers (L2-F3), so a false answer cannot hide a write behind a helper. `journalContextArity` is set only
+ * for a handler carrying live journal context, so DIRECT-mode dynamic writes - which carry none - are never
+ * gated. The caller has already returned true for `scalarJournal`, so reaching here means "not a writer".
+ */
+const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean =>
+  (func.journalContextArity ?? 0) > 0 && func.scalarJournal !== true;
 
 /**
  * Conservatively decide whether a function mutates any covenant-derived state. Returns false ONLY when the body
@@ -39,11 +262,12 @@ const STATE_WRITING_MODIFIERS = [
  * covenant-bypass modifier. Any doubt -> true, so a misclassified writer never gets the SDK's derivation skip.
  */
 function computeWritesState(func: FunctionDefinitionNode): boolean {
+  if (func.scalarJournal) return true;
   if (containsStatefulOperation(func.body?.statements)) return true;
   if ((func.externalCalls?.length ?? 0) > 0) return true;
   if ((func.deployTargets?.length ?? 0) > 0) return true;
   if ((func.libraryDelegateCalls?.length ?? 0) > 0) return true;
-  if ((func.dynamicWrites?.length ?? 0) > 0) return true;
+  if ((func.dynamicWrites?.length ?? 0) > 0 && !journalReservedDynamicWritesOnly(func)) return true;
   if ((func.lowLevelCalls?.length ?? 0) > 0) return true;
   if (func.splitCountParam !== undefined || func.mergeCountParam !== undefined) return true;
   if (func.modifiers.some((m) => STATE_WRITING_MODIFIERS.includes(m))) return true;
@@ -51,10 +275,367 @@ function computeWritesState(func: FunctionDefinitionNode): boolean {
   return false;
 }
 
+// ----------------------------------------------------------------------------------------------------------
+// X37. Value provenance: where a covenant-critical value came from, rather than what type it was spelled as.
+// ----------------------------------------------------------------------------------------------------------
+
+/**
+ * How much a spender controls each provenance, weakest first.
+ *
+ * A value the caller passes is weakest. `computed` sits next because "the compiler could not say" is never
+ * evidence of authority. The order exists so several binding sites, several key-set members, or several
+ * signature guards can be folded into ONE published answer that always keeps the weakest: the published
+ * field can then only ever understate the authority in force, which is a refusal, never an admission.
+ */
+const PROVENANCE_STRENGTH: Record<ValueProvenanceKind, number> = {
+  parameter: 0, computed: 1, stateVar: 2, constructorArg: 3, literal: 4,
+};
+
+const COMPUTED_PROVENANCE: ValueProvenance = { kind: 'computed' };
+
+const weakerProvenance = (left: ValueProvenance, right: ValueProvenance): ValueProvenance =>
+  (PROVENANCE_STRENGTH[right.kind] < PROVENANCE_STRENGTH[left.kind] ? right : left);
+
+// Links that leave the function body and reach whole other functions or contracts, where a same-named local
+// would answer a different question. The same escape list the result-consumer walk below uses.
+const PROVENANCE_WALK_SKIP = new Set([
+  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection',
+]);
+
+/** Which argument of each signature builtin is the KEY the signature is checked against. */
+const SIGNATURE_CHECK_KEY_ARGUMENT: Record<string, number> = {
+  checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+};
+
+/**
+ * Everything the provenance answers need from one function body, collected in ONE walk.
+ *
+ * `bindings` holds every expression that can bind a local name - the declaration initializer AND every later
+ * assignment. Collecting the assignments is what makes the fold sound: resolving only the declaration would
+ * let `address t = impl; t = address(target); t.delegatecall(input);` publish the constructor argument while
+ * the call reaches the caller's bytes. Block scoping is deliberately ignored, so two same-named locals in
+ * sibling blocks fold to the weaker of the two. `bound` also holds names bound by a form with no nameable
+ * expression (a tuple destructure), which must resolve to `computed` rather than escape to the outer scopes.
+ *
+ * Building the index up front is what keeps this affordable: resolving each alias with its own walk turned
+ * artifact generation into a per-identifier re-traversal of the whole body.
+ */
+interface ProvenanceIndex {
+  bindings: Map<string, ExpressionNode[]>;
+  bound: Set<string>;
+  calls: (LowLevelCallNode | LowLevelCallStatementNode)[];
+  signatureChecks: FunctionCallNode[];
+}
+
+const bindName = (index: ProvenanceIndex, name: string, expression?: ExpressionNode): void => {
+  index.bound.add(name);
+  if (!expression) return;
+  const existing = index.bindings.get(name);
+  if (existing) existing.push(expression);
+  else index.bindings.set(name, [expression]);
+};
+
+const indexBody = (fn: FunctionDefinitionNode): ProvenanceIndex => {
+  const index: ProvenanceIndex = {
+    bindings: new Map(), bound: new Set(), calls: [], signatureChecks: [],
+  };
+  const seen = new Set<object>();
+  const walk = (value: unknown): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof VariableDefinitionNode) bindName(index, value.name, value.expression);
+    else if (value instanceof AssignNode) bindName(index, value.identifier.name, value.expression);
+    else if (value instanceof TupleAssignmentNode) {
+      for (const element of value.elements) if (!element.skip && element.name) bindName(index, element.name);
+    } else if (value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode) {
+      index.calls.push(value);
+    } else if (value instanceof FunctionCallNode
+      && SIGNATURE_CHECK_KEY_ARGUMENT[value.identifier.name] !== undefined) {
+      index.signatureChecks.push(value);
+    }
+    // eslint-disable-next-line no-restricted-syntax, guard-for-in
+    for (const key in value) {
+      if (PROVENANCE_WALK_SKIP.has(key)) continue;
+      const child = (value as unknown as Record<string, unknown>)[key];
+      if (child instanceof Node) walk(child);
+      else if (Array.isArray(child)) for (const item of child) walk(item);
+    }
+  };
+  walk(fn.body);
+  return index;
+};
+
+/**
+ * Resolve an expression to where its value came from.
+ *
+ * Casts are stripped and local aliases are followed, so a `bytes` parameter re-spelled as an address -
+ * `address t = address(target); t.delegatecall(input);` - resolves to `parameter`. That is the whole point:
+ * the published TYPE of a delegatecall target says nothing about who chose it, and refusing `bytes`
+ * parameters is not available because every admitted class carries a `bytes` calldata parameter.
+ *
+ * A function parameter answers `parameter` before its bindings are consulted: reassigning a parameter only
+ * narrows it on the paths that run the assignment, so the caller's value survives on the others.
+ */
+const provenanceOf = (
+  expression: ExpressionNode | undefined, fn: FunctionDefinitionNode, contract: ContractNode | undefined,
+  index: ProvenanceIndex, resolving: Set<string> = new Set(),
+): ValueProvenance => {
+  if (!expression) return COMPUTED_PROVENANCE;
+  if (expression instanceof CastNode) return provenanceOf(expression.expression, fn, contract, index, resolving);
+  if (expression instanceof LiteralNode) return { kind: 'literal' };
+  if (expression instanceof StateAccessNode) return { kind: 'stateVar', name: expression.name };
+  // A key set (`checkMultiSig(sigs, [a, b])`) is only as strong as its weakest member.
+  if (expression instanceof ArrayNode) {
+    return expression.elements.length === 0 ? COMPUTED_PROVENANCE
+      : expression.elements
+        .map((element) => provenanceOf(element, fn, contract, index, resolving))
+        .reduce(weakerProvenance);
+  }
+  if (!(expression instanceof IdentifierNode)) return COMPUTED_PROVENANCE;
+  const { name } = expression;
+  if (fn.parameters.some((parameter) => parameter.name === name)) return { kind: 'parameter', name };
+  if (resolving.has(name)) return COMPUTED_PROVENANCE; // an alias cycle - refuse rather than pick an arm
+  if (index.bound.has(name)) {
+    const bindings = index.bindings.get(name);
+    if (!bindings) return COMPUTED_PROVENANCE;
+    resolving.add(name);
+    const candidates = bindings.map((binding) => provenanceOf(binding, fn, contract, index, resolving));
+    // Branch-lowered locals can have several assignments with equally strong but different origins. Picking the
+    // first constructor argument would falsely describe a ternary target as fixed; disagreement is computed.
+    const first = JSON.stringify(candidates[0]);
+    const resolved = candidates.some((candidate) => JSON.stringify(candidate) !== first)
+      ? COMPUTED_PROVENANCE : candidates.reduce(weakerProvenance);
+    resolving.delete(name);
+    return resolved;
+  }
+  if (contract?.parameters.some((parameter) => parameter.name === name)) return { kind: 'constructorArg', name };
+  if (contract?.stateVariables.some((variable) => variable.name === name)) return { kind: 'stateVar', name };
+  if (contract?.constantDefinitions.some((constant) => constant.name === name)) return { kind: 'literal' };
+  return COMPUTED_PROVENANCE;
+};
+
+/**
+ * Per-callIndex target provenance for this function's low-level calls.
+ *
+ * The call nodes carry the same `callIndex` the symbol-table pre-scan used to build `func.lowLevelCalls`, so
+ * the rows line up by that index rather than by re-deriving the pre-scan's walk order here.
+ */
+const lowLevelCallTargets = (
+  fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
+): (ValueProvenance | undefined)[] => {
+  const targets: (ValueProvenance | undefined)[] = [];
+  for (const call of index.calls) {
+    const resolved = provenanceOf(call.targetExpression, fn, contract, index);
+    const existing = targets[call.callIndex];
+    // Two nodes claiming one index means this walk and the pre-scan disagree; publish the weakest of them.
+    targets[call.callIndex] = existing ? weakerProvenance(existing, resolved) : resolved;
+  }
+  return targets;
+};
+
+/**
+ * X51. The signature guard as the artifact publishes it: the weakest key any check in this body can be
+ * satisfied against, plus what that key is PINNED to when the compiler proved a pin. Undefined when the body has
+ * no signature check at all. A check whose key argument is absent resolves to `computed`, not to nothing.
+ *
+ * WHY THE SECOND FIELD EXISTS. `key` alone reads the standard BCH authorization idiom as unguarded:
+ * `require(hash160(pk) == pkh); require(checkSig(s, pk))` publishes `{parameter, pk}`, because what makes it
+ * authority is a separate require the key provenance does not describe. A consumer cannot reconstruct that from
+ * types - a `bytes20` constructor argument beside a `pubkey` parameter is exactly the type reasoning X37 exists
+ * to remove - so the compiler publishes the fact instead. `parameterCommitmentSource` is the same walk SEC-17's
+ * diagnostic decides on, X46's writer strengthening included: a commitment against state this body already
+ * overwrote from a caller parameter is not a commitment and yields nothing here either.
+ *
+ * THE FOLD IS THE WEAKEST, like `key`. Every check contributes a bound on the authority a spender must defeat:
+ * what its key is pinned to when it is pinned, and its own key provenance when it is not. `keyCommitment` is the
+ * weakest of those, so ONE unpinned parameter key anywhere in the body drags the published answer down to
+ * `parameter` and no consumer allow-list admits it. The field appears only when at least one check IS pinned;
+ * a body with no pin publishes no `keyCommitment`, which reads back as `unknown`. Understating the authority in
+ * force is a refusal, never an admission - the same discipline `key` is folded under.
+ */
+const signatureGuardOf = (
+  fn: FunctionDefinitionNode, contract: ContractNode | undefined, index: ProvenanceIndex,
+): { key: ValueProvenance; keyCommitment?: ValueProvenance } | undefined => {
+  let weakestKey: ValueProvenance | undefined;
+  let weakestBound: ValueProvenance | undefined;
+  let anyPinned = false;
+  for (const check of index.signatureChecks) {
+    const key = provenanceOf(
+      check.parameters[SIGNATURE_CHECK_KEY_ARGUMENT[check.identifier.name]], fn, contract, index,
+    );
+    // Only a parameter can be pinned: every other kind is already something the caller does not hand in.
+    const pinned = key.kind === 'parameter' && key.name !== undefined
+      ? parameterCommitmentSource(key.name, fn)
+      : undefined;
+    if (pinned) anyPinned = true;
+    const bound = pinned ? provenanceOf(pinned, fn, contract, index) : key;
+    weakestKey = weakestKey ? weakerProvenance(weakestKey, key) : key;
+    weakestBound = weakestBound ? weakerProvenance(weakestBound, bound) : bound;
+  }
+  if (!weakestKey) return undefined;
+  return { key: weakestKey, ...(anyPinned && weakestBound && { keyCommitment: weakestBound }) };
+};
+
+interface ControlSite { block: BlockNode; index: number }
+
+/**
+ * X62. Prove that every delegatecall is reached only after a signature requirement on the same control-flow
+ * path. Merely finding `checkSig` in the function is insufficient: a check in an optional branch authorizes no
+ * code after that branch. This deliberately recognizes only requirements whose truth entails the signature
+ * check (`checkSig(..)` itself, or an `&&` containing it); an `||` may succeed without evaluating the check.
+ */
+const signatureGuardDominatesDelegatecalls = (fn: FunctionDefinitionNode): boolean => {
+  const guards: ControlSite[][] = [];
+  const delegates: ControlSite[][] = [];
+  const requiredCheck = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode
+      && SIGNATURE_CHECK_KEY_ARGUMENT[expression.identifier.name] !== undefined) return true;
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (requiredCheck(expression.left) || requiredCheck(expression.right));
+  };
+  const seen = new Set<object>();
+  const walk = (value: unknown, path: ControlSite[]): void => {
+    if (!(value instanceof Node) || seen.has(value)) return;
+    seen.add(value);
+    if (value instanceof RequireNode && requiredCheck(value.expression)) guards.push(path);
+    if ((value instanceof LowLevelCallNode || value instanceof LowLevelCallStatementNode)
+      && value.callMode === 'delegatecall') delegates.push(path);
+    if (value instanceof BlockNode) {
+      for (const [index, statement] of (value.statements ?? []).entries()) {
+        walk(statement, [...path, { block: value, index }]);
+      }
+      return;
+    }
+    // eslint-disable-next-line no-restricted-syntax, guard-for-in
+    for (const key in value) {
+      if (PROVENANCE_WALK_SKIP.has(key)) continue;
+      const child = (value as unknown as Record<string, unknown>)[key];
+      if (child instanceof Node) walk(child, path);
+      else if (Array.isArray(child)) for (const item of child) walk(item, path);
+    }
+  };
+  walk(fn.body, []);
+  if (delegates.length === 0) return false;
+  const dominates = (guard: ControlSite[], call: ControlSite[]): boolean => {
+    const guardSite = guard[guard.length - 1];
+    if (!guardSite) return false;
+    const callLevel = call.findIndex((site) => site.block === guardSite.block);
+    if (callLevel < 0 || guard.length - 1 !== callLevel) return false;
+    return guard.slice(0, -1).every((site, index) => call[index]?.block === site.block
+      && call[index]?.index === site.index)
+      && guardSite.index < call[callLevel].index;
+  };
+  return delegates.every((call) => guards.some((guard) => dominates(guard, call)));
+};
+
 /** Build the common metadata fields for an ABI function entry. */
-function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = false): Partial<AbiFunction> {
+function buildFunctionAbiMetadata(
+  func: FunctionDefinitionNode, isStateful = false, contract?: ContractNode,
+  interfaces: readonly InterfaceNode[] = [],
+): Partial<AbiFunction> {
+  const possibleSelectorTargets = (
+    interfaceName: string, parameters: readonly ExpressionNode[],
+  ): readonly { functionName: string; selector: string }[] => {
+    const iface = interfaces.find((candidate) => candidate.name === interfaceName);
+    if (!iface) return [];
+    const types = parameters.map((parameter) => parameter.type?.toString());
+    return iface.functions.filter((candidate) =>
+      candidate.parameters.length === types.length
+      && candidate.parameters.every((parameter, index) => parameter.type.toString() === types[index]))
+      .map((candidate) => {
+        const signature = `${candidate.name}(${candidate.parameters
+          .map((parameter) => abiTypeString(parameter.type)).join(',')})`;
+        return { functionName: candidate.name, selector: computeFunctionSelectorHex(signature) };
+      })
+      .sort((left, right) => left.selector.localeCompare(right.selector));
+  };
+  const resultConsumers = (): readonly {
+    consumerCallsiteId: number; argument: number; producerCallsiteId: number;
+  }[] => {
+    const slots = func.externalCalls ?? [];
+    const slotByCall = new Map<Node, number>(slots
+      .filter((slot) => !!slot.sourceCallNode)
+      .map((slot) => [slot.sourceCallNode!, slot.slotIndex] as const));
+    const producerByDefinition = new Map<Node, number>();
+    const producerByTupleName = new Map<string, number>();
+    const visit = (value: unknown, action: (node: Node) => void, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value)) return;
+      seen.add(value);
+      action(value);
+      for (const [key, child] of Object.entries(value)) {
+        if ([
+          'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection',
+        ].includes(key)) continue;
+        if (child instanceof Node) visit(child, action, seen);
+        else if (Array.isArray(child)) for (const item of child) visit(item, action, seen);
+      }
+    };
+    visit(func.body, (node) => {
+      const expression = node instanceof VariableDefinitionNode
+        ? node.expression : node instanceof TupleAssignmentNode ? node.tuple : undefined;
+      if (!expression) return;
+      let producer: number | undefined;
+      visit(expression, (candidate) => {
+        const slot = slotByCall.get(candidate);
+        if (slot !== undefined) producer = slot;
+      });
+      if (producer === undefined) return;
+      if (node instanceof VariableDefinitionNode) producerByDefinition.set(node, producer);
+      else if (node instanceof TupleAssignmentNode) {
+        node.elements.filter((element) => !element.skip && !!element.name)
+          .forEach((element) => producerByTupleName.set(element.name!, producer!));
+      }
+    });
+    const result: {
+      consumerCallsiteId: number; argument: number; producerCallsiteId: number;
+    }[] = [];
+    for (const slot of slots) {
+      slot.sourceCallNode?.parameters.forEach((parameter, argument) => {
+        const producers = new Set<number>();
+        visit(parameter, (candidate) => {
+          if (!(candidate instanceof IdentifierNode)) return;
+          const definition = candidate.definition?.definition;
+          if (definition instanceof Node) {
+            let producer = producerByDefinition.get(definition);
+            // Tuple declarations are represented in the symbol table by synthetic VariableDefinitionNodes
+            // whose initializer is the shared tuple call, rather than as children of the function body.
+            if (producer === undefined && definition instanceof VariableDefinitionNode
+              && definition.expression) {
+              visit(definition.expression, (expression) => {
+                const slotIndex = slotByCall.get(expression);
+                if (slotIndex !== undefined) producer = slotIndex;
+              });
+            }
+            if (producer !== undefined) producers.add(producer);
+          }
+          const tupleProducer = producerByTupleName.get(candidate.name);
+          if (tupleProducer !== undefined) producers.add(tupleProducer);
+        });
+        for (const producerCallsiteId of producers) {
+          result.push({
+            consumerCallsiteId: slot.slotIndex,
+            argument,
+            producerCallsiteId,
+          });
+        }
+      });
+    }
+    return result.sort((left, right) =>
+      left.consumerCallsiteId - right.consumerCallsiteId
+      || left.argument - right.argument
+      || left.producerCallsiteId - right.producerCallsiteId);
+  };
+  const consumers = resultConsumers();
+  // X37. Both walks are paid for only by a function that has the construct they describe: a body with no
+  // low-level call and no signature check resolves nothing and publishes nothing.
+  const provenance = indexBody(func);
+  const callTargets = lowLevelCallTargets(func, contract, provenance);
+  const signatureGuard = signatureGuardOf(func, contract, provenance);
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
+    ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
     ...(func.requiredNftIndices !== undefined
       && { requiredNftIndices: func.requiredNftIndices }),
     ...(func.entryAccesses && func.entryAccesses.some((ea) => !ea.inLoop) && {
@@ -63,19 +644,26 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
       entryAccesses: func.entryAccesses.filter((ea) => !ea.inLoop).map((ea) => ({
         collection: ea.collection,
         keyParams: ea.keyParams,
-        ...(ea.keySources && ea.keySources.some((ks) => ks.kind !== 'param') && {
-          keySources: ea.keySources.map((ks) => ({
-            kind: ks.kind,
-            ...(ks.paramName && { paramName: ks.paramName }),
-            ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
-            ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
-            ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
-            ...(ks.kind === 'msgSender' && { senderOp: ks.senderOp }),
-            ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
-          })),
+        ...(ea.keySources && (ea.keySources.some((ks) => ks.kind !== 'param')
+          || ea.keyParams.some((name) => /_sender(?:_|$)/.test(name))) && {
+          keySources: ea.keySources.map((ks, index) => {
+            const syntheticSender = ks.kind === 'param'
+              && /_sender(?:_|$)/.test(ea.keyParams[index] ?? '');
+            return {
+              kind: syntheticSender ? 'msgSender' : ks.kind,
+              ...(ks.paramName && { paramName: ks.paramName }),
+              ...(ks.stateVarName && { stateVarName: ks.stateVarName }),
+              ...(ks.stateArrayName && { stateArrayName: ks.stateArrayName }),
+              ...(ks.kind === 'constant' && { constantValue: ks.constantValue }),
+              ...((ks.kind === 'msgSender' || syntheticSender) && { senderOp: ks.senderOp ?? 'msg.sender' }),
+              ...(ks.kind === 'expression' && { expressionLabel: ks.canonical }),
+            };
+          }),
         }),
         operations: ea.operations,
         ...(ea.aliasCondDeleteSlot !== undefined && { aliasCondDeleteSlot: ea.aliasCondDeleteSlot }),
+        ...(ea.runtimeAliasPriorSlots?.length
+          && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
       })),
     }),
@@ -88,6 +676,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.transferInfos && func.transferInfos.length > 0 && {
       transferCount: func.transferInfos.length,
+      ...(contract && { transfers: transferEffects(func, contract) }),
     }),
     ...(func.deployTargets && func.deployTargets.length > 0 && {
       deployTargets: func.deployTargets.map((dt) => ({
@@ -109,6 +698,14 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     }),
     ...(func.externalCalls && func.externalCalls.length > 0 && {
       externalCalls: func.externalCalls.map((ec) => ({
+        callsiteId: ec.slotIndex,
+        ...(ec.sourceCallNode && {
+          sourceLocation: {
+            line: ec.sourceCallNode.location.start.line,
+            column: ec.sourceCallNode.location.start.column,
+          },
+        }),
+        ...occurrenceInfoOf(func, ec.sourceCallNode),
         interfaceName: ec.interfaceName,
         functionName: ec.functionName,
         ...(ec.addressParam && { addressParam: ec.addressParam }),
@@ -116,8 +713,10 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         ...(ec.addressLiteral && { addressLiteral: ec.addressLiteral }),
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
         ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
+        ...(ec.selectorArrayVar && ec.sourceCallNode && {
+          possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
+        }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
-        ...(ec.addressSource && { addressSource: ec.addressSource }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
         // witness selector; call/staticcall/delegatecall inject no selector param.
@@ -132,10 +731,19 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
-        ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
-        ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
+        ...(ec.batchInvocations && {
+          batchInvocations: ec.batchInvocations.map((row) => ({
+            selector: binToHex(row.selector),
+            logicalIndex: row.logicalIndex,
+            inputs: row.parameterTypes.map((type, index) => ({
+              name: `arg${index}`, type: abiTypeString(type),
+            })),
+            ...(row.argSources && { argSources: row.argSources }),
+          })),
+        }),
       })),
     }),
+    ...(consumers.length > 0 && { resultConsumers: consumers }),
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {
       externalOutStateReads: func.externalOutStateReads.map((os) => ({
         interfaceName: os.interfaceName,
@@ -152,6 +760,10 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
       })),
     }),
     ...(func.usesMsgSender && { usesMsgSender: true }),
+    // Absent means no signature check was proven - a body with none, or an artifact predating the field.
+    // Both read as "unguarded"; absent is never a proof of authority.
+    ...(signatureGuard && { signatureGuard }),
+    ...(signatureGuardDominatesDelegatecalls(func) && { signatureGuardDominatesDelegatecalls: true }),
     ...(func.usedLibraries && func.usedLibraries.length > 0 && { externalLibraries: func.usedLibraries }),
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
@@ -168,7 +780,12 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
     ...(func.ecrecoverLoopReads && { ecrecoverLoopReads: true }),
     ...(func.unsafeTier !== undefined && { unsafeTier: func.unsafeTier }),
     ...(func.lowLevelCalls && func.lowLevelCalls.length > 0 && {
-      lowLevelCalls: func.lowLevelCalls.map((lc) => ({ callMode: lc.callMode })),
+      lowLevelCalls: func.lowLevelCalls.map((lc, index) => ({
+        callMode: lc.callMode,
+        // Always published, `computed` included, so a row that carries NO `target` identifies an artifact
+        // compiled before the field existed. Absent is read as unknown, never as an unconstrained target.
+        target: callTargets[index] ?? COMPUTED_PROVENANCE,
+      })),
     }),
     ...(func.libraryDelegateCalls && func.libraryDelegateCalls.length > 0 && {
       libraryDelegateCalls: func.libraryDelegateCalls.map((ld) => ({
@@ -197,10 +814,23 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
       ),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
-    ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && { sortedInsertLoopInfo: [...func.sortedInsertLoopInfo] }),
-    ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && { sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo] }),
+    ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && {
+      sortedInsertLoopInfo: [...func.sortedInsertLoopInfo],
+    }),
+    ...(func.sortedUpsertLoopInfo && func.sortedUpsertLoopInfo.length > 0 && {
+      sortedUpsertLoopInfo: [...func.sortedUpsertLoopInfo],
+    }),
     ...(func.sortedBatchInfo && func.sortedBatchInfo.length > 0 && { sortedBatchInfo: [...func.sortedBatchInfo] }),
     ...(func.blockhashReads && func.blockhashReads.length > 0 && { blockhashReads: [...func.blockhashReads] }),
+    ...(func.messageBusBlockhashReadWidth && func.messageBusBlockhashReads && {
+      graphBlockhashOracle: {
+        inputBaseParameter: '__internal__blockhashInputIndex' as const,
+        rowCount: func.messageBusMaximumRows!,
+        readWidth: func.messageBusBlockhashReadWidth,
+        slotCount: func.messageBusMaximumRows! * func.messageBusBlockhashReadWidth,
+        reads: [...func.messageBusBlockhashReads],
+      },
+    }),
     ...(func.blockLayout && { blockLayout: func.blockLayout }),
   };
 }
@@ -330,9 +960,7 @@ export function generateArtifact(
 
   // Mirror the stateLayout gate below: writesState is only meaningful (and only emitted) for stateful contracts.
   const isStateful = contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
-    || contract.deploysWithValue
-    || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
 
   const abi: AbiFunction[] = abiFunctions.map((func) => ({
     name: func.name,
@@ -347,7 +975,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
-    ...buildFunctionAbiMetadata(func, isStateful),
+    ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
   }));
@@ -366,7 +994,7 @@ export function generateArtifact(
       ...(contract.constructorDef.modifiers.length > 0 && {
         modifiers: contract.constructorDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.constructorDef),
+      ...buildFunctionAbiMetadata(contract.constructorDef, false, contract, ast.interfaceDefinitions),
     });
   }
 
@@ -379,7 +1007,7 @@ export function generateArtifact(
       ...(contract.fallbackDef.modifiers.length > 0 && {
         modifiers: contract.fallbackDef.modifiers.map((m) => m.toString()),
       }),
-      ...buildFunctionAbiMetadata(contract.fallbackDef),
+      ...buildFunctionAbiMetadata(contract.fallbackDef, false, contract, ast.interfaceDefinitions),
     });
   }
 
@@ -390,7 +1018,7 @@ export function generateArtifact(
       inputs: [],
       isReceive: true,
       modifiers: ['payable'],
-      ...buildFunctionAbiMetadata(contract.receiveDef),
+      ...buildFunctionAbiMetadata(contract.receiveDef, false, contract, ast.interfaceDefinitions),
     });
   }
 
@@ -410,9 +1038,7 @@ export function generateArtifact(
   // master-NFT self-pin covenant; see the forceStateful compiler option).
   let stateLayout: StateLayout | undefined;
   if (contract.stateVariables.length > 0 || contract.collections.length > 0
-    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
-    || contract.deploysWithValue
-    || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))) {
+    || compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild) {
     stateLayout = {
       variables: contract.stateVariables.map((sv) => ({
         name: sv.name,
@@ -616,6 +1242,7 @@ export function generateArtifact(
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
         commitmentLimit: compilerOptions.commitmentLimit,
+        messageBus: compilerOptions.messageBus,
       },
     },
     updatedAt: new Date().toISOString(),

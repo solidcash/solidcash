@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, MockNetworkProvider, SignatureTemplate,
@@ -222,7 +222,7 @@ describe('Delegatecall', () => {
       const fallbackAbi = proxyArtifact.abi.find((f) => f.name === '__fallback')!;
       expect(fallbackAbi).toBeDefined();
       expect(fallbackAbi.isFallback).toBe(true);
-      expect(fallbackAbi.lowLevelCalls).toEqual([{ callMode: 'delegatecall' }]);
+      expect(fallbackAbi.lowLevelCalls).toEqual([{ callMode: 'delegatecall', target: { kind: 'literal' } }]);
     });
 
     it('proxy fallback should have no user-visible inputs', () => {
@@ -391,10 +391,14 @@ describe('Delegatecall', () => {
       expect(tx.txid).toBeDefined();
 
       // wrong impl: claim a different address than the co-spent delegate -> identity pin fails
-      await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow();
+      await expect(build(addressToLockScript(proxy.contract.address))).rejects.toThrow(
+        /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      );
 
       // wrong selector: forward calldata that isn't the co-spent delegate's function -> selector pin fails
-      await expect(build(implLbc, hexToBin('deadbeef'))).rejects.toThrow();
+      await expect(build(implLbc, hexToBin('deadbeef'))).rejects.toThrow(
+        /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+      );
     });
 
     it('should preserve implementation NFTs in delegate transaction outputs', async () => {

@@ -1,11 +1,17 @@
 // Solidity behavioral parity pins (VM-run, invisible to the compile-only bench): function types, array
 // bounds/defaults, panics/short-circuit, internal fn-ptr memory arrays and state vars.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory, Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import { fundedSigner, createTestProvider } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+
+const missingAuthenticatedReturn = (functionName: string): string =>
+  `Could not derive the return value of '${functionName}' for .emitReturn(). The covenant trace did not expose an authenticated return commitment.`;
+
+const preflightFailure = (reason: string): string =>
+  `messageBus: BCH-2026 preflight failed at input 0: ${reason}`;
 
 describe('function types', () => {
   // functionTypes/ corpus files VM-run against their Solidity `// ----` outputs (the bench is
@@ -23,7 +29,7 @@ describe('function types', () => {
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
       await expect(sc.ok()).resolves.toBeDefined();
-      await expect(sc.wrong()).rejects.toThrow();
+      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
     });
 
     // ternary_contract_internal_function.sol: test(true) -> 1, test(false) -> 2 via `(b ? C.f : C.g)()`.
@@ -37,7 +43,7 @@ describe('function types', () => {
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
       await expect(sc.ok()).resolves.toBeDefined();
-      await expect(sc.wrong()).rejects.toThrow();
+      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
     });
 
     // function_delete_stack.sol: `function() y = a; delete y; y();` -> FAILURE (calling a nulled pointer reverts).
@@ -53,7 +59,7 @@ describe('function types', () => {
         }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.callDeleted()).rejects.toThrow();
+      await expect(sc.callDeleted()).rejects.toThrow(missingAuthenticatedReturn('callDeleted'));
     });
 
     // function_delete_storage.sol: `delete y` on a STATE fn-ptr writes the invalid sentinel; a later `y()` reverts.
@@ -65,7 +71,9 @@ describe('function types', () => {
         function delThenCall() public returns (bool) { y = a; delete y; y(); require(true); return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.delThenCall()).rejects.toThrow();
+      await expect(sc.delThenCall()).rejects.toThrow(preflightFailure(
+        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0xffffff7f.',
+      ));
     });
 
     // ternary_contract_public_function.sol: `(b ? C.f : C.g)()` with PUBLIC functions -> 1/2 per branch.
@@ -92,7 +100,7 @@ describe('function types', () => {
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
       await expect(sc.setEq()).resolves.toBeDefined();
-      await expect(sc.setNeq()).rejects.toThrow();
+      await expect(sc.setNeq()).rejects.toThrow(preflightFailure('Program failed an OP_VERIFY operation.'));
     });
   });
 });
@@ -118,7 +126,7 @@ describe('array bounds/defaults', () => {
         function oob() public returns (bool) { int[] memory x = new int[](5); x[5]; return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.oob()).rejects.toThrow();
+      await expect(sc.oob()).rejects.toThrow(missingAuthenticatedReturn('oob'));
     });
 
     // test/libsolidity/semanticTests/array/array_storage_pop_zero_length.sol
@@ -129,7 +137,7 @@ describe('array bounds/defaults', () => {
         function popEmpty() public returns (bool) { storageArray.pop(); return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.popEmpty()).rejects.toThrow();
+      await expect(sc.popEmpty()).rejects.toThrow(preflightFailure('Program failed an OP_VERIFY operation.'));
     });
 
     // test/libsolidity/semanticTests/array/array_storage_push_pop.sol
@@ -161,7 +169,7 @@ describe('panics/short-circuit', () => {
         function divZero(int a, int b) public returns (int) { return a / b; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.divZero(10n, 0n)).rejects.toThrow();
+      await expect(sc.divZero(10n, 0n)).rejects.toThrow(missingAuthenticatedReturn('divZero'));
     });
 
     it('runtime modulo by zero reverts', async () => {
@@ -169,7 +177,7 @@ describe('panics/short-circuit', () => {
         function modZero(int a, int b) public returns (int) { return a % b; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.modZero(10n, 0n)).rejects.toThrow();
+      await expect(sc.modZero(10n, 0n)).rejects.toThrow(missingAuthenticatedReturn('modZero'));
     });
 
     // test/libsolidity/semanticTests/reverts/assert_require.sol
@@ -179,7 +187,7 @@ describe('panics/short-circuit', () => {
         function assertT() public returns (bool) { assert(true); return true; }
       }`, { forceStateful: true });
       const sc = await getContractFactory(art, await fundedSigner()).deploy();
-      await expect(sc.assertF()).rejects.toThrow();
+      await expect(sc.assertF()).rejects.toThrow(missingAuthenticatedReturn('assertF'));
       await expect(sc.assertT()).resolves.toBeDefined();
     });
 
@@ -197,7 +205,7 @@ describe('panics/short-circuit', () => {
       await expect(sc.scAnd(false, 0n)).resolves.toBeDefined(); // LHS false -> && short-circuits, no 10/0
       await expect(sc.scOr(true, 0n)).resolves.toBeDefined();   // LHS true  -> || short-circuits, no 10/0
       // Sanity: when the RHS IS reached (LHS does not decide), the div-by-zero reverts.
-      await expect(sc.scAnd(true, 0n)).rejects.toThrow();
+      await expect(sc.scAnd(true, 0n)).rejects.toThrow(missingAuthenticatedReturn('scAnd'));
     });
   });
 });
@@ -237,7 +245,7 @@ describe('internal fn-ptr memory array', () => {
 
     it('a wrong expectation reverts (dispatch is real per-index, not constant-folded)', async () => {
       const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-      await expect(sc.wrong()).rejects.toThrow();
+      await expect(sc.wrong()).rejects.toThrow(missingAuthenticatedReturn('wrong'));
     });
   });
 });
@@ -264,12 +272,16 @@ describe('internal fn-ptr state var', () => {
   describe('internal fn-ptr state variable behavior', () => {
     it('calling an uninitialized void internal fn-ptr state var reverts', async () => {
       const c = await dep('contract Test { function() internal x; function f() public returns (int) { x(); return 2; } }', {});
-      await fund(c); await expect(c.f().send()).rejects.toThrow();
+      await fund(c); await expect(c.f().send()).rejects.toThrow(preflightFailure(
+        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0x.',
+      ));
     });
 
     it('calling an uninitialized int-typed internal fn-ptr state var reverts', async () => {
       const c = await dep('contract Test { function(int) internal returns(int) x; function f() public returns (int) { return x(5); } }', {});
-      await fund(c); await expect(c.f().send()).rejects.toThrow();
+      await fund(c); await expect(c.f().send()).rejects.toThrow(preflightFailure(
+        'Program attempted to OP_INVOKE an undefined function identifier. Function identifier: 0x.',
+      ));
     });
 
     it('a set internal fn-ptr state var persists and dispatches to the stored function', async () => {

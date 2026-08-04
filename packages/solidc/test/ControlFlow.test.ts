@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Control flow: loops, break/continue, ternary, assignment-as-expression, ++/--.
 

@@ -27,10 +27,12 @@ export interface StructArgument { [field: string]: ConstructorArgument }
 // A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`), a
 // struct object, or a primitive.
 export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
-export type FunctionArgument = ConstructorArgument | SignatureTemplate;
+export type FunctionArgument = ConstructorArgument | SignatureTemplate | SignatureTemplate[];
 
 export type EncodedConstructorArgument = Uint8Array;
-export type EncodedFunctionArgument = Uint8Array | SignatureTemplate;
+export type EncodedFunctionArgument = Uint8Array | SignatureTemplate | SignatureTemplate[];
+export const isSignatureTemplateArray = (value: unknown): value is SignatureTemplate[] =>
+  Array.isArray(value) && value.every((element) => element instanceof SignatureTemplate);
 
 export type EncodeFunction =
   (arg: FunctionArgument, typeStr: string, structs?: readonly StructDefinitionInfo[]) => EncodedFunctionArgument;
@@ -74,6 +76,9 @@ export function encodeFunctionArgument(
   // a length prefix followed by packed fixed-width elements (or per-element encodings) - via the shared
   // pushdata encoder, so it matches the compiler's runtime array layout / state encoding exactly.
   if (Array.isArray(argument)) {
+    const parsed = parseType(typeStr);
+    if (parsed instanceof ArrayType && parsed.elementType === PrimitiveType.SIG
+      && isSignatureTemplateArray(argument)) return argument;
     // A CashAddress string inside an `address[]` (or nested) arg must become its locking bytecode BEFORE the
     // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
     // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript

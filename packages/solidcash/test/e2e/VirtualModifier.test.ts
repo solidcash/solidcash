@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory, SignatureTemplate } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';

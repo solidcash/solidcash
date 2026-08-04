@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc } from '../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
+import { compileString } from './direct-compile.js';
 
 // Functions: visibility, unused params, named returns, mutability, internal-helper inlining.
 

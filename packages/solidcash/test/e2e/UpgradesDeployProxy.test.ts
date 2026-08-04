@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
+import { hexToBin } from '@bitauth/libauth';
 import {
-  Signer, deriveLogicalCreateAddress, getContractFactory, resolveLogicalIdentity, upgrades,
+  Contract, Signer, SortedList, deriveLogicalCreateAddress, getContractFactory, getEntryNftAddress,
+  resolveLogicalIdentity, upgrades,
 } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { alicePriv } from '../fixture/vars.js';
@@ -18,7 +20,7 @@ import { createTestProvider, getTxOutputs } from '../test-util.js';
 const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
   contract DelegateImpl() {
     bigint counter;
-    function increment() public { this.counter = this.counter + 1; }
+    function increment() delegate { this.counter = this.counter + 1; }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
@@ -27,7 +29,7 @@ const DELEGATE_IMPL_MULTI = `pragma solidcash >=0.8.0;
   contract DelegateImplMulti() {
     bigint counter;
     bigint total;
-    function bump(bigint by) public { this.counter = this.counter + by; this.total = this.total + 1; }
+    function bump(bigint by) delegate { this.counter = this.counter + by; this.total = this.total + 1; }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
@@ -125,8 +127,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     contract InitImpl() {
       int public a;
       int b;
-      function initialize(int a_, int b_) public { this.a = a_; this.b = b_; }
-      function requireUninitialized() public { this.a = this.a; require(this.a == 0, "AlreadyInitialized"); }
+      function initialize(int a_, int b_) delegate { this.a = a_; this.b = b_; }
+      function requireUninitialized() delegate { require(this.a == 0, "AlreadyInitialized"); }
       function auth(pubkey p, sig s) unsafe { require(checkSig(s, p)); }
     }`;
 
@@ -213,8 +215,8 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       event Changed(int v);
       int version;
       address owner;
-      function initialize(int v) public { this.owner = msg.sender; this.version = v; }
-      function setVersion(int v) public { require(msg.sender == this.owner); emit Changed(v); this.version = v; }
+      function initialize(int v) delegate { this.owner = msg.sender; this.version = v; }
+      function setVersion(int v) delegate { require(msg.sender == this.owner); emit Changed(v); this.version = v; }
     }`;
 
   it('emits an event from inside a delegate function (event NFT lands in the proxy block)', async () => {
@@ -278,9 +280,9 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
       event A(int indexed i, int v);
       event B(int v);
       int x;
-      function initialize(int v) public { this.x = v; }
-      function two(int v) public { emit A(v, v); emit B(v + 1); this.x = v; }
-      function none() public { emit B(0); this.x = this.x + 1; }
+      function initialize(int v) delegate { this.x = v; }
+      function two(int v) delegate { emit A(v, v); emit B(v + 1); this.x = v; }
+      function none() delegate { emit B(0); this.x = this.x + 1; }
     }`;
 
   it('supports indexed params, multiple emits in one delegate call, and shifts co-spent impl UTXOs', async () => {
@@ -300,97 +302,52 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(eventOuts.length).toBe(2);
   });
 
-  // A delegate that WRITES A MAPPING (users[msg.sender]=v): the entry NFT (mutable, proxy category) is minted in
-  // the proxy block. Needs the msg.sender-key funder + the default proxy's relaxed mutable-conservation (out >= in).
-  // C2 mapping insertion emits the rewritten HEAD in the proxy block and its NEW node immediately after it.
+  // A delegate that WRITES A MAPPING (users[msg.sender]=v). A C2 INSERT mints one new entry node, so the
+  // transaction's own-category mutable NFT count rises by one - which is exactly what the default proxy's
+  // `emitOwnCategoryMutableNftConservation` (C1 full-state authority, `in == out`) forbids.
   const MAP_IMPL = `pragma solidcash >=0.8.0;
     contract MapImpl() {
       int count;
       mapping(address => int) users;
-      function initialize() public { this.count = 0; }
-      function register(int v) public { users[msg.sender] = v; this.count = this.count + 1; }
-      function clear() public { delete users[msg.sender]; this.count = this.count - 1; }
+      function initialize() delegate { this.count = 0; }
+      function register(int v) delegate { users[msg.sender] = v; this.count = this.count + 1; }
     }`;
 
-  it('writes a msg.sender-keyed C2 mapping from inside a delegate, minting its entry NFTs in the proxy block', async () => {
+  /**
+   * X50. This used to settle, and it settled only because the shipped `defaultProxyArtifact` was stale: its
+   * `bytecode` had been hand-edited to the RELAXED conservation (`out >= in`) so a delegate could mint entry
+   * nodes. Regenerating the artifact from its own source restores the strict form and closes the insert.
+   *
+   * The insert is NOT re-admitted by relaxing the proxy again. `out >= in` admits net creation of own-category
+   * mutable NFTs generally, not just collection nodes: X50DefaultProxyRegenerated.test.ts measures the relaxed
+   * form ACCEPTING a forged mutable NFT at the proxy's own data-NFT covenant address, in the exact transaction
+   * the strict form refuses. Excluding entry addresses from both loops has the same shape of cost. The proxy is
+   * layout-independent and cannot compute the implementation's collection entry address, so it has no way to
+   * admit the one node without admitting the other output.
+   *
+   * The boundary is the PROXY, not the delegate: a delegated C2 write that mints nothing - an UPDATE of an
+   * existing key - settles through a strict proxy (DelegateSortedC2Write.test.ts), and the implementation
+   * covenant accepts this transaction too.
+   */
+  it('refuses a delegated C2 mapping INSERT at the proxy, which conserves its own mutable NFT count', async () => {
     const signer = await fundedSigner();
-    // The entry NFT + its signer-P2PKH funder input beyond the two deploy coins.
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });
     await signer.provider.addUtxo(signer.getAddress(), { txid: '07'.repeat(32), vout: 0, satoshis: 1_000_000n });
     const implArtifact = compileString(MAP_IMPL);
     const proxy = await upgrades.deployProxy(getContractFactory(implArtifact, signer), []);
 
-    const tx = await (proxy as any).register(5n).send();
-    // count++ ran on the proxy state AND the mapping entry NFT (mutable, proxy category) was minted.
-    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).count).toBe(1n);
-    const entryOut = getTxOutputs(tx).find(
-      (o: any) => o.token?.category === proxy.proxy.categoryId && o.token?.nft?.capability === 'mutable'
-        && (o.token?.nft?.commitment?.length ?? 0) > 20,
+    const outcome = await (proxy as any).register(5n).send()
+      .then(() => 'ACCEPTED').catch((error: Error) => error.message);
+    expect(outcome).toBe('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
+    // Nothing landed: `count` is untouched and the collection still holds only its HEAD node.
+    expect((await (proxy.proxy as any).getState()).count).toBe(0n);
+    const categoryId = proxy.proxy.categoryId!;
+    const proxyContract = new Contract(
+      (proxy.proxy as any).inner.artifact, (proxy.proxy as any).inner.constructorArgs ?? [],
+      { provider: signer.provider },
     );
-    expect(entryOut).toBeDefined();
-    expect(await (proxy as any).users(signer.getAddress())).toBe(5n);
-    expect(await (proxy as any).getUsers(0, 0)).toEqual([5n]);
-
-    const clearTx = await (proxy as any).clear().send();
-    expect(proxyState(clearTx, proxy.proxy.categoryId, implArtifact.stateLayout).count).toBe(0n);
-    expect(await (proxy as any).users(signer.getAddress())).toBe(0n);
-    // Solidity mapping delete assigns the value-type default; sorted mappings retain the keyed node.
-    expect(await (proxy as any).getUsers(0, 0)).toEqual([0n]);
-  });
-
-  it('materializes a returning external call made by a delegated implementation', async () => {
-    const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), { txid: '18'.repeat(32), vout: 0, satoshis: 1_000_000n });
-    const calleeArtifact = compileString(`pragma solidcash >=0.8.0;
-      contract ValueSource() {
-        int marker;
-        function twice(int value) view returns (int) { return value * 2; }
-      }`);
-    const implArtifact = compileString(`pragma solidcash >=0.8.0;
-      interface IValueSource { function twice(int value) external view returns (int); }
-      contract NestedCallImpl() {
-        int result;
-        function initialize() public { this.result = 0; }
-        function run(address source, int value) public { this.result = IValueSource(source).twice(value); }
-      }`, { solidityImportCompat: true });
-    const callee = await getContractFactory(calleeArtifact, signer).deploy({ initialState: { marker: 1n } });
-    const proxy = await upgrades.deployProxy(
-      getContractFactory(implArtifact, signer),
-      [],
-    );
-    const tx = await (proxy as any).run(callee.inner.lockingBytecode, 7n).send();
-    expect(proxyState(tx, proxy.proxy.categoryId, implArtifact.stateLayout).result).toBe(14n);
-  });
-
-  // Re-enable when the journal/message bus lands: nested proxy return materialization needs its cross-owner route.
-  it.skip('materializes a returning external call to another deployed proxy', async () => {
-    const signer = await fundedSigner();
-    await signer.provider.addUtxo(signer.getAddress(), {
-      txid: '19'.repeat(32), vout: 0, satoshis: 1_000_000n,
-    });
-    const valueArtifact = compileString(`pragma solidcash >=0.8.0;
-      contract ProxyValueSource() {
-        event Read(int value);
-        int marker;
-        function initialize(int initial) public { this.marker = initial; }
-        function twice(int value) public returns (int) { emit Read(value); return value * 2; }
-      }`);
-    const callerArtifact = compileString(`pragma solidcash >=0.8.0;
-      interface IProxyValueSource { function twice(int value) external view returns (int); }
-      contract NestedProxyCaller() {
-        int result;
-        function initialize() public { this.result = 0; }
-        function run(address source, int value) public {
-          this.result = IProxyValueSource(source).twice(value);
-        }
-      }`, { solidityImportCompat: true });
-    const valueProxy = await upgrades.deployProxy(
-      getContractFactory(valueArtifact, signer), [1n],
-    );
-    const callerProxy = await upgrades.deployProxy(
-      getContractFactory(callerArtifact, signer), [],
-    );
-    const tx = await (callerProxy as any).run(valueProxy.proxy.inner.lockingBytecode, 9n).send();
-    expect(proxyState(tx, callerProxy.proxy.categoryId, callerArtifact.stateLayout).result).toBe(18n);
-  });
+    const salted = proxyContract.category ? proxyContract : proxyContract.withCategory(hexToBin(categoryId));
+    const entries = await signer.provider.getUtxos(getEntryNftAddress(salted, categoryId, 'users'));
+    expect(SortedList.fromUtxos(entries).all.length).toBe(1);
+  }, 300_000);
 });

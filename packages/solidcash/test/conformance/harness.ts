@@ -331,7 +331,7 @@ export function abiNestedStructCase(o: {
   return {
     solidity: `${SPDX}contract C {\n${defs}  function f(${params}) public pure returns (bytes memory) {\n`
       + `    Inner memory inner = Inner(${innerCtor});\n    Outer memory o = Outer(${outerCtor});\n`
-      + `    return abi.encode(o);\n  }\n}\n`,
+      + '    return abi.encode(o);\n  }\n}\n',
     scash: `contract Conf() {\n${defs}  function f(${params}) {\n    ${build}\n`
       + `    require(abi.encode(o) == ${expected});\n  }\n}\n`,
     evmFn: 'f', bchFn: 'f', args: [...o.outerPreVals, ...o.innerVals], evmCompat: true,

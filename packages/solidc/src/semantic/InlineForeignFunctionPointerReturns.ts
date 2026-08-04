@@ -31,8 +31,11 @@ import { cloneNode } from '../ast/clone.js';
  */
 export default class InlineForeignFunctionPointerReturns extends AstTraversal {
   // helper name -> { param names, external-fn-ptr param positions, the single returned expression, isPublic }
-  private candidates = new Map<string,
-    { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }>();
+  private candidates = new Map<
+  string,
+  { params: string[]; extPtrParams: Set<number>; returnExpr: ExpressionNode; isPublic: boolean }
+  >();
+
   private fnPtrStateVars = new Set<string>(); // foreign fn-ptr state vars - sound to beta-reduce as a helper arg
 
   visitSourceFile(node: SourceFileNode): Node {
@@ -159,9 +162,12 @@ export default class InlineForeignFunctionPointerReturns extends AstTraversal {
     }
     for (const key of Object.keys(expr)) {
       const val = (expr as unknown as Record<string, unknown>)[key];
-      if (val instanceof Node) (expr as unknown as Record<string, unknown>)[key] = this.substExpr(val as ExpressionNode, subst);
-      else if (Array.isArray(val)) {
-        (expr as unknown as Record<string, unknown>)[key] = val.map((v) => v instanceof Node ? this.substExpr(v as ExpressionNode, subst) : v);
+      if (val instanceof Node) {
+        (expr as unknown as Record<string, unknown>)[key] = this.substExpr(val as ExpressionNode, subst);
+      } else if (Array.isArray(val)) {
+        (expr as unknown as Record<string, unknown>)[key] = val.map(
+          (v) => v instanceof Node ? this.substExpr(v as ExpressionNode, subst) : v,
+        );
       }
     }
     return expr;

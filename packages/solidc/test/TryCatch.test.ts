@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // try/catch: the catch is dead code on BCH (a failed co-spent call/deploy aborts the whole tx, and warns).
 

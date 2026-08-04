@@ -1,9 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
-import { hexToBin } from '@bitauth/libauth';
 
 // Yul log0-log4 are the EVM LOG opcodes = EVENT emission (every `emit E(..)` lowers to a LOGn), NOT diagnostics.
 // LowerInlineAssembly wires them to SolidCash's anonymous event NFT: `log*(p,n,topics...)` emits an anonymous

@@ -97,7 +97,6 @@ import {
   AssertNode,
   AddressTransferStatementNode,
   AddressSendExpressionNode,
-  SelfdestructStatementNode,
   LowLevelCallNode,
   LowLevelCallStatementNode,
   ExternalFunctionCallNode,
@@ -109,8 +108,6 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
-  FunctionModifier,
-  TryCatchNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
@@ -126,9 +123,9 @@ import {
   IndexOutOfBoundsError,
   TupleAssignmentError,
   BitshiftBitcountNegativeError,
-  BitshiftBitcountTooLargeError,
   UnsupportedStateTypeError,
   StateAssignTypeError,
+  AbiEncodeEmptyError,
   AbiDecodeIndexError,
   UnsupportedMappingKeyTypeError,
   UnsupportedMappingValueTypeError,
@@ -151,15 +148,12 @@ import {
   InvalidAssemblyError,
   NoMatchingOverloadError,
   AmbiguousOverloadError,
-  AmbiguousEventOverloadError,
   InternalCallToExternalError,
   ContractConstructorArgTypeError,
   RevertArgumentCountError,
   RevertArgumentTypeError,
   PackedArrayUnsupportedTypeError,
   IntLiteralOutOfRangeError,
-  InvalidCallOptionError,
-  UnsupportedAbiV1TypeError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
@@ -167,24 +161,33 @@ import { createDefaultValueExpression } from '../ast/defaults.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
+import { ImportedLocations } from './ImportedLocations.js';
 
 export default class TypeCheckTraversal extends AstTraversal {
   private currentFunction: FunctionDefinitionNode;
   private functionDefinitions: Map<string, FunctionDefinitionNode[]> = new Map();
-  private abiCoderV1 = false;
+
+  // Names the imported file a warned-about position belongs to. This traversal runs on the MERGED ast, so a bare
+  // `at line N` cites a line that only exists in an import and is impossible in the file the user named.
+  private importedLocations = new ImportedLocations();
 
   // The `solidityImportCompat`-named literal coercions (hex->int/address, string->bytesN, bytes widen, negate)
   // are now plain SolidCash defaults - they only fire on source/target pairings that are a native type error, so
   // they can't change working code. Default true; kept as a field so the coercion helpers read uniformly.
-  constructor(
-    private solidityImportCompat: boolean = true,
-    private strictSolidityValidation: boolean = false,
-  ) {
+  constructor(private solidityImportCompat: boolean = true, rootFileId?: string) {
     super();
+    this.rootFileId = rootFileId ?? '';
+  }
+
+  private rootFileId: string;
+
+  /** ` at line N` for a warning, naming the imported file when line N is not in the file being compiled. */
+  private diagLine(location?: { start?: { line: number } }): string {
+    return this.importedLocations.diagLine(location as never);
   }
 
   visitSourceFile(node: SourceFileNode): Node {
-    this.abiCoderV1 = node.abiCoderVersion === 'v1';
+    this.importedLocations = new ImportedLocations(node, this.rootFileId);
     node.constantDefinitions.forEach((cd) => this.visitConstantDefinition(cd));
 
     // Build function definitions map from free functions
@@ -224,21 +227,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       // Validate: at most 1 user-facing parameter of type 'bytes' (unbounded)
       // Synthetic parameters (prefixed with _) injected by SymbolTableTraversal are excluded
       const userParams = node.fallbackDef.parameters.filter((p) => !p.name.startsWith('__internal__'));
-      if (this.solidityImportCompat) {
-        const validEmptySignature = userParams.length === 0 && node.fallbackDef.returnTypes.length === 0;
-        const validForwardingSignature = userParams.length === 1
-          && userParams[0].type instanceof BytesType && userParams[0].type.bound === undefined
-          && userParams[0].modifier.includes(Modifier.CALLDATA)
-          && node.fallbackDef.returnTypes.length === 1
-          && node.fallbackDef.returnTypes[0] instanceof BytesType
-          && (node.fallbackDef.returnTypes[0] as BytesType).bound === undefined
-          && node.fallbackDef.returnModifiers[0]?.includes(Modifier.MEMORY);
-        if (!validEmptySignature && !validForwardingSignature) {
-          throw new TypeError(node.fallbackDef, [], [],
-            'Fallback function either has to have the signature "fallback()" or '
-            + '"fallback(bytes calldata) returns (bytes memory)"');
-        }
-      }
       if (userParams.length > 1) {
         throw new TypeError(node.fallbackDef, [], [],
           "Fallback function can have at most one parameter of type 'bytes'");
@@ -259,19 +247,6 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitConstantDefinition(node: ConstantDefinitionNode): Node {
-    // Solidity evaluates literal-only rational constant expressions exactly and only requires the final value
-    // to fit the declared integer type. Fold before ordinary operand typing so a fractional intermediate such
-    // as `500e-3` can participate in an integral result without being prematurely assigned a fixed-point type.
-    if (node.type instanceof IntType) {
-      const rational = this.evalLiteralRational(node.expression);
-      if (rational && rational.denominator !== 0n && rational.denominator !== 1n
-        && rational.numerator % rational.denominator === 0n) {
-        const literal = new IntLiteralNode(rational.numerator / rational.denominator);
-        literal.location = node.expression.location;
-        node.expression = literal;
-      }
-    }
-    node.expression = this.contextualizeHexArithmetic(node.expression, node.type);
     node.expression = this.visit(node.expression);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
@@ -322,12 +297,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitEventDefinition(node: EventDefinitionNode): Node {
-    // Solidity's AST pipeline retains declarations containing internal-only parameter types even though such a
-    // value cannot cross an event boundary. Preserve the declaration (and its ABI/internalType metadata) here;
-    // validate that particular type at an actual emit site below. Other invalid event shapes still fail here.
     for (const param of node.parameters) {
-      const astOnlyInternalFunction = param.type instanceof FunctionType && !param.type.isExternal;
-      if (!astOnlyInternalFunction && !isValidEventParamType(param.type)) {
+      if (!isValidEventParamType(param.type)) {
         throw new UnsupportedEventParamTypeError(node, param.type);
       }
     }
@@ -339,28 +310,15 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Resolve overloaded events by matching argument types
     if (node.eventCandidates && node.eventCandidates.length > 1) {
-      const sourceIndex = (candidateIndex: number, candidate: EventDefinitionNode): number =>
-        node.fieldNames
-          ? node.fieldNames.indexOf(candidate.parameters[candidateIndex].name)
-          : candidateIndex;
-      const matches = node.eventCandidates.filter((candidate) => (
+      const match = node.eventCandidates.find((candidate) => (
         candidate.parameters.length === node.args.length
         && candidate.parameters.every((param, i) => {
-          const argType = node.args[sourceIndex(i, candidate)]?.type;
+          const argType = node.args[i].type;
           return argType !== undefined && implicitlyCastable(argType, param.type);
         })
       ));
-      if (matches.length === 0) {
+      if (!match) {
         throw new UndefinedEventError(node);
-      }
-      if (matches.length > 1) {
-        throw new AmbiguousEventOverloadError(node);
-      }
-      const match = matches[0];
-      if (node.fieldNames) {
-        node.args = match.parameters.map((parameter) =>
-          node.args[node.fieldNames!.indexOf(parameter.name)]);
-        node.fieldNames = undefined;
       }
       node.eventDefinition = match;
       node.eventCandidates = undefined;
@@ -368,19 +326,12 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     if (node.eventDefinition) {
       const eventDef = node.eventDefinition;
-      for (const param of eventDef.parameters) {
-        if (!isValidEventParamType(param.type)) {
-          throw new UnsupportedEventParamTypeError(eventDef, param.type);
-        }
-      }
       if (node.args.length !== eventDef.parameters.length) {
         throw new EmitArgumentCountError(node, eventDef.parameters.length, node.args.length);
       }
-      // Event arguments use the same Solidity literal conversions as function-call arguments and assignments:
-      // notably `"abc"` -> bytes3 and a short fixed-bytes literal -> a right-padded wider bytesN.
-      node.args = this.coerceHexArgs(node.args, eventDef.parameters.map((p) => p.type));
       for (let i = 0; i < node.args.length; i++) {
         const paramType = eventDef.parameters[i].type;
+        node.args[i] = this.maybeCoerceZeroToBytes(node.args[i], paramType);
         const argType = node.args[i].type;
         if (argType && !implicitlyCastable(argType, paramType)) {
           throw new EmitArgumentTypeError(node, eventDef.parameters[i].name, argType, paramType);
@@ -476,15 +427,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
-    node.recipient = this.visit(node.recipient);
-    const recipientType = node.recipient.type;
-    if (!(recipientType instanceof AddressType && recipientType.payable)) {
-      throw new TransferArgumentTypeError(node, 'recipient', recipientType!, new AddressType(true));
-    }
-    return node;
-  }
-
   visitLowLevelCall(node: LowLevelCallNode): Node {
     // Don't type-check targetExpression - it may be an unresolved interface/contract ref
     node.data = this.visit(node.data);
@@ -546,7 +488,7 @@ export default class TypeCheckTraversal extends AstTraversal {
             throw new UnsupportedStructFieldTypeError(node, field.type);
           }
         }
-      } else if (!isValidCollectionElementType(node.type.elementType)) {
+      } else if (!isValidStateType(node.type.elementType)) {
         throw new UnsupportedArrayElementTypeError(node, node.type.elementType);
       }
       // Validate bound is positive if static
@@ -634,6 +576,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.keys = this.visitList(node.keys);
     if (node.arrayIndex) {
       node.arrayIndex = this.visit(node.arrayIndex);
+    }
+    // No-arg `map[k].push()`: append the entry array's element-type default value.
+    if (node.noArg && node.arrayPush && node.collection?.innermostValueType instanceof ArrayType) {
+      node.expression = createDefaultValueExpression(node.collection.innermostValueType.elementType, node.location!);
     }
     // Whole-value array assign `m[k] = [a,b,c]`: blob-encode the literal (pushdata(count) ++ tight elements) so the
     // codegen stores the array as a single value blob (matching the chunk-aware read), not separate stack items.
@@ -749,26 +695,8 @@ export default class TypeCheckTraversal extends AstTraversal {
           if (seen.has(field.type)) continue;
           seen.add(field.type);
           validate(field.type.fields, seen);
-          seen.delete(field.type);
           continue;
         }
-        // Solidity permits fixed/dynamic arrays of mapping-bearing structs as storage-only type declarations.
-        // Validate the element struct recursively here; actual uses still pass through state/local/parameter
-        // validation, which rejects locations that cannot represent the mapping-bearing value.
-        if (field.type instanceof ArrayType && field.type.elementType instanceof StructType) {
-          // A fixed-array cycle has infinite inline size and Solidity rejects it (`struct S { S[1] x; }`).
-          // Dynamic arrays and mapping-bearing paths are indirections, so their recursive declarations remain
-          // legal storage-only shapes.
-          if (seen.has(field.type.elementType)) {
-            if (field.type.bound !== undefined) throw new UnsupportedStructFieldTypeError(node, field.type);
-            continue;
-          }
-          seen.add(field.type.elementType);
-          validate(field.type.elementType.fields, seen);
-          seen.delete(field.type.elementType);
-          continue;
-        }
-        if (field.type instanceof ArrayType && field.type.elementType instanceof MappingType) continue;
         if (!isValidStateType(field.type)) {
           throw new UnsupportedStructFieldTypeError(node, field.type);
         }
@@ -820,10 +748,10 @@ export default class TypeCheckTraversal extends AstTraversal {
       return node;
     }
 
-    // Solidity exposes address.codehash as bytes32. P2SH20 hashes are widened at codegen.
+    // Handle .codehash on address types -> bytes (20 or 32 depending on P2SH type, checked at runtime)
     if ((exprType instanceof AddressType)
         && node.name === 'codehash') {
-      node.type = new BytesType(32);
+      node.type = new BytesType();
       return node;
     }
 
@@ -840,9 +768,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!member) {
         throw new UndefinedEnumMemberError(node, exprType);
       }
-      // Enum members use their integer ordinal at codegen, but remain nominally enum-typed for semantic checks.
-      // Solidity requires an explicit cast before assigning an enum value to an integer (or vice versa).
-      node.type = exprType;
+      node.type = PrimitiveType.BIGINT;
       node.enumType = exprType;
       return node;
     }
@@ -931,13 +857,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         node.expression.type = node.stateVariable.type;
       }
     }
-    if (node.stateVariable?.type instanceof ArrayType && node.expression instanceof ArrayNode) {
-      this.contextualizeArrayLiteral(node.expression, node.stateVariable.type);
-    }
-    node.expression = this.contextualizeHexArithmetic(node.expression, node.stateVariable?.type);
     node.expression = this.visit(node.expression);
-    node.expression = this.maybeCoercePublicGetterReference(node.expression, node.stateVariable?.type);
-    node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.stateVariable?.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.stateVariable?.type);
@@ -951,7 +871,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!implicitlyCastable(node.expression.type, node.stateVariable.type)) {
         throw new StateAssignTypeError(node, node.expression.type, node.stateVariable.type);
       }
-      this.checkIntLiteralRange(node, node.expression, node.stateVariable.type);
     }
     return node;
   }
@@ -960,7 +879,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     // For array type variables with an array literal, set blobEncoded before visiting
     // so that visitArray can handle empty arrays correctly
     if (node.type instanceof ArrayType && node.expression instanceof ArrayNode) {
-      this.contextualizeArrayLiteral(node.expression, node.type);
       node.expression.blobEncoded = true;
       if (node.expression.elements.length === 0) {
         node.expression.type = node.type;
@@ -972,22 +890,11 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
     // Uninitialized declaration (`int x;`): no initializer to type-check; codegen emits the zero value.
     if (node.expression) {
-      node.expression = this.contextualizeHexArithmetic(node.expression, node.type);
       node.expression = this.visit(node.expression);
-      node.expression = this.maybeCoercePublicGetterReference(node.expression, node.type);
-      node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.type);
       node.expression = this.maybeCoerceHexToInt(node.expression, node.type);
       node.expression = this.maybeCoerceZeroToBytes(node.expression, node.type);
       node.expression = this.maybeCoerceStringToBytesN(node.expression, node.type);
       node.expression = this.maybeCoerceBytesWiden(node.expression, node.type);
-      // ABI address words carry no payability bit. Solidity permits a direct abi.decode(..., (address)) result
-      // to bind an `address payable` local; preserve that contextual qualifier without relaxing ordinary
-      // address-to-payable assignments.
-      if (node.expression instanceof AbiDecodeNode
-        && node.type instanceof AddressType && node.type.payable
-        && node.expression.type instanceof AddressType && !node.expression.type.payable) {
-        node.expression.type = node.type;
-      }
       expectAssignable(node, node.expression.type, node.type);
       this.checkIntLiteralRange(node, node.expression, node.type);
     }
@@ -1039,15 +946,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitTupleAssignment(node: TupleAssignmentNode): Node {
     if (node.tupleExpressions) {
       // `(x, y) = (a, b)`: each RHS expression maps to one slot; the combined type is their tuple.
-      node.tupleExpressions = node.tupleExpressions.map((e, i) => {
-        let expression = this.visit(e) as ExpressionNode;
-        const expected = node.elements[i]?.skip ? undefined : node.elements[i]?.type;
-        expression = this.maybeCoerceHexToInt(expression, expected);
-        expression = this.maybeCoerceZeroToBytes(expression, expected);
-        expression = this.maybeCoerceStringToBytesN(expression, expected);
-        expression = this.maybeCoerceBytesWiden(expression, expected);
-        return expression;
-      });
+      node.tupleExpressions = node.tupleExpressions.map((e) => this.visit(e));
       const rhsTuple = new TupleType(node.tupleExpressions.map((e) => e.type!));
       const elementTypes = node.elements.map((e, i) => (e.skip ? rhsTuple.elements[i] : e.type!));
       const assignmentType = new TupleType(elementTypes);
@@ -1089,20 +988,34 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAssign(node: AssignNode): Node {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
+    // X171. An array-typed local REASSIGNED an array literal must blob-encode exactly as its DECLARATION does
+    // (visitVariableDefinition) - one stack item, pushdata(count) ++ tight elements. Without the flag
+    // visitArray takes the standard (checkMultiSig) path and leaves N separate items plus a count, so the
+    // slot receives the COUNT and the next local array op decodes a 1-byte item with an empty payload
+    // (OP_BIN2NUM OP_SPLIT aborts: "stack item length: 0; requested split index: 1"). State assigns
+    // (visitStateAssign) and declarations already set it; this is the third member of that set.
+    if (node.identifier.type instanceof ArrayType && node.expression instanceof ArrayNode) {
+      node.expression.blobEncoded = true;
+      if (node.expression.elements.length === 0) {
+        node.expression.type = node.identifier.type;
+      }
+    }
     // Propagate FixedType to decimal literals before visiting
     if (node.identifier.type instanceof FixedType && node.expression instanceof DecimalLiteralNode) {
       node.expression.type = node.identifier.type;
     }
-    node.expression = this.contextualizeHexArithmetic(node.expression, node.identifier.type);
     node.expression = this.visit(node.expression);
-    node.expression = this.maybeCoercePublicGetterReference(node.expression, node.identifier.type);
-    node.expression = this.maybeCoerceHexLiteralToString(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceHexToInt(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceZeroToBytes(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceStringToBytesN(node.expression, node.identifier.type);
     node.expression = this.maybeCoerceBytesWiden(node.expression, node.identifier.type);
     expectAssignable(node, node.expression.type, node.identifier.type);
-    this.checkIntLiteralRange(node, node.expression, node.identifier.type!);
+    // Pack a non-empty literal at the DECLARED element width, not the literals' inferred width - same reason
+    // as visitVariableDefinition. After expectAssignable so a real type mismatch still throws.
+    if (node.identifier.type instanceof ArrayType && node.expression instanceof ArrayNode
+      && node.expression.elements.length > 0) {
+      coerceArrayLiteralType(node.expression, node.identifier.type);
+    }
     return node;
   }
 
@@ -1145,106 +1058,19 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  visitTryCatch(node: TryCatchNode): Node {
-    node = super.visitTryCatch(node) as TryCatchNode;
-    if (!this.solidityImportCompat) return node;
-
-    const externalTarget = node.expression instanceof ExternalFunctionCallNode
-      || node.expression instanceof InstantiationNode
-      || (node.expression instanceof FunctionCallNode && node.expression.fromThisCall)
-      // Solidity library calls use external-call try semantics. Compatibility lowering
-      // retains their qualified library name while representing them as ordinary calls.
-      || (node.expression instanceof FunctionCallNode && node.expression.identifier.name.includes('.'))
-      || node.expression.fromExternalSelfCall
-      || node.fromExternalSelfCall;
-    if (!externalTarget) {
-      throw new TypeError(
-        node.expression,
-        node.expression.type,
-        undefined,
-        'Try can only be used with external function calls and contract creation',
-      );
-    }
-
-    if (node.returnParameters) {
-      const actualTypes = node.expression.type instanceof TupleType
-        ? node.expression.type.elements
-        : node.expression.type === PrimitiveType.VOID || node.expression.type === undefined
-          ? []
-          : [node.expression.type];
-      const declaredTypes = node.returnParameters.map((parameter) => parameter.type);
-      if (actualTypes.length !== declaredTypes.length) {
-        throw new TypeError(
-          node,
-          actualTypes,
-          declaredTypes,
-          `Try returns clause declares ${declaredTypes.length} values, but the expression returns ${actualTypes.length}`,
-        );
-      }
-      // Contract creation is represented as the deployed locking bytecode in SolidCash,
-      // while Solidity types its result as the created contract. The source-level return
-      // clause is nevertheless exact once its arity has been checked above.
-      const mismatch = node.expression instanceof InstantiationNode
-        ? -1
-        : declaredTypes.findIndex((declared, index) =>
-          declared.toString() !== actualTypes[index].toString());
-      if (mismatch >= 0) {
-        throw new TypeError(
-          node.returnParameters[mismatch],
-          actualTypes[mismatch],
-          declaredTypes[mismatch],
-          `Try return type must exactly match '${actualTypes[mismatch]}'`,
-        );
-      }
-    }
-    return node;
-  }
-
   // Remaining statements are visited inside executeWithNarrowedTypes so the narrowed types are
   // automatically restored when the recursion unwinds.
-  private visitStatementsRecursively(
-    statements: StatementNode[], index: number = 0, end: number = statements.length,
-  ): void {
-    if (index >= end) return;
+  private visitStatementsRecursively(statements: StatementNode[], index: number = 0): void {
+    if (index >= statements.length) return;
 
     statements[index] = this.visit(statements[index]) as StatementNode;
 
     if (statements[index] instanceof RequireNode) {
       const narrowings = extractBytesNarrowings((statements[index] as RequireNode).expression);
-      // A length guard narrows only until the variable can be assigned again. Continuing to treat
-      // `require(b.length == 32); b = dynamicBytes();` as bytes32 rejects the legal reassignment and makes every
-      // later read stale. A write nested in a branch/loop also ends the fact conservatively.
-      let cutoff = end;
-      for (let i = index + 1; i < end; i += 1) {
-        if (narrowings.some(({ symbol }) => this.writesSymbol(statements[i], symbol))) {
-          cutoff = i;
-          break;
-        }
-      }
-      executeWithNarrowedTypes(
-        narrowings,
-        () => this.visitStatementsRecursively(statements, index + 1, cutoff),
-      );
-      this.visitStatementsRecursively(statements, cutoff, end);
+      executeWithNarrowedTypes(narrowings, () => this.visitStatementsRecursively(statements, index + 1));
     } else {
-      this.visitStatementsRecursively(statements, index + 1, end);
+      this.visitStatementsRecursively(statements, index + 1);
     }
-  }
-
-  private writesSymbol(node: Node, symbol: Symbol): boolean {
-    if (node instanceof AssignNode && node.identifier.definition === symbol) return true;
-    if (node instanceof TupleAssignmentNode
-      && node.elements.some((element) => element.existing && element.name === symbol.name)) return true;
-    if (node instanceof DeleteLocalNode && node.identifier.definition === symbol) return true;
-    for (const key of Object.keys(node)) {
-      if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'definition') continue;
-      const value = (node as unknown as Record<string, unknown>)[key];
-      if (value instanceof Node && this.writesSymbol(value, symbol)) return true;
-      if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node && this.writesSymbol(item, symbol)) return true;
-      }
-    }
-    return false;
   }
 
   visitRequire(node: RequireNode): Node {
@@ -1434,37 +1260,13 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
 
-    const loc = node.location ? ` at line ${node.location.start.line}` : '';
+    const loc = this.diagLine(node.location);
     console.log(`Warning: inline assembly used${loc}. Raw opcodes bypass type checking; you are responsible for the correctness of the emitted script.`);
     return node;
   }
 
   visitCast(node: CastNode): Node {
     node.expression = this.visit(node.expression);
-    if (this.strictSolidityValidation && node.sourceCast
-      && node.type instanceof BytesType && node.type.bound !== undefined) {
-      if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {
-        throw new CastTypeError(node);
-      }
-      if (node.expression instanceof HexLiteralNode) {
-        const invalidHexString = node.expression.isHexStringLiteral
-          && node.expression.value.length > node.type.bound;
-        const invalidHexNumber = node.expression.numericValue !== undefined
-          && node.expression.numericValue !== 0n
-          && node.expression.sourceHexDigits !== node.type.bound * 2;
-        if (invalidHexString || invalidHexNumber) throw new CastTypeError(node);
-      }
-    }
-    if (this.strictSolidityValidation && node.type instanceof AddressType
-      && node.expression instanceof HexLiteralNode
-      && node.expression.numericValue !== undefined
-      && node.expression.numericValue >= (1n << 160n)) {
-      throw new CastTypeError(node);
-    }
-    if (this.solidityImportCompat && node.type === PrimitiveType.STRING
-      && node.expression instanceof StringLiteralNode && node.expression.solidityInvalidUtf8) {
-      throw new CastTypeError(node);
-    }
 
     // For payable() cast, determine the correct target type based on source type
     let validPayableLiteral = false;
@@ -1482,27 +1284,7 @@ export default class TypeCheckTraversal extends AstTraversal {
           && node.expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE);
     }
 
-    const from = node.expression.type;
-    if (node.sourceUdvtUnwrap
-      && (!(from instanceof ValueType) || from.name !== node.sourceUdvtUnwrap.name)) {
-      throw new CastTypeError(node);
-    }
-    const validUdvtSelfCast = node.sourceCast
-      && from instanceof ValueType && node.type instanceof ValueType && from.name === node.type.name;
-    // Hex literals are mobile numeric literals in Solidity: their temporary
-    // bytesN type describes the spelling, not a fixed-bytes value conversion.
-    const invalidSoliditySourceCast = node.sourceCast && !node.isUnsafe
-      && !(node.expression instanceof HexLiteralNode) && (
-      (from instanceof IntType && node.type instanceof IntType
-        && from.signed !== node.type.signed && from.bits !== node.type.bits)
-      || (from instanceof IntType && node.type instanceof BytesType && node.type.bound !== undefined
-        && from.bits !== node.type.bound * 8)
-      || (from instanceof BytesType && from.bound !== undefined && node.type instanceof IntType
-        && from.bound * 8 !== node.type.bits)
-    );
-
-    if (!validPayableLiteral && !validUdvtSelfCast && !node.isUnsafe
-      && (invalidSoliditySourceCast || !explicitlyCastable(from, node.type))) {
+    if (!validPayableLiteral && !explicitlyCastable(node.expression.type, node.type)) {
       throw new CastTypeError(node);
     }
 
@@ -1510,7 +1292,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // embedded 20-byte hash (see compileCast). Lossy, so warn once at the cast site.
     if (node.expression.type instanceof AddressType
       && ((node.type instanceof BytesType && node.type.bound === 20) || node.type instanceof IntType)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: ${node.type}(address)${loc} narrows a variable-length BCH address (a locking `
         + 'bytecode) to its embedded 20-byte hash; this is lossy and differs from a fixed-width EVM address.');
     }
@@ -1521,7 +1303,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.type instanceof AddressType && !(node.expression.type instanceof AddressType)
       && ((node.expression.type instanceof BytesType && node.expression.type.bound === 20)
         || node.expression.type instanceof IntType)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: address(${node.expression.type})${loc} treats a fixed 20-byte value as an address, but `
         + 'a BCH address is a variable-length locking bytecode, not a 20-byte hash; this does not yield a valid '
         + 'address (wrap the hash explicitly, e.g. new LockingBytecodeP2PKH(hash)).');
@@ -1532,7 +1314,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       const litValue = node.expression.value;
       if (node.type instanceof IntType) {
         if (litValue < node.type.minValue || litValue > node.type.maxValue) {
-          const loc = node.location ? ` at line ${node.location.start.line}` : '';
+          const loc = this.diagLine(node.location);
           console.log(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `${node.type.toString()} range (${node.type.minValue} to ${node.type.maxValue}).`,
@@ -1542,7 +1324,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         const maxVal = (1n << (BigInt(node.type.bound) * 8n)) - 1n;
         const absVal = litValue < 0n ? -litValue : litValue;
         if (absVal > maxVal) {
-          const loc = node.location ? ` at line ${node.location.start.line}` : '';
+          const loc = this.diagLine(node.location);
           console.log(
             `Warning: integer literal ${litValue}${loc} exceeds `
             + `bytes${node.type.bound} range (max ${maxVal}).`,
@@ -1559,14 +1341,9 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitIndirectCall(node: IndirectCallNode): Node {
     node.callee = this.visit(node.callee) as ExpressionNode;
     node.parameters = this.visitList(node.parameters);
-    if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
-    if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
     const ft = node.callee.type;
     if (!(ft instanceof FunctionType)) {
       throw new TypeError(node, node.callee.type ?? PrimitiveType.VOID, new FunctionType([], []));
-    }
-    if (this.strictSolidityValidation && node.callOptions?.value && ft.stateMutability !== 'payable') {
-      throw new InvalidCallOptionError(node, 'value', 'a non-payable function type');
     }
     node.parameters = this.coerceHexArgs(node.parameters, ft.parameterTypes);
     expectParameters(node, node.parameters.map((p: ExpressionNode) => p.type!), ft.parameterTypes);
@@ -1579,43 +1356,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
-    if (node.fieldNames && node.namedOverloadCandidates) {
-      const names = node.fieldNames;
-      const argsFor = (f: FunctionDefinitionNode): ExpressionNode[] => {
-        const params = f.parameters.filter((p) => !p.name.startsWith('__internal__'));
-        return params.map((p) => node.parameters[names.indexOf(p.name)]);
-      };
-      const matches = applyFreeFunctionShadowing(node.namedOverloadCandidates.filter((f) => {
-        const args = argsFor(f);
-        return implicitlyCastableSignature(args.map((arg) => arg.type!), declaredParamTypes(f));
-      }));
-      if (matches.length === 0) throw new NoMatchingOverloadError(node);
-
-      let selected: FunctionDefinitionNode | undefined;
-      if (matches.length === 1) {
-        [selected] = matches;
-      } else {
-        const exactMatches = matches.filter((f) => {
-          const argTypes = argsFor(f).map((arg) => arg.type!);
-          const paramTypes = declaredParamTypes(f);
-          return argTypes.every((argType, i) => argType.toString() === paramTypes[i]?.toString());
-        });
-        if (exactMatches.length === 1) [selected] = exactMatches;
-        else throw new AmbiguousOverloadError(node);
-      }
-      node.resolvedFunction = selected;
-      node.parameters = argsFor(selected!);
-      node.fieldNames = undefined;
-      node.namedOverloadCandidates = undefined;
-    }
-
     // Indirect call through a function-typed value: check args against the signature, result is its returns.
-    if (!node.fromThisCall && node.identifier.type instanceof FunctionType
-      && (!this.functionDefinitions.has(node.identifier.name) || node.lexicalIndirectCall)) {
+    if (node.identifier.type instanceof FunctionType && !this.functionDefinitions.has(node.identifier.name)) {
       const ft = node.identifier.type;
-      if (this.strictSolidityValidation && node.callOptions?.value && ft.stateMutability !== 'payable') {
-        throw new InvalidCallOptionError(node, 'value', 'a non-payable function type');
-      }
       // Both internal and self-external (`this.f`) pointers dispatch via `<functionId> OP_INVOKE`: an external
       // FunctionType value has no (address, selector) representation yet (barred from state + ABI), so the only
       // creatable external pointer is a self-ref carrying a functionId. Foreign IFoo(addr).method is Phase B.
@@ -1701,9 +1444,12 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // Additional array length check for checkMultiSig
     if (node.identifier.name === GlobalFunction.CHECKMULTISIG) {
-      const sigs = node.parameters[0] as ArrayNode;
-      const pks = node.parameters[1] as ArrayNode;
-      if (sigs.elements.length > pks.elements.length) {
+      const sigs = node.parameters[0];
+      const pks = node.parameters[1];
+      // Literal widths are statically comparable. Dynamic value arrays are
+      // checked by OP_CHECKMULTISIG at runtime.
+      if (sigs instanceof ArrayNode && pks instanceof ArrayNode
+        && sigs.elements.length > pks.elements.length) {
         throw new ArrayElementError(pks);
       }
     }
@@ -1748,14 +1494,9 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitReturn(node: ReturnNode): Node {
     node.expressions = this.visitList(node.expressions);
-    if (node.isYulReturn) return node;
-    if (node.fromModifier && node.expressions.length === 0) return node;
     // Type check return values against enclosing function's declared return types
     if (this.currentFunction && this.currentFunction.returnTypes.length > 0) {
       const expectedTypes = this.currentFunction.returnTypes;
-      node.expressions = node.expressions.map(
-        (expression, i) => this.maybeCoercePublicGetterReference(expression, expectedTypes[i]),
-      );
       const soleType = node.expressions.length === 1 ? node.expressions[0].type : undefined;
       let actualTypes: Type[];
       if (soleType instanceof TupleType && expectedTypes.length > 1) {
@@ -1775,11 +1516,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         throw new ReturnTypeMismatchError(node, expectedTypes, actualTypes);
       }
       for (let i = 0; i < actualTypes.length; i++) {
-        const expectedType = expectedTypes[i];
-        const externalGetterBlob = node.externalFunctionGetterBridge
-          && expectedType instanceof FunctionType && expectedType.isExternal
-          && actualTypes[i] instanceof BytesType;
-        if (actualTypes[i] && !implicitlyCastable(actualTypes[i], expectedType) && !externalGetterBlob) {
+        if (actualTypes[i] && !implicitlyCastable(actualTypes[i], expectedTypes[i])) {
           throw new ReturnTypeMismatchError(node, expectedTypes, actualTypes);
         }
       }
@@ -1788,13 +1525,6 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
-    // Named overloads need candidate-specific name-to-position mapping, which visitFunctionCall performs
-    // before the ordinary positional statement-call overload path below.
-    if (node.call.namedOverloadCandidates) {
-      node.call = this.visitFunctionCall(node.call) as FunctionCallNode;
-      return node;
-    }
-
     // For multi-overload functions where resolution is deferred, handle here
     const overloads = this.functionDefinitions.get(node.call.identifier.name);
     if (overloads && overloads.length > 1 && !node.call.resolvedFunction) {
@@ -1849,6 +1579,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (node.referencedContract) {
       // Contract deployment: type-check constructor args
       node.parameters = this.visitList(node.parameters);
+      const parameterTypes = node.parameters.map((p) => p.type!);
       // Solidity `constructor(args)` carries the deploy params on constructorDef, not the (solidcash)
       // contract-level parameters; use whichever has them. Synthetic __internal__ params (appended onto
       // the shared ctor node by the child's own semantic pass) are never call-site arguments.
@@ -1856,9 +1587,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         ? node.referencedContract.parameters : (node.referencedContract.constructorDef?.parameters ?? []))
         .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
       const expectedTypes = ctorParams.map((p) => p.type);
-      // Constructor calls apply the same contextual literal conversions as ordinary calls.
-      node.parameters = this.coerceHexArgs(node.parameters, expectedTypes);
-      const parameterTypes = node.parameters.map((p) => p.type!);
       expectParameters(node, parameterTypes, expectedTypes);
 
       // Deploy-then-call fold: type the per-field genesis expressions (param-substituted clones of the
@@ -1902,9 +1630,6 @@ export default class TypeCheckTraversal extends AstTraversal {
 
     // bytes[k] with a literal index parses as a tuple-index op: a single byte (Solidity bytes1).
     if (node.tuple.type instanceof BytesType) {
-      if (node.tuple.type.bound !== undefined && (node.index < 0 || node.index >= node.tuple.type.bound)) {
-        throw new IndexOutOfBoundsError(node);
-      }
       node.type = new BytesType(1);
       return node;
     }
@@ -1963,10 +1688,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   // Reinterpret a Solidity hex number literal as its big-endian integer value (the bytes are stored in
   // source order). Returns an IntLiteralNode so codegen emits a proper Script number, not a byte string.
   private hexLiteralToInt(lit: HexLiteralNode): IntLiteralNode {
-    let value = lit.numericValue ?? 0n;
-    if (lit.numericValue === undefined) {
-      for (const b of lit.value) value = (value << 8n) + BigInt(b);
-    }
+    let value = 0n;
+    for (const b of lit.value) value = (value << 8n) + BigInt(b);
     const intNode = new IntLiteralNode(value);
     intNode.location = lit.location;
     intNode.type = PrimitiveType.INT;
@@ -1975,26 +1698,6 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   private isIntegerType(t?: Type): boolean {
     return t === PrimitiveType.INT || t === PrimitiveType.BIGINT || t instanceof IntType;
-  }
-
-  // In Solidity, an uncalled `this.x` for a public state variable denotes the generated external getter
-  // function, while `this.x()` performs the value read. SolidCash also supports whole-state `this.x` reads, so
-  // preserve those unless the surrounding context explicitly requires a function value.
-  private maybeCoercePublicGetterReference(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!(expected instanceof FunctionType) || !(expr instanceof StateAccessNode)
-      || !expr.stateVariable || !['public', 'external'].includes(expr.stateVariable.visibility ?? '')) {
-      return expr;
-    }
-    const getter = (this.functionDefinitions.get(expr.name) ?? []).find((fn) => {
-      const params = fn.parameters.filter((p) => !p.name.startsWith('__internal__')).map((p) => p.type);
-      return implicitlyCastable(new FunctionType(params, fn.returnTypes, true, 'view'), expected);
-    });
-    if (!getter) return expr;
-    const ref = new IdentifierNode(expr.name);
-    ref.location = expr.location;
-    ref.functionReference = getter;
-    ref.isExternalSelfRef = true;
-    return this.visitIdentifier(ref) as ExpressionNode;
   }
 
   // A whole-number literal used where a fixed-point value is expected becomes a decimal literal of the
@@ -2018,59 +1721,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     return expr;
   }
 
-  // A hex NUMBER literal is contextually an integer throughout an arithmetic expression, not only when paired
-  // directly with an already-typed integer operand. Apply an integral destination to the literal leaves before
-  // visiting the tree, otherwise `uint x = 0x12 + 0x34` is prematurely typed as bytes1 concatenation.
-  private contextualizeHexArithmetic(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || !this.isIntegerType(expected)) return expr;
-    if (expr instanceof HexLiteralNode) return this.hexLiteralToInt(expr);
-    if (expr instanceof UnaryOpNode && (expr.operator === UnaryOperator.NEGATE
-      || expr.operator === UnaryOperator.INVERT)) {
-      expr.expression = this.contextualizeHexArithmetic(expr.expression, expected);
-      return expr;
-    }
-    if (expr instanceof TernaryOpNode) {
-      expr.ifTrue = this.contextualizeHexArithmetic(expr.ifTrue, expected);
-      expr.ifFalse = this.contextualizeHexArithmetic(expr.ifFalse, expected);
-      return expr;
-    }
-    if (expr instanceof BinaryOpNode && [
-      BinaryOperator.PLUS, BinaryOperator.MINUS, BinaryOperator.MUL, BinaryOperator.DIV, BinaryOperator.MOD,
-      BinaryOperator.POW, BinaryOperator.SHIFT_LEFT, BinaryOperator.SHIFT_RIGHT,
-      BinaryOperator.BIT_AND, BinaryOperator.BIT_OR, BinaryOperator.BIT_XOR,
-    ].includes(expr.operator)) {
-      expr.left = this.contextualizeHexArithmetic(expr.left, expected);
-      expr.right = this.contextualizeHexArithmetic(expr.right, expected);
-    }
-    return expr;
-  }
-
-  // Inline-array inference normally chooses a type from the first element and then requires every element to
-  // match it. Solidity instead contextually converts literal elements from the destination (`bytes7[2] a =
-  // [bytes7("A"), "B"]`, `uint[2] a = [1, 0x12]`). Apply those conversions before visitArray performs its
-  // homogeneous-element check; recurse for fixed/dynamic nested array literals.
-  private contextualizeArrayLiteral(array: ArrayNode, expected: ArrayType): void {
-    array.elements = array.elements.map((element) => {
-      if (element instanceof ArrayNode && expected.elementType instanceof ArrayType) {
-        this.contextualizeArrayLiteral(element, expected.elementType);
-        return element;
-      }
-      let converted = this.contextualizeHexArithmetic(element, expected.elementType);
-      converted = this.maybeCoerceHexToInt(converted, expected.elementType);
-      converted = this.maybeCoerceZeroToBytes(converted, expected.elementType);
-      converted = this.maybeCoerceStringToBytesN(converted, expected.elementType);
-      converted = this.maybeCoerceBytesWiden(converted, expected.elementType);
-      return converted;
-    });
-  }
-
   // Solidity allows the integer literal `0` (and only 0) to implicitly convert to any bytesN (all-zero bytes),
   // a common idiom (`bytes32 constant SLOT = 0`, EVM storage-slot zero). Coerce it to an N-zero-byte literal so
   // it type-checks + codegen emits the right width; non-zero int literals still error (matches Solidity).
   private maybeCoerceZeroToBytes(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    const isZero = (expr instanceof IntLiteralNode && expr.value === 0n)
-      || (expr instanceof HexLiteralNode && expr.value.every((byte) => byte === 0));
-    if (isZero && expected instanceof BytesType && expected.bound !== undefined) {
+    if (expr instanceof IntLiteralNode && expr.value === 0n
+      && expected instanceof BytesType && expected.bound !== undefined) {
       const hex = new HexLiteralNode(new Uint8Array(expected.bound));
       hex.type = expected;
       hex.location = expr.location;
@@ -2086,7 +1742,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (!this.solidityImportCompat || !(expected instanceof BytesType) || expected.bound === undefined) return expr;
     // String literal -> bytesN: right-pad the UTF-8 bytes to the target width.
     if (expr instanceof StringLiteralNode) {
-      const bytes = expr.solidityBytes ?? encodeString(expr.value);
+      const bytes = encodeString(expr.value);
       if (bytes.length <= expected.bound) {
         const padded = new Uint8Array(expected.bound);
         padded.set(bytes);
@@ -2108,27 +1764,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       return hex;
     }
     return expr;
-  }
-
-  // A Solidity hex string literal is an untyped byte sequence and may initialize/assign `string` even though an
-  // ordinary bytesN value may not implicitly convert to string. AstBuilder represents the literal as fixed bytes,
-  // so restore the literal-only conversion with an explicit no-op bytes->string cast.
-  private maybeCoerceHexLiteralToString(expr: ExpressionNode, expected?: Type): ExpressionNode {
-    if (!this.solidityImportCompat || expected !== PrimitiveType.STRING || !(expr instanceof HexLiteralNode)) {
-      return expr;
-    }
-    // Solidity rejects a hex literal containing malformed UTF-8 when the destination is string. Leave it as
-    // bytesN so the normal assignability diagnostic rejects it; TextDecoder's fatal mode also catches truncated
-    // and overlong sequences.
-    try {
-      new TextDecoder('utf-8', { fatal: true }).decode(expr.value);
-    } catch {
-      return expr;
-    }
-    const cast = new CastNode(PrimitiveType.STRING, expr, false);
-    cast.type = PrimitiveType.STRING;
-    cast.location = expr.location;
-    return cast;
   }
 
   // Solidity implicitly widens a fixed bytesN to a wider bytesM (M >= N), right-padding with zero bytes
@@ -2182,13 +1817,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
     const FORWARDABLE = new Set(['__internal__msgSenderCategory', '__internal__blockhashInputIndex']);
-    const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
-    const canForwardByName = (p: ParameterNode): boolean => {
-      const callerParam = callerParams.get(p.name);
-      return !!callerParam && callerParam.type.toString() === p.type.toString()
-        && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_'));
-    };
-    if (!synthetic.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
+    if (!synthetic.every((p) => p.name === '__internal__returnOutputIdx' || FORWARDABLE.has(p.name))) return;
     for (const p of synthetic) {
       if (p.name === '__internal__returnOutputIdx') {
         const minusOne = new IntLiteralNode(-1n);
@@ -2201,70 +1830,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         ref.type = p.type;
         node.parameters.push(ref);
       }
-    }
-  }
-
-  // Evaluate an exact literal-only rational expression without truncating intermediate division. Solidity keeps
-  // rational constants exact until their destination type is known, so `(-1 / 2) ** -1` is the integer `-2`.
-  private evalLiteralRational(node: ExpressionNode): { numerator: bigint; denominator: bigint } | undefined {
-    if (node instanceof IntLiteralNode) return { numerator: node.value, denominator: 1n };
-    if (node instanceof DecimalLiteralNode) {
-      const negative = node.value.startsWith('-');
-      const text = negative ? node.value.slice(1) : node.value;
-      const [integer, fraction = ''] = text.split('.');
-      const numerator = BigInt((integer || '0') + fraction);
-      return {
-        numerator: negative ? -numerator : numerator,
-        denominator: 10n ** BigInt(fraction.length),
-      };
-    }
-    if (node instanceof UnaryOpNode && node.operator === UnaryOperator.NEGATE) {
-      const inner = this.evalLiteralRational(node.expression);
-      return inner ? { numerator: -inner.numerator, denominator: inner.denominator } : undefined;
-    }
-    if (!(node instanceof BinaryOpNode)) return undefined;
-    const left = this.evalLiteralRational(node.left);
-    const right = this.evalLiteralRational(node.right);
-    if (!left || !right) return undefined;
-    switch (node.operator) {
-      case BinaryOperator.PLUS:
-        return {
-          numerator: left.numerator * right.denominator + right.numerator * left.denominator,
-          denominator: left.denominator * right.denominator,
-        };
-      case BinaryOperator.MINUS:
-        return {
-          numerator: left.numerator * right.denominator - right.numerator * left.denominator,
-          denominator: left.denominator * right.denominator,
-        };
-      case BinaryOperator.MUL:
-        return {
-          numerator: left.numerator * right.numerator,
-          denominator: left.denominator * right.denominator,
-        };
-      case BinaryOperator.DIV:
-        if (right.numerator === 0n) return undefined;
-        return {
-          numerator: left.numerator * right.denominator,
-          denominator: left.denominator * right.numerator,
-        };
-      case BinaryOperator.POW: {
-        if (right.denominator !== 1n || right.numerator < -4096n || right.numerator > 4096n) return undefined;
-        const exponent = right.numerator;
-        if (exponent < 0n) {
-          if (left.numerator === 0n) return undefined;
-          return {
-            numerator: left.denominator ** (-exponent),
-            denominator: left.numerator ** (-exponent),
-          };
-        }
-        return {
-          numerator: left.numerator ** exponent,
-          denominator: left.denominator ** exponent,
-        };
-      }
-      default:
-        return undefined;
     }
   }
 
@@ -2320,18 +1885,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       // whole-number literals to fixed; re-literal as a decimal so codegen scales it to the fixed's decimals.
       node.left = this.maybeCoerceIntLiteralToFixed(node.left, node.right.type);
       node.right = this.maybeCoerceIntLiteralToFixed(node.right, node.left.type);
-      // Solidity promotes a typed integer operand in mixed fixed-point arithmetic/comparison to the fixed
-      // operand's scale (e.g. `uint64(1) + ufixed(2)`). Use the ordinary checked cast so runtime integers are
-      // scaled exactly like an explicit fixed-point conversion rather than merely relabelled.
-      if (node.left.type instanceof FixedType && node.right.type instanceof IntType) {
-        const cast = new CastNode(node.left.type, node.right, false);
-        cast.location = node.right.location;
-        node.right = this.visit(cast) as ExpressionNode;
-      } else if (node.right.type instanceof FixedType && node.left.type instanceof IntType) {
-        const cast = new CastNode(node.right.type, node.left, false);
-        cast.location = node.left.location;
-        node.left = this.visit(cast) as ExpressionNode;
-      }
     }
 
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);
@@ -2352,16 +1905,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case BinaryOperator.POW: {
         expectNumeric(node, resType);
-        if (node.right instanceof IntLiteralNode && node.right.value < 0n) {
-          const rational = this.evalLiteralRational(node);
-          if (rational && rational.denominator !== 0n
-            && rational.numerator % rational.denominator === 0n) {
-            const literal = new IntLiteralNode(rational.numerator / rational.denominator);
-            literal.location = node.location;
-            literal.type = resType;
-            return literal;
-          }
-        }
         // Solidity: exponent must be unsigned. Reject signed bounded int types
         // and fixed-point types. Unbounded int is allowed (runtime non-negative check).
         const expType = node.right.type!;
@@ -2441,32 +1984,12 @@ export default class TypeCheckTraversal extends AstTraversal {
         // Integer bitwise (fixed-width two's-complement) when at least one operand is a bounded int.
         const lt = node.left.type;
         const rt = node.right.type;
-        const lInt = unboundedInt(lt) || lt instanceof IntType;
-        const rInt = unboundedInt(rt) || rt instanceof IntType;
+        const lInt = lt === PrimitiveType.BIGINT || lt instanceof IntType;
+        const rInt = rt === PrimitiveType.BIGINT || rt instanceof IntType;
         if (lInt && rInt) {
           const bounded = lt instanceof IntType ? lt : (rt instanceof IntType ? rt : undefined);
           if (!bounded) {
-            // Solidity-compat arithmetic over integer constants can leave a non-literal expression carrying the
-            // legacy unbounded `int` marker (`(2 + 2) & ~1`). Solidity evaluates that word operation as int256;
-            // restore the target width here. Native SolidCash bigint remains widthless and still fails closed.
-            if (this.solidityImportCompat && lt === PrimitiveType.INT && rt === PrimitiveType.INT) {
-              // An all-positive mask such as `((2**224-1)<<32) | 0xef...` is uint256 (and can exceed int256.max);
-              // a subtree containing a negative literal, unary minus, or bitwise complement needs signed int256.
-              const signedSyntax = (e: ExpressionNode): boolean => {
-                if (e instanceof IntLiteralNode) return e.value < 0n;
-                if (e instanceof UnaryOpNode) {
-                  return e.operator === UnaryOperator.NEGATE || e.operator === UnaryOperator.INVERT
-                    || signedSyntax(e.expression);
-                }
-                if (e instanceof BinaryOpNode) return signedSyntax(e.left) || signedSyntax(e.right);
-                return false;
-              };
-              const parityInt = new IntType(signedSyntax(node.left) || signedSyntax(node.right), 256);
-              node.left = toBounded(node.left, parityInt);
-              node.right = toBounded(node.right, parityInt);
-              node.type = parityInt;
-              return node;
-            }
+            // Unbounded `int` has no fixed width; require intN/uintN for bitwise.
             throw new UnsupportedTypeError(node as any, lt, new IntType(false, 256));
           }
           // Mixed widths of the SAME signedness: Solidity implicitly widens the narrower operand.
@@ -2495,10 +2018,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         if (node.right instanceof IntLiteralNode && Number(node.right.value) < 0) {
           throw new BitshiftBitcountNegativeError(node, Number(node.right.value));
         }
-        if (this.solidityImportCompat && node.right instanceof IntLiteralNode
-          && node.right.value > 0xffffffffn) {
-          throw new BitshiftBitcountTooLargeError(node, node.right.value);
-        }
         node.type = node.left.type;
         return node;
       case BinaryOperator.SPLIT:
@@ -2514,11 +2033,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitUnaryOp(node: UnaryOpNode): Node {
     node.expression = this.visit(node.expression);
 
-    // Unary minus and complement give a Solidity hex-NUMBER literal an integer context (`-0x42`, `~0xff`).
-    // Distinguish these from hex-string literals (`hex"ff"`), which deliberately remain bytes.
-    if (this.solidityImportCompat && (node.operator === UnaryOperator.NEGATE
-      || node.operator === UnaryOperator.INVERT)
-      && node.expression instanceof HexLiteralNode && node.expression.numericValue !== undefined) {
+    // A negated hex number literal (`-0x42`) is an integer negation in Solidity - hex literals are big-endian
+    // integers in an arithmetic context. Reinterpret it as its integer value (mirrors the binary-op handling).
+    if (this.solidityImportCompat && node.operator === UnaryOperator.NEGATE
+      && node.expression instanceof HexLiteralNode) {
       node.expression = this.hexLiteralToInt(node.expression);
     }
 
@@ -2532,15 +2050,6 @@ export default class TypeCheckTraversal extends AstTraversal {
           node.type = node.expression.type;
         } else {
           expectInt(node, node.expression.type);
-          if (this.solidityImportCompat && node.expression.type instanceof IntType
-            && !node.expression.type.signed) {
-            throw new TypeError(
-              node,
-              node.expression.type,
-              undefined,
-              `Unary negation cannot be applied to unsigned type '${node.expression.type}'`,
-            );
-          }
           node.type = node.expression.type instanceof IntType ? node.expression.type : PrimitiveType.BIGINT;
         }
         return node;
@@ -2659,45 +2168,24 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiEncode(node: AbiEncodeNode): Node {
     node.parameters = this.visitList(node.parameters);
-    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
+    if (node.parameters.length === 0) {
+      throw new AbiEncodeEmptyError(node);
+    }
     node.type = new BytesType();
     return node;
   }
 
   visitAbiEncodePacked(node: AbiEncodePackedNode): Node {
     node.parameters = this.visitList(node.parameters);
-    if (this.strictSolidityValidation) {
-      const unsupported = node.parameters.find((parameter) => this.isUnsupportedPackedType(parameter.type));
-      if (unsupported) {
-        throw new TypeError(
-          unsupported,
-          unsupported.type,
-          undefined,
-          'Type not supported in packed mode',
-        );
-      }
+    if (node.parameters.length === 0) {
+      throw new AbiEncodeEmptyError(node);
     }
     node.type = new BytesType();
     return node;
   }
 
-  private isUnsupportedPackedType(type: Type | undefined): boolean {
-    if (!type) return false;
-    if (type instanceof StructType || type instanceof MappingType) return true;
-    if (!(type instanceof ArrayType)) return false;
-    const element = type.elementType;
-    return element instanceof ArrayType
-      || element instanceof StructType
-      || element instanceof MappingType
-      || (element instanceof BytesType && element.bound === undefined)
-      || element === PrimitiveType.STRING
-      || this.isUnsupportedPackedType(element);
-  }
-
   visitAbiEncodeWithSelector(node: AbiEncodeWithSelectorNode): Node {
     node.selector = this.visit(node.selector) as ExpressionNode;
-    // Solidity's general literal-zero conversion applies here too: `abi.encodeWithSelector(0)` uses bytes4(0).
-    node.selector = this.maybeCoerceZeroToBytes(node.selector, new BytesType(4));
     // A string/hex literal selector that fits in 4 bytes is right-padded to bytes4 (Solidity converts a fitting
     // literal to the bytes4 selector type), e.g. abi.encodeWithSelector("f()", ..).
     node.selector = this.maybeCoerceStringToBytesN(node.selector, new BytesType(4));
@@ -2705,7 +2193,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TypeError(node, node.selector.type, new BytesType(4));
     }
     node.parameters = this.visitList(node.parameters);
-    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
   }
@@ -2716,7 +2203,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       throw new TypeError(node, node.signature.type, PrimitiveType.STRING);
     }
     node.parameters = this.visitList(node.parameters);
-    this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
   }
@@ -2724,9 +2210,6 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitAbiEncodeCall(node: AbiEncodeCallNode): Node {
     node.parameters = this.visitList(node.parameters);
     if (node.resolvedParamTypes) {
-      // `abi.encodeCall` applies the same contextual literal conversions as an ordinary
-      // call. In particular, Solidity accepts `"ab"` for a bytes2 parameter.
-      node.parameters = this.coerceHexArgs(node.parameters, node.resolvedParamTypes);
       node.parameters.forEach((param, i) => {
         const expected = node.resolvedParamTypes![i];
         if (!implicitlyCastable(param.type, expected)) {
@@ -2734,10 +2217,6 @@ export default class TypeCheckTraversal extends AstTraversal {
         }
       });
     }
-    this.validateAbiV1Types(
-      node,
-      node.resolvedParamTypes ?? node.parameters.map((parameter) => parameter.type),
-    );
     node.type = new BytesType();
     return node;
   }
@@ -2766,7 +2245,6 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiDecode(node: AbiDecodeNode): Node {
     node.data = this.visit(node.data);
-    this.validateAbiV1Types(node, node.schema);
     // A single-type decode yields that type directly (Solidity `abi.decode(d, (T))` returns T); 2+ -> tuple.
     node.type = node.schema.length === 1 ? node.schema[0] : new TupleType(node.schema);
     return node;
@@ -2774,31 +2252,11 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiDecodeAt(node: AbiDecodeAtNode): Node {
     node.data = this.visit(node.data);
-    this.validateAbiV1Types(node, node.schema);
     if (node.index < 0 || node.index >= node.schema.length) {
       throw new AbiDecodeIndexError(node);
     }
     node.type = node.schema[node.index];
     return node;
-  }
-
-  private validateAbiV1Types(owner: Node, types: Array<Type | undefined>): void {
-    if (!this.strictSolidityValidation || !this.abiCoderV1) return;
-    const unsupported = types.find((type): type is Type =>
-      type !== undefined && this.isUnsupportedAbiV1Type(type));
-    if (unsupported) throw new UnsupportedAbiV1TypeError(owner, unsupported.toString());
-  }
-
-  private isUnsupportedAbiV1Type(type: Type): boolean {
-    if (type instanceof StructType || type instanceof MappingType) return true;
-    if (!(type instanceof ArrayType)) return false;
-    const element = type.elementType;
-    return element instanceof ArrayType
-      || element instanceof StructType
-      || element instanceof MappingType
-      || (element instanceof BytesType && element.bound === undefined)
-      || element === PrimitiveType.STRING
-      || this.isUnsupportedAbiV1Type(element);
   }
 
   visitArray(node: ArrayNode): Node {
@@ -2843,24 +2301,16 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitArrayAccess(node: ArrayAccessNode): Node {
     node.array = this.visit(node.array);
     node.index = this.visit(node.index);
-    const rationalIndex = this.solidityImportCompat ? this.evalLiteralRational(node.index) : undefined;
-    const constantIndex = rationalIndex?.denominator === 1n ? rationalIndex.numerator : undefined;
 
-    // Solidity array indices are uint256. Evaluate literal-only rational trees exactly, then reject signed or
-    // oversized integral values for every indexable type before applying any fixed-size bound.
-    if ((node.index instanceof IntLiteralNode && node.index.value < 0n)
-      || (this.solidityImportCompat && constantIndex !== undefined
-        && (constantIndex < 0n || constantIndex >= (1n << 256n)))) {
+    // A constant negative index (`arr[-1]`) is out of bounds. (Negation is now a folded unary op, not a signed
+    // literal token, so check the folded value here.)
+    if (node.index instanceof IntLiteralNode && node.index.value < 0n) {
       throw new IndexOutOfBoundsError(node as any);
     }
 
     // bytes[k] / bytesN[k]: index a single byte (Solidity returns bytes1).
     if (node.array.type instanceof BytesType) {
       expectInt(node as any, node.index.type);
-      if (node.array.type.bound !== undefined && constantIndex !== undefined
-        && constantIndex >= BigInt(node.array.type.bound)) {
-        throw new IndexOutOfBoundsError(node as any);
-      }
       node.type = new BytesType(1);
       return node;
     }
@@ -2870,10 +2320,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     expectInt(node as any, node.index.type);
-    if (node.array.type.bound !== undefined && constantIndex !== undefined
-      && constantIndex >= BigInt(node.array.type.bound)) {
-      throw new IndexOutOfBoundsError(node as any);
-    }
     node.type = node.array.type.elementType;
     return node;
   }
@@ -2929,7 +2375,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.value = this.maybeCoerceHexToInt(node.value, node.arrayType.elementType);
     node.value = this.maybeCoerceZeroToBytes(node.value, node.arrayType.elementType);
     node.value = this.maybeCoerceStringToBytesN(node.value, node.arrayType.elementType);
-    node.value = this.maybeCoerceBytesWiden(node.value, node.arrayType.elementType);
     // Validate element type compatibility
     if (!implicitlyCastable(node.value.type, node.arrayType.elementType)) {
       throw new TypeError(node as any, node.value.type, node.arrayType.elementType);
@@ -2961,7 +2406,6 @@ export default class TypeCheckTraversal extends AstTraversal {
       node.value.blobEncoded = true;
     }
     node.value = this.visit(node.value);
-    node.value = this.maybeCoerceBytesWiden(node.value, arrType.elementType);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);
     }
@@ -2979,7 +2423,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     const arrType = sv.type as ArrayType;
     node.value = this.maybeCoerceZeroToBytes(node.value, arrType.elementType);
     node.value = this.maybeCoerceStringToBytesN(node.value, arrType.elementType);
-    node.value = this.maybeCoerceBytesWiden(node.value, arrType.elementType);
     expectInt(node as any, node.index.type);
     if (!implicitlyCastable(node.value.type, arrType.elementType)) {
       throw new StateAssignTypeError(node as any, node.value.type, arrType.elementType);
@@ -3024,14 +2467,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     // functions accrue - the pointer signature is the DECLARED one the caller wrote.
     if (node.functionReference) {
       const declaredParams = node.functionReference.parameters.filter((p) => !p.name.startsWith('__internal__'));
-      const stateMutability = node.functionReference.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
-        : node.functionReference.modifiers.includes(FunctionModifier.PURE) ? 'pure'
-          : node.functionReference.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable';
       node.type = new FunctionType(
         declaredParams.map((p) => p.type),
         node.functionReference.returnTypes,
         node.isExternalSelfRef,
-        stateMutability,
       );
       return node;
     }
@@ -3293,17 +2732,6 @@ function isValidStateType(type: Type, seen: Set<string> = new Set(), allowExtern
   return false;
 }
 
-// Collections can legally nest mappings inside arrays (`mapping(K=>V)[]`) even though a mapping is not a
-// standalone encodable state value. Validate the mapping's keys and recursively validate its eventual values;
-// operation lowering remains responsible for requiring a representable access path.
-function isValidCollectionElementType(type: Type, seen: Set<string> = new Set()): boolean {
-  if (type instanceof MappingType) {
-    return isValidMappingKeyType(type.keyType) && isValidCollectionElementType(type.valueType, seen);
-  }
-  if (type instanceof ArrayType) return isValidCollectionElementType(type.elementType, seen);
-  return isValidStateType(type, seen);
-}
-
 // Coerce a (possibly nested) array literal's inferred type to a declared array type, so a fixed-inner nested
 // array's rows carry their bound (`uint256[N]`) and thus encode fixed-width (packed) rather than framed.
 function coerceArrayLiteralType(arr: ArrayNode, target: Type): void {
@@ -3328,7 +2756,7 @@ function isValidMappingKeyType(type: Type): boolean {
   return false;
 }
 
-function isValidEventParamType(type: Type, activeStructs: Set<StructType> = new Set()): boolean {
+function isValidEventParamType(type: Type): boolean {
   // int, bool, string, pubkey are valid
   if (type === PrimitiveType.BIGINT || type === PrimitiveType.BOOL) return true;
   // Bounded int types are valid
@@ -3338,22 +2766,11 @@ function isValidEventParamType(type: Type, activeStructs: Set<StructType> = new 
   if (type instanceof BytesType) return true;
   // address is bytes-backed (locking bytecode), serialized like bytes
   if (type instanceof AddressType) return true;
-  // Enums and UDVTs use their underlying value representation at the event boundary.
-  if (type instanceof EnumType) return true;
-  if (type instanceof ValueType) return isValidEventParamType(type.underlyingType, activeStructs);
-  // Structs are valid when every nested field has a finite, event-encodable representation.
-  if (type instanceof StructType) {
-    if (activeStructs.has(type)) return false;
-    const nested = new Set(activeStructs);
-    nested.add(type);
-    return type.fields.every((field) => isValidEventParamType(field.type, nested));
-  }
+  // Structs are valid (serialized via pushdata encoding)
+  if (type instanceof StructType) return true;
   // Arrays are valid when their element type is. The emit writes the on-stack array blob verbatim (count push +
   // fixed-width or framed elements); the SDK reads it back via decodePackedEventArray.
-  if (type instanceof ArrayType) return isValidEventParamType(type.elementType, activeStructs);
-  // Solidity permits EXTERNAL function values in events (encoded as address+selector), but rejects internal
-  // function types as "internal type is not allowed as event parameter type".
-  if (type instanceof FunctionType) return type.isExternal;
+  if (type instanceof ArrayType) return isValidEventParamType(type.elementType);
   // sig and datasig are NOT valid event parameter types
   return false;
 }

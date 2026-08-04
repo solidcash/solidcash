@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Events and emit (parameter types, qualified/named-arg emit). Split out of PortingFixes.test.ts by topic.
 
@@ -138,16 +138,16 @@ describe('qualified event emit from a library or sibling contract', () => {
 describe('file-level event declarations', () => {
   it('resolves `emit E()` for a file-level event, byte-identical to the contract-level form', () => {
     const fileLevel = compileString('event E(uint x); contract C { function f() external { emit E(7); require(true); } }',
-      { solidityImportCompat: true });
+      { solidityImportCompat: true, messageBus: false });
     const contractLevel = compileString('contract C { event E(uint x); function f() external { emit E(7); require(true); } }',
-      { solidityImportCompat: true });
+      { solidityImportCompat: true, messageBus: false });
     expect(fileLevel.bytecode).toBe(contractLevel.bytecode);
     expect(fileLevel.events?.find((e) => e.name === 'E')?.signature).toBe(contractLevel.events?.find((e) => e.name === 'E')?.signature);
   });
   it('accepts a file-level event with indexed params', () => {
     const a = compileString('event Transfer(address indexed from, uint value);'
       + ' contract C { function f(address a) external { emit Transfer(a, 5); require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(a.events?.some((e) => e.name === 'Transfer')).toBe(true);
   });
 });

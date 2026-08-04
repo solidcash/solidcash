@@ -1,5 +1,6 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -31,11 +32,11 @@ describe('Named return values', () => {
   it('binds assigned named returns correctly', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.check(3n, 4n)).resolves.toBeDefined();
+    expect(await sc.check(3n, 4n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('defaults an unassigned named return to 0', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.defaultReturn()).resolves.toBeDefined();
+    expect(await sc.defaultReturn()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

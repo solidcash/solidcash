@@ -13,6 +13,7 @@ import {
 } from '@solidcash/utils';
 import {
   ConstructorArgument, encodeFunctionArgument, encodeConstructorArguments, FunctionArgument,
+  isSignatureTemplateArray,
 } from './Argument.js';
 import {
   Unlocker, ContractOptions, GenerateUnlockingBytecodeOptions, Utxo, AddressType, ContractUnlocker, LibauthOutput,
@@ -402,6 +403,21 @@ export class Contract<
       const signingBytecode = (selectorHex && this.artifact.functionBodies?.[selectorHex])
         ? hexToBin(this.artifact.functionBodies[selectorHex])
         : bytecode;
+      const signingBytecodeForArgument = (inputName: string): Uint8Array => {
+        const match = /^__message_bus_sig_(\d+)_\d+_r\d+$/.exec(inputName);
+        if (!match) return signingBytecode;
+        const handler = this.artifact.messageBus?.handlers[Number(match[1])];
+        const handlerBody = handler?.signatureBytecode;
+        if (!handlerBody) {
+          // A signature parameter may only be forwarded by this participant;
+          // its child owns the CHECKSIG and receives its own per-input
+          // signature. The forwarding route still needs a well-typed 65-byte
+          // witness, so sign its ordinary route body. If this participant
+          // performs CHECKSIG, the compiler always publishes signatureBytecode.
+          return signingBytecode;
+        }
+        return hexToBin(handlerBody);
+      };
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
       const encodedArgs = args
@@ -410,13 +426,18 @@ export class Contract<
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,
       ): Uint8Array => {
-        const completeArgs = encodedArgs.map((arg) => {
-          if (!(arg instanceof SignatureTemplate)) return arg;
+        const completeArgs = encodedArgs.map((arg, index) => {
+          if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
 
           // Generate transaction signature from SignatureTemplate
-          const preimage = createSighashPreimage(transaction, sourceOutputs, inputIndex, signingBytecode, arg.getHashType());
-          const sighash = hash256(preimage);
-          return arg.generateSignature(sighash);
+          const coveredBytecode = signingBytecodeForArgument(argInputs[index].name);
+          const sign = (template: SignatureTemplate): Uint8Array => template.generateSignature(hash256(
+            createSighashPreimage(
+              transaction, sourceOutputs, inputIndex, coveredBytecode, template.getHashType(),
+            ),
+          ));
+          if (arg instanceof SignatureTemplate) return sign(arg);
+          return encodeFunctionArgument(arg.map(sign), argInputs[index].type, structs) as Uint8Array;
         });
 
         // Fill the synthesized blockhash co-spend index (locate the C_oracle UTXO among the spent inputs);
@@ -437,6 +458,44 @@ export class Contract<
       const generateLockingBytecode = (): Uint8Array => addressToLockScript(this.address);
 
       return { generateUnlockingBytecode, generateLockingBytecode, contract: this, params: args, abiFunction };
+    };
+  }
+
+  /** @internal Construct an unlocker for a compiler-owned physical route
+   * which is advertised outside the source ABI (for example message-bus batch). */
+  createCompilerRouteUnlocker(
+    abiFunction: AbiFunction, selector: Uint8Array,
+  ): ContractFunctionUnlocker {
+    const base = this.createUnlocker(abiFunction, selector);
+    const batchBlobIndex = abiFunction.inputs.findIndex((input) => input.name === 'batchBlob');
+    if (binToHex(selector) !== '53434231' || batchBlobIndex < 0) return base;
+    return (...args: FunctionArgument[]) => {
+      const unlocker = base(...args);
+      const blob = args[batchBlobIndex];
+      if (!(blob instanceof Uint8Array)) throw new Error('message-bus batch batchBlob must encode as bytes');
+      const positionalPush = scriptToBytecode([blob]);
+      // Preserve the historical positional frame without carrying the callManifest in the master. The
+      // artifact-specialized verifier inputs carry the canonical callManifest.
+      const messageEnvelopePlaceholder = scriptToBytecode([new Uint8Array()]);
+      const generateUnlockingBytecode = (
+        options: GenerateUnlockingBytecodeOptions,
+      ): Uint8Array => {
+        const ordinary = unlocker.generateUnlockingBytecode(options);
+        // The selector is always the minimal push4 frame (5 bytes). Duplicate
+        // the executable blob here as the canonical positional second push;
+        // the message-bus batch covenant proves this copy equals its decoded batchBlob arg.
+        return new Uint8Array([
+          ...ordinary.slice(0, 5),
+          ...positionalPush,
+          ...messageEnvelopePlaceholder,
+          ...ordinary.slice(5),
+        ]);
+      };
+      // message-bus batch is a compiler-owned covenant even when the source handler has no state slots. Mark the master
+      // unlocker itself so zero-state participant blocks receive the same best-effort artifact-debug treatment
+      // as routes which happen to include a data/container covenant input; finalized-byte preflight remains the
+      // authoritative broadcast gate in both cases.
+      return { ...unlocker, generateUnlockingBytecode, covenantUnlocker: true };
     };
   }
 

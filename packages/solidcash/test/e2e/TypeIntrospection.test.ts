@@ -23,6 +23,12 @@ describe('TypeIntrospection', () => {
     await provider.addUtxo(contract.address, randomUtxo());
   });
 
+  const expectSuccessfulSend = async (txPromise: ReturnType<TransactionBuilder['send']>): Promise<void> => {
+    const sent = await txPromise;
+    expect(sent.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(sent.hex).not.toHaveLength(0);
+  };
+
   describe('checkIntBounds', () => {
     it('should succeed when value is within int8 range', async () => {
       const to = contract.address;
@@ -35,7 +41,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should succeed at int8 boundary values (-128 and 127)', async () => {
@@ -49,7 +55,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value is below int8 min (-129)', async () => {
@@ -93,7 +99,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value is negative (below uint8 min)', async () => {
@@ -123,7 +129,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when value exceeds enum range', async () => {
@@ -163,7 +169,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when providing incorrect interfaceId', async () => {
@@ -195,7 +201,7 @@ describe('TypeIntrospection', () => {
         .addOutput({ to, amount: changeAmount })
         .send();
 
-      await expect(txPromise).resolves.not.toThrow();
+      await expectSuccessfulSend(txPromise);
     });
 
     it('should fail when providing incorrect contract name', async () => {

@@ -123,6 +123,25 @@ The returned `ProxyContract` handle:
   build runs against the proxy's state via the injected `_proxyMasterIndex`. The delegatecall function on the proxy
   must not write its own state (the implementation owns all writes).
 
+## What the default proxy does not support: minting new state NFTs
+
+The default proxy conserves the count of its own-category **mutable** NFTs (`in == out`). That covers its data
+NFTs and any collection entry nodes, and it is what stops an un-touched proxy data NFT being destroyed - or a
+second one being minted - on a path where the forwarder skips its own state covenant.
+
+The consequence is a boundary, not a bug: a `delegate` function that **inserts a new key** into a C2 mapping is
+refused by the proxy. An insert mints one new entry node, so the mutable count rises by one. An **update** of an
+existing key rewrites a node instead of minting one, so it leaves the count alone and settles - measured on an
+equivalent conserving proxy in `packages/solidcash/test/e2e/DelegateSortedC2Write.test.ts`, which also pins the
+insert refusal to the proxy's input rather than the delegate's.
+
+The proxy is layout-independent - it never reads its own state fields, which is the whole reason one bytecode
+serves any implementation - so it cannot compute the implementation's collection entry address and cannot admit
+that one node while refusing every other appended mutable NFT. Relaxing the check to `out >= in` does admit the
+insert, and it also admits a **forged data NFT at the proxy's own state address**, measured in
+`packages/solidcash/test/e2e/X50DefaultProxyRegenerated.test.ts`. If you need delegated inserts, write a proxy
+whose covenant expresses the bound you actually want; do not relax this one.
+
 ## Regenerating the default proxy artifact
 
 `packages/solidcash/src/stateful/defaultProxyArtifact.ts` is generated (it embeds the compiled `SolidCashProxy`
@@ -130,3 +149,11 @@ so the SDK needs no compiler at runtime). To regenerate after a compiler change,
 (exported from that file) with `compileString`, drop the volatile `updatedAt`, and `JSON.stringify` the artifact
 back into the file (keep the `/* eslint-disable */` header). The bytecode is layout-independent, so it does not
 depend on any specific implementation.
+
+**Apply no manual edit afterwards.** The file used to carry one - the conservation above, hand-relaxed to
+`out >= in` so a delegate could mint entry nodes - and it was applied to the `bytecode` field only, leaving
+`debug.bytecode` and `fingerprint` describing the unedited compile. The artifact's own fields disagreed: 159
+bytes loaded, 158 bytes debugged, a fingerprint of the second. It also predated `lowLevelCalls[].target`, so the
+SDK's own built-in proxy was refused by the delegate class gate as `unpublished-target-provenance`. A verbatim
+compile fixes both, and `X50DefaultProxyRegenerated.test.ts` asserts field-for-field equality with a fresh
+compile so a future hand edit fails a test rather than shipping.

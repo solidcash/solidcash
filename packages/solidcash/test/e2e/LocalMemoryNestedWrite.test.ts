@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 // Nested writes to a local-memory struct's multi-dimensional array field (s.a[i][j] = v, s.a[i][j]++).
@@ -31,6 +31,6 @@ describe('local-memory nested struct-field array write (runtime)', () => {
   });
   it('a wrong post-write expectation reverts', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.wrong()).rejects.toThrow();
+    await expect(sc.wrong()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

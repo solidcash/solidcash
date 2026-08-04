@@ -1,6 +1,8 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // C3 direction + ctor init chains: bases listed most-base-first, grandparent ctor invocations,
 // and super resolution walking the linearization right-to-left.
@@ -68,19 +70,23 @@ describe('constructor chains and linearization order (VM)', () => {
   it('grandparent ctor invocation initializes state through an abstract link', async () => {
     const artifact = compileString(GRANDPARENT_CTOR, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy(5n);
-    await expect(sc.check(6n)).resolves.toBeDefined();
+    expect(await sc.check(6n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('grandparent ctor invocation rejects a wrong expectation', async () => {
     const artifact = compileString(GRANDPARENT_CTOR, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy(5n);
-    await expect(sc.check(7n)).rejects.toThrow();
+    await expect(sc.check(7n)).rejects.toThrow(verifyFailure);
   });
 
   it('most-base-first sibling lists linearize and run the ctor chain', async () => {
     const artifact = compileString(SIBLING_CHAIN, { forceStateful: true });
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.check(4n)).resolves.toBeDefined();
+    expect(await sc.check(4n)).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('super in a multi-base contract resolves to the rightmost base first', async () => {
@@ -88,6 +94,6 @@ describe('constructor chains and linearization order (VM)', () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
     await expect(sc.check(2n)).resolves.toBeDefined();
     const sc2 = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc2.check(1n)).rejects.toThrow();
+    await expect(sc2.check(1n)).rejects.toThrow(verifyFailure);
   });
 });

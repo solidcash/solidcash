@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { Contract, StatefulContract } from '../src/index.js';
 import type { FunctionArgument } from '../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from './test-util.js';
@@ -37,6 +37,8 @@ describe('unchecked-block early return (OZ Math.tryAdd) produces correct values 
     await call('checkOk', [3n, 4n, 7n]); // c = 7 >= 3, so return (true, 7)
   });
   it('rejects a wrong expected sum (the returned local c is exact)', async () => {
-    await expect(call('checkOk', [3n, 4n, 8n])).rejects.toThrow();
+    await expect(call('checkOk', [3n, 4n, 8n])).rejects.toThrow(
+      /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
+    );
   });
 });

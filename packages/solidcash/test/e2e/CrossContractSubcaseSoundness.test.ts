@@ -1,5 +1,6 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
@@ -29,7 +30,7 @@ describe('cross-contract callee subcase soundness (fail-closed, never silent-wro
   };
 
   it('(A) chunked (>60 B) value cross-contract is fail-closed or correct', async () => {
-    const IBANK = `interface IBank { function setBlob(int k, bytes v); }`;
+    const IBANK = 'interface IBank { function setBlob(int k, bytes v); }';
     const BANK = `pragma solidcash >=0.8.0;\n${IBANK}\ncontract Bank() is IBank {
       mapping(int => bytes) blob;
       function setBlob(int k, bytes v) { this.blob[k] = v; }

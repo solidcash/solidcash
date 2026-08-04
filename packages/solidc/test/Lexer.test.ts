@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Lexer: identifier / keyword / number-literal edge cases (exponents, units, soft keywords, literal-0 coercion).
 

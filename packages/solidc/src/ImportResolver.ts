@@ -63,6 +63,7 @@ export class ImportResolver {
           undefined,
           this.solidityImportCompat,
           true,
+          resolvedId,
         );
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);

@@ -1,7 +1,10 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A storage pointer to a (non-flattened) struct state variable is an ALIAS, not a copy: writes through the
 // pointer reach the state variable. Previously `S storage sL = s` silently fell through to a local copy, so
@@ -34,26 +37,26 @@ describe('struct storage pointer to a state variable is an alias (runtime)', () 
   it('writes per-field through the pointer to the state variable', async () => {
     const sc = await mk(SRC);
     await sc.wrField().send();
-    await expect(sc.chkField().send()).resolves.toBeDefined();
+    expect(await sc.chkField().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('a wrong expectation reverts (the field write really reached s)', async () => {
     const sc = await mk(SRC);
     await sc.wrField().send();
-    await expect(sc.chkWrong().send()).rejects.toThrow();
+    await expect(sc.chkWrong().send()).rejects.toThrow(verifyPreflight);
   });
   it('whole-assigns through the pointer to the state variable', async () => {
     const sc = await mk(SRC);
     await sc.wrWhole().send();
-    await expect(sc.chkWhole().send()).resolves.toBeDefined();
+    expect(await sc.chkWhole().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('reads through the pointer', async () => {
     const sc = await mk(SRC);
     await sc.wrField().send();
-    await expect(sc.readThroughAlias().send()).resolves.toBeDefined();
+    expect(await sc.readThroughAlias().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('deletes a field through the pointer (clears the state variable, not a local copy)', async () => {
     const sc = await mk(SRC);
     await sc.delField().send();
-    await expect(sc.chkDeleted().send()).resolves.toBeDefined();
+    expect(await sc.chkDeleted().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

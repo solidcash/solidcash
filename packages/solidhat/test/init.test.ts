@@ -211,7 +211,10 @@ describe('CLI entry points', () => {
     expect(output).toContain('Compiled');
     expect(existsSync(join(directory, 'artifacts', 'solidcash', 'contracts', 'Counter.scash', 'Counter.json')))
       .toBe(true);
-  }, 20_000);
+    // Budget was 20s. This spawns a child process running the whole CLI compile-and-test cycle: measured
+    // 10,069 ms on a quiet box (half the old budget) but 63,152 ms and 76,982 ms under concurrent
+    // parallel-worker rounds. A hang is unbounded, so 180s still catches one; 20s only caught a busy box.
+  }, 180_000);
 });
 
 describe('interactive setup', () => {

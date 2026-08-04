@@ -1,13 +1,17 @@
 import { describe, it, expect } from 'vitest';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
 import { Contract, TransactionBuilder, MockNetworkProvider } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
 
 const K = new Uint8Array(32).fill(0xbb); // side-car own NFT category
 const evm = (b: Uint8Array): Uint8Array => keccak_256(b);
+const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
+  + 'Top stack item: ""\\.\\)$');
 
 const SINGLE = compileString('contract C { function f(bytes x, bytes32 e) public pure { require(keccak256(x) == e); } }');
 const MULTI = compileString(`contract C2 {
@@ -76,7 +80,7 @@ describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(a, b, evm(a), evm(a)))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 
   it('rejects when the asserted hash e != keccak256(x)', async () => {
@@ -88,7 +92,7 @@ describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(x, new Uint8Array(32).fill(0xff)))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 });
 

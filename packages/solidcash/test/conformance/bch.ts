@@ -2,7 +2,7 @@
 // Compile SolidCash with solidc's compileString, then evaluate a require-oracle function through the
 // solidcash SDK against MockNetworkProvider: TransactionBuilder.send() runs the real script VM locally
 // (via debug()) and throws FailedRequireError iff a require() failed. So resolve = PASS, throw = MISMATCH.
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, TransactionBuilder, MockNetworkProvider, FailedRequireError, randomUtxo, StatefulContract,
 } from 'solidcash';

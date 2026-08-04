@@ -1,4 +1,4 @@
-import { Artifact } from '@solidcash/utils';
+import { Artifact, asmToBytecode } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
@@ -25,6 +25,8 @@ export interface DeployContractOptions {
   fee?: bigint;
   addressType?: AddressType;
   threadCount?: number;
+  /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
+  messageBusVerificationInputCount?: number;
   initialBalance?: bigint;
   initArgs?: DeployOptions['initArgs'];
   /** Internal composition escape: a split/proxy parent owns the one logical transaction nonce. */
@@ -54,7 +56,8 @@ export async function selectGenesisFundingUtxo(
   identityNftCount = 1,
 ): Promise<Utxo> {
   const dataNfts = BigInt(artifact.delegateOnly ? 0 : (artifact.stateLayout?.dataNftCount ?? 1));
-  const deployFee = BigInt(Math.max(5000, Math.ceil(artifact.bytecode.length / 2) + 2000));
+  // X149: `bytecode` is an ASM LISTING, so `.length / 2` is half a CHARACTER count and this overpaid.
+  const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
   const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(
@@ -137,7 +140,9 @@ export class ContractFactory<T extends Artifact = Artifact> {
           + '{ fundingUtxo, funder, changeAddress } override with a NetworkProvider runner.',
         );
       }
-      fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact);
+      const verifierCount = overrides.messageBusVerificationInputCount
+        ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
+      fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact, new Set(), 1 + verifierCount);
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
     }
@@ -172,6 +177,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         fee: overrides.fee,
         addressType: overrides.addressType,
         threadCount: overrides.threadCount,
+        messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,
         initArgs: overrides.initArgs ?? (positionalInitArgs.length > 0 ? positionalInitArgs : undefined),
         identityAnchors,

@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin, bigIntToVmNumber } from '@bitauth/libauth';
 import {
   Contract, StatefulContract,
@@ -222,7 +222,6 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
 
       // Create multi-key entry: allowances[alice][bob] = 500
-      const collection = stateLayout.collections!.find((c) => c.name === 'allowances')!;
       const slot = keyToSlotMulti([alicePkh, bobPkh]);
       const entryCommitment = c2Entry(slot, 500n);
       const { categoryId } = await setupWithEntries(

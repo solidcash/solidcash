@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import {
   keyToSlot, encodeEntryCommitment, slotValueToBytes, bytesToSlotValue, getEntryNftAddress,
@@ -23,6 +23,7 @@ const SRC = `contract C() {
 }`;
 
 const ZERO = slotValueToBytes(0n);
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // HEAD + entries chained in ascending-SLOT order (H(key) masked), tail nextKey = 0. Index 0 is the HEAD; 1..N are
 // the entries by ascending slot, each nextKey pointing to the following entry's slot (the last -> 0).
@@ -73,7 +74,7 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     expect((await sc.total(60n, alicePub, sig).send()).txid).toBeDefined();
 
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(59n, alicePub, sig).send()).rejects.toThrow(); // wrong total -> require fails
+    await expect(sc.total(59n, alicePub, sig).send()).rejects.toThrow(verifyFailure); // wrong total
   });
 
   it('boundary: empty list (HEAD only, nextKey==0) runs zero iterations -> sum 0', async () => {
@@ -81,7 +82,7 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     let sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.total(0n, alicePub, sig).send()).txid).toBeDefined();
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(1n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.total(1n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
   it('boundary: single entry (HEAD -> e -> tail) runs one iteration', async () => {
@@ -90,7 +91,7 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     let sc = StatefulContract.withCategory(contract, categoryId);
     expect((await sc.total(99n, alicePub, sig).send()).txid).toBeDefined();
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(98n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.total(98n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
   it('omission: a co-spend set missing a middle linked entry breaks the chain -> reverts', async () => {
@@ -101,12 +102,12 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     const withGap = [all[0], all[1], all[3]]; // HEAD, min, max - middle (all[2]) omitted
     const { contract, categoryId } = await seed(withGap);
 
-    // Any claimed total must revert: the covenant fails on the chain check (OP_EQUALVERIFY slot==expectedNext at
-    // the VM, "error in evaluating input index 0: Program failed an OP_VERIFY") before the sum is even trusted.
+    // Any claimed total must revert: the covenant fails on the chain check (OP_EQUALVERIFY slot==expectedNext)
+    // at input 0 in the BCH-2026 preflight before the sum is even trusted.
     let sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(40n, alicePub, sig).send()).rejects.toThrow(); // attacker's under-reported 10+30
+    await expect(sc.total(40n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(60n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.total(60n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
   it('truncation: a co-spend set missing the tail entry never reaches nextKey==0 -> reverts', async () => {
@@ -117,8 +118,8 @@ describe('sorted mapping VALUES iteration (linkage completeness)', () => {
     const { contract, categoryId } = await seed(truncated);
 
     let sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(30n, alicePub, sig).send()).rejects.toThrow(); // attacker's under-reported 10+20
+    await expect(sc.total(30n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.total(60n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.total(60n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 });

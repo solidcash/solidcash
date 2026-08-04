@@ -135,7 +135,11 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
 
     const loc = node.location;
     const id = (n: string): IdentifierNode => { const x = new IdentifierNode(n); x.location = loc; return x; };
-    const fieldOf = (v: string, f: string): FieldAccessNode => { const fa = new FieldAccessNode(id(v), f); fa.location = loc; return fa; };
+    const fieldOf = (v: string, f: string): FieldAccessNode => {
+      const fa = new FieldAccessNode(id(v), f);
+      fa.location = loc;
+      return fa;
+    };
 
     // Scalar `struct.field = v`: the field's new value is v directly. Array `struct.field[i] = v`: read the field
     // into a tmp, write the element, then use the tmp as the field's new value.
@@ -163,7 +167,9 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
     } else if (node.trailingMembers && node.trailingMembers.length > 0) {
       // Nested field write `struct.a.b = v`: the new value of field `a` is `a` rebuilt with `b = v` (recursively).
       if (!(field.type instanceof StructType)) return undefined; // `a.b` requires `a` to be a struct
-      newFieldValue = this.rebuildNestedExpr(fieldOf(node.name, node.fieldName), field.type, node.trailingMembers, node.expression);
+      newFieldValue = this.rebuildNestedExpr(
+        fieldOf(node.name, node.fieldName), field.type, node.trailingMembers, node.expression,
+      );
     } else {
       newFieldValue = node.expression;
     }
@@ -243,17 +249,28 @@ export default class RedesugarImportedStructFieldWrites extends AstTraversal {
   // Rebuild a struct expression with the field at `chain` replaced by `value`, recursively (mirrors the AstBuilder's
   // rebuildStructWithChain): `S(f0, .., <rebuild of head with rest=value>, .., fN)`. Used for a nested imported-struct
   // field write `struct.a.b = v` whose deeper members the AstBuilder preserved as trailingMembers.
-  private rebuildNestedExpr(structExpr: ExpressionNode, structT: StructType, chain: string[], value: ExpressionNode): ExpressionNode {
+  private rebuildNestedExpr(
+    structExpr: ExpressionNode, structT: StructType, chain: string[], value: ExpressionNode,
+  ): ExpressionNode {
     const loc = structExpr.location;
-    const fieldAccess = (e: ExpressionNode, f: string): FieldAccessNode => { const fa = new FieldAccessNode(e, f); fa.location = loc; return fa; };
+    const fieldAccess = (e: ExpressionNode, f: string): FieldAccessNode => {
+      const fa = new FieldAccessNode(e, f);
+      fa.location = loc;
+      return fa;
+    };
     const [head, ...rest] = chain;
     const headType = structT.fields.find((f) => f.name === head)?.type;
     if (rest.length > 0 && !(headType instanceof StructType)) return value; // malformed chain: fail closed downstream
     const newField = rest.length === 0 ? value
-      : this.rebuildNestedExpr(fieldAccess(cloneNode(structExpr) as ExpressionNode, head), headType as StructType, rest, value);
+      : this.rebuildNestedExpr(
+        fieldAccess(cloneNode(structExpr) as ExpressionNode, head), headType as StructType, rest, value,
+      );
     const ctorId = new IdentifierNode(structT.name); ctorId.location = loc;
     const ctor = new FunctionCallNode(ctorId,
-      structT.fields.map((f) => (f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name))));
+      structT.fields.map((f) => (
+        f.name === head ? newField : fieldAccess(cloneNode(structExpr) as ExpressionNode, f.name)
+      )),
+    );
     ctor.location = loc;
     return ctor;
   }

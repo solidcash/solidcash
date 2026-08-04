@@ -20,8 +20,14 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
     const r = cashAddressToLockingBytecode(addr);
     return typeof r === 'string' ? null : r.bytecode;
   };
-  if (isBytes(actual) && isCashAddr(expected)) { const lb = decode(expected); if (lb) return [binToHex(actual), binToHex(lb)]; }
-  if (isCashAddr(actual) && isBytes(expected)) { const lb = decode(actual); if (lb) return [binToHex(lb), binToHex(expected)]; }
+  if (isBytes(actual) && isCashAddr(expected)) {
+    const lockingBytecode = decode(expected);
+    if (lockingBytecode) return [binToHex(actual), binToHex(lockingBytecode)];
+  }
+  if (isCashAddr(actual) && isBytes(expected)) {
+    const lockingBytecode = decode(actual);
+    if (lockingBytecode) return [binToHex(lockingBytecode), binToHex(expected)];
+  }
   return [actual, expected];
 }
 
@@ -206,6 +212,7 @@ class Assertion {
     (this.negate ? ev(a).not : ev(a)).toEqual(e);
     return this;
   }
+
   equals(expected: any): this { return this.equal(expected); }
   eq(expected: any): this { return this.equal(expected); }
   eql(expected: any): this { return this.equal(expected); }
@@ -300,7 +307,9 @@ class Assertion {
   }
 
   revertedWith(reason: RegExp | string): Promise<void> {
-    const relaxed = ((this.actual as any)?.parentContract?.inner?.provider?.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    const maximumInputBytes = (this.actual as any)?.parentContract?.inner?.provider
+      ?.consensusLimits?.maximumInputBytes ?? 10_000;
+    const relaxed = maximumInputBytes > 10_000;
     if (!this.negate && (relaxed || delegatedSourceDeclaresReason(this.actual, reason))) {
       const result = typeof this.actual?.send === 'function' ? this.actual.send() : this.actual;
       return Promise.resolve(result).then(

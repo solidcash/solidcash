@@ -77,6 +77,8 @@ const sidebars: SidebarsConfig = {
       label: 'Guides',
       items: [
         'guides/stateful-guide',
+        'guides/state-journal',
+        'guides/message-bus',
         'guides/covenants',
         'guides/lifecycle',
         'guides/cashtokens',
@@ -87,6 +89,13 @@ const sidebars: SidebarsConfig = {
         'guides/debugging',
         'guides/optimization',
         'guides/adversarial',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Reference',
+      items: [
+        'reference/message-bus-artifact',
       ],
     },
     {

@@ -152,14 +152,22 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
           const mapKeys = visitedKeys.slice(0, info.keyCount);
           const arrIdxs = visitedKeys.slice(info.keyCount);
           let read: ExpressionNode = this.ident(base.name, node);
-          for (const k of mapKeys) { const acc = new ArrayAccessNode(read, clone(k)); acc.location = node.location; read = acc; }
+          for (const k of mapKeys) {
+            const acc = new ArrayAccessNode(read, clone(k));
+            acc.location = node.location;
+            read = acc;
+          }
           const tmpName = `__mar_tmp_${this.counter++}`;
           const decl = new VariableDefinitionNode(info.valueType, [], tmpName, read);
           decl.location = node.location;
           this.locals.set(tmpName, info.valueType);
           this.pendingHoists.push(decl);
           let repl: ExpressionNode = this.ident(tmpName, node);
-          for (const idx of arrIdxs) { const acc = new ArrayAccessNode(repl, clone(idx)); acc.location = node.location; repl = acc; }
+          for (const idx of arrIdxs) {
+            const acc = new ArrayAccessNode(repl, clone(idx));
+            acc.location = node.location;
+            repl = acc;
+          }
           return repl;
         }
       }

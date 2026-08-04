@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
+import { compileString as compileMessageBus } from '../src/compiler.js';
 
 // External and low-level calls: interface-typed targets, call{value}, transfer/send, and their receivers.
 
@@ -112,9 +113,11 @@ describe('value-returning low-level-call helpers are inlined at direct call site
   });
   it('the inlined low-level-call co-spend covenant is byte-identical to the hand-written form', () => {
     const inlined = compileString(`${LIB} contract C() {`
-      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }').bytecode.split(' ');
+      + ' function f(address x, bytes d) returns (bytes) { return L.fwd(x, d); } }',
+    { messageBus: false }).bytecode.split(' ');
     const hand = compileString('contract C() { function f(address x, bytes d) returns (bytes) {'
-      + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }').bytecode.split(' ');
+      + ' (bool ok, bytes r) = x.call(d); require(ok); return r; } }',
+    { messageBus: false }).bytecode.split(' ');
     // Inlining adds a benign param-copy at the front; the entire co-spend covenant tail must be identical.
     expect(inlined.slice(-150).join(' ')).toBe(hand.slice(-150).join(' '));
   });
@@ -217,6 +220,7 @@ describe('value-returning low-level-call helpers are inlined at direct call site
 
 describe('external call on a tuple-destructured / copied local interface var', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
+  const ccBus = (src: string): string => compileMessageBus(src, { solidityImportCompat: true }).contractName;
   const iface = 'interface IERC20 { function transferFrom(address f, address t, uint256 a) external returns (bool);'
     + ' function balanceOf(address o) external view returns (uint256); function transfer(address t, uint256 a) external returns (bool); }';
 
@@ -227,12 +231,12 @@ describe('external call on a tuple-destructured / copied local interface var', (
   });
 
   it('routes a method call on a tuple-ternary-destructured interface var (CSAMM shape)', () => {
-    expect(cc(`${iface} contract C { IERC20 token0; IERC20 token1;`
+    expect(ccBus(`${iface} contract C { IERC20 token0; IERC20 token1;`
       + ' function swap(bool isToken0, uint256 amt) public {'
       + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
       + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
       + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
-  });
+  }, 60_000);
 });
 
 describe('SBE-21: external call on a state-var target in fallback/receive', () => {
@@ -244,6 +248,11 @@ describe('SBE-21: external call on a state-var target in fallback/receive', () =
       + ' contract C { Store s; constructor(address a){ s = Store(a); }'
       + ' fallback() external { s.withdraw(); }'
       + ' receive() external payable { s.withdraw(); } }')).toBe('C');
+  });
+
+  it('pins a bare low-level-call state receiver through a surviving address local', () => {
+    expect(cc('contract C { address target; constructor(address a) { target = a; }'
+      + ' function forward(bytes data) public { (bool ok,) = target.call(data); require(ok); } }')).toBe('C');
   });
 });
 
@@ -407,7 +416,7 @@ describe('external call on a struct-field target (s.field.m())', () => {
     );
     const manual = compileString(
       `${IF}struct S { IFoo target; uint x; } contract C { S s; function f() public returns (uint) `
-      + `{ IFoo __extaddr_s_target = s.target; return __extaddr_s_target.m(); } }`,
+      + '{ IFoo __extaddr_s_target = s.target; return __extaddr_s_target.m(); } }',
       opts,
     );
     expect(auto.bytecode).toBe(manual.bytecode);

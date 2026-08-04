@@ -35,7 +35,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
       version: compilerVersion,
     } = await import('solidc');
-    const { formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
+    const { asmToBytecode, formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
@@ -74,7 +74,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const primary = compileString(source, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
-        if (primary.bytecode.length / 2 > maximumInputBytes) {
+        // X149: `bytecode` is an ASM listing; measuring it fires on contracts that actually fit.
+        if (asmToBytecode(primary.bytecode).length > maximumInputBytes) {
           const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes: maximumInputBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
@@ -122,7 +123,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           .map((match) => match[1]);
         const needsSplit = declarations.some((name) => {
           const artifact = result.artifacts[name];
-          return artifact && artifact.bytecode.length / 2 > maximumInputBytes;
+          return artifact && asmToBytecode(artifact.bytecode).length > maximumInputBytes;
         });
         if (!needsSplit) continue;
         let split;

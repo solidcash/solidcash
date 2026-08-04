@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Data-location parity: calldata read-only enforcement.
 

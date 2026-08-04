@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // End-to-end: a COMPILED sorted-set mapping. `require(!claimed[k])` compiles to the sorted read covenant; the SDK
 // co-spends the exact entry if k is present, else the bracketing predecessor. So the guard passes for an absent
@@ -45,6 +47,6 @@ describe('sorted mapping compiled read (C2 end-to-end)', () => {
 
     // Present key 5 -> !claimed[5] is false -> guard reverts (already claimed). Cannot be bypassed by omission.
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.check(5n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.check(5n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 });

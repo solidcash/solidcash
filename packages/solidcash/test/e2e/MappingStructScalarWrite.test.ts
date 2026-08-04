@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+const verifyPreflight = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A state struct with a mapping field flattens to per-field state (`s__a` scalar + `s__c` mapping). The bare
 // scalar field write `s.a = v` (the Solidity form) resolves to the flattened `s__a` state var, symmetric with
@@ -37,6 +39,6 @@ describe('mapping-bearing struct scalar field write (s.a = v -> flattened s__a)'
     expect(readTx.txid).toBeDefined();
     // the wrong value is rejected by the covenant
     sc = StatefulContract.withCategory(contract, categoryId);
-    await expect(sc.checkA(100n, alicePub, sig).send()).rejects.toThrow();
+    await expect(sc.checkA(100n, alicePub, sig).send()).rejects.toThrow(verifyPreflight);
   });
 });

@@ -1,5 +1,6 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -93,6 +94,6 @@ describe('SafeERC20-chain low-level .call with a self-pinned state-chain target 
       caller.pay(payload, alicePub, sig())
         .withExternalCall(echoB.sc, 'setAndReturn', [42n, alicePub, sig()])
         .send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

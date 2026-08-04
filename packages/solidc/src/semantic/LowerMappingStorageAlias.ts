@@ -135,8 +135,12 @@ export default class LowerMappingStorageAlias extends AstTraversal {
     const val = this.visit(node.value) as ExpressionNode;
     if (!alias.cond) return this.stamp(new ArrayAssignNode(alias.a, idx, val), node.location);
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const ifB = this.stamp(new BlockNode([this.stamp(new ArrayAssignNode(alias.a, clone(idx), clone(val)), node.location)]), node.location);
-    const elseB = this.stamp(new BlockNode([this.stamp(new ArrayAssignNode(alias.b!, clone(idx), clone(val)), node.location)]), node.location);
+    const ifB = this.stamp(new BlockNode([
+      this.stamp(new ArrayAssignNode(alias.a, clone(idx), clone(val)), node.location),
+    ]), node.location);
+    const elseB = this.stamp(new BlockNode([
+      this.stamp(new ArrayAssignNode(alias.b!, clone(idx), clone(val)), node.location),
+    ]), node.location);
     return this.stamp(new BranchNode(clone(alias.cond), ifB, elseB), node.location);
   }
 

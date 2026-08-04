@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
@@ -542,11 +542,11 @@ contract ExternalSource() {
     };
 
     const writerUnlocker = createDataNftUnlocker(writerContract, 0, writerCategoryId);
-    const masterUnlocker = writerSaltedContract.unlock.increment();
+    const stateInputUnlocker = writerSaltedContract.unlock.increment();
 
     const stb = new StatefulTransactionBuilder({
       provider,
-      masterUtxo: { ...writerMasterUtxo, unlocker: masterUnlocker },
+      masterUtxo: { ...writerMasterUtxo, unlocker: stateInputUnlocker },
       dataNftUtxos: [{ ...writerDataNftUtxo, unlocker: writerUnlocker }],
       stateLayout: writerStateLayout,
       categoryId: writerCategoryId,

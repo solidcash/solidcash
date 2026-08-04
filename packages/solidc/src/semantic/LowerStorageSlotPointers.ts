@@ -1,13 +1,14 @@
 import {
-  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, PrimitiveType, Type,
+  StructType, MappingType, IntType, AddressType, BytesType, ArrayType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import {
   Node, SourceFileNode, ContractNode, FunctionDefinitionNode, AssemblyStatementNode, VariableDefinitionNode,
   AssignNode, FieldAccessNode, IdentifierNode, FunctionCallNode, ExpressionNode, CastNode, BlockNode,
   MappingAccessNode, MappingAssignNode, MappingFieldAssignNode, ArrayAccessNode, CollectionNode,
-  StateVariableNode, StateAccessNode, StateAssignNode, StateVariableVisibility,
+  StateVariableNode, StateAccessNode, StateAssignNode, StateVariableVisibility, InstantiationNode,
 } from '../ast/AST.js';
+import { Class } from '../ast/Globals.js';
 import { cloneNode } from '../ast/clone.js';
 import { Location } from '../ast/Location.js';
 import { YulAssignmentNode, YulPathNode, YulLiteralNode } from '../ast/YulAST.js';
@@ -164,7 +165,8 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       if (alias.slot) {
         this.used = true;
         const write = new MappingAssignNode(
-          EVM_STORAGE, [this.keyOf(alias)], this.toUint(this.visit(node.expression) as ExpressionNode, alias.struct.fields[0].type),
+          EVM_STORAGE, [this.keyOf(alias)],
+          this.toUint(this.visit(node.expression) as ExpressionNode, alias.struct.fields[0].type),
         );
         write.location = node.location;
         return write;
@@ -212,7 +214,9 @@ export default class LowerStorageSlotPointers extends AstTraversal {
           this.constStructsToPromote.set(factory.struct.name, factory.struct);
         } else if (factory.isSlotAlias) {
           // `S storage d = getXSlot(ref)` -> d aliases `ref` directly (no __evm_storage register).
-          this.aliases.set(node.name, { aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
+          this.aliases.set(node.name, {
+            aliasRef: node.expression.parameters[factory.slotParamIdx], struct: factory.struct,
+          });
         } else {
           this.aliases.set(node.name, { slot: node.expression.parameters[factory.slotParamIdx], struct: factory.struct });
           this.used = true;
@@ -351,11 +355,38 @@ export default class LowerStorageSlotPointers extends AstTraversal {
     return this.cast(UINT256, expr, expr.location);
   }
 
-  // Read the word back as the field type. uint256 word -> address(uint160(w)); other -> fieldType(w).
+  // Read the word back as the field type. X117: the write above stores the field's bytes as a NON-NEGATIVE
+  // script number (BytesType -> unsigned IntType sign-pads a 0x00 high byte), so the inverse has to re-encode
+  // one byte WIDER and drop that byte. A bare `bytesN(word)` is `NUM2BIN(N)`, which ABORTS for every value
+  // whose top byte has the high bit set (`OP_NUM2BIN operation with an insufficient byte length`).
+  //
+  // A BCH address is a variable-length locking bytecode, not a fixed 20-byte value, and `address(uint160(w))`
+  // is the deliberate no-op cast TypeCheckTraversal warns about - it left the raw script number on the stack
+  // where a locking bytecode was expected, so the value never read back (`OP_SPLIT` out of range on the
+  // 20-byte narrowing, or a failed comparison). Rebuild the P2PKH wrapper the write narrowed away instead.
   private fromUint(expr: ExpressionNode, fieldType: Type): ExpressionNode {
     if (fieldType instanceof AddressType) {
-      return this.cast(new AddressType(), this.cast(UINT160, expr, expr.location), expr.location);
+      const build = new InstantiationNode(
+        this.at(new IdentifierNode(Class.LOCKING_BYTECODE_P2PKH), expr), [this.exactBytes(expr, 20)],
+      );
+      build.location = expr.location;
+      return build;
+    }
+    if (fieldType instanceof BytesType && fieldType.bound !== undefined) {
+      return this.exactBytes(expr, fieldType.bound);
     }
     return this.cast(fieldType, expr, expr.location);
+  }
+
+  // A stored word -> EXACTLY `width` bytes: re-encode at width+1 so a high-bit-set top byte still fits, then
+  // keep the leftmost `width` bytes (NUM2BIN is little-endian, so the sign byte is the one dropped).
+  private exactBytes(expr: ExpressionNode, width: number): ExpressionNode {
+    const wide = this.cast(new BytesType(width + 1), cloneNode(expr) as ExpressionNode, expr.location);
+    return this.cast(new BytesType(width), wide, expr.location);
+  }
+
+  private at<T extends Node>(node: T, source: Node): T {
+    node.location = source.location;
+    return node;
   }
 }

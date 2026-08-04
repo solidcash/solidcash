@@ -2,7 +2,6 @@ import {
   Node,
   SourceFileNode,
   ContractNode,
-  StateVariableNode,
   FunctionDefinitionNode,
   BlockNode,
   StatementNode,
@@ -68,6 +67,8 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
     const refFns = new Set<string>(); // functions that reference ev (assign or call)
     for (const fn of bodies) {
       let refsHere = false;
+      // The callback is invoked synchronously before this loop advances.
+      // eslint-disable-next-line @typescript-eslint/no-loop-func
       const walk = (n: Node): void => {
         if (this.aliasWriteName(n) === name) {
           refsHere = true;

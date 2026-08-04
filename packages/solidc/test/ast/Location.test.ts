@@ -1,6 +1,7 @@
 import fs from 'fs';
 import { URL } from 'url';
-import { compileString, parseCode } from '../../src/compiler.js';
+import { parseCode } from '../../src/compiler.js';
+import { compileString } from '../direct-compile.js';
 import { buildLineToAsmMap, bytecodeToAsm, bytecodeToScript } from '@solidcash/utils';
 import { hexToBin } from '@bitauth/libauth';
 

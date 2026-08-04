@@ -1023,9 +1023,11 @@ describe('synthesizes __extaddr for IFoo(<self-pinned state chain>).method() (EA
       + ' ITok(job.token).transfer(msg.sender, 1); require(true); } }')).toBe('C');
   });
   it('dedups two identical-chain casts to ONE synthesized local (compiles, no re-decl)', () => {
-    expect(ok(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
+    expect(compileString(iface + ' ' + struc + ' contract C { mapping(uint256 => Job) public jobs;'
       + ' function pay(uint256 id) public { ITok(jobs[id].token).transfer(msg.sender, 1);'
-      + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }')).toBe('C');
+      + ' ITok(jobs[id].token).transfer(msg.sender, 2); require(true); } }', {
+      solidityImportCompat: true, messageBus: true,
+    }).contractName).toBe('C');
   });
 });
 

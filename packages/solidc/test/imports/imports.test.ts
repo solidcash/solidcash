@@ -30,7 +30,6 @@ import {
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   DiamondInheritanceError,
-  DeployValueInNonStatefulError,
 } from '../../src/Errors.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -3758,10 +3757,10 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('ErrorDeployStateful');
     });
 
-    it('should throw DeployValueInNonStatefulError when using {value} in non-stateful contract', () => {
-      expect(() => {
-        compileFile(path.join(fixtures, 'error_deploy_value_non_stateful.scash'));
-      }).toThrow(DeployValueInNonStatefulError);
+    it('value-bearing deployment makes the parent stateful', () => {
+      const artifact = compileFile(path.join(fixtures, 'error_deploy_value_non_stateful.scash'));
+      expect(artifact.contractName).toBe('ErrorDeployValueNonStateful');
+      expect(artifact.stateLayout).toBeDefined();
     });
 
     it('should throw ContractConstructorArgCountError for wrong arg count', () => {

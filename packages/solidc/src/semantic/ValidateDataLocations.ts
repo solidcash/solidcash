@@ -426,13 +426,6 @@ export default class ValidateDataLocations extends AstTraversal {
     isConstructor = false, isLibraryFunction = false, isAbstractConstructor = false): void {
     const locations = this.locations(modifiers);
     if (locations.length === 0) {
-      if (this.solidityImportCompat && this.isReferenceType(type)
-        && (context === 'parameter' || context === 'return')) {
-        throw new InvalidDataLocationError(
-          node,
-          `Data location must be 'storage', 'memory' or 'calldata' for ${context} in function, but none was given`,
-        );
-      }
       return;
     }
     if (locations.length > 1) {

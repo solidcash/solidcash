@@ -15,6 +15,7 @@ import {
   TernaryOpNode,
   FieldAccessNode,
   IdentifierNode,
+  StateAccessNode,
   ExpressionNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -56,7 +57,13 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
     this.aliases = new Map();
     if (node.body) {
       this.collectAliases(node.body);
-      node.externalPointerAliases = Object.fromEntries(this.aliases);
+      // This pass runs once before branch normalization and again after pointer-specific lowerings. Preserve
+      // aliases captured by the early run: it may erase their declaration after rewriting high-level calls,
+      // while LowerInlineAssembly still needs the original member to lower `fp.address`/`fp.selector` in Yul.
+      node.externalPointerAliases = {
+        ...(node.externalPointerAliases ?? {}),
+        ...Object.fromEntries(this.aliases),
+      };
       node.body = this.visit(node.body) as BlockNode;
     }
     this.aliases = saved;
@@ -103,6 +110,9 @@ export default class DesugarExternalFunctionPointers extends AstTraversal {
   // Structural equality of two receiver expressions (enough for `IFace(addr)` casts: same identifier + args).
   private sameReceiver(a: ExpressionNode, b: ExpressionNode): boolean {
     if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+    // Bare state identifiers are normalized before this pass, so `I(handler).inc : I(handler).dec` carries two
+    // separately-cloned StateAccessNodes rather than IdentifierNodes. They still name the same receiver.
+    if (a instanceof StateAccessNode && b instanceof StateAccessNode) return a.name === b.name;
     if (a instanceof FunctionCallNode && b instanceof FunctionCallNode) {
       return a.identifier instanceof IdentifierNode && b.identifier instanceof IdentifierNode
         && a.identifier.name === b.identifier.name

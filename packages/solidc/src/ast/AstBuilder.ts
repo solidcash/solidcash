@@ -249,7 +249,10 @@ import {
 } from './Globals.js';
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
-import { ParseError, StateVariableNameCollisionError, UnsupportedTypeError, VersionError } from '../Errors.js';
+import {
+  InvalidArrayBoundError, ParseError, StateVariableNameCollisionError, TernaryTypeMismatchError,
+  UnsupportedTypeError, VersionError,
+} from '../Errors.js';
 
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {
@@ -1966,19 +1969,6 @@ export default class AstBuilder
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
     }
-    if (this.solidityImportCompat
-      && !this.usesLegacySolidityDefaultFunctionVisibility()
-      && !functionDefinition.modifiers.some((modifier) => [
-        FunctionModifier.PUBLIC,
-        FunctionModifier.EXTERNAL,
-        FunctionModifier.INTERNAL,
-        FunctionModifier.PRIVATE,
-      ].includes(modifier))) {
-      throw new ParseError(
-        `No visibility specified for function '${name}'. Did you intend to add 'public'?`,
-        functionDefinition.location,
-      );
-    }
     // Parse custom modifier invocations (split/merge are handled specially)
     const customModCtxs = ctx.customModifierInvocation_list();
     if (customModCtxs && customModCtxs.length > 0) {
@@ -2071,6 +2061,7 @@ export default class AstBuilder
     if (functionDefinition.body.statements!.some((s) => s instanceof SelfdestructStatementNode)
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
       functionDefinition.modifiers.push(FunctionModifier.SELFDESTRUCT);
+      functionDefinition.impliedSelfdestruct = true;
     }
 
     return functionDefinition;
@@ -2558,14 +2549,15 @@ export default class AstBuilder
       const defName = `__pushPtr_def_${uid}`;
       // uint __idx = arr.length;  (pre-push length = the appended element's index)
       const idxDef = stamp(new VariableDefinitionNode(
-        PrimitiveType.BIGINT, [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
+        this.solidityImportCompat ? new IntType(256, false) : PrimitiveType.BIGINT,
+        [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
       // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
       const access = stamp(new ArrayAccessNode(ident(arrName), ident(idxName)));
       this.storageAliases.set(name, { container: arrName, keys: [ident(idxName)], access });
       // `uint[] storage p = c.push();` (2D): an array-typed element has no scalar __def local encoding -
       // append the inner default via the no-arg push path instead.
-      if (type instanceof ArrayType || type instanceof StructType) {
+      if (type instanceof ArrayType) {
         const push = this.buildArrayPush(arrName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx);
         return stamp(new BlockNode([idxDef, push]));
       }
@@ -4448,6 +4440,11 @@ export default class AstBuilder
     const ifFalse = this.visit(ctx._ifFalse);
     const ternary = new TernaryOpNode(condition, ifTrue, ifFalse);
     ternary.location = Location.fromCtx(ctx);
+    if (!this.solidityImportCompat
+      && ((ifTrue instanceof IntLiteralNode && ifFalse instanceof HexLiteralNode)
+        || (ifFalse instanceof IntLiteralNode && ifTrue instanceof HexLiteralNode))) {
+      throw new TernaryTypeMismatchError(ternary);
+    }
     return ternary;
   }
 
@@ -4554,7 +4551,7 @@ export default class AstBuilder
       if (match) {
         const digits = match[1];
         const shift = Number(match[2]);
-        if (shift < 0) {
+        if (shift < 0 && this.solidityImportCompat) {
           const padded = digits.padStart(-shift + 1, '0');
           const cut = padded.length + shift;
           const node = new DecimalLiteralNode(`${padded.slice(0, cut)}.${padded.slice(cut)}`);
@@ -4846,7 +4843,12 @@ export default class AstBuilder
     }
     const hexValue = hexToBin(hexContent);
     const hexLiteral = new HexLiteralNode(hexValue);
-    hexLiteral.numericValue = BigInt(`0x${hexContent.replace(/_/g, '')}`);
+    // A bare `0x` is the empty byte sequence. JavaScript's BigInt parser rejects
+    // the spelling even though the language parser accepts it, so only attach a
+    // numeric interpretation when at least one digit is present.
+    hexLiteral.numericValue = hexContent.length === 0
+      ? undefined
+      : BigInt(`0x${hexContent.replace(/_/g, '')}`);
     hexLiteral.sourceHexDigits = hexContent.length;
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
@@ -6358,7 +6360,9 @@ export default class AstBuilder
     // fixed value-type arrays as StateVariableNode, and zero/uint256-overflow dimensions must be rejected in every
     // declaration context before that representation choice is made.
     if (value <= 0n) {
-      throw new ParseError('Array bound must be a positive integer', Location.fromCtx(ctx));
+      const invalid = new IntLiteralNode(value);
+      invalid.location = Location.fromCtx(ctx);
+      throw new InvalidArrayBoundError(invalid);
     }
     if (value >= (1n << 256n)) {
       throw new ParseError('Array length too large, maximum is 2**256 - 1', Location.fromCtx(ctx));

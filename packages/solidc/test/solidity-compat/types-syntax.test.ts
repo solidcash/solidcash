@@ -11,9 +11,8 @@ describe('modifier declaration source validation', () => {
       .toThrow(/multiple data locations specified/i);
   });
 
-  it('requires a data location for reference-type modifier parameters', () => {
-    expect(() => cc('contract C { modifier m(uint[] values) { _; } }'))
-      .toThrow(/data location must be.*but none was given/i);
+  it('infers a data location for reference-type modifier parameters', () => {
+    expect(cc('contract C { modifier m(uint[] values) { _; } }')).toBe('C');
   });
 
   it('rejects return arguments in modifier bodies while retaining bare return', () => {
@@ -724,11 +723,11 @@ describe('contract constant scope and numeric type introspection', () => {
 });
 
 describe('Solidity function visibility version boundary', () => {
-  it('requires explicit visibility in current Solidity compatibility mode', () => {
-    expect(() => compileString(
+  it('retains SolidCash default visibility in current Solidity compatibility mode', () => {
+    expect(compileString(
       'pragma solidity ^0.8.0; contract C { function f() pure {} }',
       { solidityImportCompat: true },
-    )).toThrow(/No visibility specified.*public/i);
+    ).contractName).toBe('C');
   });
 
   it('retains pre-0.5 and native SolidCash default visibility', () => {

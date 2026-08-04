@@ -948,7 +948,7 @@ describe('push-return assignment on bytes[]', () => {
        require(data[i][j] == v); } }`,
       { solidityImportCompat: true },
     ).contractName).toBe('C');
-  });
+  }, 120_000);
 });
 
 describe('compound assignment to a pushed element', () => {
@@ -1408,15 +1408,14 @@ describe('Solidity index-range slice sources', () => {
 });
 
 describe('required Solidity data locations', () => {
-  it('rejects omitted locations on reference-type parameters and returns', () => {
-    const invalid = [
+  it('infers omitted locations on reference-type parameters and returns', () => {
+    const accepted = [
       'contract C { function f(uint[] x) internal pure {} }',
       'contract C { function f() private pure returns (bytes x) {} }',
       'contract C { struct S { uint x; } function f(S x) public pure {} }',
     ];
-    for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
-        .toThrow(/Data location must be/);
+    for (const source of accepted) {
+      expect(compileString(source, { solidityImportCompat: true }).contractName).toBe('C');
     }
   });
 

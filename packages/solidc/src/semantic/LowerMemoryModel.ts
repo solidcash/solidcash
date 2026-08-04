@@ -1310,6 +1310,7 @@ export default class LowerMemoryModel extends AstTraversal {
     const ptr = new IdentifierNode(node.name);
     // uint b = mload(0x40);
     const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
+    if (literal) decl.memoryLiteralValue = literal;
     // mstore(0x40, b + 32 + roundUp(n, 32));   (bump past the length word + word-aligned data)
     const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.bytesBlockBytes(n()))), node);
     // __yulmem = bytes.concat(__yulmem, new bytes(32 + roundUp(n, 32)));   (grow, zero-filled)

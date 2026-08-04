@@ -265,7 +265,13 @@ expect.extend({
     // and async (StatefulFunctionCall.build() -> Promise<TransactionBuilder>) cases.
     let rawTxHex: string;
     try {
-      if (typeof (transaction as any).send === 'function') {
+      // A prebuilt TransactionBuilder is already fully materialized and may be intentionally reused across
+      // several matcher assertions. Inspect its bytes without broadcasting it (broadcasting here both consumes
+      // its inputs and makes the second assertion observe a double-spend). A lazy StatefulFunctionCall still
+      // needs send(), because its final phase derives delegate/event commitments.
+      if (typeof (transaction as any).buildLibauthTransaction === 'function') {
+        rawTxHex = (transaction as any).build();
+      } else if (typeof (transaction as any).send === 'function') {
         const sent = await (transaction as any).send();
         rawTxHex = sent.hex;
       } else {

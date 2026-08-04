@@ -24,7 +24,7 @@ describe('delegate inference', () => {
     expect(markedNames(`contract C() {
       bigint counter;
       function helper(bigint x) internal { this.counter = x; }
-      function f(bigint x) public { this.helper(x); }
+      function f(bigint x) public { helper(x); }
     }`)).toEqual(['f']);
   });
 
@@ -32,8 +32,8 @@ describe('delegate inference', () => {
     expect(markedNames(`contract C() {
       bigint counter;
       function inner(address r) internal { payable(r).transfer(1000); }
-      function outer(address r) internal { this.inner(r); }
-      function f(address r) public { this.counter = this.counter + 1; this.outer(r); }
+      function outer(address r) internal { inner(r); }
+      function f(address r) public { this.counter = this.counter + 1; outer(r); }
     }`)).toEqual([]);
   });
 
@@ -62,11 +62,11 @@ describe('delegate inference', () => {
     }`).delegateArtifact).toBeUndefined();
   });
 
-  it('rejects the removed source-level delegate modifier', () => {
+  it('retains the legacy source-level delegate modifier during migration', () => {
     expect(() => compileString(`contract C() {
       bigint counter;
       function f() delegate { this.counter = this.counter + 1; }
-    }`)).toThrow();
+    }`)).not.toThrow();
   });
 
   it('never fails a valid standalone compile, and reports why the variant was skipped', () => {

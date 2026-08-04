@@ -93,6 +93,7 @@ function collectVarTypes(node: Node, out: Map<string, Type>): void {
   if (node instanceof VariableDefinitionNode) {
     out.set(node.name, node.type);
     if (node.expression instanceof HexLiteralNode) currentVarValues.set(node.name, node.expression.value);
+    else if (node.memoryLiteralValue) currentVarValues.set(node.name, node.memoryLiteralValue);
     // `bytes X = type(C).creationCode` - record X -> C so a create2 over X lowers to `new C{salt}()`. Read the raw
     // type name (typeArgText); TypeIntrospectionNode.contractName is only set later (SymbolTableTraversal).
     if (node.expression instanceof TypeIntrospectionNode
@@ -2219,7 +2220,9 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
         const byte = loc(
           new SliceNode(loc(new IdentifierNode(ptr.name), call), intLit(at, call), intLit(at + 1n, call)), call,
         );
-        return loc(new CastNode(UINT256, byte, false), call);
+        // Preserve the raw one-byte result: the surrounding assignment supplies exactly the destination cast,
+        // avoiding an otherwise duplicated uint8 (or unnecessary uint256) range check.
+        return byte;
       }
     }
     const word = loc(new CastNode(BYTES32, lowerValue(args[1]), false), call);
@@ -2391,7 +2394,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
       return defs.length === 1 ? defs[0] : loc(new BlockNode(defs), stmt);
     }
     if (stmt.names.length !== 1) throw new YulNotLowerable(); // multi-value `let x, y := f()` (later)
-    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1) {
+    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1
+      && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, stmt.names[0], true, stmt);
     }
     // `let pair := create2(0, add(code,0x20), mload(code), salt)` -> `address pair = new C{salt}()` (deploy). Emit
@@ -2554,7 +2558,8 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
         return loc(new AssignNode(loc(new IdentifierNode(name), stmt), ctor), stmt);
       }
     }
-    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1) {
+    if (stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'clz' && stmt.value.args.length === 1
+      && !isIntLiteral(stmt.value.args[0])) {
       return lowerClzBinding(stmt.value, name, false, stmt);
     }
     // `pair := create2(0, add(code,0x20), mload(code), salt)` -> `pair = new C{salt}()` (deploy). Emit the

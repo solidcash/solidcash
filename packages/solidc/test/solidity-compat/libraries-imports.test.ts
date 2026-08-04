@@ -6,11 +6,9 @@ describe('inline-only library declaration validation', () => {
   const cc = (src: string): string =>
     compileString(src, { solidityImportCompat: true }).contractName;
 
-  it('requires locations on reference-type parameters and returns before the declaration-artifact return', () => {
-    expect(() => cc('library L { function f(uint[] values) internal pure {} }'))
-      .toThrow(/data location must be.*but none was given/i);
-    expect(() => cc('library L { function f() private pure returns(uint[]) {} }'))
-      .toThrow(/data location must be.*but none was given/i);
+  it('infers locations on reference-type parameters and returns before the declaration-artifact return', () => {
+    expect(cc('library L { function f(uint[] values) internal pure {} }')).toBe('L');
+    expect(cc('library L { function f() private pure returns(uint[]) {} }')).toBe('L');
   });
 
   it('retains explicit library parameter and return locations', () => {

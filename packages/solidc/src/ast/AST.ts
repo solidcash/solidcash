@@ -507,6 +507,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // uncompressed key), appended after all recovery pairs (shifts recovery offsets by E)
   ecrecoverEvmFlags?: boolean[]; // per ecrecover call (emission order): is it the evm projection? (SDK keccak co-spend)
   unsafeTier?: number;          // 0, 1, or 2 (only set when UNSAFE modifier present)
+  impliedSelfdestruct = false;  // body-level selfdestruct(...) inferred the lifecycle modifier
   splitCountParam?: string;     // parameter name for split count
   mergeCountParam?: string;     // parameter name for merge count
   blockLayout?: FunctionBlockLayout;  // 1:1 input/output block layout (compile-time offsets)
@@ -708,6 +709,9 @@ export class VariableDefinitionNode extends StatementNode implements Named, Type
   // Exact method carried by a statically known external-function-pointer value whose runtime expression is not
   // itself a direct function reference (for example `function() external f = callbacks[1]`).
   functionPointerMethodAlias?: string;
+  // Original literal bytes when LowerMemoryModel rewrites a `bytes memory` declaration into a numeric pointer.
+  // Yul create-address lowering still needs the compile-time blob after that representation change.
+  memoryLiteralValue?: Uint8Array;
 
   constructor(
     public type: Type,
@@ -1087,6 +1091,10 @@ export class MappingAccessNode extends ExpressionNode implements Named {
   isOutStateTokenContainerAccess?: boolean;
   isPackedStateArrayAccess?: boolean;
   packedStateVariable?: StateVariableNode;
+  // Preserve the logical outer element type even if later journal/storage lowerings rewrite the state variable's
+  // physical representation before code generation.
+  packedElementType?: Type;
+
   tokenContainerSlotIndex: number = -1;
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
   // A mapping read in the constructor: genesis has no input entry NFTs, so it resolves to the type default

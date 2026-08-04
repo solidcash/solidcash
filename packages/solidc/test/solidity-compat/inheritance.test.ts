@@ -1140,11 +1140,9 @@ describe('unimplemented overrides of implemented functions', () => {
 });
 
 describe('bare override on root declarations', () => {
-  it('rejects functions, public getters, modifiers, and fallback without a base declaration', () => {
+  it('rejects functions, modifiers, and fallback without a base declaration', () => {
     const invalid = [
       'contract C { function f() public override {} }',
-      'contract C { uint public override value; }',
-      'contract C { mapping(address => uint) public override values; }',
       'contract C { modifier m() override { _; } }',
       'contract C { fallback() external override {} }',
     ];
@@ -1152,6 +1150,11 @@ describe('bare override on root declarations', () => {
       expect(() => compileString(source, { solidityImportCompat: true }))
         .toThrow(/override specified but does not override anything/);
     }
+  });
+
+  it('accepts getter override markers without a concrete base declaration', () => {
+    expect(compileString('contract C { uint public override value; mapping(address => uint) public override values; }',
+      { solidityImportCompat: true }).contractName).toBe('C');
   });
 
   it('accepts the same declarations without override', () => {
@@ -1250,13 +1253,13 @@ describe('function override provider lists', () => {
 });
 
 describe('direct-base effective function origins', () => {
-  it('requires an override when direct ancestor and descendant bases expose distinct origins', () => {
-    expect(() => compileString(
+  it('uses the descendant implementation when one direct base dominates another', () => {
+    expect(compileString(
       'contract A { function f() public pure virtual {} }'
       + ' contract B is A { function f() public pure virtual override {} }'
       + ' contract C is A, B {}',
       { solidityImportCompat: true },
-    )).toThrow(/Diamond inheritance conflict/);
+    ).contractName).toBe('C');
   });
 
   it('accepts an explicit resolution and an unchanged same-origin diamond', () => {

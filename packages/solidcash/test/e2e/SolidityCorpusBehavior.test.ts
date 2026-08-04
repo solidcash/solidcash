@@ -9,6 +9,30 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // test/libsolidity/semanticTests/immutable/assign_at_declaration.sol
+  // test/libsolidity/semanticTests/immutable/getter.sol
+  // test/libsolidity/semanticTests/memoryManagement/memory_types_initialisation.sol
+  // Immutable initialization/getters and default memory shapes share one deployment.
+  it('executes immutable accessors and default memory initialization', async () => {
+    const declared = await deploy(`contract C {
+      uint8 immutable declared = 2;
+      uint immutable public x = 1;
+      function verify() public view { require(declared == 2); }
+      function verifyMemory() public {
+        uint[5] memory stat;
+        uint[] memory dyn;
+        uint[3][] memory nested;
+        uint[3][7] memory nestedStat;
+        require(stat[0] == 0 && stat[4] == 0);
+        require(dyn.length == 0 && nested.length == 0);
+        require(nestedStat[0][0] == 0 && nestedStat[6][2] == 0);
+      }
+    }`);
+    await expect(declared.verify()).resolves.toBeDefined();
+    await expect(declared.x()).resolves.toBe(1n);
+    await expect(declared.verifyMemory()).resolves.toBeDefined();
+  });
+
   // test/libsolidity/semanticTests/exponentiation/literal_base.sol
   // Literal-base sign and precedence execute for the upstream fixture's representative exponents.
   it('executes literal-base exponentiation', async () => {
@@ -236,7 +260,22 @@ describe('Solidity corpus behavioral parity', () => {
     await expect(contract.verifyWrong(7n)).rejects.toThrow();
   });
 
+  // test/libsolidity/semanticTests/freeFunctions/overloads.sol
+  // test/libsolidity/semanticTests/freeFunctions/free_namesake_contract_function.sol
+  // File-level overload resolution selects by parameter type.
+  it('executes file-level overload and namesake resolution', async () => {
+    const overloaded = await deploy(`function f(uint) returns (uint) { return 2; }
+    function f(string memory) returns (uint) { return 3; }
+    contract C { function verify() public { require(f(2) == 2 && f("abc") == 3); } }`);
+    await expect(overloaded.verify()).resolves.toBeDefined();
+
+    const namesake = await deploy(`function f() pure returns (uint) { return 1337; }
+    contract C { function f() public pure returns (uint) { return f(); } }`);
+    await expect(namesake.f()).rejects.toThrow();
+  });
+
   // test/libsolidity/semanticTests/using/free_function_multi.sol
+  // test/libsolidity/semanticTests/using/free_function_braces.sol
   // Attached file-level functions preserve 10 through id() and map it to 0 through zero().
   it('executes multiple file-level functions attached with using-for', async () => {
     const contract = await deploy(`function id(uint x) pure returns (uint) { return x; }
@@ -248,6 +287,28 @@ describe('Solidity corpus behavioral parity', () => {
     }`);
     await expect(contract.verify(10n)).resolves.toBeDefined();
     await expect(contract.verifyWrong(10n)).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/using/free_functions_individual.sol
+  // test/libsolidity/semanticTests/using/private_library_function.sol
+  // Individually scoped free functions and private library attachments share one test case.
+  it('executes individually scoped and private-library attachments', async () => {
+    const individual = await deploy(`using {zero} for uint;
+    function id(uint x) pure returns (uint) { return x; }
+    function zero(uint) pure returns (uint) { return 0; }
+    contract C {
+      using {id} for uint;
+      function verify(uint z) public { require(z.id() == z && z.zero() == 0); }
+    }`);
+    await expect(individual.verify(256n)).resolves.toBeDefined();
+
+    const privateLibrary = await deploy(`library L {
+      using {L.privateFunction} for uint;
+      function privateFunction(uint x) private pure returns (uint) { return x + 1; }
+      function f() public pure returns (uint) { uint x = 1; return x.privateFunction(); }
+    }
+    contract C { function verify() public { require(L.f() == 2); } }`);
+    await expect(privateLibrary.verify()).resolves.toBeDefined();
   });
 
   // test/libsolidity/semanticTests/conversions/string_to_bytes.sol

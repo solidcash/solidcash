@@ -41,12 +41,6 @@ contract C {
     function checkEntry2() public view { require(m2[0].u == 33 && m2[0].b.length == 3); }
 }`;
 
-// Solidity corpus mapping/struct copy parity:
-// test/libsolidity/semanticTests/structs/copy_from_mapping.sol
-// test/libsolidity/semanticTests/structs/copy_substructures_from_mapping.sol
-// test/libsolidity/semanticTests/structs/copy_substructures_to_mapping.sol
-// test/libsolidity/semanticTests/structs/copy_to_mapping.sol
-// test/libsolidity/semanticTests/structs/struct_storage_to_mapping.sol
 describe('whole-struct <-> mapping-entry copies (runtime)', () => {
   it('writes a struct-constructor value (named args) into a mapping entry', async () => {
     const sc = await mk(SRC);

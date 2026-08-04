@@ -41,12 +41,6 @@ async function sendTx(
 
 // --- Tests ------------------------------------------------------------------
 
-// Solidity corpus deletion parity:
-// test/libsolidity/semanticTests/structs/struct_delete_member.sol
-// test/libsolidity/semanticTests/structs/struct_delete_storage.sol
-// test/libsolidity/semanticTests/structs/struct_delete_storage_small.sol
-// test/libsolidity/semanticTests/structs/struct_delete_storage_with_array.sol
-// test/libsolidity/semanticTests/structs/struct_delete_struct_in_mapping.sol
 describe('Delete Keyword', () => {
   // --- delete local variable ------------------------------------------------
 

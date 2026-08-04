@@ -30,17 +30,6 @@ contract C() {
   }
 }`;
 
-// Solidity corpus accessor and packed-storage parity:
-// test/libsolidity/semanticTests/storage/accessors_mapping_for_array.sol
-// test/libsolidity/semanticTests/storage/array_accessor.sol
-// test/libsolidity/semanticTests/storage/chop_sign_bits.sol
-// test/libsolidity/semanticTests/storage/complex_accessors.sol
-// test/libsolidity/semanticTests/storage/empty_nonempty_empty.sol
-// test/libsolidity/semanticTests/storage/mapping_state.sol
-// test/libsolidity/semanticTests/storage/packed_storage_overflow.sol
-// test/libsolidity/semanticTests/storage/packed_storage_signed.sol
-// test/libsolidity/semanticTests/storage/simple_accessor.sol
-// test/libsolidity/semanticTests/storage/state_smoke_test.sol
 describe('EVM-storage foundation: sstore/sload roundtrip via __evm_storage', () => {
   it('persists a slot across txs; distinct/untouched slots are independent', async () => {
     const sc = await deploy(EVM);

@@ -5,12 +5,6 @@ import { fundedSigner } from '../test-util.js';
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).
 
-// Solidity corpus checked/unchecked call-context parity:
-// test/libsolidity/semanticTests/arithmetics/block_inside_unchecked.sol
-// test/libsolidity/semanticTests/arithmetics/checked_add_v1.sol
-// test/libsolidity/semanticTests/arithmetics/checked_called_by_unchecked.sol
-// test/libsolidity/semanticTests/arithmetics/checked_modifier_called_by_unchecked.sol
-// test/libsolidity/semanticTests/arithmetics/unchecked_called_by_checked.sol
 describe('Unchecked Arithmetic - SDK e2e', () => {
   describe('unsigned overflow wrapping', () => {
     it('uint8(255) + uint8(1) wraps to 0', async () => {

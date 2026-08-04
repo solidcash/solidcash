@@ -241,15 +241,3 @@ describe('Concat Functions', () => {
     });
   });
 });
-
-// Solidity corpus concat/string behaviors executed by the cases above:
-// test/libsolidity/semanticTests/array/concat/bytes_concat_2_args.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_3_args.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_as_argument.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_different_types.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_empty_argument_list.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_empty_strings.sol
-// test/libsolidity/semanticTests/array/concat/bytes_concat_nested.sol
-// test/libsolidity/semanticTests/strings/concat/string_concat_different_types.sol
-// test/libsolidity/semanticTests/array/string_bytes_conversion.sol
-// test/libsolidity/semanticTests/strings/return_string.sol

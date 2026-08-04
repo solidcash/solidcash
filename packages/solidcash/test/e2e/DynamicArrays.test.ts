@@ -2432,30 +2432,3 @@ describe('Dynamic Arrays', () => {
     });
   });
 });
-
-// Further Solidity corpus allocation, indexing, mutation, and bounds parity:
-// test/libsolidity/semanticTests/array/array_storage_index_boundary_test.sol
-// test/libsolidity/semanticTests/array/array_storage_push_empty.sol
-// test/libsolidity/semanticTests/array/array_storage_push_empty_length_address.sol
-// test/libsolidity/semanticTests/array/bytes_length_member.sol
-// test/libsolidity/semanticTests/array/create_dynamic_array_with_zero_length.sol
-// test/libsolidity/semanticTests/array/create_memory_array.sol
-// test/libsolidity/semanticTests/array/create_memory_byte_array.sol
-// test/libsolidity/semanticTests/array/create_multiple_dynamic_arrays.sol
-// test/libsolidity/semanticTests/array/delete/bytes_delete_element.sol
-// test/libsolidity/semanticTests/array/delete/delete_bytes_array.sol
-// test/libsolidity/semanticTests/array/delete/delete_memory_array.sol
-// test/libsolidity/semanticTests/array/delete/delete_storage_array.sol
-// test/libsolidity/semanticTests/array/delete/delete_storage_array_packed.sol
-// test/libsolidity/semanticTests/array/delete/memory_arrays_delete.sol
-// test/libsolidity/semanticTests/array/dynamic_arrays_in_storage.sol
-// test/libsolidity/semanticTests/array/fixed_arrays_in_storage.sol
-// test/libsolidity/semanticTests/array/fixed_bytes_length_access.sol
-// test/libsolidity/semanticTests/array/indexAccess/bytes_index_access.sol
-// test/libsolidity/semanticTests/array/indexAccess/bytes_index_access_memory.sol
-// test/libsolidity/semanticTests/array/indexAccess/memory_arrays_dynamic_index_access_write.sol
-// test/libsolidity/semanticTests/array/indexAccess/memory_arrays_index_access_write.sol
-// test/libsolidity/semanticTests/array/inline_array_singleton.sol
-// test/libsolidity/semanticTests/array/memory_arrays_of_various_sizes.sol
-// test/libsolidity/semanticTests/array/pop/array_pop.sol
-// test/libsolidity/semanticTests/array/push/array_push.sol

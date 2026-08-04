@@ -13,9 +13,6 @@ const SRC = `contract C() {
 const ABC32 = hexToBin(`616263${'00'.repeat(29)}`); // "abc" right-padded to 32 bytes
 const ABC3 = hexToBin('616263');
 
-// Solidity corpus string/bytes value parity:
-// test/libsolidity/semanticTests/strings/constant_string_literal.sol
-// test/libsolidity/semanticTests/types/strings.sol
 describe('string literal -> bytesN (right-padded)', () => {
   const provider = createTestProvider();
   const art = compileString(SRC, { solidityImportCompat: true, forceStateful: true });

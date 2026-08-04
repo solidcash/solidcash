@@ -20,15 +20,6 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 const B = (...bytes: number[]): Uint8Array => Uint8Array.from(bytes);
 
-// Solidity corpus fixed-bytes/integer cast parity:
-// test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol
-// test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_min_size.sol
-// test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_type.sol
-// test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_smaller_size.sol
-// test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_greater_size.sol
-// test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_same_min_size.sol
-// test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_same_size.sol
-// test/libsolidity/semanticTests/types/convert_uint_to_fixed_bytes_smaller_size.sol
 describe('bytesN ordering', () => {
   it('orders by value (1 < 2)', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());

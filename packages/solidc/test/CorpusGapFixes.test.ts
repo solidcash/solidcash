@@ -1825,6 +1825,27 @@ describe('Solidity explicit conversion boundaries', () => {
     )).toThrow(/conversion.*enum/i);
   });
 
+  it('requires explicit conversion between enums and integers', () => {
+    expect(() => compileString(
+      'contract C { enum E { A, B } uint value;'
+      + ' constructor() { value = E.B; } }',
+      compat,
+    )).toThrow(/assign|type/i);
+    expect(() => compileString(
+      'contract C { enum E { A, B }'
+      + ' function f(uint x) public pure returns (E) { return x; } }',
+      compat,
+    )).toThrow(/return type mismatch|type/i);
+  });
+
+  it('retains explicit enum/integer conversions and same-enum assignment', () => {
+    expect(compileString(
+      'contract C { enum E { A, B } E value;'
+      + ' constructor() { value = E.B; uint x = uint(E.B); value = E(x); } }',
+      compat,
+    ).contractName).toBe('C');
+  });
+
 });
 
 describe('Yul assignment across types (assembly { r := x })', () => {

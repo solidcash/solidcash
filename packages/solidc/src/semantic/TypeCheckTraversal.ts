@@ -840,7 +840,9 @@ export default class TypeCheckTraversal extends AstTraversal {
       if (!member) {
         throw new UndefinedEnumMemberError(node, exprType);
       }
-      node.type = PrimitiveType.BIGINT;
+      // Enum members use their integer ordinal at codegen, but remain nominally enum-typed for semantic checks.
+      // Solidity requires an explicit cast before assigning an enum value to an integer (or vice versa).
+      node.type = exprType;
       node.enumType = exprType;
       return node;
     }

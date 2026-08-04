@@ -5402,3 +5402,13 @@ The focused suite is **1106/1106**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite is **1109/1109**. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 340, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### Nominal enum-conversion loop: 4443 flat, NEG-ACCEPTED 340 -> 337 (-3)
+
+- Enum members now retain their nominal enum type during semantic validation while continuing to use their integer
+  ordinal during code generation.
+- Solidity-compatible sources must explicitly cast across the enum/integer boundary. Assignments within the same
+  enum and explicit enum/integer conversions remain valid.
+
+The focused suite remains green. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
+337, plus 275 multifile and 289 cmdline fixtures excluded.

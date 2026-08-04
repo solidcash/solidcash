@@ -57,6 +57,9 @@ describe('Solidity corpus behavioral parity', () => {
   // test/libsolidity/semanticTests/accessor/accessor_for_const_state_variable.sol
   // test/libsolidity/semanticTests/accessor/accessor_for_state_variable.sol
   // test/libsolidity/semanticTests/types/assign_calldata_value_type.sol
+  // test/libsolidity/semanticTests/strings/empty_string.sol
+  // test/libsolidity/semanticTests/strings/empty_string_input.sol
+  // test/libsolidity/semanticTests/enums/constructing_enums_from_ints.sol
   // One deployment checks the independent language paths while keeping corpus runtime overhead low.
   it('executes consolidated control-flow, metadata, accessor, and calldata-value parity', async () => {
     const contract = await deploy(`interface A {
@@ -69,6 +72,7 @@ describe('Solidity corpus behavioral parity', () => {
     }
     interface I { function ping() external; }
     contract C {
+      enum Truth { False, True }
       uint256 public constant constantTicketPrice = 555;
       uint256 public ticketPrice = 500;
 
@@ -85,9 +89,16 @@ describe('Solidity corpus behavioral parity', () => {
         x = 42;
         require(x == 42 && original == 23);
       }
+      function verifyEmpty(string calldata message, uint256 value) public {
+        string memory empty = "";
+        require(bytes(empty).length == 0 && bytes(message).length == 0 && value == 0x888);
+      }
+      function verifyEnum() public { require(uint256(Truth(uint8(0x1))) == 1); }
     }`);
     await expect(contract.verify()).resolves.toBeDefined();
     await expect(contract.copy(23n)).resolves.toBeDefined();
+    await expect(contract.verifyEmpty('', 0x888n)).resolves.toBeDefined();
+    await expect(contract.verifyEnum()).resolves.toBeDefined();
     await expect(contract.constantTicketPrice()).resolves.toBe(555n);
     await expect(contract.ticketPrice()).resolves.toBe(500n);
   });
@@ -200,6 +211,7 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // test/libsolidity/semanticTests/getters/mapping.sol
+  // test/libsolidity/semanticTests/getters/mapping_with_names.sol
   // The generated getter accepts every nested mapping key and returns the initialized leaf value.
   it('executes a generated nested-mapping getter through the SDK', async () => {
     const contract = await deploy(`contract C {
@@ -376,6 +388,7 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // test/libsolidity/semanticTests/inheritance/constructor_inheritance_init_order.sol
+  // test/libsolidity/semanticTests/constructor/base_constructor_arguments.sol
   // Solidity constructs A first and uses A.x == 42 for B.y's initializer.
   it('executes inherited constructor initialization in base-to-derived order', async () => {
     const contract = await deploy(`contract A {
@@ -390,6 +403,13 @@ describe('Solidity corpus behavioral parity', () => {
     }`);
     await expect(contract.verify()).resolves.toBeDefined();
     await expect(contract.verifyWrong()).rejects.toThrow();
+
+    const withArgument = await deploy(`contract BaseBase {
+      uint256 value; constructor(uint256 initial) { value = initial; }
+    }
+    contract Base is BaseBase(7) { constructor() { value *= value; } }
+    contract C is Base { function verify() public { require(value == 49); } }`);
+    await expect(withArgument.verify()).resolves.toBeDefined();
   });
 
   // test/libsolidity/semanticTests/modifiers/evaluation_order.sol

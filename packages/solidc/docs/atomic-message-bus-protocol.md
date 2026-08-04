@@ -41,7 +41,9 @@ it is not duplicated as an ABI argument. The verifier validates the call manifes
 parsing it. This makes divergent per-participant call manifests fail. The verifier output commitment is
 `"L3V1" || instance:u16le || bindingDigest`, where `bindingDigest` hashes the call manifest, local batch, active
 input, row count, and graph witnesses. Each compact state input recomputes that digest and pins the exact verifier
-lock, category, index, and commitment. Signatures and complete unlocking bytecodes are excluded, so there is no
+lock, category, index, and commitment. The compact state-input binder also requires its master NFT commitment to
+be preserved exactly; masters may therefore acquire commitment state later without opening an unauthenticated
+output field. Signatures and complete unlocking bytecodes are excluded, so there is no
 transaction-signature circularity.
 
 Each verifier also receives an inert density-reserve push. The SDK sizes this reserve after encoding that
@@ -122,3 +124,8 @@ version byte. Two-, four-, five-, and eight-participant graphs complete under me
 outside the protocol bound. `ATOMIC_MESSAGE_BUS_CAPACITY`, compiler metadata, composer preflight, and finalized
 transaction VM preflight enforce these bounds. Exact measurements are published in
 `atomic-message-bus-capacity-bch2026.json`.
+
+Semantic result/effect derivation is a bounded fixed-point calculation. Its bound is derived from every mutable
+result, event, resource, value, token, and sidecar claim, with one final confirmation pass; repeated complete
+claim states fail immediately as cycles. It is deliberately not derived from invocation count alone, because
+resource-heavy six-to-eight-participant graphs can require more passes than a call-only graph of the same depth.

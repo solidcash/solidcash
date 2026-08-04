@@ -459,8 +459,28 @@ export class AtomicMessageBusComposition {
       let claimedValueEffects: readonly AtomicValueSlotEffect[] = provisionalValueEffects;
       let claimedTokenEffects: readonly AtomicTokenSlotEffect[] = provisionalTokenEffects;
       let claimedSidecarEffects: readonly AtomicSidecarSlotEffect[] = provisionalSidecarEffects;
-      const maximumPasses = plan.invocations.length + 5;
+      // Every value below is a claim which can feed a later assembly pass. The old
+      // `invocations + 5` heuristic counted effect *classes*, so a resource-heavy graph could exhaust the
+      // allowance even though another pass reached a valid fixed point. Allow one discovery pass per mutable
+      // claim, one pass per returning invocation (results can propagate along the call graph), and one final
+      // confirmation pass. Repeated complete states are rejected immediately as cycles.
+      const mutableClaimCount = returning.length + eventSlots.length + resourceSlots.length
+        + valueSlots.length + tokenSlots.length + sidecarSlots.length;
+      const maximumPasses = mutableClaimCount + 2;
+      const seenClaimStates = new Set<string>();
       for (let pass = 0; pass < maximumPasses; pass += 1) {
+        const claimState = semanticJson({
+          results: claimedResults,
+          events: claimedEventEffects,
+          resources: claimedResourceEffects,
+          values: claimedValueEffects,
+          tokens: claimedTokenEffects,
+          sidecars: claimedSidecarEffects,
+        });
+        if (seenClaimStates.has(claimState)) {
+          throw new Error('messageBus: semantic derivation entered a repeated non-final claim state');
+        }
+        seenClaimStates.add(claimState);
         finalized = finalizeAtomicInvocationGraph(
           plan, categories, claimedResults, claimedEventEffects, claimedResourceEffects, claimedValueEffects,
           claimedTokenEffects,
@@ -691,7 +711,7 @@ export class AtomicMessageBusComposition {
         claimedTokenEffects = derivedTokenEffects;
       }
       throw new Error(
-        `messageBus: L3_SEMANTIC_DERIVATION_DID_NOT_CONVERGE after ${maximumPasses} bounded passes`,
+        `messageBus: semantic derivation did not converge after ${maximumPasses} claim-bounded passes`,
       );
     }
     let assembled = await assemble(finalized, provisionalResults);

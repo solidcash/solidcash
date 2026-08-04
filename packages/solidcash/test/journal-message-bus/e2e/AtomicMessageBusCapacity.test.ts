@@ -33,6 +33,37 @@ const SINK = `contract CapacitySink(int marker) {
   function run(int value) public pure returns (int) { require(value >= 0); return value; }
 }`;
 
+const HEAVY_HOP = `
+interface IHeavyCapacityHop { function run(int value) returns (int); }
+contract HeavyCapacityHop(address next) {
+  int marker;
+  function run(int value) public returns (int) {
+    int result = IHeavyCapacityHop(next).run(value);
+    this.marker = value;
+    return result;
+  }
+}`;
+
+const HEAVY_ROOT = `
+interface IHeavyCapacityRootHop { function run(int value) returns (int); }
+contract HeavyCapacityRoot(address next) {
+  int marker;
+  function root(int value) public {
+    int result = IHeavyCapacityRootHop(next).run(value);
+    this.marker = value;
+    require(result >= 0);
+  }
+}`;
+
+const HEAVY_SINK = `contract HeavyCapacitySink() {
+  int marker;
+  function run(int value) public returns (int) {
+    this.marker = value;
+    require(value >= 0);
+    return value;
+  }
+}`;
+
 interface CapacityReading {
   participants: number;
   authenticatedParticipants: number;
@@ -49,53 +80,53 @@ interface CapacityReading {
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 22_550, callManifestBytes: 294,
+    transactionBytes: 22_572, callManifestBytes: 294,
     worstOperationCost: 1_997_038, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.2760474953002322,
-    inputOperationCosts: [333_178, 314_871, 695, 1_877_975, 1_997_038, 27_321],
-    inputMaximumOperationCosts: [1_593_600, 1_439_200, 34_400, 7_234_400, 7_234_400, 112_800],
+    inputOperationCosts: [334_391, 316_086, 695, 1_877_975, 1_997_038, 27_321],
+    inputMaximumOperationCosts: [1_602_400, 1_448_000, 34_400, 7_234_400, 7_234_400, 112_800],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 46_222, callManifestBytes: 584,
+    transactionBytes: 46_266, callManifestBytes: 584,
     worstOperationCost: 3_464_908, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.47894891075970364,
     inputOperationCosts: [
-      389_362, 438_200, 695, 438_200, 695, 389_107, 695,
+      390_575, 439_415, 695, 439_415, 695, 390_322, 695,
       3_218_148, 3_464_908, 3_464_370, 3_381_370, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_659_200, 1_970_400, 34_400, 1_970_400, 34_400, 1_439_200, 34_400,
+      1_668_000, 1_979_200, 34_400, 1_979_200, 34_400, 1_448_000, 34_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 58_181, callManifestBytes: 729,
+    transactionBytes: 58_236, callManifestBytes: 729,
     worstOperationCost: 4_203_995, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.5811117715359947,
     inputOperationCosts: [
-      417_422, 475_769, 695, 475_769, 695, 475_769, 695, 426_161, 695,
+      418_635, 476_984, 695, 476_984, 695, 476_984, 695, 427_376, 695,
       3_923_110, 4_203_995, 4_203_457, 4_202_900, 4_107_401, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_692_000, 2_003_200, 34_400, 2_003_200, 34_400, 2_003_200, 34_400, 1_439_200, 34_400,
+      1_700_800, 2_012_000, 34_400, 2_012_000, 34_400, 2_012_000, 34_400, 1_448_000, 34_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   8: {
     participants: 8, authenticatedParticipants: 8, slots: 24,
-    transactionBytes: 94_563, callManifestBytes: 1_164,
+    transactionBytes: 94_651, callManifestBytes: 1_164,
     worstOperationCost: 6_561_081, worstMaximumOperationCost: 7_234_400,
     worstRatio: 0.9069281488444101,
     inputOperationCosts: [
-      501_674, 588_548, 695, 588_556, 695, 588_556, 695, 588_556, 695, 588_556, 695,
-      588_556, 695, 537_459, 695, 6_177_821, 6_561_081, 6_560_543, 6_559_986,
+      502_887, 589_763, 695, 589_771, 695, 589_771, 695, 589_771, 695, 589_771, 695,
+      589_771, 695, 538_674, 695, 6_177_821, 6_561_081, 6_560_543, 6_559_986,
       6_559_429, 6_558_872, 6_558_315, 6_421_568, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_791_200, 2_102_400, 34_400, 2_103_200, 34_400, 2_103_200, 34_400, 2_103_200,
-      34_400, 2_103_200, 34_400, 2_103_200, 34_400, 1_440_000, 34_400,
+      1_800_000, 2_111_200, 34_400, 2_112_000, 34_400, 2_112_000, 34_400, 2_112_000,
+      34_400, 2_112_000, 34_400, 2_112_000, 34_400, 1_448_800, 34_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
@@ -120,6 +151,37 @@ const buildChain = async (participants: number): Promise<TransactionBuilder> => 
   for (let index = participants - 2; index >= 1; index -= 1) {
     contracts.unshift(await connect(new Contract(
       hopArtifact, [BigInt(index), contracts[0].inner.lockingBytecode], { provider },
+    ), hopArtifact));
+  }
+  contracts.unshift(await connect(
+    new Contract(rootArtifact, [contracts[0].inner.lockingBytecode], { provider }), rootArtifact,
+  ));
+  const fee = await createBareP2pkhFeeFunder(provider, 2_000_000n);
+  return messageBus.compose({
+    calls: contracts.map((contract, index) => index === 0 ? contract.call.root(1n) : contract.call.run(1n)),
+    funder: fee,
+    changeAddress: fee.unlocker.generateLockingBytecode(),
+  }).build();
+};
+
+/** R-1 regression: every participant adds a state-resource effect to the returning chain. */
+const buildResourceHeavyChain = async (participants: number): Promise<TransactionBuilder> => {
+  const provider = createMessageBusCapstoneTestProvider();
+  const rootArtifact = compileString(HEAVY_ROOT, { forceStateful: true });
+  const hopArtifact = compileString(HEAVY_HOP, { forceStateful: true });
+  const sinkArtifact = compileString(HEAVY_SINK, { forceStateful: true });
+  const connect = async (base: Contract, artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
+    const setup = await setupStatefulUtxos(
+      provider, base, artifact.stateLayout!, { marker: 0n }, { saltContract: true },
+    );
+    return StatefulContract.withCategory(
+      base.withCategory(hexToBin(setup.categoryId)), setup.categoryId,
+    );
+  };
+  const contracts: StatefulContract[] = [await connect(new Contract(sinkArtifact, [], { provider }), sinkArtifact)];
+  for (let index = participants - 2; index >= 1; index -= 1) {
+    contracts.unshift(await connect(new Contract(
+      hopArtifact, [contracts[0].inner.lockingBytecode], { provider },
     ), hopArtifact));
   }
   contracts.unshift(await connect(
@@ -204,7 +266,7 @@ describe('atomic single-transaction capacity', () => {
     expect(reading.worstRatio).toBeLessThanOrEqual(1);
     expect(reading.authenticatedParticipants).toBe(count);
     expect(reading.slots).toBeGreaterThan(count);
-    console.log(`L3_ATOMIC_CAPACITY ${JSON.stringify(reading)}`);
+    console.log(`MESSAGE_BUS_ATOMIC_CAPACITY ${JSON.stringify(reading)}`);
     expect(reading).toEqual(EXPECTED[count]);
     // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
     // filter for the eight-participant case to prove the maximum admitted physical/resource shape on BCHN.
@@ -217,5 +279,16 @@ describe('atomic single-transaction capacity', () => {
       // and resource UTXOs have been consumed by the first standard-policy broadcast.
       await expect(builder.provider.sendRawTransaction(finalizedHex)).rejects.toThrow();
     }
+  }, 300_000);
+
+  it.each([6, 8])('converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {
+    const builder = await buildResourceHeavyChain(count);
+    const transaction = builder.buildLibauthTransaction();
+    const verifier = builder.inputs.findIndex((input) => input.token?.nft?.commitment.startsWith('4c335631'));
+    expect(verifier).toBeGreaterThanOrEqual(0);
+    const envelope = decodeAuthenticationInstructions(transaction.inputs[verifier].unlockingBytecode)[0];
+    if (!envelope || !('data' in envelope)) throw new Error('heavy capacity fixture has no messageEnvelope');
+    expect(messageBus.decodeAtomicMessageEnvelope(envelope.data).participants).toHaveLength(count);
+    expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
   }, 300_000);
 });

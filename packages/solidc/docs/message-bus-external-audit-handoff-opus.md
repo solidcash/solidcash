@@ -15,11 +15,19 @@
 > closed, then reported three non-blocking findings and one hostile-harness residual. Both shared hostile VM
 > helpers now refuse the `0xffffffff` derivation sentinel before evaluation, and both finalized and broadcast
 > preflight reject it. Verifier density padding is calculated after encoding each verifier's real arguments to
-> a 9,000-byte unlocking floor; the remeasured eight-party transaction is 94,563 bytes at 0.9069281488 worst
+> a 9,000-byte unlocking floor; after master-commitment preservation the eight-party transaction is 94,651 bytes at 0.9069281488 worst
 > operation density. Encoder, decoder, and finalized canonical-verifier preflight explicitly enforce the
 > 256-byte `OP_PUSHDATA2` envelope floor. Canonical-envelope mutations now target the final verifier, while the
 > separate divergence regression still mutates a non-final verifier. The reported rename-path mismatch was
 > already corrected in `9d9a42b3`.
+
+> **2026-08-04 final re-audit repair:** The remaining R-1 SDK refusal is closed. Semantic convergence now uses
+> the number of mutable claims (including every resource slot and returning invocation), records complete claim
+> states, and rejects cycles rather than assuming `invocations + 5` passes. Resource-heavy six- and eight-party
+> regressions reach finalized transactions instead of the former false refusal. Dynamic chunk-span mutations
+> rewrite the envelope in every verifier and repoint every binding digest, closing the named hostile-test gap.
+> Compact participant binders preserve master NFT commitments, turning the previously latent empty-master
+> assumption into an enforced invariant. The remaining internal `L3_SEMANTIC...` diagnostic was removed.
 
 Audience: an independent Opus reviewer. Do not accept the implementation record, test names, or this handoff as
 proof. Reproduce the commands, read the covenant paths, and try to construct accepted transactions that violate
@@ -154,7 +162,7 @@ detail, has equivalent atomic evidence. Large deletion volume is not itself proo
 - `AtomicMessageBusCompose` evaluates canonical and hostile semantic/effect transactions in BCH-2026 VM tests;
   `MessageBusMessageEnvelopeBindingAudit` directly pins the L3-01 and L3-02 accepted-transaction reproducers.
 - `AtomicMessageBusCapacity` evaluates every finalized input for 2/4/5/8 participants. After authentication repair
-  and wire compaction, the measured eight-party transaction is 94,563 bytes with adaptive verifier density
+  and wire compaction, the measured eight-party transaction is 94,651 bytes with adaptive verifier density
   reserves; its worst operation-density ratio is 0.9069281488. Exact finalized-transaction preflight remains
   authoritative.
 - `standard-policy-harness.sh` broadcasts five semantic capstones and the eight-party maximum to BCHN v29 with
@@ -216,7 +224,8 @@ On 2026-08-03, after the L3-01 through L3-04 repairs on the branch containing th
 - the built package exports `messageBus.compose`, the capacity object, and verifier helpers; npm dry-run packs include
   their JavaScript and declarations;
 - BCHN v29 under `acceptnonstdtxn=0` accepted the repaired no-setup two-party transaction, transitive three-party
-  return, event, BCH transfer, repeated FT settlement, and the authenticated 94,563-byte eight-party transaction;
+  return, event, BCH transfer, repeated FT settlement, and the authenticated maximum-shape transaction; the
+  current master-commitment-preserving eight-party bytes measure 94,651 and require a fresh live rerun;
 - the harness restored BCHN to its default healthy regtest command afterward;
 - the production residue search above returned no matches.
 

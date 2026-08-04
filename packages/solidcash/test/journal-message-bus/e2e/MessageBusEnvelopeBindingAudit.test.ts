@@ -143,4 +143,16 @@ describe('message bus canonical messageEnvelope and master binding audit regress
       /must begin with an OP_PUSHDATA2 messageEnvelope of at least 256 bytes/,
     );
   }, 120_000);
+
+  it('preserves every participant master NFT commitment in its compact binder', async () => {
+    const hostile = await (await buildComposition()).build();
+    const masterOutput = hostile.outputs[0];
+    expect(masterOutput.token?.nft?.capability).toBe('minting');
+    expect(masterOutput.token?.nft?.commitment).toBe('');
+    // Output and source input intentionally share immutable token metadata in the builder; detach it so this
+    // mutation changes only the serialized output, as an adversarial transaction editor would.
+    masterOutput.token = { ...masterOutput.token!, nft: { ...masterOutput.token!.nft!, commitment: '01' } };
+    expect(binToHex(hostile.buildLibauthTransaction().outputs[0].token!.nft!.commitment)).toBe('01');
+    expect(vmRejects(hostile)).toBe(true);
+  }, 120_000);
 });

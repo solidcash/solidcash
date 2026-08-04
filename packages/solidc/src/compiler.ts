@@ -2485,7 +2485,8 @@ function synthesizeMessageBusRoute(
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33
           && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
           && tx.outputs[activeInputIndex].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
-          && tx.outputs[activeInputIndex].tokenCategory == tx.inputs[activeInputIndex].tokenCategory);
+          && tx.outputs[activeInputIndex].tokenCategory == tx.inputs[activeInputIndex].tokenCategory
+          && tx.outputs[activeInputIndex].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
         bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
         bigint activeVerifier = __internal__activeVerifierIndex;
         require(activeVerifier >= 0 && activeVerifier < tx.inputs.length

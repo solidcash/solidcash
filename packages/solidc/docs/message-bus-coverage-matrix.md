@@ -14,7 +14,7 @@ Status: stable acceptance matrix. Dated measurements and development chronology 
 | Effects | Events, return events, BCH, FT, and NFT settlement | `AtomicMessageBusCompose` |
 | Sidecars | Blockhash, keccak, and ecrecover exact-slot consumption | `AtomicMessageBusCompose`, `GraphBlockhashAssembly` |
 | Call modes | Stateful, static, raw; unsupported delegate shapes fail closed | `AtomicMessageBusCompose`, refusal matrix |
-| Capacity | Finalized 2/4/5/8 participant transactions under BCH-2026 limits | `AtomicMessageBusCapacity`, capacity JSON |
+| Capacity | Finalized 2/4/5/8 participant transactions under BCH-2026 limits; resource-heavy 6/8-party fixed-point convergence | `AtomicMessageBusCapacity`, capacity JSON |
 | Live policy | Heterogeneous return, transitive chain, repeated token effects, maximum shape | standard-policy regtest harness |
 
 ## Security requirements
@@ -27,7 +27,7 @@ Status: stable acceptance matrix. Dated measurements and development chronology 
 | S4 | Active membership | Every master proves membership in exactly one block. |
 | S5 | Exact row consumption | Every row family is consumed once and EOF is required. |
 | S6 | Call authenticity | Caller, mode, selector, arguments, results, order, and occurrence are bound. |
-| S7 | State authenticity | Every state/resource transition owns an exact physical slot. |
+| S7 | State authenticity | Every state/resource transition owns an exact physical slot; master commitments are preserved. |
 | S8 | Effect authenticity | Events and value/token effects cannot be forged or redirected. |
 | S9 | No replay authority | Participant spends prevent replay; verifier NFTs only attest and self-preserve. |
 | S10 | No circular commitment | MessageEnvelope bytes exclude signatures, txid, and complete unlocking bytecodes. |
@@ -37,3 +37,7 @@ Status: stable acceptance matrix. Dated measurements and development chronology 
 All rows have positive and hostile evidence in the dedicated test directories. The completed requirement-by-
 requirement audit and historical controller migration census are retained in
 `archive/journal-message-bus/message-bus-implementation-record.md`.
+
+Dynamic trailing-span attacks use the stronger adversary model: the test rewrites the shared envelope in every
+verifier and recomputes every verifier binding digest before evaluation. Rejection therefore proves the
+`actualSize`/`trailingUsed`/`maximumSize` and physical-layout rules, not merely detection of a stale digest.

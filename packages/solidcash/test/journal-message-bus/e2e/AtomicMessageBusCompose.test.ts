@@ -4,7 +4,7 @@ import {
 } from '@bitauth/libauth';
 import { compileString } from 'solidc';
 import {
-  blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode,
+  blockhashOracleLockingBytecode, buildBlockhashCommitment, buildChunkCommitment, scriptToBytecode, sha256,
   keccakComputeLockingBytecode,
   ecrecoverComputeLockingBytecode,
 } from '@solidcash/utils';
@@ -59,6 +59,80 @@ const vmRejects = (candidate: TransactionBuilder): boolean => {
   return transaction.inputs.some((_input, inputIndex) => (
     vm.debug({ inputIndex, sourceOutputs, transaction }) as Array<{ error?: unknown }>
   ).some((state) => state.error !== undefined));
+};
+
+const uint16 = (value: number): Uint8Array => Uint8Array.of(value & 0xff, (value >>> 8) & 0xff);
+const concatBytes = (...parts: readonly Uint8Array[]): Uint8Array => {
+  const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    result.set(part, offset);
+    offset += part.length;
+  }
+  return result;
+};
+
+/**
+ * Adversary-strength envelope mutation: rewrite the canonical envelope in every verifier and repoint every
+ * verifier output commitment to the new manifest hash. Rejection after this rewrite exercises the participant
+ * layout rules, not the cheap stale-digest boundary.
+ */
+const mutateEveryEnvelopeAndRebind = (
+  builder: TransactionBuilder,
+  mutate: (manifest: ReturnType<typeof decodeAtomicMessageEnvelope>) => ReturnType<typeof decodeAtomicMessageEnvelope>,
+): void => {
+  const verifierIndices = builder.inputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => input.token?.nft?.commitment.startsWith('4c335631'))
+    .map(({ index }) => index);
+  if (verifierIndices.length < 2) throw new Error('strong mutation requires every participant verifier');
+  const verifierUnlockers = verifierIndices.map((index) => builder.inputs[index].unlocker!);
+  const transaction = builder.buildLibauthTransaction();
+  const firstInstructions = decodeAuthenticationInstructions(transaction.inputs[verifierIndices[0]].unlockingBytecode);
+  const firstEnvelope = firstInstructions[0];
+  if (!firstEnvelope || !('data' in firstEnvelope)) throw new Error('strong mutation found no canonical envelope');
+  const originalManifest = decodeAtomicMessageEnvelope(firstEnvelope.data);
+  const changedEnvelope = encodeAtomicMessageEnvelope(mutate(originalManifest));
+  const changedCallManifest = changedEnvelope.slice(8);
+
+  for (const [participant, verifierIndex] of verifierIndices.entries()) {
+    const original = verifierUnlockers[participant];
+    builder.inputs[verifierIndex] = {
+      ...builder.inputs[verifierIndex],
+      unlocker: {
+        generateLockingBytecode: () => original.generateLockingBytecode(),
+        generateUnlockingBytecode: (options) => {
+          const instructions = decodeAuthenticationInstructions(original.generateUnlockingBytecode(options));
+          if (!instructions[0] || !('data' in instructions[0])) throw new Error('verifier has no envelope push');
+          instructions[0] = { ...instructions[0], data: changedEnvelope };
+          return encodeAuthenticationInstructions(instructions);
+        },
+      },
+    };
+  }
+
+  for (let participant = 0; participant < originalManifest.participants.length; participant += 1) {
+    // Verifier ABI: density reserve, active base, local row count, batch blob, seven graph values, envelope.
+    const params = verifierUnlockers[participant].params;
+    const activeBase = params[1];
+    const expectedLocalRows = params[2];
+    const batchBlob = params[3];
+    if (typeof activeBase !== 'bigint' || typeof expectedLocalRows !== 'bigint') {
+      throw new Error('participant verifier has no active-base/local-row arguments');
+    }
+    if (!(batchBlob instanceof Uint8Array)) throw new Error('participant master has no batchBlob');
+    const parts = [
+      sha256(changedCallManifest), uint16(Number(activeBase)), uint16(Number(expectedLocalRows)), sha256(batchBlob),
+    ];
+    for (const value of params.slice(4, 11)) {
+      if (typeof value === 'bigint') parts.push(uint16(Number(value)));
+      else if (value instanceof Uint8Array) parts.push(sha256(value));
+      else throw new Error('participant verifier has an invalid graph argument');
+    }
+    const output = builder.outputs[verifierIndices[participant]];
+    output.token!.nft!.commitment = `${builder.inputs[verifierIndices[participant]].token!.nft!.commitment.slice(0, 12)}`
+      + binToHex(sha256(concatBytes(...parts)));
+  }
 };
 
 const mutateAuthenticatedFrame = (
@@ -1262,7 +1336,23 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-span-shrink', 'messageEnvelope-span-expand', 'messageEnvelope-span-maximum',
     ] as const) {
       const hostileSpan = await composition.build();
-      mutateAuthenticatedFrame(hostileSpan, '', mutation);
+      mutateEveryEnvelopeAndRebind(hostileSpan, (manifest) => {
+        const participantIndex = manifest.participants.findIndex((participant) =>
+          mutation === 'messageEnvelope-span-shrink' ? participant.trailingUsed > 0
+            : mutation === 'messageEnvelope-span-expand' ? participant.actualSize < participant.maximumSize
+              : participant.trailingUsed > 0);
+        if (participantIndex < 0) throw new Error(`test could not locate a ${mutation} participant`);
+        return {
+          ...manifest,
+          participants: manifest.participants.map((participant, index) => index !== participantIndex
+            ? participant
+            : mutation === 'messageEnvelope-span-shrink'
+              ? { ...participant, actualSize: participant.actualSize - 1, trailingUsed: participant.trailingUsed - 1 }
+              : mutation === 'messageEnvelope-span-expand'
+                ? { ...participant, actualSize: participant.actualSize + 1, trailingUsed: participant.trailingUsed + 1 }
+                : { ...participant, maximumSize: participant.maximumSize + 1 }),
+        };
+      });
       expect(vmRejects(hostileSpan), mutation).toBe(true);
     }
     const hostileOutput = await composition.build();

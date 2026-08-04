@@ -1,7 +1,87 @@
 pragma solidcash ^0.13.0;
+
+struct JobEventData {
+  uint8 type_;
+  bytes address_;
+  bytes data_;
+  uint32 timestamp_;
+}
+
+struct UserData {
+  address address_;
+  string name;
+  string bio;
+  string avatar;
+  int reputationUp;
+  int reputationDown;
+}
+
+struct ArbitratorData {
+  address address_;
+  string name;
+  string bio;
+  string avatar;
+  int fee;
+  int settledCount;
+  int refusedCount;
+}
+
 contract MarketplaceDataV1() {
+  event UserRegistered(address indexed address_, bytes publicKey, string name, string bio, string avatar);
+  event UserUpdated(address indexed address_, string name, string bio, string avatar);
+  event ArbitratorRegistered(address indexed address_, bytes publicKey, string name, string bio, string avatar, int fee);
+  event ArbitratorUpdated(address indexed address_, string name, string bio, string avatar);
+
   address marketplaceAddress;
+  mapping(address => bytes) public publicKeys;
+  private mapping(address => UserData) users;
+  private mapping(address => ArbitratorData) arbitrators;
+
   function initialize(address marketplace) public {
     this.marketplaceAddress = marketplace;
+  }
+
+  function registerUser(bytes publicKey, string name, string bio, string avatar) public {
+    require(publicKey.length == 33, "invalid pubkey length, must be compressed, 33 bytes");
+    require(name.length >= 2 && name.length <= 20, "name too short or long");
+    require(bio.length <= 256, "bio too long");
+    require(avatar.length <= 128, "avatar too long");
+    UserData current = this.users[msg.sender];
+    require(current.address_ == address(0), "already registered");
+    this.publicKeys[msg.sender] = publicKey;
+    this.users[msg.sender] = UserData(msg.sender, name, bio, avatar, 0, 0);
+    emit UserRegistered(msg.sender, publicKey, name, bio, avatar);
+  }
+
+  function updateUser(string name, string bio, string avatar) public {
+    UserData current = this.users[msg.sender];
+    require(current.address_ != address(0), "not registered");
+    require(name.length >= 2 && name.length <= 20, "name too short or long");
+    require(bio.length <= 256, "bio too long");
+    require(avatar.length <= 128, "avatar too long");
+    this.users[msg.sender] = UserData(current.address_, name, bio, avatar, current.reputationUp, current.reputationDown);
+    emit UserUpdated(msg.sender, name, bio, avatar);
+  }
+
+  function registerArbitrator(bytes publicKey, string name, string bio, string avatar, int fee) public {
+    require(publicKey.length == 33, "invalid pubkey length, must be compressed, 33 bytes");
+    require(name.length >= 2 && name.length <= 20, "name too short or long");
+    require(bio.length <= 256, "bio too long");
+    require(avatar.length <= 128, "avatar too long");
+    ArbitratorData current = this.arbitrators[msg.sender];
+    require(current.address_ == address(0), "already registered");
+    this.publicKeys[msg.sender] = publicKey;
+    this.arbitrators[msg.sender] = ArbitratorData(msg.sender, name, bio, avatar, fee, 0, 0);
+    emit ArbitratorRegistered(msg.sender, publicKey, name, bio, avatar, fee);
+  }
+
+  function updateArbitrator(string name, string bio, string avatar) public {
+    ArbitratorData current = this.arbitrators[msg.sender];
+    require(current.address_ != address(0), "not registered");
+    require(name.length >= 2 && name.length <= 20, "name too short or long");
+    require(bio.length <= 256, "bio too long");
+    require(avatar.length <= 128, "avatar too long");
+    this.arbitrators[msg.sender] = ArbitratorData(current.address_, name, bio, avatar, current.fee, current.settledCount, current.refusedCount);
+    emit ArbitratorUpdated(msg.sender, name, bio, avatar);
   }
 }

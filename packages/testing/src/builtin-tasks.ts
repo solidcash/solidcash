@@ -11,6 +11,8 @@ import type { HardhatRuntimeEnvironment } from './hre.js';
 import { compileSolidityProject } from './project-compiler.js';
 import { solidcashArtifactsPath } from './artifact-paths.js';
 import { migrateHardhatConfig } from './config.js';
+import { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
+import { diagnoseProject } from './doctor.js';
 
 // Recursively collect `.sol` sources, skipping vendored dependency trees (node_modules + `@scope` package dirs like
 // @openzeppelin / @sablier) - those are resolved as imports by compileFileMulti, not compiled as top-level targets.
@@ -30,13 +32,23 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
   .addFlag('quiet', 'Suppress per-file output')
   .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
     const {
-      compileString, compileStringMulti, compileFileMulti, version: compilerVersion,
+      compileString, compileStringMulti, compileStringSplit, compileFileMulti, compileFileSplit,
+      version: compilerVersion,
     } = await import('solidc');
-    const { formatArtifact } = await import('@solidcash/utils');
+    const { formatArtifact, formatSplitArtifactBundle } = await import('@solidcash/utils');
     const contractsDir = path.resolve(hre.config.paths.contracts);
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
+    const maximumInputBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
+    const compilerOptions = {
+      ...hre.config.solc,
+      commitmentLimit: Math.min(
+        (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,
+        maximumNftCommitmentBytes,
+      ),
+    };
     if (!fs.existsSync(contractsDir)) throw new Error(`Contracts dir not found: ${contractsDir}`);
     fs.rmSync(outputDir, { recursive: true, force: true });
     fs.mkdirSync(outputDir, { recursive: true });
@@ -50,7 +62,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         const source = fs.readFileSync(path.join(contractsDir, fn), 'utf-8');
         // Hardhat mirror: one artifact JSON per CONTRACT (by contract name), nested under the source file dir.
         // This is what `getContractFactory("Name")` resolves against.
-        const map = compileStringMulti(source, hre.config.solc);
+        const map = compileStringMulti(source, compilerOptions);
         const nestDir = path.join(outputDir, contractsBase, fn);
         fs.mkdirSync(nestDir, { recursive: true });
         for (const [name, artifact] of Object.entries(map)) {
@@ -59,9 +71,16 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           contracts++;
         }
         // Backward-compat flat artifact (the file's primary contract, by file name) for direct `import` usage.
-        const primary = compileString(source, hre.config.solc);
+        const primary = compileString(source, compilerOptions);
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
+        if (primary.bytecode.length / 2 > maximumInputBytes) {
+          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes: maximumInputBytes });
+          fs.writeFileSync(
+            path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
+            formatSplitArtifactBundle(split, 'json'),
+          );
+        }
         if (!args.quiet) console.log(`Compiled ${fn} -> ${Object.keys(map).join(', ')}`);
         ok++;
       } catch (e: any) {
@@ -82,7 +101,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     try {
       const result = compileSolidityProject(
         solFiles,
-        { solidityImportCompat: true, ...hre.config.solc },
+        { solidityImportCompat: true, ...compilerOptions },
         compileFileMulti,
         {
           directory: path.join(hre.config.paths.cache, 'solidcash'),
@@ -92,7 +111,32 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       for (const [name, artifact] of Object.entries(result.artifacts)) {
         writtenNames.add(name);
         fs.writeFileSync(path.join(outputDir, `${name}.json`), formatArtifact(artifact as any, 'json'));
+        fs.writeFileSync(path.join(outputDir, `${name}.artifact.ts`), formatArtifact(artifact as any, 'ts'));
         contracts++;
+      }
+      // Splitting is needed only for roots whose normal artifact exceeds the consensus script limit. Preserve the
+      // project DAG/cache fast path for ordinary contracts rather than independently recompiling every source.
+      for (const full of solFiles) {
+        const source = fs.readFileSync(full, 'utf8');
+        const declarations = [...source.matchAll(/\b(?:abstract\s+)?contract\s+([A-Za-z_$][\w$]*)/g)]
+          .map((match) => match[1]);
+        const needsSplit = declarations.some((name) => {
+          const artifact = result.artifacts[name];
+          return artifact && artifact.bytecode.length / 2 > maximumInputBytes;
+        });
+        if (!needsSplit) continue;
+        let split;
+        try {
+          split = compileFileSplit(full, {
+            solidityImportCompat: true, ...compilerOptions, maxShardBytes: maximumInputBytes,
+          });
+        } catch (error: any) {
+          throw new Error(`Failed to shard ${path.relative(contractsDir, full)}: ${error.message}`, { cause: error });
+        }
+        if (split.manifest.facets.length > 0) fs.writeFileSync(
+          path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
+          formatSplitArtifactBundle(split, 'json'),
+        );
       }
       solOk = solFiles.length;
       compilerJobs = result.compiledRoots.length;
@@ -106,6 +150,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       }
     } catch (e: any) {
       console.error(`Error compiling Solidity project: ${e.message.split('\n')[0]}`);
+      if (process.env.SOLIDC_DEBUG && e.stack) console.error(e.stack);
       failures.push(new Error(`Solidity project: ${e.message}`));
     }
 
@@ -115,11 +160,53 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     }
     fs.rmSync(artifactsDir, { recursive: true, force: true });
     fs.renameSync(outputDir, artifactsDir);
+    const typegen = generateTypechainTargets({
+      artifactsDir,
+      contractsDir,
+      cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
+      targets: hre.config.typegen.targets,
+    });
     const totalFiles = files.length + solFiles.length;
     if (!args.quiet) console.log(`Compiled ${ok + solOk}/${totalFiles} file(s), ${contracts} contract artifact(s).`);
     return {
-      compiled: ok + solOk, total: totalFiles, contracts, compilerJobs, cacheHits,
+      compiled: ok + solOk, total: totalFiles, contracts, compilerJobs, cacheHits, typegen,
     };
+  });
+
+task('typegen', 'Generate TypeChain-compatible contract bindings from compiled artifacts')
+  .addFlag('watch', 'Regenerate bindings when sources or artifacts change')
+  .setAction(async (_args, hre: HardhatRuntimeEnvironment) => {
+    const options = {
+      artifactsDir: solidcashArtifactsPath(hre.config.paths.artifacts),
+      contractsDir: path.resolve(hre.config.paths.contracts),
+      cacheDir: path.join(hre.config.paths.cache, 'solidcash'),
+      targets: hre.config.typegen.targets,
+    };
+    if (_args.watch) {
+      const watcher = watchTypechainTargets(options, (generated) => generated.forEach((result) => {
+        console.log(`${result.skipped ? 'Reused' : 'Generated'} ${result.target} bindings in ${result.outDir}`);
+      }));
+      console.log('Watching SolidCash sources and artifacts for type changes.');
+      await new Promise<void>((resolve) => process.once('SIGINT', () => { watcher.close(); resolve(); }));
+      return [];
+    }
+    const results = generateTypechainTargets(options);
+    for (const result of results) {
+      console.log(`${result.skipped ? 'Reused' : 'Generated'} ${result.target} bindings in ${result.outDir}`);
+    }
+    return results;
+  });
+
+task('doctor', 'Check SolidHat configuration, artifacts, generated files, and migration readiness')
+  .addFlag('json', 'Print machine-readable JSON')
+  .setAction(async (args, hre: HardhatRuntimeEnvironment) => {
+    const findings = diagnoseProject(hre.config);
+    if (args.json) console.log(JSON.stringify(findings, null, 2));
+    else findings.forEach((finding) => console.log(
+      `${finding.severity.toUpperCase()} [${finding.code}] ${finding.message}${finding.path ? ` (${finding.path})` : ''}`,
+    ));
+    if (findings.some((finding) => finding.severity === 'error')) process.exitCode = 1;
+    return findings;
   });
 
 task('init', 'Create SolidCash configuration')
@@ -135,7 +222,10 @@ task('test', 'Run the test suite (Vitest)')
   .addVariadicPositionalParam('paths', 'Optional test file paths/globs')
   .setAction(async (args) => {
     const extra = (args.paths as string[]) ?? [];
-    const res = spawnSync('npx', ['vitest', 'run', ...extra], { stdio: 'inherit' });
+    const solidhatConfig = ['vitest.solidhat.config.ts', 'vitest.solidhat.config.js']
+      .find((candidate) => fs.existsSync(path.resolve(candidate)));
+    const configArgs = solidhatConfig ? ['--config', solidhatConfig] : [];
+    const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], { stdio: 'inherit' });
     if (res.status !== 0) process.exitCode = res.status ?? 1;
     return { status: res.status };
   });
@@ -154,7 +244,8 @@ task('clean', 'Delete the artifacts directory')
     const cacheDir = path.join(hre.config.paths.cache, 'solidcash');
     fs.rmSync(artifactsDir, { recursive: true, force: true });
     fs.rmSync(cacheDir, { recursive: true, force: true });
-    console.log(`Removed ${artifactsDir} and ${cacheDir}`);
+    for (const target of hre.config.typegen.targets) fs.rmSync(target.outDir, { recursive: true, force: true });
+    console.log(`Removed ${artifactsDir}, ${cacheDir}, and configured generated bindings`);
   });
 
 task('node', 'Info about the in-process mock network (no separate server needed)')

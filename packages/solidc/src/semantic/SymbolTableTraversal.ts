@@ -72,6 +72,7 @@ import {
   ExternalFunctionCallNode,
   ExternalCallSlot,
   ExternalCallArgSource,
+  ExternalCallExpression,
   ExternalCallMode,
   ExternalOutputStateNode,
   ExternalOutputStateAccessNode,
@@ -668,7 +669,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
       }
 
-      if (sv.visibility === StateVariableVisibility.EXTERNAL) {
+      if (sv.isolatedNft) {
+        if (currentNftUsed > 0) {
+          nftIndex++;
+          fieldIndex = 0;
+          currentNftUsed = 0;
+        }
+        sv.nftIndex = nftIndex;
+        sv.fieldIndex = 0;
+        nftIndex++;
+        fieldIndex = 0;
+        currentNftUsed = 0;
+      } else if (sv.visibility === StateVariableVisibility.EXTERNAL) {
         // External variables always get their own dedicated NFT
         if (currentNftUsed > 0) {
           nftIndex++;
@@ -4174,22 +4186,90 @@ export default class SymbolTableTraversal extends AstTraversal {
       const userVisibleParams = this.currentFunction?.parameters.filter(
         (p) => !p.name.startsWith('__internal__'),
       ) ?? [];
-      for (const param of node.parameters) {
-        if (param instanceof IdentifierNode && param.definition) {
-          const defNode = param.definition.definition;
+      const classifyArg = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallArgSource | undefined => {
+        if (seen.has(expression)) return undefined;
+        seen.add(expression);
+        if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
+        if (expression instanceof IdentifierNode && expression.name === 'this') {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof UnaryOpNode
+          && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+          && expression.expression instanceof NullaryOpNode
+          && expression.expression.operator === NullaryOperator.INPUT_INDEX) {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof TypeIntrospectionNode
+          && (expression.property === 'min' || expression.property === 'max')
+          && expression.resolvedType instanceof IntType) {
+          return {
+            kind: 'literal',
+            value: (expression.property === 'min'
+              ? expression.resolvedType.minValue
+              : expression.resolvedType.maxValue).toString(),
+            type: 'bigint',
+          };
+        }
+        if (expression instanceof IdentifierNode && expression.definition) {
+          const defNode = expression.definition.definition;
           if (defNode instanceof ParameterNode) {
             const funcIdx = userVisibleParams.indexOf(defNode);
-            if (funcIdx >= 0) {
-              argSources.push({ kind: 'forward', paramIndex: funcIdx });
-              continue;
-            }
+            if (funcIdx >= 0) return { kind: 'forward', paramIndex: funcIdx };
             const ctorIdx = this.currentContract?.parameters.indexOf(defNode);
             if (ctorIdx !== undefined && ctorIdx >= 0) {
-              argSources.push({ kind: 'constructorArg', paramName: defNode.name });
-              continue;
+              return { kind: 'constructorArg', paramName: defNode.name };
             }
           }
+          // Inlined helpers bind their original parameters to synthesized locals.
+          // Follow that initializer back to the entry-point parameter/expression.
+          if (defNode instanceof VariableDefinitionNode && defNode.expression) {
+            return classifyArg(defNode.expression, seen);
+          }
         }
+        // Synthesized external-address locals are inserted before symbol binding
+        // and can therefore reach this metadata pass without a definition link.
+        // Recover their initializer from the function body so param-rooted
+        // low-level targets (e.g. SafeERC20's address(token).call(...)) retain
+        // their caller-supplied address origin in the artifact.
+        if (expression instanceof IdentifierNode && this.currentFunction?.body) {
+          const initializer = this.findLocalInit(this.currentFunction.body, expression.name);
+          if (initializer) return classifyArg(initializer, seen);
+        }
+        if (expression instanceof NullaryOpNode
+          && (expression.operator === NullaryOperator.MSG_SENDER
+            || expression.operator === NullaryOperator.TX_ORIGIN)) {
+          return { kind: 'msgSender' };
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const arraySource = classifyArg(expression.array, seen);
+          if (arraySource?.kind === 'forward' && arraySource.paramIndex !== undefined) {
+            const indexSource = classifyArg(expression.index, seen);
+            if (indexSource?.kind === 'forward') {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexParamIndex: indexSource.paramIndex,
+              };
+            }
+            if (expression.index instanceof IntLiteralNode) {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexValue: Number(expression.index.value),
+              };
+            }
+            // A loop-local index cannot be supplied by the caller. The SDK expands
+            // these call sites in array order; index zero identifies the first group.
+            return { kind: 'arrayElement', paramIndex: arraySource.paramIndex, indexValue: 0 };
+          }
+        }
+        return undefined;
+      };
+      for (const param of node.parameters) {
+        const classified = classifyArg(param);
+        if (classified) { argSources.push(classified); continue; }
         if (param instanceof IntLiteralNode) {
           argSources.push({ kind: 'literal', value: param.value.toString(), type: 'bigint' });
           continue;
@@ -4212,6 +4292,214 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         argSources.push({ kind: 'expression' });
       }
+      let addressSource = classifyArg(node.addressExpression);
+      if (!addressSource && addressStateVar?.startsWith('ll_')) {
+        const sourceName = addressStateVar.slice('ll_'.length);
+        const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
+        if (sourceIndex >= 0) addressSource = { kind: 'forward', paramIndex: sourceIndex };
+      }
+      const resolveInitializer = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExpressionNode => {
+        if (seen.has(expression)) return expression;
+        seen.add(expression);
+        if (expression instanceof IdentifierNode) {
+          const definition = expression.definition?.definition;
+          const initializer = definition instanceof VariableDefinitionNode
+            ? definition.expression
+            : this.currentFunction?.body
+              ? this.findLocalInit(this.currentFunction.body, expression.name)
+              : undefined;
+          if (initializer) return resolveInitializer(initializer, seen);
+        }
+        return expression;
+      };
+      const serializeExpression = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallExpression | undefined => {
+        if (seen.has(expression)) {
+          return {
+            kind: 'reference',
+            name: expression instanceof IdentifierNode ? expression.name : expression.constructor.name,
+          };
+        }
+        seen.add(expression);
+        const source = classifyArg(expression);
+        if (source && source.kind !== 'expression') return { kind: 'source', source };
+        const resolved = resolveInitializer(expression);
+        if (resolved !== expression) return serializeExpression(resolved, seen);
+        if (expression instanceof IntLiteralNode) {
+          return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
+        }
+        if (expression instanceof BoolLiteralNode) {
+          return { kind: 'literal', type: 'bool', value: expression.value };
+        }
+        if (expression instanceof StringLiteralNode) {
+          return { kind: 'literal', type: 'string', value: expression.value };
+        }
+        if (expression instanceof HexLiteralNode) {
+          return {
+            kind: 'literal',
+            type: `bytes${expression.value.byteLength}`,
+            value: [...expression.value].map((b) => b.toString(16).padStart(2, '0')).join(''),
+          };
+        }
+        if (expression instanceof StateAccessNode) {
+          return { kind: 'state', name: expression.name };
+        }
+        if (expression instanceof CastNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+        }
+        if (expression instanceof UnaryOpNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          let stateLengthDelta = 0;
+          if (expression.operator === UnaryOperator.SIZE
+            && expression.expression instanceof StateAccessNode
+            && this.currentFunction?.body) {
+            const stateName = expression.expression.name;
+            const countPushes = (candidate: Node, visited = new Set<Node>()): number => {
+              if (visited.has(candidate)) return 0;
+              visited.add(candidate);
+              let count = candidate instanceof StateArrayPushNode
+                && candidate.name === stateName ? 1 : 0;
+              for (const value of Object.values(candidate)) {
+                if (value instanceof Node) count += countPushes(value, visited);
+                else if (Array.isArray(value)) {
+                  for (const item of value) if (item instanceof Node) count += countPushes(item, visited);
+                }
+              }
+              return count;
+            };
+            stateLengthDelta = countPushes(this.currentFunction.body);
+          }
+          return inner && {
+            kind: 'unary',
+            operator: expression.operator,
+            expression: inner,
+            ...(stateLengthDelta > 0 && { value: stateLengthDelta.toString() }),
+          };
+        }
+        if (expression instanceof BinaryOpNode) {
+          const left = serializeExpression(expression.left, seen);
+          const right = serializeExpression(expression.right, seen);
+          return left && right && {
+            kind: 'binary', operator: expression.operator, left, right,
+          };
+        }
+        if (expression instanceof TernaryOpNode) {
+          const condition = serializeExpression(expression.condition, seen);
+          const ifTrue = serializeExpression(expression.ifTrue, seen);
+          const ifFalse = serializeExpression(expression.ifFalse, seen);
+          return condition && ifTrue && ifFalse && {
+            kind: 'ternary', condition, ifTrue, ifFalse,
+          };
+        }
+        if (expression instanceof FieldAccessNode) {
+          const enumType = expression.enumType
+            ?? (expression.expression instanceof IdentifierNode
+              ? this.enumMap.get(expression.expression.name)
+              : undefined);
+          if (enumType) {
+            const member = enumType.members.find((candidate) => candidate.name === expression.name);
+            if (member) {
+              return { kind: 'literal', type: 'bigint', value: member.value.toString() };
+            }
+          }
+          const inner = serializeExpression(expression.expression, seen);
+          const fieldType = expression.type
+            ?? expression.structType?.fields.find((field) => field.name === expression.name)?.type
+            ?? (expression.expression.type instanceof StructType
+              ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
+              : undefined);
+          return inner && {
+            kind: 'field',
+            name: expression.name,
+            expression: inner,
+            ...(fieldType && { type: fieldType.toString() }),
+          };
+        }
+        if (expression instanceof MappingAccessNode) {
+          const keys = expression.keys.map((key) => serializeExpression(key, seen));
+          return keys.every((key): key is ExternalCallExpression => key !== undefined)
+            ? {
+              kind: 'stateAccess',
+              name: expression.name,
+              args: keys,
+              ...(expression.type && { type: expression.type.toString() }),
+            }
+            : undefined;
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const array = serializeExpression(expression.array, seen);
+          const index = serializeExpression(expression.index, seen);
+          return array && index && { kind: 'arrayAccess', left: array, right: index };
+        }
+        if (expression instanceof ArrayNode) {
+          const elements = expression.elements.map((item) => serializeExpression(item, seen));
+          return elements.every((item): item is ExternalCallExpression => item !== undefined)
+            ? { kind: 'array', args: elements }
+            : undefined;
+        }
+        const serializeArgs = (parameters: ExpressionNode[]): ExternalCallExpression[] | undefined => {
+          const values = parameters.map((parameter) => serializeExpression(parameter, seen));
+          return values.every((value): value is ExternalCallExpression => value !== undefined)
+            ? values : undefined;
+        };
+        if (expression instanceof BytesConcatNode || expression instanceof StringConcatNode
+          || expression instanceof AbiEncodeNode || expression instanceof AbiEncodePackedNode) {
+          const values = serializeArgs(expression.parameters);
+          if (!values) return undefined;
+          return {
+            kind: expression instanceof BytesConcatNode ? 'bytesConcat'
+              : expression instanceof StringConcatNode ? 'stringConcat'
+                : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
+            args: values,
+            fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+          };
+        }
+        if (expression instanceof FunctionCallNode) {
+          const values = serializeArgs(expression.parameters);
+          return values && {
+            kind: 'call',
+            name: expression.identifier.name,
+            args: values,
+            ...(expression.fieldNames && { fields: expression.fieldNames }),
+            ...(expression.type && { type: expression.type.toString() }),
+          };
+        }
+        if (expression instanceof IdentifierNode) return { kind: 'identifier', name: expression.name };
+        return {
+          kind: 'unsupported',
+          name: expression.constructor.name,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      };
+      for (let i = 0; i < argSources.length; i++) {
+        if (argSources[i].kind !== 'expression') continue;
+        const expression = serializeExpression(node.parameters[i]);
+        argSources[i] = {
+          kind: 'expression',
+          expression: expression ?? {
+            kind: 'missing',
+            name: node.parameters[i]?.constructor.name ?? 'undefined',
+          },
+        };
+      }
+      const rawPayload = node.opaqueReturn && node.parameters.length === 1
+        ? resolveInitializer(node.parameters[0])
+        : undefined;
+      const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.functionName
+        : undefined;
+      const rawArgSources = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.parameters.map((parameter) => {
+          const classified = classifyArg(parameter);
+          if (classified) return classified;
+          const expression = serializeExpression(parameter);
+          return expression ? { kind: 'expression' as const, expression } : { kind: 'expression' as const };
+        })
+        : undefined;
 
       slots.push({
         interfaceName: node.callInfo.interfaceName,
@@ -4224,6 +4512,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
         ...(addressLiteral && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(addressSource && { addressSource }),
+        ...(rawFunctionName && { rawFunctionName }),
+        ...(rawArgSources && { rawArgSources }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,

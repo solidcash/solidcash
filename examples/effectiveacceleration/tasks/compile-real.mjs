@@ -16,7 +16,19 @@ import { compileFileMulti } from 'solidc';
 import { formatArtifact } from '@solidcash/utils';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
-const contractsDir = path.resolve(here, '../../../../effectiveacceleration.ai/contract/contracts');
+function findSiblingProject(start) {
+  let current = start;
+  while (true) {
+    const candidate = path.join(current, 'effectiveacceleration.ai', 'contract', 'contracts');
+    if (fs.existsSync(candidate)) return candidate;
+    const parent = path.dirname(current);
+    if (parent === current) return undefined;
+    current = parent;
+  }
+}
+const contractsDir = process.env.EACC_CONTRACTS_DIR
+  ? path.resolve(process.env.EACC_CONTRACTS_DIR)
+  : findSiblingProject(here);
 const artifactsDir = path.resolve(here, '../artifacts-real/solidcash');
 const solc = { solidityImportCompat: true, ecrecover: 'p2pkh' };
 
@@ -30,7 +42,9 @@ function findSolSources(dir, out = []) {
   return out;
 }
 
-if (!fs.existsSync(contractsDir)) throw new Error(`Real EA source not found: ${contractsDir}`);
+if (!contractsDir || !fs.existsSync(contractsDir)) {
+  throw new Error('Real EA source not found; set EACC_CONTRACTS_DIR to its contract/contracts directory.');
+}
 fs.rmSync(artifactsDir, { recursive: true, force: true });
 fs.mkdirSync(artifactsDir, { recursive: true });
 

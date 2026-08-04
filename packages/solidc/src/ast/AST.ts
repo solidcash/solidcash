@@ -417,6 +417,9 @@ export class StateVariableNode extends Node implements Named, Typed {
   // Dynamic-storage var (string / unbounded bytes): the data-NFT field holds a uint32 length header
   // (<name>$len) and the value lives in chunk UTXOs. See docs/dynamic-storage.md.
   isDynamic: boolean = false;
+  // Compiler-generated security registers may require a stable, dedicated commitment without adopting the
+  // user-facing `external` storage semantics.
+  isolatedNft: boolean = false;
   initializer?: ExpressionNode; // inline `= expr` init, lowered into the constructor by the AstBuilder
   contractTypeName?: string;
   nftIndex: number = 0;
@@ -1848,11 +1851,31 @@ export class ExternalFunctionCallNode extends ExpressionNode {
 }
 
 export interface ExternalCallArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
   paramIndex?: number;
+  indexParamIndex?: number;
+  indexValue?: number;
   paramName?: string;
   value?: string;
   type?: string;
+  expression?: ExternalCallExpression;
+}
+
+export interface ExternalCallExpression {
+  kind: string;
+  name?: string;
+  type?: string;
+  value?: string | boolean;
+  operator?: string;
+  source?: ExternalCallArgSource;
+  expression?: ExternalCallExpression;
+  left?: ExternalCallExpression;
+  right?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  ifTrue?: ExternalCallExpression;
+  ifFalse?: ExternalCallExpression;
+  args?: ExternalCallExpression[];
+  fields?: string[];
 }
 
 export interface ExternalCallSlot {
@@ -1883,6 +1906,7 @@ export interface ExternalCallSlot {
   // Set when the call target is `msg.sender` (IFoo(msg.sender).m()): the callee is the tx-derived msg.sender
   // input (category-matched, or tx.origin P2PKH), verified against emitMsgSender's locking bytecode.
   addressIsMsgSender?: boolean;
+  addressSource?: ExternalCallArgSource;
   slotIndex: number;
   requiredDataNftIndices: number[];
   hasReturnValues?: boolean;
@@ -1903,6 +1927,8 @@ export interface ExternalCallSlot {
   selectorArrayVar?: string;
   callMode?: ExternalCallMode;
   argSources?: ExternalCallArgSource[];
+  rawFunctionName?: string;
+  rawArgSources?: ExternalCallArgSource[];
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
   // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).

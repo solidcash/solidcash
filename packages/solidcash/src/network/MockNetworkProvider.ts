@@ -1,9 +1,10 @@
 import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -17,7 +18,24 @@ export interface TokenGenesisOutput {
 export interface MockNetworkProviderOptions {
   updateUtxoSet: boolean;
   vmTarget?: VmTarget;
+  /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
+  consensusLimits: ConsensusLimits;
+  policy: NetworkPolicy;
 }
+
+export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
+  consensusLimits?: Partial<ConsensusLimits>;
+  policy?: Partial<NetworkPolicy>;
+};
+
+export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
+  maximumInputBytes: 1_000_000,
+  maximumStackItemBytes: 1_000_000,
+  maximumTransactionBytes: 10_000_000,
+  maximumNftCommitmentBytes: 1_000_000,
+  operationCostBudgetPerByte: 10_000_000,
+  hashDigestIterationsPerByte: 10_000_000,
+};
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
 export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
@@ -36,6 +54,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   public blockHeight: number = 133700;
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
+  public consensusLimits: ConsensusLimits;
+  public policy: NetworkPolicy;
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -43,14 +63,39 @@ export default class MockNetworkProvider implements NetworkProvider {
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
+  private signerCache = new Map<string, HDSigner>();
+  private fundedSignerKeys = new Set<string>();
 
-  constructor(options?: Partial<MockNetworkProviderOptions>) {
-    this.options = { updateUtxoSet: true, ...options };
+  constructor(options?: MockNetworkProviderOverrides) {
+    this.options = {
+      updateUtxoSet: true,
+      ...options,
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...options?.consensusLimits },
+      policy: { enforceDust: false, ...options?.policy },
+    };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
+    this.consensusLimits = this.options.consensusLimits;
+    this.policy = this.options.policy;
 
+    const overrides = {
+      maximumBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStackItemLength: this.consensusLimits.maximumStackItemBytes,
+      maximumStandardUnlockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStandardLockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumTransactionLengthBytes: this.consensusLimits.maximumTransactionBytes,
+      maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
+      maximumTokenCommitmentLength: this.consensusLimits.maximumNftCommitmentBytes,
+      operationCostBudgetPerByte: this.consensusLimits.operationCostBudgetPerByte,
+      hashDigestIterationsPerByteNonstandard: this.consensusLimits.hashDigestIterationsPerByte,
+    };
     const verifier = createTxVerifier({
-      vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
-    });
+      // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
+      // consensus VM when dust is disabled; mem-cash still applies fee/value/finality validation and every
+      // configured consensus override. Opting back into dust also restores the full production policy VM.
+      vmVersion: this.vmTarget, standard: this.policy.enforceDust, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
+      dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
+      consensus: overrides,
+    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
     this.indexer = createIndexer({ verifier });
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
@@ -127,10 +172,16 @@ export default class MockNetworkProvider implements NetworkProvider {
   async takeSnapshot(): Promise<SnapshotRestorer> {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
+    const fundingNonce = this.fundingNonce;
+    const signerNonces = new Map(
+      [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
+    );
     const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
     const restore = async (): Promise<void> => {
       this.indexer.restore(snap);
       this.blockHeight = height;
+      this.fundingNonce = fundingNonce;
+      for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
     };
     return { snapshotId, restore };
   }
@@ -199,7 +250,18 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    const result = this.indexer.submitTransaction(txHex);
+    // libauth's CashToken introspection operations in current releases call the common checked-push helper rather
+    // than the selected BCH instruction set's stack-item limit. mem-cash overrides those operations natively in
+    // its next release; keep 0.0.8 compatible by scoping the legacy common value to this synchronous mock check.
+    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
+    const previousStackItemLength = commonConsensus.maximumStackItemLength;
+    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    let result;
+    try {
+      result = this.indexer.submitTransaction(txHex);
+    } finally {
+      commonConsensus.maximumStackItemLength = previousStackItemLength;
+    }
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
@@ -271,11 +333,30 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
+    this.signerCache.clear();
+    this.fundedSignerKeys.clear();
+    this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
   private nextFundingTxid(): string {
     return (this.fundingNonce++).toString(16).padStart(64, '0');
+  }
+
+  private signerKey(mnemonic: string, path: string | undefined, index: number): string {
+    return `${mnemonic}\u0000${path ?? ''}\u0000${index}`;
+  }
+
+  /** Return the stable signer object for an account, creating but not funding it if necessary. */
+  getCachedSigner(index = 0, opts: { mnemonic?: string; path?: string } = {}): HDSigner {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const key = this.signerKey(mnemonic, opts.path, index);
+    let signer = this.signerCache.get(key);
+    if (!signer) {
+      [signer] = signersFromMnemonic(mnemonic, this, { initialIndex: index, count: 1, path: opts.path });
+      this.signerCache.set(key, signer);
+    }
+    return signer;
   }
 
   /**
@@ -290,26 +371,27 @@ export default class MockNetworkProvider implements NetworkProvider {
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
-    const signers = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count, path: opts.path },
-    );
-    for (const signer of signers) {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
+    for (let index = 0; index < signers.length; index++) {
+      const signer = signers[index];
+      const key = this.signerKey(mnemonic, opts.path, index);
+      if (this.fundedSignerKeys.has(key)) continue;
+      // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
+      // outputs are category-neutral and can safely fill C2/output-only block slots.
+      const fundingTxid = this.nextFundingTxid();
       for (let i = 0; i < fundingUtxos; i++) {
-        await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
+        await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
       }
+      this.fundedSignerKeys.add(key);
     }
     return signers;
   }
 
   /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
   async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string } = {}): Promise<HDSigner> {
-    const [signer] = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1, path: opts.path },
-    );
-    await this.addUtxo(signer.getAddress(), {
-      txid: this.nextFundingTxid(), vout: 0, satoshis: opts.satoshis ?? 1_000_000n,
-    });
-    return signer;
+    await this.getSigners(index + 1, opts);
+    return this.getCachedSigner(index, opts);
   }
 }
 

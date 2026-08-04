@@ -26,9 +26,13 @@ type TypeMap = {
 // - Else default to `any`.
 type MapType<Type> = Type extends `${infer Elem}[${string}]`
   ? MapType<Elem>[]
-  : Type extends keyof TypeMap
-    ? TypeMap[Type]
-    : any;
+  : Type extends `int${number}` | `uint${number}` | `fixed${string}` | `ufixed${string}`
+    ? bigint
+    : Type extends 'uint' | 'bigint' | 'fixed' | 'ufixed'
+      ? bigint
+      : Type extends keyof TypeMap
+        ? TypeMap[Type]
+        : any;
 
 // Helper type to process a single parameter by mapping its `type` to a value type (see MapType).
 // Example: { type: "pubkey" } -> Uint8Array | string; { type: "int[]" } -> bigint[]

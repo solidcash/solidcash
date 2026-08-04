@@ -243,11 +243,10 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   slot all loop). VM-proven sound: 3 keys all = 100 read back exactly 100, `chk(k,1)` and `chk(k,99)` REVERT (not the
   old pin, not a placeholder), absent reads 0. Within the RANGE-SPLICE (insert-loop) matcher, per-key `vs[i]` and RMW
   `+=` fall through - but they are NOT unsupported: they route to the per-iteration UPSERT loop instead ((b)/(b3)).
-  Only the loop var `= i` (not a param/array) truly fails closed. `= <default>` and delete are now handled by the
-  sorted-upsert loop. A reassigned param or non-param local mints a mismatching/empty tail and reverts (sound).
+  Only the loop var `= i` (not a param/array) and `= <default>`/delete truly fail closed. A reassigned param or
+  non-param local mints a mismatching/empty tail and reverts (sound).
 
-**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM; historical and superseded by
-`sorted-mapping-c2.md` §10.1).** The
+**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM; superseded in part by the 2026-07-22 merge audit).** The
 surveyed shapes are SOUND (fail-closed where incomplete). It did not cover two distinct straight-line absent-key
 writes sharing one predecessor: fixed upserts independently select the same input and trailing NEW output. That shape
 is sound only because transaction construction rejects the duplicate input, but is not complete. The required batch
@@ -272,9 +271,8 @@ RESOLVED 2026-07-19/20 (case b + same-gap chains): a NEW recipient whose predece
 (case b) NOW WORKS (pending-defer + order-independent reorder); 2+ new in ONE gap NOW CHAIN off any predecessor
 (credited / untouched / HEAD / debited msg.sender); self-transfer + duplicate (incl. scalar) also work - see the
 multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it now routes to the upsert loop
-(update+insert), keeping same-gap chaining. The fail-closed list originally recorded here is superseded: scalar `-=`
-duplicates, basic cross-contract `msg.sender`, and 2D `m[k][i][j]` have since landed. Current limitations are
-maintained only in `sorted-mapping-c2.md` §10.1.
+(update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
+pending-defer), cross-contract msg.sender, 2D `m[k][i][j]`, function-pointer values.
 
 **One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
@@ -871,9 +869,13 @@ so read-after-write `m[k][j]=m[k][j-1]+1` reads the value being built (value-ver
 `SortedArrayCacheInLoop` (loop build+fill, read-after-write prefix, consecutive set02); fail-close boundary in
 `SortedArrayWriteFailClose`. Commits: (this line's change).
 
-The “still fail-closed” list from this historical entry is superseded. Different-key insert loops and
-multi-dimensional array element writes now compile through the sorted-upsert/whole-value RMW paths. Current C2
-limitations are maintained only in `sorted-mapping-c2.md` §10.1.
+STILL fail-closed (sound, not silent): a DIFFERENT-key insert loop `for(i) m[k[i]]=v` (per-iteration sorted-insert
+covenant, framing (a)); a MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` (clean
+`UnsupportedTypeError` - it used to CRASH when the excess index was type-checked as a phantom key at
+`allKeyTypes[i] == undefined`; guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`);
+and function-pointer element values (no C2 path). Note the existing default-model `UnrollFixedBoundEntryLoop`
+(whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
+unroll, but it is wired + tested (CorpusGapFixes), a separate change.
 
 ---
 
@@ -957,10 +959,9 @@ a wrong commitment reverts, a misplaced input trips B's coSlot==Hk check), appen
 the trailing outputs (STB `entryLoopCommitments`/`entryLoopStart` + the derive-time master-index patch on the loop
 unlockers). Supports per-key/scalar, op +/set, int, one collection. Fail-closed (clean throw): absent key (insert), a
 callee that ALSO writes other state (blockSize>1 - the data-NFT derivation is not yet interleaved with the loop
-co-spend), multi-collection, non-int, dup keys. A >60 B CHUNKED **cross-contract callee** value stays fail-closed
-(`CrossContractSubcaseSoundness.test.ts`); the 2026-07-24 reverse-suffix implementation closes the corresponding
-single-contract loop case only. The callee case still needs B's value-chunk pins and suffix accounting composed into
-A's transaction. Original analysis retained below.
+co-spend), multi-collection, non-int, dup keys. A >60 B CHUNKED callee value stays fail-closed (VM-verified,
+`CrossContractSubcaseSoundness.test.ts`) - it would need B's value-chunk pins co-spent (same as the single-contract
+chunked-in-loop). Original analysis retained below.
 
 ### Original analysis
 
@@ -999,11 +1000,13 @@ are quiescent to avoid two-writer tangling in the delicate cross-contract dispat
 
 ## Array-VALUE sorted insert-in-loop `for(i) m[ks[i]] = a` - RESOLVED 2026-07-20 (`7d1b104b`)
 
-SHIPPED + VM-verified (solidcash `SortedArrayValueLoop.test.ts`): a loop assigning a loop-invariant rawbytes value
-(bytes/string/int[]/bytesN) to N sorted-mapping keys routes through the upsert loop. Values up to 60 bytes use the
-inline `len4 ++ value` tail. Since 2026-07-24, larger values use `len4 ++ digest ++ head28` plus authenticated
-reverse-suffix chunk outputs. Fixed rawbytes (bytesN) remain verbatim, and numeric normalization is skipped for the
-rawbytes path.
+INLINE case SHIPPED + VM-verified (solidcash `SortedArrayValueLoop.test.ts`): a loop assigning a loop-invariant
+rawbytes value (bytes/string/int[]/bytesN) to N sorted-mapping keys now routes through the upsert loop. Covenant:
+the guard accepts a rawbytes value for the invariant-param set only; the body wraps a CHUNKABLE value as the inline
+tail `len4 ++ value` with a runtime `size<=60` assert (chunked-in-loop still fails closed), stores fixed rawbytes
+(bytesN) verbatim, and skips the value BIN2NUM (every mint CATs the tail; the 'set' repoint copies `pu_val=amt`).
+SDK: a `scalarTail` threads through a `commitValue()` helper at every commitment site; the int path is byte-identical
+(35 int upsert-loop tests unchanged). CHUNKED (>60 B) stays fail-closed on BOTH sides.
 
 ## Array-VALUE sorted loop PER-KEY `for(i) m[ks[i]] = vs[i]` - RESOLVED 2026-07-20b (`817e8a1c`)
 
@@ -1014,29 +1017,19 @@ captures `valueArrayParam` for any type - so no body/setup change. The earlier "
 regressing" worry was DISPROVEN: `DeferredEntry.newVal` is now `bigint | Uint8Array` and every arithmetic path is
 int-only by the `op==='set'` guard (a rawbytes value never adds/subtracts), so the int cases are byte-identical (45
 int/invariant upsert-loop tests unchanged); the dedup stores `set` values verbatim (last-wins, no `toBig`). VM:
-`SortedArrayValueVaryingLoop.test.ts` (bytes[]/int[][] per-key independence, duplicate last-wins, and authenticated
-values above 60 bytes).
+`SortedArrayValueVaryingLoop.test.ts` (bytes[]/int[][] per-key independence, duplicate last-wins, >60 B fail-closed).
 
-### CHUNKED (>60 B) value in a loop - RESOLVED 2026-07-24
-
-The deferral below is historical. Runtime upsert loops now persist invariant and per-key long values using
-authenticated reverse-suffix chunk outputs. The SDK places them after the entry transition region and fee change,
-then guarantees exactly one terminal output: the required external-library sidecar recreation, or otherwise a
-zero-value OP_RETURN anchor. The covenant counts backward from that terminal suffix and pins collection, slot, digest,
-index, data, and exact chunk count. Varying-key array mutations reuse the layout after authenticating each old
-whole-array witness.
-`SortedArrayValueLoop.test.ts` and `SortedArrayValueVaryingLoop.test.ts` cover invariant/per-key long values and
-inline-to-chunked-to-inline push/set/pop transitions.
-
-#### Historical design note
+### Still fail-closed: CHUNKED (>60 B) value in a loop (considered effort/risk deferral - NOT fundamental)
 
 Implementable via an INTERLEAVED `[entry][chunks]` output layout with a running chunk-output counter (base_i =
 `master + blockSize + runningCounter`, advanced by `1|2 + nNew` each iteration; reads locate chunks by identity, not
 position, so interleaving is sound). NOT done because threading chunk-region management through EVERY mint site of the
 deferred/chained/msg.sender-merge/insert loop state machine - the most soundness-critical covenant - is a large change
 disproportionate to the rare bulk-LONG-value pattern. The chunk NFT is keyed by `(slot=Hk32, digest)`, so even an
-invariant value cannot share one chunk set across keys. The shipped reverse-suffix layout avoided interleaving chunks
-through the entry state machine.
+invariant value cannot share one chunk set across keys. Revisit if a real port needs bulk long values in a loop.
+
+**Revisit if.** A real port needs bulk array-value initialization across keys in one loop, OR the upsert-loop planner
+is refactored to a value-kind-generic shape for another reason (then the bytes branch is cheap + low-risk).
 
 ## Composite sub-slot field access: top-level array-of-struct only - MOSTLY DONE 2026-07-20
 
@@ -1303,14 +1296,7 @@ stateless/stateful autoderivation + RETURNING-loop (increment 1) units are all V
 (`TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch.test.ts`); the next sub-step is part 3
 (collect-phase multi-use grouping) then part 1 (the shared read+write co-spend).
 
-## C2-sorted mapping WRITE inside a delegate (proxy) function - RESOLVED 2026-07-22
-
-**Current status.** Delegate writes use the proxy category and graft the implementation's C2 entry metadata into
-the proxy transaction block. Both UPDATE and INSERT (including the trailing NEW entry NFT) are assembled before
-the delegated implementation region and preserve the proxy's authenticated sorted list. Runtime coverage lives in
-`UpgradesDeployProxy.test.ts` ("writes a msg.sender-keyed C2 mapping from inside a delegate"). The text below is
-retained as historical implementation analysis; its `sortedMappingsAll: false` workaround no longer exists because
-C2 is mandatory.
+## C2-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
 
 **What.** `users[msg.sender] = v` (or any sorted-mapping write) inside a `delegate` function, called through
 `upgrades.deployProxy`, fails closed when the mapping is C2-SORTED (the default). The NON-sorted case SHIPPED
@@ -1628,59 +1614,30 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
   OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
 - **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
   capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.
+## Split deployment follow-ups: constructor resolved; authenticated CREATE identity remains (2026-07-22)
 
----
+- **RESOLVED: imported multi-NFT constructor deployment.** The 23.8 KB Unicrow monolith correctly fails because its
+  redeem script makes the constructor unlocking bytecode exceed BCH's 10 KB limit. The split root exposed a real
+  inference bug: the VM stops at the first mismatched output placeholder, while the SDK expected every commitment
+  from one trace and fed learned outputs back as constructor inputs. Non-idempotent initialization repeated, and
+  subroutine trace slicing could associate a partial commitment with the wrong NFT. Constructors now covenant the
+  complete genesis layout; every probe retains one fixed zero/explicit pre-state; and state, entry, and event
+  placeholders converge by exact output index. VM failures include instruction and stack context. The real imported
+  Unicrow split deploys four facets and reads back protocolFee=100, its peer/governance addresses, and
+  escrowIdCounter=1.
 
-## Delegate mode: satoshi transfers and token-container operations — 2026-07-25
+- **STILL DEFERRED: signer/nonce CREATE identity authenticated to the root category.** Signer-local nonce sequencing
+  now matches Hardhat, but the hash-derived `ethers.getCreateAddress({ from, nonce })` result remains a logical
+  placeholder. It cannot safely resolve typed calls or authorize `msg.sender` until an on-chain binding proves
+  logical identity -> root category.
 
-**What.** A function that transfers satoshis (`this.transfer(...)`) or mutates a token container does not receive an
-inferred `delegateArtifact` entry. The exclusion applies to the whole function: combining a proxy-state write with a
-transfer is also ineligible. Ordinary state writes, events, and low-level calls remain eligible. The compiler and SDK
-fail closed before broadcast rather than producing a delegate spend that reverts at `OP_VERIFY`.
+  A sound implementation needs a category-bearing identity anchor created by the signed genesis transaction at the
+  deterministic logical address, plus compiler/SDK rules authenticating it against the self-pinned root. Resolution
+  must reject ambiguous or spam anchors, reconstruct and verify the physical root, and carry the authenticated
+  logical identity through typed external-call and contract-origin `msg.sender` paths. Facets remain physical
+  implementation details and never acquire logical CREATE identities or consume logical nonces.
 
-**Why deferred.** Delegate mode currently skips `emitAddDynamicOutputsBeforeEntries`, so its output-index arithmetic
-does not reserve space for transfer outputs. Value preservation also accounts for the implementation input's value,
-whereas Ethereum-style `delegatecall` semantics would spend the proxy's balance. Supporting this is therefore a
-covenant-semantics change, not an inference fix: it must define which input funds the output and exactly what value
-change the proxy covenant authorizes.
-
-**What it'd take.** Specify proxy-funded value/token semantics; update delegate codegen to derive and reserve dynamic
-outputs; update proxy value and token preservation; teach SDK transaction derivation to construct those outputs; and
-add adversarial VM/on-chain tests for mixed state-write + transfer functions, value conservation, token conservation,
-and attempts to spend the implementation's own containers.
-
-**Revisit if.** A proxy implementation needs payable forwarding, withdrawals, or token movement rather than only
-proxy-state mutation.
-
-## Delegate mode: fallback-only proxies — 2026-07-25
-
-**What.** A proxy exposing only `fallback` fails on-chain with "Tried to read from an empty stack". Adding a second
-selector-dispatched entry point avoids the SDK's sole-function selector-less unlocker path. This reproduces with the
-old explicitly marked delegate artifact as well as an inferred one, so it predates delegate inference.
-
-**Why deferred.** The inference work does not own selector-less unlocking. The SDK optimizes a single-function
-contract by omitting its selector, but the delegatecall covenant expects forwarded calldata to identify the
-implementation function. Fixing only the inferred artifact would leave the underlying call protocol inconsistent.
-
-**What it'd take.** Define the fallback-only forwarding payload, then update the SDK unlocker/`withDelegatecall`
-construction and the delegate covenant's selector pinning to agree on that representation. Add real spends for
-fallback-only, receive-only where applicable, malformed payloads, and multi-function regression coverage.
-
-**Revisit if.** Minimal transparent proxies must support a fallback as their sole entry point.
-
-## Delegate deployment parity: one source, two addresses — 2026-07-25
-
-**What.** Keyword-free source parity is complete, but deployment parity with the EVM is not. An eligible contract has
-an ordinary artifact and a lazily generated `delegateArtifact`; deploying the latter through `asDelegate()` or proxy
-helpers creates a different locking bytecode/address from the standalone contract.
-
-**Why deferred.** One script that supports both execution modes measured roughly 2.2-2.4x the standalone bytecode.
-That cost is unacceptable against BCH's 10,000-byte script limit and would make realistic contracts undeployable.
-Keeping two single-mode artifacts preserves current script sizes and makes the deployment choice explicit in the SDK.
-
-**What it'd take.** A substantially cheaper dual-mode code-generation design, likely with extensive sharing between
-standalone and proxy covenant paths, followed by size measurements across the corpus and adversarial tests proving
-that a witness cannot select the wrong state context.
-
-**Revisit if.** A dual-mode encoding approaches single-mode size closely enough for real contracts, or a protocol
-change materially raises/removes the script-size constraint.
+  **Acceptance:** Hardhat artifact lookup automatically chooses a split bundle; four circular Unicrow peer addresses
+  predicted from one signer nonce sequence resolve after deployment; forged anchors/categories and physical facet
+  addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
+  runs unchanged on the BCH HRE.

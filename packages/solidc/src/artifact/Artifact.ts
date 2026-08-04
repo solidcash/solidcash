@@ -29,7 +29,7 @@ function abiTypeString(type: Type | undefined): string {
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
 const STATE_WRITING_MODIFIERS = [
-  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
+  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
 ];
 
 /**
@@ -117,6 +117,7 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         ...(ec.loopArrayVar && { loopArrayVar: ec.loopArrayVar }),
         ...(ec.selectorArrayVar && { selectorArrayVar: ec.selectorArrayVar }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(ec.addressSource && { addressSource: ec.addressSource }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
         // witness selector; call/staticcall/delegatecall inject no selector param.
@@ -131,6 +132,8 @@ function buildFunctionAbiMetadata(func: FunctionDefinitionNode, isStateful = fal
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
+        ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
+        ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
       })),
     }),
     ...(func.externalOutStateReads && func.externalOutStateReads.length > 0 && {

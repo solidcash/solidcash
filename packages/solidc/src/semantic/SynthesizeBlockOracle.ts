@@ -252,6 +252,10 @@ export default class SynthesizeBlockOracle extends AstTraversal {
     if (!node.stateVariables.some((sv) => sv.name === OWNER_VAR)) {
       const owner = new StateVariableNode(PrimitiveType.PUBKEY, OWNER_VAR);
       owner.immutable = true;
+      // The key is security-critical and fixed-width, while preceding user fields may include variable-width
+      // addresses whose conservative commitment footprint cannot be inferred from their runtime locking script.
+      // Isolate it so synthesis cannot overflow an otherwise full user-state commitment or shift later offsets.
+      owner.isolatedNft = true;
       node.stateVariables.push(this.at(owner) as StateVariableNode);
     }
 

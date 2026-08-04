@@ -32,12 +32,13 @@ import {
   MethodCallNode,
   CastNode,
   AbiEncodeCallNode,
+  NullaryOpNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { StructType, AddressType, MappingType } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
-import { BinaryOperator } from '../ast/Operator.js';
+import { BinaryOperator, NullaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 import { substituteInFunction } from './InheritanceExpansionTransformation.js';
@@ -131,6 +132,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     for (const fn of node.functions) {
       if (!this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
+          || this.containsMsgSender(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
@@ -237,7 +239,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(fn.isFreeFunction || fn.visibility === 'private' || fn.visibility === 'internal')) return false;
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
-      || this.transitivelyContainsExternalCall(fn);
+      || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn);
+  }
+
+  // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as
+  // an OP_INVOKE subroutine has no independently encoded arguments with which to receive that hidden context;
+  // on a deep caller stack it can therefore read an ordinary source argument (e.g. transferOwnership's `to_`).
+  // Inline the standard ContextUpgradeable `_msgSender() returns (address)` shape into its caller.
+  private containsMsgSender(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SENDER) found = true;
+    });
+    return found;
   }
 
   // Contains an EXTERNAL contract call (`unicrow.getEscrow(id)` / `token.balanceOf(a)` / `this.f(x)`): pre-semantic

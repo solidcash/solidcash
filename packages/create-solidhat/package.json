@@ -1,0 +1,29 @@
+{
+  "name": "@solidcash/create-solidhat",
+  "version": "0.13.0",
+  "description": "Create a new SolidHat project",
+  "keywords": ["solidcash", "bitcoin cash", "project initializer"],
+  "homepage": "https://solidcash.org",
+  "license": "MIT",
+  "author": "mainnet-pat",
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": { "create-solidhat": "dist/cli.js" },
+  "scripts": {
+    "build": "yarn clean && yarn compile",
+    "clean": "rm -rf ./dist",
+    "compile": "tsc -p tsconfig.build.json",
+    "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
+    "prepare": "yarn build",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": { "@solidcash/solidhat": "^0.13.0" },
+  "devDependencies": {
+    "@types/node": "^22.17.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.15"
+  }
+}

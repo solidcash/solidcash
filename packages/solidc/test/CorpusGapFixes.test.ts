@@ -2413,7 +2413,10 @@ describe('low-level .call target through inlined-local aliases traced to a self-
     + ' function _callBool(IEcho tok, bytes data) internal returns (bool) { bool ok, bytes r = address(tok).call(data); return ok; }'
     + ` function f(bytes data, address attacker, pubkey pk, sig s) { require(checkSig(s, pk)); ${mid}`
     + ' bool ok = _callBool(token, data); require(ok); this.calls = this.calls + 1; } }';
-  const extcallOf = (s: string): { addressStateVar?: string } | undefined => compileString(s, {}).abi
+  const extcallOf = (s: string): {
+    addressStateVar?: string;
+    addressSource?: { kind: string; paramIndex?: number };
+  } | undefined => compileString(s, {}).abi
     .find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn);
 
   it('sources a single-assignment user-local intermediary from the state chain (Marketplace token = IERC20(job.token))', () => {
@@ -2429,6 +2432,11 @@ describe('low-level .call target through inlined-local aliases traced to a self-
       + ' bool ok, bytes r = address(config.token).call(data); require(ok); this.d = sha256(data); } }';
     expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
       ?.addressStateVar).toBe('ll_config_token');
+  });
+  it('retains the caller-parameter origin of a synthesized low-level target', () => {
+    const call = extcallOf(src('IEcho token = IEcho(attacker);'));
+    expect(call?.addressStateVar).toBe('ll_attacker');
+    expect(call?.addressSource).toEqual({ kind: 'forward', paramIndex: 1 });
   });
 });
 
@@ -2503,6 +2511,22 @@ describe('C2-default: an inherited method accessing its OWN contract private map
     expect(() => compileString('pragma solidity ^0.8.20; contract Base { mapping(address => uint256) private _balances; }'
       + ' contract Derived is Base { function poke(address a, uint256 v) public { _balances[a] = v; } }',
     { solidityImportCompat: true })).toThrow(/Cannot access private collection '_balances'/);
+  });
+});
+
+describe('compact mappings: transitive state helper chains inline into entry points', () => {
+  it('compiles an OZ-style transfer -> _transfer -> _update mapping read/write chain', () => {
+    const src = 'pragma solidity ^0.8.20; contract Token {'
+      + ' mapping(address => uint256) private _balances;'
+      + ' function _update(address from, address to, uint256 value) internal {'
+      + ' uint256 balance = _balances[from]; require(balance >= value);'
+      + ' _balances[from] = balance - value; _balances[to] = _balances[to] + value; }'
+      + ' function _transfer(address from, address to, uint256 value) internal { _update(from, to, value); }'
+      + ' function transfer(address to, uint256 value) public returns (bool) {'
+      + ' _transfer(msg.sender, to, value); return true; } }';
+    expect(() => compileString(src, {
+      solidityImportCompat: true, sortedMappingsAll: false,
+    })).not.toThrow();
   });
 });
 

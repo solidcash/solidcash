@@ -143,7 +143,12 @@ export const debugLibauthTemplate = (template: WalletTemplate, transaction: Tran
     .filter((contract): contract is Contract => Boolean(contract))
     .map(contract => contract.artifact);
 
-  return debugTemplate(template, allArtifacts);
+  // A relaxed mock provider performs full validation with its configured mem-cash verifier. Libauth's template
+  // VM always applies production standardness (including dust), so running its transaction-wide verification
+  // here would reject transactions the selected mock policy intentionally accepts. Script scenarios above are
+  // still debugged; only the duplicate production-policy check is skipped.
+  const verifyTransaction = transaction.provider.policy?.enforceDust !== false;
+  return debugTemplate(template, allArtifacts, verifyTransaction);
 };
 
 export const getBitauthUri = (template: WalletTemplate): string => {

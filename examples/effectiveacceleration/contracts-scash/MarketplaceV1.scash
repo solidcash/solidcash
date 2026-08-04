@@ -4,28 +4,52 @@ pragma solidcash ^0.13.0;
 // addresses (unicrow/dispute/arbitrator/treasury) are accepted by initialize but not stored - keeping the state
 // NFT commitment under the 128-byte limit - since the admin tests only exercise pause/version/data-address.
 contract MarketplaceV1() {
-  bool paused;
-  int version_;
+  event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+  event Paused(address account);
+  event Unpaused(address account);
+  event VersionChanged(int version);
+
+  address public owner;
+  bool public paused;
+  int public version;
+  bool initialized;
   address marketplaceDataAddress;
 
   function initialize(address unicrow, address dispute, address arb, address treasury, int fee) public {
+    require(!this.initialized, "InvalidInitialization");
     require(fee >= 0);
-    this.version_ = 1;
+    this.owner = msg.sender;
+    this.version = 1;
+    this.initialized = true;
   }
 
   function setMarketplaceDataAddress(address dataAddr) public {
+    require(msg.sender == this.owner);
     this.marketplaceDataAddress = dataAddr;
   }
 
   function pause() public {
+    require(msg.sender == this.owner);
     this.paused = true;
+    emit Paused(msg.sender);
   }
 
   function unpause() public {
+    require(msg.sender == this.owner);
     this.paused = false;
+    emit Unpaused(msg.sender);
   }
 
   function setVersion(int v) public {
-    this.version_ = v;
+    require(msg.sender == this.owner);
+    this.version = v;
+    emit VersionChanged(v);
+  }
+
+  function transferOwnership(address newOwner) public {
+    require(msg.sender == this.owner);
+    address previousOwner = this.owner;
+    this.owner = newOwner;
+    emit OwnershipTransferred(previousOwner, newOwner);
   }
 }

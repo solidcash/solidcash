@@ -141,9 +141,9 @@ describe('Signer ethers parity', () => {
     expect(binToHex(recovered as Uint8Array)).toBe(binToHex(s.publicKey));
   });
 
-  it('EVM-specific members throw a clear "no equivalent on Bitcoin Cash" error', () => {
+  it('tracks a compatibility nonce while unsupported EVM members throw clearly', async () => {
     const s = new Signer(alicePriv, createTestProvider());
-    expect(() => s.getNonce()).toThrow(/no equivalent on Bitcoin Cash/);
+    await expect(s.getNonce()).resolves.toBe(0);
     expect(() => s.estimateGas()).toThrow(/no equivalent on Bitcoin Cash/);
     expect(() => s.signTypedData()).toThrow(/no equivalent on Bitcoin Cash/);
     expect(() => s.resolveName()).toThrow(/no equivalent on Bitcoin Cash/);

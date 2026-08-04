@@ -63,6 +63,7 @@ import { AmbiguousInlineOverloadError } from '../Errors.js';
 const PREFIX = '__sp';
 
 export default class InlineStoragePointerCalls extends AstTraversal {
+  constructor(private readonly inlineSolidityInitializers = false) { super(); }
   private funcByName: Map<string, FunctionDefinitionNode> = new Map();
   // Overload-aware callee lookup keyed by inlineKey(name, arity): a name-only map returns the wrong overload for a
   // call whose arity differs (OZ ERC20 `_approve/3` -> `_approve/4`), so the arity-mismatched call is never inlined
@@ -141,13 +142,35 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (fn.body && fn.returnTypes.length === 0
         && (this.hasStoragePointerParam(fn)
           || (this.isInternalHelper(fn) && !valueReferenced.has(fn.name)
-            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))))) {
+            && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name)
+              || (this.inlineSolidityInitializers && /^__.*_init(?:_unchained)?$/.test(fn.name)))))) {
         this.inlinedFns.add(fn.name);
       } else if (fn.body && fn.returnTypes.length === 0 && !this.isInternalHelper(fn)
         && !valueReferenced.has(fn.name)
         && (this.readsEntry(fn) || this.touchesScalarState(fn) || this.transitiveSortedWriters.has(fn.name))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
+      }
+    }
+    // Modifier/base wrappers can become stateful only after their selected callees are inlined. Close over the
+    // actual inlining set (rather than only direct AST state access), so `override onlyOwner {
+    // super.transferOwnership(n); }` cannot leave a context-dependent preserved base body behind as OP_INVOKE.
+    let addedWrapper = true;
+    while (addedWrapper) {
+      addedWrapper = false;
+      for (const fn of node.functions) {
+        if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
+          || valueReferenced.has(fn.name)) continue;
+        let callsSelected = false;
+        this.walk(fn.body, (candidate) => {
+          if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
+            callsSelected = true;
+          }
+        });
+        if (!callsSelected) continue;
+        this.inlinedFns.add(fn.name);
+        if (!this.isInternalHelper(fn)) this.keepDefFns.add(fn.name);
+        addedWrapper = true;
       }
     }
     // The fallback is internally callable via the self low-level-call lowering; a state-touching one must
@@ -373,10 +396,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
-  // The set of contract functions that DIRECTLY or TRANSITIVELY write a sorted mapping (a fn calling one that does
-  // also writes one after that callee inlines into it). All must inline so the whole chain lands in an entry
-  // point's block layout - inlining only the direct writer would leave its caller a subroutine holding the write
-  // (block-layout fail) or, once the direct writer is dropped, a dangling call. Fixpoint over the call graph.
+  // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
+  // state-touching helper becomes state-touching after that helper is inlined, so selecting only direct readers
+  // leaves wrapper chains such as OZ ERC20 `_transfer -> _update -> _balances[...]` as layout-less subroutines.
+  // Compute the full fixpoint before rewriting any bodies.
   private computeTransitiveSortedWriters(fns: FunctionDefinitionNode[]): Set<string> {
     const names = new Set(fns.map((f) => f.name));
     const calleesOf = (f: FunctionDefinitionNode): Set<string> => {
@@ -386,7 +409,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       });
       return out;
     };
-    const result = new Set<string>(fns.filter((f) => this.directlyWritesSortedEntry(f)).map((f) => f.name));
+    const result = new Set<string>(fns.filter((f) => (
+      this.readsEntry(f) || this.touchesScalarState(f) || this.directlyWritesSortedEntry(f)
+    )).map((f) => f.name));
     let changed = true;
     while (changed) {
       changed = false;

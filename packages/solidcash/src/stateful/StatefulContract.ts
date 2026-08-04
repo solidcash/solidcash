@@ -3,6 +3,7 @@ import {
   ArtifactMap,
   AbiFunction,
   ArgSource,
+  ExternalCallExpression,
   ExternalCallAbi,
   buildInitialStateCommitments,
   buildTokenContainerCovenantScript,
@@ -15,9 +16,12 @@ import {
   dynamicChunkSignature,
   parseChunkCommitment,
   buildValueChunkCommitment,
+  buildChunkCommitment,
+  splitValueIntoChunks,
   parseValueChunkCommitment,
   splitValueIntoValueChunks,
   VALUE_HEAD_SIZE,
+  VALUE_CHUNK_SIZE,
   joinChunks,
   joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
@@ -55,7 +59,6 @@ import {
 import { buildKeccakComputeSidecar, extractKeccakPreimageFromTrace } from '../keccak/keccakComputeSidecar.js';
 import { buildEcrecoverComputeSidecars, computeEcrecoverWitness, probeEcrecoverSplit } from '../ecrecover/ecrecoverComputeSidecar.js';
 import {
-  createVirtualMachineBch2026,
   binToHex,
   hexToBin,
   binsAreEqual,
@@ -65,7 +68,9 @@ import {
   vmNumberToBigInt,
   utf8ToBin,
   binToUtf8,
+  lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
+import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import {
   SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment,
@@ -95,11 +100,16 @@ import {
   createTokenContainerUnlocker, createSatoshiContainerUnlocker,
   resolveCollectionSignature, resolveCategoryFromLockingBytecode, resolveCategoryFromAddress,
 } from './covenant-helpers.js';
+import {
+  findDeploymentByAddress, findDeploymentByLockingBytecode, findDeploymentByName,
+} from './deployment-registry.js';
+import { resolveLogicalIdentity } from './logical-identity.js';
 import { ConstructorArgument, FunctionArgument } from '../Argument.js';
 import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
-  addressToLockScript, findLastIndex, generateLibauthSourceOutputs, scriptToAddress, scriptToLockingBytecode,
+  addressToLockScript, findLastIndex, generateLibauthSourceOutputs, getNetworkPrefix, scriptToAddress,
+  scriptToLockingBytecode,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -147,6 +157,8 @@ export interface DeployOptions {
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
+  /** Internal SDK composition: immutable category-bearing logical identity outputs minted by genesis. */
+  identityAnchors?: Array<{ to: string | Uint8Array; commitment: string; amount?: bigint }>;
 }
 
 export interface DeployResult<T extends Artifact = Artifact> {
@@ -366,10 +378,14 @@ const LOOP_ENTRY_MAX_ITERATIONS = 256;
 function extractCommitmentMapFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
   outputIndexRange?: { min: number; max: number },
+  scanFullTrace = false,
 ): Map<number, string> {
   // Slice to the redeem (locking) script phase, subroutine-aware (see findRedeemScriptStart).
   const p2shStart = findRedeemScriptStart(fullTrace);
-  const lockingScriptTrace = p2shStart >= 0 ? fullTrace.slice(p2shStart) : fullTrace;
+  // Delegate calls can return from the longest redeem-script instruction array and perform their
+  // output pins in a later invocation phase. In that case, scan the complete trace; the output-index
+  // range and tightly-coupled OTC/EQUALVERIFY pattern still prevent unrelated matches.
+  const lockingScriptTrace = scanFullTrace || p2shStart < 0 ? fullTrace : fullTrace.slice(p2shStart);
 
   // Use a Map keyed by output index to keep the LAST match for each output.
   // For loops that write the same state variable multiple times, intermediate
@@ -386,7 +402,7 @@ function extractCommitmentMapFromTrace(
     // instructions too (enclosing OP_IF/OP_NOTIF false => controlStack contains a `false`). A
     // dynamic-write loop's exit iteration skips its inline OP_OUTPUTTOKENCOMMITMENT verify, leaving a
     // phantom step whose frozen stack would otherwise be misread as a commitment.
-    if (step.controlStack.some((c) => c === false)) continue;
+    if (!scanFullTrace && step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
       sawOutputTokenCommitment = true;
@@ -439,8 +455,11 @@ function extractCommitmentsFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
   expectedCount: number,
   outputIndexRange?: { min: number; max: number },
+  scanFullTrace = false,
 ): string[] | undefined {
-  const commitmentsByOutputIndex = extractCommitmentMapFromTrace(fullTrace, outputIndexRange);
+  const commitmentsByOutputIndex = extractCommitmentMapFromTrace(
+    fullTrace, outputIndexRange, scanFullTrace,
+  );
   const commitments = Array.from(commitmentsByOutputIndex.entries())
     .sort(([a], [b]) => a - b)
     .map(([, hex]) => hex);
@@ -526,7 +545,7 @@ function evalComputedKey(
     if (typeof value === 'bigint') return bigIntToVmNumber(value);
     if (typeof value === 'number') return bigIntToVmNumber(BigInt(value));
     if (typeof value === 'boolean') return bigIntToVmNumber(value ? 1n : 0n);
-    if (typeof value === 'string' && value.includes(':')) return addressToLockScript(value);
+    if (typeof value === 'string') return value.includes(':') ? addressToLockScript(value) : utf8ToBin(value);
     return undefined;
   };
   const splitTopLevel = (s: string): [string, string] | undefined => {
@@ -551,7 +570,7 @@ function evalComputedKey(
       if (m[1] === 'false') return false;
       if (/^-?[0-9][0-9_]*$/.test(m[1])) return BigInt(m[1].replace(/_/g, ''));
       if (/^0x[0-9a-f]*$/i.test(m[1])) return hexToBin(m[1].slice(2));
-      return undefined;
+      return m[1];
     }
     m = s.match(/^const:(-?[0-9][0-9_]*)$/);
     if (m) return BigInt(m[1].replace(/_/g, ''));
@@ -734,6 +753,39 @@ function extractVerifiedValuesFromTrace(
   return valuesNoIndex;
 }
 
+/** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
+function evaluateProbeTrace(
+  provider: NetworkProvider,
+  program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
+): AuthenticationProgramStateCommon[] {
+  if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) {
+    return createVirtualMachineBch2026ForProvider(provider).debug(program) as AuthenticationProgramStateCommon[];
+  }
+  const trace: AuthenticationProgramStateCommon[] = [];
+  const targets = new Set<number>([
+    Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
+    Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+  ]);
+  let awaitingVerification = false;
+  const vm = createVirtualMachineBch2026ForProvider(provider, {
+    opcodes: targets,
+    beforeOperation: (unknownState) => {
+      const state = unknownState as AuthenticationProgramStateCommon;
+      const opcode = state.instructions[state.ip]?.opcode;
+      if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) return;
+      trace.push({
+        ...state,
+        stack: state.stack.slice(),
+        alternateStack: state.alternateStack.slice(),
+        controlStack: state.controlStack.slice(),
+      });
+      awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+    },
+  });
+  trace.push(vm.evaluate(program) as AuthenticationProgramStateCommon);
+  return trace;
+}
+
 /**
  * Parse derived commitments into a state record using the given layout.
  * @param nftIndices - The NFT indices corresponding to each commitment.
@@ -820,6 +872,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   private _inner!: Contract<TArtifact>;
   private _categoryId = '';
   private _pendingAddress?: string;
+  /** Solidity-visible CREATE identity; physical covenant addressing remains on `inner`. */
+  _logicalAddress?: string;
   private _resolved = false;
 
   get inner(): Contract<TArtifact> { return this._inner; }
@@ -1012,6 +1066,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** Bound signer for automatic transaction funding. Set via `connect(signer)`. */
   _signer?: Signer;
+  /** Signer identity retained for logical nonce parity without changing legacy funding behavior. */
+  _logicalNonceSigner?: Signer;
 
   /**
    * Maximum number of VM probe iterations for auto-derivation.
@@ -1084,7 +1140,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // instances. Called at the top of every async operation that needs the category.
   async _ensureResolved(): Promise<void> {
     if (this._resolved) return;
-    this._categoryId = await resolveCategoryFromAddress(this._inner.provider, this._pendingAddress!);
+    const pendingAddress = this._pendingAddress!;
+    try {
+      const identity = await resolveLogicalIdentity(this._inner.provider, pendingAddress);
+      this._categoryId = identity.categoryId;
+      const connected = this._inner.withCategory(hexToBin(this._categoryId));
+      if (binToHex(addressToLockScript(connected.address)) !== binToHex(identity.rootLockingBytecode)) {
+        throw new Error(
+          `Logical identity ${pendingAddress} binds category ${this._categoryId} to a different root bytecode.`,
+        );
+      }
+      this._inner = connected;
+      this._logicalAddress = pendingAddress;
+      this._resolved = true;
+      return;
+    } catch (error) {
+      // A physical contract address has no SCID anchor; retain legacy category discovery. An address containing
+      // SCID-looking but invalid/ambiguous records must fail closed rather than silently selecting another token.
+      const utxos = await this._inner.provider.getUtxos(pendingAddress);
+      const hasIdentityRecord = utxos.some((utxo) => utxo.token?.nft?.commitment?.startsWith('53434944'));
+      if (hasIdentityRecord) throw error;
+    }
+    this._categoryId = await resolveCategoryFromAddress(this._inner.provider, pendingAddress);
     this._inner = this._inner.withCategory(hexToBin(this._categoryId));
     this._resolved = true;
   }
@@ -1306,6 +1383,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     (sc as StatefulContract)._deployDefaults = { ...this._deployDefaults };
     (sc as StatefulContract)._signer = signer;
+    (sc as StatefulContract)._logicalNonceSigner = signer;
     return sc;
   }
 
@@ -1324,6 +1402,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (sc as StatefulContract)._libraryRegistry.set(name, lib);
     }
     if (this._signer) (sc as StatefulContract)._signer = this._signer;
+    if (this._logicalNonceSigner) (sc as StatefulContract)._logicalNonceSigner = this._logicalNonceSigner;
     return sc;
   }
 
@@ -1380,21 +1459,48 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     });
 
     const stateLayout = artifact.stateLayout;
+    const delegateOnly = artifact.delegateOnly === true;
     const dataNftAddress = getDataNftAddress(contract, categoryId);
 
     const masterAmount = options.masterAmount ?? 1200n;
     const dataNftAmount = options.dataNftAmount ?? 1200n;
-    const fee = options.fee ?? 5000n;
+    // Genesis spends reveal the full redeem script. Near-limit contracts therefore exceed the historical fixed
+    // 5,000-sat fee at the default 1 sat/byte relay rate; size the default conservatively from the actual script.
+    const estimatedFee = options.fee ?? BigInt(Math.max(5000, Math.ceil(contract.bytesize) + 2000));
 
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
 
+    // Dynamic constructor writes whose values are direct parameters can be materialized exactly. Their chunk NFTs
+    // follow the fixed constructor block and are required both by the derivation probe and the real genesis tx.
+    const visibleConstructorInputs = constructorAbi?.inputs.filter(
+      (input) => !input.name.startsWith('__internal__'),
+    ) ?? [];
+    const dynamicInitialChunks = (stateLayout.variables ?? []).flatMap((variable) => {
+      if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) return [];
+      const normalized = variable.name.replace(/^_+/, '');
+      const inputIndex = visibleConstructorInputs.findIndex(
+        (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
+      );
+      const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+      const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
+      if (value === undefined) return [];
+      return splitValueIntoChunks(value).map((chunkData, chunkIndex) => ({
+        name: variable.name, type: variable.type, chunkIndex, chunkData,
+        commitment: buildChunkCommitment(
+          chunkIndex, chunkData, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+        ),
+      }));
+    });
+
     // Determine counts for constructor features
-    const entryAccesses = constructorAbi?.entryAccesses ?? [];
+    const entryAccesses = delegateOnly ? [] : (constructorAbi?.entryAccesses ?? []);
     const entryCount = entryAccesses.length;
-    const entryOutputCount = entryAccesses.reduce((count, access) => {
-      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
-      return count + (collection?.sorted ? 2 : 1);
-    }, 0);
+    // A C2 batch has one fixed target output per logical access. Recreated shared predecessors live after the
+    // fixed block (one HEAD per initially-empty collection), rather than using the old P'/NEW pair per access.
+    const entryOutputCount = entryCount;
+    const trailingEntryOutputCount = new Set(entryAccesses.filter((access) => (
+      stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
+    )).map((access) => access.collection)).size;
     const emitCount = constructorAbi?.emits?.length ?? 0;
 
     const threadCount = options.threadCount ?? 1;
@@ -1404,10 +1510,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const initialBalance = options.initialBalance ?? 0n;
     const totalMaster = masterAmount * BigInt(threadCount);
-    const totalDataNft = dataNftAmount * BigInt(stateLayout.dataNftCount);
-    const totalEntryNft = dataNftAmount * BigInt(entryOutputCount);
+    const totalDataNft = delegateOnly ? 0n : dataNftAmount * BigInt(stateLayout.dataNftCount);
+    const totalEntryNft = dataNftAmount * BigInt(entryOutputCount + trailingEntryOutputCount);
     const totalEventNft = dataNftAmount * BigInt(emitCount);
-    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + initialBalance + fee;
+    const totalDynamicNft = dataNftAmount * BigInt(dynamicInitialChunks.length);
+    const identityAnchors = options.identityAnchors ?? [];
+    const totalIdentity = identityAnchors.reduce((sum, anchor) => sum + (anchor.amount ?? dataNftAmount), 0n);
+    const totalRequired = totalMaster + totalDataNft + totalEntryNft + totalEventNft + totalDynamicNft
+      + totalIdentity + initialBalance + estimatedFee;
     const changeAmount = options.fundingUtxo.satoshis - totalRequired;
 
     if (changeAmount < 0n) {
@@ -1415,20 +1525,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         `Insufficient funding: ${options.fundingUtxo.satoshis} satoshis provided, `
         + `but ${totalRequired} needed `
         + `(master: ${totalMaster} (${threadCount}x${masterAmount}), data NFTs: ${totalDataNft}, `
-        + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, fee: ${fee}).`,
+        + `entry NFTs: ${totalEntryNft}, event NFTs: ${totalEventNft}, fee estimate: ${estimatedFee}).`,
       );
     }
 
     // Determine initial commitments and additional outputs
     let commitments: string[];
     let entryCommitments: string[] = [];
+    let trailingEntryCommitments: string[] = [];
     let eventCommitments: string[] = [];
     let transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
 
     // Check if constructor has sig params - probe won't work for those
     const hasSigParams = constructorAbi?.inputs.some((inp) => inp.type === 'sig') ?? false;
 
-    if (constructorAbi && !hasSigParams) {
+    if (delegateOnly) {
+      if (options.initialState || options.initArgs || initialBalance > 0n) {
+        throw new Error(`Delegate-only facet '${artifact.contractName}' cannot deploy application state or balance.`);
+      }
+      commitments = [];
+    } else if (constructorAbi && !hasSigParams) {
       // Use inference: build probe transaction with synthetic UTXOs
       const derived = await StatefulContract._deriveDeployCommitments(
         contract, artifact, stateLayout, categoryId, dataNftAddress,
@@ -1436,6 +1552,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
       commitments = derived.stateCommitments;
       entryCommitments = derived.entryCommitments;
+      trailingEntryCommitments = derived.trailingEntryCommitments;
       eventCommitments = derived.eventCommitments;
       transferOutputs = derived.transferOutputs;
     } else if (constructorAbi && hasSigParams) {
@@ -1446,10 +1563,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           + 'Provide options.initialState with explicit initial values.',
         );
       }
-      commitments = buildInitialStateCommitments(stateLayout, options.initialState);
+      commitments = buildInitialStateCommitments(
+        stateLayout, options.initialState, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
     } else {
       // No constructor: use explicit initialState or zero-initialized defaults
-      commitments = buildInitialStateCommitments(stateLayout, options.initialState ?? {});
+      commitments = buildInitialStateCommitments(
+        stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+      );
     }
 
     // Build and send actual genesis transaction
@@ -1470,7 +1591,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
 
     // Outputs threadCount..threadCount+dataNftCount-1: data NFTs with initial state
-    for (let i = 0; i < stateLayout.dataNftCount; i++) {
+    for (let i = 0; i < (delegateOnly ? 0 : stateLayout.dataNftCount); i++) {
       builder.addOutput({
         to: dataNftAddress,
         amount: dataNftAmount,
@@ -1482,25 +1603,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let entryCommitmentIndex = 0;
     for (const access of entryAccesses) {
       const entryNftAddress = getEntryNftAddress(contract, categoryId, access.collection);
-      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
-      const outputCount = collection?.sorted ? 2 : 1;
-      for (let output = 0; output < outputCount; output++) {
-        builder.addOutput({
-          to: entryNftAddress,
-          amount: dataNftAmount,
-          token: {
-            category: categoryId, amount: 0n,
-            nft: { capability: 'mutable', commitment: entryCommitments[entryCommitmentIndex++] ?? '' },
-          },
-        });
-      }
+      builder.addOutput({
+        to: entryNftAddress,
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: entryCommitments[entryCommitmentIndex++] ?? '' },
+        },
+      });
     }
 
     // C2 (sorted) mapping HEAD sentinels: a sorted mapping needs a HEAD[slot 0 | nextKey 0] to anchor the linked
     // list, otherwise its first read/write fails "missing HEAD sentinel". A constructor that writes the mapping
     // already mints entries for it; for the rest, mint the empty-map HEAD at genesis. Sound: the genesis is
     // funder-authorized (no covenant yet) and every later read/write pins the HEAD (slot 0) via the covenant.
-    for (const col of (stateLayout.collections ?? [])) {
+    for (const col of (delegateOnly ? [] : (stateLayout.collections ?? []))) {
       if (!col.sorted) continue;
       if (entryAccesses.some((a) => a.collection === col.name)) continue; // constructor already created its entries
       builder.addOutput({
@@ -1528,9 +1645,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const emitInfo = constructorAbi.emits[i];
         const eventDef = allEventDefs.find((e) => e.signature === emitInfo.eventSignature);
         const isAnonymous = eventDef?.anonymous === true;
-        const eventNftAddress = isAnonymous
-          ? getAnonymousEventNftAddress(contract, categoryId)
-          : getEventNftAddress(contract, categoryId, emitInfo.eventSignature);
+        const eventNftAddress = eventDef === undefined
+          ? scriptToLockingBytecode(
+            buildEventNftCovenantScript(
+              hexToBin(categoryId), computeEventNameHash(emitInfo.eventSignature),
+            ),
+            contract.addressType,
+          )
+          : isAnonymous
+            ? getAnonymousEventNftAddress(contract, categoryId)
+            : getEventNftAddress(contract, categoryId, emitInfo.eventSignature);
         builder.addOutput({
           to: eventNftAddress,
           amount: dataNftAmount,
@@ -1542,25 +1666,80 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
+    // C2 predecessor recreations trail the complete fixed constructor block (including conditional events).
+    // Initially every sorted collection shares its HEAD across all constructor writes, so it is emitted once.
+    let trailingEntryIndex = 0;
+    for (const collectionName of new Set(entryAccesses.filter((access) => (
+      stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
+    )).map((access) => access.collection))) {
+      builder.addOutput({
+        to: getEntryNftAddress(contract, categoryId, collectionName),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: {
+            capability: 'mutable',
+            commitment: trailingEntryCommitments[trailingEntryIndex++] ?? '',
+          },
+        },
+      });
+    }
+
+    // Dynamic constructor values are stored in per-variable chunk NFTs immediately after the fixed block.
+    for (const chunk of dynamicInitialChunks) {
+      builder.addOutput({
+        to: getDynamicChunkAddress(contract, categoryId, chunk.name, chunk.type),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: chunk.commitment },
+        },
+      });
+    }
+
     // Satoshi container output (if initialBalance > 0)
     if (initialBalance > 0n) {
       const satoshiContainerAddress = getSatoshiContainerAddress(contract, categoryId);
       builder.addOutput({ to: satoshiContainerAddress, amount: initialBalance });
     }
 
-    // Change output (account for transfer amounts)
+    // Immutable CREATE identity anchors are category-bearing discovery records. They are intentionally appended
+    // after constructor-governed outputs so existing ABI output indices remain stable.
+    for (const anchor of identityAnchors) {
+      builder.addOutput({
+        to: anchor.to,
+        amount: anchor.amount ?? dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'none', commitment: anchor.commitment },
+        },
+      });
+    }
+
+    // Add a placeholder change output so fee measurement includes its serialized size, then pay the exact
+    // one-satoshi-per-byte relay floor. This matters for near-limit contracts whose redeem script is revealed by
+    // the genesis input and whose constructor transaction is consequently larger than the contract itself.
     const totalTransferAmount = transferOutputs.reduce((sum, t) => sum + t.amount, 0n);
-    const finalChange = changeAmount - totalTransferAmount;
+    builder.addOutput({ to: options.changeAddress, amount: 1000n });
+    // The unsigned template contains a shorter placeholder for the funding signature. Leave enough headroom for
+    // the final P2PKH unlocking bytecode (and minor serialization-length changes after the change amount is set).
+    const fee = options.fee ?? (await computeFeeFromBuilder(builder)) + 1000n;
+    const nonChangeOutputTotal = builder.outputs.slice(0, -1)
+      .reduce((sum, output) => sum + output.amount, 0n);
+    const finalChange = options.fundingUtxo.satoshis - nonChangeOutputTotal - fee;
     if (finalChange < 0n) {
       throw new Error(
         'Insufficient funding: constructor transfers require '
-        + `${totalTransferAmount} satoshis but only `
-        + `${changeAmount} satoshis are available for change. `
+        + `${totalTransferAmount} satoshis and the transaction requires a ${fee}-satoshi fee. `
         + 'Increase the funding UTXO amount.',
       );
     }
     if (finalChange > 0n) {
-      builder.addOutput({ to: options.changeAddress, amount: finalChange });
+      builder.outputs[builder.outputs.length - 1] = {
+        ...builder.outputs[builder.outputs.length - 1], amount: finalChange,
+      };
+    } else {
+      builder.outputs.pop();
     }
 
     const tx = await builder.send();
@@ -1992,7 +2171,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Compute child's initial state commitments
     const childCommitments = buildInitialStateCommitments(
-      childLayout, options.childInitialState ?? {},
+      childLayout, options.childInitialState ?? {}, provider.consensusLimits?.maximumNftCommitmentBytes,
     );
 
     // Determine which data NFTs the factory's deploy function needs
@@ -2985,21 +3164,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<{
       stateCommitments: string[];
       entryCommitments: string[];
+      trailingEntryCommitments: string[];
       eventCommitments: string[];
       transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
     }> {
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
     const entryAccesses = constructorAbi?.entryAccesses ?? [];
     const entryCount = entryAccesses.length;
-    const entryOutputCount = entryAccesses.reduce((count, access) => {
-      const collection = stateLayout.collections?.find((item) => item.name === access.collection);
-      return count + (collection?.sorted ? 2 : 1);
-    }, 0);
+    const entryOutputCount = entryCount;
     const transferCount = constructorAbi?.transferCount ?? 0;
     const emitInfos = constructorAbi?.emits ?? [];
     const emitCount = emitInfos.length;
 
-    const zeroCommitments = buildInitialStateCommitments(stateLayout, {});
+    // Explicit initial state seeds fields the constructor does not write (for example compiler-injected immutable
+    // block-oracle ownership). Constructor execution still derives and authenticates its writes over this pre-state.
+    const zeroCommitments = buildInitialStateCommitments(
+      stateLayout, options.initialState ?? {}, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+    );
 
     // Synthetic master UTXO (contract's locking script + minting NFT)
     const syntheticMaster: Utxo = {
@@ -3010,23 +3191,124 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     };
 
-    // Build synthetic initArgs with synthetic parameters appended
+    // Contract unlockers accept only user-visible arguments and fill compiler-internal witnesses themselves.
     const initArgs = [...(options.initArgs ?? [])];
+    const senderLockingBytecode = options.funder.generateLockingBytecode();
+    const visibleInputs = constructorAbi?.inputs.filter((input) => !input.name.startsWith('__internal__')) ?? [];
+    const resolveConstructorKey = (label: string | undefined): Uint8Array | undefined => {
+      if (label === 'nullop:msg.sender') return senderLockingBytecode;
+      // A constructor body may reference either an explicit `__construct` argument or a contract parameter.
+      // The latter is encoded into the redeem script and therefore is not repeated in the constructor ABI.
+      return evalComputedKey(label, initArgs, visibleInputs)
+        ?? evalComputedKey(label, contract.constructorArgs, artifact.constructorInputs);
+    };
+    const sortedPlans = new Map<string, {
+      proofOffset: number;
+      targetNext: Map<number, Uint8Array>;
+      predecessorCommitment: string;
+      trailingOutput: number;
+    }>();
+    const sortedCollections = [...new Set(entryAccesses.filter((access) => (
+      stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
+    )).map((access) => access.collection))];
+    for (const [collectionIndex, collectionName] of sortedCollections.entries()) {
+      const accesses = entryAccesses.map((access, index) => ({ access, index })).filter(
+        ({ access }) => access.collection === collectionName,
+      );
+      const headUtxo: Utxo = {
+        txid: `${'00'.repeat(31)}ee`, vout: collectionIndex, satoshis: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
+        },
+      };
+      const list = SortedList.fromUtxos([headUtxo]);
+      const writes = accesses.map(({ access }) => {
+        const label = access.keySources?.[0]?.expressionLabel ?? access.keyParams?.[0];
+        const key = resolveConstructorKey(label);
+        if (key === undefined) {
+          throw new Error(
+            `Cannot derive constructor C2 key '${label ?? '<unknown>'}' for ${collectionName}.`,
+          );
+        }
+        return { slot: keyToSlot(key), value: new Uint8Array() };
+      });
+      const plan = list.planBatchUpsert(writes);
+      const targetNext = new Map<number, Uint8Array>();
+      for (const [localIndex, { index }] of accesses.entries()) {
+        const output = plan.outputs.find((candidate) => binsAreEqual(candidate.slot, writes[localIndex].slot));
+        if (output === undefined) throw new Error(`Missing constructor C2 target plan for ${collectionName}.`);
+        targetNext.set(index, decodeEntryCommitment(output.commitment).nextKey);
+      }
+      const predecessor = plan.outputs.find((output) => bytesToSlotValue(output.slot) === 0n);
+      if (predecessor === undefined) throw new Error(`Missing constructor C2 HEAD plan for ${collectionName}.`);
+      sortedPlans.set(collectionName, {
+        proofOffset: 1 + stateLayout.dataNftCount + accesses[0].index,
+        targetNext,
+        predecessorCommitment: binToHex(predecessor.commitment),
+        trailingOutput: (constructorAbi?.blockLayout?.blockSize ?? (
+          1 + stateLayout.dataNftCount + entryCount + emitCount + transferCount
+        )) + collectionIndex,
+      });
+    }
+    const internalInitArgs: FunctionArgument[] = [];
+    for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
+      if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
+      else {
+        const match = input.name.match(/^__internal__c2Batch(Slot|Proof|Next|PredOut)_(\d+)$/);
+        if (match) {
+          const slotIndex = Number(match[2]);
+          const access = entryAccesses[slotIndex];
+          const plan = sortedPlans.get(access.collection);
+          const label = access.keySources?.[0]?.expressionLabel ?? access.keyParams?.[0];
+          const key = resolveConstructorKey(label);
+          if (plan === undefined || key === undefined) throw new Error(`Missing constructor C2 witness ${input.name}.`);
+          if (match[1] === 'Slot') internalInitArgs.push(keyToSlot(key));
+          else if (match[1] === 'Proof') internalInitArgs.push(BigInt(plan.proofOffset));
+          else if (match[1] === 'Next') internalInitArgs.push(plan.targetNext.get(slotIndex)!);
+          else internalInitArgs.push(BigInt(plan.trailingOutput));
+        } else if (input.name === '__internal__c2BatchTrailingCount') {
+          internalInitArgs.push(BigInt(sortedCollections.length));
+        } else {
+          throw new Error(`Unsupported constructor internal witness '${input.name}'.`);
+        }
+      }
+    }
 
 
 
     const requiredIndices = constructorAbi?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const useSparseProbe = (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
-    const maxDeployIterations = 5;
+    // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
+    // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
+    const maxDeployIterations = Math.max(5, requiredIndices.length + 2);
     const seenDeployKeys = new Set<string>();
 
+    let deployConverged = false;
     let currentCommitments = [...zeroCommitments];
     let stateCommitments: string[] = [];
-    let entryCommits: string[] = [];
-    let eventCommits: string[] = [];
+    let entryCommits: string[] = Array.from({ length: entryOutputCount }, () => '');
+    const usesC2BatchWitnesses = constructorAbi?.inputs.some(
+      (input) => input.name.startsWith('__internal__c2Batch'),
+    ) ?? false;
+    // Scalar C2 insertion recreates P' in the fixed entry slot and places NEW after the block. Batched insertion
+    // places its targets in fixed slots and trails the shared predecessor. Only the unknown value-bearing side
+    // is left blank for VM inference.
+    if (!usesC2BatchWitnesses) {
+      for (const [index, access] of entryAccesses.entries()) {
+        const plan = sortedPlans.get(access.collection);
+        if (plan) entryCommits[index] = plan.predecessorCommitment;
+      }
+    }
+    let trailingEntryCommits = sortedCollections.map(
+      (collectionName) => usesC2BatchWitnesses
+        ? sortedPlans.get(collectionName)!.predecessorCommitment
+        : '',
+    );
+    const eventCommits: string[] = Array.from({ length: emitCount }, () => '');
     let transferOuts: Array<{
       lockingBytecode: Uint8Array; amount: bigint;
     }> = [];
@@ -3040,14 +3322,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             category: categoryId, amount: 0n,
             nft: {
               capability: 'mutable' as const,
-              commitment: currentCommitments[i],
+              // A constructor always executes from its original zero/explicit pre-state. Only the synthetic
+              // OUTPUT placeholders converge; feeding a prior result back as input repeats non-idempotent writes.
+              commitment: zeroCommitments[i],
             },
           },
         }),
       );
 
       const constructorUnlocker = (contract.unlock as any).__construct(
-        ...initArgs,
+        ...initArgs, ...internalInitArgs,
       );
       const dataNftUnlockers = iterDataNfts.map(
         () => createDataNftUnlocker(contract, 0, categoryId),
@@ -3064,27 +3348,66 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Constructor C2 writes are probed against a synthetic empty HEAD. The real genesis is funder-authorized,
       // but the probe must present the same authenticated predecessor shape the runtime upsert code consumes.
+      const materializedProofs = new Set<number>();
       for (let e = 0; e < entryCount; e++) {
         const access = entryAccesses[e];
         const collection = stateLayout.collections?.find((item) => item.name === access.collection);
         if (collection?.sorted) {
-          probeBuilder.addInput({
-            txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount,
-            token: {
-              category: categoryId, amount: 0n,
-              nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
-            },
-          }, createEntryNftUnlocker(contract, 0, categoryId, access.collection));
+          const plan = sortedPlans.get(access.collection)!;
+          if (!materializedProofs.has(plan.proofOffset)) {
+            materializedProofs.add(plan.proofOffset);
+            probeBuilder.addInput({
+              txid: `${'00'.repeat(31)}ee`, vout: sortedCollections.indexOf(access.collection),
+              satoshis: dataNftAmount,
+              token: {
+                category: categoryId, amount: 0n,
+                nft: { capability: 'mutable', commitment: binToHex(headSentinelCommitment()) },
+              },
+            }, createEntryNftUnlocker(contract, 0, categoryId, access.collection));
+          } else {
+            probeBuilder.addInput(
+              { txid: `${'00'.repeat(31)}ec`, vout: e, satoshis: dataNftAmount },
+              options.funder,
+            );
+          }
           continue;
         }
+        const collectionSig = stateLayout.collections?.find(
+          (collection) => collection.name === access.collection,
+        )?.signature ?? access.collection;
+        const entryLockingBytecode = scriptToLockingBytecode(
+          buildEntryNftCovenantScript(hexToBin(categoryId), computeCollectionHash(collectionSig)),
+          contract.addressType,
+        );
         probeBuilder.addInput(
           { txid: `${'00'.repeat(31)}ee`, vout: e, satoshis: dataNftAmount },
           {
-            generateLockingBytecode: (): Uint8Array => DUMMY_FUNDER_LOCKING_BYTECODE,
+            generateLockingBytecode: (): Uint8Array => entryLockingBytecode,
             generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
           },
         );
       }
+
+      // Conditional event slots are output-bearing block positions too; materialize matching no-token inputs so
+      // input/output positional checks see the exact genesis layout.
+      for (const [eventIndex, emitInfo] of emitInfos.entries()) {
+        const eventDef = allEventDefs.find((event) => event.signature === emitInfo.eventSignature);
+        const eventScript = eventDef?.anonymous === true
+          ? buildAnonymousEventNftCovenantScript(hexToBin(categoryId))
+          : buildEventNftCovenantScript(hexToBin(categoryId), computeEventNameHash(emitInfo.eventSignature));
+        const eventLockingBytecode = scriptToLockingBytecode(eventScript, contract.addressType);
+        probeBuilder.addInput(
+          { txid: `${'00'.repeat(31)}ed`, vout: eventIndex, satoshis: dataNftAmount },
+          {
+            generateLockingBytecode: (): Uint8Array => eventLockingBytecode,
+            generateUnlockingBytecode: (): Uint8Array => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+          },
+        );
+      }
+
+      // Direct msg.sender resolves to tx.origin, the first native P2PKH source output. Keep the real funder after
+      // the fixed constructor block so it supplies identity without shifting any positional covenant slots.
+      probeBuilder.addInput(options.fundingUtxo, options.funder);
 
       // Output 0: master preserved
       probeBuilder.addOutput({
@@ -3098,7 +3421,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probeBuilder.addOutput({
           to: dataNftUnlockers[i].generateLockingBytecode(),
           amount: dataNftAmount,
-          token: nft.token,
+          token: {
+            category: categoryId,
+            amount: 0n,
+            nft: {
+              capability: 'mutable' as const,
+              commitment: currentCommitments[i],
+            },
+          },
         });
       });
 
@@ -3127,20 +3457,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             },
           },
         });
-        const collection = stateLayout.collections?.find((item) => item.name === access.collection);
-        if (collection?.sorted) {
-          probeBuilder.addOutput({
-            to: lockingBytecode,
-            amount: dataNftAmount,
-            token: {
-              category: categoryId, amount: 0n,
-              nft: {
-                capability: 'mutable' as const,
-                commitment: entryCommits[probeEntryCommitmentIndex++] ?? '',
-              },
-            },
-          });
-        }
       }
 
       // Transfer placeholder outputs
@@ -3152,7 +3468,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
 
       // Event NFT placeholder outputs
-      for (const emitInfo of emitInfos) {
+      for (const [eventIndex, emitInfo] of emitInfos.entries()) {
         const eventDef = allEventDefs.find(
           (e) => e.signature === emitInfo.eventSignature,
         );
@@ -3171,9 +3487,54 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           amount: dataNftAmount,
           token: {
             category: categoryId, amount: 0n,
-            nft: { capability: 'mutable' as const, commitment: '' },
+            nft: { capability: 'none' as const, commitment: eventCommits[eventIndex] },
           },
         });
+      }
+
+      for (const [index, collectionName] of sortedCollections.entries()) {
+        probeBuilder.addOutput({
+          to: getEntryNftAddress(contract, categoryId, collectionName),
+          amount: dataNftAmount,
+          token: {
+            category: categoryId, amount: 0n,
+            nft: {
+              capability: 'mutable',
+              commitment: trailingEntryCommits[index],
+            },
+          },
+        });
+      }
+
+      // Dynamic constructor writes trail the fixed block. Direct parameter assignments (the Solidity-compatible
+      // pattern used by ERC20(name, symbol)) are known exactly, so use their real commitments in every probe.
+      for (const variable of stateLayout.variables ?? []) {
+        if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
+        const normalized = variable.name.replace(/^_+/, '');
+        const inputIndex = visibleInputs.findIndex(
+          (input) => input.name.replace(/^_+/, '').replace(/_+$/, '') === normalized,
+        );
+        const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
+        const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
+        if (value === undefined) continue;
+        const lockingBytecode = addressToLockScript(getDynamicChunkAddress(
+          contract, categoryId, variable.name, variable.type,
+        ));
+        for (const [chunkIndex, chunkData] of splitValueIntoChunks(value).entries()) {
+          probeBuilder.addOutput({
+            to: lockingBytecode,
+            amount: dataNftAmount,
+            token: {
+              category: categoryId, amount: 0n,
+              nft: {
+                capability: 'mutable' as const,
+                commitment: buildChunkCommitment(
+                  chunkIndex, chunkData, options.provider.consensusLimits?.maximumNftCommitmentBytes,
+                ),
+              },
+            },
+          });
+        }
       }
 
       // Run VM debug and extract commitments
@@ -3181,49 +3542,116 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const sourceOutputs = generateLibauthSourceOutputs(
         probeBuilder.inputs,
       );
-      const fullTrace = vm.debug({
-        inputIndex: 0,
-        sourceOutputs,
-        transaction,
-      }) as AuthenticationProgramStateCommon[];
+      const program = { inputIndex: 0, sourceOutputs, transaction };
+      let fullTrace: AuthenticationProgramStateCommon[];
+      if (useSparseProbe) {
+        // Large private-network contracts can execute millions of instructions. vm.debug() clones every state,
+        // including its stack, so probing a several-hundred-kilobyte initializer can consume many gigabytes.
+        // Commitment/transfer extraction only needs the inspected opcode and its adjacent EQUALVERIFY state.
+        const sparseTrace: AuthenticationProgramStateCommon[] = [];
+        const observedOpcodes = new Set<number>([
+          Op.OP_OUTPUTTOKENCOMMITMENT,
+          Op.OP_OUTPUTBYTECODE,
+          Op.OP_OUTPUTVALUE,
+          Op.OP_OUTPUTTOKENAMOUNT,
+          Op.OP_OUTPUTTOKENCATEGORY,
+          Op.OP_EQUALVERIFY,
+        ]);
+        let awaitingVerification = false;
+        const vm = createVirtualMachineBch2026ForProvider(options.provider, {
+          opcodes: observedOpcodes,
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            const opcode = state.instructions[state.ip]?.opcode;
+            if (opcode === Op.OP_EQUALVERIFY && !awaitingVerification) return;
+            sparseTrace.push({
+              ...state,
+              stack: state.stack.slice(),
+              alternateStack: state.alternateStack.slice(),
+              controlStack: state.controlStack.slice(),
+            });
+            awaitingVerification = opcode !== Op.OP_EQUALVERIFY;
+          },
+        });
+        const finalState = vm.evaluate(program) as AuthenticationProgramStateCommon;
+        fullTrace = [...sparseTrace, finalState];
+      } else {
+        fullTrace = createVirtualMachineBch2026ForProvider(options.provider).debug(
+          program,
+        ) as AuthenticationProgramStateCommon[];
+      }
 
       // Learn entry commitments even from a trace that stops at their placeholder equality check. On the next
       // iteration those commitments are present, allowing execution to reach later state/event derivations.
-      let learnedEntryCommits: string[] = [];
+      const learnedEntryCommits = [...entryCommits];
+      let learnedAnyEntry = false;
       if (entryOutputCount > 0) {
         const entryOutputBase = 1 + stateLayout.dataNftCount;
-        learnedEntryCommits = extractCommitmentsFromTrace(fullTrace, entryOutputCount, {
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
-        }) ?? [];
+        })) {
+          learnedEntryCommits[outputIndex - entryOutputBase] = commitment;
+          learnedAnyEntry = true;
+        }
       }
-      const entryLearningChanged = learnedEntryCommits.length > 0
+      const entryLearningChanged = learnedAnyEntry
         && learnedEntryCommits.some((commitment, index) => commitment !== entryCommits[index]);
       if (entryLearningChanged) {
         entryCommits = learnedEntryCommits;
         continue;
+      }
+      if (!usesC2BatchWitnesses) {
+        const learnedTrailing = [...trailingEntryCommits];
+        let trailingChanged = false;
+        for (const [collectionIndex, collectionName] of sortedCollections.entries()) {
+          const outputIndex = sortedPlans.get(collectionName)!.trailingOutput;
+          const learned = extractCommitmentMapFromTrace(fullTrace, {
+            min: outputIndex, max: outputIndex + 1,
+          }).get(outputIndex);
+          if (learned !== undefined && learned !== learnedTrailing[collectionIndex]) {
+            learnedTrailing[collectionIndex] = learned;
+            trailingChanged = true;
+          }
+        }
+        if (trailingChanged) {
+          trailingEntryCommits = learnedTrailing;
+          continue;
+        }
       }
 
       // Extract state commitments with output-index range filtering
       const stateOutputRange = {
         min: 1, max: 1 + requiredIndices.length,
       };
-      const newStateCommitments = extractCommitmentsFromTrace(
-        fullTrace, requiredIndices.length, stateOutputRange,
+      const stateCommitmentMap = extractCommitmentMapFromTrace(
+        fullTrace, stateOutputRange,
       );
-      if (
-        !newStateCommitments
-        || newStateCommitments.length < requiredIndices.length
-      ) {
-        const failedState = fullTrace.find((state) => state.error);
-        const vmError = failedState?.error;
-        const vmPosition = failedState ? ` at instruction ${failedState.ip}` : '';
+      if (stateCommitmentMap.size === 0) {
+        const failedStep = [...fullTrace].reverse().find((step) => step.error);
+        const vmError = failedStep?.error;
+        const vmLocation = failedStep === undefined
+          ? ''
+          : ` at instruction ${failedStep.ip}/${failedStep.instructions.length}`;
+        const vmStack = failedStep === undefined
+          ? ''
+          : ` (stack: ${failedStep.stack.slice(-4).map((item) => binToHex(item)).join(', ')})`;
         throw new Error(
           'Failed to derive initial state commitments from '
           + 'constructor. Ensure the constructor writes all '
-          + `state variables.${vmError ? ` VM error${vmPosition}: ${vmError}` : ''}`,
+          + 'state variables.'
+          + (vmError === undefined ? '' : ` VM error${vmLocation}: ${vmError}${vmStack}`),
         );
       }
+
+      // A subroutine-aware trace slice may expose only the last failing verification, so a partial positional
+      // list cannot be assumed to be a prefix. Map each observed output slot back to its exact required NFT.
+      for (const [outputIndex, commitment] of stateCommitmentMap) {
+        const compactIndex = outputIndex - stateOutputRange.min;
+        const nftIndex = requiredIndices[compactIndex];
+        if (nftIndex !== undefined) currentCommitments[nftIndex] = commitment;
+      }
+      stateCommitments = requiredIndices.map((nftIndex) => currentCommitments[nftIndex]);
 
       // Extract entry commitments
       if (entryOutputCount > 0) {
@@ -3232,22 +3660,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
         };
-        entryCommits = extractCommitmentsFromTrace(
-          fullTrace, entryOutputCount, entryOutputRange,
-        ) ?? [];
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange)) {
+          entryCommits[outputIndex - entryOutputBase] = commitment;
+        }
       }
 
       // Extract event commitments
-      eventCommits = [];
       if (emitCount > 0) {
         const eventBase = 1 + stateLayout.dataNftCount + entryOutputCount
           + transferCount;
         const eventOutputRange = {
           min: eventBase, max: eventBase + emitCount,
         };
-        eventCommits = extractCommitmentsFromTrace(
-          fullTrace, emitCount, eventOutputRange,
-        ) ?? [];
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange)) {
+          eventCommits[outputIndex - eventBase] = commitment;
+        }
       }
 
       // Extract transfer outputs
@@ -3275,21 +3702,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      stateCommitments = newStateCommitments;
-
-      // Check convergence: did commitments change from previous iter?
-      const currentStateCommitments = stateCommitments;
-      const converged = requiredIndices.every(
-        (idx) => currentCommitments[idx] === currentStateCommitments[
-          requiredIndices.indexOf(idx)
-        ],
-      );
-      if (converged) break;
+      // Once the complete constructor probe validates, every learned output placeholder is a fixed point.
+      if (!fullTrace.some((step) => step.error !== undefined)) {
+        deployConverged = true;
+        break;
+      }
 
       // Oscillation detection: if we've seen this exact commitment set before,
       // the derivation is cycling without converging.
       const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
-        + '||' + eventCommits.join('|');
+        + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|');
       if (seenDeployKeys.has(deployKey)) {
         throw new Error(
           'Deploy derivation oscillation detected: commitment state is cycling without converging. '
@@ -3297,16 +3719,45 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
       seenDeployKeys.add(deployKey);
+    }
 
-      // Update current commitments for next iteration
-      for (let j = 0; j < requiredIndices.length; j++) {
-        currentCommitments[requiredIndices[j]] = stateCommitments[j];
+    if (!deployConverged) {
+      throw new Error(
+        `Constructor commitment derivation did not converge after ${maxDeployIterations} probes.`,
+      );
+    }
+
+    // Conditional constructor writes reserve fixed entry outputs even when their branch is not taken. The batch
+    // probe plans against every potential target, so a materialized node can initially point through an empty
+    // (nonexistent) output. Genesis is funder-authorized rather than covenant-spent: rebuild each C2 collection's
+    // links over only the entries the trace actually materialized, preserving their computed values.
+    for (const [collectionIndex, collectionName] of usesC2BatchWitnesses ? sortedCollections.entries() : []) {
+      const materialized = entryAccesses
+        .map((access, index) => ({ access, index, commitment: entryCommits[index] }))
+        .filter(({ access, commitment }) => access.collection === collectionName && commitment.length >= 128)
+        .map(({ index, commitment }) => ({ index, ...decodeEntryCommitment(hexToBin(commitment)) }))
+        .sort((a, b) => {
+          const av = bytesToSlotValue(a.slot);
+          const bv = bytesToSlotValue(b.slot);
+          return av < bv ? -1 : av > bv ? 1 : 0;
+        });
+      for (let i = 0; i < materialized.length; i++) {
+        const entry = materialized[i];
+        entryCommits[entry.index] = binToHex(encodeEntryCommitment(
+          entry.slot, materialized[i + 1]?.slot ?? new Uint8Array(32), entry.value,
+        ));
       }
+      trailingEntryCommits[collectionIndex] = binToHex(encodeEntryCommitment(
+        new Uint8Array(32), materialized[0]?.slot ?? new Uint8Array(32),
+      ));
     }
 
     return {
-      stateCommitments,
+      // `stateCommitments` contains only constructor-required indices. Return the complete converged state so
+      // untouched, explicitly seeded NFTs are materialized rather than becoming undefined genesis commitments.
+      stateCommitments: currentCommitments,
       entryCommitments: entryCommits,
+      trailingEntryCommitments: trailingEntryCommits,
       eventCommitments: eventCommits,
       transferOutputs: transferOuts,
     };
@@ -3390,12 +3841,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */
   get target(): string {
-    return this.address;
+    return this._logicalAddress ?? this.address;
   }
 
   /** The contract's p2sh address (async, ethers.js `contract.getAddress()`). */
   async getAddress(): Promise<string> {
-    return this.address;
+    return this.target;
   }
 
   async getState(): Promise<Record<string, StateValueType>> {
@@ -3862,7 +4313,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     base: number, slotCount: number,
   ): Promise<Array<{ inputIndex: number; n: bigint }>> {
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const b = new CovenantTransactionBuilder({ provider: this.inner.provider });
     b.locktime = 499999999; // max block-height locktime: satisfies any tx.time >= n (height) CLTV
     const dataUnlockers = dataNftUtxos.map(() => createDataNftUnlocker(this.inner, 0, this.categoryId));
@@ -4030,7 +4481,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'blockhash oracles) do not fill the slots before the keccak side-car; cannot position the probe.');
     }
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const lock = keccakComputeLockingBytecode(salt, true);
     let guard = 0;
     while (preimages.some((p) => p === null)) {
@@ -4093,7 +4544,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const scUtxos = (await this.inner.provider.getUtxosForLockingBytecode(lock))
       .filter((u) => u.token?.nft?.capability === 'mutable');
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const vm = createVirtualMachineBch2026();
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
     const MAX_ITERS = 64; // budget/standardness cap on runtime keccak side-cars per tx
     const preimages: Uint8Array[] = [];
     for (let k = 1; k <= MAX_ITERS + 1; k++) {
@@ -4294,7 +4745,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // cleanly distinguishable from programming bugs or configuration errors.
       try {
         const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-        const vm = createVirtualMachineBch2026();
 
         // Probe with optional data NFT output commitment overrides (default: current).
         const runProbe = (dataNftOutputCommitments?: string[]): AuthenticationProgramStateCommon[] => {
@@ -4369,7 +4819,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           const transaction = probeBuilder.buildLibauthTransaction();
           const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
-          return vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+          return evaluateProbeTrace(this.inner.provider, { inputIndex: 0, sourceOutputs, transaction });
         };
 
         // Pass 1: derive data NFT state. Placeholder outputs fail the data NFT verify, but
@@ -4552,7 +5002,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const ec = externalCalls[groupIdx];
           if (ec.hasReturnValues) {
             const group = externalCallUtxoGroups[groupIdx];
-            stb.setReturnEventOutput(group.categoryId, new Uint8Array([0]));
+            stb.setReturnEventOutput(
+              group.categoryId,
+              group.precomputedReturnCommitment ?? new Uint8Array([0]),
+              `external-call:${groupIdx}`,
+            );
           }
         }
 
@@ -4565,6 +5019,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (let groupIdx = externalCallUtxoGroups.length - 1; groupIdx >= 0; groupIdx--) {
           const group = externalCallUtxoGroups[groupIdx];
           const ec = externalCalls[groupIdx];
+          if (group.sharedGroupIndex !== undefined) continue;
+
+          if (group.plannedEntryInserts?.length
+            && !group.plannedEntryInsertHandles) {
+            group.plannedEntryInsertHandles = group.plannedEntryInserts.map(({ blockSlot }) => {
+              const input = group.blockInputs?.[blockSlot];
+              if (!input) throw new Error('Planned nested entry insert has no block input.');
+              return stb.addExternalCallEntryInsert(
+                group.categoryId,
+                input.unlocker.generateLockingBytecode(),
+                '00',
+              );
+            });
+          }
 
           // Build probe with current (possibly placeholder) state
           const probeBuilder = stb.build();
@@ -4572,7 +5040,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
           // Get B's master input index
-          const bMasterIdx = stb.getExternalCallMasterInputIndex(groupIdx);
+          const bMasterIdx = group.delegateCallGroupIndex === undefined
+            ? stb.getExternalCallMasterInputIndex(groupIdx)
+            : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
 
           // Patch B's C2 entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
           // covenant's write path (flag=1) verifies a minting NFT at masterInputIndex = B's master, but block-build
@@ -4607,7 +5077,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Run VM on B's master input
-          const vm = createVirtualMachineBch2026();
+          const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
           const fullTrace = vm.debug({
             inputIndex: bMasterIdx,
             sourceOutputs,
@@ -4641,9 +5111,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
           if (group.blockLayout && group.blockInputs) {
             const bEntryMap = extractCommitmentMapFromTrace(fullTrace,
-              { min: bOutputBase, max: bOutputBase + group.blockInputs.length });
+              { min: bOutputBase, max: bOutputBase + group.blockInputs.length },
+              // A nested callee may execute through a delegate/sharded
+              // function-body phase and return to a shorter redeem script
+              // before performing its entry pins. Restricting extraction to
+              // the longest redeem phase misses those final commitments.
+              true);
             const bBlockSize = group.blockLayout.blockSize ?? group.blockInputs.length;
-            const insertHandles: Array<{ handle: number; newIdx: number }> = [];
+            const insertHandles: Array<{ handle: number; newIdx: number; planned: boolean }> = [];
             let insertCount = 0;
             for (let si = 0; si < group.blockLayout.slots.length; si++) {
               if (group.blockLayout.slots[si]?.kind !== 'entry') continue;
@@ -4658,10 +5133,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const inCommit = input?.token?.nft?.commitment;
               if (inCommit && inCommit.length >= 128 && commit.length >= 128
                 && inCommit.slice(64, 128) !== commit.slice(64, 128)) {
-                const handle = stb.addExternalCallEntryInsert(
-                  group.categoryId, input.unlocker.generateLockingBytecode(), commit,
-                );
-                insertHandles.push({ handle, newIdx: bMasterIdx + bBlockSize + insertCount });
+                const plannedIndex = group.plannedEntryInserts
+                  ?.findIndex((planned) => planned.blockSlot === si) ?? -1;
+                const handle = plannedIndex >= 0
+                  ? group.plannedEntryInsertHandles![plannedIndex]
+                  : stb.addExternalCallEntryInsert(
+                    group.categoryId, input.unlocker.generateLockingBytecode(), commit,
+                  );
+                insertHandles.push({
+                  handle,
+                  newIdx: bMasterIdx + bBlockSize + insertCount,
+                  planned: plannedIndex >= 0,
+                });
                 insertCount++;
               }
             }
@@ -4669,14 +5152,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // OP_OUTPUTTOKENCOMMITMENT and pushes the real NEW commitment; extract it and replace the placeholder.
             if (insertHandles.length > 0) {
               const pb2 = stb.build();
-              const map2 = extractCommitmentMapFromTrace(createVirtualMachineBch2026().debug({
+              const map2 = extractCommitmentMapFromTrace(createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
                 inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
                 transaction: pb2.buildLibauthTransaction(),
               }) as AuthenticationProgramStateCommon[]);
-              for (const { handle, newIdx } of insertHandles) {
+              for (const { handle, newIdx, planned } of insertHandles) {
                 const newCommit = map2.get(newIdx);
                 if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
-                else stb.removeExternalCallEntryInsert(handle);
+                else if (!planned) stb.removeExternalCallEntryInsert(handle);
               }
             }
           }
@@ -4690,11 +5173,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // Re-run B's VM with any data NFT commitments now set so B's script reliably reaches that point.
           // The range covers all return events (chained A->B->C give each group a distinct index); B's script
           // verifies only its own, so exactly one matches.
-          if (ec.hasReturnValues) {
+          if (ec.hasReturnValues
+            && (group.fusedReturnGroupIndex !== undefined || !group.precomputedReturnCommitment)) {
             const probeBuilderRet = stb.build();
             const transactionRet = probeBuilderRet.buildLibauthTransaction();
             const sourceOutputsRet = generateLibauthSourceOutputs(probeBuilderRet.inputs);
-            const vmRet = createVirtualMachineBch2026();
+            const vmRet = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTraceRet = vmRet.debug({
               inputIndex: bMasterIdx,
               sourceOutputs: sourceOutputsRet,
@@ -4703,13 +5187,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
             const returnEventOutputBase = stb.getReturnEventOutputBase();
             const totalReturnEvents = externalCalls.filter((e) => e.hasReturnValues).length;
-            const returnOutputRange = {
-              min: returnEventOutputBase,
-              max: returnEventOutputBase + totalReturnEvents,
-            };
-            const returnCommitments = extractCommitmentsFromTrace(fullTraceRet, 1, returnOutputRange);
+            const returnOutputRange = group.returnOutputIndex === undefined
+              ? {
+                min: returnEventOutputBase,
+                max: returnEventOutputBase + totalReturnEvents,
+              }
+              : { min: group.returnOutputIndex, max: group.returnOutputIndex + 1 };
+            const returnCommitments = extractCommitmentsFromTrace(
+              fullTraceRet, 1, returnOutputRange, true,
+            );
             if (returnCommitments && returnCommitments.length > 0) {
-              stb.setReturnEventOutput(group.categoryId, hexToBin(returnCommitments[0]));
+              const returnGroupIndex = group.fusedReturnGroupIndex ?? groupIdx;
+              stb.setReturnEventOutput(
+                group.categoryId,
+                hexToBin(returnCommitments[0]),
+                `external-call:${returnGroupIndex}`,
+              );
             }
           }
 
@@ -4723,7 +5216,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const bAbiFunc = bArt?.abi?.find((f: any) => f.name === group.functionName);
             const bEmits: Array<{ eventSignature: string; emitIndex: number }> = bAbiFunc?.emits ?? [];
 
-            if (bEmits.length > 0 && bArt?.events) {
+            if (bEmits.length > 0) {
             // Find the event slot positions in B's block layout
               const eventSlots = group.blockLayout.slots.filter((s) => s.kind === 'event');
               if (eventSlots.length > 0) {
@@ -4732,7 +5225,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 const probeBuilder2 = stb.build();
                 const transaction2 = probeBuilder2.buildLibauthTransaction();
                 const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
-                const vm2 = createVirtualMachineBch2026();
+                const vm2 = createVirtualMachineBch2026ForProvider(this.inner.provider);
                 const fullTrace2 = vm2.debug({
                   inputIndex: bMasterIdx,
                   sourceOutputs: sourceOutputs2,
@@ -4741,7 +5234,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
                 const eventOutputStart = bOutputBase + eventSlots[0].offset;
                 const eventOutputRange = { min: eventOutputStart, max: eventOutputStart + eventSlots.length };
-                const eventCommits = extractCommitmentsFromTrace(fullTrace2, eventSlots.length, eventOutputRange);
+                const eventCommits = extractCommitmentsFromTrace(
+                  fullTrace2, eventSlots.length, eventOutputRange, true,
+                );
 
                 if (eventCommits && eventCommits.length > 0) {
                   const eventOutputs: Array<{
@@ -4779,7 +5274,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
             const bMasterIdx = stb.getExternalOutStateMasterInputIndex(groupIdx);
-            const vm = createVirtualMachineBch2026();
+            const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTrace = vm.debug({
               inputIndex: bMasterIdx,
               sourceOutputs,
@@ -4813,7 +5308,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
             const bMasterIdx = stb.getLowLevelCallMasterInputIndex(groupIdx);
-            const vm = createVirtualMachineBch2026();
+            const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
             const fullTrace = vm.debug({
               inputIndex: bMasterIdx,
               sourceOutputs,
@@ -4897,6 +5392,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Loop mapping writes derive one entry commitment per probe (the VM halts at the first mismatch), so a
         // loop of N iterations needs ~N+2 probes. Give the convergence loop headroom past the default.
         const maxIterations = stb.getLoopEntryVars().length > 0
+          || stb.getValueChunkVars().length > 0
+          || stb.getDynamicChunkVars().length > 0
           ? Math.max(this.maxDerivationIterations, 64)
           : this.maxDerivationIterations;
         let lastTrace: AuthenticationProgramStateCommon[] | undefined;
@@ -4907,15 +5404,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         for (let iter = 0; iter < maxIterations; iter++) {
           const probeBuilder2 = stb.build();
+          // Delegate dynamic outputs are anchored from the transaction tail, immediately before the
+          // fee-funder remainder. Derivation probes do not run STB.send()'s funding phase, so add an
+          // equivalent sentinel remainder to keep their output geometry identical to the submitted tx.
+          if (delegatecallInputIndex !== undefined) {
+            probeBuilder2.addOutput({ to: dummyLbc, amount: 1000n });
+          }
           const transaction2 = probeBuilder2.buildLibauthTransaction();
           const sourceOutputs2 = generateLibauthSourceOutputs(probeBuilder2.inputs);
 
-          const vm2 = createVirtualMachineBch2026();
-          const fullTrace2 = vm2.debug({
+          const fullTrace2 = evaluateProbeTrace(this.inner.provider, {
             inputIndex: delegatecallInputIndex ?? 0,
             sourceOutputs: sourceOutputs2,
             transaction: transaction2,
-          }) as AuthenticationProgramStateCommon[];
+          });
           lastTrace = fullTrace2;
 
           // Extract commitments using output-index filtering to avoid capturing
@@ -4987,7 +5489,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               if (nNew > 0) {
                 const range = { min: chunkOffset, max: chunkOffset + nNew };
-                const chunkCommits = extractCommitmentsFromTrace(fullTrace2, nNew, range) ?? [];
+                const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
+                const chunkCommits = Array.from({ length: nNew }, (_, i) => commitMap.get(chunkOffset + i))
+                  .filter((commit): commit is string => commit !== undefined);
                 if (chunkCommits.length > 0) {
                   const cur = stb.getChunkRawCommitments(dv.name);
                   stb.setChunkRawCommitments(dv.name,
@@ -4996,6 +5500,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               chunkOffset += nNew;
+            }
+          } else if (chunkVars.length > 0) {
+            // Delegate probes can reveal the exact expected chunk commitment before their rewritten data-NFT
+            // state has converged. Preserve that progress instead of leaving the seeded `00` placeholder.
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const range = { min: chunkOffset, max: chunkOffset + existing.length };
+              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
+            }
+          }
+          if (chunkVars.length > 0) {
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length },
+                true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
             }
           }
 
@@ -5029,7 +5564,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // A sorted VALUE upsert mints at most ONE trailing NEW node (insert), so cap its range to a single
               // output - otherwise a chunkable-value insert's value-chunk pin (which emits OP_OUTPUTTOKENCOMMITMENT
               // at loopOffset+1..) would be misread here as extra NEW nodes.
-              const loopMax = isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
+              const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
+              const loopMax = requiredCount > 0
+                ? loopOffset + requiredCount
+                : isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
               const range = { min: loopOffset, max: loopMax };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
@@ -5046,7 +5584,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // chunks converge the NEW OTC never runs and derivedCount is 0. Do NOT drop the seeded loop entry to 0
               // (that would shift vcBase and misalign the chunk derivation) - keep the count of 1 until NEW derives.
               const hasValueChunks = stb.getValueChunkVars().some((v) => v.collection === lv.collection);
-              const requiredCount = stb.getRequiredLoopEntryCount(lv.collection);
               if (isSortedValueMint && derivedCount === 0 && existing.length > 0
                 && (hasValueChunks || requiredCount > 0)) {
                 loopOffset += existing.length;
@@ -5055,7 +5592,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const stillLearning = !isSortedValueMint && derivedCount > 0
                 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
-              for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
+              const acceptedCount = requiredCount > 0 ? Math.min(derivedCount, requiredCount) : derivedCount;
+              for (let i = 0; i < acceptedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';
               if (stillLearning) next.push('00');
               while (next.length < requiredCount) next.push(existing[next.length] ?? '00');
               stb.setLoopEntryCommitments(lv.collection, next);
@@ -5086,7 +5624,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
               const derived: string[] = [];
-              for (const [outIdx, commit] of commitMap) derived[outIdx - vcOffset] = commit;
+              for (const [outIdx, commit] of commitMap) {
+                const outputChunkIndex = outIdx - vcOffset;
+                try {
+                  const parsed = parseValueChunkCommitment(commit);
+                  // The next trailing output may belong to another covenant family (for example dynamic
+                  // storage). Accept only the canonical continuation whose encoded index matches its
+                  // position in this value's chunk run.
+                  if (parsed.chunkIndex === outputChunkIndex) derived[outputChunkIndex] = commit;
+                } catch {
+                  // A different output family can have a commitment that is not a C2 continuation at all.
+                }
+              }
               const derivedCount = derived.filter((c) => c !== undefined).length;
               const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
@@ -5098,9 +5647,32 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
 
+          // Value-chunk discovery can shift the delegate dynamic-output base during this probe. Re-scan
+          // dynamic commitments after value chunks have converged so the output-index range reflects the
+          // builder's updated layout (NEW nodes, value chunks, pending outputs, then dynamic chunks).
+          if (chunkVars.length > 0) {
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of chunkVars) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length }, true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                commitmentProgress += next.length;
+              }
+              chunkOffset += existing.length;
+            }
+          }
+
           // Event commitments: output indices [eventBase, eventBase + eventCount)
           if (eventCount > 0) {
-            const eventOutputBase = stb.getEventOutputBase();
+            const physicalEventIndices = delegatecallInputIndex === undefined ? [] : probeBuilder2.outputs
+              .map((output, index) => output.token?.category === this.categoryId
+                && output.token.nft?.capability === 'none' ? index : -1)
+              .filter((index) => index >= 0);
+            const eventOutputBase = physicalEventIndices[0] ?? stb.getEventOutputBase();
             const eventOutputRange = { min: eventOutputBase, max: eventOutputBase + eventCount };
             const eventCommits = extractCommitmentsFromTrace(fullTrace2, eventCount, eventOutputRange) ?? [];
             commitmentProgress += eventCommits.length;
@@ -5253,6 +5825,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const commits = stb.getValueChunkRawCommitments(vcv.collection).filter((c) => c !== '00');
           if (commits.length !== stb.getValueChunkRawCommitments(vcv.collection).length) {
             stb.setValueChunkRawCommitments(vcv.collection, commits);
+          }
+        }
+
+        // The speculative value-chunk placeholder above can be the first failing output pin in every
+        // primary probe. Once it is removed, delegate execution can finally reach later dynamic-storage
+        // pins. Derive those commitments from the cleaned layout before constructing the final transaction.
+        if (stb.getDynamicChunkVars().length > 0) {
+          for (let iter = 0; iter < 64; iter++) {
+            const cleanedProbe = stb.build();
+            if (delegatecallInputIndex !== undefined) {
+              cleanedProbe.addOutput({ to: dummyLbc, amount: 1000n });
+            }
+            const cleanedTrace = evaluateProbeTrace(this.inner.provider, {
+              inputIndex: delegatecallInputIndex ?? 0,
+              sourceOutputs: generateLibauthSourceOutputs(cleanedProbe.inputs),
+              transaction: cleanedProbe.buildLibauthTransaction(),
+            });
+            lastTrace = cleanedTrace;
+            let changed = false;
+            let chunkOffset = stb.getChunkOutputBase();
+            for (const dv of stb.getDynamicChunkVars()) {
+              const existing = stb.getChunkRawCommitments(dv.name);
+              const commitMap = extractCommitmentMapFromTrace(
+                cleanedTrace, { min: chunkOffset, max: chunkOffset + existing.length }, true,
+              );
+              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              if (next.some((commit, i) => commit !== existing[i])) {
+                stb.setChunkRawCommitments(dv.name, next);
+                changed = true;
+              }
+              chunkOffset += existing.length;
+            }
+            if (!changed || !cleanedTrace.some((s: any) => s.error)) break;
           }
         }
 
@@ -5475,8 +6080,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 return-value emit: -1 means "do not emit" (default). With .emitReturn(), point the covenant's
     // __internal__returnOutputIdx at the function's returnEvent output slot (a fixed block-layout offset).
     let returnEmitOutputIndex = -1;
-    if (overrides?.emitReturn && (abiFunction?.outputs?.length ?? 0) > 0) {
-      const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    const delegatedReturnFunction = overrides?.calls
+      ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
+      .map((call) => call.contract.inner.artifact.abi.find((fn) => fn.name === call.functionName))
+      .find((fn) => (fn?.outputs?.length ?? 0) > 0);
+    const returnAbiFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturnFunction;
+    if (overrides?.emitReturn && (returnAbiFunction?.outputs?.length ?? 0) > 0) {
+      const slot = returnAbiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
       if (!slot) {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
       }
@@ -5503,6 +6113,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Handle entry NFT accesses
     let entryAccesses = abiFunction?.entryAccesses;
+    let entryAbiFunction = abiFunction;
+    let entryArgs = args;
     // A delegatecall'd impl that writes a mapping does so against the PROXY's grafted collections (this.categoryId).
     // __forward itself has no entryAccesses, so route the impl fn's - the entry machinery below then mints/updates
     // the proxy's entry NFTs at the proxy-block entry slot (reserved via delegateEventSlots).
@@ -5510,13 +6122,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const resolvedForEntries = overrides?.calls ?? [];
       for (let i = 0; i < abiFunction.lowLevelCalls.length; i++) {
         if (abiFunction.lowLevelCalls[i].callMode !== 'delegatecall') continue;
-        const ci = resolvedForEntries[i] as { type?: string; contract?: StatefulContract; functionName?: string } | undefined;
+        const ci = resolvedForEntries[i] as {
+          type?: string; contract?: StatefulContract; functionName?: string; args?: FunctionArgument[];
+        } | undefined;
         if (ci?.type !== 'stateful' || !ci.contract) continue;
         const implFn = (ci.contract.inner.artifact.abi as readonly AbiFunction[]).find((f) => f.name === ci.functionName);
-        if (implFn?.entryAccesses?.length) { entryAccesses = implFn.entryAccesses; break; }
+        if (implFn?.entryAccesses?.length) {
+          entryAccesses = implFn.entryAccesses;
+          entryAbiFunction = implFn;
+          entryArgs = ci.args ?? [];
+          break;
+        }
       }
     }
     let entryNfts: EntryNftInfo[] = [];
+    let entryValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
+    let entryBatchWitnesses: unknown[] = [];
     // C2 sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
@@ -5622,8 +6243,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // resolve it from a caller-supplied entryKeyOverrides value (withEntryKey), matching the default entry
             // model. Without one, use a type-width placeholder (a lone entry / VM-trace derivation resolves it).
             if (source?.kind === 'expression') {
+              if (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(source.expressionLabel ?? '')) {
+                const senderSigner = this._signer ?? this._logicalNonceSigner;
+                if (!senderSigner) {
+                  throw new Error('A msg.sender-keyed sorted mapping requires a connected Signer.');
+                }
+                return addressToLockScript(senderSigner.getAddress());
+              }
               // Auto-derive a direct computed key (hash160(pk), sha256(x), ...) from its canonical label.
-              const auto = evalComputedKey(source.expressionLabel, args, abiFunction!.inputs);
+              const auto = evalComputedKey(source.expressionLabel, entryArgs, entryAbiFunction!.inputs);
               if (auto) return auto;
               const ov = overrides?.entryKeyOverrides?.get(slotIndex);
               if (ov !== undefined) {
@@ -5633,8 +6261,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const m = keyType.match(/^bytes(\d+)$/);
               return m ? new Uint8Array(parseInt(m[1], 10)) : new Uint8Array(0);
             }
-            const idx = abiFunction!.inputs.findIndex((inp) => inp.name === paramName);
-            const v = args[idx] as bigint | boolean | Uint8Array | string;
+            const idx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === paramName);
+            const v = entryArgs[idx] as bigint | boolean | Uint8Array | string;
             // An address key is hashed as its locking bytecode (matching the covenant's on-stack address and the
             // default entry model). Bytes keys arrive as Uint8Array (raw); ints as their VM number.
             if (keyType === 'address' && typeof v === 'string' && v.includes(':')) return addressToLockScript(v);
@@ -5645,9 +6273,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           const slot = keyToSlotMulti(keyNames.map((name, i) => encodeKey(name, keyTypes[i] ?? collection.keyType, i)));
           batchTargetSlots.set(slotIndex, slot);
-          if (abiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
-          }
-          const kvIdx = abiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
+          const kvIdx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
             ? onChainState.state[access.keySources[0].stateArrayName ?? ''] as unknown[] : undefined;
           const kv = access.keySources?.[0]?.kind === 'constant'
@@ -5655,20 +6281,29 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             : access.keySources?.[0]?.kind === 'msgSender'
             ? addressToLockScript(this._signer!.getAddress())
             : access.keySources?.[0]?.kind === 'expression'
-              ? (evalComputedKey(access.keySources[0].expressionLabel, args, abiFunction!.inputs)
-                ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
+              ? (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(
+                access.keySources[0].expressionLabel ?? '',
+              ) && (this._signer ?? this._logicalNonceSigner)
+                ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
+                : evalComputedKey(access.keySources[0].expressionLabel, entryArgs, entryAbiFunction!.inputs)
+                  ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
               : access.keySources?.[0]?.kind === 'stateArrayLast'
                 ? stateArrayKeyValues![stateArrayKeyValues!.length - 1] as bigint | boolean | Uint8Array | string
-              : args[kvIdx] as bigint | boolean | Uint8Array | string;
+                : entryArgs[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');
-          const isSoftDelete = abiFunction?.blockLayout?.slots.some(
+          const isSoftDelete = entryAbiFunction?.blockLayout?.slots.some(
             (s) => s.kind === 'entry' && s.slotIndex === slotIndex && s.softDelete,
           ) ?? false;
+          const encodedKv = typeof kv === 'string'
+            ? (collection.keyType === 'string' ? utf8ToBin(kv)
+              : /^bytes(?:\d+)?$/.test(collection.keyType) && kv.startsWith('0x') ? hexToBin(kv.slice(2))
+                : kv)
+            : kv;
           const entryBase = {
             slotIndex, collection: access.collection, keyType: collection.keyType, valueType: collection.valueType,
-            keyValue: kv as bigint | boolean | Uint8Array, exists: true,
+            keyValue: encodedKv as bigint | boolean | Uint8Array, exists: true,
           };
           if (isWrite) {
             // Upsert. Present -> UPDATE: co-spend the exact entry; the covenant pins the entry output k' = link||v,
@@ -5693,8 +6328,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // it PINNED so the derivation skips this collection entirely (see setLoopEntryCommitments + pinning).
               let newNode: Uint8Array | undefined;
               if (collection.chunkableValue && access.valueParam) {
-                const vIdx2 = abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
-                const raw2 = vIdx2 >= 0 ? args[vIdx2] : undefined;
+                const vIdx2 = entryAbiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam);
+                const raw2 = vIdx2 >= 0 ? entryArgs[vIdx2] : undefined;
                 const vB = typeof raw2 === 'string' ? utf8ToBin(raw2) : raw2 instanceof Uint8Array ? raw2 : undefined;
                 if (vB) {
                   const len4 = new Uint8Array(4);
@@ -5704,7 +6339,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   newNode = encodeEntryCommitment(slot, plan.predecessor.nextKey, tail);
                 }
               }
-              if (!abiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
+              if (!entryAbiFunction?.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
                 sortedInserts.push({ slotIndex, collection: access.collection, predNew: plan.predNewCommitment, newNode });
               }
             }
@@ -5729,11 +6364,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const root = tail.slice(4, 36);
                   const headData = tail.slice(36, 64);
                   const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, access.collection, slot, root);
-                  const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+                  const expectedChunkCount = Math.ceil((len - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+                  const chunksByIndex = new Map<number, { chunkIndex: number; chunkData: Uint8Array }>();
+                  for (const chunk of (await this.inner.provider.getUtxos(chunkAddr))
                     .filter((u) => u.token?.category === this.categoryId
                       && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
-                    .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
-                    .sort((a, b) => a.chunkIndex - b.chunkIndex);
+                    .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))) {
+                    // Only canonical continuation indices for this authenticated value belong to the
+                    // reconstruction. Other covenant families can coexist under provider/indexer queries
+                    // and their commitments must not inflate this value's strict chunk count.
+                    if (chunk.chunkIndex < expectedChunkCount) chunksByIndex.set(chunk.chunkIndex, chunk);
+                  }
+                  const chunks = [...chunksByIndex.values()].sort((a, b) => a.chunkIndex - b.chunkIndex);
                   witness = joinValueChunks(headData, chunks, len);
                   if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
                     throw new Error(`C2 value chunks do not match the authenticated root`);
@@ -5749,8 +6391,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // is chunked here; a COMPUTED value (unresolvable param / expression) is registered so the SDK derives the
           // pinned chunk commitments from the VM trace (like dynamicChunkVars).
           if (isWrite && collection.chunkableValue) {
-            const vIdx = access.valueParam ? abiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam) : -1;
-            const raw = vIdx >= 0 ? args[vIdx] : undefined;
+            const vIdx = access.valueParam ? entryAbiFunction!.inputs.findIndex((inp) => inp.name === access.valueParam) : -1;
+            const raw = vIdx >= 0 ? entryArgs[vIdx] : undefined;
             const vBytes = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
             if (vBytes) {
               if (vBytes.length > 60) {
@@ -5789,11 +6431,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const keySource = keySources[ki];
           if (keySource.kind === 'param') {
             // Existing: extract from function arguments by parameter name
-            const keyParamIndex = abiFunction!.inputs.findIndex((inp) => inp.name === keySource.paramName);
+            const keyParamIndex = entryAbiFunction!.inputs.findIndex((inp) => inp.name === keySource.paramName);
             if (keyParamIndex < 0) {
               throw new Error(`Key parameter '${keySource.paramName}' not found in function inputs`);
             }
-            let kv = args[keyParamIndex] as bigint | boolean | Uint8Array | string;
+            let kv = entryArgs[keyParamIndex] as bigint | boolean | Uint8Array | string;
             // Normalize a CashAddress string for an address key to its locking bytecode, matching how the covenant
             // stores it (Argument encoding does the same) - else the search cannot match the on-chain entry.
             if (effectiveKeyTypes[ki] === 'address' && typeof kv === 'string' && kv.includes(':')) {
@@ -5841,7 +6483,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // then consult an explicit override, and only then use a probe placeholder.
             const entryKeyOverrides = overrides?.entryKeyOverrides;
             const override = entryKeyOverrides?.get(slotIndex);
-            const evaluated = evalComputedKey(keySource.expressionLabel, args, abiFunction!.inputs);
+            const senderExpression = /^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(
+              keySource.expressionLabel ?? '',
+            );
+            const senderSigner = this._signer ?? this._logicalNonceSigner;
+            const evaluated = senderExpression && senderSigner
+              ? addressToLockScript(senderSigner.getAddress())
+              : evalComputedKey(keySource.expressionLabel, entryArgs, entryAbiFunction!.inputs);
             if (evaluated !== undefined) {
               const keyType = effectiveKeyTypes[ki];
               keyValues.push(/^(u?int|bigint|enum)/.test(keyType) ? decodeScriptNumber(evaluated) : evaluated);
@@ -5970,7 +6618,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (owner && entry.collection === owner.collection && entrySlot && ownerTarget
           && binToHex(entrySlot) === binToHex(ownerTarget)) batchAliasSkips.add(entry.slotIndex);
       }
-      const batchGuardSlot = abiFunction?.blockLayout?.slots.find(
+      const batchGuardSlot = entryAbiFunction?.blockLayout?.slots.find(
         (slot) => slot.kind === 'entry' && slot.softDelete,
       )?.slotIndex;
       const batchGuardEntry = batchGuardSlot === undefined ? undefined
@@ -5987,8 +6635,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Read-only dynamic chunks are preserved first in the trailing output region. Batch planning happens before
       // those witnesses are materialized below, so count them from the same deterministic addresses here.
       let preservedTrailingCount = 0;
-      const dynamicWriteSet = new Set(abiFunction?.dynamicWrites ?? []);
-      for (const varName of new Set(abiFunction?.dynamicReads ?? [])) {
+      const dynamicWriteSet = new Set(entryAbiFunction?.dynamicWrites ?? []);
+      for (const varName of new Set(entryAbiFunction?.dynamicReads ?? [])) {
         if (dynamicWriteSet.has(varName)) continue;
         const variable = stateLayout.variables.find((v) => v.name === varName && v.dynamic);
         if (!variable) continue;
@@ -5997,13 +6645,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
-      let batchPredOutputBase = (abiFunction?.blockLayout?.blockSize ?? 1) + preservedTrailingCount;
-      for (const batch of abiFunction?.sortedBatchInfo ?? []) {
+      let batchPredOutputBase = (entryAbiFunction?.blockLayout?.blockSize ?? 1) + preservedTrailingCount;
+      if (returnEmitOutputIndex < 0
+        && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {
+        batchPredOutputBase -= 1;
+      }
+      for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
         if (!collection) throw new Error(`Unknown C2 batch collection: ${batch.collection}`);
         if (batchNoOp) {
           for (const slotIndex of batch.slotIndices) {
-            const offset = abiFunction!.blockLayout?.slots.find(
+            const offset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
             )?.offset;
             if (offset === undefined) throw new Error(`C2 no-op slot has no block offset ${slotIndex}`);
@@ -6025,7 +6677,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (const slotIndex of batch.slotIndices) {
           if (batchAliasSkips.has(slotIndex)) {
             const ownerSlot = entryAccesses[slotIndex].aliasCondDeleteSlot!;
-            const ownerOffset = abiFunction!.blockLayout?.slots.find(
+            const ownerOffset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
             )?.offset;
             if (ownerOffset === undefined) throw new Error(`C2 alias owner has no block slot ${ownerSlot}`);
@@ -6044,7 +6696,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             duplicate.exists = false;
             duplicate.utxo = undefined;
           }
-          const offset = abiFunction!.blockLayout?.slots.find(
+          const offset = entryAbiFunction!.blockLayout?.slots.find(
             (s) => s.kind === 'entry' && s.slotIndex === owner,
           )?.offset;
           if (offset === undefined) throw new Error(`C2 batch '${batch.collection}' has no block slot ${owner}`);
@@ -6065,12 +6717,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         batchPredOutputBase += predOutputs.length;
         batchTrailingCount += predOutputs.length;
       }
-      if ((abiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
-      for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
+      if ((entryAbiFunction?.sortedBatchInfo?.length ?? 0) > 0) batchWitnesses.push(BigInt(batchTrailingCount));
+      entryBatchWitnesses = batchWitnesses;
+      if (entryAbiFunction === abiFunction) {
+        for (const witness of batchWitnesses) finalArgs = [...finalArgs, witness];
+      }
 
       // Append the P5b value witnesses in slotIndex order (SymbolTable injects them right after blockhash, before
       // the iteration params - matching this position in finalArgs). Empty for short/absent, the full value for long.
-      for (const witness of chunkableReadWitnesses) finalArgs = [...finalArgs, witness];
+      // When entry accesses come from a delegated facet, the witnesses belong to the facet ABI and are injected
+      // while constructing its unlocker below; the split root ABI intentionally has no such hidden parameters.
+      if (abiFunction?.inputs.some((input) => input.name.startsWith('__internal__valueWitness_'))) {
+        for (const witness of chunkableReadWitnesses) finalArgs = [...finalArgs, witness];
+      }
+      entryValueWitnesses = chunkableReadWitnesses;
 
     }
 
@@ -7153,7 +7813,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
                     // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
                     const effKeyValue = bEntryAccess.keySources?.[0]?.kind === 'msgSender'
-                      ? addressToLockScript(this.address)
+                      ? this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -7870,7 +8530,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const bAbiFunc = bAbiFuncs.find((f) => f.name === group.functionName);
         let bFinalArgs = [...group.functionArgs];
         if (bAbiFunc?.usesMsgSender) {
-          bFinalArgs = [...bFinalArgs, hexToBin(this.categoryId)];
+          // EVM delegatecall preserves the original caller. A zero category selects tx.origin in emitMsgSender;
+          // passing the proxy category would incorrectly make onlyOwner compare against the proxy itself.
+          bFinalArgs = [...bFinalArgs, group.callMode === 'delegatecall'
+            ? new Uint8Array(32) : hexToBin(this.categoryId).reverse()];
         }
 
         // Create B's master unlocker
@@ -7895,6 +8558,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Track per-group proxy master index for delegatecall composability
     const groupProxyMasterIndices: number[] = [];
+    // External calls made by a delegate implementation are still independent co-spends:
+    // the implementation executes against the proxy's state, but its callees must be
+    // materialized in the ordinary external-call section. Keep the child group indices
+    // per delegate group so its hidden witnesses can point at the real inputs/outputs.
+    const delegateExternalGroupIndices = new Map<number, number[]>();
+    const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
+    let nestedFunderIndex = 0;
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       const resolvedCalls = overrides?.calls ?? [];
@@ -7908,7 +8578,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (callInfo.type === 'stateful') {
-          const bState = await callInfo.contract.getFullState();
+          const bState = callInfo.contract.inner.artifact.delegateOnly
+            ? await (callInfo.contract as StatefulContract)._getMasterOnlyState()
+            : await callInfo.contract.getFullState();
           const bStateLayout = callInfo.contract.inner.stateLayout!;
           const bCategoryId = callInfo.contract.categoryId;
 
@@ -7919,9 +8591,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
 
           // Include all data NFTs
-          const bRequiredNftIndices = Array.from(
-            { length: bStateLayout.dataNftCount }, (_, idx) => idx,
-          );
+          const bRequiredNftIndices = callInfo.contract.inner.artifact.delegateOnly
+            ? []
+            : Array.from({ length: bStateLayout.dataNftCount }, (_, idx) => idx);
           const bDataNfts: UnlockableUtxo[] = [];
           for (const nftIndex of bRequiredNftIndices) {
             const dataNftUtxo = bState.dataNftUtxos[nftIndex];
@@ -7948,6 +8620,358 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             callMode: lowLevelCalls[i].callMode,
           });
           groupProxyMasterIndices.push(callInfo.proxyMasterIndex ?? 0);
+
+          if (lowLevelCalls[i].callMode === 'delegatecall') {
+            const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
+            const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
+            const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
+            const nestedIndices: number[] = [];
+            for (const nested of delegateFn?.externalCalls ?? []) {
+              const nestedSources = nested.rawArgSources ?? nested.argSources;
+              const usesEmptyArrayElement = (value: unknown, seen = new Set<object>()): boolean => {
+                if (!value || typeof value !== 'object' || seen.has(value as object)) return false;
+                seen.add(value as object);
+                const source = value as Partial<ArgSource>;
+                if (source.kind === 'arrayElement' && source.paramIndex !== undefined
+                  && Array.isArray(callInfo.args[source.paramIndex])
+                  && (callInfo.args[source.paramIndex] as unknown[]).length === 0) {
+                  return true;
+                }
+                return Object.values(value).some((child) => (
+                  Array.isArray(child)
+                    ? child.some((item) => usesEmptyArrayElement(item, seen))
+                    : usesEmptyArrayElement(child, seen)
+                ));
+              };
+              const inactiveArrayIteration = nestedSources?.some((source) => usesEmptyArrayElement(source));
+              if (inactiveArrayIteration) continue;
+              const resolvedAddress = nested.addressSource
+                ? this._resolveExternalArgs(
+                  [nested.addressSource], callInfo.args, callInfo.contract.inner.artifact,
+                )?.[0]
+                : undefined;
+              const addressParamIndex = nested.addressParam
+                ? delegateFn!.inputs.findIndex((input) => input.name === nested.addressParam)
+                : -1;
+              const addressValue = resolvedAddress
+                ?? (addressParamIndex >= 0 ? callInfo.args[addressParamIndex] : undefined);
+              let deploymentAtAddress: unknown;
+              if (typeof addressValue === 'string') {
+                deploymentAtAddress = (
+                  findDeploymentByAddress(this.inner.provider, addressValue)
+                  ?? findDeploymentByLockingBytecode(this.inner.provider, addressValue)
+                )?.contract;
+              } else if (addressValue instanceof Uint8Array) {
+                deploymentAtAddress = findDeploymentByLockingBytecode(
+                  this.inner.provider, binToHex(addressValue),
+                )?.contract;
+                try {
+                  const address = lockingBytecodeToCashAddress({
+                    bytecode: addressValue,
+                    prefix: getNetworkPrefix(this.inner.provider.network),
+                    tokenSupport: false,
+                  });
+                  if (typeof address !== 'string') {
+                    deploymentAtAddress = findDeploymentByAddress(this.inner.provider, address.address)?.contract;
+                  }
+                } catch { /* fall through to interface-name resolution */ }
+              }
+              // Hardhat-style factories connect externals on the public proxy
+              // instance. A manually assembled delegate may instead connect them
+              // directly on the implementation; accept both, preferring the latter.
+              const registeredCallee = (
+                callInfo.contract._externalRegistry.get(nested.interfaceName)
+                ?? this._externalRegistry.get(nested.interfaceName)
+                ?? deploymentAtAddress
+                ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
+              ) as StatefulContract | {
+                proxy: StatefulContract; implementation: StatefulContract;
+                forward: (name: string, args: FunctionArgument[]) => StatefulFunctionCall;
+              } | undefined;
+              const proxyCallee = registeredCallee && 'proxy' in registeredCallee
+                ? registeredCallee : undefined;
+              const callee = (proxyCallee?.proxy ?? registeredCallee) as StatefulContract | undefined;
+              if (!callee) {
+                throw new Error(
+                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} is not connected. `
+                  + `Connect '${nested.interfaceName}' on the implementation before calling through the proxy.`,
+                );
+              }
+              const nestedArgs = this._resolveExternalArgs(
+                nestedSources,
+                callInfo.args,
+                callInfo.contract.inner.artifact,
+                onChainState.state,
+              );
+              if (nestedArgs === undefined) {
+                throw new Error(
+                  `Delegate external call to ${nested.interfaceName}.${nested.functionName} `
+                  + `(offset ${nested.computedOffset ?? 0}) has arguments `
+                  + 'that cannot yet be resolved by the SDK.',
+                );
+              }
+              const childState = await callee.getFullState();
+              if (!childState.masterUtxo) {
+                throw new Error(
+                  `External contract master UTXO not found for ${nested.interfaceName} `
+                  + `(category ${callee.categoryId})`,
+                );
+              }
+              const childLayout = callee.inner.stateLayout!;
+              // An explicitly empty requirement means the callee does not touch
+              // fixed state. Expanding it to every data NFT corrupts the callee's
+              // block offsets (notably ERC20 mapping-only functions).
+              const childRequired = nested.requiredDataNftIndices;
+              const childData: UnlockableUtxo[] = childRequired.map((nftIndex) => {
+                const utxo = childState.dataNftUtxos[nftIndex];
+                if (!utxo) {
+                  throw new Error(
+                    `External data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
+                  );
+                }
+                return {
+                  ...utxo,
+                  unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
+                };
+              });
+              const childExternalGroupIndex = externalCallUtxoGroups.length;
+              nestedIndices.push(childExternalGroupIndex);
+              let childFunctionName = nested.rawFunctionName ?? nested.functionName;
+              let childFunctionArgs = nestedArgs;
+              let delegateCallGroupIndex: number | undefined;
+              let childWritesState = false;
+              if (proxyCallee) {
+                const targetFn = (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
+                  .find((f) => f.name === nested.functionName);
+                if (!targetFn?.selector) {
+                  throw new Error(
+                    `Proxy implementation function '${nested.functionName}' has no selector.`,
+                  );
+                }
+                // The built-in single-function proxy has no dispatcher: its first
+                // unlocking push is the forwarded implementation selector, which
+                // also satisfies the caller's selector pin.
+                childFunctionName = '__forward';
+                childFunctionArgs = [hexToBin(targetFn.selector)];
+                childWritesState = targetFn.writesState === true;
+
+                const implementationState = proxyCallee.implementation.inner.artifact.delegateOnly
+                  ? await proxyCallee.implementation._getMasterOnlyState()
+                  : await proxyCallee.implementation.getFullState();
+                if (!implementationState.masterUtxo) {
+                  throw new Error(
+                    `Proxy implementation master UTXO not found for ${nested.interfaceName}.`,
+                  );
+                }
+                const existingDelegateIndex = lowLevelCallUtxoGroups.findIndex((group) => (
+                  group.callMode === 'delegatecall'
+                  && group.categoryId === proxyCallee.implementation.categoryId
+                ));
+                delegateCallGroupIndex = existingDelegateIndex >= 0
+                  ? existingDelegateIndex : lowLevelCallUtxoGroups.length;
+                if (existingDelegateIndex >= 0) {
+                  if (targetFn.writesState) {
+                    const primaryDelegate = lowLevelCallUtxoGroups[existingDelegateIndex];
+                    primaryDelegate.functionName = nested.functionName;
+                    primaryDelegate.functionArgs = nestedArgs;
+                  }
+                } else {
+                  nestedDelegateProxyGroupByLowLevel.set(delegateCallGroupIndex, childExternalGroupIndex);
+                  lowLevelCallUtxoGroups.push({
+                    categoryId: proxyCallee.implementation.categoryId,
+                    stateLayout: proxyCallee.implementation.inner.stateLayout!,
+                    masterUtxo: implementationState.masterUtxo,
+                    dataNftUtxos: [],
+                    requiredDataNftIndices: [],
+                    functionName: nested.functionName,
+                    functionArgs: nestedArgs,
+                    externalContract: proxyCallee.implementation,
+                    callMode: 'delegatecall',
+                  });
+                  groupProxyMasterIndices.push(0);
+                }
+              }
+              const sharedGroupIndex = externalCallUtxoGroups.findIndex(
+                (group) => group.categoryId === callee.categoryId,
+              );
+              const selectedFn = (callee.inner.artifact.abi as readonly AbiFunction[])
+                .find((fn) => fn.name === childFunctionName);
+              childWritesState ||= selectedFn?.writesState === true;
+              let precomputedReturnCommitment: Uint8Array | undefined;
+              if (nested.hasReturnValues && selectedFn && !selectedFn.writesState
+                && selectedFn.outputs?.length === 1) {
+                const value = await callee._deriveReturnValue(childFunctionName, childFunctionArgs);
+                precomputedReturnCommitment = encodePushdataValue(
+                  value as never, selectedFn.outputs![0].type,
+                );
+              }
+              if (sharedGroupIndex >= 0) {
+                if (childWritesState) {
+                  const primary = externalCallUtxoGroups[sharedGroupIndex];
+                  primary.functionName = childFunctionName;
+                  primary.functionArgs = childFunctionArgs;
+                  primary.callMode = nested.callMode;
+                }
+              }
+              let childBlockInputs: UnlockableUtxo[] | undefined;
+              const childPlannedEntryInserts: Array<{
+                blockSlot: number; outputBlockSlot: number;
+              }> = [];
+              const selectedLayout = selectedFn?.blockLayout;
+              if ((sharedGroupIndex < 0 || childWritesState)
+                && selectedLayout && selectedLayout.blockSize > 1) {
+                childBlockInputs = [];
+                let dataIndex = 0;
+                const takeFunder = async (): Promise<UnlockableUtxo> => {
+                  const funder = sharedFunderPool?.shift();
+                  if (funder) return funder;
+                  // MockNetworkProvider can materialize deterministic OP_TRUE
+                  // funding inputs. This keeps large composed tests focused on
+                  // covenant behavior without requiring users to pre-split an
+                  // arbitrary number of wallet UTXOs. Real providers continue
+                  // to fail closed and request additional funding.
+                  const provider = this.inner.provider;
+                  const mockProvider = provider as typeof provider & {
+                    addUtxo?: (lockingBytecode: string, utxo: Utxo) => Promise<void>;
+                  };
+                  if (mockProvider.addUtxo) {
+                    const dummy: Utxo = {
+                      txid: (0xe000n + BigInt(nestedFunderIndex++)).toString(16).padStart(64, '0'),
+                      vout: 0,
+                      satoshis: 10000n,
+                    };
+                    await mockProvider.addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
+                    return {
+                      ...dummy,
+                      unlocker: {
+                        generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+                        generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+                      },
+                    };
+                  }
+                  throw new Error(
+                    `Insufficient funding UTXOs for nested call ${nested.interfaceName}.${nested.functionName}.`,
+                  );
+                };
+                for (const slot of selectedLayout.slots) {
+                  if (slot.kind === 'master') {
+                    childBlockInputs.push(childState.masterUtxo as UnlockableUtxo);
+                  } else if (slot.kind === 'dataNft') {
+                    const data = childData[dataIndex++];
+                    if (data) childBlockInputs.push(data);
+                  } else if (slot.kind === 'entry') {
+                    const access = selectedFn?.entryAccesses?.[slot.slotIndex ?? 0];
+                    const collection = childLayout.collections?.find(
+                      (candidate) => candidate.name === access?.collection
+                        || candidate.signature === access?.collection,
+                    );
+                    let entry: Utxo | undefined;
+                    if (access && collection?.sorted) {
+                      const keySources = access.keySources
+                        ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));
+                      const keys = keySources.map((source, keyIndex) => {
+                        if (source.kind === 'msgSender'
+                          || ('expressionLabel' in source && source.expressionLabel?.includes('msg.sender'))) {
+                          return hexToBin(
+                            this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode,
+                          );
+                        }
+                        const paramName = source.paramName ?? access.keyParams[keyIndex];
+                        const paramIndex = selectedFn.inputs.findIndex((input) => input.name === paramName);
+                        const value = paramIndex >= 0 ? nestedArgs[paramIndex] : undefined;
+                        return value instanceof Uint8Array ? value
+                          : typeof value === 'bigint' ? bigIntToVmNumber(value)
+                            : typeof value === 'boolean' ? bigIntToVmNumber(value ? 1n : 0n)
+                              : undefined;
+                      });
+                      if (keys?.every((key): key is Uint8Array => key !== undefined)) {
+                        // The entry covenant derives its locking bytecode from
+                        // the ABI collection identifier (the source name), not
+                        // the descriptive state-layout signature.
+                        const address = getEntryNftAddress(
+                          callee.inner, callee.categoryId, access.collection,
+                        );
+                        const list = SortedList.fromUtxos(
+                          (await this.inner.provider.getUtxos(address))
+                            .filter((utxo) => utxo.token?.category === callee.categoryId),
+                        );
+                        const keySlot = keyToSlotMulti(keys);
+                        try {
+                          const exists = list.has(keySlot);
+                          entry = (exists ? list.find(keySlot) : list.predecessorOf(keySlot))?.utxo;
+                          if (!exists) {
+                            childPlannedEntryInserts.push({
+                              blockSlot: childBlockInputs.length,
+                              outputBlockSlot: -1,
+                            });
+                          }
+                        } catch { entry = undefined; }
+                      }
+                    }
+                    childBlockInputs.push(entry ? {
+                      ...entry,
+                      unlocker: createEntryNftUnlocker(
+                        callee.inner, 0, callee.categoryId, access!.collection,
+                      ),
+                    } : await takeFunder());
+                  } else if (slot.kind === 'returnEvent') {
+                    // Preserve the compiler's fixed block position even though
+                    // the real return NFT is emitted by the shared return
+                    // section. The positional input/output keeps all following
+                    // delegate groups aligned.
+                    childBlockInputs.push(await takeFunder());
+                  } else if (slot.kind === 'lowLevelCall' || slot.kind === 'deploy') {
+                    // These slots are managed by their dedicated sections.
+                  } else {
+                    childBlockInputs.push(await takeFunder());
+                  }
+                }
+                for (const planned of childPlannedEntryInserts) {
+                  planned.outputBlockSlot = childBlockInputs.length;
+                  childBlockInputs.push(await takeFunder());
+                }
+              }
+              if (sharedGroupIndex >= 0 && childWritesState) {
+                const primary = externalCallUtxoGroups[sharedGroupIndex];
+                primary.stateLayout = childLayout;
+                primary.masterUtxo = childState.masterUtxo;
+                primary.dataNftUtxos = childData;
+                primary.requiredDataNftIndices = childRequired;
+                primary.blockInputs = childBlockInputs;
+                primary.blockLayout = selectedLayout;
+                primary.plannedEntryInserts = childPlannedEntryInserts;
+                if (nested.hasReturnValues) {
+                  primary.fusedReturnGroupIndex = childExternalGroupIndex;
+                }
+              }
+              externalCallUtxoGroups.push({
+                categoryId: callee.categoryId,
+                stateLayout: childLayout,
+                masterUtxo: childState.masterUtxo,
+                dataNftUtxos: childData,
+                requiredDataNftIndices: childRequired,
+                functionName: childFunctionName,
+                functionArgs: childFunctionArgs,
+                externalContract: callee,
+                ...(delegateCallGroupIndex !== undefined && { delegateCallGroupIndex }),
+                ...(nested.callMode && { callMode: nested.callMode }),
+                ...(childBlockInputs && {
+                  blockInputs: childBlockInputs,
+                  blockLayout: selectedLayout,
+                }),
+                ...(childPlannedEntryInserts.length > 0 && {
+                  plannedEntryInserts: childPlannedEntryInserts,
+                }),
+                ...(sharedGroupIndex >= 0 && {
+                  sharedGroupIndex,
+                  blockInputs: [] as UnlockableUtxo[],
+                }),
+                ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
+              });
+              allGroupEcSlots = [...allGroupEcSlots, nested];
+            }
+            delegateExternalGroupIndices.set(delegateGroupIndex, nestedIndices);
+          }
         } else {
           lowLevelCallRawInputs.push(callInfo.utxo);
         }
@@ -7955,8 +8979,94 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Compute _callInputIndex values
       const externalCallInputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
+        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
       );
+
+      // Complete the nested callee unlockers now that every external group has a
+      // stable absolute input position.
+      let nestedInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
+        + outStateInputCount + iterationEntryInputs.length;
+      const nestedMasterIndices: number[] = [];
+      for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
+        const child = externalCallUtxoGroups[groupIdx];
+        if (child.sharedGroupIndex !== undefined) {
+          nestedMasterIndices[groupIdx] = nestedMasterIndices[child.sharedGroupIndex];
+          continue;
+        }
+        nestedMasterIndices[groupIdx] = nestedInputBase;
+        child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
+          ...utxo,
+          unlocker: createDataNftUnlocker(child.externalContract.inner, nestedInputBase, child.categoryId),
+        }));
+        nestedInputBase += child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
+      }
+
+      // Delegate-mode return events are emitted immediately after all ordinary
+      // external-call outputs and before the preserved implementation group.
+      const externalOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
+        + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
+        + iterationEntryInputs.length;
+      const delegateReturnOutputBase = externalOutputStart + externalCallUtxoGroups.reduce(
+        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
+      ) + lowLevelCallUtxoGroups
+        .filter((g) => g.callMode === 'delegatecall')
+        .reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0);
+      const returningExternalGroups = externalCallUtxoGroups
+        .map((_, idx) => idx)
+        .filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
+      const returnIndexForGroup = new Map(
+        returningExternalGroups.map((groupIdx, ordinal) => [groupIdx, delegateReturnOutputBase + ordinal]),
+      );
+
+      for (const groupIdx of new Set([...delegateExternalGroupIndices.values()].flat())) {
+        const child = externalCallUtxoGroups[groupIdx];
+        child.returnOutputIndex = returnIndexForGroup.get(
+          child.fusedReturnGroupIndex ?? groupIdx,
+        );
+        const childFn = (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === child.functionName);
+        if (!childFn) continue;
+        let visible = 0;
+        const encoded = childFn.inputs.map((input) => {
+          if (!input.name.startsWith('__internal__')) return child.functionArgs[visible++];
+          if (input.name === '__internal__returnOutputIdx') {
+            return BigInt(returnIndexForGroup.get(
+              child.fusedReturnGroupIndex ?? groupIdx,
+            ) ?? -1);
+          }
+          if (input.name === '__internal__msgSenderCategory') {
+            // Token categories are exposed by introspection in transaction byte
+            // order. Match the established direct-call witness encoding so the
+            // callee can resolve msg.sender to the caller's locking bytecode.
+            return hexToBin(this.categoryId).reverse();
+          }
+          if (input.name === '__internal__delegateInputIndex') {
+            const delegateGroup = child.delegateCallGroupIndex;
+            if (delegateGroup === undefined) return -1n;
+            const preceding = lowLevelCallUtxoGroups.slice(0, delegateGroup)
+              .reduce((sum, candidate) => sum + 1 + candidate.dataNftUtxos.length, 0);
+            return BigInt(nestedInputBase + preceding);
+          }
+          throw new Error(
+            `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
+          );
+        });
+        child.masterUtxo = {
+          ...child.masterUtxo,
+          unlocker: child.externalContract.inner.unlock[child.functionName]!(...encoded),
+        } as UnlockableUtxo;
+        if (child.blockInputs) {
+          let childDataIndex = 0;
+          for (let slotIndex = 0; slotIndex < (child.blockLayout?.slots.length ?? 0); slotIndex++) {
+            const slot = child.blockLayout!.slots[slotIndex];
+            if (slot.kind === 'master') {
+              child.blockInputs[slotIndex] = child.masterUtxo as UnlockableUtxo;
+            } else if (slot.kind === 'dataNft') {
+              child.blockInputs[slotIndex] = child.dataNftUtxos[childDataIndex++];
+            }
+          }
+        }
+      }
       // Reserve the delegatecall'd impl's EVENT slots in the proxy block (its covenant verifies them at
       // proxyMaster+offset). Only handled when the impl fn's block is master + dataNfts + events, so the slot
       // offsets align 1:1 with the proxy block. A delegate that also transfers, reads a mapping/keccak/blockhash,
@@ -7969,20 +9079,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (extra.length === 0 || !extra.every((s) => s.kind === 'event' || s.kind === 'entry')) continue;
         const existingCallSlot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'lowLevelCall');
         const callOffset = existingCallSlot?.offset ?? (abiFunction?.blockLayout?.blockSize ?? 1);
-        const hasEntrySlot = extra.some((s) => s.kind === 'entry');
-        if (hasEntrySlot && !existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
+        if (!existingCallSlot && !delegateEventSlots.some((s) => s.kind === 'lowLevelCall')) {
           delegateEventSlots.push({ kind: 'lowLevelCall', offset: callOffset });
         }
         for (const s of extra) {
           delegateEventSlots.push({
-            kind: s.kind, offset: s.kind === 'entry' ? callOffset + s.offset : s.offset,
+            kind: s.kind,
+            offset: callOffset + s.offset,
             ...(s.slotIndex !== undefined && { slotIndex: s.slotIndex }),
           });
         }
       }
-      lowLevelCallInputBase = 1 + requiredNftIndices.length
-        + externalReadUtxos.length + outStateInputCount + externalCallInputCount
-        + delegateEventSlots.filter((s) => s.kind === 'event').length;
+      const denseCallInputBase = 1 + requiredNftIndices.length
+        + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
+      // A plain send intentionally materializes no returnEvent input/output; .emitReturn() materializes both.
+      // Keep the facet master aligned at the same input/output index in either mode. All other fixed block slots
+      // are materialized, so blockSize minus an inactive return slot remains authoritative for positional gaps.
+      const inactiveReturnSlots = returnEmitOutputIndex < 0
+        ? (abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'returnEvent').length ?? 0) : 0;
+      const materializedBlockSize = (abiFunction?.blockLayout?.blockSize ?? 0) - inactiveReturnSlots;
+      const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
+      const explicitLowLevelCallOffset = abiFunction?.blockLayout?.slots
+        .find((slot) => slot.kind === 'lowLevelCall')?.offset
+        ?? delegateEventSlots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
+      lowLevelCallInputBase = hasDelegatecallGroup
+        // The compiler offset describes the root function's own block. Nested
+        // external-call groups are inserted before the delegated implementation,
+        // so their materialized inputs must shift the absolute witness index.
+        // Taking the explicit offset alone made a proxy pin input 3 even when
+        // its implementation had moved to input 8 behind those groups.
+        ? Math.max(
+          explicitLowLevelCallOffset ?? 0,
+          materializedBlockSize,
+          denseCallInputBase,
+        )
+        : denseCallInputBase;
 
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
@@ -8008,26 +9139,82 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
           ?? bSameName[0];
         if (bFunc) {
-          const bVisibleInputs = bFunc.inputs.filter((inp) => !inp.name.startsWith('__internal__'));
-          const encodedArgs: any[] = bVisibleInputs.map((inp, idx) => {
-            const arg = group.functionArgs[idx];
-            return arg;
+          let visibleIndex = 0;
+          let batchWitnessIndex = 0;
+          let delegateReturnWitnessIndex = 0;
+          const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
+          const encodedArgs: any[] = bFunc.inputs.map((inp) => {
+            if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
+            if (inp.name === '__internal__returnOutputIdx') {
+              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              return BigInt(proxyExternalGroup === undefined
+                ? returnEmitOutputIndex
+                : returnIndexForGroup.get(proxyExternalGroup) ?? -1);
+            }
+            if (inp.name === '__internal__msgSenderCategory') {
+              return nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
+                ? hexToBin(masterUtxo.token?.category ?? this.categoryId).reverse()
+                : new Uint8Array(32);
+            }
+            if (inp.name === '__internal__proxyMasterIndex') {
+              const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+              return BigInt(proxyExternalGroup === undefined
+                ? groupProxyMasterIndices[groupLocalIdx] ?? 0
+                : nestedMasterIndices[proxyExternalGroup]);
+            }
+            if (inp.name === '__internal__externalCallInputBase') {
+              const firstNested = nestedGroups[0];
+              return BigInt(firstNested === undefined
+                ? masterInputIndex + 1 + group.dataNftUtxos.length
+                : nestedMasterIndices[firstNested]);
+            }
+            if (/^__internal__extcallMasterIdx\d*$/.test(inp.name)) {
+              const suffix = inp.name.slice('__internal__extcallMasterIdx'.length);
+              const slot = suffix === '' ? 0 : Number(suffix);
+              const nestedGroup = nestedGroups[slot];
+              return BigInt(nestedGroup === undefined
+                ? masterInputIndex + 1 + group.dataNftUtxos.length
+                : nestedMasterIndices[nestedGroup]);
+            }
+            const selectorWitness = inp.name.match(/^__internal__externalCallSelector(\d+)$/);
+            if (selectorWitness) {
+              const slot = Number(selectorWitness[1]);
+              const call = (bFunc as AbiFunction).externalCalls?.[slot];
+              const interfaces = (bArt.externalInterfaces ?? []) as readonly {
+                name: string;
+                abi: readonly { name: string; selector?: string }[];
+              }[];
+              const iface = interfaces.find((candidate) => candidate.name === call?.interfaceName);
+              const target = iface?.abi.find((candidate) => candidate.name === call?.functionName);
+              return target?.selector ? hexToBin(target.selector) : new Uint8Array(4);
+            }
+            if (/^__internal__externalReturnOutputIdx\d*$/.test(inp.name)) {
+              const nestedReturning = nestedGroups.filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
+              const nestedGroup = nestedReturning[delegateReturnWitnessIndex++];
+              return BigInt(nestedGroup === undefined ? -1 : returnIndexForGroup.get(nestedGroup) ?? -1);
+            }
+            if (inp.name.startsWith('__internal__c2Batch')) {
+              const value = entryBatchWitnesses[batchWitnessIndex++];
+              if (value !== undefined) {
+                // C2 batch proofs are offsets from the active contract's master input. A delegated
+                // implementation executes with the proxy master as its active/master input, while its
+                // block-layout offsets are relative to the implementation master. Rebase only physical
+                // proof inputs; negative values are covenant sentinels and remain unchanged.
+                if (/^__internal__c2BatchProof_\d+$/.test(inp.name)
+                  && typeof value === 'bigint' && value >= 0n) {
+                  return value + BigInt(masterInputIndex);
+                }
+                if (/^__internal__c2BatchPredOut_\d+$/.test(inp.name)
+                  && typeof value === 'bigint' && value >= 0n) {
+                  return value + BigInt(masterInputIndex);
+                }
+                return value;
+              }
+            }
+            const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
+            if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
+            throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
           });
-
-          // Inject the SDK-filled synthetic params in ABI order (msgSenderCategory before proxyMasterIndex) so the
-          // impl's unlocker receives the FULL input list (it accepts visible-only OR fully-filled, not a partial).
-          // A delegatecall'd impl that uses msg.sender resolves it against the tx like a direct call: 32 zeros =>
-          // tx.origin = the signer's native P2PKH input. (IFoo(msg.sender).m() inside a delegate impl - the callee
-          // category - is not yet wired for the delegatecall path.)
-          if (bFunc.inputs.some((inp) => inp.name === '__internal__msgSenderCategory')) {
-            encodedArgs.push(new Uint8Array(32));
-          }
-          // Inject _proxyMasterIndex for delegate functions.
-          // Defaults to 0 (proxy master is the first input in the STB), but can be
-          // overridden via withDelegatecall(..., proxyMasterIndex) for composability.
-          if (bFunc.inputs.some((inp) => inp.name === '__internal__proxyMasterIndex')) {
-            encodedArgs.push(BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0));
-          }
 
           group.masterUtxo = {
             ...(group.masterUtxo as UnlockableUtxo),
@@ -8269,7 +9456,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Dynamic-storage vars (string / unbounded bytes) WRITTEN by this function: chunk NFTs at a per-var
     // entry covenant address. Only written vars (dynamicWrites) get old chunks consumed + new ones created;
     // read-only or untouched vars must be left alone, else their chunks would be wrongly destroyed.
-    const dynamicWrites = abiFunction?.dynamicWrites ?? [];
+    const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
+    for (const g of lowLevelCallUtxoGroups) {
+      if (g.callMode !== 'delegatecall') continue;
+      const gFn = (g.externalContract.inner.artifact.abi as readonly {
+        name: string;
+        dynamicWrites?: readonly string[];
+      }[]).find((f) => f.name === g.functionName);
+      for (const name of gFn?.dynamicWrites ?? []) {
+        if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
+      }
+    }
     const dynamicVarInfos = (stateLayout.variables ?? [])
       .filter((v) => v.dynamic && dynamicWrites.includes(v.name));
     const dynamicChunkVars = dynamicVarInfos.map((v) => ({
@@ -8333,7 +9530,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const ins of sortedInserts) addLoopCollection(ins.collection);
     const loopEntryVars = orderedLoopCollections.map((name) => ({
       collection: name,
-      lockingBytecode: getEntryNftLockingBytecode(this.inner, this.categoryId, name),
+      // Prefer the locking bytecode resolved from the effective (possibly delegate-grafted) state layout above.
+      // `this.inner.artifact` is the proxy artifact and does not necessarily declare implementation collections;
+      // resolving only by name against it hashes the bare name and mints NEW at a different covenant address.
+      lockingBytecode: entryNftLockingBytecodes.get(name)
+        ?? getEntryNftLockingBytecode(this.inner, this.categoryId, name),
     }));
 
     // Extend the block layout with the event/transfer slots of any delegatecall'd impl. A delegate fn's event is
@@ -8348,7 +9549,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     const builder = new StatefulTransactionBuilder({
       provider: this.inner.provider,
-      maximumFeeSatoshis: 50000n,
+      // A relaxed mock may intentionally execute very large scripts/transactions. At the normal 1 sat/byte
+      // relay floor, a valid call can therefore exceed the production-oriented 50k absolute cap. Bound the mock
+      // default by its configured maximum transaction size; the per-byte safety cap remains enforced below.
+      maximumFeeSatoshis: this.inner.provider.policy?.enforceDust === false
+        ? BigInt(this.inner.provider.consensusLimits?.maximumTransactionBytes ?? 10_000_000)
+        : 50000n,
       checkMinRelayFee: true,
       masterUtxo: unlockableMaster,
       dataNftUtxos: unlockableDataNfts,
@@ -8373,7 +9579,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(externalCallUtxoGroups.length > 0 && { externalCallUtxoGroups }),
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
       ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
-      ...(delegateEventSlots.some((s) => s.kind === 'entry') && { delegateEntriesAfterLowLevel: true }),
+      ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+        && { delegateEntriesAfterLowLevel: true }),
+      ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+        && { lowLevelCallInputBase }),
       ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -8480,7 +9689,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const entryInfos = builder.getEntryNftInfos();
       const tcInfos = builder.getTokenContainerInfos();
       let neededFunders = effectiveBlockLayout.slots.filter(
-        (s) => outputOnlyKinds.has(s.kind),
+        (s) => outputOnlyKinds.has(s.kind) && (s.kind !== 'returnEvent' || returnEmitOutputIndex >= 0),
       ).length;
       neededFunders += effectiveBlockLayout.slots.filter(
         (s) => s.kind === 'entry' && !entryInfos.some((e) => e.slotIndex === s.slotIndex && e.exists),
@@ -8524,9 +9733,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const consumedTxids = new Set(
             (sharedFunderPool ?? []).map((f) => `${f.txid}:${f.vout}`),
           );
-          const plainUtxos = signerUtxos.filter(
-            (u) => !u.token && !consumedTxids.has(`${u.txid}:${u.vout}`),
-          );
+          const plainUtxos = signerUtxos
+            .filter((u) => !u.token && !consumedTxids.has(`${u.txid}:${u.vout}`))
+            // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
+            // outpoint hash as a category. Prefer category-neutral sibling outputs for C2 absence witnesses.
+            .sort((a, b) => Number(a.vout === 0) - Number(b.vout === 0));
           if (plainUtxos.length < neededFunders) {
             throw new Error(
               `Signer has ${plainUtxos.length} available plain UTXO(s) but ${neededFunders} funder(s) needed. `
@@ -8579,6 +9790,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const derivTransferCount = abiFunction?.transferCount ?? 0;
     const derivTokenOps = tokenContainerTransferOps.length > 0 ? tokenContainerTransferOps : undefined;
 
+    // Reserve the return placeholder before computing any input indices: an active returnEvent contributes a
+    // funder inside the root block and therefore shifts the delegated facet by one input.
+    if (returnEmitOutputIndex >= 0) {
+      builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
+    }
+
     // Detect delegatecall group for auto-derivation: Phase 2 runs on the delegate's input
     // instead of input 0 (proxy's master), because the delegate function is what verifies
     // the proxy's state commitments.
@@ -8586,6 +9803,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (lowLevelCallUtxoGroups.length > 0) {
       for (let i = 0; i < lowLevelCallUtxoGroups.length; i++) {
         if (lowLevelCallUtxoGroups[i].callMode === 'delegatecall') {
+          // lowLevelCallInputBase is computed from the materialized block size, which already includes an
+          // active return-event slot. Adding it again probes one input past the delegated facet.
           delegatecallInputIndex = builder.getLowLevelCallMasterInputIndex(i);
           break;
         }
@@ -8634,12 +9853,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
       }
       builder.setSidecar(sidecarUtxos[0], blob, sidecarSalt);
-    }
-
-    // B8 emit: reserve a placeholder return-event output so the covenant's OP_OUTPUTTOKENCOMMITMENT at
-    // the return slot has an output to read during derivation; the real commitment is derived below.
-    if (returnEmitOutputIndex >= 0) {
-      builder.setReturnEventOutput(this.categoryId, new Uint8Array([0]));
     }
 
     // Check if there is nothing to derive for this function (e.g., split/merge/unsafe tiers)
@@ -8718,14 +9931,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // B8 emit: derive the encoded return value (the covenant compares it to the return-event output
     // commitment) and set it, replacing the placeholder.
     if (returnEmitOutputIndex >= 0) {
-      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex);
+      const blob = this._deriveReturnBlob(builder, returnEmitOutputIndex, delegatecallInputIndex ?? 0);
       if (!blob) {
         throw new Error(
           `Could not derive the return value of '${functionName}' for .emitReturn(). `
-          + 'Functions that write state and return a value are not yet supported with emit.',
+          + 'The covenant trace did not expose an authenticated return commitment.',
         );
       }
       builder.setReturnEventOutput(this.categoryId, blob);
+      (builder as any).__derivedReturnBlob = blob;
     }
 
     // Auto-derived entry deletions: an UNCONDITIONAL `delete m[k]` produces no output for that entry, so the
@@ -8746,13 +9960,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   // B8 emit: run one VM probe and extract the encoded return blob from the return-event verification
   // (OP_OUTPUTTOKENCOMMITMENT == __returnBlob), the same trace-extraction used for external-call returns.
   private _deriveReturnBlob(
-    builder: StatefulTransactionBuilder, returnOutputIndex: number,
+    builder: StatefulTransactionBuilder, returnOutputIndex: number, inputIndex = 0,
   ): Uint8Array | undefined {
     const probe = builder.build();
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
-    const vm = createVirtualMachineBch2026();
-    const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
+    const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
@@ -8765,28 +9979,51 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    * WITHOUT sending a transaction. A single output returns the decoded value; multiple outputs return an
    * ethers-style array (tuple). Typechain `.toObject()`/`.toArray()` accessors are attached at this boundary.
    */
-  async _deriveReturnValue(functionName: string, args: FunctionArgument[]): Promise<StateValue> {
+  async _deriveReturnValue(
+    functionName: string, args: FunctionArgument[], calls?: CallInfo[],
+  ): Promise<StateValue> {
     const abiFunction = this.inner.artifact.abi.find((f) => f.name === functionName);
-    const outputs = abiFunction?.outputs ?? [];
+    const delegatedReturn = calls
+      ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
+      .map((call) => ({
+        artifact: call.contract.inner.artifact,
+        fn: call.contract.inner.artifact.abi.find((candidate) => candidate.name === call.functionName),
+      }))
+      .find(({ fn }) => (fn?.outputs?.length ?? 0) > 0);
+    const resultFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturn?.fn;
+    const outputs = resultFunction?.outputs ?? [];
     if (outputs.length === 0) {
       throw new Error(`staticCall: '${functionName}' has no return value to read.`);
     }
-    const slot = abiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
+    const slot = resultFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
     if (!slot) {
       throw new Error(`staticCall: '${functionName}' has no returnEvent output slot; its value cannot be derived.`);
     }
     // emitReturn makes _createBuilder lay out the return-event output; the probe then extracts its commitment.
-    const builder = await this._createBuilder(functionName, args, { emitReturn: true });
-    const blob = this._deriveReturnBlob(builder, slot.offset);
+    const builder = await this._createBuilder(functionName, args, { emitReturn: true, calls });
+    const blob = (builder as any).__derivedReturnBlob as Uint8Array | undefined
+      ?? this._deriveReturnBlob(builder, slot.offset);
     if (!blob) {
       throw new Error(
         `staticCall: could not derive the return value of '${functionName}'. `
         + 'Functions that write state and return a value are not yet supported as reads.',
       );
     }
-    const structs = this.inner.artifact.stateLayout?.structs;
+    const structs = delegatedReturn?.artifact.stateLayout?.structs ?? this.inner.artifact.stateLayout?.structs;
     if (outputs.length === 1) {
-      return attachDecodedAccessors(decodePushdataValue(blob, 0, outputs[0].type, structs).value);
+      const decoded = decodePushdataValue(blob, 0, outputs[0].type, structs).value;
+      const addressBytecode = decoded instanceof Uint8Array
+        ? decoded
+        : typeof decoded === 'string' && decoded.startsWith('0x') ? hexToBin(decoded.slice(2)) : undefined;
+      if (outputs[0].type === 'address' && addressBytecode) {
+        const cashaddr = lockingBytecodeToCashAddress({
+          bytecode: addressBytecode,
+          prefix: getNetworkPrefix(this.inner.provider.network),
+          tokenSupport: false,
+        });
+        if (typeof cashaddr !== 'string') return cashaddr.address;
+      }
+      return attachDecodedAccessors(decoded);
     }
     // Multi-value (tuple) returns use a packed return-event encoding that is not a plain concatenation of each
     // value's pushdata; decoding it needs the tuple-return convention (viewReturn machinery). Fail closed rather
@@ -8863,6 +10100,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     argSources: readonly ArgSource[] | undefined,
     functionArgs: FunctionArgument[],
     artifact: Artifact,
+    state?: Record<string, unknown>,
   ): FunctionArgument[] | undefined {
     if (!argSources || argSources.length === 0) return undefined;
 
@@ -8904,13 +10142,228 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           break;
         }
+        case 'msgSender': {
+          if (!this._signer) return undefined;
+          resolved.push(addressToLockScript(this._signer.getAddress()));
+          break;
+        }
+        case 'selfAddress': {
+          resolved.push(addressToLockScript(this.target));
+          break;
+        }
+        case 'arrayElement': {
+          if (source.paramIndex === undefined || source.paramIndex >= functionArgs.length) return undefined;
+          const array = functionArgs[source.paramIndex];
+          if (!Array.isArray(array)) return undefined;
+          let index = source.indexValue ?? 0;
+          if (source.indexParamIndex !== undefined) {
+            const rawIndex = functionArgs[source.indexParamIndex];
+            if (typeof rawIndex !== 'bigint' && typeof rawIndex !== 'number') return undefined;
+            index = Number(rawIndex);
+          }
+          if (index < 0 || index >= array.length) return undefined;
+          resolved.push(array[index] as FunctionArgument);
+          break;
+        }
         case 'expression':
+          if (source.expression) {
+            const value = this._evaluateExternalExpression(
+              source.expression, functionArgs, artifact, state,
+            );
+            if (value === undefined) return undefined;
+            resolved.push(value);
+            break;
+          }
+          return undefined;
         default:
           // Can't resolve complex expressions - user must provide via withExternalCall
           return undefined;
       }
     }
     return resolved;
+  }
+
+  private _evaluateExternalExpression(
+    expression: ExternalCallExpression,
+    functionArgs: FunctionArgument[],
+    artifact: Artifact,
+    state?: Record<string, unknown>,
+  ): FunctionArgument | undefined {
+    const evaluate = (candidate: ExternalCallExpression): FunctionArgument | undefined => (
+      this._evaluateExternalExpression(candidate, functionArgs, artifact, state)
+    );
+    const concat = (parts: Uint8Array[]): Uint8Array => {
+      const result = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
+      let offset = 0;
+      for (const part of parts) {
+        result.set(part, offset);
+        offset += part.length;
+      }
+      return result;
+    };
+    const uintBe = (value: bigint, width: number): Uint8Array => {
+      const result = new Uint8Array(width);
+      const bits = BigInt(width * 8);
+      let normalized = ((value % (1n << bits)) + (1n << bits)) % (1n << bits);
+      for (let i = width - 1; i >= 0; i--) {
+        result[i] = Number(normalized & 0xffn);
+        normalized >>= 8n;
+      }
+      return result;
+    };
+    const asBytes = (value: FunctionArgument, typeHint = ''): Uint8Array | undefined => {
+      if (typeHint === 'bool' || typeof value === 'boolean') {
+        return new Uint8Array([value ? 1 : 0]);
+      }
+      if (typeof value === 'bigint' || typeof value === 'number') {
+        const widthMatch = typeHint.match(/^u?int(\d+)$/);
+        return uintBe(BigInt(value), widthMatch ? Number(widthMatch[1]) / 8 : 32);
+      }
+      if (typeof value === 'string') return utf8ToBin(value);
+      if (value instanceof Uint8Array) {
+        if (typeHint === 'uint160' || typeHint === 'address') return value.slice(-20);
+        return value;
+      }
+      return undefined;
+    };
+
+    if (expression.kind === 'source' && expression.source) {
+      return this._resolveExternalArgs([expression.source], functionArgs, artifact, state)?.[0];
+    }
+    if (expression.kind === 'literal') {
+      if (expression.type === 'bigint' && typeof expression.value === 'string') return BigInt(expression.value);
+      if (expression.type === 'bool' && typeof expression.value === 'boolean') return expression.value;
+      if (expression.type === 'string' && typeof expression.value === 'string') return expression.value;
+      if (typeof expression.value === 'string' && expression.type?.startsWith('bytes')) {
+        return hexToBin(expression.value);
+      }
+      return undefined;
+    }
+    if (expression.kind === 'state' && expression.name) {
+      return state?.[expression.name] as FunctionArgument | undefined;
+    }
+    if (expression.kind === 'stateAccess' && expression.name) {
+      let value = state?.[expression.name] as unknown;
+      for (const keyExpression of expression.args ?? []) {
+        const key = evaluate(keyExpression);
+        if (key === undefined) return undefined;
+        if (Array.isArray(value)) value = value[Number(key)];
+        else if (value && typeof value === 'object') value = (value as Record<string, unknown>)[String(key)];
+        else return undefined;
+      }
+      return value as FunctionArgument | undefined;
+    }
+    if (expression.kind === 'field' && expression.expression && expression.name) {
+      const base = evaluate(expression.expression);
+      if (base && typeof base === 'object' && !Array.isArray(base) && !(base instanceof Uint8Array)) {
+        const value = (base as unknown as Record<string, FunctionArgument>)[expression.name];
+        if (value !== undefined) return value;
+      }
+      if (expression.type === 'bool') return false;
+      if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) return 0n;
+      return undefined;
+    }
+    if (expression.kind === 'unary' && expression.expression) {
+      const value = evaluate(expression.expression);
+      if (value === undefined) return undefined;
+      if (expression.operator === '.length') {
+        if (typeof value === 'string' || Array.isArray(value) || value instanceof Uint8Array) {
+          return BigInt(value.length) + BigInt(
+            typeof expression.value === 'string' ? expression.value : 0,
+          );
+        }
+      }
+      if (expression.operator === '!') return !value;
+      if (expression.operator === '-' && (typeof value === 'bigint' || typeof value === 'number')) {
+        return -BigInt(value);
+      }
+      return undefined;
+    }
+    if (expression.kind === 'binary' && expression.left && expression.right) {
+      const left = evaluate(expression.left);
+      const right = evaluate(expression.right);
+      if (left === undefined || right === undefined) return undefined;
+      if (expression.operator === '&&') return Boolean(left) && Boolean(right);
+      if (expression.operator === '||') return Boolean(left) || Boolean(right);
+      if (expression.operator === '==') return left === right;
+      if (expression.operator === '!=') return left !== right;
+      if ((typeof left === 'bigint' || typeof left === 'number')
+        && (typeof right === 'bigint' || typeof right === 'number')) {
+        const a = BigInt(left);
+        const b = BigInt(right);
+        if (expression.operator === '+') return a + b;
+        if (expression.operator === '-') return a - b;
+        if (expression.operator === '*') return a * b;
+        if (expression.operator === '/') return a / b;
+        if (expression.operator === '%') return a % b;
+        if (expression.operator === '<') return a < b;
+        if (expression.operator === '<=') return a <= b;
+        if (expression.operator === '>') return a > b;
+        if (expression.operator === '>=') return a >= b;
+      }
+      return undefined;
+    }
+    if (expression.kind === 'ternary' && expression.condition && expression.ifTrue && expression.ifFalse) {
+      return evaluate(expression.condition) ? evaluate(expression.ifTrue) : evaluate(expression.ifFalse);
+    }
+    if (expression.kind === 'cast' && expression.expression) {
+      const value = evaluate(expression.expression);
+      if (value === undefined) return undefined;
+      if (expression.type === 'bytes' && typeof value === 'string') return utf8ToBin(value);
+      if (expression.type?.startsWith('uint') || expression.type?.startsWith('int')) {
+        if (typeof value === 'bigint' || typeof value === 'number') return BigInt(value);
+        if (value instanceof Uint8Array) {
+          let result = 0n;
+          for (const byte of value.slice(expression.type === 'uint160' ? -20 : 0)) {
+            result = (result << 8n) | BigInt(byte);
+          }
+          return result;
+        }
+      }
+      return value;
+    }
+    if (expression.kind === 'array') {
+      const values = (expression.args ?? []).map(evaluate);
+      return values.every((value) => value !== undefined)
+        ? values as unknown as FunctionArgument
+        : undefined;
+    }
+    if (expression.kind === 'arrayAccess' && expression.left && expression.right) {
+      const array = evaluate(expression.left);
+      const index = evaluate(expression.right);
+      return Array.isArray(array) && (typeof index === 'bigint' || typeof index === 'number')
+        ? array[Number(index)] as FunctionArgument
+        : undefined;
+    }
+    if (expression.kind === 'bytesConcat' || expression.kind === 'abiEncodePacked') {
+      const values = (expression.args ?? []).map(evaluate);
+      if (values.some((value) => value === undefined)) return undefined;
+      const parts = values.map((value, index) => asBytes(
+        value as FunctionArgument, expression.fields?.[index] ?? '',
+      ));
+      return parts.every((part): part is Uint8Array => part !== undefined) ? concat(parts) : undefined;
+    }
+    if (expression.kind === 'call') {
+      const values = (expression.args ?? []).map(evaluate);
+      if (values.some((value) => value === undefined)) return undefined;
+      if (expression.name === 'encodeString' && typeof values[0] === 'string') {
+        const bytes = utf8ToBin(values[0]);
+        return concat([uintBe(BigInt(bytes.length), 1), bytes]);
+      }
+      if (expression.name === 'encodeStringArray' && Array.isArray(values[0])) {
+        const strings = values[0] as unknown[];
+        const encoded = strings.map((value) => {
+          const bytes = utf8ToBin(String(value));
+          return concat([uintBe(BigInt(bytes.length), 1), bytes]);
+        });
+        return concat([uintBe(BigInt(strings.length), 1), ...encoded]);
+      }
+      // Struct constructor: positional arrays are accepted by the ABI encoder.
+      if (expression.name && /^[A-Z]/.test(expression.name)) {
+        return values as unknown as FunctionArgument;
+      }
+    }
+    return undefined;
   }
 
   /**
@@ -9499,6 +10952,11 @@ export class StatefulFunctionCall {
   }> = [];
 
   private extraOutputs: Output[] = [];
+  private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
+  private detachedEvents: Array<{
+    name: string; args: StateValueType[]; definition?: EventDefinitionAbi; lockingBytecode?: Uint8Array;
+  }> = [];
+  private declaredRevertReasons: string[] = [];
 
   private maxFeeOverride?: bigint;
   private containerDepositAmount: bigint = 0n;
@@ -9507,6 +10965,7 @@ export class StatefulFunctionCall {
   private callInfos: CallInfo[] = [];
   private registryExternalStateOverrides: Map<string, Record<string, StateValueType>> = new Map();
   private emitReturnFlag = false;
+  private consumesLogicalNonce = true;
 
   private splitFundingConfig?: {
     utxos: Utxo[];
@@ -9604,6 +11063,47 @@ export class StatefulFunctionCall {
     return this;
   }
 
+  /** Supply an event commitment explicitly when a composed delegate trace cannot be auto-derived. */
+  emitEvent(name: string, ...args: StateValueType[]): this {
+    this.manualEvents.push({ name, args });
+    return this;
+  }
+
+  /** Compatibility event placed after composed delegate blocks, so it cannot shift positional covenant slots. */
+  emitDetachedEvent(name: string, ...args: StateValueType[]): this {
+    this.detachedEvents.push({ name, args });
+    return this;
+  }
+
+  emitDetachedEventWithDefinition(
+    definition: EventDefinitionAbi, lockingBytecode: Uint8Array, ...args: StateValueType[]
+  ): this {
+    this.detachedEvents.push({ name: definition.signature, args, definition, lockingBytecode });
+    return this;
+  }
+
+  getDetachedEvents(): readonly {
+    name: string; args: readonly StateValueType[]; definition?: EventDefinitionAbi;
+  }[] {
+    return this.detachedEvents;
+  }
+
+  withDeclaredRevertReasons(reasons: readonly string[]): this {
+    this.declaredRevertReasons = [...reasons];
+    return this;
+  }
+
+  declaresRevertReason(reason: string | RegExp): boolean {
+    return this.declaredRevertReasons.some((message) => typeof reason === 'string'
+      ? message === reason : reason.test(message));
+  }
+
+  /** Internal composition escape: the enclosing top-level SDK operation owns the nonce. */
+  withoutLogicalNonce(): this {
+    this.consumesLogicalNonce = false;
+    return this;
+  }
+
   /**
    * ethers `contract.fn.staticCall(...)`: read the function's return value(s) without sending a transaction. Runs
    * the covenant in a read-only VM probe against current state, decodes the return blob against the ABI output
@@ -9617,6 +11117,7 @@ export class StatefulFunctionCall {
     }
     return this.parentContract._deriveReturnValue(
       this.functionName, (this.functionArgs ?? []) as FunctionArgument[],
+      this.callInfos.length > 0 ? this.callInfos : undefined,
     ) as Promise<StateValueType>;
   }
 
@@ -9882,7 +11383,7 @@ export class StatefulFunctionCall {
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
       && this.entryDeleteSlots.length === 0 && this.extraOutputs.length === 0
       && this.tokenContainerTransfers.length === 0 && this.tokenContainerTransferNfts.length === 0
-      && this.externalCallInfos.length === 0 && this.callInfos.length === 0
+      && this.externalCallInfos.length === 0
       && this.registryExternalStateOverrides.size === 0
       && this.containerDepositAmount === 0n && !this.splitFundingConfig && !this.mergeConfig;
   }
@@ -9897,6 +11398,7 @@ export class StatefulFunctionCall {
     if (this._isPureRead()) {
       return this.parentContract!._deriveReturnValue(
         this.functionName!, (this.functionArgs ?? []) as FunctionArgument[],
+        this.callInfos.length > 0 ? this.callInfos : undefined,
       ).then(onfulfilled as (value: unknown) => TResult1 | PromiseLike<TResult1>, onrejected);
     }
     return this.send().then(onfulfilled, onrejected);
@@ -9910,6 +11412,19 @@ export class StatefulFunctionCall {
   }
 
   async send(): Promise<TransactionDetails> {
+    const reservation = this.consumesLogicalNonce
+      ? this.parentContract?._logicalNonceSigner?.reserveTransactionNonce() : undefined;
+    try {
+      const result = await this._sendWithoutLogicalNonce();
+      reservation?.commit();
+      return result;
+    } catch (error) {
+      reservation?.release();
+      throw error;
+    }
+  }
+
+  private async _sendWithoutLogicalNonce(): Promise<TransactionDetails> {
     const splitMergeBuilder = await this._trySplitMergeBuild();
     if (splitMergeBuilder) {
       // Split/merge bypass the debug step (covenant scripts don't fully validate
@@ -10361,6 +11876,13 @@ export class StatefulFunctionCall {
     // Add extra outputs
     for (const output of this.extraOutputs) {
       builder.addOutput(output);
+    }
+    for (const event of this.manualEvents) builder.emitEvent(event.name, ...event.args);
+    for (const event of this.detachedEvents) {
+      if (event.definition && event.lockingBytecode) {
+        builder.registerDetachedEvent(event.definition, event.lockingBytecode);
+      }
+      builder.emitDetachedEvent(event.name, ...event.args);
     }
 
     return builder;

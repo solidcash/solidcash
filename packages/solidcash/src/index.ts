@@ -24,7 +24,10 @@ export {
   type EncodedFunctionArgument,
   encodeFunctionArgument,
 } from './Argument.js';
-export type { Artifact, AbiFunction, AbiInput, StateLayout, StateVariableInfo, StateValue, PrimitiveStateValue, StateRecord } from '@solidcash/utils';
+export type {
+  Artifact, AbiFunction, AbiInput, StateLayout, StateVariableInfo, StateValue, PrimitiveStateValue, StateRecord,
+  SplitArtifactBundle, SplitManifest, SplitRoute, SplitFacetInfo, SplitStateFootprint,
+} from '@solidcash/utils';
 export * as utils from '@solidcash/utils';
 export * from './interfaces.js';
 export * from './Errors.js';
@@ -37,7 +40,9 @@ export {
   FailingMockNetworkProvider,
   RegtestNetworkProvider,
   type SnapshotRestorer,
+  type ConsensusLimits,
   MOCK_DEFAULT_BLOCK_TIME,
+  MOCK_CONSENSUS_LIMITS,
 } from './network/index.js';
 export { randomUtxo, randomToken, randomNFT } from './utils.js';
 export { gatherBchUtxos, gatherFungibleTokenUtxos, type GatherUtxosResult } from './transaction-utils.js';

@@ -95,7 +95,7 @@ export function validateInput(utxo: Utxo): void {
   }
 }
 
-export function validateOutput(output: Output): void {
+export function validateOutput(output: Output, enforceDust = true): void {
   // Universal validations (apply to both string addresses and bytecode outputs)
   if (output.amount < 0n) {
     throw new OutputSatoshisTooSmallError(output.amount, 0n);
@@ -107,7 +107,7 @@ export function validateOutput(output: Output): void {
 
   // Dust check for all non-OP_RETURN outputs (both string addresses and raw bytecode)
   const isOpReturn = output.to instanceof Uint8Array && output.to.length > 0 && output.to[0] === 0x6a;
-  if (!isOpReturn) {
+  if (enforceDust && !isOpReturn) {
     const minimumAmount = calculateDust(output);
     if (output.amount < minimumAmount) {
       throw new OutputSatoshisTooSmallError(output.amount, BigInt(minimumAmount));

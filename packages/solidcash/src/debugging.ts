@@ -33,38 +33,70 @@ const createVirtualMachine = (vmTarget: VmTarget): VM => {
 };
 
 // debugs the template, optionally logging the execution data
-export const debugTemplate = (template: WalletTemplate, artifacts: Artifact[]): DebugResults => {
+export const debugTemplate = (
+  template: WalletTemplate,
+  artifacts: Artifact[],
+  verifyTransaction: boolean = true,
+): DebugResults => {
+  const unlockingScriptIds = Object.keys(template.scripts).filter((key) =>
+    'unlocks' in template.scripts[key] && !key.includes('_body_'),
+  );
+  const relevantArtifacts = artifacts.filter((artifact) =>
+    unlockingScriptIds.some((scriptId) => scriptId.startsWith(artifact.contractName)),
+  );
   // If a contract has the same name, but a different bytecode, then it is considered a name collision
-  const hasArtifactNameCollision = artifacts.some(
+  const hasArtifactNameCollision = relevantArtifacts.some(
     (artifact) => (
-      artifacts.some((other) => other.contractName === artifact.contractName && other.bytecode !== artifact.bytecode)
+      relevantArtifacts.some((other) => other.contractName === artifact.contractName && other.bytecode !== artifact.bytecode)
     ),
   );
 
-  if (hasArtifactNameCollision) {
+  // Split transactions can legitimately include multiple state/entry unlockers carrying different generated
+  // root variants plus uniquely named branded facets. Facet script IDs remain unambiguous, so retain legacy
+  // collision rejection for ordinary transactions but allow the compiler-authenticated split topology.
+  const isSplitTransaction = artifacts.some((artifact) => artifact.brandedLibrary && artifact.delegateOnly);
+  const inspectAllInputs = isSplitTransaction
+    || relevantArtifacts.some((artifact) => artifact.contractName === 'SolidCashProxy');
+  // A Hardhat whole-project artifact registry commonly contains inherited dependencies with the same Solidity
+  // contract name but different bytecode. Keep evaluating the transaction-specific script IDs; the first matching
+  // artifact is sufficient for execution, while source attribution remains best-effort for ambiguous names.
+  if (hasArtifactNameCollision && !isSplitTransaction) {
     throw new Error('There are multiple artifacts with the same contractName. Please make sure that all artifacts have unique names.');
   }
 
   const results: DebugResults = {};
+  const evaluationErrors: unknown[] = [];
   // Filter out body unlock scripts - they are for IDE visualization only, not for programmatic debugging.
   // Body scripts use Key-typed signature variables and lockingType: 'standard', which don't evaluate
   // correctly in the programmatic debug flow (e.g., Key variables require operation identifiers like
   // 's.schnorr_signature.all_outputs_all_utxos' that the P2SH debug path doesn't use).
-  const unlockingScriptIds = Object.keys(template.scripts).filter((key) =>
-    'unlocks' in template.scripts[key] && !key.includes('_body_'),
-  );
-
   for (const unlockingScriptId of unlockingScriptIds) {
     const scenarioIds = (template.scripts[unlockingScriptId] as WalletTemplateScriptUnlocking).passes ?? [];
 
     const matchingArtifact = artifacts.find((artifact) => unlockingScriptId.startsWith(artifact.contractName));
 
     for (const scenarioId of scenarioIds) {
-      results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(template, matchingArtifact, unlockingScriptId, scenarioId);
+      try {
+        results[`${unlockingScriptId}.${scenarioId}`] = debugSingleScenario(
+          template, matchingArtifact, unlockingScriptId, scenarioId,
+        );
+      } catch (error) {
+        // A composed transaction can fail at both a wrapper/proxy input and its delegated implementation input.
+        // Inspect every input so a source-level require from the implementation is not masked by the proxy's
+        // generic `delegatecall(...)` OP_VERIFY failure.
+        if (!inspectAllInputs) throw error;
+        evaluationErrors.push(error);
+      }
     }
   }
 
-  verifyFullTransaction(template);
+  if (evaluationErrors.length > 0) {
+    throw evaluationErrors.find((error) => error instanceof FailedRequireError)
+      ?? evaluationErrors.find((error) => (error as { artifact?: Artifact })?.artifact?.brandedLibrary)
+      ?? evaluationErrors[0];
+  }
+
+  if (verifyTransaction) verifyFullTransaction(template);
 
   return results;
 };

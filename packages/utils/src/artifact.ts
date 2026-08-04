@@ -356,11 +356,31 @@ export interface ExternalReadAbi {
 }
 
 export interface ArgSource {
-  kind: 'forward' | 'constructorArg' | 'literal' | 'expression';
+  kind: 'forward' | 'constructorArg' | 'literal' | 'msgSender' | 'selfAddress' | 'arrayElement' | 'expression';
   paramIndex?: number;     // for 'forward': index into the user-visible function args
+  indexParamIndex?: number; // for 'arrayElement': optional function parameter containing the element index
+  indexValue?: number;     // for 'arrayElement': fixed index (loop call sites commonly begin at zero)
   paramName?: string;      // for 'constructorArg': name of the constructor parameter
   value?: string;          // for 'literal': serialized value
   type?: string;           // for 'literal': SolidCash type string
+  expression?: ExternalCallExpression;
+}
+
+export interface ExternalCallExpression {
+  kind: string;
+  name?: string;
+  type?: string;
+  value?: string | boolean;
+  operator?: string;
+  source?: ArgSource;
+  expression?: ExternalCallExpression;
+  left?: ExternalCallExpression;
+  right?: ExternalCallExpression;
+  condition?: ExternalCallExpression;
+  ifTrue?: ExternalCallExpression;
+  ifFalse?: ExternalCallExpression;
+  args?: readonly ExternalCallExpression[];
+  fields?: readonly string[];
 }
 
 export interface ExternalCallAbi {
@@ -374,6 +394,7 @@ export interface ExternalCallAbi {
   // sel[i] from it (not a witness), so the SDK resolves each element's method from its selector + skips the witness.
   selectorArrayVar?: string;
   addressIsMsgSender?: boolean; // target is msg.sender: the SDK co-spends the caller-designated msg.sender contract
+  addressSource?: ArgSource; // SDK-resolvable origin for computed/local target addresses
   // Foreign fn-ptr call: the SDK fills a per-call master-index witness.
   fnPtrCall?: boolean;
   // A regular direct call needs a selector witness unless the callee has only one method.
@@ -386,6 +407,8 @@ export interface ExternalCallAbi {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   opaqueReturn?: boolean; // `(bool,bytes)=addr.call(payload)`: opaque integrity-bound return, callee unknown at compile time
   argSources?: readonly ArgSource[];
+  rawFunctionName?: string; // decoded abi.encodeCall target for a low-level call
+  rawArgSources?: readonly ArgSource[];
 }
 
 export interface ExternalOutStateAbi {
@@ -488,6 +511,7 @@ export interface Artifact {
   externalLibraries?: readonly ExternalLibraryAbi[];  // external script libraries this contract depends on
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
+  delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
@@ -508,6 +532,60 @@ export interface Artifact {
  */
 export type ArtifactMap = Record<string, Artifact>;
 
+export interface SplitStateFootprint {
+  reads: readonly string[];
+  writes: readonly string[];
+  effects: readonly string[];
+  unknown: boolean;
+}
+
+export interface SplitRoute {
+  selector: string;
+  function: string;
+  target: 'root' | string;
+  footprint: SplitStateFootprint;
+}
+
+export interface SplitFacetInfo {
+  name: string;
+  functions: readonly string[];
+  brandArgument: '__brand';
+  linkArgument: string;
+  delegateOnly: true;
+  estimatedRedeemBytes: number;
+}
+
+export interface SplitManifest {
+  logicalContractName: string;
+  abi: readonly AbiFunction[];
+  stateLayoutFingerprint: string;
+  deploymentMode: 'immutable-one-hop';
+  algorithm: 'state-affinity-best-fit-v2';
+  identityBinding: {
+    scheme: 'solidcash-create-v1';
+    owner: 'root';
+    facetIdentity: 'physical-only';
+  };
+  routes: readonly SplitRoute[];
+  facets: readonly SplitFacetInfo[];
+}
+
+/** Additive compiler result for a statically linked one-hop split contract. */
+export interface SplitArtifactBundle {
+  format: 'solidcash-split-v1';
+  root: Artifact;
+  facets: ArtifactMap;
+  manifest: SplitManifest;
+}
+
+export function formatSplitArtifactBundle(bundle: SplitArtifactBundle, format: 'json' | 'ts'): string {
+  if (format === 'ts') {
+    const normalised = JSON.parse(JSON.stringify(bundle));
+    return `export default ${stringifyAsTs(normalised)} as const;\n`;
+  }
+  return JSON.stringify(bundle, null, 2);
+}
+
 export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): string {
   if (format === 'ts') {
     // We remove any undefined values to make the artifact serializable using stringifyAsTs
@@ -521,6 +599,8 @@ export function formatArtifact(artifact: Artifact, format: 'json' | 'ts'): strin
 const indent = (level: number): string => '  '.repeat(level);
 
 function stringifyAsTs(obj: any, indentationLevel: number = 1): string {
+  if (obj === null) return 'null';
+
   // For strings we use JSON.stringify to handle escaping, but we want to use single quotes instead of double quotes
   // around string values inside objects, to match regular TS style
   if (typeof obj === 'string') {

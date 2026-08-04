@@ -1,10 +1,34 @@
 import { Utxo, Network } from '../interfaces.js';
 
+export interface ConsensusLimits {
+  /** Maximum serialized unlocking/locking bytecode for one input script. */
+  maximumInputBytes: number;
+  /** Maximum VM stack item size (the P2SH redeem script is pushed as one item). */
+  maximumStackItemBytes: number;
+  /** Maximum serialized transaction size. */
+  maximumTransactionBytes: number;
+  maximumNftCommitmentBytes: number;
+  /** Operation-cost units allowed per density-control byte. */
+  operationCostBudgetPerByte: number;
+  /** Hash digest iterations allowed per density-control byte in the mock consensus VM. */
+  hashDigestIterationsPerByte: number;
+}
+
+export interface NetworkPolicy {
+  /** Apply node relay dust thresholds when constructing and validating outputs. */
+  enforceDust: boolean;
+}
+
 export default interface NetworkProvider {
   /**
    * Variable indicating the network that this provider connects to.
    */
   network: Network;
+
+  /** Optional provider-specific consensus limits. Omitted providers use BCH production limits. */
+  consensusLimits?: ConsensusLimits;
+  /** Optional relay-policy behavior. Omitted providers use production policy. */
+  policy?: NetworkPolicy;
 
   /**
    * Retrieve all UTXOs (confirmed and unconfirmed) for a given address.

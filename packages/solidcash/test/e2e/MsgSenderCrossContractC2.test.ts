@@ -3,7 +3,6 @@ import { compileString } from 'solidc';
 import { hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
-import { addressToLockScript } from '../../src/utils.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -29,8 +28,8 @@ contract Caller(bytes bankAddr) {
   }
 }`;
 
-// Regression for the original boundary reproduction. Cross-contract C2 entry derivation now handles the callee's
-// predecessor/exact-node proof and resolves msg.sender to the caller contract's canonical address locking script.
+// Cross-contract dispatch must derive the callee's sorted-entry predecessor/target and key msg.sender by the
+// caller's category-pinned locking bytecode. The assertion decodes the resulting C2 entry from the provider.
 describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], caller = contract A)', () => {
   it('A calls Bank.deposit(); Bank.bal[A] == amt (msg.sender = caller contract)', async () => {
     const provider = createTestProvider();
@@ -50,6 +49,8 @@ describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], ca
 
     const scCaller = StatefulContract.withCategory(caller, catCaller);
     const scBank = StatefulContract.withCategory(bank, catBank);
+    const callerLbc = hexToBin(caller.withCategory(hexToBin(catCaller)).lockingBytecode);
+
     const tx = await scCaller.pay(7n, alicePub, new SignatureTemplate(alicePriv))
       .withExternalCall(scBank, 'deposit', [7n])
       .send();
@@ -57,8 +58,7 @@ describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], ca
 
     // Bank.bal[A's locking bytecode] == 7.
     const ea = getEntryNftAddress(scBank.inner, catBank, 'bal');
-    const entry = SortedList.fromUtxos(await provider.getUtxos(ea))
-      .find(keyToSlot(addressToLockScript(scCaller.address)));
+    const entry = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(callerLbc));
     expect(entry).toBeDefined();
     expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(7n);
   });

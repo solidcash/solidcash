@@ -55,6 +55,17 @@ describe('AbiFunction.writesState classification', () => {
     expect(r.pay).toBe(true);
   });
 
+  it('classifies delegate functions by their body rather than the delegate modifier alone', () => {
+    const r = ws(`pragma solidcash >=0.8.0;
+      contract C() {
+        int counter;
+        function read() delegate returns (int) { return this.counter; }
+        function write(int value) delegate { this.counter = value; require(true); }
+      }`);
+    expect(r.read).toBe(false);
+    expect(r.write).toBe(true);
+  });
+
   it('omits writesState for stateless contracts', () => {
     const abi = compileString(`pragma solidcash >=0.8.0;
       contract P2PKH(bytes20 pkh) {

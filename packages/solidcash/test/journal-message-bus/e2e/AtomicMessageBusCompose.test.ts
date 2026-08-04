@@ -23,6 +23,7 @@ import {
   createBareP2pkhFeeFunder, genesisFtContainer, setupStatefulUtxos,
 } from '../../test-util.js';
 import { alicePkh } from '../../fixture/vars.js';
+import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
@@ -51,6 +52,7 @@ const raw = (builder: TransactionBuilder): string =>
   binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
 const vmRejects = (candidate: TransactionBuilder): boolean => {
+  assertAuthenticatingVmEvidence(candidate);
   const transaction = candidate.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(candidate.inputs);
   const vm = createVirtualMachineBch2026ForProvider(candidate.provider);
@@ -59,7 +61,7 @@ const vmRejects = (candidate: TransactionBuilder): boolean => {
   ).some((state) => state.error !== undefined));
 };
 
-const mutateInputZero = (
+const mutateAuthenticatedFrame = (
   builder: TransactionBuilder, selectorHex: string,
   target: 'messageEnvelope' | 'emissions' | 'messageEnvelope-result' | 'messageEnvelope-event' | 'messageEnvelope-resource'
   | 'messageEnvelope-resource-mode' | 'messageEnvelope-resource-slot' | 'messageEnvelope-resource-subject'
@@ -76,9 +78,11 @@ const mutateInputZero = (
     || target.startsWith('messageEnvelope-satoshi') || target.startsWith('messageEnvelope-token')
     || target.startsWith('messageEnvelope-context-') || target === 'messageEnvelope-root-origin'
     || target.startsWith('messageEnvelope-span-') || target.startsWith('messageEnvelope-invocation-');
-  const inputIndex = messageEnvelopeTarget
-    ? builder.inputs.findIndex((input) => input.token?.nft?.commitment.startsWith('4c335631'))
-    : 0;
+  const verifierIndices = builder.inputs
+    .map((input, index) => ({ input, index }))
+    .filter(({ input }) => input.token?.nft?.commitment.startsWith('4c335631'))
+    .map(({ index }) => index);
+  const inputIndex = messageEnvelopeTarget ? verifierIndices[verifierIndices.length - 1] ?? -1 : 0;
   if (inputIndex < 0) throw new Error('test could not locate a deployed message bus verifier input');
   const original = builder.inputs[inputIndex].unlocker!;
   builder.inputs[inputIndex] = {
@@ -299,7 +303,7 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-context-caller', 'messageEnvelope-context-selector', 'messageEnvelope-context-args', 'messageEnvelope-root-origin',
     ] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
+      mutateAuthenticatedFrame(hostile, '', mutation);
       expect(vmRejects(hostile), mutation).toBe(true);
     }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -351,7 +355,7 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-invocation-swap', 'messageEnvelope-invocation-drop', 'messageEnvelope-invocation-duplicate',
     ] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
+      mutateAuthenticatedFrame(hostile, '', mutation);
       expect(vmRejects(hostile), mutation).toBe(true);
     }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -400,7 +404,7 @@ describe('messageBus.compose atomic transaction', () => {
     expect(canonical.inputs).toHaveLength(7);
     expect(vmRejects(canonical)).toBe(false);
     const hostile = await composition.build();
-    mutateInputZero(hostile, '', 'messageEnvelope-invocation-target');
+    mutateAuthenticatedFrame(hostile, '', 'messageEnvelope-invocation-target');
     expect(vmRejects(hostile)).toBe(true);
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
@@ -454,10 +458,10 @@ describe('messageBus.compose atomic transaction', () => {
     expect(vmRejects(canonicalTaken)).toBe(false);
     expect(vmRejects(canonicalUntaken)).toBe(false);
     const omitted = await taken.build();
-    mutateInputZero(omitted, '', 'messageEnvelope-invocation-drop');
+    mutateAuthenticatedFrame(omitted, '', 'messageEnvelope-invocation-drop');
     expect(vmRejects(omitted)).toBe(true);
     const phantom = await untaken.build();
-    mutateInputZero(phantom, '', 'messageEnvelope-invocation-duplicate');
+    mutateAuthenticatedFrame(phantom, '', 'messageEnvelope-invocation-duplicate');
     expect(vmRejects(phantom)).toBe(true);
     await expect(canonicalTaken.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
@@ -509,7 +513,7 @@ describe('messageBus.compose atomic transaction', () => {
     }).build()).rejects.toThrow(/compiled graph reaches 3/);
     for (const mutation of ['messageEnvelope-invocation-drop', 'messageEnvelope-invocation-duplicate'] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
+      mutateAuthenticatedFrame(hostile, '', mutation);
       expect(vmRejects(hostile), mutation).toBe(true);
     }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -567,7 +571,7 @@ describe('messageBus.compose atomic transaction', () => {
     expect(staticRow?.mode).toBe(1);
     expect(vmRejects(canonical)).toBe(false);
     const renamed = await composition.build();
-    mutateInputZero(renamed, '', 'messageEnvelope-invocation-mode');
+    mutateAuthenticatedFrame(renamed, '', 'messageEnvelope-invocation-mode');
     expect(vmRejects(renamed)).toBe(true);
 
     const mutableArtifact = compileString(`contract ComposeStaticMutation() {
@@ -647,7 +651,7 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-result',
     ] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
+      mutateAuthenticatedFrame(hostile, '', mutation);
       expect(vmRejects(hostile), mutation).toBe(true);
     }
     await expect(canonical.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
@@ -992,11 +996,11 @@ describe('messageBus.compose atomic transaction', () => {
 
     for (const mutation of ['messageEnvelope', 'emissions'] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!, mutation);
+      mutateAuthenticatedFrame(hostile, calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!, mutation);
       await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
     }
     const hostileCallManifestResult = await composition.build();
-    mutateInputZero(
+    mutateAuthenticatedFrame(
       hostileCallManifestResult,
       calleeArtifact.abi.find((fn) => fn.name === 'settle')!.selector!,
       'messageEnvelope-result',
@@ -1126,7 +1130,7 @@ describe('messageBus.compose atomic transaction', () => {
       output.token?.category === calleeSetup.categoryId && output.token.nft?.capability === 'none');
     expect(eventOutputIndex).toBeGreaterThan(0);
     const hostileMessageEnvelope = await composition.build();
-    mutateInputZero(hostileMessageEnvelope, '', 'messageEnvelope-event');
+    mutateAuthenticatedFrame(hostileMessageEnvelope, '', 'messageEnvelope-event');
     await expect(provider.sendRawTransaction(raw(hostileMessageEnvelope))).rejects.toThrow();
     const hostileOutput = await composition.build();
     const commitment = hexToBin(hostileOutput.outputs[eventOutputIndex].token!.nft!.commitment);
@@ -1196,7 +1200,7 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-resource', 'messageEnvelope-resource-mode', 'messageEnvelope-resource-slot', 'messageEnvelope-resource-subject',
     ] as const) {
       const hostileMessageEnvelope = await composition.build();
-      mutateInputZero(hostileMessageEnvelope, '', mutation);
+      mutateAuthenticatedFrame(hostileMessageEnvelope, '', mutation);
       const outcome = await provider.sendRawTransaction(raw(hostileMessageEnvelope)).then(() => 'accepted').catch(() => 'rejected');
       expect(outcome, mutation).toBe('rejected');
     }
@@ -1252,13 +1256,13 @@ describe('messageBus.compose atomic transaction', () => {
     expect(mutableOutputs.length).toBeGreaterThanOrEqual(2);
     const chunkOutput = mutableOutputs[mutableOutputs.length - 1].index;
     const hostileMessageEnvelope = await composition.build();
-    mutateInputZero(hostileMessageEnvelope, '', 'messageEnvelope-resource-create');
+    mutateAuthenticatedFrame(hostileMessageEnvelope, '', 'messageEnvelope-resource-create');
     await expect(provider.sendRawTransaction(raw(hostileMessageEnvelope))).rejects.toThrow();
     for (const mutation of [
       'messageEnvelope-span-shrink', 'messageEnvelope-span-expand', 'messageEnvelope-span-maximum',
     ] as const) {
       const hostileSpan = await composition.build();
-      mutateInputZero(hostileSpan, '', mutation);
+      mutateAuthenticatedFrame(hostileSpan, '', mutation);
       expect(vmRejects(hostileSpan), mutation).toBe(true);
     }
     const hostileOutput = await composition.build();
@@ -1331,7 +1335,7 @@ describe('messageBus.compose atomic transaction', () => {
       .some((row) => row.kind === 1 && row.mode === 2);
     expect(deletion).toBe(true);
     const hostile = await composition.build();
-    mutateInputZero(hostile, '', 'messageEnvelope-resource-delete');
+    mutateAuthenticatedFrame(hostile, '', 'messageEnvelope-resource-delete');
     await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
     await expect(composition.send()).resolves.toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
   }, 120_000);
@@ -1390,7 +1394,7 @@ describe('messageBus.compose atomic transaction', () => {
         'messageEnvelope-value', 'messageEnvelope-value-drop', 'messageEnvelope-satoshi', 'messageEnvelope-satoshi-drop',
       ] as const) {
         const hostileMessageEnvelope = await composition.build();
-        mutateInputZero(hostileMessageEnvelope, '', mutation);
+        mutateAuthenticatedFrame(hostileMessageEnvelope, '', mutation);
         await expect(provider.sendRawTransaction(raw(hostileMessageEnvelope))).rejects.toThrow();
       }
       const hostileOutput = await composition.build();
@@ -1459,7 +1463,7 @@ describe('messageBus.compose atomic transaction', () => {
         'messageEnvelope-token', 'messageEnvelope-token-drop', 'messageEnvelope-token-container', 'messageEnvelope-token-container-drop',
       ] as const) {
         const hostile = await composition.build();
-        mutateInputZero(hostile, '', mutation);
+        mutateAuthenticatedFrame(hostile, '', mutation);
         await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
       }
       const hostileOutput = await composition.build();
@@ -1529,7 +1533,7 @@ describe('messageBus.compose atomic transaction', () => {
       'messageEnvelope-token', 'messageEnvelope-token-drop', 'messageEnvelope-token-container', 'messageEnvelope-token-container-drop',
     ] as const) {
       const hostile = await composition.build();
-      mutateInputZero(hostile, '', mutation);
+      mutateAuthenticatedFrame(hostile, '', mutation);
       await expect(provider.sendRawTransaction(raw(hostile))).rejects.toThrow();
     }
     const hostileOutput = await composition.build();

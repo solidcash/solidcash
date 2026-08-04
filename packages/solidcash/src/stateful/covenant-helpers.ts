@@ -290,6 +290,13 @@ export async function getContractState(
 // Covenant unlocker factories
 // ---------------------------------------------------------------------------
 
+/**
+ * Minimum encoded verifier unlocking-bytecode length used to earn BCH-2026 operation-density budget.
+ * The reserve is calculated after encoding the actual verifier arguments, so larger programs and envelopes
+ * displace padding rather than accumulating another fixed allocation.
+ */
+export const MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES = 9_000;
+
 export function createMessageBusVerifierUnlocker(
   contract: Contract<any, any>, categoryId: string, messageEnvelope: Uint8Array, verifierArgs: FunctionArgument[],
 ): ContractUnlocker {
@@ -299,14 +306,30 @@ export function createMessageBusVerifierUnlocker(
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }
-  return createCovenantContractUnlocker(
-    contract,
-    `MessageBusVerifier_${categoryId.slice(0, 8)}`,
-    buildMessageBusVerifierCovenantScript(program),
-    [{ name: '__internal__densityReserve', type: 'bytes' }, ...program.inputs, { name: 'messageEnvelope', type: 'bytes' }],
-    [new Uint8Array(2048), ...verifierArgs, messageEnvelope],
-    'p2sh32',
+  const covenantScript = buildMessageBusVerifierCovenantScript(program);
+  const abiInputs: AbiInput[] = [
+    { name: '__internal__densityReserve', type: 'bytes' },
+    ...program.inputs,
+    { name: 'messageEnvelope', type: 'bytes' },
+  ];
+  const create = (densityReserve: Uint8Array): ContractUnlocker => createCovenantContractUnlocker(
+    contract, `MessageBusVerifier_${categoryId.slice(0, 8)}`, covenantScript, abiInputs,
+    [densityReserve, ...verifierArgs, messageEnvelope], 'p2sh32',
   );
+  const empty = create(new Uint8Array());
+  const emptyLength = empty.generateUnlockingBytecode({} as never).length;
+  let reserveLength = Math.max(0, MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - emptyLength);
+  let unlocker = create(new Uint8Array(reserveLength));
+  let encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
+    reserveLength += MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES - encodedLength;
+    unlocker = create(new Uint8Array(reserveLength));
+    encodedLength = unlocker.generateUnlockingBytecode({} as never).length;
+  }
+  if (encodedLength < MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES) {
+    throw new Error('message bus verifier density reserve calculation did not reach its encoded-byte floor');
+  }
+  return unlocker;
 }
 
 export function createDataNftUnlocker(

@@ -4,6 +4,7 @@ import {
 import { compileString } from 'solidc';
 import { describe, expect, it } from 'vitest';
 import { Contract, StatefulContract, messageBus } from '../../../src/index.js';
+import { MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES } from '../../../src/stateful/covenant-helpers.js';
 import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import type { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
@@ -48,54 +49,54 @@ interface CapacityReading {
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 18_798, callManifestBytes: 294,
-    worstOperationCost: 1_982_886, worstMaximumOperationCost: 5_819_200,
-    worstRatio: 0.34074890019246634,
-    inputOperationCosts: [320_795, 302_488, 695, 1_863_609, 1_982_886, 27_321],
-    inputMaximumOperationCosts: [1_593_600, 1_439_200, 34_400, 5_648_000, 5_819_200, 112_800],
+    transactionBytes: 22_550, callManifestBytes: 294,
+    worstOperationCost: 1_997_038, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.2760474953002322,
+    inputOperationCosts: [333_178, 314_871, 695, 1_877_975, 1_997_038, 27_321],
+    inputMaximumOperationCosts: [1_593_600, 1_439_200, 34_400, 7_234_400, 7_234_400, 112_800],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 41_418, callManifestBytes: 584,
-    worstOperationCost: 3_369_538, worstMaximumOperationCost: 6_051_200,
-    worstRatio: 0.5568379825489159,
+    transactionBytes: 46_222, callManifestBytes: 584,
+    worstOperationCost: 3_464_908, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.47894891075970364,
     inputOperationCosts: [
-      379_009, 427_847, 695, 427_847, 695, 378_754, 695,
-      3_206_184, 3_453_698, 3_453_160, 3_369_538, 27_321,
+      389_362, 438_200, 695, 438_200, 695, 389_107, 695,
+      3_218_148, 3_464_908, 3_464_370, 3_381_370, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_659_200, 1_970_400, 34_400, 1_970_400, 34_400, 1_439_200, 34_400,
-      5_945_600, 6_548_800, 6_548_800, 6_051_200, 112_800,
+      7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 53_409, callManifestBytes: 729,
-    worstOperationCost: 4_096_729, worstMaximumOperationCost: 6_167_200,
-    worstRatio: 0.6642769814502529,
+    transactionBytes: 58_181, callManifestBytes: 729,
+    worstOperationCost: 4_203_995, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.5811117715359947,
     inputOperationCosts: [
-      408_084, 466_431, 695, 466_431, 695, 466_431, 695, 416_823, 695,
-      3_912_347, 4_193_986, 4_193_448, 4_192_891, 4_096_729, 27_321,
+      417_422, 475_769, 695, 475_769, 695, 475_769, 695, 426_161, 695,
+      3_923_110, 4_203_995, 4_203_457, 4_202_900, 4_107_401, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_692_000, 2_003_200, 34_400, 2_003_200, 34_400, 2_003_200, 34_400, 1_439_200, 34_400,
-      6_094_400, 6_697_600, 6_697_600, 6_697_600, 6_167_200, 112_800,
+      7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   8: {
     participants: 8, authenticatedParticipants: 8, slots: 24,
-    transactionBytes: 92_126, callManifestBytes: 1_164,
-    worstOperationCost: 6_414_376, worstMaximumOperationCost: 6_515_200,
-    worstRatio: 0.9845248035363457,
+    transactionBytes: 94_563, callManifestBytes: 1_164,
+    worstOperationCost: 6_561_081, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.9069281488444101,
     inputOperationCosts: [
-      495_381, 582_255, 695, 582_263, 695, 582_263, 695, 582_263, 695, 582_263, 695,
-      582_263, 695, 531_166, 695, 6_170_662, 6_554_676, 6_554_138, 6_553_581,
-      6_553_024, 6_552_467, 6_551_910, 6_414_376, 27_321,
+      501_674, 588_548, 695, 588_556, 695, 588_556, 695, 588_556, 695, 588_556, 695,
+      588_556, 695, 537_459, 695, 6_177_821, 6_561_081, 6_560_543, 6_559_986,
+      6_559_429, 6_558_872, 6_558_315, 6_421_568, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_791_200, 2_102_400, 34_400, 2_103_200, 34_400, 2_103_200, 34_400, 2_103_200,
-      34_400, 2_103_200, 34_400, 2_103_200, 34_400, 1_440_000, 34_400, 6_541_600,
-      7_144_800, 7_144_800, 7_144_800, 7_144_800, 7_144_800, 7_144_800, 6_515_200, 112_800,
+      34_400, 2_103_200, 34_400, 2_103_200, 34_400, 1_440_000, 34_400,
+      7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
 });
@@ -158,6 +159,20 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
     (input) => input.token?.nft?.commitment.startsWith('4c335631'),
   );
   if (verifierIndex < 0) throw new Error('capacity fixture has no deployed message bus verifier input');
+  const verifierUnlockingLengths = builder.inputs
+    .map((input, inputIndex) => ({ input, inputIndex }))
+    .filter(({ input }) => input.token?.nft?.commitment.startsWith('4c335631'))
+    .map(({ inputIndex }) => transaction.inputs[inputIndex].unlockingBytecode.length);
+  expect(Math.min(...verifierUnlockingLengths)).toBeGreaterThanOrEqual(
+    MESSAGE_BUS_VERIFIER_MIN_UNLOCKING_BYTECODE_BYTES,
+  );
+  if (participants === 8) {
+    expect(Math.max(...verifierUnlockingLengths) - Math.min(...verifierUnlockingLengths)).toBeLessThanOrEqual(2);
+    const reserveLengths = builder.inputs
+      .filter((input) => input.token?.nft?.commitment.startsWith('4c335631'))
+      .map((input) => (input.unlocker!.params[0] as Uint8Array).length);
+    expect(new Set(reserveLengths).size).toBeGreaterThan(1);
+  }
   const messageEnvelope = decodeAuthenticationInstructions(
     builder.inputs[verifierIndex].unlocker!.generateUnlockingBytecode({
       inputIndex: verifierIndex,
@@ -189,8 +204,8 @@ describe('atomic single-transaction capacity', () => {
     expect(reading.worstRatio).toBeLessThanOrEqual(1);
     expect(reading.authenticatedParticipants).toBe(count);
     expect(reading.slots).toBeGreaterThan(count);
-    expect(reading).toEqual(EXPECTED[count]);
     console.log(`L3_ATOMIC_CAPACITY ${JSON.stringify(reading)}`);
+    expect(reading).toEqual(EXPECTED[count]);
     // The ordinary suite pins exact stock-VM costs. An explicit live run broadcasts the same finalized bytes;
     // filter for the eight-participant case to prove the maximum admitted physical/resource shape on BCHN.
     if (process.env.TESTS_USE_REGTEST) {

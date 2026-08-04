@@ -15,14 +15,14 @@ const artifact = (selector: string, inputType = 'int'): Artifact => ({
 const plan = (): messageBus.CompiledGraphPlan => ({
   participants: [
     {
-      participant: 0, artifact: artifact('11111111'), lockingBytecode: '51', executionKind: 0,
+      participant: 0, artifact: artifact('11111111'), lockingBytecode: '51'.repeat(64), executionKind: 0,
       executorOffset: null, executorInputIndex: 0xffff, executorLockingBytecode: '',
       batch: {} as never, invocations: [0],
       blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
       routeInputs: [], settlementBoundary: 2, completionPositions: [2],
     },
     {
-      participant: 1, artifact: artifact('22222222'), lockingBytecode: '52', executionKind: 0,
+      participant: 1, artifact: artifact('22222222'), lockingBytecode: '52'.repeat(64), executionKind: 0,
       executorOffset: null, executorInputIndex: 0xffff, executorLockingBytecode: '',
       batch: {} as never, invocations: [1],
       blockLayout: { blockSize: 1, slots: [{ kind: 'master', offset: 0 }] },
@@ -74,7 +74,9 @@ describe('atomic compiled invocation graph', () => {
     const codeChanged = plan();
     const changed = {
       ...codeChanged,
-      participants: [codeChanged.participants[0], { ...codeChanged.participants[1], lockingBytecode: '5353' }],
+      participants: [codeChanged.participants[0], {
+        ...codeChanged.participants[1], lockingBytecode: '53'.repeat(64),
+      }],
     };
     expect(messageBus.finalizeAtomicInvocationGraph(
       changed, ['aa'.repeat(32), 'bb'.repeat(32)], { 1: '2a' },

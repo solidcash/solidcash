@@ -9,7 +9,7 @@ import { MessageBusDiagnosticError } from './diagnostics.js';
  * Exact finalized-byte and VM preflight remains authoritative for resource-heavy shapes below this ceiling.
  */
 export const ATOMIC_MESSAGE_BUS_CAPACITY = Object.freeze({
-  profile: 'self-preserved-verifier-return-chain-bch2026-stock-v4',
+  profile: 'self-preserved-verifier-return-chain-bch2026-stock-v5',
   maximumParticipants: 8,
   firstRejectedParticipants: 9,
   operationCostBudgetPerByte: 800,

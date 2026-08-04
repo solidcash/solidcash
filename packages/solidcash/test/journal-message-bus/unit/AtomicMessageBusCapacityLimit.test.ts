@@ -4,7 +4,7 @@ import { messageBus } from '../../../src/index.js';
 describe('atomic single-transaction admission limit', () => {
   it('publishes and enforces the adjacent measured BCH-2026 participant bound', () => {
     expect(messageBus.ATOMIC_MESSAGE_BUS_CAPACITY).toMatchObject({
-      profile: 'self-preserved-verifier-return-chain-bch2026-stock-v4',
+      profile: 'self-preserved-verifier-return-chain-bch2026-stock-v5',
       maximumParticipants: 8,
       firstRejectedParticipants: 9,
       operationCostBudgetPerByte: 800,

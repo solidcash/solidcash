@@ -44,6 +44,11 @@ input, row count, and graph witnesses. Each compact state input recomputes that 
 lock, category, index, and commitment. Signatures and complete unlocking bytecodes are excluded, so there is no
 transaction-signature circularity.
 
+Each verifier also receives an inert density-reserve push. The SDK sizes this reserve after encoding that
+verifier's actual program arguments and message envelope, bringing its unlocking bytecode to a 9,000-byte floor.
+Larger arguments displace reserve bytes rather than accumulating a fixed 2,048-byte pad. Finalized VM and byte
+preflight remain authoritative if a verifier needs more computation or the transaction approaches relay size.
+
 SDK-only effect/return derivation probes temporarily use state-input outpoint index `ffffffff`, which cannot name a
 real transaction output. The route skips its final binding check only for that impossible probe outpoint; the SDK restores
 the real outpoint before assembly, and finalized preflight explicitly rejects any leaked probe sentinel.
@@ -58,7 +63,8 @@ EOF
 ```
 
 The verifier covenant fixes the message envelope's first-push position and requires its minimally encoded Bitcoin Script
-push. The codec already rejects a wrong domain, length, truncation, or suffix. The call manifest excludes
+push. The codec and finalized-transaction preflight explicitly reject an envelope shorter than 256 bytes or a canonical
+verifier input that does not begin with `OP_PUSHDATA2`; they also reject a wrong domain, length, truncation, or suffix. The call manifest excludes
 the transaction ID, signatures, and unlocking bytecodes, avoiding a circular commitment.
 
 ## Call-manifest grammar

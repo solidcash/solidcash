@@ -11,6 +11,16 @@
 > restores it before assembly, and finalized preflight rejects leakage. All evidence below predating this repair is historical and must be
 > regenerated before merge.
 
+> **2026-08-04 re-audit follow-up:** The re-audit confirmed L3-01 through L3-03 and L3-05 through L3-07
+> closed, then reported three non-blocking findings and one hostile-harness residual. Both shared hostile VM
+> helpers now refuse the `0xffffffff` derivation sentinel before evaluation, and both finalized and broadcast
+> preflight reject it. Verifier density padding is calculated after encoding each verifier's real arguments to
+> a 9,000-byte unlocking floor; the remeasured eight-party transaction is 94,563 bytes at 0.9069281488 worst
+> operation density. Encoder, decoder, and finalized canonical-verifier preflight explicitly enforce the
+> 256-byte `OP_PUSHDATA2` envelope floor. Canonical-envelope mutations now target the final verifier, while the
+> separate divergence regression still mutates a non-final verifier. The reported rename-path mismatch was
+> already corrected in `9d9a42b3`.
+
 Audience: an independent Opus reviewer. Do not accept the implementation record, test names, or this handoff as
 proof. Reproduce the commands, read the covenant paths, and try to construct accepted transactions that violate
 the invariants below.
@@ -144,8 +154,9 @@ detail, has equivalent atomic evidence. Large deletion volume is not itself proo
 - `AtomicMessageBusCompose` evaluates canonical and hostile semantic/effect transactions in BCH-2026 VM tests;
   `MessageBusMessageEnvelopeBindingAudit` directly pins the L3-01 and L3-02 accepted-transaction reproducers.
 - `AtomicMessageBusCapacity` evaluates every finalized input for 2/4/5/8 participants. After authentication repair
-  and wire compaction, the measured eight-party transaction is 92,126 bytes; its worst operation-density ratio is
-  0.9845248035. Exact finalized-transaction preflight remains authoritative.
+  and wire compaction, the measured eight-party transaction is 94,563 bytes with adaptive verifier density
+  reserves; its worst operation-density ratio is 0.9069281488. Exact finalized-transaction preflight remains
+  authoritative.
 - `standard-policy-harness.sh` broadcasts five semantic capstones and the eight-party maximum to BCHN v29 with
   `acceptnonstdtxn=0`, then restores the default node.
 
@@ -205,7 +216,7 @@ On 2026-08-03, after the L3-01 through L3-04 repairs on the branch containing th
 - the built package exports `messageBus.compose`, the capacity object, and verifier helpers; npm dry-run packs include
   their JavaScript and declarations;
 - BCHN v29 under `acceptnonstdtxn=0` accepted the repaired no-setup two-party transaction, transitive three-party
-  return, event, BCH transfer, repeated FT settlement, and the authenticated 92,126-byte eight-party transaction;
+  return, event, BCH transfer, repeated FT settlement, and the authenticated 94,563-byte eight-party transaction;
 - the harness restored BCHN to its default healthy regtest command afterward;
 - the production residue search above returned no matches.
 

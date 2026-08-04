@@ -7,6 +7,9 @@ import {
 export const ATOMIC_MESSAGE_BUS_DOMAIN = ATOMIC_MESSAGE_BUS_DOMAIN_HEX;
 export { ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS };
 
+/** Atomic envelopes must use Bitcoin Script OP_PUSHDATA2 in every verifier unlocking bytecode. */
+export const ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES = 256;
+
 const concat = (...parts: readonly Uint8Array[]): Uint8Array => {
   const result = new Uint8Array(parts.reduce((length, part) => length + part.length, 0));
   let cursor = 0;
@@ -269,10 +272,21 @@ export function atomicMessageBusPhysicalLayout(blockSizes: readonly number[]): A
 /** Bytes carried by each verifier; the final participant verifier is the canonical callManifest source. */
 export function encodeAtomicMessageEnvelope(callManifest: AtomicMessageBusCallManifest): Uint8Array {
   const encoded = encodeAtomicMessageBusCallManifest(callManifest);
-  return concat(hexToBin('4c334331'), uint(encoded.length, 4, 'messageEnvelope length'), encoded);
+  const messageEnvelope = concat(hexToBin('4c334331'), uint(encoded.length, 4, 'messageEnvelope length'), encoded);
+  if (messageEnvelope.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+    throw new Error(
+      `messageBus: atomic messageEnvelope must be at least ${ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES} bytes`,
+    );
+  }
+  return messageEnvelope;
 }
 
 export function decodeAtomicMessageEnvelope(messageEnvelope: Uint8Array): AtomicMessageBusCallManifest {
+  if (messageEnvelope.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+    throw new Error(
+      `messageBus: atomic messageEnvelope must be at least ${ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES} bytes`,
+    );
+  }
   const reader = new Reader(messageEnvelope);
   if (binToHex(reader.take(4, 'messageEnvelope domain')) !== '4c334331') {
     throw new Error('messageBus: invalid atomic messageEnvelope domain');

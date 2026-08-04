@@ -45,8 +45,9 @@ export function buildMessageBusVerifierCovenantScript(program: MessageBusVerifie
     throw new Error('message bus verifier program contains duplicate function identifiers');
   }
   const script: Script = [
-    // The SDK places one covered-bytecode density reserve on top of the verifier stack. Dropping an unlocking
-    // push is substantially cheaper than embedding unreachable bytes in every redeemed covenant script.
+    // The SDK calculates one covered-bytecode density reserve after encoding the real arguments, padding each
+    // verifier to a common byte floor. Dropping an unlocking push is substantially cheaper than embedding
+    // unreachable bytes in every redeemed covenant script.
     Op.OP_DROP,
     // Unlocking stack: <messageEnvelope> <verify arguments...>. The verifier consumes only its arguments, leaving the
     // messageEnvelope. Never park it on the altstack: compiled verifier frames use that stack internally.

@@ -3,9 +3,9 @@ import { messageBus } from '../../src/index.js';
 
 const sample = (): messageBus.AtomicMessageBusCallManifest => ({
   participants: [
-    { lockingBytecode: '51', stateCategory: '11'.repeat(32), fixedSize: 2, actualSize: 2,
+    { lockingBytecode: '51'.repeat(64), stateCategory: '11'.repeat(32), fixedSize: 2, actualSize: 2,
       maximumSize: 2, trailingUsed: 0, returnOffset: 0xffff },
-    { lockingBytecode: '52', stateCategory: '22'.repeat(32), fixedSize: 2, actualSize: 3,
+    { lockingBytecode: '52'.repeat(64), stateCategory: '22'.repeat(32), fixedSize: 2, actualSize: 3,
       maximumSize: 7, trailingUsed: 1, returnOffset: 1 },
   ],
   rows: [
@@ -27,7 +27,14 @@ describe('atomic single-transaction codec', () => {
     const value = sample();
     const encoded = messageBus.encodeAtomicMessageBusCallManifest(value);
     expect(messageBus.decodeAtomicMessageBusCallManifest(encoded)).toEqual(value);
-    expect(messageBus.decodeAtomicMessageEnvelope(messageBus.encodeAtomicMessageEnvelope(value))).toEqual(value);
+    const messageEnvelope = messageBus.encodeAtomicMessageEnvelope(value);
+    expect(messageEnvelope.length).toBeGreaterThanOrEqual(messageBus.ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES);
+    expect(messageBus.decodeAtomicMessageEnvelope(messageEnvelope)).toEqual(value);
+    expect(() => messageBus.decodeAtomicMessageEnvelope(new Uint8Array(255))).toThrow(/at least 256 bytes/);
+    expect(() => messageBus.encodeAtomicMessageEnvelope({
+      ...value,
+      participants: value.participants.map((participant) => ({ ...participant, lockingBytecode: '51' })),
+    })).toThrow(/at least 256 bytes/);
   });
 
   it('places complete blocks contiguously before the fee tail', () => {

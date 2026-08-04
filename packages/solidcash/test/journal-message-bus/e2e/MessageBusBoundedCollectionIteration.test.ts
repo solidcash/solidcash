@@ -79,6 +79,6 @@ describe('bounded fixed-array collection iteration on the message bus route', ()
     builder.outputs.push(builder.outputs[builder.outputs.length - 1]);
     (builder as any).options.allowImplicitNftBurn = true;
     expect(() => messageBus.preflightMessageBusTransaction(builder))
-      .toThrow('BCH-2026 preflight failed at input 0: malformed message-bus batch envelope');
+      .toThrow('must begin with an OP_PUSHDATA2 messageEnvelope of at least 256 bytes');
   }, 180_000);
 });

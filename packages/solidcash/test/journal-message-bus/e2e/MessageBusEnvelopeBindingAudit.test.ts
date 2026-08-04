@@ -9,12 +9,14 @@ import { generateLibauthSourceOutputs } from '../../../src/utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../../../src/network/createVirtualMachine.js';
 import { preflightMessageBusTransaction } from '../../../src/message-bus/preflight.js';
 import { createBareP2pkhFeeFunder, setupStatefulUtxos } from '../../test-util.js';
+import { assertAuthenticatingVmEvidence } from '../vm-evidence.js';
 import { createMessageBusCapstoneTestProvider } from './message-bus-semantic-profile.js';
 
 const TRUE_RESULT = '45332211';
 const FORGED_RESULT = 'ffffff7f';
 
 const vmRejects = (builder: TransactionBuilder): boolean => {
+  assertAuthenticatingVmEvidence(builder);
   const transaction = builder.buildLibauthTransaction();
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
@@ -102,7 +104,10 @@ describe('message bus canonical messageEnvelope and master binding audit regress
 
     const impossibleProbe = await composition.build();
     impossibleProbe.inputs[0] = { ...impossibleProbe.inputs[0], vout: 0xffffffff };
+    expect(() => vmRejects(impossibleProbe)).toThrow(/VM evidence cannot use/);
     expect(() => preflightMessageBusTransaction(impossibleProbe)).toThrow(/derivation-probe outpoint/);
+    await expect(messageBus.sendPreflightedMessageBusTransaction(impossibleProbe))
+      .rejects.toThrow(/derivation-probe outpoint/);
 
     const hostile = await composition.build();
     forgeCallerEmission(hostile);
@@ -128,5 +133,14 @@ describe('message bus canonical messageEnvelope and master binding audit regress
       return changed;
     });
     expect(vmRejects(hostile)).toBe(true);
+
+    const shortCanonicalEnvelope = await composition.build();
+    replacePush(shortCanonicalEnvelope, verifierIndices[verifierIndices.length - 1], (data, pushIndex) => {
+      if (pushIndex !== 0 || binToHex(data).slice(0, 8) !== '4c334331') return undefined;
+      return new Uint8Array(255);
+    });
+    expect(() => preflightMessageBusTransaction(shortCanonicalEnvelope)).toThrow(
+      /must begin with an OP_PUSHDATA2 messageEnvelope of at least 256 bytes/,
+    );
   }, 120_000);
 });

@@ -11,6 +11,7 @@ import {
 import type { BalancedAssembly, BalancedAssemblyOptions } from '../stateful/balancedBlocks.js';
 import type { TransactionBuilder } from '../TransactionBuilder.js';
 import { assertGraphTrailingCapacity, type GraphTrailingRegion } from './graph.js';
+import { ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES, decodeAtomicMessageEnvelope } from './atomic.js';
 import { MessageBusDiagnosticError } from './diagnostics.js';
 
 /**
@@ -119,12 +120,35 @@ export const preflightMessageBusBlockAssembly = (
  * refusal rather than a pass. Without this, stripping `abiFunction` from every master input silences the gate
  * completely while the transaction bytes stay identical.
  */
-const requireMessageBusBlockAssembly = (builder: TransactionBuilder): void => {
-  if (preflightMessageBusBlockAssembly(builder) !== undefined) return;
+const requireMessageBusBlockAssembly = (builder: TransactionBuilder): BalancedAssembly => {
+  const assembly = preflightMessageBusBlockAssembly(builder);
+  if (assembly !== undefined) return assembly;
   throw new Error(
     'messageBus: no participant master block could be derived from this transaction, so the balanced block '
     + 'assembly gate cannot run; every participant master input must expose its contract unlocker',
   );
+};
+
+/** Enforce the physical encoding assumed by the generated final-verifier loader. */
+const assertCanonicalMessageEnvelopePush = (
+  transaction: Transaction, assembly: BalancedAssembly,
+): void => {
+  const unlockingBytecode = transaction.inputs[assembly.verifierInput]?.unlockingBytecode ?? new Uint8Array();
+  const messageEnvelope = firstPush(unlockingBytecode);
+  if (unlockingBytecode[0] !== 0x4d || messageEnvelope === undefined
+    || messageEnvelope.length < ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES) {
+    throw new Error(
+      `messageBus: canonical verifier input ${assembly.verifierInput} must begin with an OP_PUSHDATA2 `
+      + `messageEnvelope of at least ${ATOMIC_MESSAGE_ENVELOPE_MIN_BYTES} bytes`,
+    );
+  }
+  decodeAtomicMessageEnvelope(messageEnvelope);
+};
+
+const assertNoDerivationProbeOutpoints = (builder: TransactionBuilder): void => {
+  if (builder.inputs.some((input) => input.vout === 0xffffffff)) {
+    throw new Error('messageBus: finalized transactions cannot contain the internal derivation-probe outpoint');
+  }
 };
 
 /* ------------------------------------------------------------------------------------------------------ */
@@ -911,12 +935,11 @@ export const assertFinalizedTransactionCovenants = (
 export const preflightMessageBusTransaction = (
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,
 ): Transaction => {
-  if (builder.inputs.some((input) => input.vout === 0xffffffff)) {
-    throw new Error('messageBus: finalized transactions cannot contain the internal derivation-probe outpoint');
-  }
+  assertNoDerivationProbeOutpoints(builder);
   // Structural gate first: a malformed or unbalanced block assembly is rejected before any signature is taken.
-  requireMessageBusBlockAssembly(builder);
+  const assembly = requireMessageBusBlockAssembly(builder);
   const transaction = builder.buildLibauthTransaction();
+  assertCanonicalMessageEnvelopePush(transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // Byte rules LAST, so a transaction that cannot execute reports its semantic cause rather than whichever
   // relay observation happens to be true of it as well. A transaction refused by the VM is broken regardless
@@ -963,9 +986,11 @@ export async function sendPreflightedMessageBusTransaction(
   builder: TransactionBuilder, options?: FinalizedByteGateOptions,
 ): Promise<string> {
   // Structural gate first: this runs before build() takes a single signature.
-  requireMessageBusBlockAssembly(builder);
+  assertNoDerivationProbeOutpoints(builder);
+  const assembly = requireMessageBusBlockAssembly(builder);
   const raw = builder.build();
   const transaction = decodeTransactionUnsafe(hexToBin(raw));
+  assertCanonicalMessageEnvelopePush(transaction, assembly);
   evaluateEveryInput(builder, transaction);
   // The byte gate reads the DECODED broadcast bytes, not a re-derived shape, so it judges exactly what
   // `sendRawTransaction` is about to receive. This is the last thing between the composer and the network.

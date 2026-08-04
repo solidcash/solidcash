@@ -695,7 +695,7 @@ export function assertFinalizedTransactionBytes(
     : '';
   const binding = enforced[0];
   throw new MessageBusDiagnosticError(
-    'L3_FINALIZED_BYTE_LIMIT',
+    'MESSAGE_BUS_FINALIZED_BYTE_LIMIT',
     `messageBus: finalized transaction refused by ${enforced.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
     + `${verdict.outputCount} outputs):\n${lines.join('\n')}${suppressed}`,

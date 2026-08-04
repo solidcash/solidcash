@@ -147,6 +147,9 @@ describe('X163 Row B - the scope of the finalized-bytes refusal, and why it stop
       .toEqual(['policy:relay-transaction-size']);
 
     // The suppressible half: refused by default, admitted when the caller says they are going to a miner.
+    expect(() => messageBus.assertFinalizedTransactionBytes(transaction)).toThrow(expect.objectContaining({
+      code: 'MESSAGE_BUS_FINALIZED_BYTE_LIMIT',
+    }));
     expect(() => messageBus.assertFinalizedTransactionBytes(transaction)).toThrow(/relay-transaction-size/);
     expect(messageBus.assertFinalizedTransactionBytes(transaction, { allowNonRelayable: true }).admitted)
       .toBe(false);

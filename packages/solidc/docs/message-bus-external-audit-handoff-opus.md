@@ -28,6 +28,8 @@
 > rewrite the envelope in every verifier and repoint every binding digest, closing the named hostile-test gap.
 > Compact participant binders preserve master NFT commitments, turning the previously latent empty-master
 > assumption into an enforced invariant. The remaining internal `L3_SEMANTIC...` diagnostic was removed.
+> The subsequent cosmetic pass also renamed the newly introduced public finalized-byte diagnostic to
+> `MESSAGE_BUS_FINALIZED_BYTE_LIMIT` before release, avoiding another legacy internal prefix in the public API.
 
 Audience: an independent Opus reviewer. Do not accept the implementation record, test names, or this handoff as
 proof. Reproduce the commands, read the covenant paths, and try to construct accepted transactions that violate

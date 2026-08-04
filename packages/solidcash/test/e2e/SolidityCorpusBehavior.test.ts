@@ -9,15 +9,105 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // Passes 1-5:
+  // test/libsolidity/semanticTests/expressions/conditional_expression_false_literal.sol
+  // test/libsolidity/semanticTests/expressions/conditional_expression_true_literal.sol
+  // test/libsolidity/semanticTests/expressions/conditional_expression_multiple.sol
+  // test/libsolidity/semanticTests/expressions/conditional_expression_different_types.sol
+  // test/libsolidity/semanticTests/literals/scientific_notation.sol
+  // Passes 6-10:
+  // test/libsolidity/semanticTests/expressions/conditional_expression_tuples.sol
+  // test/libsolidity/semanticTests/expressions/conditional_expression_with_return_values.sol
+  // test/libsolidity/semanticTests/expressions/tuple_from_ternary_expression.sol
+  // test/libsolidity/semanticTests/arithmetics/signed_mod.sol
+  // test/libsolidity/semanticTests/expressions/unary_too_long_literal.sol
+  // Passes 14-15:
+  // test/libsolidity/semanticTests/freeFunctions/libraries_from_free.sol
+  // test/libsolidity/semanticTests/functionCall/call_attached_library_function_on_function.sol
+  it('executes consolidated expression and library semantics', async () => {
+    const contract = await deploy(`library L {
+      function pub() public pure returns (uint) { return 7; }
+      function inter() internal pure returns (uint) { return 8; }
+      function invoke(function() internal returns (uint) target) internal returns (uint) { return target(); }
+    }
+    function values() pure returns (uint, uint) { return (L.pub(), L.inter()); }
+    contract C {
+      using L for *;
+      function verify(uint input) public {
+        require((false ? 5 : 10) == 10 && (true ? 5 : 10) == 5);
+        uint selected = input > 100 ? input > 1000 ? 1000 : 100 : input > 50 ? 50 : 10;
+        require(selected == 100);
+        uint8 narrow = 0xcd; uint16 wide = 0xabab;
+        require((true ? narrow : wide) == 0xcd && (false ? narrow : wide) == 0xabab);
+        require(2e10 == 20000000000 && 200e-2 == 2 && 2.5e1 == 25);
+      }
+      function tuple(bool condition) internal returns (uint, uint) { return condition ? (1, 2) : (3, 4); }
+      function assigned(bool condition, uint value) internal returns (uint a, uint b) { condition ? a = value : b = value; }
+      function verifyTuples() public {
+        uint a, uint b = tuple(true); require(a == 1 && b == 2);
+        (a, b) = tuple(false); require(a == 3 && b == 4);
+        (a, b) = assigned(true, 20); require(a == 20 && b == 0);
+        bool flag; ((flag = true) ? (1, 2, 3) : (3, 2, 1)); require(flag);
+      }
+      function wideUnary() public {
+        require(0 < ~~84926290883049832306107864558384249403874903260938453235235091622489261765859);
+      }
+      function signedModulo() public {
+        require(int(7) % int(-5) == 2 && int(-7) % int(5) == -2 && int(-5) % int(-5) == 0);
+      }
+      function target() internal returns (uint) { return 7; }
+      function verifyLibraries() public {
+        uint a, uint b = values(); require(a == 7 && b == 8 && target.invoke() == 7);
+      }
+    }`);
+    await expect(contract.verify(500n)).resolves.toBeDefined();
+    await expect(contract.verifyTuples()).resolves.toBeDefined();
+    await expect(contract.wideUnary()).resolves.toBeDefined();
+    await expect(contract.signedModulo()).resolves.toBeDefined();
+    await expect(contract.verifyLibraries()).resolves.toBeDefined();
+  });
+
+  // Passes 11-13:
+  // test/libsolidity/semanticTests/modifiers/break_in_modifier.sol
+  // test/libsolidity/semanticTests/modifiers/continue_in_modifier.sol
+  // test/libsolidity/semanticTests/modifiers/access_through_contract_name.sol
+  it('executes loop control and base-qualified modifiers', async () => {
+    const contract = await deploy(`contract A {
+      uint x = 7; modifier selected() virtual { x = 2; _; }
+    }
+    contract C is A {
+      uint breakCount; uint continueCount;
+      modifier selected() override { x = 1; _; }
+      modifier breakRun() { for (uint i = 0; i < 10; i++) { _; if (i == 1) break; } }
+      modifier continueRun() { for (uint i = 0; i < 10; i++) { if (i % 2 == 1) continue; _; } }
+      function runBreak() internal breakRun { breakCount += 1; }
+      function runContinue() internal continueRun { continueCount += 1; }
+      function runBase() internal A.selected {}
+      function runDerived() internal selected {}
+      function verifyAll() public {
+        runBreak(); runContinue(); runBase();
+        require(breakCount == 2 && continueCount == 5 && x == 2);
+        runDerived(); require(x == 1);
+      }
+    }`);
+    await expect(contract.verifyAll()).resolves.toBeDefined();
+  });
+
   // test/libsolidity/semanticTests/immutable/assign_at_declaration.sol
   // test/libsolidity/semanticTests/immutable/getter.sol
   // test/libsolidity/semanticTests/memoryManagement/memory_types_initialisation.sol
+  // Pass 16: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_return_param_zeroed_memory_index_access.sol
+  // Pass 17: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_array_static.sol
+  // Pass 18: test/libsolidity/semanticTests/array/array_2d_assignment.sol
+  // Pass 19: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_zeroed_memory_index_access.sol
+  // Pass 20: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_2d_zeroed_memory_index_access.sol
   // Immutable initialization/getters and default memory shapes share one deployment.
   it('executes immutable accessors and default memory initialization', async () => {
     const declared = await deploy(`contract C {
       uint8 immutable declared = 2;
       uint immutable public x = 1;
       function verify() public view { require(declared == 2); }
+      function defaults() internal returns (uint[3] memory a, uint[2] memory b, uint[] memory c, uint d) {}
       function verifyMemory() public {
         uint[5] memory stat;
         uint[] memory dyn;
@@ -26,6 +116,14 @@ describe('Solidity corpus behavioral parity', () => {
         require(stat[0] == 0 && stat[4] == 0);
         require(dyn.length == 0 && nested.length == 0);
         require(nestedStat[0][0] == 0 && nestedStat[6][2] == 0);
+        uint[3] memory ra; uint[2] memory rb; uint[] memory rc; uint rd;
+        (ra, rb, rc, rd) = defaults();
+        require(ra[0] == 0 && rb[1] == 0 && rc.length == 0 && rd == 0);
+        uint[4][] memory mixed = new uint[4][](2);
+        require(mixed[0][0] == 0 && mixed[1][0] == 0);
+        uint[][] memory assigned = new uint[][](2);
+        assigned[0] = new uint[](3); assigned[1] = new uint[](3); assigned[1][1] = 42;
+        uint[] memory row = assigned[1]; require(row[1] == 42);
       }
     }`);
     await expect(declared.verify()).resolves.toBeDefined();
@@ -198,6 +296,10 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // test/libsolidity/semanticTests/reverts/invalid_enum_as_external_arg.sol
+  // Pass 23: test/libsolidity/semanticTests/reverts/invalid_enum_compared.sol
+  // Pass 24: test/libsolidity/semanticTests/reverts/invalid_enum_stored.sol
+  // Pass 21: test/libsolidity/semanticTests/arithmetics/divisiod_by_zero.sol
+  // Pass 22: test/libsolidity/semanticTests/arithmetics/unchecked_div_by_zero.sol
   // An out-of-range enum passed through an external ABI boundary must revert.
   it('rejects an invalid enum ordinal at a self-call ABI boundary', async () => {
     const contract = await deploy(`contract C {
@@ -206,8 +308,23 @@ describe('Solidity corpus behavioral parity', () => {
       function invalid() public returns (uint) {
         X value; assembly { value := 5 } return this.tested(value);
       }
+      function compareInvalid() public returns (bool) {
+        X value; assembly { value := 5 } return value == value;
+      }
+      X stored;
+      function storeInvalid() public { X value; assembly { value := 5 } stored = value; }
+      function div(uint a, uint b) public returns (uint) { return a / b; }
+      function mod(uint a, uint b) public returns (uint) { return a % b; }
+      function uncheckedDiv(uint a, uint b) public returns (uint) { unchecked { return a / b; } }
+      function uncheckedMod(uint a, uint b) public returns (uint) { unchecked { return a % b; } }
     }`);
     await expect(contract.invalid()).rejects.toThrow();
+    await expect(contract.compareInvalid()).rejects.toThrow();
+    await expect(contract.storeInvalid()).rejects.toThrow();
+    await expect(contract.div(7n, 0n)).rejects.toThrow();
+    await expect(contract.mod(7n, 0n)).rejects.toThrow();
+    await expect(contract.uncheckedDiv(7n, 0n)).rejects.toThrow();
+    await expect(contract.uncheckedMod(7n, 0n)).rejects.toThrow();
   });
 
   // test/libsolidity/semanticTests/getters/mapping.sol
@@ -516,14 +633,18 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // test/libsolidity/semanticTests/events/emit_two_identical_events.sol
+  // Pass 25: test/libsolidity/semanticTests/events/emit_three_identical_events.sol
   // The upstream transaction emits two distinct Terminated logs from one call.
   it('executes and decodes two identical event emissions', async () => {
     const contract = await deploy(`contract C {
       event Terminated();
       function terminate() public { emit Terminated(); emit Terminated(); require(true); }
+      function terminateThree() public { emit Terminated(); emit Terminated(); emit Terminated(); require(true); }
     }`);
     const receipt = await (await contract.call.terminate().send()).wait!();
     expect(receipt.events?.map((event) => event.event)).toEqual(['Terminated', 'Terminated']);
+    const three = await (await contract.call.terminateThree().send()).wait!();
+    expect(three.events?.map((event) => event.event)).toEqual(['Terminated', 'Terminated', 'Terminated']);
   });
 
   // test/libsolidity/semanticTests/errors/require_error_condition_evaluated_only_once.sol

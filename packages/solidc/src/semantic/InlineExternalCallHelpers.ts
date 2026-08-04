@@ -85,7 +85,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
       // context and turns its external calls into inert ordinary-call nodes.
-      if (!fn.graphEmissionHandler && fn.body && fn.returnTypes.length === 0
+      if (!fn.graphEmissionHandler && fn.body && this.canDiscardCallResult(fn)
         && this.makesExternalCall(fn)) {
         this.voidExternalCallHelpers.add(fn.name);
       }
@@ -104,6 +104,23 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
     return node;
+  }
+
+  // A bare call statement may ignore a helper's named returns. Inline that shape too when the helper falls through
+  // normally (no explicit return statement): the named return variables are ordinary locals whose values are simply
+  // discarded by the caller. This covers Kashi's `_borrow() { updateExchangeRate(); ... }`, where keeping the public
+  // returning helper as an OP_INVOKE subroutine would hide its oracle co-spend from the caller's SDK metadata.
+  private canDiscardCallResult(fn: FunctionDefinitionNode): boolean {
+    if (fn.returnTypes.length === 0) return true;
+    if (fn.returnNames.length !== fn.returnTypes.length || fn.returnNames.some((name) => !name)) return false;
+    let safeReturns = true;
+    this.walk(fn.body, (n) => {
+      if (n instanceof ReturnNode && (n.expressions.length !== fn.returnNames.length
+        || n.expressions.some((e, i) => !(e instanceof IdentifierNode) || e.name !== fn.returnNames[i]))) {
+        safeReturns = false;
+      }
+    });
+    return safeReturns;
   }
 
   private static isLowLevel(m: string): boolean {
@@ -275,6 +292,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     const n = this.counter++;
     const map = new Map<string, string>();
     for (const p of helper.parameters) map.set(p.name, `${PREFIX}${n}_${p.name}`);
+    for (const name of helper.returnNames) if (name) map.set(name, `${PREFIX}${n}_${name}`);
     // A void helper's `return;` exits the HELPER, not its caller. Normalize early returns before splicing so the
     // remaining helper statements sit in the appropriate else branch, then erase the now-terminal bare returns.
     // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.

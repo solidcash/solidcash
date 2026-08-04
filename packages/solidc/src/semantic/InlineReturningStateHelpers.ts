@@ -257,6 +257,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+        this.normalizeForwardedMultiReturn(fn);
         this.normalizeSimpleEarlyReturn(fn);
       }
     }
@@ -344,7 +345,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     // Library free-functions are inlined here as storage-pointer value helpers, or (like OZ Address's
     // `functionCall`) as single-tail-return helpers containing a low-level call; other library functions keep
-    // their own (delegate) machinery.
+    // their own (delegate) machinery. Returning helpers making EXTERNAL calls (`getReserves` ->
+    // `IPair(..).getReserves()`) also inline: covenant params are threaded only at entry points, so keeping the
+    // helper as a subroutine would surface phantom params at its call site. This check is transitive.
     for (const fn of this.freeFns) {
       if (this.eligibleStoragePtr(fn)) this.inlinedFns.add(fn.name);
       else if (this.eligibleShape(fn) && this.transitivelyTouchesRawEvmStorage(fn)) {
@@ -353,12 +356,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // chain can then be dropped even when they reference one another.
         this.inlinedFns.add(fn.name);
         this.rawSlotFreeFns.add(fn.name);
-      }
-      // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
-      // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
-      // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
-      // so a helper reaching the external call only through another inlined helper inlines too.
-      else if (this.eligibleShape(fn)
+      } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
       }
@@ -421,6 +419,40 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const ret = new ReturnNode([conditional]);
     ret.location = tail.location;
     fn.body.statements = [...stmts.slice(0, -2), ret];
+  }
+
+  // Solidity permits a multi-returning call to be forwarded as one return expression (`return target.f()`).
+  // Give that value one local per return slot so the ordinary multi-value helper inliner can splice wrappers
+  // which own an external call into the entry point. Otherwise eligibleShape sees one expression for N declared
+  // results and leaves the wrapper behind as an OP_INVOKE callee with unsupplied covenant parameters.
+  private normalizeForwardedMultiReturn(fn: FunctionDefinitionNode): void {
+    if (!fn.body || fn.returnTypes.length < 2) return;
+    const bodyStatements = fn.body.statements ?? [];
+    const stmts = this.effectiveStmts(bodyStatements);
+    const last = stmts[stmts.length - 1];
+    if (!(last instanceof ReturnNode) || last.expressions.length !== 1) return;
+    const serial = this.counter++;
+    const names = fn.returnTypes.map((_, i) => `${PREFIX}_forward_${serial}_${i}`);
+    const capture = new TupleAssignmentNode(
+      names.map((name, i) => ({ name, type: fn.returnTypes[i], existing: false })),
+      last.expressions[0],
+      true,
+    );
+    capture.location = last.location;
+    const returned = names.map((name) => {
+      const id = new IdentifierNode(name);
+      id.location = last.location;
+      return id;
+    });
+    const replacement = new ReturnNode(returned);
+    replacement.location = last.location;
+    if (stmts === bodyStatements) {
+      fn.body.statements = [...stmts.slice(0, -1), capture, replacement];
+    } else {
+      (bodyStatements[0] as UncheckedNode).block.statements = [
+        ...stmts.slice(0, -1), capture, replacement,
+      ];
+    }
   }
 
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).

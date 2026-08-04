@@ -419,6 +419,12 @@ export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
+  /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
+  keyDecodeTupleIndex?: number;
+  keyDecodeTupleTypes?: readonly string[];
+  /** Keep only iterations where predicateArrayParam[i] equals this integer value. */
+  predicateArrayParam?: string;
+  predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)

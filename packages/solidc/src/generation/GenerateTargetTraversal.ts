@@ -10603,6 +10603,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
       }
       this.emitEvmWordFromUint(loc);
+    } else if (type instanceof AddressType) {
+      // EVM ABI addresses are right-aligned (12 zero bytes followed by the 20-byte address), unlike bytes20.
+      this.emit(new Uint8Array(12), loc);
+      this.emit(Op.OP_SWAP, loc);
+      this.emit(Op.OP_CAT, loc);
     } else if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
       const pad = 32 - type.bound;
       if (pad > 0) {
@@ -11135,6 +11140,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (type === PrimitiveType.BOOL) {
       this.emit(Op.OP_REVERSEBYTES, loc);
       this.emit(Op.OP_BIN2NUM, loc); // 0x01 or empty
+      return;
+    }
+    if (type instanceof AddressType) {
+      this.emit(encodeInt(12n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_NIP, loc);
       return;
     }
     if (type instanceof BytesType && type.bound !== undefined && type.bound <= 32) {
@@ -16615,7 +16626,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const writeNode = this.findSortedInsertLoopWrite(block);
     if (!writeNode) return false;
     const collection = writeNode.collection!;
-    const slotIndex = writeNode.entrySlotIndex;
+    // IfConvertConditionalEntryOp may clone a predicated loop write after entry-slot assignment. Recover the one
+    // runtime-loop slot for this collection; the key recipe below still has to validate before setup can succeed.
+    const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
+      : this.entrySlots.findIndex((slot) => slot.collection === collection.name && slot.inLoop);
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false; // no slot -> fall through to the fail-close
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
@@ -16858,28 +16872,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // upsert same-gap chaining keeps the N-in-one-gap behavior). Routed here, not the insert-only range-splice.
         const isParamSet = e instanceof IdentifierNode
           && this.currentFunction.parameters.some((p) => p.name === (e as IdentifierNode).name);
-        // The remaining forms are arithmetic/scalar/const and INT-ONLY (an array has no += / literal / bool value).
-        // RMW credit/debit: `m[k[i]] = m[k[i]] +/- v[i]` (self-read).
-        const isRmw = upsertVk === 'int' && e instanceof BinaryOpNode
-          && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
-          && e.left instanceof MappingAccessNode && e.left.name === n.name;
         // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element. The key varying-ness is
         // validated in setup. Rawbytes per-key (`vs` a bytes[]/array-of-array param) is inline-only, like the invariant
         // rawbytes set: the body wraps each vs[i] tail (isChunkableVal), the SDK encodes the per-key tail.
         const isPerKeySet = (upsertVk === 'int' || upsertVk === 'rawbytes')
           && e instanceof ArrayAccessNode && e.array instanceof IdentifierNode;
-        // Absolute set to a loop-invariant INT LITERAL `m[k[i]] = 100` (batch-set-const) or BOOL LITERAL `= true`
-        // (whitelistWorkers; bool = int 1/0). N keys can land in MULTIPLE gaps + update existing.
-        const isConstSet = upsertVk === 'int' && e instanceof IntLiteralNode;
-        const isBoolSet = upsertVk === 'int' && e instanceof BoolLiteralNode;
-        const isOffsetArraySet = upsertVk === 'int' && e instanceof BinaryOpNode
-          && e.operator === BinaryOperator.PLUS && e.left instanceof ArrayAccessNode
-          && e.left.array instanceof IdentifierNode && e.right instanceof IntLiteralNode;
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
         const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
-        if (rawbytesOk || (upsertVk === 'int'
-          && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet || isOffsetArraySet))) {
+        if (rawbytesOk || upsertVk === 'int') {
           found = n; return;
         }
       }
@@ -16898,6 +16899,91 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     walk(node);
     return found;
+  }
+
+  /** Resolve the Solidity dispatcher idiom
+   * `(T a, address key, ...) = abi.decode(datas[i], (...)); if (actions[i] == K) m[key] = ...`.
+   * The SDK needs this recipe before it can select the entry NFTs consumed by the on-chain loop. Values remain
+   * covenant-derived: only the key and the branch occurrence are reconstructed off-chain.
+   */
+  private runtimeDecodedLoopKeyRecipe(block: Node, write: MappingAssignNode | MappingDeleteNode): {
+    varyingArrayParam?: string; keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
+    predicateArrayParam?: string; predicateEquals?: string;
+  } | undefined {
+    let key = write.keys[write.keys.length - 1];
+    // A void external-call wrapper is inlined with alpha-renamed parameter bindings, so Kashi's
+    // `addCollateral(to, ...)` write reaches codegen as `m[__inlN_to]` while `to` is the abi.decode tuple slot.
+    // Peel those single-assignment aliases before matching the decoded-key recipe.
+    const keyAliases = new Set<string>();
+    while (key instanceof IdentifierNode && !keyAliases.has(key.name)) {
+      keyAliases.add(key.name);
+      const source = this.findSingleAssignLocalInit(block, key.name);
+      if (!(source instanceof IdentifierNode)) break;
+      key = source;
+    }
+    let tuple: TupleAssignmentNode | undefined;
+    let predicateArrayParam: string | undefined;
+    let predicateEquals: string | undefined;
+    const capturePredicate = (condition: ExpressionNode): void => {
+      if (!(condition instanceof BinaryOpNode) || condition.operator !== BinaryOperator.EQ) return;
+      const sides: Array<[ExpressionNode, ExpressionNode]> = [
+        [condition.left, condition.right], [condition.right, condition.left],
+      ];
+      for (const [candidate, literal] of sides) {
+        if (candidate instanceof ArrayAccessNode && candidate.array instanceof IdentifierNode
+          && literal instanceof IntLiteralNode) {
+          predicateArrayParam = candidate.array.name;
+          predicateEquals = literal.value.toString();
+        }
+      }
+    };
+    const contains = (root: Node, target: Node, seen = new WeakSet<object>()): boolean => {
+      if (root === target) return true;
+      if (seen.has(root)) return false;
+      seen.add(root);
+      for (const [name, value] of Object.entries(root)) {
+        if (['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction'].includes(name)) continue;
+        if (value instanceof Node && contains(value, target, seen)) return true;
+        if (Array.isArray(value) && value.some((v) => v instanceof Node && contains(v, target, seen))) return true;
+      }
+      return false;
+    };
+    const walked = new WeakSet<object>();
+    const walk = (n: Node): void => {
+      if (walked.has(n)) return;
+      walked.add(n);
+      if (key instanceof IdentifierNode && n instanceof TupleAssignmentNode && n.elements.some((e) => e.name === key.name)
+        && n.tuple instanceof AbiDecodeNode) tuple = n;
+      if (n instanceof BranchNode && contains(n.ifBlock, write) && n.condition instanceof BinaryOpNode
+        && n.condition.operator === BinaryOperator.EQ) {
+        capturePredicate(n.condition);
+      }
+      for (const [name, value] of Object.entries(n)) {
+        if (['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction'].includes(name)) continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const v of value) if (v instanceof Node) walk(v);
+      }
+    };
+    walk(block);
+    // IfConvertConditionalEntryOp turns `if (p) m[k] = x` into `m[k] = p ? x : m[k]` before codegen.
+    if (write instanceof MappingAssignNode && write.expression instanceof TernaryOpNode) {
+      capturePredicate(write.expression.condition);
+    }
+    if (!tuple || !(tuple.tuple instanceof AbiDecodeNode)) {
+      return predicateArrayParam && predicateEquals !== undefined
+        ? { predicateArrayParam, predicateEquals } : undefined;
+    }
+    const data = tuple.tuple.data;
+    if (!(data instanceof ArrayAccessNode) || !(data.array instanceof IdentifierNode)) return undefined;
+    const tupleIndex = tuple.elements.findIndex((e) => e.name === (key as IdentifierNode).name);
+    if (tupleIndex < 0 || tupleIndex >= tuple.tuple.schema.length) return undefined;
+    return {
+      varyingArrayParam: data.array.name,
+      keyDecodeTupleIndex: tupleIndex,
+      keyDecodeTupleTypes: tuple.tuple.schema.map((t) => t.toString()),
+      ...(predicateArrayParam && predicateEquals !== undefined
+        ? { predicateArrayParam, predicateEquals } : {}),
+    };
   }
 
   // The initializer of a SINGLE-ASSIGN local `name` within `node` (a `<name> = <expr>` VariableDefinition, never
@@ -16936,7 +17022,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const writeNode = this.findSortedUpsertLoopWrite(block);
     if (!writeNode) return false;
     const collection = writeNode.collection!;
-    const slotIndex = writeNode.entrySlotIndex;
+    // Conditional lowering may clone the write after slots were assigned. Recover the collection's unique
+    // runtime-loop slot; key/value recipe validation below still rejects ambiguous unsupported shapes.
+    const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
+      : this.entrySlots.findIndex((slot) => slot.collection === collection.name && slot.inLoop);
     if (slotIndex < 0 || !this.entrySlots[slotIndex]) return false;
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
 
@@ -16948,6 +17037,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (src.kind === 'param' && src.paramName) { fixedKeyParams.push(src.paramName); continue; }
       const m = (src.canonical ?? '').match(/^arridx\(id:(\w+),.+\)$/);
       if (m) varyingArrayParam = m[1];
+    }
+    const decodedKeyRecipe = this.runtimeDecodedLoopKeyRecipe(block, writeNode);
+    if (!varyingArrayParam && decodedKeyRecipe?.varyingArrayParam) {
+      varyingArrayParam = decodedKeyRecipe.varyingArrayParam;
     }
     const isDelete = writeNode instanceof MappingDeleteNode;
     let op: '+' | '-' | 'set' | 'delete';
@@ -16990,13 +17083,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
     const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
-    if (!varyingArrayParam || (!isDelete && !hasValue)) return false;
+    const valueRuntimeExpression = !isDelete && !!decodedKeyRecipe
+      && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined);
+    if (!varyingArrayParam || (!isDelete && !hasValue && !valueRuntimeExpression)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
     if (!infos.some((x) => x.collection === collection.name)) {
       infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
+        ...(decodedKeyRecipe && {
+          ...(decodedKeyRecipe.keyDecodeTupleIndex !== undefined
+            && { keyDecodeTupleIndex: decodedKeyRecipe.keyDecodeTupleIndex }),
+          ...(decodedKeyRecipe.keyDecodeTupleTypes
+            && { keyDecodeTupleTypes: decodedKeyRecipe.keyDecodeTupleTypes }),
+          ...(decodedKeyRecipe.predicateArrayParam && { predicateArrayParam: decodedKeyRecipe.predicateArrayParam }),
+          ...(decodedKeyRecipe.predicateEquals !== undefined && { predicateEquals: decodedKeyRecipe.predicateEquals }),
+        }),
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
+        ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }), op });
     }
     this.sortedWrittenCollections.add(collection.name);

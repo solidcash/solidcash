@@ -1155,6 +1155,31 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info?.op).toBe('+');
     expect(info?.valueScalarParam).toBe('v');
   });
+  it('traces an ABI-decoded key through an inlined external-call helper parameter', () => {
+    const art = compileString('library M { function add(uint a, uint b) internal pure returns (uint) { return a+b; } }'
+      + ' interface IV { function ping() external; } contract C { using M for uint; mapping(address => uint) m; IV v;'
+      + ' function addOne(address to, uint share) public { m[to] = m[to].add(share); v.ping(); require(true); }'
+      + ' function cook(uint[] actions, bytes[] datas) public { for (uint i=0; i<actions.length; i=i+1) {'
+      + ' if (actions[i] == 1) { (address to, uint share) = abi.decode(datas[i], (address,uint)); addOne(to,share); }'
+      + ' } require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('datas');
+    expect(info?.keyDecodeTupleIndex).toBe(0);
+    expect(info?.predicateArrayParam).toBe('actions');
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
+  it('tracks decoded keys and computed values through a returning external-call helper', () => {
+    const art = compileString('interface IV { function ping() external; } contract C {'
+      + ' mapping(address => uint) m; IV v; function addOne(address to, uint share) internal returns (uint fraction) {'
+      + ' fraction = share + 1; if (fraction < 2) { return 0; } m[to] = m[to] + fraction; v.ping(); }'
+      + ' function cook(uint[] actions, bytes[] datas) public { uint value1=0; for (uint i=0;i<actions.length;i=i+1) {'
+      + ' if(actions[i]==1) { (address to,uint share)=abi.decode(datas[i],(address,uint)); value1=addOne(to,share); }'
+      + ' } require(value1>=0); } }', { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('datas');
+    expect(info?.keyDecodeTupleIndex).toBe(0);
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
   it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
     expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
       .toThrow(/C2 linked-list transition generator/);

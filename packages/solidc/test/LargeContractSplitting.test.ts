@@ -68,6 +68,31 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.deploymentMode).toBe('immutable-one-hop');
   });
 
+  it('keeps synthesized public getters on the logical root instead of duplicating them into facets', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.20;
+      contract GetterSplit {
+        uint256 public value;
+        mapping(address => uint256) public balances;
+        function set(uint256 next) public { value = next; require(next >= 0); }
+      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(bundle.root.abi.map((fn) => fn.name)).toEqual(expect.arrayContaining(['value', 'balances']));
+    expect(facet.abi.map((fn) => fn.name)).not.toEqual(expect.arrayContaining(['value', 'balances']));
+    expect(bundle.manifest.routes.find((route) => route.function === 'value')?.target).toBe('root');
+    expect(bundle.manifest.routes.find((route) => route.function === 'balances')?.target).toBe('root');
+  });
+
+  it('does not expose a root-owned public view call closure as a facet selector', () => {
+    const bundle = compileStringSplit(`contract ViewClosure() {
+      int counter;
+      function read() public view returns (int) { return this.counter; }
+      function increment() public { this.counter = read() + 1; require(this.counter > 0); }
+    }`, { messageBus: true, forceSplit: true });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(bundle.manifest.routes.find((route) => route.function === 'read')?.target).toBe('root');
+    expect(facet.abi.map((fn) => fn.name)).not.toContain('read');
+  });
+
   it('is deterministic', () => {
     const a = compileStringSplit(SOURCE, { forceSplit: true });
     const b = compileStringSplit(SOURCE, { forceSplit: true });
@@ -227,10 +252,13 @@ describe('large-contract state-local splitting', () => {
     expect(slots(together.facets[together.manifest.facets[0].name].stateLayout))
       .toEqual(slots(together.root.stateLayout));
 
-    // The same source at the limit that USED to be refused (root had AStorage__a@0.1 where the touchC facet
-    // had CStorage__c@0.1). It now compiles into more than one facet, and every shard - including the unsplit
-    // baseline the manifest fingerprint is taken from - names the same variable at every slot.
-    const divided = compileStringSplit(source, { ...options, maxShardBytes: 1100 });
+    // Put the boundary one byte below the measured all-entry facet. This used to be the fixed 1,100-byte
+    // historical threshold; split facets no longer regenerate unrelated public getters, so derive the same
+    // multi-facet condition from the physical union rather than charging that removed overhead to the fixture.
+    // Every shard - including the unsplit baseline the manifest fingerprint is taken from - must still name the
+    // same variable at every slot.
+    const unionBytes = together.manifest.facets[0].estimatedRedeemBytes;
+    const divided = compileStringSplit(source, { ...options, maxShardBytes: unionBytes - 1 });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
     const expected = slots(compileString(source, {
       solidityImportCompat: true, messageBus: false,

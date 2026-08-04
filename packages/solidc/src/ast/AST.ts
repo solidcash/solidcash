@@ -203,6 +203,7 @@ export class ContractNode extends Node implements Named {
     origin: string;
     isVirtual: boolean;
   }>> = {};
+
   // Constructor external reads hoisted to deploy inputs by PromoteConstructorExternalReads. Surfaced as
   // stateLayout.deployReads so the SDK can auto-resolve them (read the target's state at deploy).
   deployReads: { input: string; addressInput: string; contractType: string; read: string }[] = [];
@@ -356,7 +357,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
+    predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueRuntimeExpression?: boolean;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;

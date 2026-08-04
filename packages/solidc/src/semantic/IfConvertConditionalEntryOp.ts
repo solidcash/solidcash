@@ -21,6 +21,8 @@ import {
   VariableDefinitionNode,
   IdentifierNode,
   IntLiteralNode,
+  WhileNode,
+  DoWhileNode,
 } from '../ast/AST.js';
 import {
   Type, MappingType, ArrayType, StructType, PrimitiveType,
@@ -83,6 +85,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Names the hoisted condition locals uniquely per converted if/else branch.
   private condCounter = 0;
+  private loopDepth = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -90,6 +93,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.loopDepth = 0;
     this.mappings = new Map();
     for (const c of node.collections) {
       if (c.type instanceof MappingType) this.mappings.set(c.name, c);
@@ -97,6 +101,22 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
     for (const fn of [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef]) {
       if (fn?.body) this.visit(fn as FunctionDefinitionNode);
     }
+    return node;
+  }
+
+  visitWhile(node: WhileNode): Node {
+    node.condition = this.visit(node.condition) as ExpressionNode;
+    this.loopDepth += 1;
+    node.block = this.visit(node.block) as BlockNode;
+    this.loopDepth -= 1;
+    return node;
+  }
+
+  visitDoWhile(node: DoWhileNode): Node {
+    this.loopDepth += 1;
+    node.block = this.visit(node.block) as BlockNode;
+    this.loopDepth -= 1;
+    node.condition = this.visit(node.condition) as ExpressionNode;
     return node;
   }
 
@@ -117,6 +137,13 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Returns the replacement statements if the branch is a convertible conditional entry op, else undefined.
   private tryConvertBranch(node: BranchNode): StatementNode[] | undefined {
+    // A C2 write whose key varies in a runtime loop has its own counter-indexed conditional output protocol.
+    // Preserve the branch: predicating it into `cond ? value : old` would force an ordinary fixed-slot read for
+    // the not-taken arm, but this entry deliberately has no fixed block slot.
+    if (this.loopDepth > 0 && (node.ifBlock.statements ?? []).some((s) => {
+      const op = this.entryOpInfo(s);
+      return !!op && !!this.mappings.get(op.name)?.sorted;
+    })) return undefined;
     if (node.elseBlock) return this.tryConvertIfElse(node);
     const stmts = node.ifBlock.statements ?? [];
     if (stmts.length === 0) return undefined;

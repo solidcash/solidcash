@@ -3,7 +3,7 @@ import { binToHex } from '@bitauth/libauth';
 import {
   Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
-  encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, IntType, MappingType,
+  encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
@@ -26,7 +26,7 @@ import {
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
   TokenContainerMethodStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -4782,12 +4782,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   // shared helpers and delegate covenant overhead. This avoids eagerly recompiling every pair on every round.
   let groups = hardClosureGroups(plans);
   const measuredBytes = new Map<string, number>();
+  const measuredArtifacts = new Map<string, Artifact>();
   const groupKey = (group: PlannedFunction[]): string => group.map((plan) => plan.name).sort().join(',');
   const measure = (group: PlannedFunction[]): number => {
     const key = groupKey(group);
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
-    const bytes = byteSize(compileFacet(code, merged, errorListener, group, 'ProbeFacet'));
+    const artifact = compileFacet(code, merged, errorListener, group, 'ProbeFacet');
+    const bytes = byteSize(artifact);
+    measuredArtifacts.set(key, artifact);
     measuredBytes.set(key, bytes);
     return bytes;
   };
@@ -4801,51 +4804,77 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups = groups.flatMap((group) => (
     group.length > 1 && measure(group) > maxShardBytes ? group.map((plan) => [plan]) : [group]
   ));
-  // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
-  // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
-  let mergedAffinity = true;
-  while (mergedAffinity) {
-    mergedAffinity = false;
-    const candidates: Array<{
-      affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
-    }> = [];
-    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
-      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
-      const affinity = stateAffinity(groups[i], groups[j]);
-      if (affinity > 0) candidates.push({
-        affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
-      });
-    }
-    candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
-    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
-    if (selected) {
-      groups[selected.left] = selected.plans;
-      groups.splice(selected.right, 1);
-      mergedAffinity = true;
-    }
+  // A singleton is an indivisible physical closure: every facet containing that entry must also contain this
+  // body and its internal callees. Test these before the quadratic affinity search. Besides producing the useful
+  // handler/closure diagnostic directly, this prevents a large contract with one impossible entry from spending
+  // minutes compiling every larger pair even though none can remove bytes from the required closure.
+  for (const group of [...groups].sort((a, b) => groupKey(a).localeCompare(groupKey(b)))) {
+    if (group.length !== 1) continue;
+    const measured = measure(group);
+    if (measured <= maxShardBytes) continue;
+    const handlers = group.map((plan) => plan.name);
+    const callChain = group.flatMap((plan) => [
+      plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name),
+    ]);
+    throw new SolidcDiagnosticError(
+      'SPLIT_CLOSURE_CAPACITY',
+      `Cannot split '${logicalName}': indivisible closure '${handlers.join(', ')}' is ${measured} bytes `
+        + `(limit ${maxShardBytes}).`,
+      { contractName: logicalName, facet: 'singleton', handlers, callChain, measured, limit: maxShardBytes },
+    );
   }
-
-  // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
-  // union first, while the cached real compilation remains the acceptance authority.
-  let packed = true;
-  while (packed) {
-    packed = false;
-    const candidates: Array<{
-      estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
-    }> = [];
-    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
-      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
-      candidates.push({
-        estimate: measure(groups[i]) + measure(groups[j]),
-        left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
-      });
+  // Pairwise best-fit is quadratic in physical compilations. Above this frontier, keep the already-valid hard
+  // closure groups rather than spending minutes proving that optional combinations do not fit (UniswapV2Pair
+  // has nine groups and 36 pairs, with two verifier passes per probe). This can produce more facets, never a
+  // larger or semantically weaker one; every selected group is still measured against the consensus limit.
+  const exhaustivePacking = groups.length <= 8;
+  if (exhaustivePacking) {
+    // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
+    // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
+    let mergedAffinity = true;
+    while (mergedAffinity) {
+      mergedAffinity = false;
+      const candidates: Array<{
+        affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+      }> = [];
+      for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+        const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+        const affinity = stateAffinity(groups[i], groups[j]);
+        if (affinity > 0) candidates.push({
+          affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+        });
+      }
+      candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
+      const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+      if (selected) {
+        groups[selected.left] = selected.plans;
+        groups.splice(selected.right, 1);
+        mergedAffinity = true;
+      }
     }
-    candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
-    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
-    if (selected) {
-      groups[selected.left] = selected.plans;
-      groups.splice(selected.right, 1);
-      packed = true;
+
+    // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
+    // union first, while the cached real compilation remains the acceptance authority.
+    let packed = true;
+    while (packed) {
+      packed = false;
+      const candidates: Array<{
+        estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+      }> = [];
+      for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+        const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+        candidates.push({
+          estimate: measure(groups[i]) + measure(groups[j]),
+          left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+        });
+      }
+      candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
+      const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+      if (selected) {
+        groups[selected.left] = selected.plans;
+        groups.splice(selected.right, 1);
+        packed = true;
+      }
     }
   }
 
@@ -4854,16 +4883,20 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups.sort((a, b) => a.map((p) => p.name).join(',').localeCompare(b.map((p) => p.name).join(',')));
   groups.forEach((group, index) => {
     const name = `${logicalName}__Facet${index}`;
-    const artifact = compileFacet(code, merged, errorListener, group, name);
+    const measured = measuredArtifacts.get(groupKey(group));
+    const artifact = measured ? cloneArtifact(measured) : compileFacet(code, merged, errorListener, group, name);
+    // The synthetic facet name is metadata only (the branded bytecode and constructor shape are identical), so a
+    // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
+    artifact.contractName = name;
     if (byteSize(artifact) > maxShardBytes) {
-      const measured = byteSize(artifact);
+      const measuredBytes = byteSize(artifact);
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(
         'SPLIT_CLOSURE_CAPACITY',
-        `Cannot split '${logicalName}': facet '${name}' is ${measured} bytes `
+        `Cannot split '${logicalName}': facet '${name}' is ${measuredBytes} bytes `
           + `(limit ${maxShardBytes}); closure: ${handlers.join(', ')}.`,
-        { contractName: logicalName, facet: name, handlers, callChain, measured, limit: maxShardBytes },
+        { contractName: logicalName, facet: name, handlers, callChain, measured: measuredBytes, limit: maxShardBytes },
       );
     }
     facets[name] = artifact;
@@ -4884,8 +4917,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     fn.overrideBases = [];
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
   }
+  // A split root's mutating entries are delegate forwarders. Message-bus admission already refuses delegate
+  // handlers (`atomic-delegate-context-unpreservable`), leaving only incidental root-owned getters on the hidden
+  // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
+  // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
+  // Facet bodies retain their normal external-call/message-bus lowering; this changes only the synthetic root.
+  const rootOptions = { ...merged, messageBus: false };
   const root = compileResolvedAst(
-    rootAst, code, merged, false, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
+    rootAst, code, rootOptions, false, true, true, true, true, true, undefined,
+    splitPreLowersFnPtrArrays(rootOptions),
   );
   if (byteSize(root) > maxShardBytes) {
     throw new SolidcDiagnosticError(
@@ -5128,6 +5168,17 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   contract.implements = [];
   contract.parentInvocations = [];
   contract.functions = contract.functions.filter((fn) => keep.has(fn.name));
+  // Public getters are synthesized later than split planning. Without suppressing them here, every facet silently
+  // regains every public state/collection/constant getter after its function set was filtered. Besides publishing
+  // unrelated selectors on every shard, those getters make each facet synthesize the full incoming message-bus
+  // route (UniswapV2Pair's one-entry `approve` facet measured 13,066 bytes for this reason). The logical root keeps
+  // all getters and their ABI routes; a facet contains only the entries assigned to it and their call closure.
+  for (const state of contract.stateVariables) state.visibility = StateVariableVisibility.INTERNAL;
+  for (const collection of contract.collections) collection.visibility = StateVariableVisibility.INTERNAL;
+  for (const constant of contract.constantDefinitions) {
+    if (constant.visibility !== undefined) constant.visibility = StateVariableVisibility.INTERNAL;
+  }
+  contract.flattenedPublicStructGetters = [];
   // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets are
   // renamed synthetic contracts with no Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make
   // the idempotent inheritance pass validate resolved source metadata against the synthetic facet and reject it.
@@ -5144,11 +5195,12 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
       FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.DELEGATE);
-  } else if (isMovableSplitEntry(fn)) {
-    // A movable entry that is only KEPT here - it is routed to some other facet - is reachable in this facet
-    // solely through an internal call from one of `plans`. Emitting its entry-point arm as well would charge
-    // this facet for selector dispatch and parameter decoding it can never be entered through. Demote it to a
-    // plain internal helper; the body, and every modifier already expanded into it, is untouched.
+  } else if (fn.isEntryPoint) {
+    // Any entry that is only KEPT here - including a root-owned view such as UniswapV2Pair.getReserves - is
+    // reachable in this facet solely through an internal call from one of `plans`. Emitting its entry-point arm
+    // as well would charge this facet for selector dispatch, ABI decoding, and (for an otherwise delegate-only
+    // facet) an entire incoming message-bus route it can never enter. Demote it to a plain internal helper; the
+    // body, and every modifier already expanded into it, is untouched. The logical root retains its real selector.
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
     ].includes(m));
@@ -5557,7 +5609,9 @@ function countSpdxIdentifiersInComments(code: string): number {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) { i += 1; break; }
+        else if (code[i] === quote) {
+          i += 1; break;
+        }
         else i += 1;
       }
       continue;
@@ -5610,7 +5664,9 @@ function validateUnicodeDirectionMarkers(code: string): void {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) { i += 1; break; }
+        else if (code[i] === quote) {
+          i += 1; break;
+        }
         else i += 1;
       }
       validateToken(code.slice(start, i));
@@ -5757,6 +5813,7 @@ export function parseCode(
     },
   );
   code = code.replace(
+    // eslint-disable-next-line max-len
     /(\bcontract\s+\w+\b(?:\s+is\s+[^{}]*?)?)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+([^{};]+?))(?=\s*\{)/g,
     (_m, header, clause, expr) => {
       if (/\berc7201\b/.test(expr)) {

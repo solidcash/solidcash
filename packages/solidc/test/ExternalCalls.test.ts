@@ -138,6 +138,14 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 
+  it('inlines a multi-return wrapper which directly forwards an external call', () => {
+    const src = 'interface IVault { function deposit(uint a) external returns (uint, uint); }'
+      + ' contract C { uint n; function wrap(IVault v, uint a) internal returns (uint, uint) {'
+      + ' return v.deposit(a); } function f(IVault v, uint a) public {'
+      + ' (uint x, uint y) = wrap(v, a); this.n = x + y; require(this.n >= x); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
   // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the
   // arity-keyed overload lookup + recursion stack, and the {value: value} option's param alpha-rename.
   it('resolves overloads in a chain (call/2 -> call/3 with a {value:} low-level call)', () => {

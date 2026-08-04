@@ -6177,6 +6177,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
               const derivedCount = derived.filter((c) => c !== undefined).length;
+              // Runtime-expression C2 loops reserve their exact UPDATE/INSERT topology up front. A probe commonly
+              // confirms output 0, then fails at output 1, so the observation map is sparse by absolute output
+              // index. Merge it by index; positional `derivedCount` handling would discard the newly learned
+              // commitment at index 1 and leave the transaction permanently on its placeholder.
+              if (requiredCount > 0) {
+                const next = Array.from({ length: requiredCount }, (_, i) => derived[i] ?? existing[i] ?? '00');
+                stb.setLoopEntryCommitments(lv.collection, next);
+                commitmentProgress += derivedCount;
+                latestLoopEntryCommits = latestLoopEntryCommits.concat(next);
+                loopOffset += requiredCount;
+                continue;
+              }
               // A newly-learned last commitment (its placeholder was still '00') means more may follow; keep probing
               // with one extra placeholder. If the last commitment merely re-confirms a known one, the loop ran to
               // completion (all N derived) - drop the extra placeholder so the count pin sees exactly N outputs.
@@ -7584,6 +7596,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
     // Fail closed (throw) when a key is already present (update-in-loop) or two keys share a predecessor (same-gap).
     const sortedLoopCommitments = new Map<string, string[]>();
+    // These collections have exact input/key topology but values computed only by the covenant. Their output
+    // commitments are seeded as placeholders and learned by the normal VM probe instead of being pinned here.
+    const runtimeSortedLoopCommitments = new Set<string>();
     const insertLoopPredecessors: UnlockableUtxo[] = [];
     for (const info of abiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
@@ -7688,6 +7703,42 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       let keysArr = argOf(info.varyingArrayParam) as unknown[];
+      if (info.keyDecodeTupleIndex !== undefined || info.predicateArrayParam) {
+        const sourceKeys = keysArr;
+        const predicate = info.predicateArrayParam ? argOf(info.predicateArrayParam) as unknown[] : undefined;
+        if (!Array.isArray(sourceKeys) || (info.predicateArrayParam && !Array.isArray(predicate))) continue;
+        const selected: unknown[] = [];
+        const asBigInt = (v: unknown): bigint => typeof v === 'bigint' ? v : BigInt(v as number | string);
+        const decodeStaticWord = (blob: unknown, tupleIndex: number, typeName: string): unknown => {
+          const bytes = blob instanceof Uint8Array ? blob
+            : typeof blob === 'string' ? hexToBin(blob.startsWith('0x') ? blob.slice(2) : blob)
+              : new Uint8Array(0);
+          const word = bytes.slice(tupleIndex * 32, tupleIndex * 32 + 32);
+          if (word.length !== 32) throw new Error(
+            `C2 upsert loop ${info.collection}: ABI tuple word ${tupleIndex} is truncated`,
+          );
+          if (typeName === 'address') return word.slice(12);
+          if (typeName === 'bool') return word.some((b) => b !== 0);
+          const fixedBytes = typeName.match(/^bytes(\d+)$/);
+          if (fixedBytes) return word.slice(0, Number(fixedBytes[1]));
+          if (/^u?int(?:\d+)?$/.test(typeName)) {
+            let value = 0n;
+            for (const byte of word) value = (value << 8n) | BigInt(byte);
+            if (typeName.startsWith('int') && (word[0] & 0x80) !== 0) value -= 1n << 256n;
+            return value;
+          }
+          throw new Error(`C2 upsert loop ${info.collection}: unsupported ABI-decoded key type '${typeName}'`);
+        };
+        for (let i = 0; i < sourceKeys.length; i++) {
+          if (predicate && info.predicateEquals !== undefined
+            && asBigInt(predicate[i]) !== BigInt(info.predicateEquals)) continue;
+          selected.push(info.keyDecodeTupleIndex === undefined ? sourceKeys[i] : decodeStaticWord(
+            sourceKeys[i], info.keyDecodeTupleIndex,
+            info.keyDecodeTupleTypes?.[info.keyDecodeTupleIndex] ?? varyType,
+          ));
+        }
+        keysArr = selected;
+      }
       const isDelete = info.op === 'delete';
       // A loop-INVARIANT value (fixed-amount airdrop `+= amount` / batch-set-const `= 100`): the same amount for every
       // key, from a scalar param arg or an int literal. Otherwise the value is the per-key array valsArr[i].
@@ -7718,7 +7769,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!isRawbytesVal && !isDelete && info.valueScalarParam !== undefined) {
         scalarAmt = toBig(argOf(info.valueScalarParam));
       } else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
-      let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
+      let perKey = !info.valueRuntimeExpression && !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
       if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
         valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
@@ -8015,7 +8066,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             chunks: splitValueIntoValueChunks(loopRawValue),
           });
         }
-        const amt: bigint | Uint8Array = perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
+        const amt: bigint | Uint8Array = info.valueRuntimeExpression ? 0n
+          : perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
           : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
           // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
@@ -8120,7 +8172,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (foldActive) lastDeferred = { uid: '', commitIndex: uCommitIndex, slot, newVal: amt, oldNext: pred.nextKey };
         }
       }
-      if (commitments.length > 0) sortedLoopCommitments.set(info.collection, commitments);
+      if (commitments.length > 0) {
+        sortedLoopCommitments.set(info.collection, commitments);
+        if (info.valueRuntimeExpression) runtimeSortedLoopCommitments.add(info.collection);
+      }
     }
 
     // Handle external state reads (cross-contract reads via interfaces)
@@ -10709,7 +10764,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // from the off-chain list; inject + pin them so the auto-derivation skips this collection (nothing to trace).
     for (const [collectionName, commitments] of sortedLoopCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
-      builder.pinLoopEntry(collectionName);
+      if (runtimeSortedLoopCommitments.has(collectionName)) {
+        builder.requireLoopEntryCount(collectionName, commitments.length);
+      } else {
+        builder.pinLoopEntry(collectionName);
+      }
     }
     for (const [collectionName, commitments] of batchPredCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
@@ -10974,6 +11033,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const hasNothingToDerive = requiredNftIndices.length === 0
       && (entryAccesses?.length ?? 0) === 0
       && (entryAbiFunction?.entryLoopWrites?.length ?? 0) === 0
+      && (entryAbiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0
       && (derivTokenOps?.length ?? 0) === 0

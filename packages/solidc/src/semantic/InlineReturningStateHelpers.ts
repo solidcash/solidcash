@@ -228,7 +228,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!(last instanceof ReturnNode)) return false;
     // The final return must be 1:1 with the declared return types, so a multi-value helper returns `(a, b)` (each
     // split into a temp) rather than a nested tuple-forward `return g()` which can't be split.
-    if (last.expressions.length !== fn.returnTypes.length) return false;
+    // Multi-return forwarding `return externalCall();` carries one tuple-valued expression for N declared slots.
+    // inlineCall splits that tuple into N temps below.
+    if (last.expressions.length !== fn.returnTypes.length
+      && !(fn.returnTypes.length > 1 && last.expressions.length === 1)) return false;
     let returns = 0;
     this.walk(fn.body, (n) => { if (n instanceof ReturnNode) returns += 1; });
     if (returns !== 1) return false; // a mid-body return can't linearize into a hoisted prelude
@@ -519,6 +522,15 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   // A call STATEMENT whose call gets expression-inlined must not keep the bare temp inside the
   // FunctionCallStatement wrapper (later passes read call.identifier); re-wrap as a dropped expression.
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
+    // A multi-return helper may be called purely for side effects (`updateExchangeRate();`). It still must inline
+    // when it contains external reads/calls—the synthetic covenant parameters cannot cross OP_INVOKE. Materialize
+    // its return temps exactly as for tuple destructuring and discard one as an expression statement.
+    const multiTemps = this.tryInlineMultiValue(node.call);
+    if (multiTemps) {
+      const stmt = new ExpressionStatementNode(multiTemps[0]);
+      stmt.location = node.location;
+      return stmt;
+    }
     const result = this.visit(node.call);
     if (result instanceof FunctionCallNode) {
       node.call = result;
@@ -557,6 +569,10 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       callee = this.pickOverloadByReturnArity(name, arity, 1) ?? callee;
     }
     if (callee) this.reorderNamedTail(node, callee);
+    if (this.suppress && callee && this.inlinedFns.has(name)) {
+      const direct = this.inlineNamedReturnExpression(callee, node.parameters as ExpressionNode[]);
+      if (direct) return this.visit(direct);
+    }
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity))
       && arity === callee.parameters.length
@@ -569,6 +585,30 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return this.inlineCall(callee, node.parameters as ExpressionNode[])[0];
     }
     return node;
+  }
+
+  // A named-return helper of the form `T r; r = EXPR; return r` can be beta-reduced directly even in a
+  // short-circuit/ternary position. No statement is hoisted, so EXPR retains Solidity's conditional evaluation.
+  // This is the common `_tokenBalanceOf(token)` shape: EXPR contains an external read and therefore cannot remain
+  // behind an OP_INVOKE boundary, while hoisting it out of `a || _tokenBalanceOf(..)` would be incorrect.
+  private inlineNamedReturnExpression(callee: FunctionDefinitionNode, args: ExpressionNode[]): ExpressionNode | undefined {
+    if (callee.returnTypes.length !== 1 || args.length !== callee.parameters.length) return undefined;
+    const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    const stmts = this.effectiveStmts(cloned.body.statements ?? []);
+    const meaningful = stmts.filter((stmt) => !(stmt instanceof VariableDefinitionNode));
+    if (meaningful.length !== 2 || !(meaningful[0] instanceof AssignNode) || !(meaningful[1] instanceof ReturnNode)) {
+      return undefined;
+    }
+    const assign = meaningful[0] as AssignNode;
+    const ret = meaningful[1] as ReturnNode;
+    if (ret.expressions.length !== 1 || !(ret.expressions[0] instanceof IdentifierNode)
+      || ret.expressions[0].name !== assign.identifier.name) return undefined;
+    const substitutions = new Map<string, ExpressionNode>();
+    callee.parameters.forEach((param, index) => substitutions.set(param.name, cloneNode(args[index]) as ExpressionNode));
+    substituteInFunction(cloned, substitutions);
+    const clonedMeaningful = this.effectiveStmts(cloned.body.statements ?? [])
+      .filter((stmt) => !(stmt instanceof VariableDefinitionNode));
+    return cloneNode((clonedMeaningful[0] as AssignNode).expression) as ExpressionNode;
   }
 
   // Multi-value helpers inline only where the whole call is a statement's value: `return f()` (forward the N
@@ -719,9 +759,19 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     this.stack = savedStack;
 
     const ret = processed[processed.length - 1] as ReturnNode;
-    const retDefs: VariableDefinitionNode[] = [];
+    const retDefs: StatementNode[] = [];
     const ids: IdentifierNode[] = [];
-    for (let k = 0; k < ret.expressions.length; k++) {
+    if (callee.returnTypes.length > 1 && ret.expressions.length === 1) {
+      const elements = callee.returnTypes.map((type, k) => ({ name: `${PREFIX}${n}__ret${k}`, type }));
+      const tuple = new TupleAssignmentNode(elements, ret.expressions[0], true);
+      tuple.location = callee.location;
+      retDefs.push(tuple);
+      for (const element of elements) {
+        const id = new IdentifierNode(element.name);
+        id.location = callee.location;
+        ids.push(id);
+      }
+    } else for (let k = 0; k < ret.expressions.length; k++) {
       const retName = `${PREFIX}${n}__ret${k}`;
       const retDef = new VariableDefinitionNode(callee.returnTypes[k], [], retName, ret.expressions[k]);
       retDef.location = callee.location;

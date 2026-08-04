@@ -18,12 +18,14 @@ import {
   WhileNode,
   DoWhileNode,
   UncheckedNode,
+  ReturnNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import EarlyReturnTransformation from './EarlyReturnTransformation.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -261,7 +263,26 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     const n = this.counter++;
     const map = new Map<string, string>();
     for (const p of helper.parameters) map.set(p.name, `${PREFIX}${n}_${p.name}`);
-    const body = cloneNode(helper.body);
+    // A void helper's `return;` exits the HELPER, not its caller. Normalize early returns before splicing so the
+    // remaining helper statements sit in the appropriate else branch, then erase the now-terminal bare returns.
+    // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.
+    const normalized = cloneNode(helper) as FunctionDefinitionNode;
+    normalized.accept(new EarlyReturnTransformation());
+    const stripReturns = (block: BlockNode): void => {
+      const kept: StatementNode[] = [];
+      for (const statement of block.statements ?? []) {
+        if (statement instanceof ReturnNode) continue;
+        if (statement instanceof BranchNode) {
+          stripReturns(statement.ifBlock);
+          if (statement.elseBlock) stripReturns(statement.elseBlock);
+        } else if (statement instanceof BlockNode) stripReturns(statement);
+        else if (statement instanceof UncheckedNode) stripReturns(statement.block);
+        kept.push(statement);
+      }
+      block.statements = kept;
+    };
+    stripReturns(normalized.body);
+    const body = normalized.body;
     this.walk(body, (node) => {
       if (node instanceof VariableDefinitionNode && !map.has(node.name)) {
         map.set(node.name, `${PREFIX}${n}_${node.name}`);

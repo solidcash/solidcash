@@ -121,6 +121,18 @@ export default class CaptureBranchExternalCallTargets extends AstTraversal {
     this.loopDepth += 1; const r = super.visitCollectionIteration(node); this.loopDepth -= 1; return r;
   }
 
+  // Some earlier lowering passes have already materialized an
+  // ExternalFunctionCallNode, so rewriting only the parser-level dotted
+  // FunctionCall/MethodCall spellings misses its addressExpression. Rename
+  // every subsequent read of the captured SSA local in the nested scope. The
+  // synthesized `capture = original` assignment is appended after visiting
+  // the declaration and is therefore intentionally not traversed here.
+  visitIdentifier(node: IdentifierNode): Node {
+    const replacement = this.renames.get(node.name);
+    if (replacement) node.name = replacement;
+    return node;
+  }
+
   // `u.method(..)` (no call options) is a dotted FunctionCall `u.method`; rewrite the receiver to the capture.
   visitFunctionCall(node: FunctionCallNode): Node {
     const name = node.identifier.name;

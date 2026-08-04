@@ -312,6 +312,8 @@ export interface SortedUpsertLoopAbi {
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  valueRuntimeLocal?: string;  // compiler-generated per-iteration value rebuilt from the authenticated old entry
+  valueRuntimeExpression?: boolean; // final value is computed on-chain per iteration and trace-derived by the SDK
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   mutationValueScalarParam?: string;

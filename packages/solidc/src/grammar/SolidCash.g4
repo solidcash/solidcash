@@ -106,7 +106,7 @@ interfaceStateVariableVisibility
     ;
 
 interfaceFunction
-    : 'function' Identifier parameterList functionModifier* returnType? ';'
+    : 'function' anyIdentifier parameterList functionModifier* returnType? ';'
     ;
 
 libraryDefinition
@@ -706,8 +706,8 @@ expression
     // by `.call{value:v}(data)`). Desugared by the AstBuilder to a MethodCall with call options; the first
     // Identifier must be call/staticcall/delegatecall and the second value/gas (validated there).
     | expression '.' Identifier ('.' Identifier | '.value') '(' expression ')' expressionList # LegacyCallOptionCall
-    | expression '.' Identifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
-    | expression '.' Identifier callOptions? expressionList # MethodCall
+    | expression '.' anyIdentifier callOptions? '(' '{' (namedArg (',' namedArg)* ','?)? '}' ')' # MethodCallNamed
+    | expression '.' anyIdentifier callOptions? expressionList # MethodCall
     | base=expression '[' index=expression ']' expressionList # IndexedFunctionCall
     | expression memberName # FieldAccess
     | expression op=('++' | '--') # PostfixOp

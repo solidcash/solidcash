@@ -373,6 +373,12 @@ export default class AstBuilder
   // rerouted to a baked constant (see visitStateVariableDeclaration).
   private inLibraryDecl = false;
 
+  // Solidity 0.7 and earlier expose msg.sender/tx.origin as address payable;
+  // Solidity 0.8 changed both globals to plain address. This must be tracked
+  // per parsed file since imported dependencies can use an older pragma than
+  // the project root.
+  private legacyPayableAddressGlobals = false;
+
   constructor(private tree: ParseTree, private solidityImportCompat = false, private chunkedArrays = true) {
     super();
   }
@@ -386,6 +392,15 @@ export default class AstBuilder
   }
 
   visitSourceFile(ctx: SourceFileContext): SourceFileNode {
+    if (this.solidityImportCompat) {
+      const solidityPragma = ctx.pragmaDirective_list()
+        .map((pragma) => pragma.getText())
+        .find((text) => /^pragmasolidity/.test(text));
+      const version = solidityPragma?.match(/(\d+)\.(\d+)/);
+      this.legacyPayableAddressGlobals = version
+        ? Number(version[1]) === 0 && Number(version[2]) < 8
+        : false;
+    }
     ctx.pragmaDirective_list().forEach((pragma) => {
       this.processPragma(pragma);
     });
@@ -2673,6 +2688,9 @@ export default class AstBuilder
   visitNullaryOp(ctx: NullaryOpContext): NullaryOpNode {
     const operator = ctx.getText() as NullaryOperator;
     const nullaryOp = new NullaryOpNode(operator);
+    if (operator === NullaryOperator.MSG_SENDER || operator === NullaryOperator.TX_ORIGIN) {
+      nullaryOp.legacyPayableAddress = this.legacyPayableAddressGlobals;
+    }
     nullaryOp.location = Location.fromCtx(ctx);
     return nullaryOp;
   }
@@ -3425,6 +3443,32 @@ export default class AstBuilder
     // Local struct ARRAY-field element write `s.arr[i] op= v` / nested `s.arr[i][j] op= v` (member then index/es):
     // struct fields have no in-place element write, so read-modify-rebuild via buildLocalStructArrayFieldWrite.
     // A multi-index write lowers the temp element write to a MappingAssign (DesugarNestedArrayWrite handles it).
+    // Local struct -> array-of-struct -> scalar field write (`info.factories[i].factory = x`). Rebuild the
+    // element struct first, then use the ordinary local struct array-field roundtrip to replace that element and
+    // rebuild the outer struct. Without this, the generic indexed-lvalue fallback treats `factory` as though the
+    // RHS were the whole `Factory` element.
+    if (!isThis && fieldName && members.length === 2 && keyFns.length === 1
+      && segs.length === 3 && segs[0].member !== undefined && segs[1].key !== undefined
+      && segs[2].member !== undefined && this.localStructTypes.has(rawName)) {
+      const arrayField = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
+      const elementType = arrayField?.type instanceof ArrayType ? arrayField.type.elementType : undefined;
+      if (arrayField?.type instanceof ArrayType && elementType instanceof StructType
+        && elementType.fields.some((f) => f.name === members[1])) {
+        const base = new IdentifierNode(rawName); base.location = nameLoc;
+        const arrayRead = new FieldAccessNode(base, fieldName); arrayRead.location = loc;
+        const elementRead = new ArrayAccessNode(arrayRead, keyFns[0]()); elementRead.location = loc;
+        const rhs = op === '=' ? (valueNode ?? this.visit(valueCtx!) as ExpressionNode) : this.compoundRhs(
+          (() => { const f = new FieldAccessNode(elementRead, members[1]); f.location = loc; return f; })(),
+          op, valueCtx, loc,
+        );
+        const rebuiltElement = this.rebuildStructWithChain(
+          elementRead, elementType, [members[1]], rhs, nameLoc, loc,
+        );
+        return this.buildLocalStructArrayFieldWrite(rawName, fieldName, arrayField.type,
+          [() => keyFns[0]()], '=', undefined, loc, rebuiltElement);
+      }
+    }
+
     if (!isThis && fieldName && members.length === 1 && keyFns.length >= 1
       && segs.length === keyFns.length + 1 && segs[0].member !== undefined && this.localStructTypes.has(rawName)) {
       const field = this.localStructTypes.get(rawName)!.fields.find((f) => f.name === fieldName);
@@ -4290,7 +4334,7 @@ export default class AstBuilder
   }
 
   visitInterfaceFunction(ctx: InterfaceFunctionContext): InterfaceFunctionNode {
-    const name = ctx.Identifier().getText();
+    const name = ctx.anyIdentifier().getText();
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
 
     let returnTypes: Type[] = [];
@@ -4423,7 +4467,7 @@ export default class AstBuilder
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier().getText();
+    const methodName = ctx.anyIdentifier().getText();
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
 
@@ -4505,7 +4549,7 @@ export default class AstBuilder
   // Named-arg method call: obj.f({a: x, b: y}). Args are reordered against the callee's params in semantic analysis.
   visitMethodCallNamed(ctx: MethodCallNamedContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier().getText();
+    const methodName = ctx.anyIdentifier().getText();
     const namedArgs = ctx.namedArg_list();
     const parameters = namedArgs.map((na) => this.visit(na.expression()) as ExpressionNode);
     // `L.f({named})` where L is a library -> a namespaced library function call `L.f(...)` (matches the positional
@@ -5689,7 +5733,7 @@ export default class AstBuilder
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     const ctx = lhsCtx as MethodCallContext;
-    const method = ctx.Identifier().getText();
+    const method = ctx.anyIdentifier().getText();
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
     const callArgs = this.buildCallArguments(ctx.expressionList());

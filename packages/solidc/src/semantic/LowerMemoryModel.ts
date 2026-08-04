@@ -669,6 +669,26 @@ export default class LowerMemoryModel extends AstTraversal {
       }
       // `return b;` / `this.s = b;` on a memory bytes pointer -> serialize to the value-copy data slice
       // __yulmem[b+32 : b+32+b.length], so the pointer never crosses the export boundary.
+      if (stmt instanceof ReturnNode && (stmt.expressions?.length ?? 0) > 1) {
+        // Apply the same export-boundary conversion independently to every component of a multi-return. Solidity
+        // rewarder APIs commonly return `(IERC20[], uint256[])`; the uint array uses the pointer model while the
+        // address array remains value-copy, so handling only a sole return leaked the uint pointer as a scalar.
+        const prefix: StatementNode[] = [];
+        const expressions = stmt.expressions.map((expression) => {
+          if (!(expression instanceof IdentifierNode)) return expression;
+          if (this.memBytes.has(expression.name)) return this.serializeBytes(expression.name, stmt);
+          if (this.memArrays.has(expression.name)) {
+            const serialized = this.serializeArray(expression.name, this.memArrays.get(expression.name)!, stmt);
+            prefix.push(...serialized.stmts);
+            return this.at(new IdentifierNode(serialized.serName), stmt);
+          }
+          return expression;
+        });
+        if (prefix.length > 0 || expressions.some((expression, i) => expression !== stmt.expressions[i])) {
+          out.push(...prefix, this.visit(this.at(new ReturnNode(expressions), stmt)) as StatementNode);
+          continue;
+        }
+      }
       if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
         && stmt.expressions[0] instanceof IdentifierNode && this.memBytes.has(stmt.expressions[0].name)) {
         out.push(this.at(new ReturnNode([this.serializeBytes(stmt.expressions[0].name, stmt)]), stmt));

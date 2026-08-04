@@ -682,7 +682,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const index = this.stack.indexOf(value);
 
     if (index === -1 && !canBeUndefined) {
-      throw new Error(`Expected variable '${value}' does not exist on the stack`);
+      throw new Error(
+        `Expected variable '${value}' does not exist on the stack while compiling '${this.currentFunction?.name ?? '<unknown>'}'`
+        + ` (tracked stack: ${this.stack.join(', ')})`,
+      );
     }
 
     return index;
@@ -697,7 +700,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slot = layout.slots.find(
       (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
     );
-    if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''}`);
+    if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''} `
+      + `while compiling '${this.currentFunction?.name ?? '<unknown>'}'`);
     return slot.offset;
   }
 
@@ -7795,7 +7799,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   isOpRoll(node: IdentifierNode): boolean {
-    return this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
+    // External-call/read target identities are consumed again by the trailing
+    // covenant verification after the source body. The ordinary lexical
+    // last-use analysis cannot see that generated epilogue, so retain these
+    // values even when their final source-level use is at top level. This is
+    // especially important for inlined aliases (`__rhN_pair`) whose external
+    // call result is used immediately and would otherwise OP_ROLL the target.
+    const usedByCovenantEpilogue = this.externalCallSlots.some((slot) => slot.addressParam === node.name)
+      || this.externalReadSlots.some((slot) => slot.addressParam === node.name);
+    return !usedByCovenantEpilogue
+      && this.currentFunction.opRolls.get(node.name) === node && this.scopeDepth === 0;
   }
 
   visitBoolLiteral(node: BoolLiteralNode): Node {
@@ -10917,7 +10930,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.sortedUpsertLoopActive && this.entrySlots[slotIndex]?.inLoop && accessNode) {
       // A varying-key array mutation has one authenticated old-value witness per loop iteration. Select the witness
       // with the exact same source index used by k[index], rather than accepting one scalar witness for every key.
-      const varyingKey = accessNode.keys.find((k) => k instanceof ArrayAccessNode) as ArrayAccessNode | undefined;
+      let varyingKey = accessNode.keys.find((k) => k instanceof ArrayAccessNode) as ArrayAccessNode | undefined;
+      if (!varyingKey) {
+        for (const key of accessNode.keys) {
+          if (!(key instanceof IdentifierNode)) continue;
+          const initializer = this.findSingleAssignLocalInit(this.currentFunction.body, key.name);
+          if (initializer instanceof ArrayAccessNode) { varyingKey = initializer; break; }
+        }
+      }
       if (!varyingKey) throw new SortedMappingCodegenPendingError(accessNode, accessNode.collection!.name);
       const witnessId = new IdentifierNode(w);
       witnessId.type = new ArrayType(new BytesType());
@@ -11133,7 +11153,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.collection?.sorted) {
       // Whole value read, or (for a chunkable array value) element read: materialize the array via the C2 read,
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
-      this.emitSortedSetRead(node);
+      // A predicated runtime upsert evaluates `cond ? newValue : m[k]` while the loop already holds H(k) and
+      // addresses the corresponding trailing co-spend. Reuse that key/input context; a fixed block slot does not
+      // exist for this varying access.
+      const reuseLoopKey = this.sortedUpsertLoopActive
+        && this.sortedUpsertLoopCollection === node.collection.name
+        && this.currentFunction.sortedUpsertLoopInfo?.some((info) => (
+          info.collection === node.collection!.name && info.valueRuntimeExpression
+        )) === true
+        && this.entrySlots[node.entrySlotIndex]?.inLoop;
+      this.emitSortedSetRead(node, reuseLoopKey);
       if (node.arrayIndex) {
       this.emitArrayElementExtract(node, { location: node.location, positionHint: PositionHint.START });
       }
@@ -13774,6 +13803,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const isArrayMutation = n.collection.innermostValueType instanceof ArrayType
           && !!(n.arrayIndex || n.arrayPush || n.arrayPop);
         const e = n.expression;
+        const isRuntimeStructRmw = upsertVk === 'rawbytes' && e instanceof IdentifierNode
+          && n.collection.innermostValueType instanceof StructType
+          && this.isLoopStructRuntimeRmw(node, n, e.name);
         // Absolute set to a loop-invariant PARAM `m[k[i]] = v` (v a fn param). The ONE form valid for a rawbytes value
         // (a whole bytes/array param - stored as the inline chunkable tail); for int it also gains UPDATE support (the
         // upsert same-gap chaining keeps the N-in-one-gap behavior). Routed here, not the insert-only range-splice.
@@ -13784,6 +13816,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const isRmw = upsertVk === 'int' && e instanceof BinaryOpNode
           && (e.operator === BinaryOperator.PLUS || e.operator === BinaryOperator.MINUS)
           && e.left instanceof MappingAccessNode && e.left.name === n.name;
+        const isLibraryRmw = upsertVk === 'int' && e instanceof FunctionCallNode && e.parameters.length === 2
+          && e.parameters[0] instanceof MappingAccessNode && e.parameters[0].name === n.name
+          && /(^|\.)(add|sub)$/.test(e.identifier.name);
         // Absolute per-key set: `m[k[i]] = v[i]` where v[i] is a per-iteration ARRAY element. The key varying-ness is
         // validated in setup. Rawbytes per-key (`vs` a bytes[]/array-of-array param) is inline-only, like the invariant
         // rawbytes set: the body wraps each vs[i] tail (isChunkableVal), the SDK encodes the per-key tail.
@@ -13798,9 +13833,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           && e.left.array instanceof IdentifierNode && e.right instanceof IntLiteralNode;
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
-        const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
+        const predicatedRuntimeSet = upsertVk === 'int' && e instanceof TernaryOpNode
+          && [e.ifTrue, e.ifFalse].some((arm) => arm instanceof MappingAccessNode && arm.name === n.name)
+          && [e.ifTrue, e.ifFalse].some((arm) => (arm instanceof BinaryOpNode
+            && (arm.operator === BinaryOperator.PLUS || arm.operator === BinaryOperator.MINUS)
+            && arm.left instanceof MappingAccessNode && arm.left.name === n.name)
+            || (arm instanceof FunctionCallNode && arm.parameters[0] instanceof MappingAccessNode
+              && arm.parameters[0].name === n.name && /(^|\.)(add|sub)$/.test(arm.identifier.name)));
+        const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet || isRuntimeStructRmw);
         if (isArrayMutation || rawbytesOk || (upsertVk === 'int'
-          && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet || isOffsetArraySet))) {
+          && (isRmw || isLibraryRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet || isOffsetArraySet
+            || predicatedRuntimeSet))) {
           found = n; return;
         }
       }
@@ -13819,6 +13862,62 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
     walk(node);
     return found;
+  }
+
+  // InlineReturningStateHelpers lowers `m[k].field += delta` through a storage pointer to:
+  // `S t = m[k]; t = S(updatedField, t.other...); m[k] = t`. Recognize that compiler-generated, authenticated
+  // read-modify-write value so the C2 loop can use the live rebuilt struct as its per-iteration SET value.
+  private isLoopStructRuntimeRmw(block: Node, write: MappingAssignNode, localName: string): boolean {
+    let read: MappingAccessNode | undefined;
+    const rebuilds: FunctionCallNode[] = [];
+    let reassigned = 0;
+    let invalidReassignment = false;
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName
+        && node.expression instanceof MappingAccessNode) read = node.expression;
+      if (node instanceof AssignNode && node.identifier.name === localName) {
+        // A named struct return/local is declared without an initializer and then populated from the entry
+        // (`pool = poolInfo[pid]`) before one or more partial-field rebuilds. Treat that first assignment as the
+        // authenticated read, not as an unrelated reassignment.
+        if (!read && node.expression instanceof MappingAccessNode) read = node.expression;
+        else {
+          reassigned += 1;
+          if (node.expression instanceof FunctionCallNode) rebuilds.push(node.expression);
+          else invalidReassignment = true;
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
+          || key === 'collection') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(block);
+    const structName = (write.collection!.innermostValueType as StructType).name;
+    if (!read || reassigned < 1 || invalidReassignment || rebuilds.length !== reassigned || read.name !== write.name
+      || rebuilds.some((rebuild) => rebuild.identifier.name !== structName)) return false;
+    const sameExpression = (a: ExpressionNode, b: ExpressionNode): boolean => {
+      if (a.constructor !== b.constructor) return false;
+      if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+      if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
+      if (a instanceof ArrayAccessNode && b instanceof ArrayAccessNode) {
+        return sameExpression(a.array, b.array) && sameExpression(a.index, b.index);
+      }
+      if (a instanceof CastNode && b instanceof CastNode) return sameExpression(a.expression, b.expression);
+      return false;
+    };
+    const sameKeys = read.keys.length === write.keys.length
+      && read.keys.every((key, i) => sameExpression(key, write.keys[i]));
+    if (!sameKeys) return false;
+    // Every partial struct-field update rebuild must preserve at least one field from the prior local. Supporting a
+    // sequence (rather than exactly one rebuild) covers `pool.acc = ...; pool.last = ...; m[k] = pool` while still
+    // excluding an arbitrary local replaced wholesale with an unrelated constructor value.
+    return rebuilds.every((rebuild) => rebuild.parameters.some((parameter) => parameter instanceof FieldAccessNode
+      && parameter.expression instanceof IdentifierNode && parameter.expression.name === localName));
   }
 
   // The initializer of a SINGLE-ASSIGN local `name` within `node` (a `<name> = <expr>` VariableDefinition, never
@@ -13875,6 +13974,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let valueArrayParam: string | undefined;    // per-key vs[i]
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
+    let valueRuntimeLocal: string | undefined;  // rebuilt struct value derived from this iteration's old entry
+    let valueRuntimeExpression = false;
     let valueArrayOffset: string | undefined;
     let mutation: 'push' | 'pop' | 'setAt' | undefined;
     let mutationValueArrayParam: string | undefined;
@@ -13888,7 +13989,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     } else {
       const assign = writeNode as MappingAssignNode;
       const expr = assign.expression;
-      if (assign.arrayPush || assign.arrayPop || assign.arrayIndex) {
+      if (expr instanceof TernaryOpNode) {
+        op = 'set';
+        valueRuntimeExpression = true;
+      } else if (expr instanceof IdentifierNode && collection.innermostValueType instanceof StructType
+        && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
+        op = 'set';
+        valueRuntimeLocal = expr.name;
+      } else if (assign.arrayPush || assign.arrayPop || assign.arrayIndex) {
         mutation = assign.arrayPush ? 'push' : assign.arrayPop ? 'pop' : 'setAt';
         op = 'set';
         const capture = (
@@ -13914,9 +14022,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
             (v) => { mutationIndexConst = v; });
         }
       } else {
-      const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
-      op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
-      let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
+      const libraryRmw = expr instanceof FunctionCallNode && expr.parameters.length === 2
+        && expr.parameters[0] instanceof MappingAccessNode
+        && /(^|\.)(add|sub)$/.test(expr.identifier.name);
+      const isRmw = (expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode) || libraryRmw;
+      op = !isRmw ? 'set' : libraryRmw
+        ? /(^|\.)sub$/.test((expr as FunctionCallNode).identifier.name) ? '-' : '+'
+        : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      let valueRight = !isRmw ? expr : libraryRmw
+        ? (expr as FunctionCallNode).parameters[1] : (expr as BinaryOpNode).right;
       // Inlining OZ ERC20 `_update` binds its `value` param to a single-assign LOCAL (`__inlN_value = amounts[i]`),
       // so the write's per-key value is that local, not the array element directly. Resolve it to the underlying
       // source (mirrors how the KEY is canonicalized through localKeyDefs) so the metadata below records the real
@@ -13924,8 +14038,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (valueRight instanceof IdentifierNode
         && !this.currentFunction.parameters.some((p) => p.name === (valueRight as IdentifierNode).name)) {
         const src = this.findSingleAssignLocalInit(block, (valueRight as IdentifierNode).name);
-        if (src instanceof ArrayAccessNode || src instanceof IdentifierNode || src instanceof IntLiteralNode
-          || src instanceof BoolLiteralNode) valueRight = src;
+        if (src instanceof ArrayAccessNode || src instanceof IdentifierNode
+          || src instanceof IntLiteralNode || src instanceof BoolLiteralNode) valueRight = src;
       }
       if (valueRight instanceof ArrayAccessNode && valueRight.array instanceof IdentifierNode) {
         valueArrayParam = valueRight.array.name;                        // per-key vs[i]
@@ -13945,7 +14059,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = mutation !== undefined || !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
+    const hasValue = mutation !== undefined || !!valueArrayParam || !!valueScalarParam
+      || valueConst !== undefined || !!valueRuntimeLocal || valueRuntimeExpression;
     if (!varyingArrayParam || (!isDelete && !hasValue)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
@@ -13953,6 +14068,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
+        ...(valueRuntimeLocal && { valueRuntimeLocal }),
+        ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
         ...(valueArrayOffset !== undefined && { valueArrayOffset }),
         ...(mutation && { mutation }),
         ...(mutationValueArrayParam && { mutationValueArrayParam }),
@@ -13961,7 +14078,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         ...(mutationIndexArrayParam && { mutationIndexArrayParam }),
         ...(mutationIndexScalarParam && { mutationIndexScalarParam }),
         ...(mutationIndexConst !== undefined && { mutationIndexConst }),
-        ...(mutation && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
+        ...((mutation || valueRuntimeLocal) && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
         op });
     }
     this.sortedWrittenCollections.add(collection.name);
@@ -14205,7 +14322,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (op === 'set' && isArrayMutation) {
         this.emitMappingArrayElementAssign(a, true);
       } else if (op === 'set') { a.expression = this.visit(a.expression); }
-      else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
+      else if (a.expression instanceof BinaryOpNode) {
+        a.expression.right = this.visit(a.expression.right);
+      } else {
+        const call = a.expression as FunctionCallNode;
+        call.parameters[1] = this.visit(call.parameters[1]);
+      }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
         this.emitSortedValueChunkPin(
@@ -16567,7 +16689,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (slot.addressLiteral) {
         this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
       } else {
-        throw new Error('external call target address must be a constructor/function parameter');
+        throw new Error('external call target address must be a constructor/function parameter '
+          + `(${slot.interfaceName}.${slot.functionName} in ${node.name}; source: ${JSON.stringify(slot.addressSource)})`);
       }
       this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)
@@ -16726,7 +16849,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           + 'an array-element external call. See docs/call-model.md section 10.',
         );
       }
-      throw new Error(`array external-call target '${slot.loopArrayVar}' must be a state array`);
+      throw new Error(`array external-call target '${slot.loopArrayVar}' must be a state array while compiling '${node.name}'`);
     }
     const stride = 1 + slot.requiredDataNftIndices.length;
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
@@ -17136,7 +17259,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // --- return event: idx = externalReturnOutputIdx + i ; verify + read commitment as returnData ---
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalReturnOutputIdx'))), loc);
+    const opaqueReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
+    const opaqueRetParam = opaqueReturningCount === 1
+      ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+    this.emit(encodeInt(BigInt(this.getStackIndex(opaqueRetParam))), loc);
     this.emit(Op.OP_PICK, loc);           // [..., retbase]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc); // +1: retbase
     this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
@@ -17345,10 +17471,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (The actual return value reading is done in visitExternalFunctionCall)
 
     const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues && !s.inlineLoopDispatch);
+    const allReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
 
     for (const slot of returningSlots) {
       // Determine the parameter name for this slot's return output index
-      const returnParamName = returningSlots.length === 1
+      const returnParamName = allReturningCount === 1
         ? '__internal__externalReturnOutputIdx'
         : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
 

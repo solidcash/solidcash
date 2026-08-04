@@ -774,6 +774,29 @@ describe('address payable conversions follow Solidity directionality', () => {
   });
 });
 
+describe('inlined external-call target survives the covenant epilogue (MistSwap TWAP)', () => {
+  it('retains each helper alias used by repeated state-reading calls', () => {
+    expect(() => compileString(`
+      interface IPair { function price() external view returns (uint256); }
+      contract C {
+        mapping(IPair => uint256) seen;
+        function _get(IPair pair) public view returns (uint256) {
+          return pair.price();
+        }
+        function get(IPair pair, bool first) external returns (uint256) {
+          if (first) {
+            seen[pair] = _get(pair);
+            return 0;
+          }
+          uint256 value = _get(pair);
+          seen[pair] = value;
+          return value;
+        }
+      }
+    `, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 describe('using-for on a NESTED mapping element receiver (SushiSwap/OZ ERC20 allowances)', () => {
   const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   const lib = 'library SM { function sub(uint256 a, uint256 b) internal pure returns (uint256) { return a - b; }'
@@ -1161,6 +1184,12 @@ describe('nested write to a local-memory struct multi-D array field (s.a[i][j] =
   it('keeps the single-index form working', () => {
     expect(cc('contract C { struct S { uint[] a; } '
       + 'function f(uint i,uint v) public pure { S memory s; s.a[i]=v; s.a[i]++; require(true); } }')).toBe('C');
+  });
+  it('rebuilds a scalar field on an array-of-struct element nested in a local struct', () => {
+    expect(cc('interface IF { function n() external view returns (uint); } contract C {'
+      + ' struct F { IF factory; uint count; } struct UI { F[] factories; }'
+      + ' function f(uint i, IF factory) public pure { UI memory info; info.factories = new F[](2);'
+      + ' info.factories[i].factory = factory; require(true); } }')).toBe('C');
   });
 });
 
@@ -1571,6 +1600,10 @@ describe('soft keywords as declaration and variable names', () => {
     expect(cc('contract C { uint leave = 1; function f() external { require(leave == 1); } }')).toBe('C');
     expect(cc('contract C { function f() external { uint leave = 1; require(leave == 1); } }')).toBe('C');
   });
+  it('accepts a soft-keyword interface function and calls it', () => {
+    expect(cc('interface IBar { function leave(uint share) external; } contract C {'
+      + ' function f(IBar bar, uint share) external { bar.leave(share); } }')).toBe('C');
+  });
   it('accepts an error named with a soft keyword and reverting through it', () => {
     ok('error error(uint a); contract C { function f() external pure { revert error(2); } }');
   });
@@ -1732,6 +1765,21 @@ describe('chained getter returning a contract + using-for on computed receivers'
       + ' contract Event { Token public collateralToken; }'
       + ' contract C { Event ev; function f() public returns (uint)'
       + ' { return ev.collateralToken().balanceOf(address(this)); } }')).toBe('C');
+  });
+
+  it('calls a method on an imported concrete contract public-mapping getter result', () => {
+    expect(cc('contract Token { function balanceOf(address a) public returns (uint) { return 0; } }'
+      + ' contract Chef { Token[] public lpToken; }'
+      + ' contract C { uint marker; address chef; function update(uint pid) public returns (uint)'
+      + ' { return Chef(chef).lpToken(pid).balanceOf(address(this)); }'
+      + ' function mass(uint[] memory pids) external { for (uint i = 0; i < pids.length; i++)'
+      + ' { marker = update(pids[i]); } } }')).toBe('C');
+  });
+
+  it('serializes each pointer-backed component of a multi-array return', () => {
+    expect(cc('contract C { function f() external returns (address[] memory aa, uint[] memory uu) {'
+      + ' address[] memory a = new address[](1); uint[] memory u = new uint[](1);'
+      + ' a[0] = address(this); u[0] = 7; return (a, u); } }')).toBe('C');
   });
 
   it('resolves a chained getter on a contract-typed LOCAL (market = markets[i])', () => {
@@ -3389,6 +3437,28 @@ describe('BARE mapping access (no this.) as a storage-pointer arg - real-Solidit
   });
 });
 
+describe('using-for on an interface-typed local (BoringHelper IPair metadata)', () => {
+  it('resolves a library method before treating the dotted call as an external interface call', () => {
+    const src = 'interface IERC20 { function totalSupply() external view returns (uint256); }'
+      + ' interface IPair is IERC20 { function token0() external view returns (IERC20); }'
+      + ' library Meta { function name(IPair token) internal pure returns (uint256) { token; return 1; } }'
+      + ' library PairMeta { function factory(IPair token) internal pure returns (address) { token; return address(0); } }'
+      + ' contract C() { using Meta for IPair; using PairMeta for IPair;'
+      + ' function f(IPair pair) { uint256 n = pair.name(); address a = pair.factory(); require(n == n && a == a); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
+describe('internally-called public external-read helper with early returns (BoringHelper getETHRate)', () => {
+  it('normalizes the returns early enough to inline the external-call covenant context', () => {
+    const src = 'interface IF { function read() external view returns (uint256); } contract C() {'
+      + ' function rate(IF target, bool unit) public view returns (uint256) {'
+      + ' if (unit) return 1; uint256 n = target.read(); if (n == 0) return 2; return n; }'
+      + ' function use(IF target, bool unit) public view returns (uint256) { return rate(target, unit); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
 describe('abi.decode to an interface/contract type (BentoBox/Kashi)', () => {
   // `abi.decode(data, (IERC20))` - an interface/contract handle is an address on BCH, so it decodes as address
   // (byte-identical to `abi.decode(data, (address))`). Was: "Unsupported type 'IERC20' in abi.decode".
@@ -3422,5 +3492,38 @@ describe('overloaded returning-helper inline disambiguated by return arity (Kash
     expect(ok(`${LIB} contract C() { using L for R; R rr;`
       + ' function one(int x, int b) { R t = R(0,0); t = t.add(x, b); this.rr = t; require(true); }'
       + ' function two(int x) { R t = R(0,0); int bb; (t, bb) = t.add(x, true); this.rr = t; require(bb >= 0); } }')).toBe('C');
+  });
+});
+
+describe('Kashi helper-boundary and tuple-state regressions', () => {
+  const opts = { solidityImportCompat: true, forceStateful: true };
+
+  it('does not leak a bare return from an inlined void external-call helper into a valued caller', () => {
+    const src = 'interface I { function ping() external; } contract C { I target; int x;'
+      + ' function accrue(bool done) internal { if (done) { return; } target.ping(); x = 1; }'
+      + ' function f(bool done) public returns (int) { accrue(done); return x; } }';
+    expect(compileString(src, opts).contractName).toBe('C');
+  });
+
+  it('inlines a tuple-forwarding external-call helper when assigned or called for side effects', () => {
+    const src = 'interface I { function pair(int x) external returns (int, int); } contract C { I target; int x;'
+      + ' function helper(int n) internal returns (int, int) { return target.pair(n); }'
+      + ' function assigned(int n) public { int a; int b; (a,b) = helper(n); x = a+b; }'
+      + ' function discarded(int n) public { helper(n); x = n; } }';
+    expect(compileString(src, opts).contractName).toBe('C');
+  });
+
+  it('destructures a returned struct into a whole state-struct target', () => {
+    const src = 'struct R { int e; int b; } library L {'
+      + ' function add(R r, int x) internal pure returns (R, int p) { r.e += x; p = x; return (r,p); } }'
+      + ' contract C { R total; int part; function f(int x) public { (total,part) = L.add(total,x); } }';
+    expect(compileString(src, opts).contractName).toBe('C');
+  });
+
+  it('recognizes a named-return mapping struct updated through multiple field rebuilds in a loop', () => {
+    const src = 'struct P { int a; int b; int c; } contract C { mapping(int => P) pools;'
+      + ' function update(int k) public returns (P pool) { pool = pools[k]; pool.a += 1; pool.b += 2; pools[k] = pool; }'
+      + ' function mass(int[] memory keys) external { for (int i=0; i<keys.length; i++) { update(keys[i]); } } }';
+    expect(compileString(src, opts).contractName).toBe('C');
   });
 });

@@ -5569,7 +5569,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? loopOffset + requiredCount
                 : isSortedValueMintColl ? loopOffset + 1 : loopOffset + LOOP_ENTRY_MAX_ITERATIONS;
               const range = { min: loopOffset, max: loopMax };
-              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range);
+              // A runtime struct rebuild commonly executes in an OP_INVOKE handler. Its trailing output pin may
+              // therefore occur outside the longest redeem instruction array selected by findRedeemScriptStart.
+              // The output range plus the adjacent OTC/EQUALVERIFY pattern is sufficient to scan the full trace
+              // safely (the same rule used for delegated commitment derivation).
+              const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
               const derivedCount = derived.filter((c) => c !== undefined).length;
@@ -6149,6 +6153,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const computedValueChunkCollections = new Set<string>();
     // Computed UPDATES (present key, no NEW node): pin the loop entry empty so it is not phantom-derived.
     const computedValueUpdateCollections = new Set<string>();
+    // Runtime struct RMW loops (`S memory v = m[keys[i]]; ...; m[keys[i]] = v`) cannot derive their final
+    // commitment from a direct ABI value parameter. The covenant computes and pins it, so seed exactly one
+    // trace-derived loop output per unique key while supplying the authenticated old struct values below.
+    const runtimeLoopDerivedCounts = new Map<string, number>();
+    const runtimeExpressionLoopCollections = new Set<string>();
     // P5b overwrite GC: on an UPDATE whose OLD value was long, co-spend its old chunks (collection, slot, oldDigest)
     // so they are consumed rather than orphaned as dust. Digest-keyed, so only the exact old version is reclaimed.
     const valueChunkGc: Array<{ collection: string; slotHex: string; oldDigestHex: string }> = [];
@@ -7029,6 +7038,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       else if (!isRawbytesVal && !isDelete && info.valueConst !== undefined) scalarAmt = BigInt(info.valueConst);
       let perKey = !isRawbytesVal && !isDelete && scalarAmt === undefined;
       let valsArr = perKey ? argOf(info.valueArrayParam) : undefined;
+      if (info.valueRuntimeExpression) {
+        // Structural planning (which entries/predecessors and how many outputs) is known from the keys and current
+        // C2 list even though each final value is computed by the covenant. Zeroes are temporary value tails only;
+        // the VM derivation replaces every unpinned commitment before send.
+        valsArr = Array.isArray(keysArr) ? keysArr.map(() => 0n) : undefined;
+        perKey = true;
+        runtimeExpressionLoopCollections.add(info.collection);
+      }
       if (Array.isArray(valsArr) && info.valueArrayOffset !== undefined) {
         valsArr = (valsArr as unknown[]).map((v) => toBig(v) + BigInt(info.valueArrayOffset!));
       }
@@ -7041,8 +7058,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // minimal VM number.
       const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
         nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
-      if (!Array.isArray(keysArr) || (perKey && !info.mutation && !Array.isArray(valsArr))) continue;
-      if (perKey && !info.mutation && (valsArr as unknown[]).length !== keysArr.length) {
+      if (!Array.isArray(keysArr)
+        || (perKey && !info.mutation && !info.valueRuntimeLocal && !Array.isArray(valsArr))) continue;
+      if (perKey && !info.mutation && !info.valueRuntimeLocal
+        && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
@@ -7064,6 +7083,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const kArr = keysArr as unknown[];
         const slotHexes = kArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
         if (slotHexes.some((h, i) => slotHexes.indexOf(h) !== i)) {
+          if (info.valueRuntimeExpression) {
+            throw new Error(`C2 runtime-expression loop ${info.collection}: duplicate keys require a journaled `
+              + 'read-your-writes table');
+          }
           const seen = new Set<string>();
           const order: number[] = [];
           const merged = new Map<string, unknown>();
@@ -7198,6 +7221,65 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
+      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
+      const cospent = new Set<string>();
+      const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
+
+      if (info.valueRuntimeLocal) {
+        const oldWitnesses: Uint8Array[] = [];
+        const runtimeInputs: UnlockableUtxo[] = [];
+        const runtimeSlots = new Set<string>();
+        for (let i = 0; i < keysArr.length; i++) {
+          const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+          const slotHex = binToHex(slot);
+          if (runtimeSlots.has(slotHex)) {
+            throw new Error(`C2 runtime struct loop ${info.collection}: duplicate keys require a journaled `
+              + 'read-your-writes transition and cannot be co-spent twice');
+          }
+          runtimeSlots.add(slotHex);
+          const entry = list.find(slot);
+          if (!entry) {
+            throw new Error(`C2 runtime struct loop ${info.collection}: key ${i} has no existing entry`);
+          }
+          const uid = uidOf(entry.utxo);
+          if (cospent.has(uid)) {
+            throw new Error(`C2 runtime struct loop ${info.collection}: key ${i}'s entry is already co-spent this tx`);
+          }
+          cospent.add(uid);
+          runtimeInputs.push({ ...entry.utxo, unlocker: wUnlocker });
+
+          const tail = entry.value;
+          if (tail.length < 4) throw new Error(`C2 runtime struct value for ${info.collection} has an invalid tail`);
+          const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+          let raw: Uint8Array;
+          if (len <= 60) {
+            raw = tail.slice(4, 4 + len);
+          } else {
+            const root = tail.slice(4, 36);
+            const headData = tail.slice(36, 64);
+            const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+            const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+              .filter((u) => u.token?.category === this.categoryId
+                && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+              .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
+              .sort((a, b) => a.chunkIndex - b.chunkIndex);
+            raw = joinValueChunks(headData, chunks, len);
+            if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+              throw new Error(`C2 runtime struct value chunks do not match the authenticated root`);
+            }
+            valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
+          }
+          oldWitnesses.push(raw);
+        }
+        const wi = abiFunction!.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
+        if (wi < 0) throw new Error(`C2 runtime struct loop ${info.collection}: missing old-value witness ABI input`);
+        finalArgs[wi] = oldWitnesses;
+        insertLoopPredecessors.push(...runtimeInputs);
+        runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
+        if (collection.chunkableValue) computedValueChunkCollections.add(info.collection);
+        continue;
+      }
+
       if (info.mutation) {
         const readRawValue = async (slot: Uint8Array): Promise<Uint8Array> => {
           const entry = list.find(slot);
@@ -7262,14 +7344,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         perKey = true;
         perKeyRawbytes = true;
       }
-      const wUnlocker = createEntryNftUnlocker(this.inner, 0, this.categoryId, info.collection);
       // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
       // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
       // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
       const commitments: string[] = [];
       const seenSlots = new Set<string>();
-      const cospent = new Set<string>();
-      const uidOf = (u: { txid: string; vout: number }): string => `${u.txid}:${u.vout}`;
       // Pre-seed with this collection's FIXED (non-loop) entry co-spends - notably the cached `bal[msg.sender] -=`
       // DEBIT write. If a NEW recipient's bracketing predecessor is one of those already-co-spent entries, co-spending
       // it again would make an invalid duplicate input; detect it here and fail closed with a clear message (else the
@@ -9524,6 +9603,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const batch of abiFunction?.sortedBatchInfo ?? []) addLoopCollection(batch.collection);
     for (const name of entryLoopWrites) addLoopCollection(name);
     for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
+    for (const name of runtimeLoopDerivedCounts.keys()) addLoopCollection(name);
     for (const name of batchPredCommitments.keys()) addLoopCollection(name);
     // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
     // proxy's entryLoopWrites cannot advertise a scalar C2 INSERT. The insertion plan itself is authoritative.
@@ -9628,11 +9708,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // from the off-chain list; inject + pin them so the auto-derivation skips this collection (nothing to trace).
     for (const [collectionName, commitments] of sortedLoopCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
-      builder.pinLoopEntry(collectionName);
+      if (runtimeExpressionLoopCollections.has(collectionName)) {
+        builder.requireLoopEntryCount(collectionName, commitments.length);
+      } else {
+        builder.pinLoopEntry(collectionName);
+      }
     }
     for (const [collectionName, commitments] of batchPredCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
       builder.pinLoopEntry(collectionName);
+    }
+    // Reserve the exact number of runtime-computed UPDATE outputs before the first VM probe. They remain unpinned:
+    // auto-derivation replaces each placeholder with the covenant-observed final struct commitment.
+    for (const [collectionName, count] of runtimeLoopDerivedCounts) {
+      builder.setLoopEntryCommitments(collectionName, Array.from({ length: count }, () => '00'));
+      builder.requireLoopEntryCount(collectionName, count);
     }
 
     // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant
@@ -9859,6 +9949,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const hasNothingToDerive = requiredNftIndices.length === 0
       && (abiFunction?.entryAccesses?.length ?? 0) === 0
       && (abiFunction?.entryLoopWrites?.length ?? 0) === 0
+      && (abiFunction?.sortedUpsertLoopInfo?.length ?? 0) === 0
       && emitInfos.length === 0
       && derivTransferCount === 0;
 

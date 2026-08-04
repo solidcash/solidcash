@@ -21,6 +21,7 @@ import {
   WhileNode,
   DoWhileNode,
   CollectionIterationNode,
+  StateAccessNode,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
@@ -63,6 +64,13 @@ function elementOf(t: Type | undefined): Type | undefined {
 // possible interface-typed field). Over-approximate - the chain resolver does the exact interface-field check.
 function holdsStruct(t: Type): boolean {
   return t instanceof StructType || elementOf(t) instanceof StructType;
+}
+
+// A collection whose directly indexed value is an interface address also needs this pass even when the contract
+// has no standalone interface-typed state variable or struct root (`mapping(Token => IStrategy) strategy`).
+function holdsInterfaceAddress(t: Type): boolean {
+  const value = elementOf(t);
+  return value instanceof AddressType && !!value.interfaceName;
 }
 
 export default class SynthesizeExternalAddressLocals extends AstTraversal {
@@ -141,10 +149,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     // struct root in practice (the shape appears alongside struct state), so no extra gate term - keeping the
     // gate tight avoids visiting fn-ptr-array-only contracts whose broadcast lowering must stay untouched.
     const hasStructRoot = [...this.stateRoots.values()].some((t) => holdsStruct(t));
+    const hasInterfaceAddressRoot = [...this.stateRoots.values()].some((t) => holdsInterfaceAddress(t));
     // A COMPUTED cast target `IFoo(pairFor(..)).m()` needs the pass even with no state var (params-only contract).
     // Detect it cheaply (a MethodCall on an `IFoo(<non-identifier>)` cast) so the gate stays otherwise tight.
     const hasComputedTarget = this.hasComputedCastTarget(node);
-    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot || hasComputedTarget) {
+    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot
+      || hasInterfaceAddressRoot || hasComputedTarget) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
       // fallback/receive are external entry points like any function (e.g. a re-entrancy fallback that calls
       // back into another contract); visit them too. The state var is already set by the time they run.
@@ -393,19 +403,19 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     return undefined;
   }
 
-  // `obj` is an interface/contract-typed field reached through a chain of self-pinned STATE - a struct field,
-  // array element, or mapping value, possibly nested (`s.field`, `ss[i].field`, `ms[k].field`, `s.a.b`). Returns
+  // `obj` is an interface/contract-typed value reached through a chain of self-pinned STATE - a direct mapping/
+  // array element or a struct field, possibly nested (`strategy[token]`, `s.field`, `ss[i].field`, `s.a.b`). Returns
   // the interface + a stable local name (from the chain shape, so identical chains dedup). Returns undefined
   // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
   private chainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
-    if (!(obj instanceof FieldAccessNode)) return undefined;
-    const base = this.resolveChainType(obj.expression);
-    if (!(base instanceof StructType)) return undefined;
-    const fieldType = base.fields.find((f) => f.name === obj.name)?.type;
-    if (!(fieldType instanceof AddressType) || !fieldType.interfaceName) return undefined;
+    // Bare identifiers are handled by externalTargetStateVar. Keeping this branch to access nodes also prevents a
+    // caller parameter from being mistaken for self-pinned state.
+    if (obj instanceof IdentifierNode) return undefined;
+    const valueType = this.resolveChainType(obj);
+    if (!(valueType instanceof AddressType) || !valueType.interfaceName) return undefined;
     const key = this.chainKey(obj);
     if (!key) return undefined;
-    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}` };
+    return { iface: valueType.interfaceName, localName: `${PREFIX}${key}` };
   }
 
   // `IFoo(<chain>)` where <chain> is an `address`-typed value reached through self-pinned STATE (a struct field,
@@ -810,8 +820,25 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (obj instanceof IdentifierNode && this.stateVarIface.has(obj.name)) {
       return { name: obj.name, iface: this.stateVarIface.get(obj.name)!, isPlain: false };
     }
+    if (obj instanceof CastNode && obj.type instanceof AddressType && obj.type.interfaceName) {
+      let arg: ExpressionNode = obj.expression;
+      while (arg instanceof CastNode) arg = arg.expression;
+      if (arg instanceof IdentifierNode && this.stateVarIface.has(arg.name)) {
+        return { name: arg.name, iface: obj.type.interfaceName, isPlain: false };
+      }
+      if (arg instanceof StateAccessNode && this.stateVarIface.has(arg.name)) {
+        return { name: arg.name, iface: obj.type.interfaceName, isPlain: false };
+      }
+    }
     if (obj instanceof FunctionCallNode && obj.parameters.length === 1) {
-      const arg = obj.parameters[0];
+      let arg = obj.parameters[0];
+      // Solidity commonly writes `IWETH(address(wethToken)).deposit()`: peel the explicit address conversion
+      // before classifying the underlying interface-typed state variable.
+      while (arg instanceof CastNode
+        || (arg instanceof FunctionCallNode && arg.parameters.length === 1
+          && (arg.identifier.name === 'address' || arg.identifier.name === 'payable'))) {
+        arg = arg instanceof CastNode ? arg.expression : arg.parameters[0];
+      }
       const castName = obj.identifier.name;
       if (arg instanceof IdentifierNode) {
         // redundant same-interface cast on an interface-typed state var
@@ -821,6 +848,22 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         // interface/contract cast on a plain-`address` state var
         if (this.plainAddrStateVars.has(arg.name) && this.typeNames.has(castName)) {
           return { name: arg.name, iface: castName, isPlain: true };
+        }
+        if (this.stateVarIface.has(arg.name) && this.typeNames.has(castName)) {
+          return { name: arg.name, iface: castName, isPlain: false };
+        }
+      }
+      if (arg instanceof StateAccessNode) {
+        if (this.stateVarIface.get(arg.name) === castName) {
+          return { name: arg.name, iface: castName, isPlain: false };
+        }
+        if (this.plainAddrStateVars.has(arg.name) && this.typeNames.has(castName)) {
+          return { name: arg.name, iface: castName, isPlain: true };
+        }
+        // Explicitly recasting one interface-typed state handle to another compatible interface (IERC20 WETH
+        // viewed as IWETH) still reads the same self-pinned address; preserve the requested callee ABI.
+        if (this.stateVarIface.has(arg.name) && this.typeNames.has(castName)) {
+          return { name: arg.name, iface: castName, isPlain: false };
         }
       }
     }

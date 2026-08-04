@@ -2124,7 +2124,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.MSG_SENDER:
       case NullaryOperator.TX_ORIGIN:
-        node.type = new AddressType();
+        node.type = new AddressType(node.legacyPayableAddress);
         return node;
       default:
         return node;

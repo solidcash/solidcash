@@ -518,6 +518,11 @@ function compileResolvedAst(
   // so the chained call on the getter's (integrity-bound) return dispatches via the audited interface-local path.
   ast = ast.accept(new HoistChainedContractCalls()) as Ast;
 
+  // Normalize early returns before deciding which value-returning helpers must inline. A public helper with
+  // external calls can be invoked internally (MistSwap getUIInfo -> getETHRate); its synthetic co-spend params
+  // cannot cross the subroutine boundary, and multiple source returns would otherwise hide it from the inliner.
+  ast = ast.accept(new EarlyReturnTransformation(true)) as Ast;
+
   // Inline value-returning private helpers that read a state entry at their expression call sites (hoist the
   // body, capture the return in a temp). Same block-layout reason as the void case below; run first so a void
   // helper containing such a call is resolved before it is itself inlined.
@@ -568,6 +573,12 @@ function compileResolvedAst(
   // A NON-LOOP param-rooted array-element target `IERC20(path[path.length-1]).m()` -> hoist to a function-top
   // address local so it is a fixed-slot co-spend (not mistaken for a per-iteration loop-array dispatch).
   ast = ast.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
+  // Finalize early-return control flow before capturing branch-local external
+  // targets. Lowering `if (...) return; trailingCall();` moves trailingCall
+  // into an else block; if capture runs first, an inlined target alias such as
+  // `__rhN_pair` is incorrectly treated as function-scoped and disappears
+  // before the generated external-call covenant epilogue.
+  ast = ast.accept(new EarlyReturnTransformation()) as Ast;
   // A contract/interface-typed external-call target LOCAL declared in a branch (e.g. a `restricted` modifier's
   // if-wrapper) is popped before the epilogue's co-spend verification -> capture it into a function-top local.
   ast = ast.accept(new CaptureBranchExternalCallTargets()) as Ast;
@@ -1211,6 +1222,7 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new HoistBranchLocalExtcallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeExternalAddressLocals()) as Ast;
     singleAst = singleAst.accept(new HoistNonLoopArrayElemExtcallTargets()) as Ast;
+    singleAst = singleAst.accept(new EarlyReturnTransformation()) as Ast;
     singleAst = singleAst.accept(new CaptureBranchExternalCallTargets()) as Ast;
     singleAst = singleAst.accept(new SynthesizeBlockOracle()) as Ast;
     // Carry the file's library free functions in ONLY for symbol resolution + type checking, AFTER the desugar/

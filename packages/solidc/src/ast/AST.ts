@@ -292,6 +292,8 @@ export class FunctionDefinitionNode extends Node implements Named {
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueRuntimeLocal?: string;
+    valueRuntimeExpression?: boolean;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
@@ -1130,6 +1132,11 @@ export class UnaryOpNode extends ExpressionNode {
 }
 
 export class NullaryOpNode extends ExpressionNode {
+  // Solidity before 0.8 typed msg.sender and tx.origin as address payable.
+  // This is recorded per source file by AstBuilder because an import graph can
+  // mix pragma generations and TypeCheckTraversal runs after those graphs merge.
+  legacyPayableAddress = false;
+
   constructor(
     public operator: NullaryOperator,
   ) {

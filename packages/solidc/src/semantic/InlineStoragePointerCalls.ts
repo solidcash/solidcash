@@ -26,6 +26,7 @@ import {
   ReturnNode,
   FunctionCallNode,
   ConsoleStatementNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { StructType, MappingType } from '@solidcash/utils';
 import { tagModifierStateAccess } from './ModifierExpansionTransformation.js';
@@ -594,6 +595,14 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.walk(root, (n) => {
       if (n instanceof IdentifierNode) {
         n.name = rn(n.name);
+      } else if (n instanceof TupleAssignmentNode) {
+        // Tuple target names are stored as plain element records rather than
+        // IdentifierNodes. They must follow the same alpha-renaming as the
+        // declarations they assign, including nested inliner aliases such as
+        // `__rh5_reserveA` inside a storage-pointer-inlined library body.
+        n.elements = n.elements.map((element) => (
+          element.name ? { ...element, name: rn(element.name) } : element
+        ));
       } else {
         const nm = (n as unknown as { name?: unknown }).name;
         if (typeof nm === 'string') (n as unknown as { name: string }).name = rn(nm);

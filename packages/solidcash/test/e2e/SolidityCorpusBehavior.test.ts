@@ -9,6 +9,162 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // test/libsolidity/semanticTests/arithmetics/checked_add_v2.sol
+  // uint16 addition accepts 65534 + 0 and rejects 65535 + 1 with checked-arithmetic semantics.
+  it('executes checked bounded addition and rejects overflow', async () => {
+    const contract = await deploy(`contract C {
+      function add(uint16 a, uint16 b) internal returns (uint16) { return a + b; }
+      function verify() public { require(add(65534, 0) == 65534 && add(65535, 0) == 65535); }
+      function overflow() public { uint16 value = add(65535, 1); require(value == 0); }
+    }`);
+    await expect(contract.verify()).resolves.toBeDefined();
+    await expect(contract.overflow()).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/arithmetics/addmod_mulmod.sol
+  // addmod applies addition followed by the modulus; the adjacent wrong-result path must reject.
+  it('executes addmod arithmetic', async () => {
+    const contract = await deploy(`contract C {
+      function verify(uint x, uint y, uint modulus) public { require(addmod(x, y, modulus) == 4); }
+      function verifyWrong(uint x, uint y, uint modulus) public { require(addmod(x, y, modulus) == 5); }
+    }`);
+    await expect(contract.verify(9n, 9n, 7n)).resolves.toBeDefined();
+    await expect(contract.verifyWrong(9n, 9n, 7n)).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/exponentiation/signed_base.sol
+  // A signed base with unsigned exponents preserves the sign rules: (-3)^2=9 and (-3)^3=-27.
+  it('executes signed exponentiation', async () => {
+    const contract = await deploy(`contract C {
+      function verify() public {
+        int32 x = -3; uint8 y1 = 2; uint8 y2 = 3;
+        require(x ** y1 == 9 && x ** y2 == -27);
+      }
+      function verifyWrong() public { int32 x = -3; require(x ** 3 == 27); }
+    }`);
+    await expect(contract.verify()).resolves.toBeDefined();
+    await expect(contract.verifyWrong()).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/expressions/bytes_comparison.sol
+  it('executes fixed-bytes lexicographic comparisons', async () => {
+    const contract = await deploy(`contract C {
+      function verify() public { bytes2 a = "a"; bytes2 x = "aa"; bytes2 b = "b"; require(a < x && x < b); }
+      function verifyWrong() public { bytes2 a = "a"; bytes2 b = "b"; require(b < a); }
+    }`);
+    await expect(contract.verify()).resolves.toBeDefined();
+    await expect(contract.verifyWrong()).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/expressions/conditional_expression_functions.sol
+  // A conditional internal function value dispatches x() for true and y() for false.
+  it('executes conditional function-value dispatch', async () => {
+    const contract = await deploy(`contract C {
+      function x() internal returns (uint) { return 1; }
+      function y() internal returns (uint) { return 2; }
+      function choose(bool condition) internal returns (uint) {
+        function() returns (uint) selected = condition ? x : y; return selected();
+      }
+      function verify() public { require(choose(true) == 1 && choose(false) == 2); }
+      function verifyWrong() public { require(choose(false) == 1); }
+    }`);
+    await expect(contract.verify()).resolves.toBeDefined();
+    await expect(contract.verifyWrong()).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory.sol
+  // Copying calldata "abcdefgh" to memory preserves its contents and length.
+  it('executes a calldata-bytes to memory copy', async () => {
+    const contract = await deploy(`contract C {
+      function verify(bytes calldata data) public {
+        bytes memory copied = bytes(data);
+        require(copied == bytes("abcdefgh") && copied.length == 8);
+      }
+      function verifyWrong(bytes calldata data) public { require(bytes(data) == bytes("abcdefgi")); }
+    }`);
+    const input = new TextEncoder().encode('abcdefgh');
+    await expect(contract.verify(input)).resolves.toBeDefined();
+    await expect(contract.verifyWrong(input)).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/using/calldata_memory_copy.sol
+  // The attached memory function receives a copied calldata array and sums [1,2,8] to 11.
+  it('executes calldata-to-memory copying through an attached free function', async () => {
+    const contract = await deploy(`function sum(uint[] memory values) returns (uint result) {
+      for (uint i = 0; i < values.length; i++) result += values[i];
+    }
+    using {sum} for uint[];
+    contract C {
+      function verify(uint[] calldata values) public { require(values.sum() == 11); }
+      function verifyWrong(uint[] calldata values) public { require(values.sum() == 12); }
+    }`);
+    const input = [1n, 2n, 8n];
+    await expect(contract.verify(input)).resolves.toBeDefined();
+    await expect(contract.verifyWrong(input)).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/reverts/invalid_enum_as_external_arg.sol
+  // An out-of-range enum passed through an external ABI boundary must revert.
+  it('rejects an invalid enum ordinal at a self-call ABI boundary', async () => {
+    const contract = await deploy(`contract C {
+      enum X { A, B }
+      function tested(X value) public returns (uint) { return 1; }
+      function invalid() public returns (uint) {
+        X value; assembly { value := 5 } return this.tested(value);
+      }
+    }`);
+    await expect(contract.invalid()).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/getters/mapping.sol
+  // The generated getter accepts every nested mapping key and returns the initialized leaf value.
+  it('executes a generated nested-mapping getter through the SDK', async () => {
+    const contract = await deploy(`contract C {
+      mapping(uint => mapping(uint => uint)) public x;
+      constructor() { x[1][2] = 3; }
+    }`);
+    await expect(contract.x(1n, 2n)).resolves.toBe(3n);
+    await expect(contract.x(0n, 0n)).resolves.toBe(0n);
+  });
+
+  // test/libsolidity/semanticTests/getters/arrays.sol
+  // The generated getter indexes both the fixed outer array and its dynamic inner array.
+  it('executes a generated nested-array getter through the SDK', async () => {
+    const contract = await deploy(`contract C {
+      uint8[][2] public a;
+      constructor() { a[1].push(3); a[1].push(4); }
+    }`);
+    await expect(contract.a(1n, 0n)).resolves.toBe(3n);
+    await expect(contract.a(1n, 1n)).resolves.toBe(4n);
+    await expect(contract.a(0n, 0n)).rejects.toThrow();
+  });
+
+  // test/libsolidity/semanticTests/fallback/fallback_argument.sol
+  // A bytes-accepting fallback receives a self-call payload and persists its length.
+  it('executes a stateful fallback with its calldata argument', async () => {
+    const contract = await deploy(`contract C {
+      uint public x;
+      fallback(bytes calldata input) external returns (bytes memory) { x = input.length; return ""; }
+      function f() public returns (bool, bytes memory) { return address(this).call("abc"); }
+    }`);
+    await expect(contract.f()).resolves.toBeDefined();
+    await expect(contract.x()).resolves.toBe(3n);
+  });
+
+  // test/libsolidity/semanticTests/fallback/fallback_or_receive.sol
+  // Empty receive dispatch and non-empty fallback dispatch update different state variables.
+  it('distinguishes receive and fallback dispatch through the SDK', async () => {
+    const contract = await deploy(`contract C {
+      uint public x; uint public y;
+      fallback() external payable { x += 1; }
+      receive() external payable { y += 1; }
+    }`);
+    await expect(contract.__receive()).resolves.toBeDefined();
+    await expect(contract.__fallback()).resolves.toBeDefined();
+    await expect(contract.x()).resolves.toBe(1n);
+    await expect(contract.y()).resolves.toBe(1n);
+  });
+
   // test/libsolidity/semanticTests/freeFunctions/easy.sol
   // The file-level add(7, 2) path returns 9 upstream.
   it('executes a file-level free function from a contract function', async () => {

@@ -12,6 +12,16 @@ import {
 import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 
+// Consolidated Solidity corpus parity exercised by the event transactions below:
+// test/libsolidity/semanticTests/events/event.sol
+// test/libsolidity/semanticTests/events/event_emit.sol
+// test/libsolidity/semanticTests/events/event_anonymous.sol
+// test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision.sol
+// test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision2.sol
+// test/libsolidity/semanticTests/events/event_indexed_mixed.sol
+// test/libsolidity/semanticTests/events/event_no_arguments.sol
+// test/libsolidity/semanticTests/events/event_emit_from_a_foreign_contract.sol
+
 // Stateful contract with a named event (for comparison baseline)
 const NAMED_EVENT_CONTRACT = `
 pragma solidcash >=0.8.0;

@@ -2,6 +2,11 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+// Shared runtime coverage for upstream value-type identity and conversion cases:
+// test/libsolidity/semanticTests/userDefinedValueType/simple.sol
+// test/libsolidity/semanticTests/userDefinedValueType/parameter.sol
+// test/libsolidity/semanticTests/userDefinedValueType/wrap_unwrap.sol
+
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.test(args)`).
 

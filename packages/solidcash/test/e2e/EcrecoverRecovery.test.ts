@@ -10,6 +10,10 @@ import { computeEcrecoverWitness } from '../../src/ecrecover/ecrecoverRecovery.j
 import { probeEcrecoverSplit } from '../../src/ecrecover/ecrecoverComputeSidecar.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
+// The ethers conformance assertion below covers both upstream ABI variants:
+// test/libsolidity/semanticTests/ecrecover/ecrecover.sol
+// test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol
+
 // A recovery side-car's OWN NFT category (distinct from the consuming contract's; each of the A/B pair carries one).
 const SIDECAR_CAT = 'ee'.repeat(32);
 

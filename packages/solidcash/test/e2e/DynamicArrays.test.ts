@@ -12,6 +12,14 @@ import { alicePkh } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
 import { encodePushdataValue, packFixedWidthArray } from '@solidcash/utils';
 
+// Existing array scenarios consolidate these equivalent Solidity corpus checks:
+// test/libsolidity/semanticTests/array/array_memory_as_parameter.sol
+// test/libsolidity/semanticTests/array/array_memory_create.sol
+// test/libsolidity/semanticTests/array/array_memory_index_access.sol
+// test/libsolidity/semanticTests/array/array_push_with_arg.sol
+// test/libsolidity/semanticTests/array/array_storage_index_access.sol
+// test/libsolidity/semanticTests/array/array_storage_length_access.sol
+
 // --- Helpers -------------------------------------------------------------
 
 const VALID_DIR = resolve(

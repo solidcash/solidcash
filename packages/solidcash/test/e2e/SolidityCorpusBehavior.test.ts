@@ -9,6 +9,12 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // Generated accessor behavior is shared by the consolidated getter tests below:
+  // test/libsolidity/semanticTests/getters/bytes.sol
+  // test/libsolidity/semanticTests/getters/mapping_array_struct.sol
+  // test/libsolidity/semanticTests/getters/mapping_of_string.sol
+  // test/libsolidity/semanticTests/getters/mapping_to_struct.sol
+  // test/libsolidity/semanticTests/getters/string_and_bytes.sol
   // Passes 1-5:
   // test/libsolidity/semanticTests/expressions/conditional_expression_false_literal.sol
   // test/libsolidity/semanticTests/expressions/conditional_expression_true_literal.sol

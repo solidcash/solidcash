@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 42,
-  "untracedFixtures": 1462,
+  "explicitlyCoveredFixtures": 53,
+  "untracedFixtures": 1451,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -11,7 +11,7 @@
     },
     "accessor": {
       "compiledExecutable": 2,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 2
     },
     "arithmetics": {
       "compiledExecutable": 12,
@@ -91,7 +91,7 @@
     },
     "functionSelector": {
       "compiledExecutable": 1,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "functionTypes": {
       "compiledExecutable": 29,
@@ -139,7 +139,7 @@
     },
     "metaTypes": {
       "compiledExecutable": 1,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "modifiers": {
       "compiledExecutable": 30,
@@ -195,7 +195,7 @@
     },
     "statements": {
       "compiledExecutable": 2,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 2
     },
     "storage": {
       "compiledExecutable": 30,
@@ -207,7 +207,7 @@
     },
     "strings": {
       "compiledExecutable": 13,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 4
     },
     "structs": {
       "compiledExecutable": 51,
@@ -219,7 +219,7 @@
     },
     "types": {
       "compiledExecutable": 33,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "underscore": {
       "compiledExecutable": 1,
@@ -258,6 +258,20 @@
     {
       "fixture": "test/libsolidity/semanticTests/abicoder/abi_decode_from_memory_struct_v2.sol",
       "topic": "abicoder",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/accessor/accessor_for_const_state_variable.sol",
+      "topic": "accessor",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/accessor/accessor_for_state_variable.sol",
+      "topic": "accessor",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
@@ -403,6 +417,13 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/functionSelector/function_selector_via_contract_name.sol",
+      "topic": "functionSelector",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/functionTypes/function_delete_stack.sol",
       "topic": "functionTypes",
       "explicitRuntimeTests": [
@@ -487,6 +508,13 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/metaTypes/name_other_contract.sol",
+      "topic": "metaTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/modifiers/evaluation_order.sol",
       "topic": "modifiers",
       "explicitRuntimeTests": [
@@ -515,8 +543,57 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/statements/do_while_loop_continue.sol",
+      "topic": "statements",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/ValidContracts.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/statements/empty_for_loop.sol",
+      "topic": "statements",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/strings/concat/string_concat_2_args.sol",
+      "topic": "strings",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/ConcatFunctions.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/strings/concat/string_concat_empty_argument_list.sol",
+      "topic": "strings",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/ConcatFunctions.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/strings/concat/string_concat_empty_strings.sol",
+      "topic": "strings",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/ConcatFunctions.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/strings/concat/string_concat_nested.sol",
+      "topic": "strings",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/ConcatFunctions.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/structs/memory_struct_named_constructor.sol",
       "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/types/assign_calldata_value_type.sol",
+      "topic": "types",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
@@ -558,10 +635,7 @@
       "test/libsolidity/semanticTests/abicoder/abi_decode_from_calldata_struct_v2.sol",
       "test/libsolidity/semanticTests/abicoder/abi_decode_from_storage_struct_v2.sol"
     ],
-    "accessor": [
-      "test/libsolidity/semanticTests/accessor/accessor_for_const_state_variable.sol",
-      "test/libsolidity/semanticTests/accessor/accessor_for_state_variable.sol"
-    ],
+    "accessor": [],
     "arithmetics": [
       "test/libsolidity/semanticTests/arithmetics/addmod_mulmod_zero.sol",
       "test/libsolidity/semanticTests/arithmetics/block_inside_unchecked.sol",
@@ -681,9 +755,7 @@
       "test/libsolidity/semanticTests/functionCall/call_attached_library_function_on_storage_variable.sol",
       "test/libsolidity/semanticTests/functionCall/call_function_returning_function.sol"
     ],
-    "functionSelector": [
-      "test/libsolidity/semanticTests/functionSelector/function_selector_via_contract_name.sol"
-    ],
+    "functionSelector": [],
     "functionTypes": [
       "test/libsolidity/semanticTests/functionTypes/address_member.sol",
       "test/libsolidity/semanticTests/functionTypes/call_to_zero_initialized_function_type_ir.sol",
@@ -761,9 +833,7 @@
       "test/libsolidity/semanticTests/memoryManagement/static_memory_array_allocation.sol",
       "test/libsolidity/semanticTests/memoryManagement/struct_allocation.sol"
     ],
-    "metaTypes": [
-      "test/libsolidity/semanticTests/metaTypes/name_other_contract.sol"
-    ],
+    "metaTypes": [],
     "modifiers": [
       "test/libsolidity/semanticTests/modifiers/access_through_contract_name.sol",
       "test/libsolidity/semanticTests/modifiers/break_in_modifier.sol",
@@ -834,10 +904,7 @@
       "test/libsolidity/semanticTests/state/block_chainid.sol",
       "test/libsolidity/semanticTests/state/block_coinbase.sol"
     ],
-    "statements": [
-      "test/libsolidity/semanticTests/statements/do_while_loop_continue.sol",
-      "test/libsolidity/semanticTests/statements/empty_for_loop.sol"
-    ],
+    "statements": [],
     "storage": [
       "test/libsolidity/semanticTests/storage/accessors_mapping_for_array.sol",
       "test/libsolidity/semanticTests/storage/array_accessor.sol",
@@ -853,11 +920,11 @@
       "test/libsolidity/semanticTests/storageLayoutSpecifier/dynamic_array_storage_end.sol"
     ],
     "strings": [
-      "test/libsolidity/semanticTests/strings/concat/string_concat_2_args.sol",
       "test/libsolidity/semanticTests/strings/concat/string_concat_different_types.sol",
-      "test/libsolidity/semanticTests/strings/concat/string_concat_empty_argument_list.sol",
-      "test/libsolidity/semanticTests/strings/concat/string_concat_empty_strings.sol",
-      "test/libsolidity/semanticTests/strings/concat/string_concat_nested.sol"
+      "test/libsolidity/semanticTests/strings/constant_string_literal.sol",
+      "test/libsolidity/semanticTests/strings/empty_storage_string.sol",
+      "test/libsolidity/semanticTests/strings/empty_string.sol",
+      "test/libsolidity/semanticTests/strings/empty_string_input.sol"
     ],
     "structs": [
       "test/libsolidity/semanticTests/structs/copy_from_mapping.sol",
@@ -874,11 +941,11 @@
       "test/libsolidity/semanticTests/tryCatch/lowLevel.sol"
     ],
     "types": [
-      "test/libsolidity/semanticTests/types/assign_calldata_value_type.sol",
       "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol",
       "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol",
       "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol",
-      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol"
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_greater_size.sol",
+      "test/libsolidity/semanticTests/types/convert_fixed_bytes_to_uint_same_min_size.sol"
     ],
     "underscore": [
       "test/libsolidity/semanticTests/underscore/as_function.sol"

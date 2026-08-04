@@ -16,7 +16,7 @@ equivalent runtime coverage. Generic SolidCash tests can exercise the same behav
 fixture.
 
 The current baseline contains 1,504 successfully compiled semantic fixtures with executable expectations. Of those,
-42 are explicitly traced to an e2e or conformance test, leaving 1,462 without a durable fixture-to-runtime link. The
+53 are explicitly traced to an e2e or conformance test, leaving 1,451 without a durable fixture-to-runtime link. The
 largest untraced topics include arrays, ABI coding, via-IR/Yul, inline assembly, function calls, libraries, operators,
 structs, and inheritance.
 

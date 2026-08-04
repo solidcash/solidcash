@@ -151,6 +151,8 @@ describe('Valid Contracts - SDK e2e', () => {
       expect(tx.txid).toBeDefined();
     });
 
+    // test/libsolidity/semanticTests/statements/do_while_loop_continue.sol
+    // Executes continue inside a do-while and proves the following iteration completes.
     it('continue_simple: do-while with continue', async () => {
       const { provider, contract } = setupContract(loadCash('continue_simple.scash'));
       await addUtxos(provider, contract.address);

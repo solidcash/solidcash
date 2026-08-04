@@ -9,6 +9,47 @@ async function deploy(source: string) {
 }
 
 describe('Solidity corpus behavioral parity', () => {
+  // test/libsolidity/semanticTests/statements/empty_for_loop.sol
+  // test/libsolidity/semanticTests/functionSelector/function_selector_via_contract_name.sol
+  // test/libsolidity/semanticTests/metaTypes/name_other_contract.sol
+  // test/libsolidity/semanticTests/accessor/accessor_for_const_state_variable.sol
+  // test/libsolidity/semanticTests/accessor/accessor_for_state_variable.sol
+  // test/libsolidity/semanticTests/types/assign_calldata_value_type.sol
+  // One deployment checks the independent language paths while keeping corpus runtime overhead low.
+  it('executes consolidated control-flow, metadata, accessor, and calldata-value parity', async () => {
+    const contract = await deploy(`interface A {
+      function f() external;
+      function g(uint256 value) external;
+    }
+    interface B {
+      function f() external;
+      function g(uint256 value) external;
+    }
+    interface I { function ping() external; }
+    contract C {
+      uint256 public constant constantTicketPrice = 555;
+      uint256 public ticketPrice = 500;
+
+      function verify() public {
+        uint ret = 1;
+        for (;;) { ret += 1; if (ret >= 10) break; }
+        require(ret == 10);
+        require(A.f.selector == B.f.selector && A.g.selector == B.g.selector);
+        require(type(C).name == "C" && type(A).name == "A" && type(I).name == "I");
+      }
+
+      function copy(uint256 x) public {
+        uint256 original = x;
+        x = 42;
+        require(x == 42 && original == 23);
+      }
+    }`);
+    await expect(contract.verify()).resolves.toBeDefined();
+    await expect(contract.copy(23n)).resolves.toBeDefined();
+    await expect(contract.constantTicketPrice()).resolves.toBe(555n);
+    await expect(contract.ticketPrice()).resolves.toBe(500n);
+  });
+
   // test/libsolidity/semanticTests/arithmetics/checked_add_v2.sol
   // uint16 addition accepts 65534 + 0 and rejects 65535 + 1 with checked-arithmetic semantics.
   it('executes checked bounded addition and rejects overflow', async () => {

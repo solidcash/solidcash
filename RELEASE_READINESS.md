@@ -14,8 +14,10 @@ basic release gates. A fresh 2026-08-04 run found:
 - baseline `yarn spellcheck` failed with 7,615 occurrences; the findings-fix worktree now passes after recording
   the existing 890-term technical/corpus vocabulary in a reviewed project dictionary and fixing a first-party
   misspelling;
-- the current corpus scorecard compiles 4,443/4,587 in-scope fixtures, but still includes eight raw missing-stack
-  failures, two unavailable-block-layout failures, and two missing-block-slot failures;
+- the historical broad corpus scorecard compiled 4,443/4,587 and contained 12 raw failures; the scoped 2026-08-04
+  diagnostic pass found two raw positive-fixture failures, both now converted to named, source-located diagnostics.
+  A release scorecard still requires a higher-budget rerun because 845 fixtures exceeded the intentionally tight
+  five-second diagnostic budget under eight workers;
 - 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
 - the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
   on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
@@ -74,8 +76,10 @@ it must not silently compile to incorrect covenant behavior.
     trigger through compiler, SDK transaction construction, VM execution, and state readback.
 - [ ] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
 - [ ] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
-- [ ] Replace reachable late code-generation failures such as missing stack variables or unavailable block
+- [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
+  - The scoped positive corpus now has named diagnostics for its last two raw paths: transfer-frame loss and
+    recursive inline struct encoding. A higher-budget corpus rerun must prove zero remaining raw failures.
 - [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
 
@@ -282,7 +286,7 @@ Update this table whenever a release candidate is cut.
 
 | Gate | Result | Commit/artifact | Date |
 |---|---|---|---|
-| Clean install | Not run (existing `node_modules` used) | — | — |
+| Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
 | Build | **PASS** in findings-fix worktree (baseline failed with TS2345) | `codex/release-readiness-fixes` | 2026-08-04 |
 | Unit tests | Incomplete — utils passed (295 tests, 1 TODO); full run stopped amid heavy concurrent test load | `1a533c88` | 2026-08-04 |
 | Lint | **PASS** in findings-fix worktree (baseline failures fixed across compiler and SDK) | `codex/release-readiness-fixes` | 2026-08-04 |
@@ -290,7 +294,7 @@ Update this table whenever a release candidate is cut.
 | SDK e2e/mocknet | Not run | — | — |
 | BCHN regtest | Not run | — | — |
 | Testing-suite golden path | Not run | — | — |
-| Solidity corpus | **FAIL** — 4,443/4,587; 12 raw internal/codegen failures | `scorecard.txt` at `1a533c88` | 2026-08-04 |
+| Solidity corpus | **IN PROGRESS** — scoped diagnostic 1,904/2,805; 845 timeouts; two raw paths converted and targeted | corpus `816d9b2a`, Node 22.22.0 | 2026-08-04 |
 | Packed-package consumer smoke test | Not run | — | — |
 | Application conformance suite | Not defined | — | — |
 | Known `.skip`/`.todo` review | **FAIL** — 24 occurrences remain unclassified | `1a533c88` | 2026-08-04 |

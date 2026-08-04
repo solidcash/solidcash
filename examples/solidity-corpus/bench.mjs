@@ -19,6 +19,7 @@ const ROOT = process.env.SOLC_CORPUS || '/Code/solidity';
 const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : Infinity;
 const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 5000;
 const WORKER_COUNT = process.env.CORPUS_WORKERS ? Number(process.env.CORPUS_WORKERS) : 8;
+const CHECK_NEGATIVES = process.env.CHECK_NEGATIVES !== 'false';
 const files = execSync(`find ${ROOT} -name '*.sol'`).toString().trim().split('\n').filter(Boolean).sort();
 const corpusRevision = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
 const origLog = console.log;
@@ -99,7 +100,9 @@ for (const [index, f] of selectedFiles.entries()) {
   const rel = f.replace(ROOT + '/', '');
   let src; try { src = readFileSync(f, 'utf8'); } catch { results[index] = { rel, status: 'READERR' }; continue; }
   const cls = classify(src, rel);
-  if (cls !== 'NEGATIVE' && cls !== 'INSCOPE') results[index] = { rel, status: cls };
+  if (cls === 'NEGATIVE' && !CHECK_NEGATIVES) {
+    results[index] = { rel, status: 'NEGATIVE', overAccepted: null };
+  } else if (cls !== 'NEGATIVE' && cls !== 'INSCOPE') results[index] = { rel, status: cls };
   else jobs.push({ index, file: f, rel, cls });
 }
 
@@ -125,6 +128,7 @@ const compilation = by('COMPILATION');
 const external = by('EXTERNAL');
 const harness = by('HARNESS');
 const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixtures we also accept (diagnostic only)
+const uncheckedNeg = neg.filter(r => r.overAccepted === null).length;
 const inScope = ok.length + fail.length;
 writeFileSync(join(BENCH_DIR, 'results.json'), JSON.stringify(results, null, 1));
 writeFileSync(join(BENCH_DIR, 'run-metadata.json'), JSON.stringify({
@@ -135,10 +139,12 @@ writeFileSync(join(BENCH_DIR, 'run-metadata.json'), JSON.stringify({
   fixtureCount: files.length,
   fixtureTimeoutMs: FIXTURE_TIMEOUT_MS,
   workers: WORKER_COUNT,
+  checkedNegativeFixtures: CHECK_NEGATIVES,
 }, null, 2) + '\n');
 
 origLog(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
-  + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} of them we also accept, `
+  + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} accepted, `
+  + `${uncheckedNeg} unchecked, `
   + `diagnostic) | ${multi.length} multifile-skipped | ${cmdline.length} cmdline-skipped `
   + `| ${benchmark.length} benchmark-skipped `
   + `| ${compilation.length} compilation-project-skipped `

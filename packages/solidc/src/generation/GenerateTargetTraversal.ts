@@ -191,7 +191,7 @@ import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
-  UnboundReturnCallError,
+  RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -12091,7 +12091,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPushdataSkipCompositeInline(type: StructType | ArrayType, locationData: SingleLocationData): void {
     if (type instanceof StructType) {
       if (this.pushdataSkipStructs.has(type)) {
-        throw new Error('recursive struct types are not supported (no finite inline encoding on BCH)');
+        throw new RecursiveStructUnsupportedError(this.currentFunction);
       }
       this.pushdataSkipStructs.add(type);
       for (const field of type.fields) this.emitPushdataSkip(field.type, locationData);
@@ -18726,9 +18726,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const isConditional = this.conditionalTransferIndices.has(transferIndex);
       if (this.getStackIndex(lockingBytecodeStackName, true) < 0
         || this.getStackIndex(amountStackName, true) < 0) {
-        throw new Error(
-          `Function '${node.name}' lost pre-allocated transfer ${transferIndex} before covenant verification`,
-        );
+        throw new TransferFrameUnavailableError(node, transferIndex);
       }
 
       // For conditional transfers, check if the LBC slot is non-empty (active)

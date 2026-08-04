@@ -137,6 +137,19 @@ export class SolidCashError extends Error {
   }
 }
 
+export class TransferFrameUnavailableError extends SolidCashError {
+  constructor(node: FunctionDefinitionNode, transferIndex: number) {
+    super(node, `Value transfer ${transferIndex} in function '${node.name}' cannot preserve its covenant frame across`
+      + ' this control-flow shape; rewrite the conditional send/transfer so it is reached from the function body');
+  }
+}
+
+export class RecursiveStructUnsupportedError extends SolidCashError {
+  constructor(node: FunctionDefinitionNode) {
+    super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');
+  }
+}
+
 export class UnsupportedMemoryAliasingError extends SolidCashError {
   constructor(node: VariableDefinitionNode, names: string[]) {
     super(node, `Memory alias group '${names.join(', ')}' reaches an operation that cannot yet preserve Solidity aliasing`);

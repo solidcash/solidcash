@@ -13,6 +13,7 @@ SOLC_CORPUS=/path/to/solidity node examples/solidity-corpus/bench.mjs   # overri
 LIMIT=200 node examples/solidity-corpus/bench.mjs                       # smoke test on N files
 FIXTURE_TIMEOUT_MS=10000 node examples/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
 CORPUS_WORKERS=4 node examples/solidity-corpus/bench.mjs                # override the default 8 workers
+CHECK_NEGATIVES=false node examples/solidity-corpus/bench.mjs          # positive-only diagnostic pass
 ```
 
 ## What this bench is (and is NOT)

@@ -37,4 +37,12 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
       + ' else if (c==3) i.c{value: 1}(); else if (c==4) i.x(); return 1 + c; } }';
     expect(compileMessageBus(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
+
+  it('fails with a stable source diagnostic when a modifier guard cannot preserve a send frame', () => {
+    const src = 'contract C { modifier owner(bool allowed) { if (allowed) _; }'
+      + ' function f(bool allowed, address payable refund) public owner(allowed) {'
+      + ' if (!refund.send(1)) revert(); require(true); } }';
+    expect(() => compileString(src, { solidityImportCompat: true }))
+      .toThrow(/TransferFrameUnavailableError|cannot preserve its covenant frame/);
+  });
 });

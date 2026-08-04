@@ -1087,6 +1087,10 @@ export class MappingAccessNode extends ExpressionNode implements Named {
   isOutStateTokenContainerAccess?: boolean;
   isPackedStateArrayAccess?: boolean;
   packedStateVariable?: StateVariableNode;
+  // Preserve the logical outer element type even if later journal/storage lowerings rewrite the state variable's
+  // physical representation before code generation.
+  packedElementType?: Type;
+
   tokenContainerSlotIndex: number = -1;
   arrayIndex?: ExpressionNode; // Set when innermost value is ArrayType and extra key provided
   // A mapping read in the constructor: genesis has no input entry NFTs, so it resolves to the type default

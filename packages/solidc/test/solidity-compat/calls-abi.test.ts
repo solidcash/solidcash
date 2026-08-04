@@ -505,7 +505,9 @@ describe('inlined helper with an interface-cast external-call target (clone .cal
       + ' contract C { address factory; mapping(address => uint256) data;'
       + ' function _helper(mapping(address => uint256) storage d, address a, address b) internal {'
       + ' if (IFactory(factory).getPair(a, b) == address(0)) { IFactory(factory).createPair(a, b); } d[a] = 1; }'
-      + ' function f(address a, address b) external { _helper(data, a, b); } }', { solidityImportCompat: true }))
+      + ' function f(address a, address b) external { _helper(data, a, b); } }', {
+      solidityImportCompat: true, messageBus: true,
+    }))
       .not.toThrow();
   });
 });

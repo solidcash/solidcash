@@ -3037,17 +3037,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // True if `node` contains a `return` nested inside a loop. Generic tree walk (skips cross-references that
   // point outside the function body) so any container - branch, block, switch, try - is covered.
-  private hasReturnInLoop(node: Node, inLoop: boolean): boolean {
+  private hasReturnInLoop(node: Node, inLoop: boolean, seen = new WeakSet<Node>()): boolean {
+    if (seen.has(node)) return false;
+    seen.add(node);
     if (node instanceof ReturnNode) return inLoop;
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     for (const key of Object.keys(node)) {
       if (key === 'resolvedFunction' || key === 'definition' || key === 'collection') continue;
       const v = (node as unknown as Record<string, unknown>)[key];
       if (v instanceof Node) {
-        if (this.hasReturnInLoop(v, nowInLoop)) return true;
+        if (this.hasReturnInLoop(v, nowInLoop, seen)) return true;
       } else if (Array.isArray(v)) {
         for (const item of v) {
-          if (item instanceof Node && this.hasReturnInLoop(item, nowInLoop)) return true;
+          if (item instanceof Node && this.hasReturnInLoop(item, nowInLoop, seen)) return true;
         }
       }
     }
@@ -3905,7 +3907,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitDeployCovenantVerification(node);
       }
       // B-side: return event covenant verification for entry-point functions with return types
-      if (!this.functionHasDelegatecall && node.returnTypes.length > 0 && node.isEntryPoint) {
+      if (!this.functionHasDelegatecall && node.returnTypes.length > 0 && node.isEntryPoint
+        && !node.graphEmissionHandler) {
         this.emitReturnEventCovenantVerification(node);
       }
       // A-side: verify return event UTXO from external function calls with return values
@@ -9601,7 +9604,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPackedStateArrayAccess(node: MappingAccessNode): Node {
     const sv = node.packedStateVariable!;
     const arrType = sv.type as ArrayType;
-    const elemType = arrType.elementType;
+    const elemType = node.packedElementType ?? arrType.elementType;
     const fixedWidth = isFixedWidthType(elemType);
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
@@ -9654,9 +9657,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Extra keys drill into a fixed-inner array element: `a[i][j]` reads the row (above) then indexes into it.
     let rowType: Type = elemType;
     for (let k = 1; k < node.keys.length; k++) {
-      const rowArr = rowType as ArrayType;
-      node.keys[k] = this.emitIndexIntoArrayBlob(rowArr.elementType, node.keys[k], locationData);
-      rowType = rowArr.elementType;
+      if (rowType instanceof BytesType && rowType.bound === undefined) {
+        node.keys[k] = this.visit(node.keys[k]) as ExpressionNode;
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_NIP, locationData);
+        this.emit(encodeInt(1n), locationData);
+        this.emit(Op.OP_SPLIT, locationData);
+        this.emit(Op.OP_DROP, locationData);
+        this.popFromStack(2);
+        this.pushToStack('(value)');
+        rowType = new BytesType(1);
+      } else {
+        const rowArr = rowType as ArrayType;
+        node.keys[k] = this.emitIndexIntoArrayBlob(rowArr.elementType, node.keys[k], locationData);
+        rowType = rowArr.elementType;
+      }
     }
 
     return node;
@@ -9751,7 +9766,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitStringLiteral(node: StringLiteralNode): Node {
-    this.emit(encodeString(node.value), { location: node.location, positionHint: PositionHint.START });
+    this.emit(node.solidityBytes ?? encodeString(node.value), {
+      location: node.location,
+      positionHint: PositionHint.START,
+    });
     this.pushToStack('(value)');
     return node;
   }
@@ -19748,10 +19766,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const addrParamIdx = this.getStackIndex(addrName);
         this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
         this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
-      } else if (slot.addressLiteral) {
+      } else if (slot.addressLiteral !== undefined) {
         this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
       } else {
-        throw new Error('external call target address must be a constructor/function parameter');
+        throw new Error(
+          'external call target address must be a constructor/function parameter or self-pinned state value '
+          + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
+        );
       }
       this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)
@@ -20424,7 +20445,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // _returnOutputIdx >= 0 means cross-contract call (verify event UTXO)
     // _returnOutputIdx < 0 means standalone call (skip event UTXO)
 
-    const returnOutputIdxIdx = this.getStackIndex('__internal__returnOutputIdx');
+    const returnOutputIdxIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+    // Declaration-only/stateless compatibility paths can retain source return types without receiving the
+    // stateful return-NFT witness pair. Symbol analysis is authoritative: no witness means no return covenant.
+    if (returnOutputIdxIdx < 0) return;
     this.emit(encodeInt(BigInt(returnOutputIdxIdx)), locationData);
     this.emit(Op.OP_PICK, locationData);
     // Stack: [_returnOutputIdx] (1 untracked)

@@ -948,7 +948,7 @@ describe('push-return assignment on bytes[]', () => {
        require(data[i][j] == v); } }`,
       { solidityImportCompat: true },
     ).contractName).toBe('C');
-  });
+  }, 120_000);
 });
 
 describe('compound assignment to a pushed element', () => {

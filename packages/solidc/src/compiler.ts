@@ -135,7 +135,7 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 type InternalCompilerOptions = CompilerOptions & { __messageBusExplicitlyDisabled?: boolean };
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
-  return {
+  const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
     messageBus: options.messageBus === false ? false : true,
@@ -143,6 +143,9 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
     __suppressGeneratedRouteWarnings: true,
   } as InternalCompilerOptions;
+  // Solidity's builtin returns the canonical 20-byte EVM address. Preserve an explicit projection override.
+  if (normalized.solidityImportCompat && options.ecrecover === undefined) normalized.ecrecover = 'evm';
+  return normalized;
 }
 
 export interface CompileOptions extends CompilerOptions {
@@ -860,7 +863,9 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
   // master block and therefore cannot soundly advertise or execute message-bus batch. `forceStateful` remains the explicit
   // way to opt a zero-storage contract into the stateful/master-NFT model.
   return contract.stateVariables.length > 0 || contract.collections.length > 0
-    || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild;
+    || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
+    || contract.deploysWithValue
+    || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 }
 
 function synthesizeMessageBusRoute(
@@ -2373,6 +2378,14 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        const scalarGetter = fn.parameters.length === 0
+          && contract.stateVariables.some((state) => state.name === fn.name);
+        if (scalarGetter) {
+          if (!captureResults || fn.returnTypes.length === 0) return `this.${fn.name};`;
+          const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
+          return `${fn.returnTypes[0].toString()} ${name}; ${name} = this.${fn.name}; `
+            + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
+        }
         if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
         const names = fn.returnTypes.map((_type, index) =>
           `__message_bus_value_${rowIndex}_${handlerIndex}_${index}`);
@@ -3417,13 +3430,15 @@ function compileResolvedAst(
       // Inline-only library functions still require source-level parameter/return location validation before
       // this early declaration-artifact return.
       ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
-      // It still has declarations whose semantics must be checked. In particular, returning before the symbol
-      // pass used to let a root interface inherit an undefined or circular base even though the identical
-      // interface was refused as soon as the file also contained a contract (X184).
-      ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
-      ast = ast.accept(new TypeCheckTraversal(
-        true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
-      )) as Ast;
+      // Interfaces/declaration-only files still require semantic validation (X184). A generic-storage library,
+      // however, has already representation-lowered its storage pointer names for later import/inlining; running
+      // the ordinary contract symbol pass here mistakes those placeholders for unresolved source identifiers.
+      if (!ast.libraryName) {
+        ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+        ast = ast.accept(new TypeCheckTraversal(
+          true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
+        )) as Ast;
+      }
       // Emit a minimal ABI-only declaration artifact (like solc: ABI + empty bytecode) instead of erroring.
       return generateDeclarationArtifact(ast, code);
     }

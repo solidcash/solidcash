@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 126,
-  "untracedFixtures": 1378,
+  "explicitlyCoveredFixtures": 101,
+  "untracedFixtures": 1403,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -19,7 +19,7 @@
     },
     "array": {
       "compiledExecutable": 210,
-      "explicitlyCovered": 17
+      "explicitlyCovered": 10
     },
     "builtinFunctions": {
       "compiledExecutable": 38,
@@ -51,7 +51,7 @@
     },
     "ecrecover": {
       "compiledExecutable": 5,
-      "explicitlyCovered": 2
+      "explicitlyCovered": 0
     },
     "enums": {
       "compiledExecutable": 11,
@@ -63,7 +63,7 @@
     },
     "events": {
       "compiledExecutable": 41,
-      "explicitlyCovered": 10
+      "explicitlyCovered": 2
     },
     "exponentiation": {
       "compiledExecutable": 3,
@@ -99,7 +99,7 @@
     },
     "getters": {
       "compiledExecutable": 13,
-      "explicitlyCovered": 8
+      "explicitlyCovered": 3
     },
     "immutable": {
       "compiledExecutable": 18,
@@ -231,7 +231,7 @@
     },
     "userDefinedValueType": {
       "compiledExecutable": 28,
-      "explicitlyCovered": 4
+      "explicitlyCovered": 1
     },
     "using": {
       "compiledExecutable": 7,
@@ -354,59 +354,10 @@
       ]
     },
     {
-      "fixture": "test/libsolidity/semanticTests/array/array_2d_new.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/NestedArrayWrite.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_memory_as_parameter.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_memory_create.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_memory_index_access.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_push_with_arg.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_storage_index_access.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
-      ]
-    },
-    {
       "fixture": "test/libsolidity/semanticTests/array/array_storage_index_zeroed_test.sol",
       "topic": "array",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/array/array_storage_length_access.sol",
-      "topic": "array",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/DynamicArrays.test.ts"
       ]
     },
     {
@@ -466,20 +417,6 @@
       ]
     },
     {
-      "fixture": "test/libsolidity/semanticTests/ecrecover/ecrecover.sol",
-      "topic": "ecrecover",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EcrecoverRecovery.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol",
-      "topic": "ecrecover",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EcrecoverRecovery.test.ts"
-      ]
-    },
-    {
       "fixture": "test/libsolidity/semanticTests/enums/constructing_enums_from_ints.sol",
       "topic": "enums",
       "explicitRuntimeTests": [
@@ -512,62 +449,6 @@
       "topic": "events",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_anonymous.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision2.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_emit.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_emit_from_a_foreign_contract.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_indexed_mixed.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/events/event_no_arguments.sol",
-      "topic": "events",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/EventAnonymousE2E.test.ts"
       ]
     },
     {
@@ -767,13 +648,6 @@
       ]
     },
     {
-      "fixture": "test/libsolidity/semanticTests/getters/bytes.sol",
-      "topic": "getters",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
       "fixture": "test/libsolidity/semanticTests/getters/mapping.sol",
       "topic": "getters",
       "explicitRuntimeTests": [
@@ -781,35 +655,7 @@
       ]
     },
     {
-      "fixture": "test/libsolidity/semanticTests/getters/mapping_array_struct.sol",
-      "topic": "getters",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/getters/mapping_of_string.sol",
-      "topic": "getters",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/getters/mapping_to_struct.sol",
-      "topic": "getters",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
       "fixture": "test/libsolidity/semanticTests/getters/mapping_with_names.sol",
-      "topic": "getters",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/getters/string_and_bytes.sol",
       "topic": "getters",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
@@ -1061,27 +907,6 @@
       ]
     },
     {
-      "fixture": "test/libsolidity/semanticTests/userDefinedValueType/parameter.sol",
-      "topic": "userDefinedValueType",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/ValueTypes.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/userDefinedValueType/simple.sol",
-      "topic": "userDefinedValueType",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/ValueTypes.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/userDefinedValueType/wrap_unwrap.sol",
-      "topic": "userDefinedValueType",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/ValueTypes.test.ts"
-      ]
-    },
-    {
       "fixture": "test/libsolidity/semanticTests/using/calldata_memory_copy.sol",
       "topic": "using",
       "explicitRuntimeTests": [
@@ -1155,11 +980,11 @@
       "test/libsolidity/semanticTests/arithmetics/checked_modifier_called_by_unchecked.sol"
     ],
     "array": [
+      "test/libsolidity/semanticTests/array/array_2d_new.sol",
       "test/libsolidity/semanticTests/array/array_3d_assignment.sol",
       "test/libsolidity/semanticTests/array/array_3d_new.sol",
       "test/libsolidity/semanticTests/array/array_function_pointers.sol",
-      "test/libsolidity/semanticTests/array/array_push_return_reference.sol",
-      "test/libsolidity/semanticTests/array/array_storage_index_boundary_test.sol"
+      "test/libsolidity/semanticTests/array/array_memory_as_parameter.sol"
     ],
     "builtinFunctions": [
       "test/libsolidity/semanticTests/builtinFunctions/assignment_to_const_var_involving_keccak.sol",
@@ -1204,6 +1029,8 @@
       "test/libsolidity/semanticTests/deployedCodeExclusion/static_base_function_deployed.sol"
     ],
     "ecrecover": [
+      "test/libsolidity/semanticTests/ecrecover/ecrecover.sol",
+      "test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol",
       "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input.sol",
       "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input_asm.sol",
       "test/libsolidity/semanticTests/ecrecover/failing_ecrecover_invalid_input_proper.sol"
@@ -1223,11 +1050,11 @@
       "test/libsolidity/semanticTests/errors/named_error_args.sol"
     ],
     "events": [
+      "test/libsolidity/semanticTests/events/event.sol",
       "test/libsolidity/semanticTests/events/event_access_through_base_name_emit.sol",
-      "test/libsolidity/semanticTests/events/event_anonymous_with_topics.sol",
-      "test/libsolidity/semanticTests/events/event_dynamic_array_memory.sol",
-      "test/libsolidity/semanticTests/events/event_dynamic_array_memory_v2.sol",
-      "test/libsolidity/semanticTests/events/event_dynamic_array_storage.sol"
+      "test/libsolidity/semanticTests/events/event_anonymous.sol",
+      "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision.sol",
+      "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision2.sol"
     ],
     "exponentiation": [
       "test/libsolidity/semanticTests/exponentiation/small_exp.sol"
@@ -1271,11 +1098,11 @@
       "test/libsolidity/semanticTests/functionTypes/comparison_operators_for_external_functions.sol"
     ],
     "getters": [
-      "test/libsolidity/semanticTests/getters/struct_with_bytes.sol",
-      "test/libsolidity/semanticTests/getters/struct_with_bytes_simple.sol",
-      "test/libsolidity/semanticTests/getters/transient_value_types.sol",
-      "test/libsolidity/semanticTests/getters/transient_value_types_multi_frame_call.sol",
-      "test/libsolidity/semanticTests/getters/value_types.sol"
+      "test/libsolidity/semanticTests/getters/bytes.sol",
+      "test/libsolidity/semanticTests/getters/mapping_array_struct.sol",
+      "test/libsolidity/semanticTests/getters/mapping_of_string.sol",
+      "test/libsolidity/semanticTests/getters/mapping_to_struct.sol",
+      "test/libsolidity/semanticTests/getters/string_and_bytes.sol"
     ],
     "immutable": [
       "test/libsolidity/semanticTests/immutable/assign_from_immutables.sol",

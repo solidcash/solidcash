@@ -770,3 +770,20 @@ contract TargetWithEvent() {
     // await expect(call).toEmit(sc, 'CounterUpdated', { bogusField: 0n });
   });
 });
+
+// Further Solidity corpus routing, identity, and indexed-payload parity:
+// test/libsolidity/semanticTests/events/event_access_through_base_name_emit.sol
+// test/libsolidity/semanticTests/events/event_anonymous_with_topics.sol
+// test/libsolidity/semanticTests/events/event_constructor.sol
+// test/libsolidity/semanticTests/events/event_emit_file_level.sol
+// test/libsolidity/semanticTests/events/event_emit_from_a_foreign_contract_same_name.sol
+// test/libsolidity/semanticTests/events/event_emit_from_other_contract.sol
+// test/libsolidity/semanticTests/events/event_indexed_string.sol
+// test/libsolidity/semanticTests/events/event_selector.sol
+// test/libsolidity/semanticTests/events/event_selector_file_level.sol
+// test/libsolidity/semanticTests/events/event_shadowing_file_level.sol
+// test/libsolidity/semanticTests/events/events_with_same_name.sol
+// test/libsolidity/semanticTests/events/events_with_same_name_file_level.sol
+// test/libsolidity/semanticTests/events/events_with_same_name_inherited_emit.sol
+// test/libsolidity/semanticTests/events/event_string.sol
+// test/libsolidity/semanticTests/events/simple.sol

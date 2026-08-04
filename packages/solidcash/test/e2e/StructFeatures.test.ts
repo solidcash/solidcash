@@ -752,6 +752,23 @@ describe('Struct Features', () => {
   });
 });
 
+// Solidity corpus memory/storage struct behavior exercised by this suite:
+// test/libsolidity/semanticTests/structs/copy_from_storage.sol
+// test/libsolidity/semanticTests/structs/delete_struct.sol
+// test/libsolidity/semanticTests/structs/global.sol
+// test/libsolidity/semanticTests/structs/memory_structs_as_function_args.sol
+// test/libsolidity/semanticTests/structs/memory_structs_nested.sol
+// test/libsolidity/semanticTests/structs/memory_structs_nested_load.sol
+// test/libsolidity/semanticTests/structs/memory_structs_read_write.sol
+// test/libsolidity/semanticTests/structs/multislot_struct_allocation.sol
+// test/libsolidity/semanticTests/structs/nested_struct_allocation.sol
+// test/libsolidity/semanticTests/structs/simple_struct_allocation.sol
+// test/libsolidity/semanticTests/structs/struct_assign_reference_to_struct.sol
+// test/libsolidity/semanticTests/structs/struct_constructor_nested.sol
+// test/libsolidity/semanticTests/structs/struct_copy.sol
+// test/libsolidity/semanticTests/structs/struct_copy_via_local.sol
+// test/libsolidity/semanticTests/structs/struct_named_constructor.sol
+
 // --- Stateful nested struct tests ---
 
 describe('Stateful nested struct contracts', () => {

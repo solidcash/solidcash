@@ -77,6 +77,285 @@ describe('Solidity corpus behavioral parity', () => {
     }`);
     await expect(bytesContract.byteArray()).resolves.toBeDefined();
   });
+
+  // Exact runtime adaptations of array indexing/reference expectations:
+  // test/libsolidity/semanticTests/array/indexAccess/bytes_index_access_memory.sol
+  // test/libsolidity/semanticTests/array/indexAccess/bytes_memory_index_access.sol
+  // test/libsolidity/semanticTests/array/indexAccess/index_access.sol
+  // test/libsolidity/semanticTests/array/array_memory_as_parameter.sol
+  it('executes byte indexing, endian copying, and memory-reference mutation', async () => {
+    const contract = await deploy(`contract C {
+      function indirect(bytes memory value) internal returns (bytes memory) { return value; }
+      function bytesAt(bytes memory value) public {
+        require(value[3] == "d" && value[4] == "e" && indirect(value)[5] == "f");
+        require(value.length == 8 && value[3] == "d");
+      }
+      function littleEndian(uint64 value) public {
+        bytes memory ret = new bytes(8); bytes8 word = bytes8(value);
+        ret[0] = word[7]; ret[1] = word[6]; ret[2] = word[5]; ret[3] = word[4];
+        ret[4] = word[3]; ret[5] = word[2]; ret[6] = word[1]; ret[7] = word[0];
+        require(ret == hex"0807060504030201");
+      }
+      function receiver(uint[] memory values, uint idx) internal returns (uint) {
+        for (uint i = 0; i < values.length; i++) values[i] = i + 1;
+        return values[idx];
+      }
+      function memoryParameter(uint len, uint idx, uint expected) public {
+        uint[] memory values = new uint[](len); uint result = receiver(values, idx);
+        for (uint i = 0; i < values.length; i++) require(values[i] == i + 1);
+        require(result == expected);
+      }
+    }`);
+    await expect(contract.bytesAt(new TextEncoder().encode('abcdefgh'))).resolves.toBeDefined();
+    await expect(contract.littleEndian(0x0102030405060708n)).resolves.toBeDefined();
+    await expect(contract.memoryParameter(1n, 0n, 1n)).resolves.toBeDefined();
+    await expect(contract.memoryParameter(10n, 5n, 6n)).resolves.toBeDefined();
+    await expect(contract.memoryParameter(0n, 0n, 0n)).rejects.toThrow();
+    await expect(contract.memoryParameter(10n, 50n, 0n)).rejects.toThrow();
+  });
+
+  // Exact runtime adaptations of:
+  // test/libsolidity/semanticTests/array/array_3d_new.sol
+  // test/libsolidity/semanticTests/array/array_3d_assignment.sol
+  it('executes three-dimensional allocation and aliasing', async () => {
+    const direct = await deploy(`contract C {
+      function verify(uint n) public {
+        uint[][][] memory a = new uint[][][](2);
+        for (uint i = 0; i < 2; ++i) {
+          a[i] = new uint[][](3);
+          for (uint j = 0; j < 3; ++j) a[i][j] = new uint[](4);
+        }
+        a[1][1][1] = n; require(a[1][1][1] == n);
+      }
+    }`);
+    const alias = await deploy(`contract A {
+      function verify(uint n) public {
+        uint[][][] memory a = new uint[][][](2);
+        for (uint i = 0; i < 2; ++i) {
+          a[i] = new uint[][](3);
+          for (uint j = 0; j < 3; ++j) a[i][j] = new uint[](4);
+        }
+        a[1][1][1] = n; uint[][] memory b = a[1]; uint[] memory c = b[1]; require(c[1] == n);
+      }
+    }`);
+    await expect(direct.verify(42n)).resolves.toBeDefined();
+    await expect(alias.verify(42n)).resolves.toBeDefined();
+  });
+
+  // Exact runtime adaptations of complete struct expectations:
+  // test/libsolidity/semanticTests/structs/simple_struct_allocation.sol
+  // test/libsolidity/semanticTests/structs/nested_struct_allocation.sol
+  // test/libsolidity/semanticTests/structs/memory_structs_nested.sol
+  // test/libsolidity/semanticTests/structs/memory_structs_as_function_args.sol
+  it('executes struct allocation and nested memory arguments', async () => {
+    const contract = await deploy(`contract C {
+      struct One { uint a; }
+      struct Inner { uint b; uint c; }
+      struct Outer { Inner a; }
+      struct Triple { uint8 x; uint16 y; uint256 z; }
+      struct Nested { uint8 x; Triple s; }
+      function combine(uint8 x, uint16 y, uint256 z) internal returns (Triple memory value) {
+        value.x = x; value.y = y; value.z = z;
+      }
+      function extract(Triple memory value, uint which) internal returns (uint) {
+        if (which == 0) return value.x; if (which == 1) return value.y; return value.z;
+      }
+      function nestedCombine() internal returns (Nested memory value) {
+        value.x = 1; value.s = combine(2, 3, 4);
+      }
+      function verifyMemory() public {
+        One memory one = One(1); require(one.a == 1);
+        Outer memory outer = Outer(Inner(1, 2)); require(outer.a.b == 1);
+        Triple memory triple = combine(1, 2, 3);
+        require(extract(triple, 0) == 1 && extract(triple, 1) == 2 && extract(triple, 2) == 3);
+        Nested memory n = nestedCombine();
+        require(n.x == 1 && n.s.x == 2 && n.s.y == 3 && n.s.z == 4);
+      }
+    }`);
+    await expect(contract.verifyMemory()).resolves.toBeDefined();
+  });
+
+  // Exact runtime adaptations of calldata-to-memory struct copies:
+  // test/libsolidity/semanticTests/structs/global.sol
+  // test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_v2.sol
+  // test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_bytes_v2.sol
+  // test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_static_array_v2.sol
+  it('executes external struct decoding and independent memory copies', async () => {
+    const contract = await deploy(`
+      struct GlobalPair { uint256 a; uint256 b; }
+      contract C {
+        struct Flat { uint256 a; uint256 b; bytes2 c; }
+        struct WithBytes { uint256 a; bytes b; uint256 c; }
+        struct WithArray { uint256 a; uint256[2] b; uint256 c; }
+        function globalPair(GlobalPair calldata value) external {
+          require(value.a == 42 && value.b == 23);
+        }
+        function flat(Flat calldata value) external {
+          Flat memory copy = value;
+          require(copy.a == 42 && copy.b == 23 && copy.c[1] == "b");
+        }
+        function withBytes(WithBytes calldata value) external {
+          WithBytes memory copy = value;
+          require(copy.a == 42 && copy.b[0] == "a" && copy.b[1] == "b" && copy.c == 23);
+        }
+        function withArray(WithArray calldata value) external {
+          WithArray memory copy = value;
+          require(copy.a == 42 && copy.b[0] == 1 && copy.b[1] == 2 && copy.c == 23);
+        }
+      }`);
+    await expect(contract.globalPair({ a: 42n, b: 23n })).resolves.toBeDefined();
+    await expect(contract.flat({ a: 42n, b: 23n, c: new TextEncoder().encode('ab') })).resolves.toBeDefined();
+    await expect(contract.withBytes({ a: 42n, b: new TextEncoder().encode('ab'), c: 23n })).resolves.toBeDefined();
+    await expect(contract.withArray({ a: 42n, b: [1n, 2n], c: 23n })).resolves.toBeDefined();
+  });
+
+  // Exact runtime adaptations of nested dynamic-array struct copy and tuple assignment:
+  // test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_dynamic_array_v2.sol
+  // test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_tuple.sol
+  it('executes nested calldata struct copies without aliasing their source', async () => {
+    const copyContract = await deploy(`contract C {
+      struct S { uint128 p1; uint256[][2] a; uint32 p2; }
+      function verifyCopy(uint32 p1, S calldata value) external {
+        S memory copy = value;
+        require(copy.a[0][0] == value.a[0][0] && copy.a[1][1] == value.a[1][1]);
+        copy.p1++; copy.a[0][1]++;
+        require(p1 == 55 && copy.p1 == 78 && copy.a[0][0] == 1 && copy.a[1][1] == 2 && copy.p2 == 88);
+        require(value.p1 == 77 && value.a[0][1] == 2);
+      }
+    }`);
+    const tupleContract = await deploy(`contract T {
+      struct S { uint128 p1; uint256[][2] a; uint32 p2; }
+      function verifyTuple(uint32 p1, S calldata value) external {
+        S memory copy; uint32 p2; (p2, copy) = (p1, value);
+        copy.p1++; copy.a[0][1]++;
+        require(p2 == 55 && copy.p1 == 78 && copy.a[0][0] == 1 && copy.a[1][1] == 2 && copy.p2 == 88);
+      }
+    }`);
+    const value = { p1: 77n, a: [[1n, 2n], [1n, 2n]], p2: 88n };
+    await expect(copyContract.verifyCopy(55n, value)).resolves.toBeDefined();
+    await expect(tupleContract.verifyTuple(55n, value)).resolves.toBeDefined();
+  });
+
+  // Exact standalone adaptations; separate deployments keep constructor/state invariants independently observable:
+  // test/libsolidity/semanticTests/structs/lone_struct_array_type.sol
+  // test/libsolidity/semanticTests/structs/struct_named_constructor.sol
+  // test/libsolidity/semanticTests/structs/struct_constructor_nested.sol
+  // test/libsolidity/semanticTests/structs/struct_copy_via_local.sol
+  it('executes inert struct types, named constructors, nested constructor state, and local copies', async () => {
+    const inert = await deploy(`contract I {
+      struct S { uint a; uint b; }
+      function verify() public { S[7][]; require(3 == 3); }
+    }`);
+    await expect(inert.verify()).resolves.toBeDefined();
+
+    const named = await deploy(`contract N {
+      struct S { uint256 a; bool x; } S s;
+      constructor() { s = S({x: true, a: 1}); }
+      function verify() public { require(s.a == 1 && s.x); }
+    }`);
+    await expect(named.verify()).resolves.toBeDefined();
+
+    const nested = await deploy(`contract D {
+      struct X { uint256 x1; uint256 x2; }
+      struct S { uint256 s1; uint256[3] s2; X s3; } S s;
+      constructor() { uint256[3] memory values; values[1] = 9; s = S(1, values, X(4, 5)); }
+      function verify() public {
+        require(s.s1 == 1 && s.s2[0] == 0 && s.s2[1] == 9 && s.s2[2] == 0);
+        require(s.s3.x1 == 4 && s.s3.x2 == 5);
+      }
+    }`);
+    await expect(nested.verify()).resolves.toBeDefined();
+
+    const copied = await deploy(`contract P {
+      struct S { uint256 a; uint256 b; } S data1; S data2;
+      constructor() { data1 = S(0, 0); data2 = S(0, 0); }
+      function verify() public {
+        data1.a = 1; data1.b = 2; S memory value = data1; data2 = value;
+        require(data2.a == data1.a && data2.b == data1.b);
+      }
+    }`);
+    await expect(copied.verify()).resolves.toBeDefined();
+  });
+
+  // Exact success and failure adaptations of checked-context boundaries:
+  // test/libsolidity/semanticTests/arithmetics/addmod_mulmod_zero.sol
+  // test/libsolidity/semanticTests/arithmetics/checked_called_by_unchecked.sol
+  // test/libsolidity/semanticTests/arithmetics/checked_modifier_called_by_unchecked.sol
+  // test/libsolidity/semanticTests/arithmetics/unchecked_called_by_checked.sol
+  // test/libsolidity/semanticTests/arithmetics/unchecked_div_by_zero.sol
+  it('preserves arithmetic checks across unchecked blocks, calls, modifiers, and zero divisors', async () => {
+    const modular = await deploy(`contract M {
+      function addZero(uint d) public { addmod(1, 2, d); require(true); }
+      function mulZero(uint d) public { mulmod(1, 2, d); require(true); }
+      function zeros() public {
+        require(mulmod(0, 1, 2) == 0 && mulmod(1, 0, 2) == 0);
+        require(addmod(0, 1, 2) == 1 && addmod(1, 0, 2) == 1);
+      }
+      function divUnchecked(uint a, uint b, uint expected) public {
+        unchecked { require(a / b == expected && a % b == a % b); }
+      }
+    }`);
+    await expect(modular.zeros()).resolves.toBeDefined();
+    await expect(modular.addZero(0n)).rejects.toThrow();
+    await expect(modular.mulZero(0n)).rejects.toThrow();
+    await expect(modular.divUnchecked(7n, 2n, 3n)).resolves.toBeDefined();
+    await expect(modular.divUnchecked(7n, 0n, 0n)).rejects.toThrow();
+
+    const callBoundary = await deploy(`contract C {
+      function add(uint16 a, uint16 b) internal returns (uint16) { return a + b; }
+      function verify(uint16 a, uint16 b, uint16 c, uint16 expected) public {
+        unchecked { uint16 result = add(a, b) + c; require(result == expected); }
+      }
+    }`);
+    await expect(callBoundary.verify(0xe000n, 0x1000n, 0x1000n, 0n)).resolves.toBeDefined();
+    await expect(callBoundary.verify(0xe000n, 0xe500n, 2n, 0n)).rejects.toThrow();
+
+    const modifierBoundary = await deploy(`contract D {
+      modifier add(uint16 a, uint16 b) { unchecked { a + b; } _; }
+      function verify(uint16 a, uint16 b, uint16 c, uint16 expected) public add(a, b) {
+        require(b + c == expected);
+      }
+    }`);
+    await expect(modifierBoundary.verify(0xe000n, 0xe500n, 2n, 0xe502n)).resolves.toBeDefined();
+    await expect(modifierBoundary.verify(0x1000n, 0xe500n, 0xe000n, 0n)).rejects.toThrow();
+
+    const uncheckedCallee = await deploy(`contract U {
+      function add(uint16 a, uint16 b) internal returns (uint16) { unchecked { return a + b; } }
+      function verify(uint16 a, uint16 expected) public { require(add(a, 0x100) + 0x100 == expected); }
+    }`);
+    await expect(uncheckedCallee.verify(7n, 0x207n)).resolves.toBeDefined();
+    await expect(uncheckedCallee.verify(0xffffn, 511n)).resolves.toBeDefined();
+    await expect(uncheckedCallee.verify(0xfeffn, 0n)).rejects.toThrow();
+  });
+
+  // Exact runtime adaptations of modifier repetition, early-return, cleanup, and constructor behavior:
+  // test/libsolidity/semanticTests/modifiers/function_modifier_local_variables.sol
+  // test/libsolidity/semanticTests/modifiers/function_modifier_loop.sol
+  // test/libsolidity/semanticTests/modifiers/function_modifier_multiple_times.sol
+  // test/libsolidity/semanticTests/modifiers/function_modifier_multiple_times_local_vars.sol
+  it('executes modifier entry, repetition, nesting, and cleanup', async () => {
+    const modifiers = await deploy(`contract M {
+      uint repeated; uint a; uint observed;
+      constructor() { repeated = 0; a = 0; observed = 0; }
+      modifier locals1 { uint8 x = 1; uint8 y = 2; require(x + y == 3); _; }
+      modifier locals2(bool stop) { if (stop) return; else _; }
+      function localResult(bool stop) internal locals1 locals2(stop) returns (uint r) { return 3; }
+      modifier repeat(uint count) { for (uint i = 0; i < count; ++i) _; }
+      function runRepeat() internal repeat(10) { repeated += 1; }
+      modifier add(uint x) { a += x; _; }
+      function runAdds(uint x) internal add(2) add(5) add(x) { observed = a; }
+      modifier addAndRemove(uint x) { uint local = x; a += local; _; a -= local; require(local == x); }
+      function runCleanup(uint x) internal addAndRemove(2) addAndRemove(5) addAndRemove(x) { observed = a; }
+      function verify() public {
+        require(localResult(true) == 0 && localResult(false) == 3);
+        runRepeat(); require(repeated == 10);
+        runAdds(3); require(a == 10 && observed == 10);
+        a = 0; observed = 0; runCleanup(3); require(a == 0 && observed == 10);
+      }
+    }`);
+    await expect(modifiers.verify()).resolves.toBeDefined();
+  });
+
   // Passes 1-5:
   // test/libsolidity/semanticTests/expressions/conditional_expression_false_literal.sol
   // test/libsolidity/semanticTests/expressions/conditional_expression_true_literal.sol
@@ -713,6 +992,98 @@ describe('Solidity corpus behavioral parity', () => {
     expect(receipt.events?.map((event) => event.event)).toEqual(['Terminated', 'Terminated']);
     const three = await (await contract.call.terminateThree().send()).wait!();
     expect(three.events?.map((event) => event.event)).toEqual(['Terminated', 'Terminated', 'Terminated']);
+  });
+
+  // Exact runtime adaptations with decoded names, signatures, and arguments:
+  // test/libsolidity/semanticTests/events/event_no_arguments.sol
+  // test/libsolidity/semanticTests/events/event_string.sol
+  // test/libsolidity/semanticTests/events/event_indexed_mixed.sol
+  // test/libsolidity/semanticTests/events/event_anonymous.sol
+  // test/libsolidity/semanticTests/events/simple.sol
+  it('emits and decodes empty, string, indexed, anonymous, and base-qualified events', async () => {
+    const contract = await deploy(`contract Base { event E(); }
+    contract C is Base {
+      event Empty(); event Text(string r); event Mixed(uint a, uint indexed r, uint b, bytes c);
+      event Anonymous() anonymous; event E(uint256 a, uint256 b);
+      function emitEmpty() public { emit Empty(); require(true); }
+      function emitText() public { emit Text("HELLO WORLD"); require(true); }
+      function emitMixed() public { emit Mixed(1, 2, 3, "def"); require(true); }
+      function emitAnonymous() public { emit Anonymous(); require(true); }
+      function emitInherited() public { emit Base.E(); emit E(1, 2); require(true); }
+    }`);
+    const empty = await (await contract.call.emitEmpty().send()).wait!();
+    expect(empty.events).toHaveLength(1);
+    expect(empty.events?.[0].eventSignature).toBe('Empty()');
+
+    const text = await (await contract.call.emitText().send()).wait!();
+    expect(text.events?.[0].args.r).toBe('HELLO WORLD');
+
+    const mixed = await (await contract.call.emitMixed().send()).wait!();
+    expect(mixed.events?.[0].args).toMatchObject({ a: 1n, r: 2n, b: 3n });
+    expect(Array.from(mixed.events?.[0].args.c as Uint8Array)).toEqual(Array.from(new TextEncoder().encode('def')));
+
+    const anonymous = await (await contract.call.emitAnonymous().send()).wait!();
+    expect(anonymous.events?.map((event) => event.event)).toEqual(['Anonymous']);
+
+    const inherited = await (await contract.call.emitInherited().send()).wait!();
+    expect(inherited.events?.map((event) => event.eventSignature)).toEqual(['E()', 'E(uint256,uint256)']);
+    expect(inherited.events?.[1].args).toMatchObject({ a: 1n, b: 2n });
+  });
+
+  // Exact runtime adaptations of selector identity and evaluation side effects:
+  // test/libsolidity/semanticTests/functionTypes/selector_assignment_expression.sol
+  // test/libsolidity/semanticTests/functionTypes/selector_expression_side_effect.sol
+  // test/libsolidity/semanticTests/functionTypes/same_function_in_construction_and_runtime.sol
+  it('executes selector-expression side effects and constructor/runtime calls', async () => {
+    const evaluated = await deploy(`contract E {
+      bool z; uint x; uint initial;
+      constructor() { z = false; x = 0; initial = double(2); }
+      function f() public { require(true); } function g() public { require(true); }
+      function double(uint value) internal returns (uint) { return value * 2; }
+      function sideEffect() internal returns (E) { x = 42; return this; }
+      function verify() public {
+        ((z = true) ? this.f : this.f).selector; require(z);
+        sideEffect().f.selector; require(x == 42);
+        require(initial == 4 && double(3) == 6);
+      }
+    }`);
+    await expect(evaluated.verify()).resolves.toBeDefined();
+  });
+
+  // Exact runtime adaptations of scalar state initialization, mutation isolation, and signed packed values:
+  // test/libsolidity/semanticTests/storage/simple_accessor.sol
+  // test/libsolidity/semanticTests/storage/state_smoke_test.sol
+  // test/libsolidity/semanticTests/storage/packed_storage_signed.sol
+  it('executes independent state slots and signed bounded storage updates', async () => {
+    const accessor = await deploy(`contract A {
+      uint256 data; constructor() { data = 8; }
+      function verify() public { require(data == 8); }
+    }`);
+    await expect(accessor.verify()).resolves.toBeDefined();
+
+    const slots = await deploy(`contract S {
+      uint256 value1; uint256 value2; constructor() { value1 = 0; value2 = 0; }
+      function set(uint8 which, uint256 value) public {
+        if (which == 0) value1 = value; else value2 = value;
+        require((which == 0 ? value1 : value2) == value);
+      }
+    }`);
+    expect(await slots.getState()).toMatchObject({ value1: 0n, value2: 0n });
+    await slots.set(0n, 0x1234n); await slots.set(1n, 0x8765n);
+    expect(await slots.getState()).toMatchObject({ value1: 0x1234n, value2: 0x8765n });
+    await slots.set(0n, 3n);
+    expect(await slots.getState()).toMatchObject({ value1: 3n, value2: 0x8765n });
+
+    const packed = await deploy(`contract P {
+      int8 a; uint8 b; int8 c; uint8 d;
+      constructor() { a = 0; b = 0; c = 0; d = 0; }
+      function verify() public {
+        a = -2;
+        unchecked { b = (0 - uint8(a)) * 2; c = a * int8(120) * int8(121); }
+        require(a == -2 && b == 4 && c == -112 && d == 0);
+      }
+    }`);
+    await expect(packed.verify()).resolves.toBeDefined();
   });
 
   // test/libsolidity/semanticTests/errors/require_error_condition_evaluated_only_once.sol

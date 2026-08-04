@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 123,
-  "untracedFixtures": 1381,
+  "explicitlyCoveredFixtures": 162,
+  "untracedFixtures": 1342,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -15,11 +15,11 @@
     },
     "arithmetics": {
       "compiledExecutable": 12,
-      "explicitlyCovered": 5
+      "explicitlyCovered": 9
     },
     "array": {
       "compiledExecutable": 210,
-      "explicitlyCovered": 13
+      "explicitlyCovered": 19
     },
     "builtinFunctions": {
       "compiledExecutable": 38,
@@ -63,7 +63,7 @@
     },
     "events": {
       "compiledExecutable": 41,
-      "explicitlyCovered": 2
+      "explicitlyCovered": 7
     },
     "exponentiation": {
       "compiledExecutable": 3,
@@ -95,7 +95,7 @@
     },
     "functionTypes": {
       "compiledExecutable": 29,
-      "explicitlyCovered": 6
+      "explicitlyCovered": 9
     },
     "getters": {
       "compiledExecutable": 13,
@@ -143,7 +143,7 @@
     },
     "modifiers": {
       "compiledExecutable": 30,
-      "explicitlyCovered": 4
+      "explicitlyCovered": 8
     },
     "operators": {
       "compiledExecutable": 63,
@@ -199,7 +199,7 @@
     },
     "storage": {
       "compiledExecutable": 30,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 3
     },
     "storageLayoutSpecifier": {
       "compiledExecutable": 33,
@@ -211,7 +211,7 @@
     },
     "structs": {
       "compiledExecutable": 51,
-      "explicitlyCovered": 1
+      "explicitlyCovered": 15
     },
     "tryCatch": {
       "compiledExecutable": 20,
@@ -284,7 +284,28 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/arithmetics/addmod_mulmod_zero.sol",
+      "topic": "arithmetics",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/arithmetics/checked_add_v2.sol",
+      "topic": "arithmetics",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/arithmetics/checked_called_by_unchecked.sol",
+      "topic": "arithmetics",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/arithmetics/checked_modifier_called_by_unchecked.sol",
       "topic": "arithmetics",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
@@ -299,6 +320,13 @@
     },
     {
       "fixture": "test/libsolidity/semanticTests/arithmetics/signed_mod.sol",
+      "topic": "arithmetics",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/arithmetics/unchecked_called_by_checked.sol",
       "topic": "arithmetics",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
@@ -361,6 +389,27 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/array/array_3d_assignment.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/array_3d_new.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/array_memory_as_parameter.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/array/array_storage_index_zeroed_test.sol",
       "topic": "array",
       "explicitRuntimeTests": [
@@ -400,6 +449,27 @@
       "topic": "array",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/indexAccess/bytes_index_access_memory.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/indexAccess/bytes_memory_index_access.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/array/indexAccess/index_access.sol",
+      "topic": "array",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
     },
     {
@@ -502,6 +572,41 @@
     },
     {
       "fixture": "test/libsolidity/semanticTests/events/emit_two_identical_events.sol",
+      "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/events/event_anonymous.sol",
+      "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/events/event_indexed_mixed.sol",
+      "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/events/event_no_arguments.sol",
+      "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/events/event_string.sol",
+      "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/events/simple.sol",
       "topic": "events",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
@@ -676,10 +781,31 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/same_function_in_construction_and_runtime.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/functionTypes/same_function_in_construction_and_runtime_equality_check.sol",
       "topic": "functionTypes",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/selector_assignment_expression.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/functionTypes/selector_expression_side_effect.sol",
+      "topic": "functionTypes",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
     },
     {
@@ -830,6 +956,34 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/modifiers/function_modifier_local_variables.sol",
+      "topic": "modifiers",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/modifiers/function_modifier_loop.sol",
+      "topic": "modifiers",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/modifiers/function_modifier_multiple_times.sol",
+      "topic": "modifiers",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/modifiers/function_modifier_multiple_times_local_vars.sol",
+      "topic": "modifiers",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/operators/compound_assign.sol",
       "topic": "operators",
       "explicitRuntimeTests": [
@@ -888,6 +1042,27 @@
     {
       "fixture": "test/libsolidity/semanticTests/statements/empty_for_loop.sol",
       "topic": "statements",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/storage/packed_storage_signed.sol",
+      "topic": "storage",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/storage/simple_accessor.sol",
+      "topic": "storage",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/storage/state_smoke_test.sol",
+      "topic": "storage",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
@@ -956,7 +1131,105 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/structs/global.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/lone_struct_array_type.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/structs/memory_struct_named_constructor.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/memory_structs_as_function_args.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/memory_structs_nested.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/nested_struct_allocation.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/simple_struct_allocation.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_constructor_nested.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_bytes_v2.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_dynamic_array_v2.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_nested_static_array_v2.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_tuple.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_calldata_to_memory_v2.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_copy_via_local.sol",
+      "topic": "structs",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/structs/struct_named_constructor.sol",
       "topic": "structs",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
@@ -1127,18 +1400,16 @@
     ],
     "accessor": [],
     "arithmetics": [
-      "test/libsolidity/semanticTests/arithmetics/addmod_mulmod_zero.sol",
       "test/libsolidity/semanticTests/arithmetics/block_inside_unchecked.sol",
       "test/libsolidity/semanticTests/arithmetics/checked_add_v1.sol",
-      "test/libsolidity/semanticTests/arithmetics/checked_called_by_unchecked.sol",
-      "test/libsolidity/semanticTests/arithmetics/checked_modifier_called_by_unchecked.sol"
+      "test/libsolidity/semanticTests/arithmetics/exp_associativity.sol"
     ],
     "array": [
-      "test/libsolidity/semanticTests/array/array_3d_assignment.sol",
-      "test/libsolidity/semanticTests/array/array_3d_new.sol",
       "test/libsolidity/semanticTests/array/array_function_pointers.sol",
-      "test/libsolidity/semanticTests/array/array_memory_as_parameter.sol",
-      "test/libsolidity/semanticTests/array/array_memory_create.sol"
+      "test/libsolidity/semanticTests/array/array_memory_create.sol",
+      "test/libsolidity/semanticTests/array/array_memory_index_access.sol",
+      "test/libsolidity/semanticTests/array/array_push_return_reference.sol",
+      "test/libsolidity/semanticTests/array/array_push_with_arg.sol"
     ],
     "builtinFunctions": [
       "test/libsolidity/semanticTests/builtinFunctions/assignment_to_const_var_involving_keccak.sol",
@@ -1201,9 +1472,9 @@
     "events": [
       "test/libsolidity/semanticTests/events/event.sol",
       "test/libsolidity/semanticTests/events/event_access_through_base_name_emit.sol",
-      "test/libsolidity/semanticTests/events/event_anonymous.sol",
       "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision.sol",
-      "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision2.sol"
+      "test/libsolidity/semanticTests/events/event_anonymous_with_signature_collision2.sol",
+      "test/libsolidity/semanticTests/events/event_anonymous_with_topics.sol"
     ],
     "exponentiation": [
       "test/libsolidity/semanticTests/exponentiation/small_exp.sol"

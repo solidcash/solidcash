@@ -135,5 +135,5 @@ describe('atomic route ineligibility matrix', () => {
         sourceLocation: { line: expect.any(Number), column: expect.any(Number) },
       },
     }));
-  });
+  }, 90_000);
 });

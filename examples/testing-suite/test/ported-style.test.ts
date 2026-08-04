@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unused-expressions */
 /**
  * Drop-in demo: this file uses the SAME bare imports a ported Hardhat/ethers/chai test would
  * (`hardhat`, `chai`, `@nomicfoundation/hardhat-network-helpers`), resolved to the SolidCash harness via the

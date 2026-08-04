@@ -18,14 +18,17 @@ basic release gates. A fresh 2026-08-04 run found:
   diagnostic pass found two raw positive-fixture failures, both now converted to named, source-located diagnostics.
   A release scorecard still requires a higher-budget rerun because 845 fixtures exceeded the intentionally tight
   five-second diagnostic budget under eight workers;
+- the integrated compiler suite passes all 3,138 tests and the testing-suite golden path passes all 22 tests,
+  but the SDK VM suite has six reproducible failures in `EvmStorageLayout.test.ts`: high-bit packed `bytesN`,
+  full-word `bytes32`, and short-bytes EVM slot round-trips fail message-bus preflight at `OP_VERIFY`;
 - 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
 - the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
   on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
 - the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
 
-The immediate release sequence is therefore: restore build/lint/spellcheck green; eliminate or convert the 12
-raw corpus failures into stable source diagnostics; prove the remaining C2/covenant and delegate boundaries;
-then run the complete clean-checkout, packed-package, mocknet, and BCHN candidate matrix.
+The immediate release sequence is therefore: fix the six EVM-storage/message-bus VM failures; complete the
+higher-budget crash-free corpus scorecard; classify the skipped tests and prove the remaining covenant/delegate
+boundaries; then run the packed-package, application, and BCHN candidate matrix.
 
 This is the maintained overview for the Solidity-parity and release-readiness effort. It is intentionally
 an action-oriented companion to the detailed design and research documents. Those documents remain the source
@@ -75,6 +78,10 @@ it must not silently compile to incorrect covenant behavior.
   - Evidence: `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` exercises the exact local-copy
     trigger through compiler, SDK transaction construction, VM execution, and state readback.
 - [ ] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
+- [ ] Fix the six EVM-storage/message-bus VM regressions in `packages/solidcash/test/e2e/EvmStorageLayout.test.ts`.
+  - Reproduces in isolation: high-bit packed `bytesN`, full-word `bytes32`, packed struct bytes, and short-bytes
+    slot round-trips reach transaction construction but fail BCH-2026 message-bus preflight at input 0 with
+    `Program failed an OP_VERIFY operation`.
 - [ ] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
@@ -137,7 +144,9 @@ it must not silently compile to incorrect covenant behavior.
 - [x] Regenerate the corpus scorecard on the integrated branch.
   - Current result: 4,443/4,587 single-file in-scope compiled; 144 failed; 337 negative fixtures are also
     accepted diagnostically. This is a baseline, not a passing release gate, because raw internal failures remain.
-- [ ] Make the corpus command deterministic and record its Solidity corpus revision and tool versions.
+- [x] Make the corpus command deterministic and record its Solidity corpus revision and tool versions.
+  - The scoped runner uses stable file ordering, isolated reusable workers, a per-fixture timeout, configurable
+    worker count/negative checking, and writes the corpus revision, Node/platform, scope, and budget metadata.
 - [ ] Add release gates:
   - [ ] no regression in accepted in-scope positive fixtures;
   - [ ] no increase in incorrectly accepted negative fixtures;
@@ -288,13 +297,13 @@ Update this table whenever a release candidate is cut.
 |---|---|---|---|
 | Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
 | Build | **PASS** in findings-fix worktree (baseline failed with TS2345) | `codex/release-readiness-fixes` | 2026-08-04 |
-| Unit tests | Incomplete — utils passed (295 tests, 1 TODO); full run stopped amid heavy concurrent test load | `1a533c88` | 2026-08-04 |
+| Compiler tests | **PASS** — 3,138/3,138 after correcting two realistic per-test timeout budgets | `codex/release-readiness-fixes` | 2026-08-04 |
+| SDK unit/e2e/mocknet | **FAIL** — 6/38 failures in focused `EvmStorageLayout.test.ts`; high-bit packed/full-word/short-bytes slot writes fail message-bus preflight at `OP_VERIFY` | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** in findings-fix worktree (baseline failures fixed across compiler and SDK) | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,073 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-04 |
-| SDK e2e/mocknet | Not run | — | — |
 | BCHN regtest | Not run | — | — |
-| Testing-suite golden path | Not run | — | — |
-| Solidity corpus | **IN PROGRESS** — scoped diagnostic 1,904/2,805; 845 timeouts; two raw paths converted and targeted | corpus `816d9b2a`, Node 22.22.0 | 2026-08-04 |
+| Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
+| Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
 | Packed-package consumer smoke test | Not run | — | — |
 | Application conformance suite | Not defined | — | — |
 | Known `.skip`/`.todo` review | **FAIL** — 24 occurrences remain unclassified | `1a533c88` | 2026-08-04 |

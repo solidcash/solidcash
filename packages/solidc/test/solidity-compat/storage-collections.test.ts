@@ -553,7 +553,7 @@ describe('recursive struct types reject cleanly (no compiler stack overflow)', (
     const src = 'contract C { struct R { R[] vals; } '
       + 'function f() public pure { R[1] memory v = [ R(new R[](2)) ]; require(v[0].vals.length == 2); } }';
     expect(() => compileString(src, { solidityImportCompat: true }))
-      .toThrow(/recursive struct types are not supported/);
+      .toThrow(/Recursive struct types are unsupported/);
   });
   it('a non-recursive struct with a dynamic array field still compiles', () => {
     expect(compileString('contract C { struct S { uint x; uint[] a; } S s; function f() external view { require(s.x == 0); } }',

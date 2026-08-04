@@ -482,6 +482,10 @@
         "**/build/**",
         "**/.docusaurus/**",
         "**/grammar/**",
+        "examples/solidity-corpus/results.json",
+        "examples/solidity-corpus/current.txt",
+        "examples/solidity-corpus/progress.txt",
+        "examples/solidity-corpus/err.txt",
         // Do not spellcheck vendor code
         "**/node_modules/**",
     ],

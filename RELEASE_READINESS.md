@@ -5,7 +5,7 @@ Target: first public SolidCash release (`0.13.1`, unless the release version cha
 
 ## Current assessment
 
-**NO-GO for `0.13.1` at baseline `1a533c88`.** The formerly separate Solidity-corpus, SolidHat, state-journal, and
+**NO-GO for `0.13.1` at baseline `1a533c88` plus the findings-fix worktree.** The formerly separate Solidity-corpus, SolidHat, state-journal, and
 Layer-3/message-bus work is now integrated on `solidcash_v0.13.1`, but the integrated branch does not pass the
 basic release gates. A fresh 2026-08-04 run found:
 
@@ -18,17 +18,17 @@ basic release gates. A fresh 2026-08-04 run found:
   diagnostic pass found two raw positive-fixture failures, both now converted to named, source-located diagnostics.
   A release scorecard still requires a higher-budget rerun because 845 fixtures exceeded the intentionally tight
   five-second diagnostic budget under eight workers;
-- the integrated compiler suite passes all 3,138 tests and the testing-suite golden path passes all 22 tests,
-  but the SDK VM suite has six reproducible failures in `EvmStorageLayout.test.ts`: high-bit packed `bytesN`,
-  full-word `bytes32`, and short-bytes EVM slot round-trips fail message-bus preflight at `OP_VERIFY`;
+- the integrated compiler suite passes all 3,138 tests, the SDK suite passes 3,808 tests, and the testing-suite
+  golden path passes all 22 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
+  fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
 - 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
 - the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
   on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
 - the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
 
-The immediate release sequence is therefore: fix the six EVM-storage/message-bus VM failures; complete the
-higher-budget crash-free corpus scorecard; classify the skipped tests and prove the remaining covenant/delegate
-boundaries; then run the packed-package, application, and BCHN candidate matrix.
+The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; classify
+the skipped tests and prove the remaining covenant/delegate boundaries; then run the packed-package,
+application, and BCHN candidate matrix.
 
 This is the maintained overview for the Solidity-parity and release-readiness effort. It is intentionally
 an action-oriented companion to the detailed design and research documents. Those documents remain the source
@@ -78,10 +78,12 @@ it must not silently compile to incorrect covenant behavior.
   - Evidence: `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` exercises the exact local-copy
     trigger through compiler, SDK transaction construction, VM execution, and state readback.
 - [ ] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
-- [ ] Fix the six EVM-storage/message-bus VM regressions in `packages/solidcash/test/e2e/EvmStorageLayout.test.ts`.
-  - Reproduces in isolation: high-bit packed `bytesN`, full-word `bytes32`, packed struct bytes, and short-bytes
-    slot round-trips reach transaction construction but fail BCH-2026 message-bus preflight at input 0 with
-    `Program failed an OP_VERIFY operation`.
+- [x] Fix the six EVM-storage/message-bus VM regressions in `packages/solidcash/test/e2e/EvmStorageLayout.test.ts`.
+  - Root cause: Solidity-compatible big-endian scalar casts exposed older storage and Yul-memory lowering paths
+    that assumed BCH-native typed casts. The fix uses sign-safe raw word encoding, preserves fixed-byte order,
+    and aligns compile-time storage-slot constant folding with runtime casts.
+  - Evidence: all 39 `EvmStorageLayout` tests pass, including asymmetric `0x89ab1234`; the related memory/storage
+    focus passes 63 tests with one intentional skip; the complete compiler and SDK suites pass.
 - [ ] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
@@ -296,11 +298,11 @@ Update this table whenever a release candidate is cut.
 | Gate | Result | Commit/artifact | Date |
 |---|---|---|---|
 | Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
-| Build | **PASS** in findings-fix worktree (baseline failed with TS2345) | `codex/release-readiness-fixes` | 2026-08-04 |
+| Build | **PASS** — all six packages plus testing-suite fixture compilation | `codex/release-readiness-fixes` | 2026-08-04 |
 | Compiler tests | **PASS** — 3,138/3,138 after correcting two realistic per-test timeout budgets | `codex/release-readiness-fixes` | 2026-08-04 |
-| SDK unit/e2e/mocknet | **FAIL** — 6/38 failures in focused `EvmStorageLayout.test.ts`; high-bit packed/full-word/short-bytes slot writes fail message-bus preflight at `OP_VERIFY` | `codex/release-readiness-fixes` | 2026-08-04 |
-| Lint | **PASS** in findings-fix worktree (baseline failures fixed across compiler and SDK) | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,073 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-04 |
+| SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
+| Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
+| Spellcheck | **PASS** — 2,075 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-04 |
 | BCHN regtest | Not run | — | — |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |

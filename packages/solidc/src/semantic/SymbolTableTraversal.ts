@@ -6201,8 +6201,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // A compile-time-constant uint mapping key (the OZ StorageSlot idiom `uint256(SLOT)` with a bytes32 constant
   // SLOT, or any `uint(<const>)`) folds to a fixed value the SDK matches the entry by - without it, a non-arg key
-  // can't be located on a read. `uint(bytesN)` reinterprets the bytes as a little-endian script number; a numeric
-  // constant folds directly. Returns the value, or undefined if not a resolvable constant uint key.
+  // can't be located on a read. In Solidity-compatible mode `uint(bytesN)` interprets the fixed bytes as a
+  // big-endian integer; these storage-pointer constants only exist on that compatibility path. A numeric constant
+  // folds directly. Returns the value, or undefined if not a resolvable constant uint key.
   private tryEvalConstantUintKey(key: ExpressionNode): bigint | undefined {
     if (!(key instanceof CastNode) || !(key.type instanceof IntType) || key.type.signed) return undefined;
     return this.evalConstantOperand(key.expression);
@@ -6212,7 +6213,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof IntLiteralNode) return expr.value;
     if (expr instanceof HexLiteralNode) {
       let v = 0n;
-      for (let i = expr.value.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(expr.value[i]); // little-endian
+      for (const byte of expr.value) v = (v << 8n) | BigInt(byte);
       return v;
     }
     if (expr instanceof IdentifierNode) {

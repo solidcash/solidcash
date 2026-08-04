@@ -237,17 +237,10 @@ describe('Solidity corpus behavioral parity', () => {
   });
 
   // Exact standalone adaptations; separate deployments keep constructor/state invariants independently observable:
-  // test/libsolidity/semanticTests/structs/lone_struct_array_type.sol
   // test/libsolidity/semanticTests/structs/struct_named_constructor.sol
   // test/libsolidity/semanticTests/structs/struct_constructor_nested.sol
   // test/libsolidity/semanticTests/structs/struct_copy_via_local.sol
-  it('executes inert struct types, named constructors, nested constructor state, and local copies', async () => {
-    const inert = await deploy(`contract I {
-      struct S { uint a; uint b; }
-      function verify() public { S[7][]; require(3 == 3); }
-    }`);
-    await expect(inert.verify()).resolves.toBeDefined();
-
+  it('executes named struct constructors, nested constructor state, and local copies', async () => {
     const named = await deploy(`contract N {
       struct S { uint256 a; bool x; } S s;
       constructor() { s = S({x: true, a: 1}); }

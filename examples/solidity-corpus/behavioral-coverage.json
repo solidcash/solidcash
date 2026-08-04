@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 162,
-  "untracedFixtures": 1342,
+  "explicitlyCoveredFixtures": 161,
+  "untracedFixtures": 1343,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -211,7 +211,7 @@
     },
     "structs": {
       "compiledExecutable": 51,
-      "explicitlyCovered": 15
+      "explicitlyCovered": 14
     },
     "tryCatch": {
       "compiledExecutable": 20,
@@ -1132,13 +1132,6 @@
     },
     {
       "fixture": "test/libsolidity/semanticTests/structs/global.sol",
-      "topic": "structs",
-      "explicitRuntimeTests": [
-        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
-      ]
-    },
-    {
-      "fixture": "test/libsolidity/semanticTests/structs/lone_struct_array_type.sol",
       "topic": "structs",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"

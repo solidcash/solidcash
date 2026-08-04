@@ -17,10 +17,9 @@ basic release gates. A fresh 2026-08-04 run found:
 - the current corpus scorecard compiles 4,443/4,587 in-scope fixtures, but still includes eight raw missing-stack
   failures, two unavailable-block-layout failures, and two missing-block-slot failures;
 - 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
-- root build/test/lint scripts still explicitly exclude `testing-suite`, and CI has no corpus, packed-package,
-  application-conformance, or BCHN release gate; and
-- published package versions remain split (`solidc`, `solidcash`, and `@solidcash/utils` at 0.13.1;
-  `@solidcash/testing`, `@solidcash/solidhat`, and `@solidcash/create-solidhat` at 0.13.0).
+- the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
+  on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
+- the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
 
 The immediate release sequence is therefore: restore build/lint/spellcheck green; eliminate or convert the 12
 raw corpus failures into stable source diagnostics; prove the remaining C2/covenant and delegate boundaries;
@@ -66,12 +65,13 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Compiler and covenant soundness
 
-- [ ] Fix the documented C2 sorted-mapping read issue involving a last-use local key, or conservatively reject
-  every affected shape during semantic analysis.
+- [x] Fix the documented C2 sorted-mapping read issue involving a last-use local key.
   - Evidence/design: [`packages/solidc/docs/deferrals.md`](packages/solidc/docs/deferrals.md), “Multi-return
     STATE helper inline” and its corrected C2 root-cause analysis.
   - Completion requires a minimal source-level regression, generated-bytecode/VM proof, and a negative test
     preventing recurrence through desugaring or inlining.
+  - Evidence: `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` exercises the exact local-copy
+    trigger through compiler, SDK transaction construction, VM execution, and state readback.
 - [ ] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
 - [ ] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
 - [ ] Replace reachable late code-generation failures such as missing stack variables or unavailable block
@@ -108,7 +108,8 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Compatibility contract
 
-- [ ] Publish a versioned compatibility manifest covering at least the following dimensions:
+- [x] Publish a conservative versioned compatibility manifest covering the required dimensions:
+  [`SOLIDITY_COMPATIBILITY_0.13.1.md`](SOLIDITY_COMPATIBILITY_0.13.1.md).
 
   | Area | Parse | Type check | Codegen | SDK | Behavioral test | Release status |
   |---|---:|---:|---:|---:|---:|---|
@@ -147,16 +148,17 @@ it must not silently compile to incorrect covenant behavior.
 
 ### CI and release gates
 
-- [ ] Include `packages/testing` and `examples/testing-suite` in a required CI workflow.
+- [x] Include `packages/testing` and `examples/testing-suite` in the root build/lint/test commands and required CI
+  workflow (`codex/release-readiness-fixes`).
 - [ ] Add a clean generated-project smoke test.
 - [ ] Add at least one stateless and one stateful deployment/call test.
 - [ ] Add fixture/reset and compilation-cache invalidation tests.
 - [ ] Add a required BCHN regtest smoke suite for release candidates.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
-- [ ] Ensure CI runs for the actual release branch, not only pushes to `master`.
-- [ ] Pin and document supported Node and Yarn versions.
-- [ ] Review and update GitHub Actions versions.
+- [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.
+- [x] Pin supported Node 22 and Yarn 1.22.22 in the root manifest and CI install behavior.
+- [x] Update checkout/setup-node to GitHub Actions v4; Codecov remains on v5.
 
 ### Hardhat/ethers-compatible workflow
 
@@ -195,8 +197,7 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Packaging and release engineering
 
-- [ ] Align package versions; `packages/testing` must not remain behind the other published packages unless that is
-  intentional and documented.
+- [x] Align publishable package versions and internal dependency ranges at 0.13.1.
 - [ ] Build the exact publish tarballs and install them into an empty consumer project.
 - [ ] Run the golden-path smoke test against the packed artifacts rather than workspace links.
 - [ ] Verify package exports, type declarations, source maps, licenses, READMEs, and dependency ranges.

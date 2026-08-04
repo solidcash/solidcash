@@ -4,10 +4,15 @@ A breadth stress-test parallel to `../solidity-by-example`: attempt to compile e
 ethereum/solidity compiler test corpus (`../solidity`, i.e. `/Code/solidity`) with SolidCash, reusing the SBE
 bench shape (`compileFile` + `solidityImportCompat` + an OK/FAIL scorecard).
 
+The release compatibility denominator is intentionally limited to upstream `test/libsolidity/semanticTests/**`
+and `test/libsolidity/syntaxTests/**`. Other Solidity compiler subsystem fixtures are inventoried but excluded.
+
 ```bash
 node examples/solidity-corpus/bench.mjs          # full run -> scorecard on stdout + results.json
 SOLC_CORPUS=/path/to/solidity node examples/solidity-corpus/bench.mjs   # override corpus path
 LIMIT=200 node examples/solidity-corpus/bench.mjs                       # smoke test on N files
+FIXTURE_TIMEOUT_MS=10000 node examples/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
+CORPUS_WORKERS=4 node examples/solidity-corpus/bench.mjs                # override the default 8 workers
 ```
 
 ## What this bench is (and is NOT)
@@ -25,7 +30,23 @@ Buckets (so the denominator is meaningful):
 - **CMDLINE** - files under `test/cmdlineTests/`; these exercise CLI modes and diagnostic rendering rather than
   positive standalone compilation. Many are intentionally invalid without a semantic-test error trailer, so both
   accepting and rejecting them are meaningless for the language-parity denominator (excluded).
+- **BENCHMARK** - files under `test/benchmarks/`; these are Solidity compiler throughput/optimizer stress inputs,
+  not language-conformance fixtures. They are excluded from the compatibility denominator and should be exercised
+  by a separately budgeted compiler-performance gate.
+- **COMPILATION** - files under `test/compilationTests/`; these are full-project/imported-application compiler
+  integration fixtures rather than isolated language fixtures. They are excluded here and belong in the separately
+  budgeted application-conformance gate.
+- **EXTERNAL** - files under `test/externalTests/`; these are imported third-party application projects, likewise
+  excluded from the language denominator and assigned to application conformance.
+- **HARNESS** - all compiler-subsystem fixtures outside the semantic and syntax suites (AST/ABI JSON rendering,
+  gas estimation, SMT checker, LSP, Yul optimizer, and similar). SolidCash does not advertise compatibility with
+  those compiler subsystems, so they are inventoried but excluded.
 - Denominator = **OK + FAIL** (single files that should compile).
+
+Each run also writes `run-metadata.json` with the exact Solidity corpus commit, Node version, platform, and fixture
+count. Release scorecards must retain this file beside `results.json`. Compilation runs in a reusable worker; a
+fixture exceeding the default five-second budget is terminated, recorded as `CorpusTimeoutError`, and cannot block
+the remaining scorecard.
 
 ## Scorecard (2026-07, 7343 files)
 

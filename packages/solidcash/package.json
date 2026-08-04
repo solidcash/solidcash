@@ -56,7 +56,7 @@
     "@mem-cash/electrum": "^0.0.7",
     "@mem-cash/validation": "^0.0.8",
     "@mr-zwets/bchn-api-wrapper": "^1.0.1",
-    "@solidcash/utils": "^0.13.0",
+    "@solidcash/utils": "^0.13.1",
     "fflate": "^0.8.2",
     "semver": "^7.7.2",
     "@noble/hashes": "^2.0.0"

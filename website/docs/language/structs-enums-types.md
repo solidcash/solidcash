@@ -33,22 +33,32 @@ contract MyContract() {
 ### Creating Struct Instances
 
 ```solidity
-User user = User(hex"abc123...", "Alice", 100);
-Pair p = Pair(10, 20);
+struct User { bytes20 addr; string name; int balance; }
+struct Pair { int x; int y; }
+
+contract Demo() {
+    function build(bytes20 who) {
+        User memory user = User(who, "Alice", 100);
+        Pair memory p = Pair(10, 20);
+
+        // Field access
+        int balance = user.balance;
+        string name = user.name;
+
+        require(balance == 100 && name.length > 0 && p.x + p.y == 30);
+    }
+}
 ```
 
-### Field Access
-
-```solidity
-int balance = user.balance;
-string name = user.name;
-```
+Structs can also be built with named arguments: `Pair({ x: 10, y: 20 })`.
 
 ### Structs in State
 
 Structs are stored as concatenated fixed-width fields in NFT commitments:
 
 ```solidity
+struct User { bytes20 addr; string name; int balance; }
+
 contract Registry() {
     mapping(bytes20 => User) public users;
 
@@ -95,17 +105,21 @@ enum Priority { LOW = 1, MEDIUM = 5, HIGH = 10 }
 ### Using Enums
 
 ```solidity
-Status current = Status.ACTIVE;
-require(current == Status.ACTIVE);
-```
+enum Status { PENDING, ACTIVE, COMPLETED }
+enum Priority { LOW = 1, MEDIUM = 5, HIGH = 10 }
 
-### Type Introspection
+contract Demo() {
+    function use() {
+        Status current = Status.ACTIVE;
+        require(current == Status.ACTIVE);
 
-```solidity
-int minStatus = type(Status).min;    // 0
-int maxStatus = type(Status).max;    // 2
-int minPrio = type(Priority).min;    // 1
-int maxPrio = type(Priority).max;    // 10
+        // Type introspection
+        require(type(Status).min == 0);      // first value
+        require(type(Status).max == 2);      // last value
+        require(type(Priority).min == 1);
+        require(type(Priority).max == 10);
+    }
+}
 ```
 
 ### Scope
@@ -115,6 +129,12 @@ Enums can be file-level or contract-level. File-level enums are importable:
 ```solidity
 import { Status } from "./enums.scash";
 ```
+
+:::caution
+An imported enum can currently only be used as a **value** (`Status.ACTIVE`, `int(Status.ACTIVE)`), not as a
+**type annotation**. `Status s = Status.ACTIVE;` on an imported enum fails to resolve the type. Declare the
+enum in the same file when you need to annotate a variable with it.
+:::
 
 ## User-Defined Value Types (UDVT)
 
@@ -130,8 +150,15 @@ UDVTs prevent accidental mixing of semantically different values - a `TokenId` c
 ### Wrapping & Unwrapping
 
 ```solidity
-TokenId id = TokenId.wrap(someBytes32);
-bytes32 raw = TokenId.unwrap(id);
+type TokenId is bytes32;
+
+contract Demo() {
+    function use(bytes32 raw) {
+        TokenId id = TokenId.wrap(raw);
+        bytes32 back = TokenId.unwrap(id);
+        require(back == raw);
+    }
+}
 ```
 
 ## Using-For Directives
@@ -140,7 +167,7 @@ The `using` directive attaches library functions to types, enabling method-call 
 
 ```solidity
 library SafeMath {
-    function add(int a, int b) returns (int) {
+    function add(int a, int b) internal returns (int) {
         int result = a + b;
         require(result >= a);
         return result;
@@ -149,23 +176,56 @@ library SafeMath {
 
 using SafeMath for int;
 
-// Now callable as a method:
-int result = x.add(y);   // equivalent to SafeMath.add(x, y)
+contract Calculator() {
+    function run(int x, int y) {
+        // Callable as a method; equivalent to SafeMath.add(x, y)
+        require(x.add(y) >= x);
+    }
+}
 ```
 
 ### Operator Overloading
 
-Map specific functions to operators:
+Map specific functions onto operators for a user-defined value type:
 
 ```solidity
-using { add as +, sub as - } for int;
+type Amount is int;
+
+library AmountLib {
+    function add(Amount a, Amount b) internal returns (Amount) {
+        return Amount.wrap(Amount.unwrap(a) + Amount.unwrap(b));
+    }
+}
+
+using { AmountLib.add as + } for Amount global;
+
+contract Ledger() {
+    function total(int raw) {
+        Amount a = Amount.wrap(raw);
+        require(Amount.unwrap(a + Amount.wrap(1)) > 0);
+    }
+}
 ```
+
+The overloadable operators are `+ - * / % **`, `== != < <= > >=`, and `& | ^ ~`.
 
 ### Global Scope
 
+Appending `global` makes the attachment visible to every file that imports this one:
+
 ```solidity
-using SafeMath for int global;  // available in all contracts in this file
+library SafeMath {
+    function add(int a, int b) internal returns (int) { return a + b; }
+}
+
+using SafeMath for int global;
+
+contract Consumer() {
+    function run(int x) { require(x.add(1) > x); }
+}
 ```
+
+See [Libraries & Using-For](/docs/language/libraries) for the full reference.
 
 ## Fixed-Point Decimal Types
 
@@ -225,9 +285,13 @@ Available in 8-bit increments: `int8`, `int16`, ..., `int256` and `uint8`, `uint
 ### Introspection
 
 ```solidity
-int min = type(int8).min;       // -128
-int max = type(int8).max;       // 127
-int umax = type(uint8).max;     // 255
+contract Bounds() {
+    function check() {
+        require(type(int8).min == -128);
+        require(type(int8).max == 127);
+        require(type(uint8).max == 255);
+    }
+}
 ```
 
 ### Unchecked Arithmetic

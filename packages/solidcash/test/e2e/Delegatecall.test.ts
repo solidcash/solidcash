@@ -19,17 +19,15 @@ import { createUnlockingBytecode, addressToLockScript } from '../../src/utils.js
 // Contract Sources
 // ============================================================
 
-// Implementation contract with a `delegate` function.
-// The `delegate` modifier injects a `_proxyMasterIndex` synthetic parameter
-// and makes all `this.stateVar` accesses target the proxy's data NFTs
-// (via PICK(_proxyMasterIndex)) instead of the implementation's own.
+// Ordinary Solidity-shaped implementation. The compiler derives the proxy implementation artifact; the test
+// helper below selects that internal build for direct low-level transaction tests.
 const DELEGATE_IMPL = `
 pragma solidcash >=0.8.0;
 
 contract DelegateImpl() {
     bigint counter;
 
-    function increment() delegate {
+    function increment() public {
         this.counter = this.counter + 1;
     }
 
@@ -69,12 +67,12 @@ contract DelegateImplMulti() {
     bigint counter;
     bigint totalOps;
 
-    function increment() delegate {
+    function increment() public {
         this.counter = this.counter + 1;
         this.totalOps = this.totalOps + 1;
     }
 
-    function decrement() delegate {
+    function decrement() public {
         require(this.counter > 0);
         this.counter = this.counter - 1;
         this.totalOps = this.totalOps + 1;
@@ -106,47 +104,6 @@ contract DelegatecallProxyMulti() {
 }
 `;
 
-// ---- Error case sources ----
-
-const DELEGATE_PLUS_UNSAFE = `
-pragma solidcash >=0.8.0;
-contract Bad() {
-    bigint x;
-    function foo() delegate unsafe {
-        this.x = 1;
-    }
-}
-`;
-
-const DELEGATE_PLUS_UPGRADE = `
-pragma solidcash >=0.8.0;
-contract Bad() {
-    bigint x;
-    function foo() delegate upgrade {
-        this.x = 1;
-    }
-}
-`;
-
-const DELEGATE_NO_STATE = `
-pragma solidcash >=0.8.0;
-contract Bad() {
-    function foo() delegate {
-        require(true);
-    }
-}
-`;
-
-const DELEGATE_PLUS_SELFDESTRUCT = `
-pragma solidcash >=0.8.0;
-contract Bad() {
-    bigint x;
-    function foo() delegate selfdestruct {
-        this.x = 1;
-    }
-}
-`;
-
 // ============================================================
 // Helpers
 // ============================================================
@@ -155,6 +112,14 @@ interface Deployed {
   contract: Contract;
   categoryId: string;
   utxos: { master: Utxo; dataNfts: Utxo[] };
+}
+
+function compileDelegateSource(source: string): Artifact {
+  const standalone = compileString(source);
+  if (!standalone.delegateArtifact) {
+    throw new Error(`Expected ${standalone.contractName} to have an inferred delegate artifact`);
+  }
+  return standalone.delegateArtifact;
 }
 
 /** Deploy a stateful contract: create Contract, build UTXOs, register with provider. */
@@ -221,7 +186,7 @@ describe('Delegatecall', () => {
   // Compilation and ABI metadata
   // ========================================================
   describe('Compilation and ABI metadata', () => {
-    const implArtifact = compileString(DELEGATE_IMPL);
+    const implArtifact = compileDelegateSource(DELEGATE_IMPL);
     const proxyArtifact = compileString(DELEGATECALL_PROXY);
 
     it('delegate function should have _proxyMasterIndex in ABI inputs', () => {
@@ -275,7 +240,7 @@ describe('Delegatecall', () => {
     });
 
     it('multi-state delegate impl should compile with all delegate functions', () => {
-      const multiArtifact = compileString(DELEGATE_IMPL_MULTI);
+      const multiArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
       const incrementAbi = multiArtifact.abi.find((f) => f.name === 'increment')!;
       const decrementAbi = multiArtifact.abi.find((f) => f.name === 'decrement')!;
 
@@ -296,31 +261,10 @@ describe('Delegatecall', () => {
   });
 
   // ========================================================
-  // Compilation error cases
-  // ========================================================
-  describe('Compilation error cases', () => {
-    it('should reject delegate + unsafe modifier combination', () => {
-      expect(() => compileString(DELEGATE_PLUS_UNSAFE)).toThrow();
-    });
-
-    it('should reject delegate + upgrade modifier combination', () => {
-      expect(() => compileString(DELEGATE_PLUS_UPGRADE)).toThrow();
-    });
-
-    it('should reject delegate + selfdestruct modifier combination', () => {
-      expect(() => compileString(DELEGATE_PLUS_SELFDESTRUCT)).toThrow();
-    });
-
-    it('should reject delegate on non-stateful contract', () => {
-      expect(() => compileString(DELEGATE_NO_STATE)).toThrow();
-    });
-  });
-
-  // ========================================================
   // Proxy + Implementation transaction building
   // ========================================================
   describe('Proxy + Implementation transaction building', () => {
-    const implArtifact = compileString(DELEGATE_IMPL);
+    const implArtifact = compileDelegateSource(DELEGATE_IMPL);
     const proxyArtifact = compileString(DELEGATECALL_PROXY);
 
     it('should build proxy + impl delegatecall transaction', async () => {
@@ -505,7 +449,7 @@ describe('Delegatecall', () => {
   // Multi-state delegate transaction
   // ========================================================
   describe('Multi-state delegate transaction', () => {
-    const implArtifact = compileString(DELEGATE_IMPL_MULTI);
+    const implArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
     const proxyArtifact = compileString(DELEGATECALL_PROXY_MULTI);
 
     it('should build multi-state increment via delegate', async () => {
@@ -666,7 +610,7 @@ describe('Delegatecall', () => {
   // Implementation standalone operations
   // ========================================================
   describe('Implementation standalone operations', () => {
-    const implArtifact = compileString(DELEGATE_IMPL);
+    const implArtifact = compileDelegateSource(DELEGATE_IMPL);
 
     it('should build authorize (unsafe) transaction on impl', async () => {
       const provider = createTestProvider();
@@ -694,7 +638,7 @@ describe('Delegatecall', () => {
   // Auto-derivation via withDelegatecall
   // ========================================================
   describe('Auto-derivation via withDelegatecall', () => {
-    const implArtifact = compileString(DELEGATE_IMPL);
+    const implArtifact = compileDelegateSource(DELEGATE_IMPL);
     const proxyArtifact = compileString(DELEGATECALL_PROXY);
 
     it('should auto-derive single state variable via delegatecall', async () => {
@@ -801,7 +745,7 @@ describe('Delegatecall', () => {
     });
 
     it('should auto-derive multi-state via delegatecall', async () => {
-      const multiImplArtifact = compileString(DELEGATE_IMPL_MULTI);
+      const multiImplArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
       const multiProxyArtifact = compileString(DELEGATECALL_PROXY_MULTI);
 
       const provider = createTestProvider();

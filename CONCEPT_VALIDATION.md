@@ -302,7 +302,7 @@ A "thread" is one master UTXO within a contract instance. The default is one thr
 - [ ] Master's commitment is empty by convention; it carries authority, not state.
 - [ ] Master's LBC is the contract's compiled script (may change only under `upgrade`).
 - [ ] Every state-mutating covenant verifies the master at `masterInputIndex` with correct category and minting capability.
-- [ ] Implicit self-preservation is calibrated to each modifier (normal, guarded, upgrade, selfdestruct, delegate, unsafe tiers, split, merge).
+- [ ] Implicit self-preservation is calibrated to each execution mode (normal, guarded, upgrade, selfdestruct, inferred delegate, unsafe tiers, split, merge).
 - [ ] `emitMintingNftUniqueness` enforces `output_count <= input_count` on the contract's category, category-scoped.
 - [ ] Split creates `N` threads from one; each thread inherits state snapshot; identity and funds preserved.
 - [ ] Merge consolidates `N` threads into one with FT conservation and LBC equality checks on all consumed inputs.
@@ -480,7 +480,7 @@ Entry points: `StatefulContract.connect()` accepts the externals map; `StatefulT
 - [ ] External-call groups receive non-aliasing block offsets.
 - [ ] Transitive chains (A through B through C) are resolved in reverse dependency order.
 - [ ] Return-event commitments authenticate external-call return values.
-- [ ] Blocked modifier combinations for delegate are enforced at compile time (see Section 6).
+- [ ] Ineligible functions are excluded from the inferred delegate artifact (see Section 6).
 
 ---
 
@@ -578,9 +578,11 @@ Every stateful function has a modifier set that defines its state-lifecycle effe
 | `upgrade` | Allows LBC swap on master output (one-way migration) | yes |
 | `deploy` | Creates child contract instance | yes |
 | `selfdestruct` | Destroys master and data NFTs | yes |
-| `delegate` | Proxy delegates to this function body | yes |
 | `split` | Fan-out master: one in, N out | yes |
 | `merge` | Fan-in master: N in, one out | yes |
+
+Delegate is an internal compiler/ABI execution mode, not a source modifier. The compiler derives it for eligible
+ordinary externally callable state-mutating functions and emits those functions in `artifact.delegateArtifact`.
 
 ### 6.3 Unsafe tiers (`:1625-1648`)
 
@@ -597,28 +599,33 @@ Source: `SymbolTableTraversal.ts:1574-1901`. A combination marked incompatible p
 Mutex pairs (either modifier plus the other equals compile error):
 
 - `pure` vs `view` (`:1603`)
-- `unsafe` vs `pure, view, upgrade, deploy, selfdestruct, delegate, split, merge`
-- `upgrade` vs `unsafe, pure, view, internal, private, deploy, delegate, split, merge`
-- `deploy` vs `unsafe, pure, view, internal, private, upgrade, selfdestruct, delegate, split, merge`
-- `selfdestruct` vs `unsafe, pure, view, internal, private, upgrade, deploy, delegate, split, merge`
-- `delegate` vs `unsafe, upgrade, selfdestruct, deploy, pure, view, internal, private, split, merge`
-- `split` vs `merge, unsafe, upgrade, selfdestruct, deploy, delegate, pure, view, internal, private`
-- `merge` vs `unsafe, upgrade, selfdestruct, deploy, delegate, pure, view, internal, private`
+- `unsafe` vs `pure, view, upgrade, deploy, selfdestruct, split, merge`
+- `upgrade` vs `unsafe, pure, view, internal, private, deploy, split, merge`
+- `deploy` vs `unsafe, pure, view, internal, private, upgrade, selfdestruct, split, merge`
+- `selfdestruct` vs `unsafe, pure, view, internal, private, upgrade, deploy, split, merge`
+- `split` vs `merge, unsafe, upgrade, selfdestruct, deploy, pure, view, internal, private`
+- `merge` vs `unsafe, upgrade, selfdestruct, deploy, pure, view, internal, private`
 - `internal` or `private` vs `payable` (`:1793-1796`)
 - `pure` vs `payable` (`:1799-1801`)
 
 At most one visibility modifier (`:1594-1600`).
 
-Stateful-only modifiers (reject non-stateful contracts): `unsafe, upgrade, deploy, selfdestruct, delegate, split, merge` (checked at `:1621, :1651, :1679, :1712, :1750, :1804, :1845`).
+Stateful-only modifiers (reject non-stateful contracts): `unsafe, upgrade, deploy, selfdestruct, split, merge`.
 
-Externally-callable-only modifiers (reject internal and private visibility): `upgrade, deploy, selfdestruct, delegate, split, merge`.
+Externally-callable-only modifiers (reject internal and private visibility): `upgrade, deploy, selfdestruct, split,
+merge`.
+
+The inferred delegate build instead uses eligibility predicates: the function must be externally callable and
+mutate proxy-owned state, and it must not use `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `split`, `merge`,
+`pure`, `view`, `internal`, or `private`, issue its own delegatecall, or perform a transfer/token-container
+operation. Ineligibility omits the function or entire variant rather than rejecting a valid standalone contract.
 
 ### 6.5 Rationale for key blocks
 
-- **delegate + unsafe** (`:1755`): unsafe skips covenant checks, but delegate relies on covenants to enforce proxy self-preservation and state redirection. Combining them breaks both.
-- **delegate + upgrade** (`:1760`): upgrade changes the caller's own locking bytecode, but a delegate function runs inside the proxy's covenant context; "own LBC" would be ambiguous.
-- **delegate + selfdestruct** (`:1765`): destroying a delegate or proxy from inside a delegatecall creates ambiguous semantics about which side is destroyed.
-- **delegate + deploy** (`:1770`): deploys spawn child masters from the current contract's state; a delegate does not own the proxy's state to spawn children.
+- **inferred delegate + unsafe**: unsafe skips covenant checks, but delegate mode relies on covenants to enforce
+  proxy self-preservation and state redirection, so the function is ineligible.
+- **inferred delegate + upgrade/selfdestruct/deploy**: those lifecycle operations act on an owning contract,
+  while delegate mode operates in the proxy's state context, so the function is ineligible.
 - **deploy + upgrade** (`:1707`): separate migration concerns; combining them would make deploy semantics unclear.
 - **selfdestruct + upgrade** (`:1740`): one destroys, the other migrates; combining would be mutually defeating.
 - **split or merge plus every other stateful-mutating modifier** (`:1813-1878`): split and merge already reshape the master layout; adding deploy or upgrade or similar would compound constraints beyond what is tractably verifiable.

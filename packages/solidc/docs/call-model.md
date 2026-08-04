@@ -16,7 +16,7 @@ spec), [subroutine-extraction.md](./subroutine-extraction.md) (internal-call byt
 | External call | `IFoo(addr).m(x)` | co-spend + introspection covenant | No (co-spend) | section 3 |
 | Static external | `IFoo(addr).m.staticcall()`, `.outState.f` | read-only co-spend covenant | No | section 4 |
 | Low-level | `addr.call{value:}(data)` | calldata/value covenant | No | section 5 |
-| Delegatecall | `delegate` modifier; `addr.delegatecall(data)` | proxy/implementation covenant | No | section 6 |
+| Delegatecall | ordinary implementation function; `addr.delegatecall(data)` | inferred proxy/implementation covenant | No | section 6 |
 
 ## 1. The one fact everything follows from: BCH has no message call
 
@@ -147,8 +147,9 @@ no-option form parses as a namespaced function call; the `{value:}`/`{gas:}` for
 
 ## 6. `delegatecall` (proxy + implementation)
 
-The `delegate` modifier marks a function on the implementation (delegate) contract that runs against a
-proxy's state. The proxy holds the state and a minting NFT; the delegate holds the logic.
+The compiler emits a delegate variant for eligible ordinary functions on an implementation contract. That
+variant runs against a proxy's state: the proxy holds the state and a minting NFT, while the delegate holds the
+logic. There is no source-level `delegate` modifier.
 
 - The proxy's master input index is passed as `_proxyMasterIndex`, saved to the altstack at function entry.
   `emitMasterInputIndex` (GenerateTargetTraversal ~10261) reads it back with `FROMALTSTACK DUP TOALTSTACK`
@@ -156,8 +157,8 @@ proxy's state. The proxy holds the state and a minting NFT; the delegate holds t
   The delegate's own self-preservation uses the real `OP_INPUTINDEX`.
 - `emitDelegateSelfPreservation` verifies the delegate's own locking bytecode, value, category, capability,
   commitment, and FT amount are preserved (the delegate is co-spent but must survive unchanged).
-- Blocked modifier combinations (SymbolTableTraversal ~1853): `delegate` with any of `unsafe`, `upgrade`,
-  `selfdestruct`, `deploy`, `delegatecall`, `internal`/`private`, `pure`, `view`.
+- Functions using `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `delegatecall`, `internal`/`private`, `pure`,
+  or `view` are ineligible for the inferred delegate variant.
 
 ## 7. Call options `{value, gas, salt}`
 
@@ -285,7 +286,7 @@ after-guard; unauthenticated result reaching a load-bearing position.
 | External call | `CALL` (runtime delivers) | co-spend + introspection covenant (no delivery) |
 | Return data | returndata buffer | return-event NFT commitment, decoded by caller |
 | `staticcall` | no-state-change call | `STATICCALL` mode (all commitments preserved) + `outState` |
-| `delegatecall` | callee code on caller storage | `delegate` modifier: delegate logic on proxy state |
+| `delegatecall` | callee code on caller storage | inferred delegate artifact: implementation logic on proxy state |
 | Send value | `call{value:}` | `{value:}` -> satoshi-transfer output |
 | Reentrancy | real hazard; needs guards | structurally absent (flat atomic tx) |
 | MultiCall (reads) | batch `eth_call` workaround | off-chain UTXO batch fetch (no contract) |

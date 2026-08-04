@@ -2,6 +2,94 @@
 
 Status: DESIGN (brainstorm). No implementation yet.
 
+## Session handoff (last updated 2026-07-25)
+
+Read-this-first for a cold start. This doc is the full reasoning; below is the decision state and where to
+resume. Companion memory: `native_erc20_design.md` (dense per-turn log). Nothing is implemented - it is all
+design.
+
+**Architecture DECIDED - Model A (FT-on-entry) is primary.** The token is a wrapped ERC-20 ledger whose
+balances are REAL category-X CashTokens FTs sitting on entry NFTs (value in the NFT's `tokenAmount` field,
+not in commitment bytes). No virtual-value mappings. It IS a wrapped asset (balances at P2SH32 covenants,
+moved by co-spending the master) - which is a faithful port of what ERC-20 already is; native self-custody
+is the WITHDRAWN form (WETH-style wrap/unwrap). Consensus FT conservation makes inflation impossible even
+against a buggy contract - the strongest "untouchable supply" possible.
+
+**The load-bearing decisions (all with reasoning in the body):**
+- **Supply is normative**: full premint at genesis into a reserve; `mint` = release reserve into circulation;
+  `T (circulating) <= initialSupply` forever; open-ended minting is categorically unsound on BCH. Two burns:
+  permanent (omission / OP_RETURN) and returning (`burnToReserve`). Two-number reporting: tracked `T` (ledger
+  authority) `>= ` effective `E` (indexer sum); the gap is untracked bearer burns.
+- **Balances are multi-note**: `balanceOf(owner) = sum of the owner's notes`. The masterless path is
+  OWNERSHIP-PRESERVING ONLY (split / merge / consolidate; owner-sig + an output-scan proving every category-X
+  note output keeps the same owner tag). Any OWNERSHIP CHANGE (transfer), plus every ledger-boundary crossing
+  (withdraw / deposit / mint / burn), co-spends the master. Net: policy is always enforceable on transfers AND
+  self-management is always parallel, in both presets.
+- **Reserve** lives on a dedicated token container (a general primitive, not a custom vault); untouchable by
+  construction. In Model A the reserve's `tokenAmount` IS `R` - no stored counter, no drift.
+- **Allowances** are spender-side authority; `transferFrom` is ALWAYS master-gated (so it always checks the
+  allowance). `permit` (via native `checkDataSig` / shipped `ecrecover`) is recommended first-class.
+- **Compliance is whitelist-driven, not blacklist-driven**: only ledger-witnessed actors are "white"; the
+  white zone is a closed graph; contracts are first-class allow-list nodes (cross-chain bridges are white by
+  construction). Registered self-custody (Model B) is a SEPARATE product - it needs a virtual mirror plus the
+  attestation / maturity / floor / restriction machinery, which is the price of self-custodying the tracked
+  balance.
+- **The boundary is QUARANTINED admission - THE PURSUED DESIGN** (2026-07-25): unwrap freely to bearer P2PKH; re-entry lands in a
+  pending note that matures after `X` blocks (BIP68 `sequenceNumber` equality-pin, consensus-tracked age -
+  not a self-declared height), then a PERMISSIONLESS `claim` credits the balance. The issuer's only power is
+  blacklisting the claimant inside the window, so the issuer is never a liveness dependency and refusals are
+  on-chain auditable; `cancel` always returns the funds to the depositor, making confiscation structurally
+  impossible. The pending note is a PURE-FT output at a covenant parameterized per `(claimant, depositor)` -
+  tags in the SCRIPT, no NFT - because minting an NFT of category X would need the master and would serialize
+  every deposit. Deposits are therefore parallel. EXIT posture is a deploy-time covenant variant, both
+  audited: freedom (instant, freeze escapable) vs compliance (symmetric cooldown + master `recall`). Honest
+  scope: admission control plus travel-rule-at-the-boundary, NOT seizure; the veto is actor-based because
+  coin-level taint cannot survive FT mixing in the bearer zone.
+
+**WHERE WE STOPPED / resume here:**
+1. Owner-tag encoding in the BALANCE note commitment + the exact signature-check mechanics on the masterless
+   path (owner identity binding; EOA-keyed vs contract-owned notes). Candidate, upgraded by the 128-byte
+   commitment: store the FULL locking bytecode (25 B P2PKH / 35 B p2sh32) and compare it directly, rather
+   than the lossy `hash160(lbc)` a 40-byte budget would have forced. Still the immediate next topic.
+2. `mint` / `burn` / reserve behavior under the multi-note model.
+3. Still-open product decisions: cooldown defaults `X` / `Y` (flat, not amount-tiered - tiering invites
+   structuring), remaining admission/exit variants beyond the two presets, `decimals` default + hard check.
+   See "Open decisions".
+4. Then P1 implementation scope (see "Phasing"); the pending-note covenant lands in P4.
+
+**Doc map**: CashTokens ground rules; Supply model (normative) + tracked-vs-effective; The general-model
+realization: FT-on-entry (the primary architecture) incl. wrapped-asset nature, contention, and the
+masterless ownership-preservation rule; Reserve storage and untouchability; Self-custody / enforcement
+polarity (registered P2PKH = Model B, maturity, floor, closed graph); Soundness assessment; Allowances;
+Re-centering on user custody (registry model = Model B pole); Phasing; Open decisions.
+
+**Codebase anchors** (re-verified 2026-07-25; SYMBOL names are the durable handle - line numbers drift, so
+grep the symbol first):
+
+- `buildEntryNftCovenantScript` - `packages/utils/src/state.ts:1425`. Write path (flag=1, `state.ts:1430`) is
+  master-gated ONLY: it verifies the minting NFT at `masterInputIndex` and places no output constraint. All the
+  self-preservation / commitment / `outAmount >= inAmount` / exact-satoshi guards live in the read path
+  (`OP_ELSE`, `state.ts:1446-1494`). This is why master-authorized FT DECREASES on entries are already legal =>
+  Model A needs no covenant change.
+- `buildTokenContainerCovenantScript` - `state.ts:1783`. Master path (`state.ts:1790`) = pure auth; merge path
+  (`state.ts:1801`) = consolidate-only (`lbc` / `value >=` / `amount >=` / category) + the anti-double-merge
+  single-input loop (`state.ts:1827-1852`).
+- `emitTokenContainerPreservation` - `GenerateTargetTraversal.ts:20294`; dispatched at `GTT:2402`, alongside
+  `emitTokenContainerIdentityVerification` (`GTT:2396`) and `emitTokenContainerTransferCovenantVerification`
+  (`GTT:2399`) - all three gated `!this.functionHasDelegatecall`.
+- `emitMsgSender` dual-path - `GTT:18899` (zero category => `emitTxOrigin`, else
+  `emitMsgSenderMintingVerification` at `GTT:18981`). `emitTxOrigin` - `GTT:18660` (scans the first
+  NON-token-bearing P2PKH input).
+- `.sequenceNumber` in grammar - `SolidCash.g4:701` (`UnaryIntrospectionOp`), token `SolidCash.g4:993`.
+- SDK tx `version: 2` - `TransactionBuilder.ts:774`.
+- Entries minted `amount: 0n` today - `packages/solidcash/src/stateful/StatefulContract.ts:1468-1538` (deploy
+  path; ~225 `amount:` sites across `src/stateful/`, so the P1 SDK change is broad but mechanical).
+- `ERC20.sol` already compiles virtually: NOT in-tree. It is the SBE bench corpus at
+  `/Code/solidity-by-example/contracts/src/app/erc20/` - a sibling checkout pinned in
+  `examples/solidity-by-example/SBE_SOURCE.md` (`_bench/` is generated and empty in a fresh tree).
+
+---
+
 The question: an ERC-20 drop-in replacement whose token is a REAL CashTokens fungible token (FT amounts on
 UTXOs, spendable by any token-aware BCH wallet), not "virtual" balances living in mapping commitments - while
 keeping the full ERC-20 surface: `transfer`, `approve`/`transferFrom` allowances, blacklists, mint/burn, and
@@ -19,7 +107,8 @@ What consensus gives us (and takes away):
 - Post-genesis, per category: `sum(output FTs) <= sum(input FTs)`. A shortfall is an implicit burn -
   permanent, consensus-enforced deflation. There is no way to mint more, ever.
 - NFTs and FTs of the same category coexist (one output can carry both). A minting-capability NFT can mint
-  new NFTs of the category forever - but never FTs. Commitments are <= 40 bytes; token outputs need dust.
+  new NFTs of the category forever - but never FTs. Commitments are <= **128 bytes** since the May 2026
+  upgrade (`commitmentLimit: 128`, `compiler.ts:84`; the pre-upgrade limit was 40); token outputs need dust.
 
 The killer consequence: **the supply cap is consensus-enforced**. Even a maximally buggy or malicious ledger
 contract can never inflate the token past its genesis amount. EVM ERC-20 cannot offer this - every
@@ -129,7 +218,7 @@ contract, new token" in EVM.
 
 **Genesis (single tx).** The existing deploy flow already spends a vout-0 funding outpoint (category = its
 txid) and mints the master thread NFT (minting capability), data NFTs, optional pre-seeded entries, all with
-`amount: 0n` (`StatefulContract.ts:1140-1334`). The one SDK change v1 strictly needs: also mint `cap` FTs of
+`amount: 0n` (`src/stateful/StatefulContract.ts:1468-1538`). The one SDK change v1 strictly needs: also mint `cap` FTs of
 X at genesis, onto the contract's token container output.
 
 **State.**
@@ -941,6 +1030,222 @@ Consequences and costs:
 - **Events**: an ownership change always co-spends the master, so `Transfer` events are always emitted -
   no observability gap on actual transfers. Split/merge emit nothing, correctly (they are not transfers).
 
+## The boundary: quarantined admission (THE PURSUED DESIGN)
+
+Decided 2026-07-25: **this is the boundary design being pursued**, not one option among the admission
+variants. The earlier `open | whitelist | issuer-cosign` list is superseded as the default - those remain
+available for issuers who specifically want them, but quarantined admission is what the template, the SDK
+support, and the tests target.
+
+The mode: holders `withdraw` freely, turning ledger balance into plain P2PKH CashTokens that change hands
+arbitrarily as bearer cash; re-entry via `deposit` is subject to a COOLDOWN, and during that window the
+issuer can investigate provenance and refuse admission. This is the self-custody / compliance balance point,
+and it is a strictly better shape than the admission options sketched earlier.
+
+### Why the polarity matters: permissionless-by-default with a veto
+
+"Open decisions" listed admission as `open | whitelist | issuer-cosign`. All three are
+permissioned-or-nothing: nothing enters unless the issuer pre-listed you or actively signs. Quarantine is the
+fourth mode and it inverts the default - everything enters UNLESS the issuer acts inside the window.
+
+Two consequences, both load-bearing:
+
+- **Liveness inverts.** Under `issuer-cosign` an offline issuer blocks all deposits; the issuer is a
+  liveness dependency on the happy path. Under quarantine an offline issuer blocks nothing - deposits keep
+  flowing, and only the BLOCKING capability goes dark. The happy path never depends on the issuer.
+- **Refusals become auditable.** A cosign refusal is invisible (simply never sign, no artifact, no
+  accountability). A quarantine refusal is an on-chain state write. Censorship is still possible but it is
+  no longer deniable.
+
+### Mechanism: the pending-deposit note
+
+Two findings shrink this to almost nothing.
+
+**The pending note must be a PURE-FT output, tags in the SCRIPT - not an NFT with tags in a commitment.**
+This is forced, and it is what makes everything below work. Creating an NFT of category X requires spending a
+minting NFT of that category, i.e. the master thread - so a commitment-tagged pending note would make every
+`deposit` master-serialized. Moving existing FT amounts, by contrast, needs no capability at all. So the
+pending note is FTs (no NFT, no commitment) sitting at a P2SH32 covenant PARAMETERIZED per
+`(claimantTag, depositorTag)` pair: the tags live in the covenant script, and the address itself is the
+binding.
+
+Note the driver is CAPABILITY, not commitment space - the 128-byte commitment would hold both tags with room
+to spare, so this conclusion is unaffected by the May 2026 limit increase. The genuine side benefit is that
+distinct claimants sit at distinct ADDRESSES, making cross-claimant contamination or mis-crediting
+structurally impossible rather than a check to get right.
+
+**Deposit-initiation therefore needs no master co-spend.** No NFT is created and no balance is credited, so
+no ledger state is written and no capability is consumed. Deposits are fully PARALLEL - only the later claim
+serializes on the master thread. A rare win against the global-serializer cost documented above.
+
+**Maturity must be consensus-tracked, not self-declared.** Any `unlockHeight` the depositor bakes into the
+note is self-asserted and worthless. Coin AGE cannot be forged. Enforce the cooldown with a BIP68 relative
+locktime on the claim and no height field is needed anywhere. Same reasoning as "Ownership maturity" above:
+consensus-tracked beats master-bookkept.
+
+Three spend paths on `pendingCovenant(claimantTag, depositorTag)`:
+
+- **`deposit`** - master-free, capability-free send of FTs to the pair's address. No contract execution.
+- **`claim`** - master co-spend; PERMISSIONLESS and third-party-drivable (it credits the designated
+  claimant, so no signature is required - anyone can push a matured deposit through). Requires
+  `tx.inputs[i].sequenceNumber == <X encoded>` plus `!blacklisted[claimant]` (and `whitelisted[claimant]`
+  under the compliance preset). Credits `balances[claimant] += tokenAmount` and emits `Transfer`. The
+  contract learns the claimant by RECONSTRUCTING the expected pair-address and comparing it against
+  `tx.inputs[i].lockingBytecode` - the same reconstruct-and-compare pattern already used for entry addresses
+  (`emitSortedEntryAddress`), not by parsing bytes out of a commitment.
+- **`cancel`** - masterless, and cheap: since `depositorTag` is in the script, the covenant checks the
+  standard `OP_DUP OP_HASH160 <depositorTag> OP_EQUALVERIFY OP_CHECKSIG` pattern itself and constrains the
+  output back to the depositor. No contract execution, no master. Value is never strandable.
+
+The whole covenant is roughly `<flag> OP_IF <master-auth + sequence-pin> OP_ELSE <p2pkh on depositorTag>
+OP_ENDIF <claimantTag> OP_DROP OP_1` - small enough to audit line by line.
+
+**The veto needs no spend path.** Because `claim` already runs master code that reads the blacklist, the
+issuer's refusal is just "blacklist the claimant before maturity." No race to spend the pending note, no
+seizure path, and no `to`-griefing concern (an unwanted deposit is simply never claimed, and `cancel`
+recovers it). Effective window is `X` minus claim-confirmation latency, so treat it as `X - 1` blocks.
+
+**Confiscation is structurally impossible, and that is a design goal not an oversight.** A refused deposit's
+only exit is `cancel`, back to the depositor as bearer cash: refused admission, keep your money. A boundary
+where deposits can be trapped is a honeypot, and a honeypot does not attract deposits - the mode would
+defeat itself. If seizure must exist for some issuer, it belongs behind a much louder, separately audited
+power, never on the default quarantine path.
+
+**Primitives verified 2026-07-25 (all shipped):** `.sequenceNumber` is readable in the grammar
+(`SolidCash.g4:701`), so a covenant can equality-pin it in one comparison; the SDK sets per-input sequence
+via `utxo.options.sequence` (`interfaces.ts:33` -> `TransactionBuilder.ts:764`); txs are version 2
+(`TransactionBuilder.ts:774`), which BIP68 requires.
+
+**GOTCHA:** `DEFAULT_SEQUENCE = 0xfffffffe` (`TransactionBuilder.ts:67`) has bit 31 SET, which DISABLES BIP68
+relative locktime (it is the conventional value that enables `nLocktime` while opting out of relative
+locktime). A claim tx must pass `options.sequence` explicitly with bit 31 clear - e.g. `144` for a 144-block
+cooldown (bit 31 clear, bit 22 clear = block units, low 16 bits = the value). Bit 22 set switches to
+512-second units. Ranges: 65535 blocks (~455 days) or 65535 512s-units (~388 days) - an AML window of hours
+to days sits comfortably inside either. No interaction with `InjectLocktimeGuardTraversal`, which guards
+`nLocktime` (orthogonal to `nSequence`); and since the default sequence is already non-final, `nLocktime`
+enforcement is unchanged either way.
+
+### The exit asymmetry: an unvetoed instant exit makes in-ledger freeze cosmetic
+
+The sharp problem with quarantining only the entry. Deposits get an `X`-block inspection window;
+withdrawals get none. So any holder who smells an investigation unwraps first and is gone, and
+`blacklist`/`freeze` only ever lands on holders who were not watching. The issuer must WIN A RACE against a
+motivated adversary, every time. The earlier text demoted blacklist to "an in-ledger freeze tool" without
+confronting that race; naming it: **in the instant-exit shape, freeze is enforceable only against the
+inattentive.**
+
+The symmetric fix reuses the same primitive. `withdraw` debits `balances[owner]` immediately and creates a
+pending-WITHDRAWAL note; paths are `claim` (matured, `sequenceNumber == Y`, pays out to the owner's P2PKH,
+permissionless) and `recall` (master, owner-authorized, returns the value to `balances[owner]` if the issuer
+freezes inside the window). Debiting at initiation rather than completion is what makes `recall` necessary -
+otherwise the balance stays spendable and the withdrawal is a duplicate claim on it.
+
+**DECIDED (2026-07-25): the exit posture is a DEPLOY-TIME COVENANT VARIANT, both audited.** Same resolution
+shape as the masterless path above - the set of spend paths in the covenant IS the policy, so it is baked
+into the covenant address at deploy and cannot flip per-transaction:
+
+- **freedom preset** - instant unvetoed `withdraw`. Maximum self-custody. The tracked set still stays clean
+  (entry is quarantined either way), but in-ledger freeze is escapable, which the preset accepts explicitly
+  rather than pretending otherwise.
+- **compliance preset** - symmetric cooldown, `withdraw` via a pending-withdrawal note with `recall`. Freeze
+  becomes genuinely enforceable: the issuer has `Y` guaranteed blocks instead of a race.
+
+Cost of the symmetric variant, stated honestly: unwrapping becomes slow, which pushes holders to stay
+wrapped. Some issuers will read that as a feature. The two presets are NOT interchangeable for holders and
+the choice is visible in the address, which is the point.
+
+### What the cooldown cannot do
+
+- **Coin-level taint does not survive the bearer zone.** FT amounts carry no per-unit identity, so once
+  tainted and clean units merge in one P2PKH UTXO they are permanently inseparable. After a couple of hops
+  everything is partially tainted. Worse, it is cheaply griefable: send one base unit of flagged X to a
+  victim and their next consolidation "taints" their whole deposit - the same dust-grief shape found in the
+  Model B attestation analysis. **So the on-chain veto is ACTOR-based (blacklist the claimant); coin
+  provenance is an off-chain signal the issuer weighs during the window, never a covenant predicate.**
+- **Tiering the window by amount invites structuring.** Fast-for-small / slow-for-large is mechanically
+  trivial (`claim` checks age `>= f(amount)`) but splitting a large deposit defeats it. Per-claimant rate
+  limiting needs accumulator state (an entry-side counter); a FLAT window is the honest starting point.
+- **Investigation quality is just chain analytics.** The pending note exposes the funding outpoint, and its
+  history is public - but a depositor funding from a fresh P2PKH downstream of a mixer presents a clean-ish
+  immediate history. Not solvable on-chain, and the design should not imply otherwise.
+- **Bearer circulation is untouched.** Per "enforcement polarity" above, native P2PKH hops can never be
+  forced to update the ledger. Gray funds circulate in the native face indefinitely; the cooldown gates
+  RE-ENTRY only.
+
+Accurate framing: **this is admission control plus travel-rule-at-the-boundary, not seizure.** It fits an
+issuer whose obligation is "do not onboard tainted funds into the regulated ledger" - which is the actual
+obligation for most issuers. It does not fit one who must freeze any holder anywhere; that issuer wants
+`exit: disabled` (a pure ledger token with no bearer face). The spectrum:
+
+| shape | self-custody | freeze reach | who it is for |
+| --- | --- | --- | --- |
+| `exit: disabled` | none | total (all balance is ledger) | issuers needing unconditional freeze |
+| quarantined entry + symmetric exit | full, slow both ways | ledger + `Y`-block window | regulated issuers, compliance preset |
+| quarantined entry + instant exit | full, instant out | ledger, escapable | freedom preset |
+| open entry + instant exit | full | none in practice | unpoliced tokens |
+
+The middle two are the interesting ones and are the two audited presets.
+
+### May 2026 VM upgrade: the design's two scans rest on shipped features
+
+The upgrade brought loops (`OP_BEGIN`/`OP_UNTIL`), functions (`OP_DEFINE`/`OP_INVOKE`), and the 128-byte
+commitment. All three are already in use in this codebase, so nothing here is speculative - but be precise
+about what exists versus what still has to be written.
+
+The design leans on exactly two unbounded scans, and both are the soundness core rather than conveniences:
+
+1. **Multi-note `balanceOf`** - sum `tokenAmount` over the owner's co-spent notes.
+2. **The masterless output-scan lock** - assert EVERY category-X note output carries the same owner tag. This
+   is the condition that makes an ownership change impossible on the masterless path.
+
+Both are loop-shaped and the scaffolding is proven: `emitIntrospectionSum` (`GTT:6100`) already loops
+`n-1..0` over `OP_TXINPUTCOUNT` / `OP_TXOUTPUTCOUNT` with an `OP_BEGIN`/`OP_1SUB`/`OP_UNTIL` body and a
+caller-supplied per-element op sequence, and it is live in `tx.gasprice` (`GTT:6124`) for value and
+script-length sums. The token-container merge path uses the same shape for its anti-double-merge input scan
+(`state.ts:1827-1852`).
+
+**What is missing is the PREDICATE variant.** `emitIntrospectionSum` sums unconditionally; both scans above
+are conditional - scan 1 needs "amount if this input is one of my notes, else 0", and scan 2 is an
+all-quantified assertion, naturally emitted as a violation counter verified `== 0` (or a fail-fast
+`OP_VERIFY` in the loop body). So P1/P2 inherit a tested loop skeleton but owe two new emitters, and those
+emitters are where the adversarial tests should concentrate - an under-counting filter in scan 1 silently
+misreports balances, and a gap in scan 2 is a transfer backdoor.
+
+Functions (`OP_DEFINE`/`OP_INVOKE`) matter here for size, not capability: the note-covenant paths and the
+scans are the kind of repeated body that subroutine extraction already compresses well (`-60.7%` on the
+existing rework), which is relevant because the pending covenant and the note covenant both ship in every
+deployment of this token.
+
+### What it does not disturb
+
+- **Supply invariants hold unchanged.** Pending notes are neither reserve nor burned, so they sit in the
+  bearer ceiling `B` until claimed and move into `W` on claim. `T + R + permanentlyBurned == initialSupply`
+  and `T >= E` are untouched. A pending-withdrawal note is likewise still inside `T`.
+- **Masterless self-management is unaffected.** Pending notes are boundary objects, not balance notes; the
+  ownership-preserving split/merge path does not apply to them (their `cancel` path is the analogous
+  owner-authorized move).
+
+**Note for the open owner-tag question (decision 7):** the pending note sidesteps commitments entirely by
+putting its tags in the covenant SCRIPT. That is a transferable lesson rather than a shared solution - where
+the tag set is sparse and an address per tag is acceptable, address-parameterization beats commitment
+encoding. The BALANCE note cannot use it (balances must stay key-addressable and auto-derivable through the
+standard entry covenant, which is parameterized per COLLECTION, not per owner), so it needs a commitment tag.
+
+**The 128-byte commitment upgrades the candidate: store the FULL locking bytecode, not a hash.** With only 40
+bytes the tag had to be compressed to `hash160(lbc)` (20 B, lossy, and the spend path pays an `OP_HASH160`
+plus a collision argument). At 128 bytes there is no reason to compress: a P2PKH lbc is 25 bytes and a p2sh32
+lbc is 35, so the note stores the owner's locking bytecode verbatim and the spend path is a direct
+`tx.inputs[i].lockingBytecode == <tag>` compare - no hashing, no collision analysis, cheaper script. This
+also matches the existing idiom, where `address` already IS the variable-length lbc and mapping keys are
+pushdata-encoded to carry it. Budget: `key(32) + lbc(<=35) = 67`, leaving ~61 bytes for a permit nonce and
+flags.
+
+**It also de-risks the multi-note model.** Identical NFT commitments are a known hazard in this codebase
+(two indistinguishable data NFTs become unorderable on a non-deterministic provider). With 128 bytes every
+note can carry a per-note index alongside the owner tag, so an owner's notes are always totally ordered and
+individually addressable, and the hazard never arises. Under a 40-byte budget that index would have competed
+with the tag for space.
+
 ## Parity gaps and trade-offs (the honest section)
 
 - **int64 amounts.** Native backing caps total base units at ~9.22e18. 18-decimals sources overflow
@@ -963,25 +1268,66 @@ Consequences and costs:
 
 ## Phasing
 
-- **P1 - template, no compiler change.** Hand-written `NativeERC20.scash` on existing features (virtual
-  balance mappings + container pool + bridge/mint/burn via introspection requires) + SDK genesis-FT-amount +
-  VM-verified tests of every delta in the solvency table (including adversarial: withdraw more than balance,
-  burn resurfacing on an attacker output, deposit under-crediting, blacklist bypass).
-- **P2 - FT-on-entry.** SDK amount-carrying entries + compiler tokenAmount-backed mapping values.
-- **P3 - drop-in.** Import-compat base-class substitution + int64/decimals diagnostics.
-- **Later.** Balance sharding; BCMR metadata emission at deploy; `permit` (sig-based approve is natural on
-  BCH); ERC-4626 vault on top; DEX integration of the native form.
+Reframed 2026-07-25 around Model A (FT-on-entry) as primary. The earlier "P1 = virtual mappings + pool" plan
+described the DEMOTED bank model; it survives only as an optional preset.
+
+- **P0 - design closeout.** Finish the owner-tag/signature mechanics (handoff item 1) and mint/burn/reserve
+  under the multi-note model (item 2). Prerequisite to a correct P1 template.
+- **P1 - Model A core (wrapped ledger).** Compiler: `mapping(...) native` value-location annotation (value in
+  entry `tokenAmount`). SDK: entries carrying `amount > 0n` (today hardcoded `0n`; entry covenant already
+  guards amounts - no covenant change) + `balanceOf` = sum-of-notes aggregation. Genesis: full premint to the
+  reserve container. `mint` / `burn` / `burnToReserve` + master-mediated `transfer`. Auto-derivation reads
+  `tokenAmount` for annotated mappings. Adversarial VM tests: inflation attempt (must be consensus-REJECTED),
+  reserve untouchability (the 4 obligations), thread uniqueness, no-selfdestruct-drain, no-delegatecall-bypass.
+- **P2 - masterless self-management.** Note-covenant ownership-preserving path (split / merge / consolidate):
+  owner-sig + the output-scan lock (every category-X note output keeps the owner tag). Adversarial tests: the
+  scan must make any ownership change on this path impossible (transfer-backdoor negative test).
+- **P3 - allowances + permit.** Pool-style `allowance` mapping + always-master-gated `transferFrom`; `permit`
+  via `checkDataSig`; `increaseAllowance` / `decreaseAllowance`; infinite-allowance sentinel `2^63-1`.
+- **P4 - policy presets + the quarantined boundary.** Freedom vs compliance = which checks the master runs on
+  an ownership change: blacklist / whitelist / freeze / `destroyBlackFunds`, boundary admission (open |
+  whitelist | issuer-cosign | QUARANTINE), exit (open | quarantined | registered | vault-only | disabled).
+  Two audited variants, not a flag matrix. New primitive: the **pending note** covenant - `deposit` (master
+  free) / `claim` (master, BIP68 `sequenceNumber` equality-pin + blacklist read, permissionless) / `cancel`
+  (masterless, depositor sig), and its withdrawal-side twin (`claim` / `recall`). SDK must pass
+  `options.sequence` with bit 31 CLEAR on claims (the `0xfffffffe` default disables BIP68). Adversarial tests:
+  claim before maturity must be consensus-rejected; forged commitment height must be irrelevant; a blacklisted
+  claimant must be unable to claim while `cancel` still recovers the funds; no path may send a pending note
+  anywhere except the claimant's balance or the depositor's P2PKH (no-confiscation invariant); a claim
+  co-spending several pending notes must credit each to its own reconstructed claimant (no pooling into one
+  balance); `deposit` must require no minting capability (regression guard on the pure-FT shape).
+- **P5 - drop-in.** `solidityImportCompat` base-class substitution; mandatory `initialSupply` param; int64 /
+  decimals diagnostic (`cap * 10^decimals <= 2^63-1`).
+- **Later.** Master/thread sharding for transfer throughput; BCMR emission at deploy; ERC-4626 vault; native-
+  form DEX integration; Model B (registered self-custody) as a separate product.
 
 ## Open decisions
 
-1. DECIDED (2026-07-10): both burn flavors ship - permanent (implicit omission or OP_RETURN, `T -= x`)
-   and returning (`burnToReserve`, physical return to the reserve container, `R += x`). Supply model is
-   normative: full premint at genesis, mint = release into circulation, `T <= initialSupply` forever.
-2. Boundary policy (supersedes "blacklist scope"): admission at deposit = open | whitelist mapping |
-   issuer-cosign; exit = open | vault-only | disabled; keep in-ledger blacklist + `destroyBlackFunds` as the
-   freeze tool. Deploy-time flags or template variants? (rec: two audited variants - freedom preset and
-   compliance preset - over a flag matrix)
-3. `decimals` default 8 with the hard compile check? (rec: yes)
-4. v1 pool location: token container (rec) vs FTs riding the master thread NFT.
-5. `deposit` credit: call-only v1, or also claim-by-proof for plain sends to the container address?
-   (rec: call-only)
+1. DECIDED (2026-07-10): both burn flavors ship - permanent (implicit omission or OP_RETURN, `T -= x`) and
+   returning (`burnToReserve`, physical return to the reserve container, `R += x`). Supply model normative:
+   full premint at genesis, mint = release into circulation, `T <= initialSupply` forever.
+2. DECIDED (2026-07-11): Model A (FT-on-entry wrapped ledger) is primary; balances multi-note; masterless
+   path = ownership-preserving only; every ownership change + boundary crossing is master-mediated.
+3. DECIDED (2026-07-10): reserve on a dedicated token container; `R` = its `tokenAmount` (no stored counter).
+4. DECIDED (2026-07-25): **quarantined admission** is the default boundary shape - `deposit` lands in a
+   pending note, matures after `X` blocks via a BIP68 `sequenceNumber` equality-pin, and `claim` is
+   permissionless; the issuer's only power is blacklisting the claimant inside the window. Permissionless by
+   default with a veto, so the issuer is never a liveness dependency and refusals are on-chain auditable.
+   Confiscation is structurally impossible (`cancel` always returns to the depositor). The veto is
+   ACTOR-based; coin-level taint is off-chain signal only. See "The boundary: quarantined admission".
+5. DECIDED (2026-07-25): the EXIT posture is a deploy-time covenant variant, both audited - **freedom**
+   (instant unvetoed `withdraw`, accepting that in-ledger freeze is escapable) and **compliance** (symmetric
+   cooldown: pending-withdrawal note + master `recall`, giving the issuer `Y` guaranteed blocks). Baked into
+   the covenant address at deploy, not flippable per-tx, same resolution shape as the masterless path.
+6. RESOLVED (2026-07-25), was "deposit credit: call-only vs claim-by-proof": neither - it is the two-phase
+   quarantined claim above. Deposit-initiation is master-free and capability-free (pure-FT send to a
+   pair-parameterized covenant); the credit happens in the later permissionless `claim`.
+7. OPEN - owner-tag encoding + masterless signature-check mechanics for the BALANCE note (handoff item 1).
+   Candidate: `hash160(lockingBytecode)`, 20 bytes, uniform over P2PKH and p2sh32 owners. The pending note
+   does not share this problem (its tags are in the covenant script).
+8. OPEN - remaining boundary policy beyond the two presets: admission variants (open | whitelist |
+   issuer-cosign) for issuers who want them, exit variants (registered | vault-only | disabled); the flat vs
+   amount-tiered cooldown window (rec: flat - tiering invites structuring); the concrete `X` / `Y` defaults;
+   keep in-ledger blacklist + `destroyBlackFunds`.
+9. OPEN - `decimals` default 8 with the hard `cap * 10^decimals <= 2^63-1` compile check? (rec: yes.)
+10. OPEN - `permit` + masterless self-path in P1/P2 vs deferred (rec: P2/P3 as phased above).

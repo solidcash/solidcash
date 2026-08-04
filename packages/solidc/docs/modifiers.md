@@ -45,7 +45,6 @@ Some Solidity modifiers map cleanly, some are accepted purely so real `.sol` sou
 | `upgrade` | covenant | function | allows the contract bytecode to change |
 | `deploy` | covenant | function | may mint child contracts |
 | `selfdestruct` | covenant | function | collapses all state UTXOs |
-| `delegate` | covenant | function | proxy-implementation side (delegatecall) |
 | `split(n)` / `merge(n)` | covenant | function | thread fan-out / fan-in |
 | `modifier f() { _; }` | user-defined | function | inlined at the `_` placeholder |
 
@@ -208,13 +207,15 @@ contract, so writing it by hand is redundant and `deploy` in modifier position i
 
 Full treatment: [selfdestruct.md](./selfdestruct.md).
 
-### `delegate`
+### Delegate implementation mode (inferred)
 
 | EVM | SolidCash |
 | --- | --- |
-| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. A `delegate` function is co-spent by a proxy and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). Cannot itself contain a `delegatecall`. |
+| `delegatecall` runs another contract's code in the caller's storage context. | The implementation side of that pattern. An eligible ordinary function is emitted in a delegate-mode artifact, co-spent by a proxy, and operates on the proxy's state: it receives the proxy's master input index (passed via the altstack), verifies the proxy's minting capability and self-preservation, and skips its own full state covenant (the proxy owns that). It cannot itself contain a `delegatecall`. |
 
-Blocked with every other covenant modifier (see the matrix below).
+Solidity has no implementation-side modifier, and neither does SolidCash source: the compiler
+infers which functions can act as a proxy implementation and emits that build as `artifact.delegateArtifact`,
+reached from the SDK with `contract.asDelegate()`. See [delegatecall.md](./delegatecall.md).
 
 ### `split(n)` / `merge(n)`
 
@@ -250,14 +251,14 @@ Validated in `SymbolTableTraversal.validateModifiers`. The general rules:
 
 - **At most one** visibility modifier; **no duplicate** modifiers.
 - `pure` / `view` cannot combine with any covenant modifier (those mutate state) or with `payable`.
-- The covenant modifiers `unsafe`, `upgrade`, `deploy`, `selfdestruct`, `delegate`, `split`, `merge` are
+- The covenant modifiers `unsafe`, `upgrade`, `deploy`, `selfdestruct`, `split`, `merge` are
   **mutually exclusive** with each other (`deploy` and `selfdestruct` are inferred, not written, but still
   participate in the exclusivity check when a body both mints a child and carries another covenant modifier).
 - Every covenant modifier requires a **stateful** contract and an **externally callable** function
   (not `internal` / `private`).
 - `split` and `merge` are mutually exclusive and need a valid integer count parameter.
 - `unsafe(N)` requires `N` in `{0, 1, 2}`.
-- `delegate` bodies cannot contain a low-level `delegatecall`.
+- Inferred delegate implementation functions cannot contain a low-level `delegatecall`.
 
 Accepted-but-inert: `virtual` (no-op, warned); `pure` / `view`
 (unenforced). `payable` is inert as a value gate but enables `msg.value`.

@@ -26,7 +26,7 @@ contract-class concern.
 ## `library` lowers to a stateless contract
 
 A Solidity `library` is a stateless contract whose code runs in the caller's context via DELEGATECALL, and
-SolidCash already has that primitive (the `delegate` modifier + the `_proxyMasterIndex` altstack trick). So
+SolidCash already has that primitive (inferred delegate mode + the `_proxyMasterIndex` altstack trick). So
 `LibraryNotCompilableError` is liftable: a `library` lowers to a **stateless contract that emits a normal
 artifact** whose public functions are `delegate` entry points. This is the deployed counterpart to the
 inlined `using for` library (compile-time inlined, no artifact) - matching Solidity's own split: internal
@@ -178,8 +178,9 @@ the existing delegate-impl compilation path; Phase 3+ is the genuinely new mecha
      resolved across the delegate boundary, or a shared-layout convention. Today's storage-pointer params are
      INLINED (`InlineStoragePointerCalls`); a delegate library needs them resolved at the co-spend boundary
      instead. This is the central new design; everything else depends on it.
-   - **Library side.** Mark caller-state-touching public functions `delegate`; reuse the delegate-impl machinery
-     (`_proxyMasterIndex` altstack, `emitDelegateSelfPreservation`) so the deployed library UTXO self-preserves.
+   - **Library side.** Infer delegate mode for caller-state-touching public functions; reuse the delegate-impl
+     machinery (`_proxyMasterIndex` altstack, `emitDelegateSelfPreservation`) so the deployed library UTXO
+     self-preserves.
    - **Consumer side: mid-body `r = L.f(args)`.** Co-spend L, run f in the caller's covenant context (delegate),
      return a value mid-body. Today's delegate is whole-spend (a proxy fallback forwards all calldata); a
      mid-body, value-returning delegate call composed with the return-event is genuinely new.
@@ -295,7 +296,8 @@ return); pure value-returning helpers use the precompile path.
    into the lowered contract. A state-touching library's public/external functions are AUTO-marked `delegate` -
    Solidity has no `delegate` keyword (public library functions are delegatecalled implicitly), so ported
    source needs none. This reuses `_proxyMasterIndex` + `emitDelegateSelfPreservation` verbatim: a delegate
-   library compiles BYTE-IDENTICAL to the hand-written `public delegate` contract (LibraryContracts.test.ts).
+   library has the same inferred ABI mode and state layout as an ordinary implementation contract
+   (LibraryContracts.test.ts).
 
    **On `storage self` (EVM parity):** Solidity's `storage self` library pattern is ALREADY supported - via
    `using for` over an explicit struct instance: `library L { struct Data { uint x; } function getX(L.Data

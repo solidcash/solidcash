@@ -1,7 +1,7 @@
 contract DelegateImpl() {
     int totalSupply;
 
-    function mint(int amount) delegate {
+    function mint(int amount) public {
         this.totalSupply = this.totalSupply + amount;
     }
 

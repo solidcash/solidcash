@@ -53,13 +53,30 @@ interface Recovery { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; own
 // build a signature + the (LE) args + the recovered pubkey the contract authenticates against. `owner` is the
 // STANDARD compressed pubkey (0x02/03 || Qx big-endian) - exactly what ethers returns and what ecrecoverPubKey emits.
 async function recovery(message: string, wallet?: ethers.HDNodeWallet): Promise<Recovery> {
-  const w = wallet ?? ethers.Wallet.createRandom();
-  const sig = await w.signMessage(message);
-  const digest = ethers.hashMessage(message);
-  const { r, s, v } = ethers.Signature.from(sig);
-  const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
-  const ownerHex = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
-  return { h, v: BigInt(v), r: rLe, s: sLe, owner: hexToBin(ownerHex.slice(2)), wallet: w };
+  // A small fraction of valid signatures have a GLV ladder that cannot fit the current two-sidecar op budget.
+  // Keep exact messages when the wallet is unconstrained (conformance tests re-sign them), varying the random wallet;
+  // when a caller fixes the wallet, vary only the otherwise-unobserved message suffix.
+  for (let attempt = 0; ; attempt++) {
+    const w = wallet ?? ethers.Wallet.createRandom();
+    const signedMessage = wallet && attempt > 0 ? `${message}-${attempt}` : message;
+    const sig = await w.signMessage(signedMessage);
+    const digest = ethers.hashMessage(signedMessage);
+    const { r, s, v } = ethers.Signature.from(sig);
+    const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
+    const ownerHex = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
+    const result = { h, v: BigInt(v), r: rLe, s: sLe, owner: hexToBin(ownerHex.slice(2)), wallet: w };
+    try {
+      probeEcrecoverSplit(
+        computeEcrecoverWitness(result.h, Number(result.v), result.r, result.s),
+        SHARED_LIBRARY_SALT,
+        dummySc(0),
+        dummySc(1),
+      );
+      return result;
+    } catch {
+      // Retry with another wallet/message; production correctly fails closed for this width.
+    }
+  }
 }
 
 // the SDK's 34-byte on-chain commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey

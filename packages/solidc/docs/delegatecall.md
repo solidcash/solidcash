@@ -12,9 +12,7 @@ stable address, and the code that mutates it can be upgraded by pointing the pro
 
 ### Delegate (implementation)
 
-A delegate exposes its mutating logic as functions marked with the `delegate` modifier. Inside a `delegate`
-function, `this.<field>` refers to the **proxy's** state, not the delegate's own — the compiler injects a
-`_proxyMasterIndex` parameter and retargets every state access through it.
+An implementation is an **ordinary contract** — there is no keyword, exactly as in Solidity:
 
 ```solidity
 pragma solidcash >=0.8.0;
@@ -22,15 +20,42 @@ pragma solidcash >=0.8.0;
 contract Counter() {
     bigint counter;
 
-    function increment() delegate {
-        this.counter = this.counter + 1;   // mutates the PROXY's counter
+    function increment() public {
+        this.counter = this.counter + 1;
     }
 }
 ```
 
-A `delegate` function must:
-- run against a co-spent proxy whose master has minting capability and preserves itself (checked automatically);
-- not itself issue a delegatecall (`delegate` + `delegatecall` is rejected).
+BCH has no shared execution context, so "writes its own state" and "writes a co-spent proxy's state" are
+different scripts and the choice cannot be deferred to runtime. The compiler therefore builds this contract
+twice: the standalone artifact, plus a **delegate build** carried as `artifact.delegateArtifact`, in which
+`this.<field>` targets the proxy's state (a `_proxyMasterIndex` parameter is injected and every state access is
+retargeted through it). The SDK reaches the second build with `contract.asDelegate()`.
+
+A function gets a delegate build when it is externally callable, touches state the proxy owns (a state write,
+an `emit`, or a low-level call), and carries none of `view`, `pure`, `internal`, `private`, `unsafe`, `upgrade`,
+`deploy`, `selfdestruct`, `split`, `merge`. It must also not issue a delegatecall itself. Functions that do not
+qualify are still present in the delegate build, but in their ordinary form.
+
+Two forms are excluded because they do not currently execute in delegate mode - the delegate input fails its
+covenant:
+
+- **value transfers** (`payable(r).transfer(...)`), and
+- **token-container operations** (`this.tokens[cat].transfer(...)`).
+
+This is a limitation of the delegate codegen, not of inference. A transfer poisons the whole function, so a
+state write alongside one is excluded too, and the check follows internal helpers transitively - an entry point
+whose own body is clean is still excluded if a helper it calls transfers. Excluding them means `asDelegate()`
+throws at build time instead of the transaction reverting at broadcast. A contract whose only mutating
+functions transfer gets no delegate build at all.
+
+Typed external calls (`IFoo(addr).bar()`) do not make a function eligible either: an external call mutates the
+**callee's** state, never the proxy's, so there is nothing to delegate.
+
+The delegate build runs against a co-spent proxy whose master has minting capability and preserves itself; both
+are checked automatically.
+
+The implementation-side mode is compiler-internal. `delegate` is not a source-level function modifier.
 
 ### Proxy
 
@@ -86,7 +111,9 @@ co-spend, calldata, and the return wiring:
 import { StatefulContract } from 'solidcash';
 
 const proxy = StatefulContract.withCategory(proxyContract, proxyCategoryId);
-const impl  = StatefulContract.withCategory(counterContract, implCategoryId);
+// asDelegate() selects the delegate build. It is a different script, so deploy THIS one as the
+// implementation - it has a different address than the standalone contract.
+const impl  = StatefulContract.withCategory(counterContract.asDelegate(), implCategoryId);
 
 const tx = await proxy.call['__fallback']()
   .withDelegatecall(impl, 'increment', [])   // (impl, delegateFunction, args)
@@ -120,6 +147,8 @@ subject of [delegatecall-security.md](./delegatecall-security.md).
 
 ## Related
 
-- `delegate` modifier, `_proxyMasterIndex` injection — `packages/solidc/src/generation/GenerateTargetTraversal.ts`
+- Inferred delegate mode and `_proxyMasterIndex` injection —
+  `packages/solidc/src/semantic/AutoMarkDelegateFunctions.ts` and
+  `packages/solidc/src/generation/GenerateTargetTraversal.ts`
 - Library contracts reuse the same delegate machinery under `L.f()` sugar — see `library-contracts.md`.
 - Security model and hardening rules — `delegatecall-security.md`.

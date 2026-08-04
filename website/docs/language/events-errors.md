@@ -55,7 +55,7 @@ contract Token() {
     mapping(bytes20 => int) balances;
 
     function transfer(bytes20 to, int amount) {
-        bytes20 sender = hash160(msg.sender);
+        bytes20 sender = hash160(bytes(msg.sender));
         require(this.balances[sender] >= amount);
 
         this.balances[sender] = this.balances[sender] - amount;
@@ -124,20 +124,32 @@ Errors are included in the contract's ABI, allowing callers to decode failure re
 Use `revert` to abort execution with an error:
 
 ```solidity
-function transfer(bytes20 to, int amount) {
-    if (this.balances[hash160(msg.sender)] < amount) {
-        revert InsufficientBalance(amount, this.balances[hash160(msg.sender)]);
+error InsufficientBalance(int requested, int available);
+
+contract Ledger() {
+    mapping(bytes20 => int) balances;
+
+    function transfer(bytes20 to, int amount) public {
+        bytes20 sender = hash160(bytes(msg.sender));
+        if (this.balances[sender] < amount) {
+            revert InsufficientBalance(amount, this.balances[sender]);
+        }
+        this.balances[sender] -= amount;
+        this.balances[to] += amount;
     }
-    // ...
 }
 ```
 
 ### Revert Variants
 
 ```solidity
-revert InsufficientBalance(100, 50);  // structured error with args
-revert("Not enough funds");            // string message
-revert();                               // no data
+error InsufficientBalance(int requested, int available);
+
+contract RevertForms() {
+    function structured() { revert InsufficientBalance(100, 50); }  // error with args
+    function withMessage() { revert("Not enough funds"); }          // string message
+    function bare() { revert(); }                                   // no data
+}
 ```
 
 ## Assert
@@ -145,7 +157,14 @@ revert();                               // no data
 Assert checks internal invariants that should never be false:
 
 ```solidity
-assert(totalSupply >= 0);
+contract Invariant() {
+    int totalSupply;
+
+    function check() public {
+        assert(this.totalSupply >= 0);
+        this.totalSupply += 1;
+    }
+}
 ```
 
 If the assertion fails, the transaction is aborted.
@@ -155,8 +174,12 @@ If the assertion fails, the transaction is aborted.
 The `require` statement is the primary validation mechanism. An optional second argument provides an error message:
 
 ```solidity
-require(amount > 0, "Amount must be positive");
-require(checkSig(s, owner));
+contract Guarded(pubkey owner) {
+    function withdraw(int amount, sig s) {
+        require(amount > 0, "Amount must be positive");
+        require(checkSig(s, owner));
+    }
+}
 ```
 
 :::note

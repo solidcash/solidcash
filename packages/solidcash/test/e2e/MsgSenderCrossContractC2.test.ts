@@ -3,6 +3,7 @@ import { compileString } from 'solidc';
 import { hexToBin, vmNumberToBigInt } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
+import { addressToLockScript } from '../../src/utils.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -28,15 +29,9 @@ contract Caller(bytes bankAddr) {
   }
 }`;
 
-// DEFERRED (boundary #1). Root cause found: the cross-contract dispatch (externalCallUtxoGroups) derives only the
-// callee's SCALAR data NFTs, not its sorted-mapping ENTRY co-spend - so ANY callee sorted-mapping WRITE fails on the
-// VM (verified: even a normal-key `bal[k]=v` cross-contract write fails input 2 OP_OUTPUTTOKENCOMMITMENT verify).
-// So the msg.sender variant is blocked on the larger missing feature: callee sorted-mapping entry derivation in the
-// external group (co-spend entry/predecessor, mint P'/NEW in the callee's block layout, pin) - THEN key it by
-// keyToSlot(caller LBC) + set the callee's _msgSenderCategory = caller category. The covenant already resolves a
-// contract msg.sender (emitMsgSenderMintingVerification); the gap is entirely SDK callee-entry derivation. This test
-// is a reproduction to un-skip once that lands. See docs/deferrals.md.
-describe.skip('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], caller = contract A)', () => {
+// Regression for the original boundary reproduction. Cross-contract C2 entry derivation now handles the callee's
+// predecessor/exact-node proof and resolves msg.sender to the caller contract's canonical address locking script.
+describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], caller = contract A)', () => {
   it('A calls Bank.deposit(); Bank.bal[A] == amt (msg.sender = caller contract)', async () => {
     const provider = createTestProvider();
     const artBank = compileString(BANK, { forceStateful: true });
@@ -55,8 +50,6 @@ describe.skip('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender
 
     const scCaller = StatefulContract.withCategory(caller, catCaller);
     const scBank = StatefulContract.withCategory(bank, catBank);
-    const callerLbc = caller.withCategory(hexToBin(catCaller)).lockingBytecode;
-
     const tx = await scCaller.pay(7n, alicePub, new SignatureTemplate(alicePriv))
       .withExternalCall(scBank, 'deposit', [7n])
       .send();
@@ -64,7 +57,8 @@ describe.skip('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender
 
     // Bank.bal[A's locking bytecode] == 7.
     const ea = getEntryNftAddress(scBank.inner, catBank, 'bal');
-    const entry = SortedList.fromUtxos(await provider.getUtxos(ea)).find(keyToSlot(callerLbc));
+    const entry = SortedList.fromUtxos(await provider.getUtxos(ea))
+      .find(keyToSlot(addressToLockScript(scCaller.address)));
     expect(entry).toBeDefined();
     expect(vmNumberToBigInt(entry!.value, { requireMinimalEncoding: false })).toBe(7n);
   });

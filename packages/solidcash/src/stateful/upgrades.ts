@@ -224,14 +224,25 @@ export async function deployProxy<TImpl extends Artifact>(
 ): Promise<ProxyContract<TImpl>> {
   const runner = options.runner ?? implementationFactory.runner;
   const auth = options.auth ?? defaultAuth;
-  const implArtifact = implementationFactory.artifact;
+  const sourceArtifact = implementationFactory.artifact;
+  // Callers pass the ordinary Solidity-shaped artifact. Select the compiler-derived proxy implementation build
+  // here; source code has no `delegate` modifier and should never need to know that BCH uses a second script.
+  const implArtifact = sourceArtifact.delegateArtifact
+    ?? (sourceArtifact.abi.some((f) => f.modifiers?.includes('delegate')) ? sourceArtifact : undefined);
+  if (!implArtifact) {
+    throw new Error(
+      `Implementation '${sourceArtifact.contractName}' has no inferred delegate variant and cannot be deployed `
+      + 'behind a proxy. It needs an externally-callable function that mutates proxy-owned state.',
+    );
+  }
+  const delegateFactory = new ContractFactory(implArtifact as TImpl, runner);
 
   // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
   const initializer = resolveInitializer(options.initializer, implArtifact);
   const seededState = initializer ? undefined : toInitialState(initialState, implArtifact);
 
   // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-  const implementation = await implementationFactory.connect(runner).deploy(
+  const implementation = await delegateFactory.deploy(
     ...(options.implementationOverrides ? [options.implementationOverrides] : []),
   ) as DeployedContract<TImpl>;
 

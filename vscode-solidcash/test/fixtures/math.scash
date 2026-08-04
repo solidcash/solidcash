@@ -1,0 +1,14 @@
+pragma solidcash ^0.13.0;
+
+/// Adds two amounts.
+function add(int a, int b) returns (int) {
+    return a + b;
+}
+
+library SafeMath {
+    /// Subtracts `b` from `a`, failing on underflow.
+    function sub(int a, int b) internal returns (int) {
+        require(a >= b);
+        return a - b;
+    }
+}

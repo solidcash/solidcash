@@ -36,7 +36,9 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
   sorted/exclusion-proof backend by default; state also uses data, entry, value-chunk, token-container, and
   satoshi-container UTXOs.
 - `event`/`error` with `emit`/`revert`
-- Lifecycle modifiers: `deploy`, `upgrade`, `selfdestruct`, `split`, `merge`, `unsafe`, `delegate` (delegatecall proxy/implementation)
+- Lifecycle modifiers: `deploy`, `upgrade`, `selfdestruct`, `split`, `merge`, `unsafe`
+- Proxy implementations use ordinary functions; eligible state-mutating entry points receive an inferred
+  `delegateArtifact` for `.delegatecall`
 
 **Cross-contract & introspection**
 - External reads `IFoo(category).stateVar`; external calls + low-level `.call/.staticcall/.delegatecall`; `address.transfer/.send`

@@ -2395,16 +2395,19 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        const constantGetter = fn.parameters.length === 0
+          && contract.constantDefinitions.some((constant) => constant.name === fn.name);
         const scalarGetter = fn.parameters.length === 0
-          && contract.stateVariables.some((state) => state.name === fn.name)
+          && (constantGetter || contract.stateVariables.some((state) => state.name === fn.name))
           // A flattened public struct getter has its own compiler-generated projection body. `this.s` is the
           // whole struct value, while the getter ABI returns only its projected field shape; treating it like a
           // scalar getter assigns `S` to the first projected field type in the generated route.
           && !contract.flattenedPublicStructGetters.some((getter) => getter.name === fn.name);
         if (scalarGetter) {
-          if (!captureResults || fn.returnTypes.length === 0) return `this.${fn.name};`;
+          const getterExpression = constantGetter ? fn.name : `this.${fn.name}`;
+          if (!captureResults || fn.returnTypes.length === 0) return `${getterExpression};`;
           const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
-          return `${fn.returnTypes[0].toString()} ${name}; ${name} = this.${fn.name}; `
+          return `${fn.returnTypes[0].toString()} ${name}; ${name} = ${getterExpression}; `
             + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
         }
         if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
@@ -4272,9 +4275,40 @@ function compileResolvedAst(
     collectDefinitions(optimisationResult.script);
     const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
     if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
-    const verifierFunctionIds = [...verifierBytecodes.keys()]
-      .filter((id) => id <= -12 || id === verifierFunction?.functionId)
-      .sort((a, b) => a - b);
+    const decodeFunctionId = (encoded: ReturnType<typeof bytecodeToScript>[number]): number | undefined => {
+      if (encoded instanceof Uint8Array) {
+        try {
+          const decoded = decodeInt(encoded);
+          if (decoded >= BigInt(Number.MIN_SAFE_INTEGER) && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) {
+            return Number(decoded);
+          }
+        } catch { return undefined; }
+      } else if (encoded === Op.OP_0) return 0;
+      else if (encoded >= Op.OP_1 && encoded <= Op.OP_16) return encoded - Op.OP_1 + 1;
+      return undefined;
+    };
+    // `outlinedSubroutineBytecodes` contains every shared outline in the whole contract. Most are unrelated to the
+    // atomic verifier; embedding all of them can make the verifier covenant exceed BCH's 10KB script limit. Begin
+    // with the verifier and the dynamically selected compact-helper namespace, then add only statically invoked
+    // outlines, transitively. OP_INVOKE hard-fails on an omitted definition, so this is an exact fail-closed closure.
+    const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()]
+      .filter((id) => id <= -12 || id === verifierFunction?.functionId));
+    if (verifierFunction?.functionId !== undefined) requiredVerifierIds.add(verifierFunction.functionId);
+    const pendingVerifierIds = [...requiredVerifierIds];
+    while (pendingVerifierIds.length > 0) {
+      const id = pendingVerifierIds.pop()!;
+      const bytecode = verifierBytecodes.get(id);
+      if (!bytecode) continue;
+      const script = bytecodeToScript(bytecode);
+      for (let i = 1; i < script.length; i++) {
+        if (script[i] !== Op.OP_INVOKE) continue;
+        const invokedId = decodeFunctionId(script[i - 1]);
+        if (invokedId === undefined || requiredVerifierIds.has(invokedId) || !verifierBytecodes.has(invokedId)) continue;
+        requiredVerifierIds.add(invokedId);
+        pendingVerifierIds.push(invokedId);
+      }
+    }
+    const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
     const verifierFunctions = verifierFunctionIds.map((id) => ({
       id,
       name: functionNameById.get(id) ?? `__internal_${id}`,

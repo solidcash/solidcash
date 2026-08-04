@@ -1380,6 +1380,9 @@ export class UnaryOpNode extends ExpressionNode {
 }
 
 export class NullaryOpNode extends ExpressionNode {
+  // Solidity before 0.8 typed msg.sender and tx.origin as address payable.
+  legacyPayableAddress = false;
+
   // Solidity permits msg.value in state-variable initializers even when the synthesized constructor is
   // nonpayable; preserve that source context after the initializer is lowered into a constructor assignment.
   fromStateInitializer: boolean = false;

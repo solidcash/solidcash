@@ -2549,7 +2549,7 @@ export default class AstBuilder
       const defName = `__pushPtr_def_${uid}`;
       // uint __idx = arr.length;  (pre-push length = the appended element's index)
       const idxDef = stamp(new VariableDefinitionNode(
-        this.solidityImportCompat ? new IntType(256, false) : PrimitiveType.BIGINT,
+        this.solidityImportCompat ? new IntType(false, 256) : PrimitiveType.BIGINT,
         [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
       // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)

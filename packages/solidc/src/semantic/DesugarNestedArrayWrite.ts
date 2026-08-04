@@ -1,4 +1,4 @@
-import { ArrayType, MappingType, StructType, Type, isChunkPackableElementType } from '@solidcash/utils';
+import { ArrayType, BytesType, MappingType, StructType, Type } from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -9,8 +9,10 @@ import {
   ParameterNode,
   VariableDefinitionNode,
   MappingAssignNode,
+  MappingAccessNode,
   MappingFieldAssignNode,
   MappingDeleteNode,
+  AssignNode,
   ArrayAssignNode,
   StateArrayAssignNode,
   ArrayAccessNode,
@@ -43,9 +45,11 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // Fixed-inner nested state arrays (`uint256[N][]`): chunk-packed, so `a[i]` is a whole-row state read/write.
   // A nested write `a[i][j] = v` desugars like the local case, but the base write-back is a StateArrayAssign.
   private stateArrays = new Map<string, Type>();
+  private stateStructArrays = new Map<string, StructType>();
   // Mappings whose (innermost) value is an array: name -> { keyCount, valueType }. A `m[k..][i][j]=v` write to a
   // MULTI-dim array value desugars to a whole-value read + local nested write + whole-value write-back.
   private mappings = new Map<string, { keyCount: number; valueType: ArrayType }>();
+  private mappingStructs = new Map<string, { keyCount: number; valueType: StructType }>();
   // Temp declarations hoisted out of the CURRENT statement's expressions (a 2D array-value READ `m[k][i][j]` becomes
   // `T[][] t = m[k]` hoisted here + an `t[i][j]` local read in place). Flushed before the statement in visitBlock.
   private pendingHoists: StatementNode[] = [];
@@ -60,18 +64,23 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
 
   visitContract(node: ContractNode): Node {
     this.stateArrays = new Map();
+    this.stateStructArrays = new Map();
     for (const sv of node.stateVariables) {
-      if (sv.type instanceof ArrayType && sv.type.elementType instanceof ArrayType
-        && isChunkPackableElementType(sv.type.elementType)) {
+      if (sv.type instanceof ArrayType && sv.type.elementType instanceof ArrayType) {
         this.stateArrays.set(sv.name, sv.type);
+      }
+      if (sv.type instanceof ArrayType && sv.type.elementType instanceof StructType) {
+        this.stateStructArrays.set(sv.name, sv.type.elementType);
       }
     }
     this.mappings = new Map();
+    this.mappingStructs = new Map();
     for (const col of node.collections) {
       let vt: Type = col.type;
       let keyCount = 0;
       while (vt instanceof MappingType) { keyCount++; vt = vt.valueType; }
       if (keyCount > 0 && vt instanceof ArrayType) this.mappings.set(col.name, { keyCount, valueType: vt });
+      if (keyCount > 0 && vt instanceof StructType) this.mappingStructs.set(col.name, { keyCount, valueType: vt });
     }
     if (node.constructorDef) node.constructorDef = this.visit(node.constructorDef) as FunctionDefinitionNode;
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
@@ -106,10 +115,13 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       const visited = this.visit(stmt) as StatementNode;
       const myHoists = this.pendingHoists; // 2D array-value reads hoisted out of THIS statement
       const desugared = visited instanceof MappingAssignNode
-        ? (this.tryDesugar(visited) ?? this.tryDesugarNestedPushPop(visited)
+        ? (this.tryDesugarNestedPushPop(visited) ?? this.tryDesugar(visited)
           ?? this.tryDesugarMappingArrayValue(visited))
         : visited instanceof MappingFieldAssignNode
-          ? this.tryDesugarLocalStructArrayField(visited)
+          ? (this.tryRebuildNestedMappingStructField(visited)
+            ?? this.tryDesugarNestedStateStructField(visited)
+            ?? this.tryDesugarLocalStructArrayField(visited)
+            ?? this.tryDesugarLocalNestedStructArrayField(visited))
           : visited instanceof MappingDeleteNode
             ? this.tryDesugarLocalArrayDelete(visited)
             : undefined;
@@ -162,35 +174,143 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
     return { base: cur, keys };
   }
 
-  // `a[i].push(v)` / `a[i].pop()` on a nested state array (`uint256[][]`): a read-modify-write of row i via a
-  // local push/pop -> `T[] t = a[i]; t.push(v); a[i] = t;`. Returns undefined if not applicable.
+  // `a[i]...[j].push(v)` / `.pop()` on a nested state array: read the target array through locals, mutate it,
+  // then rebuild every containing row. For one key this is `T[] t = a[i]; t.push(v); a[i] = t`; deeper keys
+  // repeat the same read/write-back shape for each dimension.
   private tryDesugarNestedPushPop(node: MappingAssignNode): StatementNode[] | undefined {
-    if (!(node.arrayPush || node.arrayPop) || node.keys.length !== 1) return undefined;
+    if (!(node.arrayPush || node.arrayPop) || node.keys.length < 1) return undefined;
     const isState = !this.locals.has(node.name) && this.stateArrays.has(node.name);
     if (!isState) return undefined;
-    const rowType = (this.stateArrays.get(node.name) as ArrayType).elementType;
-    if (!(rowType instanceof ArrayType)) return undefined; // only nested (element is itself an array)
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
-    const tmpName = `__np_tmp_${this.counter++}`;
-    const read = new ArrayAccessNode(this.ident(node.name, node), clone(node.keys[0]));
-    read.location = node.location;
-    const decl = new VariableDefinitionNode(rowType, [], tmpName, read);
-    decl.location = node.location;
+    const stmts: StatementNode[] = [];
+    const tmpNames: string[] = [];
+    let currentType: Type = this.stateArrays.get(node.name)!;
+    let currentRead: ExpressionNode = this.ident(node.name, node);
+    for (let i = 0; i < node.keys.length; i++) {
+      if (!(currentType instanceof ArrayType)) return undefined;
+      const elementType: Type = currentType.elementType;
+      const tmpName = `__np_tmp_${this.counter++}`;
+      const read = new ArrayAccessNode(currentRead, clone(node.keys[i]));
+      read.location = node.location;
+      const decl = new VariableDefinitionNode(elementType, [], tmpName, read);
+      decl.location = node.location;
+      stmts.push(decl);
+      tmpNames.push(tmpName);
+      currentType = elementType;
+      currentRead = this.ident(tmpName, node);
+    }
+    if (!(currentType instanceof ArrayType)) return undefined;
 
     let op: StatementNode;
     if (node.arrayPush) {
-      const push = new ArrayPushNode(tmpName, node.expression);
+      const push = new ArrayPushNode(tmpNames.at(-1)!, node.expression);
       push.noArg = node.noArg;
       op = push;
     } else {
-      op = new ArrayPopNode(tmpName);
+      op = new ArrayPopNode(tmpNames.at(-1)!);
     }
     op.location = node.location;
+    stmts.push(op);
 
-    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpName, node));
+    for (let i = node.keys.length - 1; i >= 1; i--) {
+      const back = new ArrayAssignNode(
+        tmpNames[i - 1], clone(node.keys[i]), this.ident(tmpNames[i], node),
+      );
+      back.location = node.location;
+      stmts.push(back);
+    }
+    const back = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(tmpNames[0], node));
     back.location = node.location;
-    return [decl, op, back];
+    stmts.push(back);
+    return stmts;
+  }
+
+  // `m[k].outer.inner = v`: MappingFieldAssign stores one top-level struct field, so rebuild that field's nested
+  // struct value while retaining the keyed mapping write.
+  private tryRebuildNestedMappingStructField(node: MappingFieldAssignNode): StatementNode[] | undefined {
+    if (!node.trailingMembers?.length) return undefined;
+    const info = this.mappingStructs.get(node.name);
+    if (!info || node.keys.length !== info.keyCount) return undefined;
+    const target = info.valueType.fields.find((f) => f.name === node.fieldName);
+    if (!(target?.type instanceof StructType)) return undefined;
+    const mappingRead = new MappingAccessNode(
+      node.name, node.keys.map((k) => cloneNode(k) as ExpressionNode),
+    );
+    mappingRead.location = node.location;
+    const fieldRead = new FieldAccessNode(mappingRead, node.fieldName);
+    fieldRead.location = node.location;
+    node.expression = this.rebuildStructFieldChain(
+      fieldRead, target.type, node.trailingMembers, node.expression, node,
+    );
+    node.trailingMembers = undefined;
+    return [node];
+  }
+
+  // `a[i][j]...[k].field = v` where a is a nested STATE array and the terminal element is a struct. Materialize
+  // each containing row, rebuild the selected struct, then write rows back from the inside out.
+  private tryDesugarNestedStateStructField(node: MappingFieldAssignNode): StatementNode[] | undefined {
+    if (node.keys.length < 2 || node.trailingMembers?.length) return undefined;
+    const rootType = !this.locals.has(node.name) ? this.stateArrays.get(node.name) : undefined;
+    if (!(rootType instanceof ArrayType)) return undefined;
+    let terminal: Type = rootType;
+    for (let i = 0; i < node.keys.length; i++) {
+      if (!(terminal instanceof ArrayType)) return undefined;
+      terminal = terminal.elementType;
+    }
+    if (!(terminal instanceof StructType) || !terminal.fields.some((f) => f.name === node.fieldName)) {
+      return undefined;
+    }
+
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    const stmts: StatementNode[] = [];
+    const temps: string[] = [];
+    let currentType: Type = rootType;
+    let currentRead: ExpressionNode = this.ident(node.name, node);
+    // The final key selects the struct itself; materialize only its containing array rows.
+    for (let i = 0; i < node.keys.length - 1; i++) {
+      if (!(currentType instanceof ArrayType)) return undefined;
+      const elementType: Type = currentType.elementType;
+      const tmp = `__nsf_tmp_${this.counter++}`;
+      const read = new ArrayAccessNode(currentRead, clone(node.keys[i]));
+      read.location = node.location;
+      const decl = new VariableDefinitionNode(elementType, [], tmp, read);
+      decl.location = node.location;
+      stmts.push(decl);
+      temps.push(tmp);
+      currentType = elementType;
+      currentRead = this.ident(tmp, node);
+    }
+    if (temps.length === 0) return undefined;
+    const selected = (): ArrayAccessNode => {
+      const read = new ArrayAccessNode(
+        this.ident(temps.at(-1)!, node), clone(node.keys.at(-1)!),
+      );
+      read.location = node.location;
+      return read;
+    };
+    const ctor = new FunctionCallNode(
+      this.ident(terminal.name, node),
+      terminal.fields.map((f) => {
+        if (f.name === node.fieldName) return node.expression;
+        const read = new FieldAccessNode(selected(), f.name);
+        read.location = node.location;
+        return read;
+      }),
+    );
+    ctor.location = node.location;
+    const terminalWrite = new ArrayAssignNode(temps.at(-1)!, clone(node.keys.at(-1)!), ctor);
+    terminalWrite.location = node.location;
+    stmts.push(terminalWrite);
+    for (let i = temps.length - 1; i >= 1; i--) {
+      const back = new ArrayAssignNode(temps[i - 1], clone(node.keys[i]), this.ident(temps[i], node));
+      back.location = node.location;
+      stmts.push(back);
+    }
+    const stateBack = new StateArrayAssignNode(node.name, clone(node.keys[0]), this.ident(temps[0], node));
+    stateBack.location = node.location;
+    stmts.push(stateBack);
+    return stmts;
   }
 
   // `m[i].f = v` where m is a LOCAL struct array (`S[] memory`): the parser makes a MappingFieldAssignNode which
@@ -198,11 +318,16 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
   // already work, so rebuild the element with field f replaced: `m[i] = S(m[i].f0, .., v, ..)`. Only a LOCAL
   // struct array fires here - a state struct array handles a simple field write in place.
   private tryDesugarLocalStructArrayField(node: MappingFieldAssignNode): StatementNode[] | undefined {
-    if (node.keys.length !== 1) return undefined;
+    if (node.keys.length < 1) return undefined;
     const baseType = this.locals.get(node.name);
-    if (!(baseType instanceof ArrayType) || !(baseType.elementType instanceof StructType)) return undefined;
-    const struct = baseType.elementType;
-    if (!struct.fields.some((f) => f.name === node.fieldName)) return undefined;
+    const localStruct = baseType instanceof ArrayType && baseType.elementType instanceof StructType
+      ? baseType.elementType : undefined;
+    const stateStruct = !localStruct && !this.locals.has(node.name)
+      ? this.stateStructArrays.get(node.name) : undefined;
+    const struct = localStruct ?? stateStruct;
+    if (!struct) return undefined;
+    const targetField = struct.fields.find((f) => f.name === node.fieldName);
+    if (!targetField) return undefined;
 
     const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
     const elemRead = (field: string): ExpressionNode => {
@@ -212,14 +337,202 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       fa.location = node.location;
       return fa;
     };
+
+    // `m[i].a[j..] = v`: materialize the aggregate field, perform the indexed local write, then rebuild m[i].
+    // The parser flattens every index into MappingFieldAssign.keys, so keys after the first belong to the field.
+    if (node.keys.length > 1) {
+      if (!(targetField.type instanceof ArrayType)
+        && !(targetField.type instanceof BytesType && targetField.type.bound === undefined)) return undefined;
+      const tmpName = `__sa_field_${this.counter++}`;
+      const decl = new VariableDefinitionNode(targetField.type, [], tmpName, elemRead(node.fieldName));
+      decl.location = node.location;
+      const fieldKeys = node.keys.slice(1).map(clone);
+      if (fieldKeys.length === 2 && node.trailingMembers?.length === 1
+        && targetField.type instanceof ArrayType && targetField.type.elementType instanceof StructType) {
+        const elementStruct = targetField.type.elementType;
+        const innerName = node.trailingMembers[0];
+        const innerField = elementStruct.fields.find((f) => f.name === innerName);
+        if (innerField && (innerField.type instanceof ArrayType
+          || (innerField.type instanceof BytesType && innerField.type.bound === undefined))) {
+          const selected = (): ArrayAccessNode => {
+            const read = new ArrayAccessNode(this.ident(tmpName, node), clone(fieldKeys[0]));
+            read.location = node.location;
+            return read;
+          };
+          const innerTmp = `__sa_inner_${this.counter++}`;
+          const innerRead = new FieldAccessNode(selected(), innerName);
+          innerRead.location = node.location;
+          const innerDecl = new VariableDefinitionNode(innerField.type, [], innerTmp, innerRead);
+          innerDecl.location = node.location;
+          const innerWrite = new ArrayAssignNode(innerTmp, clone(fieldKeys[1]), node.expression);
+          innerWrite.location = node.location;
+          const elemCtor = new FunctionCallNode(
+            this.ident(elementStruct.name, node),
+            elementStruct.fields.map((f) => {
+              if (f.name === innerName) return this.ident(innerTmp, node);
+              const read = new FieldAccessNode(selected(), f.name);
+              read.location = node.location;
+              return read;
+            }),
+          );
+          elemCtor.location = node.location;
+          const outerWrite = new ArrayAssignNode(tmpName, clone(fieldKeys[0]), elemCtor);
+          outerWrite.location = node.location;
+          const rootCtor = new FunctionCallNode(
+            this.ident(struct.name, node),
+            struct.fields.map((f) => (f.name === node.fieldName ? this.ident(tmpName, node) : elemRead(f.name))),
+          );
+          rootCtor.location = node.location;
+          const back = stateStruct
+            ? new StateArrayAssignNode(node.name, clone(node.keys[0]), rootCtor)
+            : new ArrayAssignNode(node.name, clone(node.keys[0]), rootCtor);
+          back.location = node.location;
+          return [decl, innerDecl, innerWrite, outerWrite, back];
+        }
+      }
+      let indexedValue = node.expression;
+      if (fieldKeys.length === 1 && node.trailingMembers?.length
+        && targetField.type instanceof ArrayType && targetField.type.elementType instanceof StructType) {
+        const selected = new ArrayAccessNode(this.ident(tmpName, node), clone(fieldKeys[0]));
+        selected.location = node.location;
+        indexedValue = this.rebuildStructFieldChain(
+          selected, targetField.type.elementType, node.trailingMembers, node.expression, node,
+        );
+      }
+      let write: StatementNode;
+      if (fieldKeys.length === 1) {
+        write = new ArrayAssignNode(tmpName, fieldKeys[0], indexedValue);
+        write.location = node.location;
+      } else {
+        const nested = new MappingAssignNode(tmpName, fieldKeys, node.expression);
+        nested.location = node.location;
+        this.locals.set(tmpName, targetField.type);
+        const lowered = this.tryDesugar(nested);
+        if (!lowered) return undefined;
+        const ctor = new FunctionCallNode(
+          this.ident(struct.name, node),
+          struct.fields.map((f) => (f.name === node.fieldName ? this.ident(tmpName, node) : elemRead(f.name))),
+        );
+        ctor.location = node.location;
+        const back = stateStruct
+          ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
+          : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+        back.location = node.location;
+        return [decl, ...lowered, back];
+      }
+      const ctor = new FunctionCallNode(
+        this.ident(struct.name, node),
+        struct.fields.map((f) => (f.name === node.fieldName ? this.ident(tmpName, node) : elemRead(f.name))),
+      );
+      ctor.location = node.location;
+      const back = stateStruct
+        ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
+        : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+      back.location = node.location;
+      return [decl, write, back];
+    }
+
+    const fieldValue = node.trailingMembers?.length && targetField.type instanceof StructType
+      ? this.rebuildStructFieldChain(
+        elemRead(node.fieldName), targetField.type, node.trailingMembers, node.expression, node,
+      )
+      : node.expression;
     const ctor = new FunctionCallNode(
       this.ident(struct.name, node),
-      struct.fields.map((f) => (f.name === node.fieldName ? node.expression : elemRead(f.name))),
+      struct.fields.map((f) => (f.name === node.fieldName ? fieldValue : elemRead(f.name))),
     );
     ctor.location = node.location;
-    const assign = new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
+    const assign = stateStruct
+      ? new StateArrayAssignNode(node.name, clone(node.keys[0]), ctor)
+      : new ArrayAssignNode(node.name, clone(node.keys[0]), ctor);
     assign.location = node.location;
     return [assign];
+  }
+
+  private rebuildStructFieldChain(
+    base: ExpressionNode, type: StructType, members: string[], value: ExpressionNode, atNode: Node,
+  ): ExpressionNode {
+    const head = members[0];
+    const target = type.fields.find((f) => f.name === head);
+    let replacement = value;
+    if (members.length > 1 && target?.type instanceof StructType) {
+      const nestedBase = new FieldAccessNode(base, head);
+      nestedBase.location = atNode.location;
+      replacement = this.rebuildStructFieldChain(
+        nestedBase, target.type, members.slice(1), value, atNode,
+      );
+    }
+    const ctor = new FunctionCallNode(
+      this.ident(type.name, atNode),
+      type.fields.map((f) => {
+        if (f.name === head) return replacement;
+        const read = new FieldAccessNode(cloneNode(base) as ExpressionNode, f.name);
+        read.location = atNode.location;
+        return read;
+      }),
+    );
+    ctor.location = atNode.location;
+    return ctor;
+  }
+
+  // `s.rows[i].items[j] = v` where s is a LOCAL struct and rows is an array of structs. The parser flattens
+  // both indices onto a MappingFieldAssign rooted at s; rebuild the two aggregate layers explicitly:
+  // rows = s.rows; items = rows[i].items; items[j] = v; rows[i] = T(...items...); s = S(...rows...).
+  private tryDesugarLocalNestedStructArrayField(node: MappingFieldAssignNode): StatementNode[] | undefined {
+    if ((node.keys.length !== 1 && node.keys.length !== 2) || node.trailingMembers?.length !== 1) {
+      return undefined;
+    }
+    const root = this.locals.get(node.name);
+    if (!(root instanceof StructType)) return undefined;
+    const outerField = root.fields.find((f) => f.name === node.fieldName);
+    if (!(outerField?.type instanceof ArrayType) || !(outerField.type.elementType instanceof StructType)) {
+      return undefined;
+    }
+    const elementStruct = outerField.type.elementType;
+    const innerName = node.trailingMembers[0];
+    const innerField = elementStruct.fields.find((f) => f.name === innerName);
+    if (!innerField) return undefined;
+    if (node.keys.length === 2 && !(innerField.type instanceof ArrayType)
+      && !(innerField.type instanceof BytesType && innerField.type.bound === undefined)) return undefined;
+
+    const at = <T extends Node>(x: T): T => { x.location = node.location; return x; };
+    const id = (name: string): IdentifierNode => at(new IdentifierNode(name));
+    const field = (base: ExpressionNode, name: string): FieldAccessNode => at(new FieldAccessNode(base, name));
+    const clone = (e: ExpressionNode): ExpressionNode => cloneNode(e) as ExpressionNode;
+    const outerTmp = `__sa_outer_${this.counter++}`;
+    const innerTmp = `__sa_inner_${this.counter++}`;
+    const outerDecl = at(new VariableDefinitionNode(
+      outerField.type, [], outerTmp, field(id(node.name), node.fieldName),
+    ));
+    const selected = (): ArrayAccessNode => at(new ArrayAccessNode(id(outerTmp), clone(node.keys[0])));
+    if (node.keys.length === 1) {
+      const elemCtor = at(new FunctionCallNode(
+        id(elementStruct.name),
+        elementStruct.fields.map((f) => f.name === innerName ? node.expression : field(selected(), f.name)),
+      ));
+      const outerWrite = at(new ArrayAssignNode(outerTmp, clone(node.keys[0]), elemCtor));
+      const rootCtor = at(new FunctionCallNode(
+        id(root.name),
+        root.fields.map((f) => f.name === node.fieldName ? id(outerTmp) : field(id(node.name), f.name)),
+      ));
+      const rootWrite = at(new AssignNode(id(node.name), rootCtor));
+      rootWrite.isReferenceDataWrite = true;
+      return [outerDecl, outerWrite, rootWrite];
+    }
+    const innerDecl = at(new VariableDefinitionNode(innerField.type, [], innerTmp, field(selected(), innerName)));
+    const innerWrite = at(new ArrayAssignNode(innerTmp, clone(node.keys[1]), node.expression));
+    const elemCtor = at(new FunctionCallNode(
+      id(elementStruct.name),
+      elementStruct.fields.map((f) => f.name === innerName ? id(innerTmp) : field(selected(), f.name)),
+    ));
+    const outerWrite = at(new ArrayAssignNode(outerTmp, clone(node.keys[0]), elemCtor));
+    const rootCtor = at(new FunctionCallNode(
+      id(root.name),
+      root.fields.map((f) => f.name === node.fieldName ? id(outerTmp) : field(id(node.name), f.name)),
+    ));
+    const rootWrite = at(new AssignNode(id(node.name), rootCtor));
+    rootWrite.isReferenceDataWrite = true;
+    return [outerDecl, innerDecl, innerWrite, outerWrite, rootWrite];
   }
 
   // `delete d[k0]..[kn]` where d is a LOCAL or nested STATE array: parses as a MappingDeleteNode the symbol
@@ -318,6 +631,11 @@ export default class DesugarNestedArrayWrite extends AstTraversal {
       curType = elemType;
       curRead = this.ident(tmpName, node);
     }
+
+    // An array whose element is a mapping (`mapping(K=>V)[N]`) is not a nested value-array. Its complete
+    // `[arrayIndex][mappingKey]` path is one storage collection access and must stay as MappingAssign; attempting
+    // the local nested-array RMW would materialize a mapping value, which Solidity storage pointers never do.
+    if (!(curType instanceof ArrayType)) return undefined;
 
     // Write the last index into the innermost temp.
     const lastWrite = new ArrayAssignNode(tmpNames[m - 2], clone(keys[m - 1]), node.expression);

@@ -1,12 +1,16 @@
 import { ImportResolverFn } from '@solidcash/utils';
 import { SourceFileNode, ImportNode } from './ast/AST.js';
+import { cloneNode } from './ast/clone.js';
 import { parseCode } from './compiler.js';
 import { UnresolvedImportError, ImportSymbolNotFoundError, UnsafeImportPathError } from './Errors.js';
 
 export class ImportResolver {
   private resolvedFiles = new Map<string, SourceFileNode>();
 
-  constructor(private resolver: ImportResolverFn, private solidityImportCompat = false) {}
+  constructor(
+    private resolver: ImportResolverFn,
+    private solidityImportCompat = false,
+  ) {}
 
   resolve(ast: SourceFileNode, currentFileId: string): SourceFileNode {
     // Register this file up-front so a cyclic import back to it reuses this in-progress AST (see the loop).
@@ -54,7 +58,12 @@ export class ImportResolver {
       // InheritanceExpansionTransformation / the interface-inheritance check.
       let importedAst = this.resolvedFiles.get(resolvedId);
       if (!importedAst) {
-        importedAst = parseCode(resolved.source, undefined, this.solidityImportCompat);
+        importedAst = parseCode(
+          resolved.source,
+          undefined,
+          this.solidityImportCompat,
+          true,
+        );
         this.resolvedFiles.set(resolvedId, importedAst);
         this.resolve(importedAst, resolvedId);
       }
@@ -96,7 +105,9 @@ export class ImportResolver {
     // L's functions were inlined away (storage-pointer fns) or L is empty.
     target.declaredLibraryNames.push(...source.declaredLibraryNames);
     source.libraryFunctionSignatures.forEach((v, k) => target.libraryFunctionSignatures.set(k, v));
+    target.libraryModifierDefinitions.push(...source.libraryModifierDefinitions);
     source.libraryEventSignatures.forEach((v, k) => target.libraryEventSignatures.set(k, v));
+    source.libraryAnonymousEvents.forEach((name) => target.libraryAnonymousEvents.add(name));
     switch (importNode.kind) {
       case 'wildcard':
         // Import everything: contract, constants, enums, structs, types,
@@ -121,7 +132,7 @@ export class ImportResolver {
       case 'selective':
         if (!importNode.bindings) break;
         for (const binding of importNode.bindings) {
-          const { name } = binding;
+          const { name, alias } = binding;
           // Check if importing a library namespace (e.g. import { SafeMath } from "math_lib.scash"). A file may
           // declare SEVERAL libraries (Sablier's DataTypes.sol: Lockup, LockupDynamic, ..); `libraryName` is only
           // the last, so match any declared one. Library structs/enums are registered BARE (namespaced type refs
@@ -176,7 +187,13 @@ export class ImportResolver {
             if (constant) {
               target.constantDefinitions.push(constant);
             } else if (enumDef) {
-              target.enumDefinitions.push(enumDef);
+              if (alias) {
+                const aliased = cloneNode(enumDef);
+                aliased.name = alias;
+                target.enumDefinitions.push(aliased);
+              } else {
+                target.enumDefinitions.push(enumDef);
+              }
             } else if (structDef) {
               target.structDefinitions.push(structDef);
             } else if (typeDef) {
@@ -215,6 +232,17 @@ export class ImportResolver {
         }
         target.importedContracts.push(...source.importedContracts);
         target.enumDefinitions.push(...source.enumDefinitions);
+        // Namespace-qualified enum references (`import "./x.sol" as X; X.Color.Red`) are parsed as nested field
+        // accesses. Register cloned compound enum names so SymbolTableTraversal can collapse `X.Color` as a type
+        // namespace before it attempts to resolve X as a runtime identifier. Keep the bare imports above for
+        // compatibility with existing SolidCash namespace-import behavior.
+        if (importNode.alias) {
+          target.enumDefinitions.push(...source.enumDefinitions.map((ed) => {
+            const qualified = cloneNode(ed);
+            qualified.name = `${importNode.alias}.${ed.name}`;
+            return qualified;
+          }));
+        }
         target.structDefinitions.push(...source.structDefinitions);
         target.typeDefinitions.push(...source.typeDefinitions);
         target.eventDefinitions.push(...source.eventDefinitions);

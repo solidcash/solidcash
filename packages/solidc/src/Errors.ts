@@ -6,6 +6,7 @@ import {
   ParameterNode,
   Node,
   FunctionCallNode,
+  MethodCallNode,
   IndirectCallNode,
   BinaryOpNode,
   UnaryOpNode,
@@ -435,6 +436,15 @@ export class BitshiftBitcountNegativeError extends SolidCashError {
   }
 }
 
+export class BitshiftBitcountTooLargeError extends SolidCashError {
+  constructor(
+    node: BinaryOpNode,
+    bitcount: bigint,
+  ) {
+    super(node, `Bitshift bitcount exceeds Solidity's uint32 constant limit: ${bitcount}`);
+  }
+}
+
 export class VersionError extends Error {
   constructor(
     actual: string,
@@ -732,6 +742,33 @@ export class ErrorRedefinitionError extends RedefinitionError {
   }
 }
 
+export class ReservedErrorSelectorError extends SolidCashError {
+  constructor(node: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' uses reserved selector 0x${selectorHex}`);
+  }
+}
+
+export class ErrorSelectorCollisionError extends RedefinitionError {
+  constructor(node: ErrorDefinitionNode, existing: ErrorDefinitionNode, selectorHex: string) {
+    super(node, `Error '${node.name}' has the same 4-byte selector (0x${selectorHex}) as error '${existing.name}'`);
+  }
+}
+
+export class AnonymousEventSelectorError extends SolidCashError {
+  constructor(node: Node, eventName: string) {
+    super(node, `Anonymous event '${eventName}' does not have a selector`);
+  }
+}
+
+export class InvalidErrorUsageError extends SolidCashError {
+  constructor(node: FunctionCallNode, errorName: string) {
+    super(
+      node,
+      `Error '${errorName}' can only be used with a revert statement or as a require error`,
+    );
+  }
+}
+
 export class UndefinedErrorError extends SolidCashError {
   constructor(node: RevertNode | RequireNode) {
     super(node, `Undefined error '${node.errorName}'`);
@@ -807,10 +844,39 @@ export class InvalidModifierCombinationError extends SolidCashError {
   }
 }
 
+export class InvalidImmutableTypeError extends SolidCashError {
+  constructor(node: Node, functionType = false) {
+    super(
+      node,
+      functionType
+        ? 'Immutable variables of external function type are not supported'
+        : 'Immutable variables cannot have a non-value type',
+    );
+  }
+}
+
+export class InvalidCallOptionError extends SolidCashError {
+  constructor(node: Node, option: string, target: string) {
+    super(node, `Cannot set call option '${option}' on ${target}`);
+  }
+}
+
 export class InternalCallToExternalError extends SolidCashError {
   constructor(node: FunctionCallNode | FunctionCallStatementNode) {
     const name = node instanceof FunctionCallNode ? node.identifier.name : node.call.identifier.name;
     super(node, `Cannot call external function '${name}' from within another function`);
+  }
+}
+
+export class LibrarySelfExternalCallError extends SolidCashError {
+  constructor(node: FunctionCallNode | MethodCallNode, name: string) {
+    super(node, `Library cannot call its own function '${name}' externally`);
+  }
+}
+
+export class InvalidBaseFunctionCallError extends SolidCashError {
+  constructor(node: FunctionCallNode, reason: 'external' | 'unimplemented') {
+    super(node, `Cannot call ${reason} base function '${node.identifier.name}'`);
   }
 }
 
@@ -924,6 +990,12 @@ export class AmbiguousOverloadError extends SolidCashError {
   }
 }
 
+export class AmbiguousEventOverloadError extends SolidCashError {
+  constructor(node: EmitStatementNode) {
+    super(node, `No unique declaration found for overloaded event '${node.eventName}'`);
+  }
+}
+
 export class CircularImportError extends Error {
   constructor(filePath: string) {
     super(`Circular import detected: ${filePath}`);
@@ -1019,9 +1091,51 @@ export class NonVirtualOverrideError extends SolidCashError {
   }
 }
 
+export class OverrideMutabilityError extends SolidCashError {
+  constructor(node: Node, from: string, to: string) {
+    super(node, `Overriding function changes state mutability from '${from}' to '${to}'`);
+  }
+}
+
+export class AbstractOverrideOfImplementedError extends SolidCashError {
+  constructor(node: Node, functionName: string, parentName: string) {
+    super(node, `Unimplemented function '${functionName}' cannot override implemented function from '${parentName}'`);
+  }
+}
+
 export class OverrideBaseListError extends SolidCashError {
   constructor(node: Node, functionName: string, baseName: string) {
     super(node, `override(${baseName}) on '${functionName}': '${baseName}' is not a base contract that declares it`);
+  }
+}
+
+export class DuplicateOverrideBaseError extends SolidCashError {
+  constructor(node: Node, declarationName: string, baseName: string) {
+    super(node, `Duplicate contract '${baseName}' in override list of '${declarationName}'`);
+  }
+}
+
+export class OverrideNothingError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Declaration '${declarationName}' has override specified but does not override anything`);
+  }
+}
+
+export class GetterOverrideMismatchError extends SolidCashError {
+  constructor(node: Node, declarationName: string) {
+    super(node, `Public getter '${declarationName}' does not match the overridden function return type`);
+  }
+}
+
+export class MissingOverrideBasesError extends SolidCashError {
+  constructor(node: Node, declarationName: string, bases: string[]) {
+    super(node, `Override of '${declarationName}' must specify bases ${bases.join(', ')}`);
+  }
+}
+
+export class InvalidModifierOverrideError extends SolidCashError {
+  constructor(node: Node, modifierName: string, reason: string) {
+    super(node, `Invalid override of modifier '${modifierName}': ${reason}`);
   }
 }
 
@@ -1047,6 +1161,12 @@ export class AbstractContractNotCompilableError extends Error {
   constructor(contractName: string) {
     super(`Cannot compile abstract contract '${contractName}' - abstract contracts do not produce artifacts. Extend it with a concrete contract instead.`);
     this.name = this.constructor.name;
+  }
+}
+
+export class AbstractContractInstantiationError extends SolidCashError {
+  constructor(node: InstantiationNode, contractName: string) {
+    super(node, `Cannot instantiate abstract contract '${contractName}'`);
   }
 }
 
@@ -1080,6 +1200,12 @@ export class DeployValueInNonStatefulError extends SolidCashError {
   }
 }
 
+export class InvalidDeploymentValueError extends SolidCashError {
+  constructor(public node: Node, message: string) {
+    super(node, message);
+  }
+}
+
 export class LibraryNotCompilableError extends Error {
   constructor(libraryName: string) {
     super(`Cannot compile library '${libraryName}' - libraries do not produce artifacts. Import library functions into a contract instead.`);
@@ -1090,6 +1216,18 @@ export class LibraryNotCompilableError extends Error {
 export class ParentInvocationArgCountError extends SolidCashError {
   constructor(node: Node, parentName: string, expected: number, actual: number) {
     super(node, `Parent constructor invocation '${parentName}' expects ${expected} arguments but got ${actual}`);
+  }
+}
+
+export class ModifierStyleBaseConstructorError extends SolidCashError {
+  constructor(node: Node, parentName: string) {
+    super(node, `Base constructor invocation '${parentName}' must use parentheses`);
+  }
+}
+
+export class InvalidBaseConstructorArgumentError extends SolidCashError {
+  constructor(node: ExpressionNode, reference: string) {
+    super(node, `Invalid base constructor argument: '${reference}' is a declaration, not a value`);
   }
 }
 
@@ -1176,6 +1314,49 @@ export class UsingForUndefinedLibraryError extends SolidCashError {
 export class UsingForUndefinedFunctionError extends SolidCashError {
   constructor(node: Node, functionName: string) {
     super(node, `Function '${functionName}' referenced in 'using for' directive is not defined or imported`);
+  }
+}
+
+export class UsingForInvalidFunctionReferenceError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(node, `Identifier '${functionName}' in 'using for' directive is not a function name or not unique`);
+  }
+}
+
+export class UsingForIncompatibleTargetError extends SolidCashError {
+  constructor(node: Node, functionName: string, targetType: string, parameterType: string) {
+    super(
+      node,
+      `Function '${functionName}' cannot be attached to '${targetType}' because it cannot be implicitly converted `
+      + `to the function's first parameter type '${parameterType}'`,
+    );
+  }
+}
+
+export class UsingForPrivateFunctionError extends SolidCashError {
+  constructor(node: Node, functionName: string) {
+    super(
+      node,
+      `Function '${functionName}' is private and cannot be attached to a type outside its declaring library`,
+    );
+  }
+}
+
+export class DeprecatedNowError extends SolidCashError {
+  constructor(node: Node) {
+    super(node, '"now" has been deprecated. Use "block.timestamp" instead');
+  }
+}
+
+export class GlobalUsingForNonUDVTError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Can only use 'global' with user-defined value types, but '${typeName}' is not a UDVT`);
+  }
+}
+
+export class UnsupportedAbiV1TypeError extends SolidCashError {
+  constructor(node: Node, typeName: string) {
+    super(node, `Type '${typeName}' is only supported in ABI coder v2; use 'pragma abicoder v2;'`);
   }
 }
 

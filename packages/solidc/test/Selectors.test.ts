@@ -53,6 +53,11 @@ describe('abi.encodeCall(this.method, (args)) targets a current-contract functio
     expect(cc('contract C { function g() external {}'
       + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.g, ()); } }')).toBe('C');
   });
+  it('accepts a scalar expression as a unitary argument tuple', () => {
+    expect(cc('contract C { function g(uint256 x) external {}'
+      + ' function f(bool b) external pure returns (bytes memory) {'
+      + ' return abi.encodeCall(this.g, b ? 1 : 2); } }')).toBe('C');
+  });
   it('still resolves an interface target (Interface.method)', () => {
     expect(cc('interface IFoo { function bar(address a, uint256 b) external; }'
       + ' contract C { function f(address to, uint256 amt) external pure returns (bytes memory) {'

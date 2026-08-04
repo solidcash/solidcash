@@ -21,6 +21,13 @@ function loadCash(name: string): string {
 // --- Tests ------------------------------------------------------------------
 
 describe('Concat Functions', () => {
+  // Solidity corpus parity exercised below:
+  // test/libsolidity/semanticTests/strings/concat/string_concat_2_args.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_empty_argument_list.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_empty_strings.sol
+  // test/libsolidity/semanticTests/strings/concat/string_concat_nested.sol
+  // The runtime cases cover two-argument, zero-argument, empty-string, and nested/multi-argument concatenation.
+
   // --- bytes.concat() from fixture file ------------------------------------
 
   describe('bytes_concat.scash - bytes.concat() built-in', () => {

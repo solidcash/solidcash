@@ -102,7 +102,8 @@ describe('array bounds/defaults', () => {
   // must revert, not diverge).
 
   describe('array bounds/default behavioral parity', () => {
-    // array_zeroed_memory_index_access.sol: `new uint[](n); x[a]` == 0 in-bounds; out-of-bounds reverts (Panic 0x32).
+    // test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_zeroed_memory_index_access.sol
+    // `new uint[](n); x[a]` == 0 in-bounds; out-of-bounds reverts (Panic 0x32).
     it('zeroed memory array: in-bounds elements are 0', async () => {
       const art = compileString(`contract C {
         function get(int n, int a) internal returns (int) { int[] memory x = new int[](n); return x[a]; }
@@ -120,7 +121,8 @@ describe('array bounds/defaults', () => {
       await expect(sc.oob()).rejects.toThrow();
     });
 
-    // array_storage_pop_zero_length.sol: pop() on an empty storage array reverts (Panic 0x31).
+    // test/libsolidity/semanticTests/array/array_storage_pop_zero_length.sol
+    // pop() on an empty storage array reverts (Panic 0x31).
     it('storage array pop() on empty reverts (Solidity Panic 0x31)', async () => {
       const art = compileString(`contract C {
         int[] storageArray;
@@ -130,7 +132,8 @@ describe('array bounds/defaults', () => {
       await expect(sc.popEmpty()).rejects.toThrow();
     });
 
-    // array_storage_push_pop.sol: push() to len, pop() all -> length 0.
+    // test/libsolidity/semanticTests/array/array_storage_push_pop.sol
+    // push() to len, pop() all -> length 0.
     it('storage array push/pop length management -> 0', async () => {
       const art = compileString(`contract C {
         int[] storageArray;
@@ -169,6 +172,7 @@ describe('panics/short-circuit', () => {
       await expect(sc.modZero(10n, 0n)).rejects.toThrow();
     });
 
+    // test/libsolidity/semanticTests/reverts/assert_require.sol
     it('assert(false) reverts, assert(true) does not', async () => {
       const art = compileString(`contract C {
         function assertF() public returns (bool) { assert(false); return true; }

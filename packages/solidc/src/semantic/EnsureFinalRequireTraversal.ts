@@ -59,7 +59,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
   visitContract(node: ContractNode): ContractNode {
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
-      || node.eventDefinitions.length > 0;
+      || node.eventDefinitions.length > 0
+      || node.deploysWithValue
+      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
     if (node.constructorDef) {
@@ -378,11 +380,10 @@ function allPathsReturn(statements: StatementNode[] = []): boolean {
   }
 
   if (finalStatement instanceof TryCatchNode) {
-    const tryReturns = allPathsReturn(finalStatement.tryBlock.statements);
-    const catchesReturn = finalStatement.catchClauses.every(
-      (clause) => allPathsReturn(clause.block.statements),
-    );
-    return tryReturns && catchesReturn;
+    // BCH script failure is fatal, so catch clauses are dead code (SymbolTableTraversal emits the corresponding
+    // compatibility warning and codegen compiles only the try path). A successful try is therefore the only
+    // continuing path whose return behavior matters; a failed try never falls through this function.
+    return allPathsReturn(finalStatement.tryBlock.statements);
   }
 
   if (finalStatement instanceof UncheckedNode) {
@@ -403,7 +404,7 @@ function allPathsReturn(statements: StatementNode[] = []): boolean {
 // `return;` (void early exit) is allowed and ignored here.
 function containsReturn(statements: StatementNode[] = []): boolean {
   for (const s of statements) {
-    if (s instanceof ReturnNode && s.expressions.length > 0) return true;
+    if (s instanceof ReturnNode && s.expressions.length > 0 && !s.isYulReturn) return true;
     if (s instanceof BranchNode) {
       if (containsReturn(s.ifBlock.statements)) return true;
       if (s.elseBlock && containsReturn(s.elseBlock.statements)) return true;
@@ -436,7 +437,7 @@ function containsReturn(statements: StatementNode[] = []): boolean {
 // The first VALUED return (`return x;`), for error location. Bare `return;` is skipped.
 function findFirstReturn(statements: StatementNode[] = []): ReturnNode | undefined {
   for (const s of statements) {
-    if (s instanceof ReturnNode && s.expressions.length > 0) return s;
+    if (s instanceof ReturnNode && s.expressions.length > 0 && !s.isYulReturn) return s;
     if (s instanceof BranchNode) {
       const found = findFirstReturn(s.ifBlock.statements)
         || (s.elseBlock ? findFirstReturn(s.elseBlock.statements) : undefined);

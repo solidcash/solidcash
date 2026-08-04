@@ -30,6 +30,7 @@ import AstTraversal from '../ast/AstTraversal.js';
 export default class EliminateInternalFnPtrAlias extends AstTraversal {
   private functionNames = new Set<string>();
   private eliminated = new Map<string, string>(); // ev name -> the function f it aliases
+  private contractName = '';
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -37,6 +38,7 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.contractName = node.name;
     this.functionNames = new Set(node.functions.map((f) => f.name));
     const internalFnPtrVars = node.stateVariables.filter(
       (sv) => sv.type instanceof FunctionType && !(sv.type as FunctionType).isExternal,
@@ -77,7 +79,8 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
           } else ok = false;
           return; // don't visit the LHS identifier (not a bare read); the RHS is a leaf function name
         }
-        if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode && n.identifier.name === name) {
+        if (n instanceof FunctionCallNode && n.identifier instanceof IdentifierNode
+          && this.callName(n.identifier.name) === name) {
           refsHere = true;
           n.parameters.forEach(walk); // a call `ev(args)` is fine; recurse only into the args
           return;
@@ -122,8 +125,8 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
     if (node instanceof BlockNode) return this.rewriteBlock(node);
     if (node instanceof FunctionCallStatementNode) { node.call = this.rewrite(node.call) as FunctionCallNode; return node; }
     if (node instanceof FunctionCallNode && node.identifier instanceof IdentifierNode
-      && this.eliminated.has(node.identifier.name)) {
-      const f = new IdentifierNode(this.eliminated.get(node.identifier.name)!); f.location = node.location;
+      && this.eliminated.has(this.callName(node.identifier.name))) {
+      const f = new IdentifierNode(this.eliminated.get(this.callName(node.identifier.name))!); f.location = node.location;
       const fc = new FunctionCallNode(f, node.parameters.map((p) => this.rewrite(p) as ExpressionNode));
       fc.location = node.location;
       return fc;
@@ -137,5 +140,10 @@ export default class EliminateInternalFnPtrAlias extends AstTraversal {
       }
     }
     return node;
+  }
+
+  private callName(name: string): string {
+    const prefix = `${this.contractName}.`;
+    return name.startsWith(prefix) ? name.slice(prefix.length) : name;
   }
 }

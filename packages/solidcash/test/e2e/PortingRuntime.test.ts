@@ -47,6 +47,7 @@ describe('empty void functions (runtime; Solidity porting)', () => {
   });
 
   it('spends a contract whose only spend path is an empty receive()', async () => {
+    // test/libsolidity/semanticTests/receive/empty_calldata_calls_receive.sol
     const artifact = compileString(
       'pragma solidity ^0.8.0; contract C { receive() external payable {} }',
       { solidityImportCompat: true, forceStateful: true },

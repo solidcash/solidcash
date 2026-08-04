@@ -67,9 +67,22 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
     expect(() => compiles('function f(address memory x) { require(x == x); }')).toThrow(/only valid for reference types/);
   });
 
-  it('rejects calldata locals and constructor calldata parameters', () => {
+  it('allows calldata locals bound from calldata and rejects memory-to-calldata bindings', () => {
+    expect(compiles('function f(bytes calldata x) external { bytes calldata y = x; require(y.length > 0); }'))
+      .toBe('C');
+    expect(compiles('function f(bytes calldata x) external { bytes calldata y; y = x; require(y.length > 0); }'))
+      .toBe('C');
     expect(() => compiles('function f(bytes memory x) { bytes calldata y = x; require(y.length > 0); }'))
-      .toThrow(/local variables cannot have 'calldata'/);
+      .toThrow(/cannot initialize calldata local/);
+    expect(() => compiles('function f(bytes memory x) { bytes calldata y; y = x; require(y.length > 0); }'))
+      .toThrow(/cannot rebind calldata local/);
+    expect(compiles('function f(bytes calldata x, bool b) external { bytes calldata y;'
+      + ' if (b) y = x; else y = x; require(y.length > 0); }')).toBe('C');
+    expect(() => compiles('function f(bytes calldata x, bool b) external { bytes calldata y;'
+      + ' if (b) y = x; require(y.length > 0); }')).toThrow(/may be read before it is initialized/);
+  });
+
+  it('rejects calldata constructor parameters', () => {
     expect(() => compileString('contract C { constructor(bytes calldata y) {} }'))
       .toThrow(/constructor parameters cannot have 'calldata'/);
   });
@@ -81,11 +94,72 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
       .toThrow(/only valid on internal or private/);
   });
 
-  it('allows an internal calldata view return (OpenZeppelin Context._msgData shape)', () => {
+  it('allows storage parameters and returns on public/external library functions', () => {
+    expect(compileString('library L { function f(mapping(uint => uint) storage m) external pure'
+      + ' returns (mapping(uint => uint) storage) { return m; } }',
+    { solidityImportCompat: true }).contractName).toBe('L');
+    expect(compileString('library L { struct S { uint x; }'
+      + ' function f(S storage s) public pure returns (S storage) { return s; } }',
+    { solidityImportCompat: true }).contractName).toBe('L');
+  });
+
+  it('allows mapping-array storage pointers in libraries and rejects non-storage locations', () => {
+    expect(compileString('library L { function f(mapping(uint => uint)[] storage m) external pure {} }',
+      { solidityImportCompat: true }).contractName).toBe('L');
+    expect(() => compileString(
+      'contract C { function f(mapping(uint => uint)[] calldata m) external pure {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/mapping-containing parameters must have 'storage'/);
+    expect(() => compileString(
+      'contract C { function f(mapping(uint => uint)[2] memory m) internal pure {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/mapping-containing parameters must have 'storage'/);
+    expect(() => compileString(
+      'contract C { function f() internal pure { mapping(uint => uint)[] storage m; m; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/storage pointer .* must be initialized/i);
+  });
+
+  it('does not mistake a file-level free function for a library function', () => {
+    expect(() => compileString('function f(bytes storage x) external returns (bytes storage) { return x; }',
+      { solidityImportCompat: true })).toThrow(/free functions cannot have/i);
+  });
+
+  it('allows calldata returns for internal and externally callable functions', () => {
     expect(compiles('function f(bytes calldata x) internal pure returns (bytes calldata) { return x; }'
       + ' function g(bytes calldata x) external { require(f(x).length == x.length); }')).toBe('C');
-    expect(() => compiles('function f() external returns (bytes calldata) { }'))
-      .toThrow(/only valid on internal or private/);
+    expect(compiles('function f(bytes calldata x) external pure returns (bytes calldata) { return x; }')).toBe('C');
+    expect(compiles('function f(bytes calldata x) public pure returns (string calldata) { return string(x); }'))
+      .toBe('C');
+  });
+
+  it('requires return data locations to match when overriding a non-external function', () => {
+    expect(() => compileString(
+      'abstract contract A { function f() public virtual view returns (uint[] calldata); }'
+      + ' contract C is A { function f() public override view returns (uint[] memory) {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/data locations must match/);
+    expect(compileString(
+      'abstract contract A { function f() external virtual view returns (uint[] calldata); }'
+      + ' contract C is A { function f() public override view returns (uint[] memory) {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('allows storage-pointer parameters on abstract constructors only', () => {
+    expect(compileString(
+      'abstract contract A { constructor(mapping(uint => uint) storage m) { m[5] = 20; } }'
+      + ' contract C is A { mapping(uint => uint) m; constructor() A(m) {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+    expect(compileString(
+      'abstract contract A { constructor(uint[] storage a) {} }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('A');
+    expect(() => compileString(
+      'contract C { constructor(uint[] storage a) {} }',
+      { solidityImportCompat: true },
+    )).toThrow(/storage.*only valid on internal or private/i);
   });
 
   it('rejects duplicate/conflicting locations and mutability modifiers', () => {

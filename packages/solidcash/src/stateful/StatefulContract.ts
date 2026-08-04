@@ -3627,7 +3627,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const stateCommitmentMap = extractCommitmentMapFromTrace(
         fullTrace, stateOutputRange,
       );
-      if (stateCommitmentMap.size === 0) {
+      // A mapping-only contract has no scalar/data-NFT commitments to learn; its constructor evidence is carried
+      // entirely by the entry commitments below. An empty state map is only an error when fixed state outputs exist.
+      if (requiredIndices.length > 0 && stateCommitmentMap.size === 0) {
         const failedStep = [...fullTrace].reverse().find((step) => step.error);
         const vmError = failedStep?.error;
         const vmLocation = failedStep === undefined

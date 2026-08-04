@@ -9,10 +9,17 @@ import { fundedSigner } from '../test-util.js';
 // (`await sc.<fn>(args)`). See examples/solidity-by-example/INTERVENTIONS.md.
 
 describe('Porting features (runtime)', () => {
-  it('SBE-2: bytesN -> bytesM cast truncates the leftmost bytes', async () => {
-    // bytes4 of a 6-byte value keeps the first 4 bytes (Solidity left-aligned).
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol
+  it('SBE-2: bytesN -> bytesM casts preserve, widen, and truncate left-aligned bytes', async () => {
     const artifact = compileString(`contract C() {
-      function f() { bytes6 a = 0x1234567890ab; bytes4 b = bytes4(a); require(b == 0x12345678); }
+      function f() {
+        bytes4 a = 0x61626364;
+        require(bytes2(a) == 0x6162);
+        require(bytes4(a) == 0x61626364);
+        require(bytes6(a) == 0x616263640000);
+      }
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();

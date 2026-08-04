@@ -188,6 +188,7 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
       const callId = new IdentifierNode(`${fold.local}.${fold.method}`); callId.location = node.location;
       const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
       const fc = new FunctionCallNode(callId, args); fc.location = node.location;
+      fc.callOptions = node.callOptions;
       return fc;
     }
     const tgt = this.lowered.get(node.identifier.name);
@@ -198,6 +199,7 @@ export default class LowerForeignFunctionPointerVars extends AstTraversal {
       const cast = new FunctionCallNode(ifaceId, [xRead]); cast.location = node.location;
       const args = node.parameters.map((a) => this.visit(a) as ExpressionNode);
       const mc = new MethodCallNode(cast, tgt.method, args); mc.location = node.location;
+      mc.callOptions = node.callOptions;
       return mc;
     }
     return super.visitFunctionCall(node);

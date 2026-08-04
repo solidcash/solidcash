@@ -304,6 +304,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
           const ifaceId = new IdentifierNode(info.iface); ifaceId.location = node.location;
           const cast = new FunctionCallNode(ifaceId, [elem]); cast.location = node.location;
           const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
+          mc.callOptions = node.callOptions;
           mc.selectorArrayVar = this.selArrayName(name);
           return mc;
         }
@@ -327,6 +328,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
         const ifaceId = new IdentifierNode(info.iface); ifaceId.location = node.location;
         const cast = new FunctionCallNode(ifaceId, [elemId]); cast.location = node.location;
         const mc = new MethodCallNode(cast, '__call', args); mc.location = node.location;
+        mc.callOptions = node.callOptions;
         const selId = new IdentifierNode(selName); selId.location = node.location;
         mc.runtimeSelector = selId;
         return mc;
@@ -400,7 +402,7 @@ export default class LowerReceivedFnPtrArray extends AstTraversal {
     // `_A` keeps the `__FnPtr_` prefix the fnPtrCall gate matches, disambiguated from the param/storage forms.
     const iname = `__FnPtr_A${this.counter++}`;
     const params = ft.parameterTypes.map((t, i) => new ParameterNode(t, `p${i}`));
-    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes);
+    const method = new InterfaceFunctionNode('__call', params, ft.returnTypes, ft.stateMutability);
     const iface = new InterfaceNode(iname, [], [], [method]);
     (iface as InterfaceNode & { __sig?: string }).__sig = sig;
     this.synthIfaces.push(iface);

@@ -1,4 +1,6 @@
-import { ArrayType, IntType, BytesType, StructType, PrimitiveType, Type } from '@solidcash/utils';
+import {
+  ArrayType, IntType, BytesType, StructType, PrimitiveType, Type, ValueType, encodeString,
+} from '@solidcash/utils';
 import {
   Node,
   SourceFileNode,
@@ -15,6 +17,7 @@ import {
   ArrayAccessNode,
   TupleIndexOpNode,
   FieldAccessNode,
+  DeleteLocalNode,
   MappingDeleteNode,
   MappingFieldAssignNode,
   FunctionCallNode,
@@ -27,16 +30,20 @@ import {
   CastNode,
   SliceNode,
   BytesConcatNode,
+  ArrayNode,
   NewArrayNode,
   IntLiteralNode,
   HexLiteralNode,
+  StringLiteralNode,
   IdentifierNode,
   ExpressionNode,
   AssemblyStatementNode,
+  AbiDecodeNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { YulNode, YulPathNode, YulFunctionCallNode } from '../ast/YulAST.js';
 import { UnsupportedMemoryAliasingError } from '../Errors.js';
 import {
   YULMEM,
@@ -66,6 +73,7 @@ const WORD = 32n;
 // exists). One name = one EVM-faithful memory space per function; one module = one lowering of store/load/init.
 
 export default class LowerMemoryModel extends AstTraversal {
+  private byteConstantValues = new Map<string, HexLiteralNode | StringLiteralNode>();
   // Locals that are memory-model pointers (declared as a handled memory dynamic array, initialized by a fresh
   // allocation or an alias). Name -> the array type (element type used for encode/decode).
   private memArrays = new Map<string, ArrayType>();
@@ -91,6 +99,20 @@ export default class LowerMemoryModel extends AstTraversal {
   private counter = 0;
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.byteConstantValues = new Map();
+    const constants = [
+      ...node.constantDefinitions,
+      ...node.contract.constantDefinitions,
+      ...node.importedContracts.flatMap((contract) => contract.constantDefinitions),
+    ];
+    for (const constant of constants) {
+      if (!(constant.expression instanceof HexLiteralNode || constant.expression instanceof StringLiteralNode)) continue;
+      this.byteConstantValues.set(constant.name, constant.expression);
+      const dot = constant.name.lastIndexOf('.');
+      if (dot >= 0 && !this.byteConstantValues.has(constant.name.slice(dot + 1))) {
+        this.byteConstantValues.set(constant.name.slice(dot + 1), constant.expression);
+      }
+    }
     node.importedContracts = this.visitList(node.importedContracts) as ContractNode[];
     node.freeFunctions = this.visitList(node.freeFunctions) as FunctionDefinitionNode[];
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -116,6 +138,9 @@ export default class LowerMemoryModel extends AstTraversal {
     this.memStructArrays = new Map();
     this.memBytes = new Map();
     this.usesMemory = false;
+    if (node.body) this.inlineByteConstantInitializers(node.body);
+    if (node.body) this.materializeNamedBytesReturn(node);
+    if (node.body) this.materializeDecodedArrays(node.body);
     // P4 v2 (c): materialize a memory-array PARAM into the buffer (deserialize the ABI value-copy at entry) so it
     // is a pointer that a helper can mutate by reference. Only for NON-inlinable functions (an inlinable one is
     // spliced from its ORIGINAL body, so mutating it here would corrupt the inline source). Runs before the inline.
@@ -123,6 +148,7 @@ export default class LowerMemoryModel extends AstTraversal {
     // P4: inline pass-by-reference helper calls BEFORE the gate, so the substituted alias decls are analyzed and
     // lowered like any other alias. Pass-by-ref (convert) vs pass-by-value (fallback) then falls out of the gate.
     if (node.body) this.inlinePassByRef(node.body);
+    if (node.body) this.materializeInlineStructReferenceArgs(node.body);
     this.convertible = node.body ? this.analyzeConvertible(node.body) : new Set();
     if (node.body) {
       // A first pass over the block rewrites decls/writes/reads; if any memory array is allocated, prepend the
@@ -142,6 +168,166 @@ export default class LowerMemoryModel extends AstTraversal {
     this.usesMemory = savedUses;
     this.convertible = savedConv;
     return node;
+  }
+
+  private inlineByteConstantInitializers(body: BlockNode): void {
+    this.eachDescendant(body, (child) => {
+      if (!(child instanceof VariableDefinitionNode) || !(child.expression instanceof IdentifierNode)) return;
+      const value = this.byteConstantValues.get(child.expression.name);
+      if (value) child.expression = cloneNode(value) as HexLiteralNode | StringLiteralNode;
+    });
+  }
+
+  // A front-end struct-field rebuild can embed a fresh reference allocation directly in the constructor:
+  // `s.a = new uint8[](n)` -> `s = S(new uint8[](n), ...)`. Give that allocation a named memory local so the
+  // pointer/alias gate can track it and lower the struct field as a pointer word.
+  private materializeInlineStructReferenceArgs(body: BlockNode): void {
+    const localTypes = new Map<string, Type>();
+    this.eachDescendant(body, (n) => {
+      if (n instanceof VariableDefinitionNode) localTypes.set(n.name, n.type);
+    });
+    const process = (node: Node): void => {
+      if (node instanceof BlockNode) {
+        const out: StatementNode[] = [];
+        for (const stmt of node.statements ?? []) {
+          process(stmt);
+          if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+            && stmt.expression instanceof FunctionCallNode) {
+            const struct = localTypes.get(stmt.identifier.name);
+            if (struct instanceof StructType && stmt.expression.identifier.name === struct.name) {
+              const call = stmt.expression;
+              call.parameters.forEach((arg, index) => {
+                const fieldIndex = call.fieldNames
+                  ? struct.fields.findIndex((f) => f.name === call.fieldNames![index])
+                  : index;
+                const fieldType = struct.fields[fieldIndex]?.type;
+                if (arg instanceof NewArrayNode && fieldType instanceof ArrayType) {
+                  const name = `__mem_ctor_ref_${this.counter++}`;
+                  const decl = new VariableDefinitionNode(fieldType, ['memory'], name, arg);
+                  decl.location = stmt.location;
+                  out.push(decl);
+                  const id = new IdentifierNode(name);
+                  id.location = arg.location;
+                  call.parameters[index] = id;
+                  localTypes.set(name, fieldType);
+                }
+              });
+            }
+          }
+          out.push(stmt);
+        }
+        node.statements = out;
+        return;
+      }
+      this.eachChild(node, process);
+    };
+    process(body);
+  }
+
+  // A straight-line named memory-bytes return assigned before Yul is a value blob in the main AST but a pointer
+  // in assembly. Move its initializer into a pointer-backed local, let Yul mutate that shared buffer, then
+  // serialize it back into the named return at the function boundary.
+  private materializeNamedBytesReturn(node: FunctionDefinitionNode): void {
+    if (!node.body || node.returnNames.length !== 1 || node.returnTypes.length !== 1) return;
+    const returnType = node.returnTypes[0];
+    if (!(this.isHandledMemBytes(returnType) || this.isHandledMemString(returnType))
+      || !node.returnModifiers[0]?.includes('memory')) return;
+    const returnName = node.returnNames[0];
+    const statements = node.body.statements ?? [];
+    const assignments = statements
+      .map((statement, index) => ({ statement, index }))
+      .filter(({ statement }) => statement instanceof AssignNode
+        && statement.identifier instanceof IdentifierNode && statement.identifier.name === returnName);
+    const nestedAssignments: AssignNode[] = [];
+    this.eachDescendant(node.body, (child) => {
+      if (child instanceof AssignNode && child.identifier instanceof IdentifierNode
+        && child.identifier.name === returnName && !assignments.some(({ statement }) => statement === child)) {
+        nestedAssignments.push(child);
+      }
+    });
+    const terminal = statements[statements.length - 1];
+    const canonicalReturn = terminal instanceof ReturnNode && terminal.expressions.length === 1
+      && terminal.expressions[0] instanceof IdentifierNode && terminal.expressions[0].name === returnName;
+    const otherReturn = statements.some((statement) => statement instanceof ReturnNode && statement !== terminal);
+    if (assignments.length > 1 || otherReturn || (terminal instanceof ReturnNode && !canonicalReturn)) return;
+    let usedInYul = false;
+    this.eachDescendant(node.body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulPathNode && child.base === returnName) usedInYul = true;
+      });
+    });
+    if (!usedInYul) return;
+
+    // NamedReturnTransformation (which normally runs first) prepends the default local and appends
+    // `return out`. The pointer local replaces that default and the terminal return is redirected below.
+    const defaultIndex = statements.findIndex((candidate) => candidate instanceof VariableDefinitionNode
+      && candidate.name === returnName && candidate.expression === undefined);
+    const memName = `__memret_${returnName}_${this.counter++}`;
+    // `unchecked { result = new string(n); }` is the OpenZeppelin/Base64 shape: the allocation must retain the
+    // unchecked arithmetic context, so it cannot be hoisted into a top-level declaration. Replace the named
+    // return's default with a null pointer, rename the nested assignment target, and let visitBlock lower that
+    // pointer reassignment in place.
+    if (assignments.length === 0 && nestedAssignments.length === 1) {
+      if (!canonicalReturn || defaultIndex < 0) return;
+      const defaultDecl = statements[defaultIndex];
+      this.usesMemory = true;
+      this.memBytes.set(memName, returnType instanceof BytesType ? returnType : new BytesType());
+      statements.splice(defaultIndex, 1, this.at(new VariableDefinitionNode(
+        this.uint(), [], memName, this.intLit(0n),
+      ), defaultDecl));
+      this.eachDescendant(node.body, (child) => {
+        if (child instanceof IdentifierNode && child.name === returnName) child.name = memName;
+      });
+      this.renameYulPath(node.body, returnName, memName);
+      return;
+    }
+    if (assignments.length === 0) {
+      // An uninitialized memory reference has the EVM null pointer (0), rather than a freshly allocated empty
+      // bytes block. This matters to assembly which deliberately writes through a named return before assigning
+      // it (`mcopy(add(dst, 31), ...)`): address arithmetic must remain relative to zero.
+      if (!canonicalReturn || defaultIndex < 0) return;
+      const defaultDecl = statements[defaultIndex];
+      statements.splice(defaultIndex, 1, this.at(new VariableDefinitionNode(
+        returnType, ['memory'], memName, this.intLit(0n),
+      ), defaultDecl));
+      this.renameYulPath(node.body, returnName, memName);
+      (terminal as ReturnNode).expressions = [this.at(new IdentifierNode(memName), terminal)];
+      return;
+    }
+
+    const { statement } = assignments[0] as { statement: AssignNode; index: number };
+    if (canonicalReturn && defaultIndex >= 0) statements.splice(defaultIndex, 1);
+    const index = statements.indexOf(statement);
+    let init: StatementNode[];
+    const sourceName = statement.expression instanceof IdentifierNode ? statement.expression.name : undefined;
+    const sourceParam = sourceName !== undefined
+      ? node.parameters.find((parameter) => parameter.name === sourceName
+        && (this.isHandledMemBytes(parameter.type) || this.isHandledMemString(parameter.type)))
+      : undefined;
+    if (sourceParam) {
+      init = this.deserializeBytesParam(sourceParam, memName, statement);
+    } else {
+      init = this.deserializeBytesExpression(statement.expression, returnType, memName, statement);
+    }
+    statements.splice(index, 1, ...init);
+    this.renameYulPath(node.body, returnName, memName);
+    if (canonicalReturn) {
+      (terminal as ReturnNode).expressions = [this.at(new IdentifierNode(memName), terminal)];
+    } else {
+      const finalAssign = new AssignNode(new IdentifierNode(returnName), new IdentifierNode(memName));
+      this.at(finalAssign, node.body);
+      statements.push(finalAssign);
+    }
+  }
+
+  private renameYulPath(body: BlockNode, from: string, to: string): void {
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulPathNode && child.base === from) child.base = to;
+      });
+    });
   }
 
   // ---- P4: pass-by-reference inlining of internal helpers ----
@@ -320,13 +506,95 @@ export default class LowerMemoryModel extends AstTraversal {
   // reference. The param itself is untouched (ABI-stable); only body uses are renamed. If the buffer array does not
   // convert, the deserialize is a harmless extra copy that behaves exactly like the value-copy param (non-regress).
   private materializeParams(node: FunctionDefinitionNode): void {
-    if (!node.body || this.inlinable.size === 0) return;
+    if (!node.body) return;
     for (const p of node.parameters) {
-      if (!this.isHandledMemArray(p.type) || !this.paramPassedToInlinable(node.body, p.name)) continue;
-      const memName = `__mem_${p.name}_${this.counter++}`;
-      this.remapNames(node.body, new Map([[p.name, memName]]));
-      node.body.statements = [...this.deserializeParam(p, memName, node.body), ...(node.body.statements ?? [])];
+      if (this.inlinable.size > 0 && this.isHandledMemArray(p.type)
+        && this.paramPassedToInlinable(node.body, p.name)) {
+        const memName = `__mem_${p.name}_${this.counter++}`;
+        this.remapNames(node.body, new Map([[p.name, memName]]));
+        node.body.statements = [...this.deserializeParam(p, memName, node.body), ...(node.body.statements ?? [])];
+        continue;
+      }
+      if ((this.isHandledMemBytes(p.type) || this.isHandledMemString(p.type))
+        && p.modifier.includes('memory') && this.paramUsedInAssembly(node.body, p.name)) {
+        const memName = `__memb_${p.name}_${this.counter++}`;
+        this.eachDescendant(node.body, (n) => {
+          if (n instanceof AssemblyStatementNode && n.yulBlock) {
+            this.walkYul(n.yulBlock, (y) => {
+              if (y instanceof YulPathNode && y.base === p.name) y.base = memName;
+            });
+          }
+        });
+        node.body.statements = [...this.deserializeBytesParam(p, memName, node.body), ...(node.body.statements ?? [])];
+      }
     }
+  }
+
+  private paramUsedInAssembly(body: BlockNode, name: string): boolean {
+    let found = false;
+    let dedicatedDeployPattern = false;
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulPathNode && child.base === name) found = true;
+        if (child instanceof YulFunctionCallNode && (child.name === 'create' || child.name === 'create2')) {
+          dedicatedDeployPattern = true;
+        }
+      });
+    });
+    return found && !dedicatedDeployPattern;
+  }
+
+  private walkYul(node: YulNode, visit: (node: YulNode) => void): void {
+    visit(node);
+    for (const value of Object.values(node)) {
+      if (value instanceof YulNode) this.walkYul(value, visit);
+      else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof YulNode) this.walkYul(item, visit);
+      }
+    }
+  }
+
+  private deserializeBytesParam(p: ParameterNode, memName: string, src: Node): StatementNode[] {
+    const idxName = `__mbi_${this.counter++}`;
+    const pLen = (): ExpressionNode => new UnaryOpNode(UnaryOperator.SIZE, new IdentifierNode(p.name));
+    const allocation = new NewArrayNode(new BytesType(1), pLen());
+    allocation.rawBytes = true;
+    allocation.type = new BytesType();
+    const decl = this.at(new VariableDefinitionNode(p.type, ['memory'], memName, allocation), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    const sourceBytes = new CastNode(new BytesType(), new IdentifierNode(p.name), false);
+    const sourceByte = new ArrayAccessNode(sourceBytes, new IdentifierNode(idxName));
+    const write = this.at(new ArrayAssignNode(memName, new IdentifierNode(idxName), sourceByte), src);
+    const update = this.at(this.assign(idxName, this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, pLen()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
+    return [decl, idxDecl, loop];
+  }
+
+  // Materialize an arbitrary bytes-producing value (abi.encode/concat/call result) into the shared memory buffer.
+  // Bind the value once, allocate its exact length, then copy each byte; assembly observes `memName` as the numeric
+  // pointer while the normal return boundary serializes the buffer back to bytes.
+  private deserializeBytesExpression(
+    expression: ExpressionNode, type: Type, memName: string, src: Node,
+  ): StatementNode[] {
+    const valueName = `__mbv_${this.counter++}`;
+    const idxName = `__mbi_${this.counter++}`;
+    const value = (): IdentifierNode => new IdentifierNode(valueName);
+    const valueDecl = this.at(new VariableDefinitionNode(type, [], valueName, expression), src);
+    const valueLen = (): ExpressionNode => new UnaryOpNode(UnaryOperator.SIZE, value());
+    const allocation = new NewArrayNode(new BytesType(1), valueLen());
+    allocation.rawBytes = true;
+    allocation.type = new BytesType();
+    const decl = this.at(new VariableDefinitionNode(type, ['memory'], memName, allocation), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    const sourceBytes = new CastNode(new BytesType(), value(), false);
+    const sourceByte = new ArrayAccessNode(sourceBytes, new IdentifierNode(idxName));
+    const write = this.at(new ArrayAssignNode(memName, new IdentifierNode(idxName), sourceByte), src);
+    const update = this.at(this.assign(idxName, this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, valueLen()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
+    return [valueDecl, decl, idxDecl, loop];
   }
 
   private paramPassedToInlinable(body: BlockNode, paramName: string): boolean {
@@ -357,12 +625,83 @@ export default class LowerMemoryModel extends AstTraversal {
     return [decl, idxDecl, loop];
   }
 
+  // Solidity's ABI decoder returns value-copy arrays in the high-level AST, while inline assembly observes those
+  // locals as independently allocated memory pointers. Preserve the single tuple decode, rename only its declared
+  // result slot to a temporary value, then copy that value into a normal fresh memory-array candidate. Subsequent
+  // high-level and Yul references retain the source name and therefore share the pointer-backed allocation.
+  private materializeDecodedArrays(body: BlockNode): void {
+    const yulReferenced = new Set<string>();
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulPathNode) yulReferenced.add(child.base);
+      });
+    });
+    if (yulReferenced.size === 0) return;
+
+    const rewrite = (block: BlockNode): void => {
+      const out: StatementNode[] = [];
+      for (const statement of block.statements ?? []) {
+        if (statement instanceof TupleAssignmentNode && statement.tuple instanceof AbiDecodeNode) {
+          const copies: StatementNode[] = [];
+          for (const element of statement.elements) {
+            if (element.existing || !element.name || !yulReferenced.has(element.name)
+              || !this.isHandledMemArray(element.type)) continue;
+            const originalName = element.name;
+            const valueName = `__mdec_${originalName}_${this.counter++}`;
+            element.name = valueName;
+            copies.push(...this.deserializeArrayValue(
+              valueName, originalName, element.type as ArrayType, statement,
+            ));
+          }
+          out.push(statement, ...copies);
+        } else {
+          out.push(statement);
+        }
+        this.eachChild(statement, (child) => {
+          if (child instanceof BlockNode) rewrite(child);
+        });
+      }
+      block.statements = out;
+    };
+    rewrite(body);
+  }
+
+  private deserializeArrayValue(
+    valueName: string, memName: string, arrT: ArrayType, src: Node,
+  ): StatementNode[] {
+    const idxName = `__mdi_${this.counter++}`;
+    const valueLen = (): ExpressionNode => new UnaryOpNode(
+      UnaryOperator.SIZE, new IdentifierNode(valueName),
+    );
+    const decl = this.at(new VariableDefinitionNode(arrT, ['memory'], memName,
+      new NewArrayNode(arrT.elementType, valueLen())), src);
+    const idxDecl = this.at(new VariableDefinitionNode(this.uint(), [], idxName, this.intLit(0n)), src);
+    const source = new ArrayAccessNode(new IdentifierNode(valueName), new IdentifierNode(idxName));
+    const write = this.at(new ArrayAssignNode(memName, new IdentifierNode(idxName), source), src);
+    const update = this.at(this.assign(idxName, this.add(new IdentifierNode(idxName), this.intLit(1n))), src);
+    const cond = this.at(new BinaryOpNode(new IdentifierNode(idxName), BinaryOperator.LT, valueLen()), src);
+    const loop = this.at(new WhileNode(cond, new BlockNode([write, update])), src);
+    return [decl, idxDecl, loop];
+  }
+
   // Determine which candidate memory locals are SAFE to convert: every use of the variable, and of every other
   // variable in its alias group, must be a lowering this pass supports. Any unsupported use (pass to a call,
   // return, state assign, abi.encode, reassignment, ...) taints the whole group, which then falls back to
   // value-copy. This is the invariant that makes flag-on non-regressing.
 
   private analyzeConvertible(body: BlockNode): Set<string> {
+    // Fixed arrays only need pointer materialization when assembly observes their address. Keeping ordinary
+    // fixed-array locals on the established value path avoids changing return/ABI behavior or materializing huge
+    // compile-time bounds that never enter Yul.
+    const yulReferenced = new Set<string>();
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulPathNode) yulReferenced.add(child.base);
+      });
+    });
+
     // 1. Classify candidate memory locals + their mem type. Roots: fresh alloc / struct ctor / default. Derived:
     //    a decl whose init is another candidate (ident alias) OR a ref-field/element read of one (`tmp = s.a`) -
     //    resolved to a FIXPOINT (a struct must be known a candidate before its ref-field read makes tmp one).
@@ -373,16 +712,28 @@ export default class LowerMemoryModel extends AstTraversal {
       if (n instanceof VariableDefinitionNode) {
         definitions.set(n.name, n);
         const ty = n.type;
-        const fresh = n.expression instanceof NewArrayNode && !n.expression.rawBytes;
+        const fresh = (n.expression instanceof NewArrayNode && !n.expression.rawBytes)
+          || (ty instanceof ArrayType && ty.bound !== undefined && n.expression instanceof ArrayNode
+            && yulReferenced.has(n.name))
+          // An uninitialized dynamic memory array observed by assembly is a non-null pointer to a zero length
+          // word in Solidity's memory model. Materialize it only when Yul needs the pointer; ordinary locals stay
+          // on the established value-copy path.
+          || (ty instanceof ArrayType && ty.bound === undefined && n.expression === undefined
+            && yulReferenced.has(n.name))
+          // A fixed memory array declaration without an initializer allocates its EVM word slots zero-filled.
+          || (ty instanceof ArrayType && ty.bound !== undefined && n.expression === undefined
+            && yulReferenced.has(n.name));
         // A `bytes` buffer root: `new bytes(runtimeN)` (NewArrayNode rawBytes) OR `new bytes(constN)`, which the
-        // builder folds to an all-ZERO HexLiteralNode. A NON-zero `hex".."` / byte-string literal is left as a
-        // value-copy constant (its compile-time bytes back Yul `create` p2sh32 derivation, abi decode, etc.).
+        // builder folds to a HexLiteralNode. Literal data is copied into the allocated buffer by lowerBytesDecl.
         // Exclude a HexLiteral carrying a codegenError: `new string(n)` with a NON-constant length folds to an
         // empty placeholder HexLiteral with codegenError set (no BCH analogue), and an empty array's `.every()` is
         // vacuously true - converting it would silently drop the error and allocate 0 bytes. `new bytes` never sets it.
         const freshBytes = (n.expression instanceof NewArrayNode && n.expression.rawBytes)
-          || (n.expression instanceof HexLiteralNode && !n.expression.codegenError
-            && n.expression.value.every((byte) => byte === 0));
+          || n.expression instanceof StringLiteralNode
+          || (n.expression instanceof HexLiteralNode && !n.expression.codegenError)
+          // Compiler-generated named memory return retaining Solidity's default null pointer.
+          || (n.name.startsWith('__memret_') && n.expression instanceof IntLiteralNode
+            && n.expression.value === 0n);
         if ((this.isHandledMemArray(ty) || this.isHandledMemStructArray(ty)) && fresh) candType.set(n.name, ty!);
         else if ((this.isHandledMemBytes(ty) || this.isHandledMemString(ty)) && freshBytes) candType.set(n.name, ty!);
         else if (this.isHandledMemStruct(ty) && (n.expression === undefined || n.expression instanceof FunctionCallNode)) {
@@ -476,6 +827,11 @@ export default class LowerMemoryModel extends AstTraversal {
     const isValueArr = (e: unknown): e is IdentifierNode =>
       e instanceof IdentifierNode && candidates.has(e.name)
       && !structArrayCands.has(e.name) && !structCands.has(e.name);
+    const isCallArrayArg = (e: unknown): e is IdentifierNode =>
+      isValueArr(e) && candType.get(e.name) instanceof ArrayType;
+    const isBytesPtr = (e: unknown): e is IdentifierNode =>
+      e instanceof IdentifierNode && candidates.has(e.name)
+      && (this.isHandledMemBytes(candType.get(e.name)) || this.isHandledMemString(candType.get(e.name)));
     // The base identifier of `arr[i]` (ArrayAccess or numeric-literal TupleIndexOp), if it is a struct-array cand.
     const structArrBase = (e: unknown): string | undefined => {
       if (e instanceof ArrayAccessNode && e.array instanceof IdentifierNode && structArrayCands.has(e.array.name)) {
@@ -505,6 +861,12 @@ export default class LowerMemoryModel extends AstTraversal {
       // `return a;` on a value-element array is HANDLED: the boundary serializes the buffer to a value-copy array
       // (P3), so the pointer never leaks. Other return expressions walk normally.
       if (n instanceof ReturnNode) {
+        if (n.expressions?.length === 1 && n.expressions[0] instanceof FunctionCallNode
+          && n.expressions[0].parameters.some(isCallArrayArg)) {
+          walk(n.expressions[0].identifier);
+          n.expressions[0].parameters.forEach((e) => { if (!isCallArrayArg(e)) walk(e); });
+          return;
+        }
         for (const e of n.expressions ?? []) { if (!isValueArr(e)) walk(e); }
         return;
       }
@@ -514,11 +876,18 @@ export default class LowerMemoryModel extends AstTraversal {
         if (!isValueArr(n.expression)) walk(n.expression);
         return;
       }
+      // Before symbol resolution rewrites a bare state assignment to StateAssignNode it is still `x = b`.
+      // Serializing a byte-buffer pointer at that value-copy boundary is supported below.
+      if (n instanceof AssignNode && n.identifier instanceof IdentifierNode
+        && !candidates.has(n.identifier.name) && isBytesPtr(n.expression)) return;
       if (n instanceof ArrayAccessNode && isValueArr(n.array)) { walk(n.index); return; }
       if (n instanceof TupleIndexOpNode && isValueArr(n.tuple)) return; // numeric-literal index
       if (n instanceof UnaryOpNode && n.operator === UnaryOperator.SIZE && n.expression instanceof IdentifierNode
         && candidates.has(n.expression.name)) return; // .length (only arrays have it; value or struct element)
       if (n instanceof ArrayAssignNode && isValueArr(new IdentifierNode(n.name))) { walk(n.index); walk(n.value); return; }
+      // `delete a` on a memory reference resets its pointer to zero; Yul may subsequently observe that null
+      // pointer (e.g. mload(a) == mload(0) == 0).
+      if (n instanceof DeleteLocalNode && candidates.has(n.identifier.name)) return;
       // `arr[i] = T(..)` struct-element construct (only a struct ctor value is handled).
       if (n instanceof ArrayAssignNode && structArrayCands.has(n.name)
         && n.value instanceof FunctionCallNode
@@ -559,6 +928,7 @@ export default class LowerMemoryModel extends AstTraversal {
       }
       if (n instanceof VariableDefinitionNode && candidates.has(n.name)) {
         if (n.expression instanceof NewArrayNode) walk(n.expression.size); // fresh alloc: bound expr
+        else if (n.expression instanceof ArrayNode) n.expression.elements.forEach(walk);
         else if (n.expression instanceof FunctionCallNode) walkCtor(n.name, n.expression); // struct ctor
         // else an ident/field/element alias init (`tmp = s.a`): the edge itself, do not taint the base
         return;
@@ -628,6 +998,24 @@ export default class LowerMemoryModel extends AstTraversal {
     for (const stmt of node.statements ?? []) {
       const expanded = stmt instanceof VariableDefinitionNode ? this.tryLowerDecl(stmt) : undefined;
       if (expanded) { out.push(...expanded); continue; }
+      // Reallocation of a pointer-backed memory bytes/string local (`b = new bytes(n)`). Build the same
+      // allocation sequence as a declaration, replacing only its first pointer declaration with an assignment
+      // to the existing pointer. Keeping this inside the current block preserves `unchecked` arithmetic.
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && this.memBytes.has(stmt.identifier.name)
+        && (stmt.expression instanceof NewArrayNode || stmt.expression instanceof HexLiteralNode
+          || stmt.expression instanceof StringLiteralNode)) {
+        const name = stmt.identifier.name;
+        const fake = this.at(new VariableDefinitionNode(
+          this.memBytes.get(name)!, ['memory'], name, stmt.expression,
+        ), stmt);
+        const allocation = this.lowerBytesDecl(fake, this.memBytes.get(name));
+        if (allocation?.[0] instanceof VariableDefinitionNode) {
+          const first = allocation[0] as VariableDefinitionNode;
+          out.push(this.at(new AssignNode(new IdentifierNode(name), first.expression!), stmt), ...allocation.slice(1));
+          continue;
+        }
+      }
       // `delete d[i]` on a memory array -> store the element default (0) in place.
       if (stmt instanceof MappingDeleteNode && this.memArrays.has(stmt.name) && stmt.keys.length === 1) {
         const arrT = this.memArrays.get(stmt.name)!;
@@ -681,6 +1069,15 @@ export default class LowerMemoryModel extends AstTraversal {
         out.push(this.at(sa, stmt));
         continue;
       }
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && stmt.expression instanceof IdentifierNode && this.memBytes.has(stmt.expression.name)
+        && !this.memBytes.has(stmt.identifier.name)) {
+        out.push(this.at(new AssignNode(
+          new IdentifierNode(stmt.identifier.name),
+          this.serializeBytes(stmt.expression.name, stmt),
+        ), stmt));
+        continue;
+      }
       // `return a;` on a memory value-array -> serialize the buffer block into a fresh value-copy array and return
       // that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing/composition) while
       // still crossing the export boundary in the value-copy blob format.
@@ -689,6 +1086,23 @@ export default class LowerMemoryModel extends AstTraversal {
         const an = stmt.expressions[0].name;
         out.push(...this.serializeArrayReturn(an, this.memArrays.get(an)!, stmt));
         continue;
+      }
+      // A pointer-backed array passed directly to a call in a return expression crosses back into the normal
+      // value-copy ABI. Serialize each direct argument first, then call with the resulting fixed/dynamic array.
+      if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
+        && stmt.expressions[0] instanceof FunctionCallNode) {
+        const call = stmt.expressions[0];
+        const setup: StatementNode[] = [];
+        call.parameters = call.parameters.map((arg) => {
+          if (!(arg instanceof IdentifierNode) || !this.memArrays.has(arg.name)) return arg;
+          const serialized = this.serializeArray(arg.name, this.memArrays.get(arg.name)!, stmt);
+          setup.push(...serialized.stmts);
+          return this.at(new IdentifierNode(serialized.serName), arg);
+        });
+        if (setup.length > 0) {
+          out.push(...setup, this.visit(stmt) as StatementNode);
+          continue;
+        }
       }
       // `this.s = a;` writing a memory value-array to state -> serialize the buffer into a fresh value-copy array
       // and write that (P3 boundary serialization), so the array can be a memory-model pointer (aliasing) while
@@ -716,6 +1130,16 @@ export default class LowerMemoryModel extends AstTraversal {
   // buffer, avoiding any manual re-encoding of the packed value-copy layout. Shared by every export boundary.
   private serializeArray(arrName: string, arrT: ArrayType, src: Node): { stmts: StatementNode[]; serName: string } {
     const serName = `__ser_${this.counter++}`;
+    if (arrT.bound !== undefined) {
+      const elements = Array.from({ length: arrT.bound }, (_, i) =>
+        this.mload(this.elemAddr(new IdentifierNode(arrName), this.intLit(BigInt(i))), arrT.elementType));
+      const literal = this.at(new ArrayNode(elements), src);
+      literal.type = arrT;
+      return {
+        stmts: [this.at(new VariableDefinitionNode(arrT, [], serName, literal), src)],
+        serName,
+      };
+    }
     const idxName = `__seri_${this.counter++}`;
     const lenAt = (): ExpressionNode => this.mload(new IdentifierNode(arrName), this.uint()); // a.length word
     // uint[] __ser = new uint[](a.length);  (a fresh value-copy array - emitted post-analysis, not converted)
@@ -791,6 +1215,39 @@ export default class LowerMemoryModel extends AstTraversal {
       return [decl, bump, grow, setLen];
     }
 
+    // `T[] memory a;` observed from assembly points at an allocated zero length word. In particular, its pointer
+    // is nonzero even though `mload(a) == 0`.
+    if (arrT.bound === undefined && node.expression === undefined) {
+      this.usesMemory = true;
+      this.memArrays.set(node.name, arrT);
+      const ptr = new IdentifierNode(node.name);
+      const size = this.intLit(WORD);
+      const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
+      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.clone(size))), node);
+      const grow = this.at(this.assign(YULMEM,
+        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.clone(size))])), node);
+      return [decl, bump, grow];
+    }
+
+    // `T[N] memory a;`: fixed arrays have no length header in EVM memory; the pointer names element zero and the
+    // declaration allocates N zero-filled 32-byte slots.
+    if (arrT.bound !== undefined && (node.expression === undefined || node.expression instanceof ArrayNode)) {
+      this.usesMemory = true;
+      this.memArrays.set(node.name, arrT);
+      const ptr = new IdentifierNode(node.name);
+      const size = this.intLit(BigInt(arrT.bound) * WORD);
+      const decl = this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.freePtr()), node);
+      const bump = this.at(this.setFreePtr(this.add(this.clone(ptr), this.clone(size))), node);
+      const grow = this.at(this.assign(YULMEM,
+        new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.clone(size))])), node);
+      const stores = node.expression instanceof ArrayNode
+        ? node.expression.elements.map((element, i) => this.at(this.mstore(
+          this.elemAddr(this.clone(ptr), this.intLit(BigInt(i))), element, arrT.elementType,
+        ), node))
+        : [];
+      return [decl, bump, grow, ...stores];
+    }
+
     return undefined;
   }
 
@@ -814,10 +1271,20 @@ export default class LowerMemoryModel extends AstTraversal {
 
   // `bytes memory b = new bytes(n)` -> allocate a zero-filled [length(32)][data] block (data word-aligned so an
   // assembly word-store stays inside the allocation); `bytes b = a` -> pointer alias. A constant `new bytes(constN)`
-  // reaches here as an all-zero HexLiteralNode (only those convert - see analyzeConvertible), so the data is zeros.
+  // reaches here as an all-zero HexLiteralNode. String literals are copied into the allocated data words.
   private lowerBytesDecl(node: VariableDefinitionNode, bytesT: Type | undefined): StatementNode[] | undefined {
+    if (node.name.startsWith('__memret_') && node.expression instanceof IntLiteralNode
+      && node.expression.value === 0n) {
+      this.usesMemory = true;
+      this.memBytes.set(node.name, bytesT instanceof BytesType ? bytesT : new BytesType());
+      return [this.at(new VariableDefinitionNode(this.uint(), [], node.name, this.intLit(0n)), node)];
+    }
+    if (node.expression instanceof IdentifierNode && this.byteConstantValues.has(node.expression.name)) {
+      node.expression = cloneNode(this.byteConstantValues.get(node.expression.name)!) as HexLiteralNode | StringLiteralNode;
+    }
     const isHex = node.expression instanceof HexLiteralNode;
-    const isAlloc = node.expression instanceof NewArrayNode || isHex;
+    const isString = node.expression instanceof StringLiteralNode;
+    const isAlloc = node.expression instanceof NewArrayNode || isHex || isString;
     // Pointer-valued init (alias / ref-field read): share the pointer.
     if (node.expression && !isAlloc) {
       const r = this.resolvePtr(node.expression);
@@ -835,8 +1302,10 @@ export default class LowerMemoryModel extends AstTraversal {
     // assignable to a `string` return/state var - see types.ts string<->bytes rules).
     this.memBytes.set(node.name, bytesT instanceof BytesType ? bytesT : new BytesType());
     // Length: the runtime size expr for `new bytes(n)`, or the (zero) literal's byte length for the folded constant.
-    const n = (): ExpressionNode => (isHex
-      ? this.intLit(BigInt((node.expression as HexLiteralNode).value.length))
+    const literal = isString ? encodeString((node.expression as StringLiteralNode).value)
+      : isHex ? (node.expression as HexLiteralNode).value : undefined;
+    const n = (): ExpressionNode => (literal
+      ? this.intLit(BigInt(literal.length))
       : this.clone((node.expression as NewArrayNode).size));
     const ptr = new IdentifierNode(node.name);
     // uint b = mload(0x40);
@@ -848,7 +1317,19 @@ export default class LowerMemoryModel extends AstTraversal {
       new BytesConcatNode([this.mem(YULMEM), this.rawBytes(this.bytesBlockBytes(n()))])), node);
     // __yulmem = <store n at b>;   (the byte length)
     const setLen = this.at(this.mstore(this.at(this.clone(ptr), node), n(), this.uint()), node);
-    return [decl, bump, grow, setLen];
+    const stores: StatementNode[] = [];
+    if (literal?.some((byte) => byte !== 0)) {
+      for (let offset = 0; offset < literal.length; offset += Number(WORD)) {
+        const word = new Uint8Array(Number(WORD));
+        word.set(literal.slice(offset, offset + Number(WORD)));
+        stores.push(this.at(this.mstore(
+          this.add(this.clone(ptr), this.intLit(WORD + BigInt(offset))),
+          new HexLiteralNode(word),
+          new BytesType(32),
+        ), node));
+      }
+    }
+    return [decl, bump, grow, setLen, ...stores];
   }
 
   // Allocate a struct block at `ptrName = mload(0x40)` (bump the in-buffer free pointer + grow), then store the
@@ -895,8 +1376,17 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     const arrT = this.memArrays.get(node.name);
     if (!arrT) return super.visitArrayAssign(node);
-    const addr = this.elemAddr(new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
+    const addr = this.arrayElemAddr(arrT, new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
     return this.at(this.mstore(addr, this.visit(node.value) as ExpressionNode, arrT.elementType), node);
+  }
+
+  visitDeleteLocal(node: DeleteLocalNode): Node {
+    const name = node.identifier.name;
+    if (this.memArrays.has(name) || this.memStructArrays.has(name)
+      || this.memBytes.has(name) || this.memStructs.has(name)) {
+      return this.at(this.assign(name, this.intLit(0n)), node);
+    }
+    return super.visitDeleteLocal(node);
   }
 
   // `a[i]` read (variable index) on a memory array -> load at `a + 32 + i*32`. `b[i]` on memory bytes -> the
@@ -908,13 +1398,15 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     if (node.array instanceof IdentifierNode && this.memArrays.has(node.array.name)) {
       const arrT = this.memArrays.get(node.array.name)!;
-      const addr = this.elemAddr(new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode);
+      const addr = this.arrayElemAddr(
+        arrT, new IdentifierNode(node.array.name), this.visit(node.index) as ExpressionNode,
+      );
       return this.at(this.mload(addr, arrT.elementType), node);
     }
     // Chained base (`s.a[i]`): resolve the array pointer, load the value element.
     const b = this.resolvePtr(node.array);
     if (b && b.memType instanceof ArrayType && !this.isRefType(b.memType.elementType)) {
-      const addr = this.elemAddr(b.ptr, this.visit(node.index) as ExpressionNode);
+      const addr = this.arrayElemAddr(b.memType, b.ptr, this.visit(node.index) as ExpressionNode);
       return this.at(this.mload(addr, b.memType.elementType), node);
     }
     return super.visitArrayAccess(node);
@@ -928,13 +1420,15 @@ export default class LowerMemoryModel extends AstTraversal {
     }
     if (node.tuple instanceof IdentifierNode && this.memArrays.has(node.tuple.name)) {
       const arrT = this.memArrays.get(node.tuple.name)!;
-      const addr = this.elemAddr(new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)));
+      const addr = this.arrayElemAddr(
+        arrT, new IdentifierNode(node.tuple.name), this.intLit(BigInt(node.index)),
+      );
       return this.at(this.mload(addr, arrT.elementType), node);
     }
     // Chained base (`s.a[0]`): resolve the array pointer, load the value element.
     const b = this.resolvePtr(node.tuple);
     if (b && b.memType instanceof ArrayType && !this.isRefType(b.memType.elementType)) {
-      const addr = this.elemAddr(b.ptr, this.intLit(BigInt(node.index)));
+      const addr = this.arrayElemAddr(b.memType, b.ptr, this.intLit(BigInt(node.index)));
       return this.at(this.mload(addr, b.memType.elementType), node);
     }
     return super.visitTupleIndexOp(node);
@@ -946,6 +1440,8 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode
       && (this.memArrays.has(node.expression.name) || this.memStructArrays.has(node.expression.name)
         || this.memBytes.has(node.expression.name))) {
+      const arrT = this.memArrays.get(node.expression.name) ?? this.memStructArrays.get(node.expression.name);
+      if (arrT?.bound !== undefined) return this.at(this.intLit(BigInt(arrT.bound)), node);
       const len = this.mload(new IdentifierNode(node.expression.name), this.uint());
       return this.at(new CastNode(PrimitiveType.BIGINT, len, false), node);
     }
@@ -953,6 +1449,7 @@ export default class LowerMemoryModel extends AstTraversal {
     if (node.operator === UnaryOperator.SIZE) {
       const b = this.resolvePtr(node.expression);
       if (b && b.memType instanceof ArrayType) {
+        if (b.memType.bound !== undefined) return this.at(this.intLit(BigInt(b.memType.bound)), node);
         return this.at(new CastNode(PrimitiveType.BIGINT, this.mload(b.ptr, this.uint()), false), node);
       }
     }
@@ -1024,21 +1521,31 @@ export default class LowerMemoryModel extends AstTraversal {
     return this.mstore(this.intLit(0x40n), value, this.uint());
   }
 
-  // mstore(addr, word): splice bytes32(word) in place at addr. elemType is unused (the word encodes identically for
-  // every 256-bit element type); kept for call-site symmetry with mload. Lowering lives in ./YulMemPrimitives.
-  private mstore(addr: ExpressionNode, word: ExpressionNode, _elemType: Type): AssignNode {
-    return memWordStore(() => this.clone(addr), word);
+  // mstore(addr, word): splice bytes32(word) in place at addr. UDVT elements first unwrap to their integer word;
+  // all other handled element types already have a directly word-encodable representation.
+  private mstore(addr: ExpressionNode, word: ExpressionNode, elemType: Type): AssignNode {
+    const raw = elemType instanceof ValueType
+      ? new CastNode(elemType.underlyingType, word, false)
+      : word;
+    raw.location = word.location;
+    return memWordStore(() => this.clone(addr), raw);
   }
 
   // mload(addr): decode the 32-byte word at [addr : addr+32] back to the element type. No pad - the high-level side
   // reads only allocated slots. Lowering lives in ./YulMemPrimitives.
   private mload(addr: ExpressionNode, elemType: Type): ExpressionNode {
-    return memWordLoad(() => this.clone(addr), { decodeType: wordDecodeType(elemType) });
+    const raw = memWordLoad(() => this.clone(addr), { decodeType: wordDecodeType(elemType) });
+    return elemType instanceof ValueType ? new CastNode(elemType, raw, false) : raw;
   }
 
   // &a[i] = a + 32 + i*32
   private elemAddr(ptr: ExpressionNode, index: ExpressionNode): ExpressionNode {
     return this.add(this.add(ptr, this.intLit(WORD)), new BinaryOpNode(index, BinaryOperator.MUL, this.intLit(WORD)));
+  }
+
+  private arrayElemAddr(arrT: ArrayType, ptr: ExpressionNode, index: ExpressionNode): ExpressionNode {
+    const offset = new BinaryOpNode(index, BinaryOperator.MUL, this.intLit(WORD));
+    return arrT.bound === undefined ? this.add(this.add(ptr, this.intLit(WORD)), offset) : this.add(ptr, offset);
   }
 
   // &s.field_i = s + 32*i (struct block has no length header)
@@ -1075,12 +1582,14 @@ export default class LowerMemoryModel extends AstTraversal {
     return memByteStore(() => this.clone(addr), val, { fullWord: false });
   }
 
-  // Handled today: an unbounded array of a 256-bit int (`uint`/`int`). 32-byte words store the value exactly, so
-  // there is no narrowing/wraparound divergence from value-copy. Narrower ints (`uint8[]`) and other element
-  // types fall back until their packed encoding is handled (P6).
+  // EVM memory arrays use one full 32-byte word per integer element regardless of source width. Decode through
+  // the declared IntType so a Yul word store (e.g. 258 into uint8[]) is narrowed on the subsequent high-level
+  // read exactly as Solidity does; this is not the packed storage-array representation.
   private isHandledMemArray(t: Type | undefined): boolean {
-    return t instanceof ArrayType && t.bound === undefined
-      && t.elementType instanceof IntType && t.elementType.bits === 256;
+    return t instanceof ArrayType
+      && (t.elementType instanceof IntType
+        || (t.elementType instanceof ValueType && t.elementType.underlyingType instanceof IntType))
+      && (t.bound === undefined || t.bound <= 4096);
   }
 
   // Handled: dynamic `bytes` (a byte-packed [length][data] block). `bytesN` (fixed) is a value word, not a block.
@@ -1132,7 +1641,8 @@ export default class LowerMemoryModel extends AstTraversal {
   //   base[i] (ref element) -> {mload(basePtr+32+i*32), elementType}.
   private resolvePtr(expr: ExpressionNode): { ptr: ExpressionNode, memType: Type } | undefined {
     if (expr instanceof IdentifierNode) {
-      const t = this.memArrays.get(expr.name) ?? this.memStructArrays.get(expr.name) ?? this.memStructs.get(expr.name);
+      const t = this.memArrays.get(expr.name) ?? this.memStructArrays.get(expr.name)
+        ?? this.memStructs.get(expr.name) ?? this.memBytes.get(expr.name);
       return t ? { ptr: new IdentifierNode(expr.name), memType: t } : undefined;
     }
     if (expr instanceof FieldAccessNode) {

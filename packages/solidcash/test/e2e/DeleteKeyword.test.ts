@@ -45,13 +45,17 @@ describe('Delete Keyword', () => {
   // --- delete local variable ------------------------------------------------
 
   describe('delete local variable', () => {
-    it('should reset int to 0', async () => {
+    // test/libsolidity/semanticTests/variables/delete_local.sol
+    // test/libsolidity/semanticTests/variables/delete_locals.sol
+    it('should reset int to 0 without disturbing adjacent locals', async () => {
       const source = `
         contract DeleteInt() {
             function test(int val) {
                 int x = val;
+                int w = 6;
+                int y = 7;
                 delete x;
-                require(x == 0);
+                require(x == 0 && w == 6 && y == 7);
             }
         }
       `;

@@ -54,9 +54,9 @@ const LOWERABLE_BUILTINS = new Set<string>([
   'blobhash',
   // address/balance/extcodehash -> address(this)/.balance/.codehash; codecopy/extcodecopy/calldatacopy -> runtime
   // __yulmem copy from own bytecode / addr.code / synthesized calldata; return -> the __yulmem[ptr:ptr+size] bytes
-  // result; returndatacopy/returndatasize -> the tracked last-call return-data bytes. (clz is literal-fold-only.)
+  // result; returndatacopy/returndatasize -> the tracked last-call return-data bytes.
   'address', 'balance', 'extcodehash', 'codecopy', 'extcodecopy', 'calldatacopy',
-  'return', 'returndatacopy', 'returndatasize',
+  'return', 'returndatacopy', 'returndatasize', 'clz',
 ]);
 
 interface Walk { calls: YulFunctionCallNode[]; fnDef: boolean; }

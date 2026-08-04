@@ -114,6 +114,18 @@ describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] 
   });
 });
 
+describe('whole fixed state-array copy with address mutability widening', () => {
+  it('copies address payable[N] into address[N] element-wise', () => {
+    expect(compileString('contract C { address[2] a; address payable[2] b;'
+      + ' function f() public { a = b; require(a[0] == b[0]); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('still rejects the reverse address[N] to address payable[N] conversion', () => {
+    expect(() => compileString('contract C { address payable[2] a; address[2] b;'
+      + ' function f() public { a = b; } }', { solidityImportCompat: true })).toThrow();
+  });
+});
+
 // A whole DYNAMIC array copy with differing element types (`bytes10[] = bytes8[]`, which pack differently) can't
 // be a same-layout copy; DesugarDynamicArrayCopyCast (pre-semantic, before the loop-cache pass) rewrites it to
 // `delete d2; for (i) d2.push(bytes10(d1[i]));`. Sound by construction: canonical copy loop reusing the byte-
@@ -126,6 +138,14 @@ describe('whole dynamic-array copy with a per-element bytes conversion (bytes10[
   it('leaves a same-type dynamic copy unchanged (no loop)', () => {
     expect(compileString('contract C{bytes8[] d1;bytes8[] d2;function f()external{d1.push(bytes8(uint64(1)));'
       + 'd2=d1;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('re-packs a calldata array into a wider fixed-bytes state array', () => {
+    expect(compileString('contract C{bytes10[] d;function f(bytes8[] calldata src)external{d=src;require(true);}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('re-packs a memory local array into a wider fixed-bytes state array', () => {
+    expect(compileString('contract C{bytes10[] d;function f()external{bytes4[] memory src=new bytes4[](1);'
+      + 'd=src;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
 

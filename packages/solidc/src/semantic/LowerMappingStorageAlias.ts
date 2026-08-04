@@ -7,6 +7,8 @@ import {
   StatementNode,
   FunctionDefinitionNode,
   VariableDefinitionNode,
+  AssignNode,
+  StateAssignNode,
   ArrayAssignNode,
   ArrayAccessNode,
   IdentifierNode,
@@ -72,6 +74,17 @@ export default class LowerMappingStorageAlias extends AstTraversal {
         const alias = this.aliasFromRhs(stmt.expression, out, stmt);
         if (alias) { this.aliases.set(stmt.name, alias); continue; }
       }
+      // A storage pointer can be rebound; it still has no runtime value. Update the compile-time alias from this
+      // point onward and drop the assignment just like the original declaration.
+      if (stmt instanceof AssignNode && stmt.identifier instanceof IdentifierNode
+        && this.aliases.has(stmt.identifier.name)) {
+        const alias = this.aliasFromRhs(stmt.expression, out, stmt);
+        if (alias) { this.aliases.set(stmt.identifier.name, alias); continue; }
+      }
+      if (stmt instanceof StateAssignNode && this.aliases.has(stmt.name)) {
+        const alias = this.aliasFromRhs(stmt.expression, out, stmt);
+        if (alias) { this.aliases.set(stmt.name, alias); continue; }
+      }
       // `m[k] = v` on an aliased pointer -> underlying write (branched when conditional).
       if (stmt instanceof ArrayAssignNode && this.aliases.has(stmt.name)) {
         out.push(this.rewriteWrite(stmt, this.aliases.get(stmt.name)!));
@@ -100,7 +113,7 @@ export default class LowerMappingStorageAlias extends AstTraversal {
   }
 
   private aliasFromRhs(
-    rhs: ExpressionNode, out: StatementNode[], decl: VariableDefinitionNode,
+    rhs: ExpressionNode, out: StatementNode[], decl: VariableDefinitionNode | AssignNode | StateAssignNode,
   ): MapAlias | undefined {
     if (rhs instanceof IdentifierNode) return { a: rhs.name };
     if (rhs instanceof TernaryOpNode && rhs.ifTrue instanceof IdentifierNode && rhs.ifFalse instanceof IdentifierNode) {

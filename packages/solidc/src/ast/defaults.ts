@@ -1,5 +1,5 @@
 import {
-  AddressType, ArrayType, BytesType, EnumType, PrimitiveType, StructType, Type, ValueType,
+  AddressType, ArrayType, BytesType, EnumType, FunctionType, PrimitiveType, StructType, Type, ValueType,
 } from '@solidcash/utils';
 import {
   BoolLiteralNode,
@@ -49,6 +49,11 @@ export function createDefaultValueExpression(type: Type, location: Location): Ex
     const inner = createDefaultValueExpression(type.underlyingType, location);
     inner.type = type.underlyingType;
     node = new CastNode(type, inner, false);
+  } else if (type instanceof FunctionType) {
+    // Function pointers are integer-backed dispatch handles. Internal pointer id 0 is a real function, so use
+    // the same unreachable sentinel as emitDefaultValue; external pointers retain their zero handle.
+    node = new IntLiteralNode(type.isExternal ? 0n : 0x7fffffffn);
+    node.type = type;
   } else {
     // int, bytes (unbounded), and all other numeric types default to 0
     node = new IntLiteralNode(0n);

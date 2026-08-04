@@ -2,8 +2,8 @@
   "generatedFrom": "examples/solidity-corpus/results.json",
   "corpusRoot": "/Code/solidity",
   "compiledExecutableFixtures": 1504,
-  "explicitlyCoveredFixtures": 24,
-  "untracedFixtures": 1480,
+  "explicitlyCoveredFixtures": 30,
+  "untracedFixtures": 1474,
   "byTopic": {
     "abicoder": {
       "compiledExecutable": 128,
@@ -35,7 +35,7 @@
     },
     "constants": {
       "compiledExecutable": 9,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "constructor": {
       "compiledExecutable": 20,
@@ -43,7 +43,7 @@
     },
     "conversions": {
       "compiledExecutable": 3,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "deployedCodeExclusion": {
       "compiledExecutable": 10,
@@ -83,7 +83,7 @@
     },
     "freeFunctions": {
       "compiledExecutable": 8,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "functionCall": {
       "compiledExecutable": 65,
@@ -143,7 +143,7 @@
     },
     "modifiers": {
       "compiledExecutable": 30,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "operators": {
       "compiledExecutable": 63,
@@ -167,7 +167,7 @@
     },
     "reverts": {
       "compiledExecutable": 10,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "saltedCreate": {
       "compiledExecutable": 2,
@@ -235,7 +235,7 @@
     },
     "using": {
       "compiledExecutable": 7,
-      "explicitlyCovered": 0
+      "explicitlyCovered": 1
     },
     "variables": {
       "compiledExecutable": 21,
@@ -298,6 +298,20 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/constants/constant_string.sol",
+      "topic": "constants",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/conversions/string_to_bytes.sol",
+      "topic": "conversions",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/enums/enum_referencing.sol",
       "topic": "enums",
       "explicitRuntimeTests": [
@@ -314,6 +328,13 @@
     {
       "fixture": "test/libsolidity/semanticTests/events/emit_two_identical_events.sol",
       "topic": "events",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/freeFunctions/easy.sol",
+      "topic": "freeFunctions",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
@@ -396,10 +417,24 @@
       ]
     },
     {
+      "fixture": "test/libsolidity/semanticTests/modifiers/evaluation_order.sol",
+      "topic": "modifiers",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
       "fixture": "test/libsolidity/semanticTests/operators/compound_assign.sol",
       "topic": "operators",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/reverts/assert_require.sol",
+      "topic": "reverts",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/BehaviorParityPins.test.ts"
       ]
     },
     {
@@ -414,6 +449,13 @@
       "topic": "userDefinedValueType",
       "explicitRuntimeTests": [
         "packages/solidcash/test/e2e/EvmStorageLayout.test.ts"
+      ]
+    },
+    {
+      "fixture": "test/libsolidity/semanticTests/using/free_function_multi.sol",
+      "topic": "using",
+      "explicitRuntimeTests": [
+        "packages/solidcash/test/e2e/SolidityCorpusBehavior.test.ts"
       ]
     },
     {
@@ -472,8 +514,8 @@
       "test/libsolidity/semanticTests/constants/asm_address_constant_regression.sol",
       "test/libsolidity/semanticTests/constants/asm_constant_file_level.sol",
       "test/libsolidity/semanticTests/constants/assign_type_info.sol",
-      "test/libsolidity/semanticTests/constants/constant_string.sol",
-      "test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol"
+      "test/libsolidity/semanticTests/constants/constant_string_at_file_level.sol",
+      "test/libsolidity/semanticTests/constants/constant_variables.sol"
     ],
     "constructor": [
       "test/libsolidity/semanticTests/constructor/base_constructor_arguments.sol",
@@ -484,8 +526,7 @@
     ],
     "conversions": [
       "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory.sol",
-      "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory_reencode.sol",
-      "test/libsolidity/semanticTests/conversions/string_to_bytes.sol"
+      "test/libsolidity/semanticTests/conversions/calldata_bytes_to_memory_reencode.sol"
     ],
     "deployedCodeExclusion": [
       "test/libsolidity/semanticTests/deployedCodeExclusion/bound_function.sol",
@@ -545,11 +586,11 @@
       "test/libsolidity/semanticTests/fallback/fallback_or_receive.sol"
     ],
     "freeFunctions": [
-      "test/libsolidity/semanticTests/freeFunctions/easy.sol",
       "test/libsolidity/semanticTests/freeFunctions/free_namesake_contract_function.sol",
       "test/libsolidity/semanticTests/freeFunctions/free_runtimecode.sol",
       "test/libsolidity/semanticTests/freeFunctions/libraries_from_free.sol",
-      "test/libsolidity/semanticTests/freeFunctions/new_operator.sol"
+      "test/libsolidity/semanticTests/freeFunctions/new_operator.sol",
+      "test/libsolidity/semanticTests/freeFunctions/overloads.sol"
     ],
     "functionCall": [
       "test/libsolidity/semanticTests/functionCall/array_multiple_local_vars.sol",
@@ -645,8 +686,8 @@
       "test/libsolidity/semanticTests/modifiers/access_through_contract_name.sol",
       "test/libsolidity/semanticTests/modifiers/break_in_modifier.sol",
       "test/libsolidity/semanticTests/modifiers/continue_in_modifier.sol",
-      "test/libsolidity/semanticTests/modifiers/evaluation_order.sol",
-      "test/libsolidity/semanticTests/modifiers/function_modifier.sol"
+      "test/libsolidity/semanticTests/modifiers/function_modifier.sol",
+      "test/libsolidity/semanticTests/modifiers/function_modifier_calling_functions_in_creation_context.sol"
     ],
     "operators": [
       "test/libsolidity/semanticTests/operators/compound_assign_transient_storage.sol",
@@ -675,11 +716,11 @@
       "test/libsolidity/semanticTests/revertStrings/calldata_array_dynamic_static_short_reencode.sol"
     ],
     "reverts": [
-      "test/libsolidity/semanticTests/reverts/assert_require.sol",
       "test/libsolidity/semanticTests/reverts/error_struct.sol",
       "test/libsolidity/semanticTests/reverts/invalid_enum_as_external_arg.sol",
       "test/libsolidity/semanticTests/reverts/invalid_enum_as_external_ret.sol",
-      "test/libsolidity/semanticTests/reverts/invalid_enum_compared.sol"
+      "test/libsolidity/semanticTests/reverts/invalid_enum_compared.sol",
+      "test/libsolidity/semanticTests/reverts/invalid_enum_stored.sol"
     ],
     "saltedCreate": [
       "test/libsolidity/semanticTests/saltedCreate/prediction_example.sol",
@@ -777,9 +818,9 @@
     "using": [
       "test/libsolidity/semanticTests/using/calldata_memory_copy.sol",
       "test/libsolidity/semanticTests/using/free_function_braces.sol",
-      "test/libsolidity/semanticTests/using/free_function_multi.sol",
       "test/libsolidity/semanticTests/using/free_functions_individual.sol",
-      "test/libsolidity/semanticTests/using/library_functions_inside_contract.sol"
+      "test/libsolidity/semanticTests/using/library_functions_inside_contract.sol",
+      "test/libsolidity/semanticTests/using/library_on_interface.sol"
     ],
     "variables": [
       "test/libsolidity/semanticTests/variables/delete_local.sol",

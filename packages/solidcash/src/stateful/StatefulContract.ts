@@ -9678,8 +9678,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               // An explicitly empty requirement means the callee does not touch
               // fixed state. Expanding it to every data NFT corrupts the callee's
               // block offsets (notably ERC20 mapping-only functions).
-              const childRequired = nested.requiredDataNftIndices;
-              const childData: UnlockableUtxo[] = childRequired.map((nftIndex) => {
+              let childRequired = nested.requiredDataNftIndices;
+              let childData: UnlockableUtxo[] = childRequired.map((nftIndex) => {
                 const utxo = childState.dataNftUtxos[nftIndex];
                 if (!utxo) {
                   throw new Error(
@@ -9711,6 +9711,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 childFunctionName = '__forward';
                 childFunctionArgs = [hexToBin(targetFn.selector)];
                 childWritesState = targetFn.writesState === true;
+                if (childWritesState) {
+                  // The forwarding proxy self-preserves its complete grafted state block even when the selected
+                  // implementation entry touches only events or a subset of fields.
+                  childRequired = Array.from(
+                    { length: childLayout.dataNftCount ?? 0 }, (_, nftIndex) => nftIndex,
+                  );
+                  childData = childRequired.map((nftIndex) => {
+                    const utxo = childState.dataNftUtxos[nftIndex];
+                    if (!utxo) {
+                      throw new Error(
+                        `Proxy data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
+                      );
+                    }
+                    return {
+                      ...utxo,
+                      unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
+                    };
+                  });
+                }
 
                 const implementationState = proxyCallee.implementation.inner.artifact.delegateOnly
                   ? await proxyCallee.implementation._getMasterOnlyState()
@@ -9941,8 +9960,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Complete the nested callee unlockers now that every external group has a
       // stable absolute input position.
-      let nestedInputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
-        + outStateInputCount + iterationEntryInputs.length;
+      const delegateInputCount = lowLevelCallUtxoGroups
+        .filter((group, groupIndex) => group.callMode === 'delegatecall'
+          && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
+        .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
+      const hasNestedDelegate = delegateInputCount > 0;
+      let nestedInputBase = hasNestedDelegate
+        ? 1 + requiredNftIndices.length + delegateInputCount
+        : 1 + requiredNftIndices.length + externalReadUtxos.length
+          + outStateInputCount + iterationEntryInputs.length;
       const nestedMasterIndices: number[] = [];
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
         const child = externalCallUtxoGroups[groupIdx];
@@ -10084,23 +10110,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         .find((slot) => slot.kind === 'lowLevelCall')?.offset
         ?? delegateEventSlots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
       lowLevelCallInputBase = hasDelegatecallGroup
-        // The compiler offset describes the root function's own block. Nested
-        // external-call groups are inserted before the delegated implementation,
-        // so their materialized inputs must shift the absolute witness index.
-        // Taking the explicit offset alone made a proxy pin input 3 even when
-        // its implementation had moved to input 8 behind those groups.
-        ? Math.max(
-          explicitLowLevelCallOffset ?? 0,
-          materializedBlockSize,
-          denseCallInputBase,
-        )
+        // Delegate bytecode binds its proxy-master witness to the physical relation
+        // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.
+        ? 1 + requiredNftIndices.length
         : denseCallInputBase;
 
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
       for (let groupLocalIdx = 0; groupLocalIdx < lowLevelCallUtxoGroups.length; groupLocalIdx++) {
         const group = lowLevelCallUtxoGroups[groupLocalIdx];
-        const masterInputIndex = currentBase;
+        const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
+        const proxyPhysicalSize = proxyExternalGroup === undefined ? 0
+          : (externalCallUtxoGroups[proxyExternalGroup].blockInputs?.length
+            ?? 1 + externalCallUtxoGroups[proxyExternalGroup].dataNftUtxos.length);
+        const masterInputIndex = proxyExternalGroup === undefined
+          ? currentBase : nestedMasterIndices[proxyExternalGroup] + proxyPhysicalSize;
         group.dataNftUtxos = group.dataNftUtxos.map((nftUtxo) => ({
           ...nftUtxo,
           unlocker: createDataNftUnlocker(
@@ -10203,7 +10227,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
         }
 
-        currentBase += 1 + group.dataNftUtxos.length;
+        if (proxyExternalGroup === undefined) currentBase += 1 + group.dataNftUtxos.length;
       }
 
 

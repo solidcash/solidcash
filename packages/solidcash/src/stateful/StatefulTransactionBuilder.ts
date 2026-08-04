@@ -462,6 +462,7 @@ export class StatefulTransactionBuilder {
     // so we fall through to the legacy path which both inputs and outputs follow.
     const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
     if (this.blockLayout && this.funderUtxos.length > 0
+      && !this.delegateEntriesAfterLowLevel
       && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined)) {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
@@ -610,6 +611,39 @@ export class StatefulTransactionBuilder {
     }
 
     // Legacy ordering - funders go at the end (past all covenant inputs).
+    // Delegate bytecode requires the implementation master to immediately follow the proxy master/data region.
+    // Its nested external callees are ordinary co-spends, but must be ordered after that implementation band.
+    if (this.delegateEntriesAfterLowLevel) {
+      const associatedDelegates = new Set(this.externalCallUtxoGroups
+        .map((group) => group.delegateCallGroupIndex)
+        .filter((index): index is number => index !== undefined));
+      const groupInputs = (group: ExternalCallUtxoGroup): UnlockableUtxo[] => group.blockInputs
+        ? group.blockInputs : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos];
+      const delegateInputs = (index: number): UnlockableUtxo[] => {
+        const group = this.lowLevelCallUtxoGroups[index];
+        return group ? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos] : [];
+      };
+      const nestedInputs: UnlockableUtxo[] = [];
+      for (const group of this.externalCallUtxoGroups) {
+        if (group.sharedGroupIndex !== undefined) continue;
+        nestedInputs.push(...groupInputs(group));
+        if (group.delegateCallGroupIndex !== undefined) {
+          nestedInputs.push(...delegateInputs(group.delegateCallGroupIndex));
+        }
+      }
+      return [
+        this.masterUtxo, ...this.dataNftUtxos,
+        ...this.lowLevelCallUtxoGroups.flatMap((group, index) => associatedDelegates.has(index)
+          ? [] : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]),
+        ...this.lowLevelCallRawInputs,
+        ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
+        ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars, ...this.ecrecoverComputeCoSpendUtxos,
+        ...externalOutStateInputs, ...entryInputs, ...this.iterationEntryInputs,
+        ...this.insertLoopPredecessorInputs, ...nestedInputs,
+        ...this.dynamicChunkInputs, ...tokenContainerInputs, ...satoshiContainerInputs,
+        ...this.funderUtxos,
+      ];
+    }
     // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),
     // the covenant reads those chunks at blockSize+i, so they must sit immediately after the
     // block with nothing between. Loop external-call callees therefore go AFTER the chunk run
@@ -1293,6 +1327,12 @@ export class StatefulTransactionBuilder {
   }
 
   getLowLevelCallMasterInputIndex(groupIdx: number): number {
+    const target = this.lowLevelCallUtxoGroups[groupIdx]?.masterUtxo;
+    if (target) {
+      const exact = this.allInputs.findIndex((input) => input?.txid.toLowerCase() === target.txid.toLowerCase()
+        && input.vout === target.vout);
+      if (exact >= 0) return exact;
+    }
     if (this.lowLevelCallInputBase !== undefined) {
       let positionedBase = this.lowLevelCallInputBase;
       for (let i = 0; i < groupIdx; i++) {
@@ -1585,6 +1625,40 @@ export class StatefulTransactionBuilder {
           },
         });
       }
+    }
+
+    // A delegate implementation must occupy the same absolute output index as its input: its covenant binds
+    // that input directly after the proxy master/data region and self-preserves at OP_INPUTINDEX. Nested callees
+    // invoked by the implementation follow this preservation band.
+    const associatedDelegateOutputs = new Set(this.externalCallUtxoGroups
+      .map((group) => group.delegateCallGroupIndex)
+      .filter((index): index is number => index !== undefined));
+    const appendDelegateGroupOutputs = (groupIndex: number): void => {
+      const group = this.lowLevelCallUtxoGroups[groupIndex];
+      if (!group || group.callMode !== 'delegatecall') return;
+      const bMaster = group.masterUtxo as UnlockableUtxo;
+      builder.addOutput({
+        to: bMaster.unlocker.generateLockingBytecode(), amount: bMaster.satoshis, token: bMaster.token,
+      });
+      for (const nftUtxo of group.dataNftUtxos) {
+        builder.addOutput({
+          to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
+        });
+      }
+    };
+    if (this.delegateEntriesAfterLowLevel) {
+      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId)) {
+        builder.addOutput({
+          to: new Uint8Array([0x51]), amount: 800n,
+          token: {
+            amount: 0n, category: re.categoryId,
+            nft: { capability: 'none', commitment: binToHex(re.commitment) },
+          },
+        });
+      }
+      this.lowLevelCallUtxoGroups.forEach((_group, groupIndex) => {
+        if (!associatedDelegateOutputs.has(groupIndex)) appendDelegateGroupOutputs(groupIndex);
+      });
     }
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
@@ -1882,6 +1956,9 @@ export class StatefulTransactionBuilder {
           token: { amount: 0n, category: group.categoryId, nft: { capability: 'mutable', commitment: ins.commitment } },
         });
       }
+      if (group.delegateCallGroupIndex !== undefined) {
+        appendDelegateGroupOutputs(group.delegateCallGroupIndex);
+      }
     }
 
     // A delegate facet is preserved at its absolute input index, and the block layout now reserves that index
@@ -1889,32 +1966,6 @@ export class StatefulTransactionBuilder {
     // `OP_INPUTINDEX - (1 + dataNftCount)`. Emit the facet preservation output there FIRST, then the proxy's
     // return channel, so the output side matches the reserved input side instead of claiming its slot.
     if (this.delegateEntriesAfterLowLevel) {
-      // A return emitted by the proxy itself belongs in the proxy block, before
-      // the facet. Returns emitted by an external callee of the facet must follow
-      // the facet preservation outputs; otherwise the return NFT occupies the
-      // facet's absolute output index and its self-preservation check fails.
-      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId)) {
-        builder.addOutput({
-          to: new Uint8Array([0x51]),
-          amount: 800n,
-          token: {
-            amount: 0n,
-            category: re.categoryId,
-            nft: { capability: 'none', commitment: binToHex(re.commitment) },
-          },
-        });
-      }
-      for (const group of this.lowLevelCallUtxoGroups.filter((g) => g.callMode === 'delegatecall')) {
-        const bMaster = group.masterUtxo as UnlockableUtxo;
-        builder.addOutput({
-          to: bMaster.unlocker.generateLockingBytecode(), amount: bMaster.satoshis, token: bMaster.token,
-        });
-        for (const nftUtxo of group.dataNftUtxos) {
-          builder.addOutput({
-            to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
-          });
-        }
-      }
       // X56. The return channel follows the implementation's OWN output-only slots, not the facet master
       // directly. An implementation that also emits resolves its event at `implInput + 1` - the position this
       // used to hand the return event - and computeBlockLayout always orders events before the returnEvent, so

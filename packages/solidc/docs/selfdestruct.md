@@ -299,9 +299,10 @@ following are rejected (`InvalidModifierCombinationError`, with fixtures under
 - `upgrade` (recreates the master with new code; opposite of collapse)
 - `deploy` (creates a child contract)
 - `unsafe` (covenant-skipping tiers are incompatible with the destroy verification)
-- `delegate` (state verification is deferred to the delegate; collapse cannot be deferred)
 
 It also requires a **stateful** contract (fixture `selfdestruct_not_stateful.scash`).
+Functions using `selfdestruct` are ineligible for the separately inferred delegate artifact, so there is no
+source-modifier conflict to report.
 
 ## Limitations
 

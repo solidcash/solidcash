@@ -282,6 +282,26 @@ export class Contract<
     return new Contract(this.artifact, this.rawConstructorArgs, { ...this.options, category }) as any;
   }
 
+  /**
+   * The same contract compiled as a proxy implementation: its state writes target a co-spent proxy master
+   * instead of its own UTXO. Source never marks this (Solidity has no `delegate` keyword); the compiler emits
+   * the variant alongside the standalone one. Deploy THIS contract as the implementation behind a proxy - it is
+   * a different script, so it has a different address than the standalone contract.
+   */
+  asDelegate(): Contract<TArtifact, TResolved> {
+    const delegateArtifact = this.artifact.delegateArtifact;
+    if (!delegateArtifact) {
+      throw new Error(
+        `${this.artifact.contractName} has no delegate variant, so it cannot serve as a proxy implementation. A `
+        + 'function qualifies when it is externally callable, touches state the proxy owns (a state write, an '
+        + 'emit, or a low-level call), and carries no view/pure/internal/private/unsafe/upgrade/deploy/'
+        + 'selfdestruct/split/merge modifier. Value transfers and token-container operations are excluded: they '
+        + 'do not execute in delegate mode. See packages/solidc/docs/delegatecall.md.',
+      );
+    }
+    return new Contract(delegateArtifact, this.rawConstructorArgs, this.options) as any;
+  }
+
   static generateSalt(length: number = 32): Uint8Array {
     const salt = new Uint8Array(length);
     crypto.getRandomValues(salt);

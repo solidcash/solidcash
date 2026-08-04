@@ -15,7 +15,7 @@ contract MarketplaceV1() {
   bool initialized;
   address marketplaceDataAddress;
 
-  function initialize(address unicrow, address dispute, address arb, address treasury, int fee) delegate {
+  function initialize(address unicrow, address dispute, address arb, address treasury, int fee) public {
     require(!this.initialized, "InvalidInitialization");
     require(fee >= 0);
     this.owner = msg.sender;
@@ -23,30 +23,30 @@ contract MarketplaceV1() {
     this.initialized = true;
   }
 
-  function setMarketplaceDataAddress(address dataAddr) delegate {
+  function setMarketplaceDataAddress(address dataAddr) public {
     require(msg.sender == this.owner);
     this.marketplaceDataAddress = dataAddr;
   }
 
-  function pause() delegate {
+  function pause() public {
     require(msg.sender == this.owner);
     this.paused = true;
     emit Paused(msg.sender);
   }
 
-  function unpause() delegate {
+  function unpause() public {
     require(msg.sender == this.owner);
     this.paused = false;
     emit Unpaused(msg.sender);
   }
 
-  function setVersion(int v) delegate {
+  function setVersion(int v) public {
     require(msg.sender == this.owner);
     this.version = v;
     emit VersionChanged(v);
   }
 
-  function transferOwnership(address newOwner) delegate {
+  function transferOwnership(address newOwner) public {
     require(msg.sender == this.owner);
     address previousOwner = this.owner;
     this.owner = newOwner;

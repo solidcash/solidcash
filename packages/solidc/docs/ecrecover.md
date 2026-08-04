@@ -643,7 +643,7 @@ The pair:
 - **Covenant B** (category B) recomputes `H` from copies and checks it against A's output commitment (binding both
   inputs to the *same* table/masks/checkpoint - omission or substitution of any of them fails closed), runs
   `masks[HALF:]` from `C` to `Q`, converts to affine (witnessed `Z^-1`, verifying `Z*Z^-1 == 1`), and commits the
-  **compressed** public key (`0x02/0x03 || Qx`, 34 bytes - within the 40-byte CashTokens commitment limit) into
+  **compressed** public key (`0x02/0x03 || Qx`, 34 bytes - within the 128-byte CashTokens commitment limit) into
   **the second (last) sidecar output's data-NFT commitment**, and self-preserves.
 
 Verified: the *same fixed covenant pair* recovers two different signatures (reuse), both self-preserve, `Q` lands in

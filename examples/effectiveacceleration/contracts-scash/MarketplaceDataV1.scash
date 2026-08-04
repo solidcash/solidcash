@@ -37,11 +37,11 @@ contract MarketplaceDataV1() {
   private mapping(address => UserData) users;
   private mapping(address => ArbitratorData) arbitrators;
 
-  function initialize(address marketplace) delegate {
+  function initialize(address marketplace) public {
     this.marketplaceAddress = marketplace;
   }
 
-  function registerUser(bytes publicKey, string name, string bio, string avatar) delegate {
+  function registerUser(bytes publicKey, string name, string bio, string avatar) public {
     require(publicKey.length == 33, "invalid pubkey length, must be compressed, 33 bytes");
     require(name.length >= 2 && name.length <= 20, "name too short or long");
     require(bio.length <= 256, "bio too long");
@@ -53,7 +53,7 @@ contract MarketplaceDataV1() {
     emit UserRegistered(msg.sender, publicKey, name, bio, avatar);
   }
 
-  function updateUser(string name, string bio, string avatar) delegate {
+  function updateUser(string name, string bio, string avatar) public {
     UserData current = this.users[msg.sender];
     require(current.address_ != address(0), "not registered");
     require(name.length >= 2 && name.length <= 20, "name too short or long");
@@ -63,7 +63,7 @@ contract MarketplaceDataV1() {
     emit UserUpdated(msg.sender, name, bio, avatar);
   }
 
-  function registerArbitrator(bytes publicKey, string name, string bio, string avatar, int fee) delegate {
+  function registerArbitrator(bytes publicKey, string name, string bio, string avatar, int fee) public {
     require(publicKey.length == 33, "invalid pubkey length, must be compressed, 33 bytes");
     require(name.length >= 2 && name.length <= 20, "name too short or long");
     require(bio.length <= 256, "bio too long");
@@ -75,7 +75,7 @@ contract MarketplaceDataV1() {
     emit ArbitratorRegistered(msg.sender, publicKey, name, bio, avatar, fee);
   }
 
-  function updateArbitrator(string name, string bio, string avatar) delegate {
+  function updateArbitrator(string name, string bio, string avatar) public {
     ArbitratorData current = this.arbitrators[msg.sender];
     require(current.address_ != address(0), "not registered");
     require(name.length >= 2 && name.length <= 20, "name too short or long");

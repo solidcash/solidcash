@@ -94,19 +94,21 @@ When accessing the `tokenCategory` through introspection the result returns `0x`
 If you want to check for an NFT using introspection, you have to either split the `tokenCategory` from the `capability` or check the concatenation of the `tokenCategory` and `capability`.
 
 ```solidity
-  // Constructor parameters: providedCategory
+contract CheckMinting(bytes32 providedCategory) {
+    function verify() {
+        // Extract the separate tokenCategory and capability
+        bytes32 tokenCategory, bytes capability = tx.inputs[0].tokenCategory.split(32);
 
-  // Extract the separate tokenCategory and capability
-  bytes32 tokenCategory, bytes capability = tx.inputs[0].tokenCategory.split(32);
+        // Check that the NFT is the correct category and has a "minting" capability
+        require(providedCategory == tokenCategory);
+        require(capability == 0x02);
+    }
 
-  // Check that the NFT is the correct category and has a "minting" capability
-  require(providedCategory == tokenCategory);
-  require(capability == 0x02);
-
-  // Alternatively:
-
-  // Check by concatenating the providedCategory and capability
-  require(tx.inputs[0].tokenCategory == providedCategory + 0x02);
+    // Alternatively, check by concatenating the providedCategory and capability
+    function verifyConcatenated() {
+        require(tx.inputs[0].tokenCategory == providedCategory + 0x02);
+    }
+}
 ```
 
 #### protect the minting capability
@@ -130,21 +132,29 @@ Because the nft-capability has no separate introspection item, and nothing is ap
 First let's consider the case where a UTXO only holds an empty NFT:
 
 ```solidity
-  // Input 0 has an empty nft (commitment 0x) with providedTokenId
-  // If there was no empty nft the tokenCategory would return 0x
-  require(tx.inputs[0].nftCommitment == 0x);
-  require(tx.inputs[0].tokenAmount == 0);
-  require(tx.inputs[0].tokenCategory == providedTokenId);
+contract EmptyNftOnly(bytes32 providedTokenId) {
+    function check() {
+        // Input 0 has an empty nft (commitment 0x) with providedTokenId.
+        // If there were no empty nft, the tokenCategory would return 0x.
+        require(tx.inputs[0].nftCommitment == 0x);
+        require(tx.inputs[0].tokenAmount == 0);
+        require(tx.inputs[0].tokenCategory == providedTokenId);
+    }
+}
 ```
 
 Contrast this with the scenario where a UTXO holds both an empty NFT and fungible tokens of the same category:
 
 ```solidity
-  // Input 0 might or might not have an empty nft (commitment 0x) with providedTokenId
-  // Either way, the tokenCategory would return providedTokenId
-  require(tx.inputs[0].nftCommitment == 0x);
-  require(tx.inputs[0].tokenAmount == 10);
-  require(tx.inputs[0].tokenCategory == providedTokenId);
+contract EmptyNftWithFungibles(bytes32 providedTokenId) {
+    function check() {
+        // Input 0 might or might not have an empty nft (commitment 0x) with providedTokenId.
+        // Either way, the tokenCategory returns providedTokenId.
+        require(tx.inputs[0].nftCommitment == 0x);
+        require(tx.inputs[0].tokenAmount == 10);
+        require(tx.inputs[0].tokenCategory == providedTokenId);
+    }
+}
 ```
 
 The NFT introspection fields (`nftCommitment` and `tokenCategory`) of these UTXOs look the same to the smart contract in both of these scenarios.

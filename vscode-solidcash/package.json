@@ -1,0 +1,70 @@
+{
+  "name": "solidcash-vscode",
+  "displayName": "SolidCash",
+  "description": "Syntax highlighting, hover documentation and code navigation for SolidCash smart contracts",
+  "version": "0.1.4",
+  "publisher": "solidcash",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/cashscript/cashscript"
+  },
+  "keywords": [
+    "solidcash",
+    "bitcoin-cash",
+    "bch",
+    "smart-contracts",
+    "syntax-highlighting"
+  ],
+  "categories": [
+    "Programming Languages"
+  ],
+  "engines": {
+    "vscode": "^1.83.0"
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:solidcash"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": {
+      "supported": "limited",
+      "description": "Navigation across imported files requires local file access."
+    }
+  },
+  "scripts": {
+    "test": "node ./test/validate.mjs && node ./test/providers.mjs",
+    "package": "npx @vscode/vsce package"
+  },
+  "contributes": {
+    "languages": [
+      {
+        "id": "solidcash",
+        "aliases": [
+          "SolidCash",
+          "solidcash"
+        ],
+        "extensions": [
+          ".scash"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "solidcash",
+        "scopeName": "source.scash",
+        "path": "./syntaxes/solidcash.tmLanguage.json"
+      }
+    ],
+    "snippets": [
+      {
+        "language": "solidcash",
+        "path": "./snippets/solidcash.json"
+      }
+    ]
+  }
+}

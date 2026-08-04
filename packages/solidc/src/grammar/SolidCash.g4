@@ -250,7 +250,7 @@ customModifierInvocation
     ;
 
 functionModifier
-    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct' | 'delegate'
+    : 'pure' | 'view' | 'internal' | 'external' | 'public' | 'private' | 'payable' | overrideSpecifier | 'virtual' | unsafeModifier | 'upgrade' | 'selfdestruct'
     ;
 
 overrideSpecifier

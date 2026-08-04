@@ -196,10 +196,12 @@ SolidCash is a high-level language for Bitcoin Cash smart contracts with Solidit
     function f() selfdestruct { ... }    -- permanently destroy
     function f(int n) split(n) { ... }   -- fork into N threads
     function f(int n) merge(n) { ... }   -- consolidate N threads
-    function f() delegate { ... }        -- execute in proxy's state context
     function f() unsafe { ... }          -- tier 0: skip all covenant checks
     function f() unsafe(1) { ... }       -- tier 1: preserve master NFT
     function f() unsafe(2) { ... }       -- tier 2: preserve master + values
+
+Proxy implementation functions use ordinary `public`/`external` syntax. The compiler infers eligible
+state-mutating entry points and emits their proxy-context build as `artifact.delegateArtifact`.
 
 ### Stateful Contracts
 

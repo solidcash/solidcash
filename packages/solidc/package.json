@@ -37,7 +37,6 @@
   },
   "scripts": {
     "antlr": "antlr -Dlanguage=TypeScript -visitor -no-listener src/grammar/SolidCash.g4",
-    "postantlr": "find src/grammar -type f -name 'SolidCashVisitor.ts' | xargs sed -i '' 's|\\(import .* \".*/.*\\)\";|\\1\\.js\";|g'",
     "build": "yarn clean && yarn compile",
     "clean": "rm -rf ./dist",
     "compile": "tsc -p tsconfig.build.json",

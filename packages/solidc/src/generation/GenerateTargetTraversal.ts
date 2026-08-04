@@ -169,6 +169,7 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
 } from '../ast/AST.js';
+import { cloneNode } from '../ast/clone.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { GlobalFunction, Class } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -552,6 +553,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopAddrName: string = '(sorted_upsert_addr)';
   private sortedUpsertLoopCounterName: string = '(sorted_upsert_counter)';   // co-spends done (one input per recipient)
   private sortedUpsertLoopOutCounterName: string = '(sorted_upsert_outctr)'; // cumulative mints (update +1, insert +2)
+  private sortedUpsertLoopChunkCounterName: string = '(sorted_upsert_chunkctr)'; // long-value suffix chunks already pinned
+  private sortedUpsertLoopChunksActive: boolean = false;
   private sortedUpsertLoopActive: boolean = false;
   private sortedUpsertLoopCollection: string | null = null;
   private sortedUpsertLoopOp: '+' | '-' | 'set' | 'delete' = '+'; // set=absolute m[k[i]]=v[i]; delete=nullify; +/- = RMW
@@ -10901,7 +10904,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // Entry tail (top) -> materialized value. Short: inline. Long: caller supplies the value as witness arg
   // __internal__valueWitness_N and the covenant verifies sha256(witness)==stored hash (forged witness fails).
-  private emitChunkableValueRead(loc: SingleLocationData, slotIndex: number): void {
+  private emitChunkableValueRead(
+    loc: SingleLocationData, slotIndex: number, accessNode?: MappingAccessNode,
+  ): void {
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc); // [len4, rest]
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // [rest, len]
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // [rest, len, long]
@@ -10909,7 +10914,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); // [root32 || headData28]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [root]
     const w = `__internal__valueWitness_${slotIndex}`;
-    this.emit(encodeInt(BigInt(this.getStackIndex(w) + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: hash untracked
+    if (this.sortedUpsertLoopActive && this.entrySlots[slotIndex]?.inLoop && accessNode) {
+      // A varying-key array mutation has one authenticated old-value witness per loop iteration. Select the witness
+      // with the exact same source index used by k[index], rather than accepting one scalar witness for every key.
+      const varyingKey = accessNode.keys.find((k) => k instanceof ArrayAccessNode) as ArrayAccessNode | undefined;
+      if (!varyingKey) throw new SortedMappingCodegenPendingError(accessNode, accessNode.collection!.name);
+      const witnessId = new IdentifierNode(w);
+      witnessId.type = new ArrayType(new BytesType());
+      witnessId.location = accessNode.location;
+      const witnessAt = new ArrayAccessNode(witnessId, cloneNode(varyingKey.index) as ExpressionNode);
+      witnessAt.type = new BytesType();
+      witnessAt.location = accessNode.location;
+      // Account for the untracked root while the normal array-access visitor resolves parameter/index depths.
+      this.pushToStack('(__value_root)');
+      this.visit(witnessAt);
+      this.removeFromStack(this.getStackIndex('(__value_root)'));
+      this.popFromStack(); // witness remains runtime-untracked
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(w) + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: hash untracked
+    }
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SHA256, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_NIP, loc); // [witness]
@@ -11002,7 +11025,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * the type default if absent. Absence is proven by the bracket slot < H(k) < nextKey (nextKey 0 = +inf); there is
    * no default-on-absent branch, so omitting the entry (input bytecode won't match) reverts - closes C2.
    */
-  private emitSortedSetRead(node: MappingAccessNode): Node {
+  private emitSortedSetRead(node: MappingAccessNode, reuseLoopKey = false): Node {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const collection = node.collection!;
     const valueType = collection.innermostValueType;
@@ -11027,7 +11050,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 1. H(k) (composite for nested m[a][b]) computed FIRST so it sits at the bottom of the working area, giving
     // the proven [Hk32, slot32, nextKey32] layout.
-    this.emitSortedKeyHash(node, slotIndex, loc);     // [Hk32]
+    if (reuseLoopKey) {
+      this.emit(encodeInt(BigInt(this.getStackIndex('(credit_hk)'))), loc);
+      this.emit(Op.OP_PICK, loc);
+    } else {
+      this.emitSortedKeyHash(node, slotIndex, loc);
+    }                                                // [Hk32]
 
     // 2. Entry address = base(master category) wrapped in the collection's entry covenant. Track the categoryId so
     // emitP2sh32FromCovenant's popFromStack consumes IT (not a real tracked var), then untrack the address.
@@ -11040,7 +11068,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
     // then read its commitment -> slot32, nextKey32.
-    this.emitEntryInputIndex(slotIndex, loc, 2);      // [Hk32, entryAddr, idx]
+    if (this.sortedUpsertLoopActive && this.entrySlots[slotIndex]?.inLoop) {
+      // Loop entries are the trailing block, one per effective key, rather than a fixed block-layout slot.
+      this.emitMasterInputIndex(loc);
+      this.emit(encodeInt(BigInt(this.currentFunction.blockLayout?.blockSize ?? 1)), loc);
+      this.emit(Op.OP_ADD, loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertLoopCounterName) + 3)), loc);
+      this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_ADD, loc);
+    } else {
+      this.emitEntryInputIndex(slotIndex, loc, 2);
+    }                                                     // [Hk32, entryAddr, idx]
     this.emit(Op.OP_DUP, loc);                        // [Hk32, entryAddr, idx, idx]
     this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, inbc]
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [Hk32, entryAddr, idx, inbc, entryAddr]
@@ -11059,7 +11097,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value | tail]
     if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the int/bool tail (bytesN kept verbatim)
-    else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex);
+    else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex, node);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
     this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
@@ -11343,7 +11381,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // digest(32) ++ pushdata(i) ++ pushdata(v[i*VC:]). digest = sha256(v). A read reassembles the authentic value;
   // a forged/absent/misplaced chunk fails this OP_EQUALVERIFY at write time. Stack-neutral: v is left untouched on
   // top for emitChunkableValueTail. VC=56 leaves room for slot+digest in the 128 B commitment.
-  private emitSortedValueChunkPin(collectionName: string, slotIndex: number, node: Node, loc: SingleLocationData): void {
+  private emitSortedValueChunkPin(
+    collectionName: string, slotIndex: number, node: Node, loc: SingleLocationData,
+    loopChunkCounter?: string, hkName = '(__upsert_hk)',
+  ): void {
     const VC = VALUE_CHUNK_SIZE;
     const chunkHash = computeCollectionHash(valueChunkSignature(collectionName));
     const vName = this.stack[0]; // v, tracked on top
@@ -11364,13 +11405,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // isInsert = (co-spent entry's slot != H(k)): a present-key UPDATE has no NEW node (chunks at masterInput+
     // blockSize); an absent-key INSERT mints NEW at masterInput+blockSize, so the chunks sit one output later.
-    this.emitEntryInputIndex(slotIndex, loc, 0);
-    this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
-    this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // coSlot
-    this.pushToStack('(vc_isinsert)');
-    this.emit(encodeInt(BigInt(this.getStackIndex('(__upsert_hk)'))), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // 1 if coSlot != Hk (insert)
-    this.stack[0] = '(vc_isinsert)';
+    if (!loopChunkCounter) {
+      this.emitEntryInputIndex(slotIndex, loc, 0);
+      this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
+      this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // coSlot
+      this.pushToStack('(vc_isinsert)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(hkName))), loc); this.emit(Op.OP_PICK, loc);
+      this.emit(Op.OP_EQUAL, loc); this.emit(Op.OP_NOT, loc); // 1 if coSlot != Hk (insert)
+      this.stack[0] = '(vc_isinsert)';
+    }
 
     // --- loop-invariant temps: digest = sha256(v), slot = Hk32, chunk address, nNew, base ---
     this.emit(encodeInt(BigInt(this.getStackIndex(vName))), loc);
@@ -11378,7 +11421,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SHA256, loc);
     this.pushToStack('(vc_digest)');
 
-    this.emit(encodeInt(BigInt(this.getStackIndex('(__upsert_hk)'))), loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(hkName))), loc);
     this.emit(Op.OP_PICK, loc);
     this.pushToStack('(vc_slot)');
 
@@ -11400,25 +11443,40 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // base = masterInput + blockSize (layout-relative, so a trailing fee-change output does not shift it - unlike
     // TXOUTPUTCOUNT-nNew). Adjust down 1 when the reserved returnEvent slot is not materialized (a plain send),
     // then +isInsert (the INSERT's NEW node precedes the chunks). Matches emitDynamicWriteVerification's family.
-    const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
-    const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
-    this.emitTrailingBlockBase(blockSize, loc);
-    // Dynamic-storage outputs occupy the first trailing slots for every call mode, including delegate calls.
-    // A long C2 value's chunks follow both those outputs and the optional NEW node.
-    // Delegate builders emit NEW nodes and value chunks before the dynamic family, which is tail-anchored
-    // independently below. Only non-delegate layouts place dynamic outputs before C2 value chunks.
-    if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
-    if (hasReturnEventSlot) {
-      const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
-      if (roiIdx >= 0) {
-        this.emit(encodeInt(BigInt(roiIdx + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
-        this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
-        this.emit(Op.OP_SUB, loc); // base -= (returnOutputIdx < 0 ? 1 : 0)
+    if (loopChunkCounter) {
+      // Loop chunks precede exactly one terminal suffix output and are grouped in REVERSE source-iteration order.
+      // StatefulTransactionBuilder enforces that suffix as either the external-library sidecar recreation or a
+      // zero-value OP_RETURN anchor, with fee change inserted before the chunk region. At iteration i, `counter`
+      // is the number of chunks belonging to iterations [0,i), so this iteration's group begins at
+      // outputCount-1-counter-nNew. This is O(number of chunks), with no transaction-wide introspection scan.
+      this.emit(Op.OP_DUP, loc); this.pushToStack('(vc_nnew_for_base)');
+      this.emit(Op.OP_TXOUTPUTCOUNT, loc); this.pushToStack('(vc_txoutcount)');
+      this.emit(Op.OP_1, loc); this.pushToStack('(vc_terminal_suffix)');
+      this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_txoutcount_nosuffix)');
+      this.emit(encodeInt(BigInt(this.getStackIndex(loopChunkCounter))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(vc_chunkctr_copy)');
+      this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_suffixbase)');
+      this.emit(Op.OP_SWAP, loc);
+      [this.stack[0], this.stack[1]] = [this.stack[1], this.stack[0]];
+      this.emit(Op.OP_SUB, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_base)');
+    } else {
+      const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+      const hasReturnEventSlot = this.currentFunction.blockLayout?.slots.some((s) => s.kind === 'returnEvent') ?? false;
+      this.emitTrailingBlockBase(blockSize, loc);
+      // Delegate builders place NEW/value chunks before the independently tail-anchored dynamic family.
+      if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc);
+      if (hasReturnEventSlot) {
+        const roiIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+        if (roiIdx >= 0) {
+          this.emit(encodeInt(BigInt(roiIdx + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+          this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
+          this.emit(Op.OP_SUB, loc); // base -= (returnOutputIdx < 0 ? 1 : 0)
+        }
       }
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: base on top
+      this.emit(Op.OP_ADD, loc); // base += isInsert
     }
-    this.emit(encodeInt(BigInt(this.getStackIndex('(vc_isinsert)') + 1)), loc); this.emit(Op.OP_PICK, loc);
-    this.emit(Op.OP_ADD, loc); // base += isInsert
-    this.pushToStack('(vc_base)');
+    if (!loopChunkCounter) this.pushToStack('(vc_base)');
 
     this.emit(encodeInt(0n), loc);
     this.pushToStack('(vc_i)');
@@ -11492,6 +11550,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_DROP, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)'))), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_TOALTSTACK, loc);
+    }
+
+    if (loopChunkCounter) {
+      // Update the persistent suffix count while nNew is still tracked. Track both copies so emitReplace's
+      // bookkeeping removes only the replacement temporary, never one of the caller's credit fields.
+      this.emit(encodeInt(BigInt(this.getStackIndex(loopChunkCounter))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(vc_chunkctr_old)');
+      this.emit(encodeInt(BigInt(this.getStackIndex('(vc_nnew)'))), loc); this.emit(Op.OP_PICK, loc);
+      this.pushToStack('(vc_nnew_for_count)');
+      this.emit(Op.OP_ADD, loc); this.popFromStack(); this.popFromStack(); this.pushToStack('(vc_chunkctr_new)');
+      this.emitReplace(this.getStackIndex(loopChunkCounter), node);
+      this.popFromStack();
     }
 
     // cleanup loop-invariant temps back to the outer snapshot (top-down keeps indices valid)
@@ -11738,7 +11808,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s existing entry.
       if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name
-        && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+        ) {
         return this.emitSortedUpsertLoopBody(node);
       }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
@@ -11908,7 +11978,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (sortedRmw) {
       // Sorted C2 RMW: materialize the current array value (reassembling chunks if chunked),
       // then fall through to the shared Phase 2 surgery. Phase 3 leaves the blob for the upsert.
-      this.emitSortedSetRead(node as unknown as MappingAccessNode);
+      this.emitSortedSetRead(node as unknown as MappingAccessNode, this.sortedUpsertLoopActive);
       this.popFromStack();
     } else {
 
@@ -13699,9 +13769,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof MappingAssignNode && n.collection?.sorted
-        && !n.arrayIndex && !n.arrayPush && !n.arrayPop) {
+      if (n instanceof MappingAssignNode && n.collection?.sorted) {
         const upsertVk = this.sortedValueKind(n.collection.innermostValueType);
+        const isArrayMutation = n.collection.innermostValueType instanceof ArrayType
+          && !!(n.arrayIndex || n.arrayPush || n.arrayPop);
         const e = n.expression;
         // Absolute set to a loop-invariant PARAM `m[k[i]] = v` (v a fn param). The ONE form valid for a rawbytes value
         // (a whole bytes/array param - stored as the inline chunkable tail); for int it also gains UPDATE support (the
@@ -13728,7 +13799,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
         const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
-        if (rawbytesOk || (upsertVk === 'int'
+        if (isArrayMutation || rawbytesOk || (upsertVk === 'int'
           && (isRmw || isPerKeySet || isConstSet || isParamSet || isBoolSet || isOffsetArraySet))) {
           found = n; return;
         }
@@ -13805,10 +13876,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
     let valueArrayOffset: string | undefined;
+    let mutation: 'push' | 'pop' | 'setAt' | undefined;
+    let mutationValueArrayParam: string | undefined;
+    let mutationValueScalarParam: string | undefined;
+    let mutationValueConst: string | undefined;
+    let mutationIndexArrayParam: string | undefined;
+    let mutationIndexScalarParam: string | undefined;
+    let mutationIndexConst: string | undefined;
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
-      const expr = (writeNode as MappingAssignNode).expression;
+      const assign = writeNode as MappingAssignNode;
+      const expr = assign.expression;
+      if (assign.arrayPush || assign.arrayPop || assign.arrayIndex) {
+        mutation = assign.arrayPush ? 'push' : assign.arrayPop ? 'pop' : 'setAt';
+        op = 'set';
+        const capture = (
+          e: ExpressionNode | undefined,
+          setArray: (v: string) => void, setScalar: (v: string) => void, setConst: (v: string) => void,
+        ): void => {
+          if (e instanceof ArrayAccessNode && e.array instanceof IdentifierNode) setArray(e.array.name);
+          else if (e instanceof IdentifierNode
+            && this.currentFunction.parameters.some((p) => p.name === e.name)) setScalar(e.name);
+          else if (e instanceof IntLiteralNode) setConst(e.value.toString());
+          else if (e instanceof BoolLiteralNode) setConst(e.value ? '1' : '0');
+        };
+        if (mutation !== 'pop') {
+          capture(expr,
+            (v) => { mutationValueArrayParam = v; },
+            (v) => { mutationValueScalarParam = v; },
+            (v) => { mutationValueConst = v; });
+        }
+        if (mutation === 'setAt') {
+          capture(assign.arrayIndex,
+            (v) => { mutationIndexArrayParam = v; },
+            (v) => { mutationIndexScalarParam = v; },
+            (v) => { mutationIndexConst = v; });
+        }
+      } else {
       const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
       op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
@@ -13837,9 +13942,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       } else if (valueRight instanceof BoolLiteralNode) {
         valueConst = valueRight.value ? '1' : '0';                     // bool literal: true=0x01, false=empty (int 1/0)
       }
+      }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
+    const hasValue = mutation !== undefined || !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
     if (!varyingArrayParam || (!isDelete && !hasValue)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);
@@ -13847,7 +13953,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       infos.push({ collection: collection.name, fixedKeyParams, varyingArrayParam,
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
-        ...(valueArrayOffset !== undefined && { valueArrayOffset }), op });
+        ...(valueArrayOffset !== undefined && { valueArrayOffset }),
+        ...(mutation && { mutation }),
+        ...(mutationValueArrayParam && { mutationValueArrayParam }),
+        ...(mutationValueScalarParam && { mutationValueScalarParam }),
+        ...(mutationValueConst !== undefined && { mutationValueConst }),
+        ...(mutationIndexArrayParam && { mutationIndexArrayParam }),
+        ...(mutationIndexScalarParam && { mutationIndexScalarParam }),
+        ...(mutationIndexConst !== undefined && { mutationIndexConst }),
+        ...(mutation && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }),
+        op });
     }
     this.sortedWrittenCollections.add(collection.name);
 
@@ -13863,6 +13978,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.pushToStack(this.sortedUpsertLoopCounterName);
     this.emit(encodeInt(0n), loc);
     this.pushToStack(this.sortedUpsertLoopOutCounterName);
+    this.sortedUpsertLoopChunksActive = op === 'set' && this.isChunkableValue(collection.innermostValueType);
+    if (this.sortedUpsertLoopChunksActive) {
+      this.emit(encodeInt(0n), loc);
+      this.pushToStack(this.sortedUpsertLoopChunkCounterName);
+    }
 
     // MSG.SENDER MERGE: when EXACTLY ONE fixed (non-loop) entry of this collection coexists (the cached msg.sender
     // debit), push a re-point register (0). A new recipient landing in the debit entry's gap is then inserted by
@@ -14058,6 +14178,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // rawbytes (bytesN/address) is stored verbatim (no tail), matching the single-write path + the reader.
     const isRawbytes = this.sortedValueKind(collection.innermostValueType) === 'rawbytes';
     const isChunkableVal = isRawbytes && this.isChunkableValue(collection.innermostValueType);
+    const isArrayMutation = node instanceof MappingAssignNode
+      && collection.innermostValueType instanceof ArrayType
+      && !!(node.arrayIndex || node.arrayPush || node.arrayPop);
     const iterIdx = (): number => this.getStackIndex(this.sortedUpsertLoopCounterName);
     const outIdxC = (): number => this.getStackIndex(this.sortedUpsertLoopOutCounterName);
     const addrIdx = (): number => this.getStackIndex(this.sortedUpsertLoopAddrName);
@@ -14079,14 +14202,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_0, loc); this.pushToStack('(credit_amt)'); // default value tail (0 = empty for int)
     } else {
       const a = node as MappingAssignNode;
-      if (op === 'set') { a.expression = this.visit(a.expression); }
+      if (op === 'set' && isArrayMutation) {
+        this.emitMappingArrayElementAssign(a, true);
+      } else if (op === 'set') { a.expression = this.visit(a.expression); }
       else { (a.expression as BinaryOpNode).right = this.visit((a.expression as BinaryOpNode).right); }
       this.stack[0] = '(credit_amt)';
       if (isChunkableVal) {
-        // Wrap the whole-array/bytes value as the inline tail len4 ++ value; REVERT if size > 60 (chunked-in-loop is
-        // unsupported - a per-iteration chunk region is not statically indexable). Matches emitChunkableValueTail's
-        // inline branch + the reader (emitChunkableValueRead), so a later read of this key sees the same shape.
-        this.emit(Op.OP_SIZE, loc); this.emit(encodeInt(61n), loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);
+        this.emitSortedValueChunkPin(
+          collection.name, slotIndex, node, loc, this.sortedUpsertLoopChunkCounterName, '(credit_hk)',
+        );
         this.emitChunkableValueTail(loc);
       }
     }
@@ -14296,6 +14420,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.removeFromStack(idx);
 
     const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName, this.sortedUpsertLoopAddrName];
+    if (this.sortedUpsertLoopChunksActive) dropNames.unshift(this.sortedUpsertLoopChunkCounterName);
     if (this.sortedUpsertPendActive) {
       dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
     }
@@ -14305,6 +14430,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.removeFromStack(i);
     }
     this.sortedUpsertPendActive = false;
+    this.sortedUpsertLoopChunksActive = false;
     this.sortedUpsertLoopActive = false;
     this.sortedUpsertLoopCollection = null;
   }

@@ -67,6 +67,18 @@ describe('compileStringMulti', () => {
     expect(map.Solo.bytecode).toBe(compileString(src).bytecode);
   });
 
+  it('attaches the inferred delegate variant to each eligible multi-contract artifact', () => {
+    const src = `
+      contract A() { int x; function setA(int v) { this.x = v; } }
+      contract B() { int y; function setB(int v) { this.y = v; } }
+    `;
+    const map = compileStringMulti(src);
+    expect(map.A.delegateArtifact?.contractName).toBe('A');
+    expect(map.B.delegateArtifact?.contractName).toBe('B');
+    expect(map.A.delegateArtifact?.abi.find((f) => f.name === 'setA')?.modifiers).toContain('delegate');
+    expect(map.B.delegateArtifact?.abi.find((f) => f.name === 'setB')?.modifiers).toContain('delegate');
+  });
+
   it('compileString returns the last contract as the primary (unchanged); the map has both', () => {
     const src = `
       contract First(int x) { function f1() { require(x > 0); } }

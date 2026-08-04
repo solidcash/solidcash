@@ -193,7 +193,7 @@ This measures the percentage of Solidity/EVM language features and DApp patterns
 | CREATE2 deterministic | `create3` pattern + genesis-input category (commit `351a8c9`) | **Equivalent** (different mechanism, same goal) |
 | `selfdestruct(recipient)` | `selfdestruct` modifier + `destroy()` SDK (commit `28c18a8`) | **Identical** |
 | Proxy/upgrade pattern | `upgrade` modifier + transparent proxy (commits `73b1ab9`, `277211c`) | **Identical** |
-| `delegatecall` | `delegate` modifier + `address.delegatecall(data)` (commit `e86f651`) | **Identical** |
+| `delegatecall` | Inferred implementation artifact + `address.delegatecall(data)` | **Equivalent** (separate BCH implementation address) |
 | Flash loans | Flash loan pattern (commit `0e3128d`) | **Identical** |
 | Multi-party atomic tx | Atomic multi-party (commit `cd83ce5`) | **Exceeds** (native UTXO atomicity) |
 | ERC-20 token | Full ERC-20 in `mapping_erc20.scash` (balances + allowances + approve + transferFrom) | **Implemented** |

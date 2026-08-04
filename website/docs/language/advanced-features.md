@@ -2,62 +2,96 @@
 title: Advanced Features
 ---
 
-This page covers advanced SolidCash language features including control flow, ABI encoding, external contract interaction, delegatecall, and inline assembly.
+This page covers control flow, cross-contract interaction, and a handful of expression-level conveniences.
+
+Several topics that used to live here now have dedicated pages:
+[Inline Assembly](/docs/language/assembly), [Contract Creation & Lifecycle](/docs/language/contract-creation)
+(proxies and delegatecall), [Data Locations](/docs/language/data-locations), and
+[Global Variables](/docs/language/globals) (the `abi.*` family, `msg.*`, `block.*` and number units).
 
 ## Switch Statement
 
 ```solidity
-switch (action) {
-    case 0:
-        this.counter = this.counter + 1;
-        break;
-    case 1:
-        this.counter = this.counter - 1;
-        break;
-    default:
-        revert("Unknown action");
+contract Router() {
+    int counter;
+
+    function route(int action) public {
+        switch (action) {
+            case 0:
+                this.counter = this.counter + 1;
+                break;
+            case 1:
+                this.counter = this.counter - 1;
+                break;
+            default:
+                revert("Unknown action");
+        }
+    }
 }
 ```
 
-- Multiple `case` values with `break` to exit
+- Multiple `case` values, with `break` to exit
 - Optional `default` branch
-- Works in stateful contracts (state tracking across branches)
+- Works in stateful contracts (state is tracked across branches)
 
-## For Loops
+## Loops
 
-SolidCash supports C-style `for` loops with no compiler-imposed iteration limits:
+SolidCash supports C-style `for` loops with no compiler-imposed iteration limit. The practical bound is the
+per-input operation-cost budget, not gas.
 
 ```solidity
-for (int i = 0; i < n; i = i + 1) {
-    total = total + values[i];
+contract Summing() {
+    function total(int[] values, int n) returns (int) {
+        int sum = 0;
+        for (int i = 0; i < n; i++) {
+            sum += values[i];
+        }
+        return sum;
+    }
 }
 ```
 
 `break` and `continue` are supported:
 
 ```solidity
-for (int i = 0; i < n; i = i + 1) {
-    if (values[i] == 0) continue;  // skip zeros
-    if (total > limit) break;       // stop early
-    total = total + values[i];
+contract Filtering() {
+    function total(int[] values, int n, int limit) returns (int) {
+        int sum = 0;
+        for (int i = 0; i < n; i++) {
+            if (values[i] == 0) continue;   // skip zeros
+            if (sum > limit) break;         // stop early
+            sum += values[i];
+        }
+        return sum;
+    }
 }
 ```
 
 ### While & Do-While
 
 ```solidity
-while (remaining > 0) {
-    remaining = remaining - 1;
-}
+contract Counting() {
+    function countdown(int remaining) returns (int) {
+        int steps = 0;
+        while (remaining > 0) {
+            remaining -= 1;
+            steps += 1;
+        }
 
-do {
-    attempts = attempts + 1;
-} while (!success && attempts < maxAttempts);
+        do {
+            steps += 1;
+        } while (steps < 3);
+
+        return steps;
+    }
+}
 ```
 
 ### Collection Iteration
 
-See [Stateful Contracts - Mapping Iteration](/docs/language/stateful-contracts#mapping-iteration) for the three iteration modes (`for-of`, `for-in`, `for-of .entries`).
+See [Stateful Contracts - Mapping Iteration](/docs/language/stateful-contracts#mapping-iteration) for the
+three iteration modes (`for-of`, `for-in`, `for-of .entries`). Note that a mapping must be declared
+`enumerable` to be iterable.
 
 ## Unchecked Arithmetic
 
@@ -75,38 +109,10 @@ Only applies within the block. Outside `unchecked`, overflow/underflow causes a 
 
 ## ABI Encoding & Decoding
 
-### Basic Encoding
-
-```solidity
-bytes data = abi.encode(42, true, hex"abcd");
-bytes packed = abi.encodePacked(sender, amount);  // no padding
-```
-
-### Decoding
-
-```solidity
-(int x, bool y) = abi.decode(data, (int, bool));
-int value = abi.decodeAt(data, (int), 4);  // decode at byte offset 4
-```
-
-### Advanced Encoding
-
-```solidity
-// Encode with a specific 4-byte selector prefix
-bytes call = abi.encodeWithSelector(hex"12345678", arg1, arg2);
-
-// Encode with selector derived from function signature string
-bytes call = abi.encodeWithSignature("transfer(address,uint)", to, amount);
-
-// Encode with selector from an interface function (type-safe)
-bytes call = abi.encodeCall(IToken.transfer, (recipient, amount));
-```
-
-:::note
-`abi.encodeWithSignature` and `abi.encodeCall` derive the 4-byte selector from the function signature
-using **sha256**, not Ethereum's `keccak256`. Selectors therefore differ from an EVM contract's, so
-encoded calldata is **not** cross-VM compatible - use these for SolidCash-to-SolidCash calls.
-:::
+The `abi.encode` / `abi.encodePacked` / `abi.encodeWithSelector` / `abi.encodeWithSignature` /
+`abi.encodeCall` / `abi.decode` / `abi.decodeAt` family is documented in
+[Global Variables](/docs/language/globals#abi-encoding-and-decoding), together with the caution about
+sha256-derived selectors.
 
 ## External Contract Interaction
 
@@ -116,32 +122,43 @@ Read another contract's public state variables using an interface and category I
 
 ```solidity
 interface ICounter {
-    int public counter;
-    mapping(bytes20 => int) public balances;
+    public int counter;
+    public mapping(bytes20 => int) balances;
 }
 
 contract Reader(bytes32 counterCategory) {
     int lastSeen;
 
-    function sync() {
-        // Read current state of external contract
+    function sync() public {
+        // Read the current state of the external contract
         this.lastSeen = ICounter(counterCategory).counter;
     }
 
-    function readBalance(bytes20 account) returns (int) {
-        return ICounter(counterCategory).balances[account];
+    function readBalance(bytes20 account) public {
+        this.lastSeen = ICounter(counterCategory).balances[account];
     }
 }
 ```
 
+The compiler emits a covenant that co-spends the target's state UTXOs and verifies their category, so the read
+is trustless. The SDK attaches the required inputs automatically.
+
 ### Output State Reads
 
-Read the state that an external contract will have **after** its function executes in the same transaction:
+Read the state an external contract will have **after** its function executes in the same transaction, using
+`.outState`:
 
 ```solidity
-function readAfterCall() {
-    int newVal = ICounter(counterCategory).outState.counter;
-    this.lastSeen = newVal;
+interface ICounter {
+    public int counter;
+}
+
+contract Reader(bytes32 counterCategory) {
+    int lastSeen;
+
+    function readAfterCall() public {
+        this.lastSeen = ICounter(counterCategory).outState.counter;
+    }
 }
 ```
 
@@ -168,109 +185,54 @@ contract Caller(bytes32 targetCategory) {
 
 ## Delegatecall & Proxy Pattern
 
-The delegatecall pattern separates state (proxy) from logic (implementation):
-
-```solidity
-// Implementation - holds logic, state access redirected to proxy
-contract Implementation() {
-    int counter;
-
-    function increment() delegate {
-        this.counter = this.counter + 1;
-        // `this` refers to the PROXY's state, not implementation's
-    }
-}
-
-// Proxy - holds state, forwards unknown calls to implementation
-contract Proxy(bytes20 implAddr) {
-    int counter;
-
-    fallback(bytes input) external {
-        address(implAddr).delegatecall(input);
-    }
-}
-```
-
-The `delegate` modifier causes `this.` state access to target the calling proxy's NFT commitments instead of the implementation's.
-
-:::caution
-The `delegate` modifier cannot be combined with `unsafe`, `upgrade`, `selfdestruct`, `deploy`, `split`, or `merge`.
-:::
+Proxies, the inferred delegate build, and layout compatibility are covered in
+[Contract Creation & Lifecycle](/docs/language/contract-creation#proxy-and-delegatecall).
 
 ## Fallback & Receive Functions
 
-```solidity
-contract Flexible() {
-    // Catches calls with unknown/no function selectors
-    fallback(bytes input) external {
-        // input contains raw calldata
-    }
-
-    // Catches pure BCH value transfers
-    receive() external payable {
-        // no parameters
-    }
-}
-```
-
-- At most one `fallback` and one `receive` per contract
-- Both support `virtual`/`override` for inheritance
+See [Functions](/docs/language/functions#fallback-and-receive).
 
 ## Inline Assembly
 
-Direct Bitcoin Script opcodes for low-level control:
-
-```solidity
-assembly {
-    OP_DUP OP_ADD 0x01
-}
-```
-
-:::caution
-Inline assembly bypasses all compiler safety checks (type checking, stack verification). Use only when you fully understand the stack effects.
-:::
+SolidCash accepts both Yul blocks and native BCH opcode blocks. See
+[Inline Assembly](/docs/language/assembly).
 
 ## Exponentiation
 
 ```solidity
-int result = base ** exponent;
+contract Power() {
+    function compute(int base, uint exponent) returns (int) {
+        return base ** exponent;
+    }
+}
 ```
 
-- Right-associative: `2 ** 3 ** 2` = `2 ** 9` = `512`
-- Exponent must be unsigned (non-negative)
+- Right-associative: `2 ** 3 ** 2` is `2 ** 9`, i.e. `512`
+- The exponent must be an **unsigned** type. A signed `int` exponent is a compile error: use `uint`/`uintN`
 
 ## Date Literals
 
 ```solidity
-int deadline = date("2025-12-31");
-int precise = date("2025-06-15T14:30:00");
-require(tx.locktime >= deadline);
+contract Deadline() {
+    function check() {
+        int deadline = date("2025-12-31T00:00:00");
+        int precise = date("2025-06-15T14:30:00");
+        require(precise < deadline);
+        require(tx.time >= deadline);
+    }
+}
 ```
 
 Compiles to a Unix timestamp integer at compile time.
 
+:::note
+The full `YYYY-MM-DDThh:mm:ss` form is required. A date-only string such as `date("2025-12-31")` is a compile
+error.
+:::
+
 ## Number Units
 
-Compile-time multipliers for readability:
-
-```solidity
-int fee = 1000 satoshis;          // 1000
-int amount = 1 bitcoin;           // 100_000_000
-int timeout = 7 days;             // 604_800
-int delay = 2 hours;              // 7_200
-```
-
-| Unit | Value |
-|------|-------|
-| `satoshis` / `sats` | 1 |
-| `finney` | 10 |
-| `bits` | 100 |
-| `bitcoin` | 100,000,000 |
-| `seconds` | 1 |
-| `minutes` | 60 |
-| `hours` | 3,600 |
-| `days` | 86,400 |
-| `weeks` | 604,800 |
+See [Global Variables](/docs/language/globals#globally-available-units).
 
 ## String Features
 
@@ -286,21 +248,39 @@ string reversed = greeting.reverse();
 ## Try-Catch
 
 ```solidity
-try externalContract.someFunc() returns (int result) {
-    process(result);
-} catch Error(string memory reason) {
-    handleError(reason);
-} catch {
-    handleUnknown();
+interface IRisky {
+    function compute() returns (int);
+}
+
+contract Guarded(bytes32 target) {
+    int last;
+
+    function attempt() public {
+        try IRisky(target).compute() returns (int result) {
+            this.last = result;
+        } catch {
+            this.last = 0;
+        }
+    }
 }
 ```
 
+:::caution
+The `try` block runs, but **catch bodies are dead code**. A failed opcode aborts the Bitcoin Cash script
+outright and execution cannot be resumed, so there is nothing to catch. `try`/`catch` parses and the `try`
+path compiles so that ported Solidity sources build, and the compiler warns about the divergence. Do not rely
+on a `catch` branch for error recovery.
+:::
+
 ## `msg` and `tx` Globals
 
-| Global | Type | Description |
-|--------|------|-------------|
-| `msg.sender` | `address` | Locking bytecode of the calling contract (falls back to `tx.origin` for direct calls) |
-| `msg.value` | `int` | Net satoshi change in the contract's satoshi container (sum of all matching outputs minus sum of all matching inputs) |
-| `msg.sig` | `bytes4` | 4-byte function selector of the current function (compile-time constant) |
-| `msg.data` | `bytes` | Unlocking bytecode (with redeem script stripped) |
-| `tx.origin` | `address` | P2PKH locking bytecode of the first non-token input |
+See [Global Variables](/docs/language/globals#message-and-origin-variables) for `msg.sender`, `msg.value`,
+`msg.sig`, `msg.data` and `tx.origin`, including the caution about using signatures rather than sender
+identity for authorization.
+
+## See also
+
+- [Inline Assembly](/docs/language/assembly)
+- [Contract Creation & Lifecycle](/docs/language/contract-creation)
+- [Imports & Interfaces](/docs/language/imports-interfaces)
+- [Global Variables](/docs/language/globals)

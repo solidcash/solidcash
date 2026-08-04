@@ -74,6 +74,7 @@ import FoldHashLiterals from './semantic/FoldHashLiterals.js';
 import LowerStorageSlotPointers from './semantic/LowerStorageSlotPointers.js';
 import expandBreakContinue from './semantic/BreakContinueTransformation.js';
 import expandInheritance from './semantic/InheritanceExpansionTransformation.js';
+import autoMarkDelegateFunctions from './semantic/AutoMarkDelegateFunctions.js';
 import lowerTransientStateVars from './semantic/LowerTransientStateVars.js';
 import { ImportResolver } from './ImportResolver.js';
 import { CircularContractReferenceError } from './Errors.js';
@@ -103,6 +104,41 @@ export interface SplitCompileOptions extends CompileOptions {
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
 const compileCache = new Map<string, Artifact>();
+
+/**
+ * Clone an artifact without forcing its lazy delegate variant. `structuredClone()` reads enumerable getters,
+ * which would eagerly run the second compiler pass whenever SOLIDC_COMPILE_CACHE=1 (including the SDK tests).
+ * Keep the cache's artifact as the single variant owner; each returned clone materializes its own cloned variant
+ * only when a consumer actually reads `delegateArtifact`.
+ */
+function cloneArtifact(artifact: Artifact): Artifact {
+  const delegateDescriptor = Object.getOwnPropertyDescriptor(artifact, 'delegateArtifact');
+  if (!delegateDescriptor?.get) return structuredClone(artifact);
+
+  const withoutDelegate = Object.fromEntries(
+    Object.keys(artifact)
+      .filter((key) => key !== 'delegateArtifact')
+      .map((key) => [key, artifact[key as keyof Artifact]]),
+  ) as unknown as Artifact;
+  const cloned = structuredClone(withoutDelegate);
+  let memo: Artifact | undefined;
+  let built = false;
+  Object.defineProperty(cloned, 'delegateArtifact', {
+    enumerable: true,
+    configurable: true,
+    get(): Artifact | undefined {
+      if (!built) {
+        const variant = delegateDescriptor.get!.call(artifact) as Artifact | undefined;
+        memo = variant ? structuredClone(variant) : undefined;
+        built = true;
+      }
+      return memo;
+    },
+    set(value: Artifact | undefined): void { memo = value; built = true; },
+  });
+  return cloned;
+}
+
 export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
@@ -111,13 +147,93 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   if (cacheable) {
     cacheKey = `${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const hit = compileCache.get(cacheKey);
-    if (hit) return structuredClone(hit);
+    if (hit) return cloneArtifact(hit);
   }
   const mergedCompilerOptions = { ...DEFAULT_COMPILER_OPTIONS, ...artifactCompilerOptions };
   const ast = parseAndResolve(code, mergedCompilerOptions, errorListener);
   const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+  attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener);
   if (cacheable) compileCache.set(cacheKey, artifact);
-  return cacheable ? structuredClone(artifact) : artifact;
+  return cacheable ? cloneArtifact(artifact) : artifact;
+}
+
+/**
+ * Compile the same source a second time with its proxy-implementable functions in delegate mode, and attach the
+ * result as `artifact.delegateArtifact`. This is what lets source stay free of a `delegate` keyword: the caller
+ * never chooses the mode, the SDK selects the variant when the contract is used behind a proxy.
+ *
+ * Skipped when the contract cannot be an implementation (no eligible function), when already compiling a
+ * variant (no recursion), and for library artifacts (AstBuilder already auto-marks those in place).
+ */
+const DELEGATE_INELIGIBLE_MODIFIERS: string[] = [
+  'pure', 'view', 'internal', 'private', 'unsafe', 'upgrade', 'deploy', 'selfdestruct', 'split', 'merge',
+  'delegate',
+];
+
+function attachDelegateVariant(
+  artifact: Artifact, code: string, mergedCompilerOptions: CompilerOptions,
+  errorListener?: SolidCashErrorListener, primaryName?: string,
+): void {
+  if (mergedCompilerOptions.autoDelegate || artifact.isLibrary) return;
+  // Cheap pre-filter on the standalone ABI, so only contracts that could BE an implementation pay for the second
+  // compile: stateful, with an externally-callable state-writing function carrying no disqualifying modifier.
+  // Conservative in the same direction as writesState (a false positive costs one wasted compile, never a
+  // missing variant); AutoMarkDelegateFunctions makes the real decision.
+  const hasStatefulBacking = !!artifact.stateLayout || !!artifact.usesBlockhash
+    || !!mergedCompilerOptions.forceStateful || artifact.abi.some((f) => (f.emits?.length ?? 0) > 0);
+  if (!hasStatefulBacking) return;
+  const couldBeImplementation = artifact.abi.some((f) => f.writesState !== false
+    && !f.isFallback && !f.isReceive
+    && !f.modifiers?.some((m) => DELEGATE_INELIGIBLE_MODIFIERS.includes(m)));
+  if (!couldBeImplementation) return;
+
+  const buildVariant = (): Artifact | undefined => {
+    const variantOptions = { ...mergedCompilerOptions, autoDelegate: true };
+    const out = { delegateFunctionsMarked: 0 };
+    let variantFailure: string | undefined;
+    let built: Artifact | undefined;
+    // The variant recompiles the same source, so every warning would otherwise be printed a second time.
+    const { log, warn } = console;
+    console.log = (): void => {};
+    console.warn = (): void => {};
+    try {
+      const variantAst = parseAndResolve(code, variantOptions, errorListener, primaryName);
+      const variant = compileResolvedAst(variantAst, code, variantOptions, false, out);
+      if (out.delegateFunctionsMarked > 0) {
+        built = variant;
+      }
+    } catch (e) {
+      // The delegate variant is an extra capability, never a reason to fail a valid standalone compile. But do
+      // not swallow the reason: otherwise asDelegate() reports "no delegate variant" with no trace of why.
+      variantFailure = e instanceof Error ? e.message : String(e);
+    } finally {
+      console.log = log;
+      console.warn = warn;
+    }
+    if (variantFailure !== undefined) {
+      console.log(
+        `Warning: could not build the delegate (proxy-implementation) variant of '${artifact.contractName}': `
+        + `${variantFailure}. The contract itself compiled; it just cannot be used behind a proxy.`,
+      );
+    }
+    return built;
+  };
+
+  // Build on first read, not on every compile. The variant is a second full pass over the same source, and most
+  // contracts are never used behind a proxy - so paying for it up front doubles the cost of compiling anything
+  // that merely COULD be an implementation. Reading `.delegateArtifact` builds it once and caches the result;
+  // JSON.stringify / formatArtifact read it like any other property, so emitted artifacts still carry it.
+  let memo: Artifact | undefined;
+  let built = false;
+  Object.defineProperty(artifact, 'delegateArtifact', {
+    enumerable: true,
+    configurable: true,
+    get(): Artifact | undefined {
+      if (!built) { memo = buildVariant(); built = true; }
+      return memo;
+    },
+    set(value: Artifact | undefined): void { memo = value; built = true; },
+  });
 }
 
 // Parse + (optionally re-select a non-default primary contract) + resolve imports. The default primary is the
@@ -168,6 +284,7 @@ function setPrimaryContract(ast: Ast, name: string): void {
 // compileString and compileStringMulti.
 function compileResolvedAst(
   ast: Ast, code: string, mergedCompilerOptions: CompilerOptions, omitConstructor = false,
+  out?: { delegateFunctionsMarked: number },
 ): Artifact {
   // A library file compiled directly: if its primary library has explicitly public/external functions, lower
   // it to a stateless contract artifact (docs/library-contracts.md Phase 2). A library with only inline
@@ -482,6 +599,13 @@ function compileResolvedAst(
     if (col.type instanceof MappingType) col.sorted = true;
   }
 
+  // Delegate-variant compile: mark the proxy-implementable functions now that the function set is final (after
+  // inheritance/modifier/getter expansion) and before SymbolTableTraversal injects _proxyMasterIndex. `delegate`
+  // is never written in source; see AutoMarkDelegateFunctions.
+  if (mergedCompilerOptions.autoDelegate && out) {
+    out.delegateFunctionsMarked = autoMarkDelegateFunctions(ast, mergedCompilerOptions.forceStateful ?? false);
+  }
+
   // Semantic analysis
   ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
   ast = ast.accept(new TypeCheckTraversal()) as Ast;
@@ -580,7 +704,9 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
     if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     const ast = parseAndResolve(code, mergedCompilerOptions, errorListener, contract.name);
-    map[contract.name] = compileResolvedAst(ast, code, mergedCompilerOptions);
+    const artifact = compileResolvedAst(ast, code, mergedCompilerOptions);
+    attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, contract.name);
+    map[contract.name] = artifact;
   }
 
   // Contract-less: each interface -> an ABI-only declaration artifact (function dispatch for external calls).

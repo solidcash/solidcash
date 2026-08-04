@@ -20,7 +20,7 @@ pragma solidcash ^0.13.0;
 contract HodlVault(pubkey ownerPk, pubkey oraclePk, int minBlock, int priceTarget) {
     function spend(sig ownerSig, datasig oracleSig, bytes oracleMessage) {
         // Decode the message { blockHeight, price }
-        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);
+        bytes4 blockHeightBin, bytes priceBin = oracleMessage.split(4);
         int blockHeight = int(blockHeightBin);
         int price = int(priceBin);
 

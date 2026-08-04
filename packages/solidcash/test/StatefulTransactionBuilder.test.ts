@@ -84,6 +84,66 @@ function makeBaseOptions(overrides?: Partial<StatefulTransactionOptions>): State
 }
 
 describe('StatefulTransactionBuilder', () => {
+  describe('runtime-loop value chunk suffix layout', () => {
+    const chunkA = new Uint8Array([0x51]);
+    const chunkB = new Uint8Array([0x52]);
+    const change = new Uint8Array([0x53]);
+    const sidecarLock = new Uint8Array([0x54]);
+
+    const addChunks = (builder: StatefulTransactionBuilder): void => {
+      builder.addLateValueChunkOutput({ to: chunkA, amount: 1200n });
+      builder.addLateValueChunkOutput({ to: chunkB, amount: 1200n });
+    };
+
+    const suffix = (builder: StatefulTransactionBuilder): Array<string | Uint8Array> =>
+      builder.build().outputs.slice(-3).map((o) => o.to);
+
+    it('always adds one OP_RETURN suffix when chunks have no sidecar', () => {
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      addChunks(builder);
+
+      expect(suffix(builder)).toEqual([chunkA, chunkB, new Uint8Array([0x6a])]);
+    });
+
+    it('uses the required sidecar recreation as the one terminal suffix', () => {
+      const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+      addChunks(builder);
+      (builder as unknown as { sidecarUtxo: UnlockableUtxo }).sidecarUtxo = {
+        txid: 'ee'.repeat(32), vout: 0, satoshis: 1500n,
+        unlocker: {
+          generateLockingBytecode: () => sidecarLock,
+          generateUnlockingBytecode: () => new Uint8Array([0x51]),
+        },
+      };
+
+      expect(suffix(builder)).toEqual([chunkA, chunkB, sidecarLock]);
+    });
+
+    it('inserts fee change before chunks and preserves exactly one suffix with or without a sidecar', () => {
+      for (const withSidecar of [false, true]) {
+        const builder = new StatefulTransactionBuilder(makeBaseOptions({ allowImplicitNftBurn: true }));
+        addChunks(builder);
+        if (withSidecar) {
+          (builder as unknown as { sidecarUtxo: UnlockableUtxo }).sidecarUtxo = {
+            txid: 'ee'.repeat(32), vout: 0, satoshis: 1500n,
+            unlocker: {
+              generateLockingBytecode: () => sidecarLock,
+              generateUnlockingBytecode: () => new Uint8Array([0x51]),
+            },
+          };
+        }
+        const tx = builder.build();
+        (builder as unknown as {
+          insertBeforeLateValueSuffix: (b: typeof tx, o: { to: Uint8Array; amount: bigint }) => void;
+        }).insertBeforeLateValueSuffix(tx, { to: change, amount: 1000n });
+
+        expect(tx.outputs.slice(-4).map((o) => o.to)).toEqual([
+          change, chunkA, chunkB, withSidecar ? sidecarLock : new Uint8Array([0x6a]),
+        ]);
+      }
+    });
+  });
+
   describe('satoshi container underflow guard', () => {
     it('should throw when total transfer amount exceeds satoshi container balance', () => {
       const satoshiContainerUtxo = makeSatoshiContainerUtxo(5000n);

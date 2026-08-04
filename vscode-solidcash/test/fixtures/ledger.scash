@@ -1,0 +1,12 @@
+pragma solidcash ^0.13.0;
+
+/// A receipt of a settled transfer.
+struct Receipt {
+    address payer;
+    int amount;
+}
+
+/// Records settled transfers.
+interface Ledger {
+    function settle(Receipt receipt) external returns (bool);
+}

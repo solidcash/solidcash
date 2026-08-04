@@ -14,7 +14,7 @@ Contract authors should be careful when allowing a range of versions to check th
 #### Example
 ```solidity
 pragma solidcash ^0.13.0;
-pragma solidcash >= 0.7.0 < 0.9.3;
+pragma solidcash >=0.13.0 <0.14.0;
 ```
 
 ## Constructor
@@ -25,7 +25,10 @@ For non-stateful contracts, the constructor parameters are specified directly on
 pragma solidcash ^0.13.0;
 
 contract HTLC(pubkey sender, pubkey recipient, int expiration, bytes32 hash) {
-    ...
+    function reveal(bytes secret, sig recipientSig) {
+        require(sha256(secret) == hash);
+        require(checkSig(recipientSig, recipient));
+    }
 }
 ```
 
@@ -62,17 +65,18 @@ pragma solidcash ^0.13.0;
 
 contract TransferWithTimeout(pubkey sender, pubkey recipient, int timeout) {
     function transfer(sig recipientSig) {
-        ...
+        require(checkSig(recipientSig, recipient));
     }
 
     function timeout(sig senderSig) {
-        ...
+        require(checkSig(senderSig, sender));
+        require(tx.time >= timeout);
     }
 }
 ```
 
 :::note
-The functions described here are top-level contract functions, which act as the entry points for spending from the contract. SolidCash does not yet support user-defined reusable functions that can be called from within other functions. Callable functions are likely coming in SolidCash v0.14, which would also allow function calls inside loops and loops inside reusable functions.
+The functions described here are top-level contract functions, which act as the entry points for spending from the contract. SolidCash also supports reusable `internal` and `private` functions, free functions declared at file level, function overloading and function pointers. These compile to real subroutines and can be called from inside loops. See [Functions](/docs/language/functions).
 :::
 
 ### Function Arguments
@@ -129,14 +133,29 @@ string constant myString = 'Bitcoin Cash';
 ```
 
 ### Variable assignment
-After their initial declaration, any variable can be reassigned later on. However, SolidCash lacks any compound assignment operators such as `+=` or `-=`.
+After their initial declaration, any variable can be reassigned later on. SolidCash supports the full set of
+compound assignment operators, as well as prefix and postfix increment and decrement.
 
 #### Example
 ```solidity
-i = i + 1;
-hashedValue = sha256(hashedValue);
-myString = 'Cash';
+contract Assignments() {
+    function demo(int i, bytes32 hashedValue) {
+        string myString = 'Bitcoin Cash';
+
+        i = i + 1;
+        i += 1;
+        i++;
+        ++i;
+        hashedValue = sha256(hashedValue);
+        myString = 'Cash';
+
+        require(i > 0 && hashedValue != 0x && myString.length == 4);
+    }
+}
 ```
+
+The available compound assignment operators are `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=` and
+`>>=`. Chained assignment (`a = b = c;`) is also supported.
 
 ### If statements
 If and if-else statements follow usual semantics known from languages like C or JavaScript. If the condition within the `if` statement evaluates to `true`, the block of code within the `if` statement is executed. If the condition evaluates to `false`, the block of code within the optional `else` statement is executed.
@@ -167,7 +186,7 @@ contract OneOfTwo(bytes20 pkh1, bytes32 hash1, bytes20 pkh2, bytes32 hash2) {
 
 ### Loops
 
-SolidCash supports `for`, `while`, and `do-while` loops with `break` and `continue`. See [Advanced Features](/docs/language/advanced-features#for-loops) for the full loop syntax reference.
+SolidCash supports `for`, `while`, and `do-while` loops with `break` and `continue`. See [Advanced Features](/docs/language/advanced-features#loops) for the full loop syntax reference.
 
 #### Example
 ```solidity

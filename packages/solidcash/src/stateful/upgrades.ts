@@ -467,7 +467,16 @@ export async function deployProxy<TImpl extends Artifact>(
   } : undefined;
   try {
     const auth = options.auth ?? defaultAuth;
-    const implArtifact = ordinaryFactory.artifact;
+    const sourceArtifact = ordinaryFactory.artifact;
+    const implArtifact = sourceArtifact.delegateArtifact
+      ?? (sourceArtifact.abi.some((f) => f.modifiers?.includes('delegate')) ? sourceArtifact : undefined);
+    if (!implArtifact) {
+      throw new Error(
+        `Implementation '${sourceArtifact.contractName}' has no inferred delegate variant and cannot be deployed `
+        + 'behind a proxy. It needs an externally-callable function that mutates proxy-owned state.',
+      );
+    }
+    const delegateFactory = new ContractFactory(implArtifact as TImpl, runner);
 
     // An initializer runs after genesis to set state; otherwise the state is seeded directly at genesis.
     const initializer = resolveInitializer(options.initializer, implArtifact);
@@ -477,7 +486,7 @@ export async function deployProxy<TImpl extends Artifact>(
     const seededState = initializer ? mockInitializerState : toInitialState(initialState, implArtifact);
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
-    const implementation = await ordinaryFactory.connect(runner).deploy({
+    const implementation = await delegateFactory.deploy({
       ...(options.implementationOverrides ?? {}), logicalNonce: false,
     }) as DeployedContract<TImpl>;
 

@@ -97,7 +97,7 @@ The remaining gaps are bounded. They are listed below.
   `ecrecoverEvm` expose explicit projections; bare Solidity `ecrecover(hash,v,r,s)` is enabled through the compiler
   projection option. Use `checkSig` / `checkDataSig` when the public key is already known.
 - **`erc7201`, transient storage, storage/memory/calldata data locations, storage-slot layout** - UTXO has no storage slots; state lives in data-NFT commitments.
-- **External/message-call function types, linked (DELEGATECALL) libraries, `new` CREATE/ordered base-constructor execution, create2 deterministic addresses** - no persistent on-chain contract objects. Substitutes: covenant introspection (`IFoo(category).x`), the `delegate` modifier proxy pattern, inline libraries, the inferred deploy covenant (`new Child()`) + SDK `deployFrom`.
+- **External/message-call function types, linked (DELEGATECALL) libraries, `new` CREATE/ordered base-constructor execution, create2 deterministic addresses** - no persistent on-chain contract objects. Substitutes: covenant introspection (`IFoo(category).x`), inferred proxy-implementation artifacts, inline libraries, the inferred deploy covenant (`new Child()`) + SDK `deployFrom`.
 - **`event.selector` / `error.selector`, EIP-55 address literals, EIP-165 semantics** - events are NFT outputs addressed by SHA-256; reverts fail the script unconditionally.
 - **`gwei` / `wei` / `ether` units** - replaced by `sats`/`satoshis`/`finney`/`bits`/`bitcoin`.
 

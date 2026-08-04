@@ -51,6 +51,10 @@ export interface CompilerOptions {
   // (native cross-compilation), 'evm' = the 20-byte keccak EVM address. Omitted = `ecrecover` stays undefined.
   // See docs/ecrecover.md.
   ecrecover?: 'p2pkh' | 'evm';
+  // INTERNAL. Set only on the compiler's second pass to produce artifact.delegateArtifact: auto-marks the
+  // proxy-implementable functions `delegate` so source never needs the keyword (Solidity has none). Not a user
+  // option; setting it yields the delegate variant as the primary artifact.
+  autoDelegate?: boolean;
 }
 
 export interface AbiInput {
@@ -308,6 +312,14 @@ export interface SortedUpsertLoopAbi {
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  mutation?: 'push' | 'pop' | 'setAt';
+  mutationValueArrayParam?: string;
+  mutationValueScalarParam?: string;
+  mutationValueConst?: string;
+  mutationIndexArrayParam?: string;
+  mutationIndexScalarParam?: string;
+  mutationIndexConst?: string;
+  oldValuesWitnessParam?: string;
   op: '+' | '-' | 'set' | 'delete'; // '+'/'-' = RMW; 'set' = absolute m[k[i]]=v; 'delete' = nullify m[k[i]] to default
 }
 
@@ -501,6 +513,10 @@ export interface Artifact {
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
+  // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
+  // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and
+  // calls this variant behind a proxy, so source never needs an explicit `delegate` modifier. One level deep.
+  delegateArtifact?: Artifact;
   compiler: {
     name: string;
     version: string;

@@ -3,6 +3,8 @@ import { compileString } from 'solidc';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
+// Exact runtime adaptation of test/libsolidity/semanticTests/array/array_2d_new.sol.
+
 // 2D (nested) memory arrays: `new uint256[][](n)`, inner alloc `b[i]=new uint256[](m)`, and the nested element
 // write `b[i][j]=v`. The write desugars to a read-modify-write (`tmp=b[i]; tmp[j]=v; b[i]=tmp;`). VM-verifies
 // the write round-trips, sibling elements stay at their default, and the outer/inner structure is preserved.

@@ -227,6 +227,9 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
           require(ecrecoverEvm(h, v, r, s) == owner);
       }
   }`;
+  // Runtime-equivalent address recovery for both upstream ABI variants:
+  // test/libsolidity/semanticTests/ecrecover/ecrecover.sol
+  // test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol
   it('ecrecoverEvm: recovers the signer EVM address (keccak256(uncompressed)[12:], == ethers/Solidity)', async () => {
     const artifact = compileString(EVM);
     expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverEvmFlags).toEqual([true]);

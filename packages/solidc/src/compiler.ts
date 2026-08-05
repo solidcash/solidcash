@@ -5254,7 +5254,10 @@ function prepareSplitAst(
   ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  ast = ast.accept(new SynthesizeBlockOracle()) as Ast;
+  // Match the ordinary pipeline's Solidity-compat mode. In that mode block.timestamp is lowered directly to
+  // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
+  // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
+  ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
   return ast;
 }
 
@@ -5327,13 +5330,6 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
       FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.INTERNAL);
-  }
-  if (contract.functions.filter((fn) => fn.isEntryPoint).length < 2) {
-    const truth = new BoolLiteralNode(true); truth.location = contract.location;
-    const noopGuard = new RequireNode(truth); noopGuard.location = contract.location;
-    const body = new BlockNode([noopGuard]); body.location = contract.location;
-    const noop = new FunctionDefinitionNode('__split_noop', [], body); noop.location = contract.location;
-    noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
   }
   contract.isSplitFacet = true;
   const artifact = compileResolvedAst(

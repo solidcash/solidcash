@@ -1139,6 +1139,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: FullLocationData;
     selectorHex?: string;
     functionId?: number;
+    compilerHelperId?: number;
   }> = [];
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
@@ -1661,7 +1662,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const [hashHex, id] of this.sortedEntryAddressIds) {
       const collectionHash = hexToBin(hashHex);
       const emitBody = (t: GenerateTargetTraversalWithLocation): void => {
-        t.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+        t.emitEntryP2sh32(collectionHash, loc);
       };
       if (!this.capturedSubroutineIsProfitable(id, count(id), emitBody)) continue;
       spans.push({
@@ -2402,11 +2403,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A single DELEGATE function that is a proxy impl keeps the selector dispatch (does NOT inline): the proxy
     // covenant verifies the impl's calldata begins with the function selector, so a selector-less inlined impl
     // fails that check. Libraries are excluded - their own delegatecall path expects a selector-less calldata.
-    const soleFnIsProxyImpl = dispatchFunctions.length === 1
+    const soleFnNeedsSelectorDispatch = dispatchFunctions.length === 1
       && dispatchFunctions[0].modifiers.includes(FunctionModifier.DELEGATE)
-      && !node.isLibraryContract;
+      && (!node.isLibraryContract || node.isSplitFacet);
     const outlineLoc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
-    if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnIsProxyImpl) {
+    if (dispatchFunctions.length === 1 && !hasFallback && !hasReceive && !soleFnNeedsSelectorDispatch) {
       this.outlineSharedFunctionBodies(outlineLoc);
       const visited = this.visitList(dispatchFunctions) as FunctionDefinitionNode[];
       if (node.constructorDef) {
@@ -2489,9 +2490,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    const bodyScript = asmToScript(scriptToAsm(sub.output));
+    const bodyBytecode = scriptToBytecode(bodyScript);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
+    this.definedBodyRecords.push({
+      outputIndex: start,
+      script: bodyScript,
+      locationData: new Array(bodyScript.length).fill(locationData),
+      compilerHelperId: Number(id),
+    });
     this.emit(bodyBytecode, locationData);
     this.emit(encodeInt(id), locationData);
     this.emit(Op.OP_DEFINE, locationData);
@@ -3153,8 +3161,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return { script: record.script, locationData: record.locationData, anchors };
       }),
       () => encodeInt(this.allocateCompactHelperId()),
-      this.currentContractIsSplitFacet ? 128 : undefined,
-      this.currentContractIsSplitFacet ? 4 : undefined,
+      this.currentContractIsSplitFacet ? 112 : undefined,
+      this.currentContractIsSplitFacet ? 5 : undefined,
     );
     if (result.functions.length === 0) return;
 
@@ -3185,6 +3193,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const functionId = this.definedBodyRecords[index].functionId;
       if (functionId !== undefined) {
         this.invokedFunctionBytecodes.set(functionId, scriptToBytecode(body.script));
+      }
+      const compilerHelperId = this.definedBodyRecords[index].compilerHelperId;
+      if (compilerHelperId !== undefined) {
+        this.outlinedSubroutineBytecodes.set(compilerHelperId, scriptToBytecode(body.script));
       }
     });
 
@@ -3620,7 +3632,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
-    if (this.compilerOptions.enforceFunctionParameterTypes) {
+    // Only ABI entry frames contain attacker-supplied raw stack values. An OP_DEFINE subroutine is reachable
+    // exclusively through compiler-emitted typed calls (including function-pointer dispatch), whose operands have
+    // already been checked at their external boundary and after every bounded operation/cast. Rechecking every
+    // declared argument inside the callee duplicates large uint256/int256 guards on each internal helper body.
+    if (this.compilerOptions.enforceFunctionParameterTypes && !this.isDefineSubTraversal) {
       this.enforceFunctionParameterTypes(node);
     }
 
@@ -8500,16 +8516,25 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emitIntWrap(type, locationData);
       return;
     }
-    // Check: value >= min
+    // A minimally encoded BCH number needs one sign byte beyond an N-bit unsigned payload. After padding to
+    // N/8+1 bytes, that final byte is zero exactly when the value is in [0, 2^N-1]. For signed values, bias the
+    // duplicate by 2^(N-1) first, mapping [min,max] onto that same unsigned interval. This avoids embedding both
+    // large endpoints (particularly costly for int256/uint256) while preserving the original value below it.
     this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(type.minValue), locationData);
-    this.emit(Op.OP_GREATERTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
-    // Check: value <= max
-    this.emit(Op.OP_DUP, locationData);
-    this.emit(encodeInt(type.maxValue), locationData);
-    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
-    this.emit(Op.OP_VERIFY, locationData);
+    if (type.signed) {
+      this.emit(Op.OP_1, locationData);
+      this.emit(encodeInt(BigInt(type.bits - 1)), locationData);
+      this.emit(Op.OP_LSHIFT, locationData);
+      this.emit(Op.OP_ADD, locationData);
+    }
+    const width = type.bits / 8;
+    this.emit(encodeInt(BigInt(width + 1)), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(encodeInt(BigInt(width)), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_0, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);
   }
 
   // Emit overflow/underflow bounds check for fixed-point types (same pattern as int bounds check).
@@ -14086,7 +14111,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return;
       }
     }
-    this.emitP2sh32FromCovenant((cat) => buildEntryNftCovenantScript(cat, collectionHash), loc);
+    this.emitEntryP2sh32(collectionHash, loc);
   }
 
   /**
@@ -19523,6 +19548,63 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);          // [p2sh32_lbc]
 
     // Stack tracking: category consumed, p2sh32_lbc produced
+    this.popFromStack();
+    this.pushToStack('(value)');
+  }
+
+  /** Build an entry address while keeping its collection hash as a separate concatenation operand.
+   *
+   * Several collections share the same category-parameterized covenant and differ only by this 20-byte salt.
+   * Keeping the salt separate lets cross-definition outlining share the surrounding reconstruction instead of
+   * treating each covenant tail as one unrelated data push.
+   */
+  private emitEntryP2sh32(collectionHash: Uint8Array, locationData: SingleLocationData): void {
+    const categoryPlaceholder = Uint8Array.from({ length: 32 }, (_value, index) => index);
+    const hashPlaceholder = Uint8Array.from({ length: 20 }, (_value, index) => 0xa0 + index);
+    const covenant = scriptToBytecode(buildEntryNftCovenantScript(categoryPlaceholder, hashPlaceholder));
+    const markers = [
+      { kind: 'category' as const, bytes: Uint8Array.from([0x20, ...categoryPlaceholder.slice().reverse()]) },
+      { kind: 'hash' as const, bytes: Uint8Array.from([0x14, ...hashPlaceholder]) },
+    ];
+    const matches = (at: number, needle: Uint8Array): boolean =>
+      at + needle.length <= covenant.length && needle.every((byte, index) => covenant[at + index] === byte);
+    const pieces: Array<{ segment: Uint8Array; token?: 'category' | 'hash' }> = [];
+    let cursor = 0;
+    while (cursor < covenant.length) {
+      let found = -1;
+      let token: 'category' | 'hash' | undefined;
+      let width = 0;
+      for (let at = cursor; at < covenant.length && found < 0; at++) {
+        for (const marker of markers) if (matches(at, marker.bytes)) {
+          found = at; token = marker.kind; width = marker.bytes.length; break;
+        }
+      }
+      if (found < 0) { pieces.push({ segment: covenant.slice(cursor) }); break; }
+      pieces.push({ segment: covenant.slice(cursor, found), token });
+      cursor = found + width;
+    }
+
+    this.emit(hexToBin('20'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(pieces[0].segment, locationData);
+    for (let index = 0; index < pieces.length; index++) {
+      const piece = pieces[index];
+      if (!piece.token) continue;
+      this.emit(piece.token === 'category'
+        ? Op.OP_OVER
+        : Uint8Array.from([0x14, ...collectionHash]), locationData);
+      this.emit(Op.OP_CAT, locationData);
+      const following = pieces[index + 1]?.segment ?? new Uint8Array();
+      if (following.length > 0) { this.emit(following, locationData); this.emit(Op.OP_CAT, locationData); }
+    }
+    this.emit(Op.OP_NIP, locationData);
+    this.emit(Op.OP_HASH256, locationData);
+    this.emit(P2SH32_LBC_PREFIX, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(P2SH32_LBC_SUFFIX, locationData);
+    this.emit(Op.OP_CAT, locationData);
     this.popFromStack();
     this.pushToStack('(value)');
   }

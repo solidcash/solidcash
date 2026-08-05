@@ -325,6 +325,53 @@ describe('large-contract state-local splitting', () => {
     }
   });
 
+  it('uses Solidity-compatible block oracle synthesis for split layout planning', () => {
+    const source = `pragma solidity ^0.8.7;
+      contract OracleOrder {
+        uint256 own;
+        function recordTime(uint256 v) public {
+          own = block.timestamp + v;
+          require(v >= 0, "n");
+        }
+        function recordHeight(uint256 v) public {
+          own = block.number + v;
+          require(v >= 0, "n");
+        }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
+    const slots = (layout: any): string[] => (layout?.variables ?? []).map((v: any) => v.name);
+    const baselineSlots = slots(compileString(source, options).stateLayout);
+    const bundle = compileStringSplit(source, options);
+
+    // Inheritance/root rewriting can visit these reads in a different order. Synthetic register placement is
+    // canonical, so the physical layout remains identical in the baseline, root, and every delegate facet.
+    expect(baselineSlots).toContain('__block_number');
+    expect(baselineSlots).toContain('__block_timestamp');
+    expect(baselineSlots.indexOf('__block_number')).toBeLessThan(baselineSlots.indexOf('__block_timestamp'));
+    expect(slots(bundle.root.stateLayout)).toEqual(baselineSlots);
+    for (const info of bundle.manifest.facets) {
+      expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(baselineSlots);
+    }
+  });
+
+  it('admits a conditional value-transfer call in a message-bus handler', () => {
+    const artifact = compileString(`pragma solidity ^0.8.7;
+      contract ConditionalValue {
+        uint256 paid;
+        function pay(address to, uint256 amount, bool sendValue) public {
+          if (sendValue) {
+            (bool success,) = to.call{value: amount}("");
+            require(success, "send failed");
+          }
+          paid = amount;
+          require(amount >= 0, "n");
+        }
+      }`, { solidityImportCompat: true, messageBus: true });
+
+    expect(artifact.abi.some((entry: any) => entry.name === 'pay')).toBe(true);
+    expect(asmToBytecode(artifact.bytecode).length).toBeGreaterThan(0);
+  }, 90_000);
+
   /**
    * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair
    * removed the two orderings that produced a divergent bundle, not the refusal. `assertSplitLayoutsAgree`

@@ -23,6 +23,23 @@ fail before broadcast when its required transaction shape cannot be constructed.
 | Lifecycle deploy/upgrade/destroy/split/merge | Yes | Yes | Yes | Yes | lifecycle tests under `packages/solidcash/test/e2e/` | Supported only for documented SDK transaction builders; delegate restrictions still apply |
 | Hardhat/ethers-style testing | N/A | N/A | N/A | Partial | `packages/testing/test/`, `examples/testing-suite/test/` | Supported migration layer, not drop-in universal Hardhat compatibility |
 
+## Application porting notes
+
+The frozen application gate records these source/workflow adaptations rather than presenting the examples as
+unchanged EVM deployments:
+
+| Pattern | Required SolidCash adaptation |
+|---|---|
+| ERC-20-like ledger | Balances use entry-NFT-backed mappings; callers prove the `from` identity with a public key and signature; `Transfer` is an NFT-commitment event. Native CashTokens remain preferable for transferable fungible assets. |
+| Token integration | Connect the expected CashToken/covenant target explicitly; an arbitrary EVM token address is not a sufficient runtime identity. |
+| Ownership/modifiers | Store or derive the authorized public key and express access checks with `checkSig`; modifiers are compile-time inlining, not EVM call context. |
+| Escrow/oracle/timelock | Use `checkDataSig` for oracle messages and BCH transaction locktime/sequence rules for absolute or relative timing. |
+| Upgradeable proxy | Deploy through the built-in `upgrades.deployProxy` profile; persistent state belongs to the proxy's NFT set and initialization runs through the proxy or is seeded at genesis. |
+| Mapping plus dynamic array | Mappings use sorted entry NFTs and dynamic arrays use chunk NFTs; enable the documented chunked-array profile when needed. |
+| Cross-contract calls | Connect the concrete category/locking-bytecode target and build the composed transaction; calls are co-spends rather than synchronous EVM message calls. |
+| Events | Read decoded NFT-commitment logs through `queryFilter`, receipt events, or listeners; there is no EVM log bloom. |
+| Custom errors/assert/revert | Error declarations and arguments are artifact metadata; failed execution surfaces through transaction preflight rather than EVM revert-data transport. |
+
 ## Permanent Bitcoin Cash differences
 
 - State is held in covenant and CashToken NFT UTXOs, not EVM storage slots.

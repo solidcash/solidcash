@@ -273,8 +273,13 @@ it must not silently compile to incorrect covenant behavior.
   every row now measures its serialized locking bytecode against a named, machine-readable 10,000-byte ceiling in
   `packages/solidcash/test/application-size-budgets.ts`. The same manifest classifies event/custom-error coverage
   for every row as covered or explicitly not declared, and each scenario validates its profile while running.
-- [~] Decide whether `.worktrees/n-erc20` and its quarantined-admission design are release scope.
-- [ ] Document any source changes required when porting the corresponding Solidity pattern.
+- [-] Keep `.worktrees/n-erc20` and its quarantined-admission design outside the first release.
+  - The branch adds a separate 1,828-line native-USDT/facet profile and an admission design not used by the
+    supported nine-file application gate. The release instead ships the smaller ERC-20-like ledger scenario and
+    treats native CashTokens as the preferred fungible-asset model; the branch remains available for a later
+    independently reviewed feature release.
+- [x] Document source/workflow changes required by every selected Solidity application pattern.
+  - Evidence: `SOLIDITY_COMPATIBILITY_0.13.1.md`, “Application porting notes”.
 
 ### Packaging and release engineering
 

@@ -161,10 +161,12 @@ it must not silently compile to incorrect covenant behavior.
     files then passed 24/24 on BCHN v29. The original aggregate attempt was stopped after a later file spent more
     than 14 minutes without returning a result. The runner now starts a fresh Vitest process for each eight-file
     batch and records resumable progress, avoiding accumulation in one long-lived compiler process. On exact
-    commit `2e1014f0`, batches 1 through 7 passed 56/449 files. Batch 8 reached 221/222 passing tests and exposed
-    one mock-vs-live rejection-message mismatch in `UserLibrary.test.ts`; its corrected assertion passes the
-    focused case in both mock and BCHN modes. The full BCHN matrix remains incomplete. Resume diagnostic coverage
-    at batch 8 with `REGTEST_START_AT=56 yarn test:regtest`; the final release evidence must still run plain
+    commit `2e1014f0`, batches 1 through 7 passed 56/449 files. Batch 8 initially reached 221/222 passing tests and
+    exposed one mock-vs-live rejection-message mismatch in `UserLibrary.test.ts`; after correction, batches 8 and
+    9 passed in full on commit `ea410fd1`, advancing the cumulative diagnostic checkpoint to 72/449 files. Batch
+    10 was intentionally interrupted shortly after starting and is not counted. The full BCHN matrix remains
+    incomplete. Resume diagnostic coverage at batch 10 with `REGTEST_START_AT=72 yarn test:regtest`; the final
+    release evidence must still run plain
     `yarn test:regtest` from zero on the exact candidate revision.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
@@ -449,7 +451,7 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. The matrix now runs in resumable eight-file processes. Exact commit `2e1014f0` passed batches 1–7 (56/449 files); batch 8 passed 221/222 tests before a portable `UserLibrary` rejection-message mismatch, whose correction passes focused mock and live checks. Resume diagnostics at file 56; a from-zero exact-candidate pass is still required | `REGTEST_START_AT=56 yarn test:regtest`; final `yarn test:regtest` | 2026-08-05 |
+| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. The matrix runs in resumable eight-file processes. Commit `2e1014f0` passed batches 1–7; after the batch-8 assertion correction, commit `ea410fd1` passed batches 8–9, producing a cumulative checkpoint of 72/449 files. Batch 10 was interrupted and is not counted. Resume diagnostics at file 72; a from-zero exact-candidate pass is still required | `REGTEST_START_AT=72 yarn test:regtest`; final `yarn test:regtest` | 2026-08-05 |
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |

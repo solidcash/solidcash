@@ -106,7 +106,8 @@ clear message where a ported test may call it.
 
 ## WS2 - Task system, HRE and CLI  (Phase B, P1)
 
-Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task registry, HRE, or config loader.
+Current implementation: the `solidcash` CLI, task registry, config loader, and v2/v3-shaped HRE are integrated in
+`@solidcash/testing` and exercised by the generated-project smoke gate.
 
 - [x] CLI entry: `@solidcash/testing` bin `solidcash` -> `dist/cli.js`, `solidcash <task> [--network n] [args]`.
   Runs via `node packages/testing/dist/cli.js` (or `npx solidcash` after `yarn install` relinks the bin). DONE.
@@ -114,14 +115,17 @@ Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task 
   `clean`, `node` (info). DONE. `console` REPL TODO.
 - [x] Task registry API (hardhat v2): `task(name, desc?).addParam/.addOptionalParam/.addFlag/
   .addPositionalParam/.addVariadicPositionalParam(...).setAction(async (args, hre) => ...)` + `subtask`. DONE.
-- [ ] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
+- [x] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
   where `harness` exposes `getSigners`, `getContractFactory`, `getContractAt`, `deployContract`, providers.
   D2 LOCKED: primary shape = v2 global `hre.ethers.*`; build it over a **connection/HRE seam** so a v3
   `hre.network.create() -> { ethers, networkHelpers }` mode can layer on. `hre.ethers` = a thin binding of the
-  WS8 ethers-shim + WS3/WS4 helpers to the active network.
+  WS8 ethers-shim + WS3/WS4 helpers to the active network. DONE: the HRE supplies config, network
+  connection/create, ethers, network helpers, task lookup, and `hre.run`; the CLI injects it into task actions and
+  exposes it to `solidcash run` scripts.
 - [x] `hre.run(name, args)` programmatic task invocation. DONE. (v3 `hre.tasks.getTask` accessor also present.)
-- [ ] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
-  graph + `deployments.createFixture`). P2 unless MS deploy scripts must run.
+- [-] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
+  graph + `deployments.createFixture`). Deferred from the first release: its maintained path uses factories,
+  `deployContract`, and `upgrades.deployProxy` directly.
 
 ## WS3 - Signers and accounts  (Phase A, P0)
 

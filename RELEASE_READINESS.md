@@ -237,8 +237,10 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Hardhat/ethers-compatible workflow
 
-- [~] Reconcile the Hardhat-style project compilation cache from `.worktrees/dependency-dag` or confirm it was
+- [x] Reconcile the Hardhat-style project compilation cache from `.worktrees/dependency-dag` or confirm it was
   superseded.
+  - The integrated compiler task owns the current cache. `yarn test:generated-project-smoke` proves cold and warm
+    runs, dependency invalidation, qualified factory lookup, last-valid-artifact retention, and clean removal.
 - [ ] Demonstrate one maintained golden path:
 
   ```text
@@ -246,10 +248,17 @@ it must not silently compile to incorrect covenant behavior.
   assert event/revert/state → reset fixture → rerun
   ```
 
-- [ ] Complete or explicitly defer HRE injection.
-- [ ] Complete or explicitly defer deployment-script helpers.
+- [x] Complete or explicitly defer HRE injection.
+  - `createHardhatRuntimeEnvironment` injects config, the selected network/provider, `ethers`, network helpers,
+    task lookup, and `hre.run`; `solidcash run` also exposes the active HRE to scripts.
+- [-] Defer hardhat-deploy-style deployment scripts, tags, and dependency graphs.
+  - The first-release golden path uses factories, `deployContract`, and `upgrades.deployProxy`; no selected example
+    or release gate requires the separate hardhat-deploy workflow.
 - [ ] Complete stateless contract factory behavior needed by the golden path.
-- [ ] Verify fixture/snapshot behavior on mocknet and document regtest behavior.
+- [x] Verify fixture/snapshot behavior on mocknet and document regtest behavior.
+  - `harness.test.ts` proves snapshot restoration without fixture reruns on mocknet. Regtest deliberately has no
+    rollback snapshot primitive: live-node tests use fresh deployments/categories and run serially, as the
+    application regtest gate does.
 - [ ] Support the event and custom-error argument assertions used by the golden path.
 - [ ] Publish a Hardhat/ethers/chai-to-SolidCash migration table.
 - [ ] Include a complete stateful or token-contract test project.
@@ -390,7 +399,7 @@ Update this table whenever a release candidate is cut.
 | Compiler tests | **PASS** — 3,145/3,145, including storage-pointer definite-assignment and alias-source regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,093 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
+| Spellcheck | **PASS** — 2,095 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 18/18 | `yarn test:generated-project-smoke` | 2026-08-05 |

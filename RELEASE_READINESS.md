@@ -240,7 +240,8 @@ it must not silently compile to incorrect covenant behavior.
   - [x] cross-contract read and mutation (`ExternalFunctionCalls.test.ts`).
 - [x] Make the selected mock-provider scenarios a deterministic, named release command. The gate rejects ordinary
   test failures and does not include the environment-gated timelock file, whose four tests otherwise report as
-  skipped without chipnet/regtest configuration.
+  skipped without chipnet/regtest configuration. CI runs the named gate separately so its result remains visible
+  even though the same files are also part of the broad SDK suite.
 - [ ] For each selected application, require compilation, behavioral tests, event/error tests, and script-size
   measurements. The first frozen gate proves compilation and behavior; event/error coverage and a machine-readable
   per-application size budget still need to be added before this section is complete.

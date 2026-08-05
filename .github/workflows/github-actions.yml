@@ -37,6 +37,9 @@ jobs:
       - name: Run tests
         run: yarn test -- -- --coverage --coverage.provider=v8
 
+      - name: Run release application conformance gate
+        run: yarn test:application-conformance
+
       - name: Run linter
         run: yarn lint
 

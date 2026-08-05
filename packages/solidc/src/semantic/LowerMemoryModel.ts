@@ -43,7 +43,7 @@ import {
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import { YulNode, YulPathNode, YulFunctionCallNode } from '../ast/YulAST.js';
+import { YulNode, YulPathNode, YulFunctionCallNode, YulAssignmentNode } from '../ast/YulAST.js';
 import { UnsupportedMemoryAliasingError } from '../Errors.js';
 import {
   YULMEM,
@@ -523,7 +523,14 @@ export default class LowerMemoryModel extends AstTraversal {
         // `_returnData` by four bytes) must observe the buffer too. Keeping those reads on the original ABI value
         // was semantically stale and could also make later inherited-body cleanup discard the buffer declaration,
         // leaving the lowered assembly assignment with an undefined __memb_* target.
-        this.remapNames(node.body, new Map([[p.name, memName]]));
+        // When assembly REASSIGNS the parameter (the OZ `_getRevertMsg` shape: `_returnData := add(_returnData,
+        // 0x04)`), the buffer becomes the live memory object, so later high-level reads such as
+        // `abi.decode(_returnData, (string))` must observe it too. When assembly only READS the parameter, leave
+        // high-level uses on the original ABI value: renaming them makes the buffer a plain bytes operand and the
+        // Yul pointer arithmetic around it (`add(b, 0x60)`) then has no pointer to fold against.
+        if (this.paramAssignedInAssembly(node.body, p.name)) {
+          this.remapNames(node.body, new Map([[p.name, memName]]));
+        }
         this.eachDescendant(node.body, (n) => {
           if (n instanceof AssemblyStatementNode && n.yulBlock) {
             this.walkYul(n.yulBlock, (y) => {
@@ -534,6 +541,18 @@ export default class LowerMemoryModel extends AstTraversal {
         node.body.statements = [...this.deserializeBytesParam(p, memName, node.body), ...(node.body.statements ?? [])];
       }
     }
+  }
+
+  /** True when inline assembly assigns to `name`, making the lowered buffer the live memory object. */
+  private paramAssignedInAssembly(body: BlockNode, name: string): boolean {
+    let assigned = false;
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulAssignmentNode && child.paths.some((path) => path.base === name)) assigned = true;
+      });
+    });
+    return assigned;
   }
 
   private paramUsedInAssembly(body: BlockNode, name: string): boolean {

@@ -617,6 +617,16 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
       + ' assembly { _returnData := add(_returnData, 0x04) }'
       + ' return abi.decode(_returnData, (string)); } }', opts)).not.toThrow();
   });
+  it('keeps inherited assembly bodies independent while materializing their bytes parameter', () => {
+    const helper = 'contract B {'
+      + ' function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {'
+      + ' if (_returnData.length < 68) return "silent";'
+      + ' assembly { _returnData := add(_returnData, 0x04) }'
+      + ' return abi.decode(_returnData, (string)); } }';
+    expect(() => compileString(helper + ' contract C is B {'
+      + ' function f(bytes memory x) public pure returns (string memory) { return _getRevertMsg(x); } }', opts))
+      .not.toThrow();
+  });
   it('leaves add(int, N) arithmetic untouched (only bytes vars slice)', () => {
     expect(() => compileString('pragma solidity ^0.8.0; contract C {'
       + ' function f(uint256 x) public pure returns (uint256 y) {'

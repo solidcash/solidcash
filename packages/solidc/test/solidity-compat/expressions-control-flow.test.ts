@@ -503,6 +503,16 @@ describe('inlines internal value helpers that make an EXTERNAL contract call (OZ
   });
 });
 
+describe('direct external call through an interface-valued state mapping', () => {
+  it('resolves the mapping value ABI before public-getter symbol shadowing', () => {
+    const src = 'interface IStrategy { function exit(uint256 balance) external returns (int256); }'
+      + ' contract C { mapping(address => IStrategy) public strategy;'
+      + ' function f(address token, uint256 balance) public {'
+      + ' int256 change = strategy[token].exit(balance); require(change == change); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
 // A low-level `.call`/`.staticcall`/`.delegatecall` on a struct-FIELD address receiver (`t.dest.call(..)`) was
 // rejected: resolveLowLevelReceiverType missed a state-var base (StateAccessNode) and a mapping collection base
 // (collectionMap), so it fell through to the interface path (MethodCallNotSupported); and the field receiver was

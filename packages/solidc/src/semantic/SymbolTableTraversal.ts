@@ -10497,7 +10497,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       return t;
     }
     if (expr instanceof ArrayAccessNode) {
-      const base = this.resolveLowLevelReceiverType(expr.array);
+      // Solidity's parser represents `mappingName[key]` as an ArrayAccessNode until the ordinary expression
+      // visitor lowers it to MappingAccessNode.  For a public mapping, the lexical symbol with the same name is
+      // its synthesized getter, so resolving the identifier through nameType() sees the getter's function type
+      // rather than the storage collection. Prefer the collection declaration here, just as the
+      // MappingAccessNode branch above does, so a direct interface-valued read (`strategy[token].exit(..)`) can
+      // determine its callee ABI before visiting/lowering the receiver.
+      const base = expr.array instanceof IdentifierNode
+        ? this.collectionMap.get(expr.array.name)?.type ?? this.resolveLowLevelReceiverType(expr.array)
+        : expr.array instanceof StateAccessNode
+          ? this.collectionMap.get(expr.array.name)?.type ?? this.resolveLowLevelReceiverType(expr.array)
+          : this.resolveLowLevelReceiverType(expr.array);
       return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
     }
     if (expr instanceof TupleIndexOpNode) {

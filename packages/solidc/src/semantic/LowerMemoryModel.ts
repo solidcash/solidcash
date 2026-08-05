@@ -518,6 +518,12 @@ export default class LowerMemoryModel extends AstTraversal {
       if ((this.isHandledMemBytes(p.type) || this.isHandledMemString(p.type))
         && p.modifier.includes('memory') && this.paramUsedInAssembly(node.body, p.name)) {
         const memName = `__memb_${p.name}_${this.counter++}`;
+        // The buffer is the EVM memory object represented by this parameter. Assembly may mutate its pointer or
+        // contents, so subsequent high-level reads (notably `abi.decode(_returnData, (string))` after advancing
+        // `_returnData` by four bytes) must observe the buffer too. Keeping those reads on the original ABI value
+        // was semantically stale and could also make later inherited-body cleanup discard the buffer declaration,
+        // leaving the lowered assembly assignment with an undefined __memb_* target.
+        this.remapNames(node.body, new Map([[p.name, memName]]));
         this.eachDescendant(node.body, (n) => {
           if (n instanceof AssemblyStatementNode && n.yulBlock) {
             this.walkYul(n.yulBlock, (y) => {

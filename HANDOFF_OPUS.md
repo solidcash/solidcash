@@ -124,6 +124,11 @@ The SDK must, for a slot whose expected address is logical:
 4. Pass its absolute input index into `externalCallAnchorIndices` (the map is already threaded into the direct
    fill).
 
+Check (3) of the covenant proof is confirmed to line up: `ContractFactory` builds the anchor commitment with
+`new Contract(artifact, constructorArgs, ...).address`, i.e. the deployed contract's own master locking
+bytecode, and `upgrades.deployProxy` passes `logicalIdentity` to the PROXY deployment. So the commitment's root
+field is the proxy master the caller co-spends, not the implementation.
+
 Placement matters. Anchors must NOT sit inside an accounted band: the compiler's output math counts external
 call outputs as `1 + requiredDataNftIndices.length` per slot, and whether a slot has an anchor is a RUNTIME
 decision the compile-time count cannot express. Put them at the end, where `logicalIdentityUtxo` already goes

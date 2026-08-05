@@ -160,10 +160,11 @@ import {
   IntLiteralOutOfRangeError,
   InvalidCallOptionError,
   UnsupportedAbiV1TypeError,
+  AbiEncodeEmptyError,
+  UndefinedReferenceError,
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
-import { createDefaultValueExpression } from '../ast/defaults.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';
@@ -494,7 +495,7 @@ export default class TypeCheckTraversal extends AstTraversal {
   visitSelfdestructStatement(node: SelfdestructStatementNode): Node {
     node.recipient = this.visit(node.recipient);
     const recipientType = node.recipient.type;
-    if (!(recipientType instanceof AddressType && recipientType.payable)) {
+    if (this.strictSolidityValidation && !(recipientType instanceof AddressType && recipientType.payable)) {
       throw new TransferArgumentTypeError(node, 'recipient', recipientType!, new AddressType(true));
     }
     return node;
@@ -1180,7 +1181,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitTryCatch(node: TryCatchNode): Node {
     node = super.visitTryCatch(node) as TryCatchNode;
-    if (!this.solidityImportCompat) return node;
+    if (!this.strictSolidityValidation) return node;
 
     const externalTarget = node.expression instanceof ExternalFunctionCallNode
       || node.expression instanceof InstantiationNode
@@ -1477,6 +1478,17 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (this.strictSolidityValidation && node.sourceCast
       && node.type instanceof BytesType && node.type.bound !== undefined) {
       if (node.expression instanceof IntLiteralNode && node.expression.value !== 0n) {
+        if (this.solidityImportCompat) {
+          const maxVal = (1n << (BigInt(node.type.bound) * 8n)) - 1n;
+          const absVal = node.expression.value < 0n ? -node.expression.value : node.expression.value;
+          if (absVal > maxVal) {
+            const loc = this.diagLine(node.location);
+            console.log(
+              `Warning: integer literal ${node.expression.value}${loc} exceeds `
+              + `bytes${node.type.bound} range (max ${maxVal}).`,
+            );
+          }
+        }
         throw new CastTypeError(node);
       }
       if (node.expression instanceof HexLiteralNode) {
@@ -1516,6 +1528,18 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     const from = node.expression.type;
+    if (node.isUnsafe && !this.strictSolidityValidation) {
+      const validUnsafeInt = node.type instanceof IntType
+        && (from instanceof IntType || from instanceof BytesType);
+      const validUnsafeBool = node.type === PrimitiveType.BOOL && from instanceof IntType;
+      const validUnsafeBytes = node.type instanceof BytesType && from instanceof BytesType;
+      // External-function values are compiler-lowered to selector||address blobs. SolidCash source has no
+      // `unsafe_function` spelling, so this path is exclusively the nominal wrapper introduced by that lowering.
+      const validLoweredFunction = node.type instanceof FunctionType && from instanceof BytesType;
+      if (!validUnsafeInt && !validUnsafeBool && !validUnsafeBytes && !validLoweredFunction) {
+        throw new CastTypeError(node);
+      }
+    }
     if (node.sourceUdvtUnwrap
       && (!(from instanceof ValueType) || from.name !== node.sourceUdvtUnwrap.name)) {
       throw new CastTypeError(node);
@@ -1524,7 +1548,7 @@ export default class TypeCheckTraversal extends AstTraversal {
       && from instanceof ValueType && node.type instanceof ValueType && from.name === node.type.name;
     // Hex literals are mobile numeric literals in Solidity: their temporary
     // bytesN type describes the spelling, not a fixed-bytes value conversion.
-    const invalidSoliditySourceCast = node.sourceCast && !node.isUnsafe
+    const invalidSoliditySourceCast = this.strictSolidityValidation && node.sourceCast && !node.isUnsafe
       && !(node.expression instanceof HexLiteralNode) && (
       (from instanceof IntType && node.type instanceof IntType
         && from.signed !== node.type.signed && from.bits !== node.type.bits)
@@ -1828,6 +1852,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     // before the ordinary positional statement-call overload path below.
     if (node.call.namedOverloadCandidates) {
       node.call = this.visitFunctionCall(node.call) as FunctionCallNode;
+      if (!this.strictSolidityValidation && node.call.identifier.name === 'ripemd160'
+        && node.call.type !== PrimitiveType.VOID) {
+        throw new UndefinedReferenceError(node.call.identifier);
+      }
       return node;
     }
 
@@ -1869,6 +1897,10 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     node.call = this.visit(node.call) as FunctionCallNode;
+    if (!this.strictSolidityValidation && node.call.identifier.name === 'ripemd160'
+      && node.call.type !== PrimitiveType.VOID) {
+      throw new UndefinedReferenceError(node.call.identifier);
+    }
     return node;
   }
 
@@ -2370,6 +2402,14 @@ export default class TypeCheckTraversal extends AstTraversal {
       }
     }
 
+    // Enum members are represented by integer ordinals. Contextualize the enum
+    // side when it is compared with an integer expression (not only a literal).
+    if (node.left.type instanceof EnumType && node.right.type instanceof IntType) {
+      node.left.type = node.right.type;
+    } else if (node.right.type instanceof EnumType && node.left.type instanceof IntType) {
+      node.right.type = node.left.type;
+    }
+
     const resType = resultingTypeForBinaryOp(node.operator, node.left.type!, node.right.type!);
     if (!resType) {
       throw new UnequalTypeError(node);
@@ -2695,6 +2735,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiEncode(node: AbiEncodeNode): Node {
     node.parameters = this.visitList(node.parameters);
+    if (!this.strictSolidityValidation && node.parameters.length === 0) throw new AbiEncodeEmptyError(node);
     this.validateAbiV1Types(node, node.parameters.map((parameter) => parameter.type));
     node.type = new BytesType();
     return node;
@@ -2702,6 +2743,7 @@ export default class TypeCheckTraversal extends AstTraversal {
 
   visitAbiEncodePacked(node: AbiEncodePackedNode): Node {
     node.parameters = this.visitList(node.parameters);
+    if (!this.strictSolidityValidation && node.parameters.length === 0) throw new AbiEncodeEmptyError(node);
     if (this.strictSolidityValidation) {
       const unsupported = node.parameters.find((parameter) => this.isUnsupportedPackedType(parameter.type));
       if (unsupported) {
@@ -3042,6 +3084,13 @@ export default class TypeCheckTraversal extends AstTraversal {
       return node;
     }
 
+    const mixesIntegerAndBytes = (node.ifTrue instanceof IntLiteralNode && node.ifFalse instanceof HexLiteralNode)
+      || (node.ifFalse instanceof IntLiteralNode && node.ifTrue instanceof HexLiteralNode)
+      || (node.ifTrue.type instanceof IntType && node.ifFalse.type instanceof BytesType)
+      || (node.ifFalse.type instanceof IntType && node.ifTrue.type instanceof BytesType);
+    if (mixesIntegerAndBytes) {
+      throw new TernaryTypeMismatchError(node);
+    }
     if (implicitlyCastable(node.ifTrue.type, node.ifFalse.type)) {
       node.type = node.ifFalse.type;
     } else if (implicitlyCastable(node.ifFalse.type, node.ifTrue.type)) {

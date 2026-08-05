@@ -497,7 +497,7 @@ describe('Yul memory (constant-offset scratch)', () => {
       { solidityImportCompat: true, messageBus: false },
     );
     const direct = compileString(
-      'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf[0:32]);s=bytes32(buf[32:64]);}}',
+      'contract C(){function f(bytes buf)returns(bytes32 r,bytes32 s){r=bytes32(buf.slice(0,32));s=bytes32(buf.slice(32,64));}}',
       { solidityImportCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);
@@ -518,7 +518,7 @@ describe('Yul memory (constant-offset scratch)', () => {
       { solidityImportCompat: true, messageBus: false },
     );
     const direct = compileString(
-      'contract C(){function f(bytes65 sig)returns(uint8 v){v=uint8(sig[64:65]);}}',
+      'contract C(){function f(bytes65 sig)returns(uint8 v){v=uint8(sig.slice(64,65));}}',
       { solidityImportCompat: true, messageBus: false },
     );
     expect(yul.bytecode).toBe(direct.bytecode);

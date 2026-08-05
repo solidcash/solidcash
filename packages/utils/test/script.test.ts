@@ -97,10 +97,4 @@ describe('script utils', () => {
       expect(encodeNullDataScript(input)).toEqual(output);
     });
   });
-
-  describe.skip('TODO: generateContractBytecodeScript()', () => {
-  });
-
-  describe.skip('TODO: optimiseBytecode()', () => {
-  });
 });

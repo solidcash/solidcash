@@ -1,43 +1,33 @@
-  ...500/7343
-  ...1000/7343
-  ...1500/7343
-  ...2000/7343
-  ...2500/7343
-  ...3000/7343
-  ...3500/7343
-  ...4500/7343
-  ...5500/7343
-
-=== SOLC-CORPUS SCORECARD: 4443/4587 single-file in-scope compiled (144 failed) | 2192 negative-skipped (solc rejects; 337 of them we also accept, diagnostic) | 275 multifile-skipped | 289 cmdline-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2698/2805 single-file in-scope compiled (107 failed) | 2158 negative-fixtures (solc rejects; 323 accepted, 0 unchecked, 0 timeouts, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-   19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y
-   16  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..'
-   11  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
-    9  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code
-    8  Error: Expected variable '..' does not exist on the stack
-    7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equival
+   19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not yet lowerable to BCH script ...
+    7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equivalent (deploying runtime ...
     7  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-    6  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
-    6  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column
-    4  UnresolvedImportError: Cannot resolve import '..' from '..'
-    4  Error: recursive struct types are not supported (no finite inline encoding on BCH)
-    3  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (
-    2  Error: Block layout not available for function '..'
-    2  Error: Block slot not found: transfer[N]
-    2  ParseError: Unexpected token '..' at Line N, Column N
+    6  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code, so its element selectors ...
+    4  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend D ...
+    4  BlockLayoutUnavailableError: Block layout not available while compiling '..'
+    3  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend ...
+    3  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
+    3  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column N
+    3  CompilerRecursionLimitError: Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend C ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend A ...
+    2  StackVariableUnavailableError: Expected variable '..' does not exist on the stack
     2  CastTypeError: Type '..' is not castable to type '..' at Line N, Column N
     2  UndefinedReferenceError: Undefined reference to symbol a at Line N, Column N
-    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line
-    2  UndefinedReferenceError: Undefined reference to symbol severalMaps at Line N, Column N
+    2  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line N, Column N
     2  UndefinedReferenceError: Undefined reference to symbol A at Line N, Column N
-    1  InvalidParameterTypeError: Found parameters (uintN,bool) in call to function '..' where pa
-    1  ReturnTypeMismatchError: Return type mismatch: expected (bool) but found () at Line N, Col
-    1  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
-    1  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
-    1  UnimplementedAbstractFunctionError: Concrete contract '..' must implement abstract functio
-    1  UnknownContractTypeError: Unknown contract or interface type '..' at Line N, Column N
-    1  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
+    2  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expression at Line N, Column N
     1  UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
-    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column
-    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot y
+    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column N
+    1  TransferFrameUnavailableError: Value transfer N in function '..' cannot preserve its covenant frame across this ...
+    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot yet preserve Solidity aliasing ...
+    1  UnresolvedImportError: Cannot resolve import '..' from '..'
+    1  InvalidParameterTypeError: Found parameters (uintN,uintN,uintN) in call to function '..' where parameters ...
+    1  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function definitions are not yet supported ...
+    1  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (bytes) were expected at Line ...
+    1  InvalidParameterTypeError: Found parameters (bool,uintN,uintN) in call to function '..' where parameters ...
+    1  EmittingStateHelperEventError: Helper '..' emits an event and is invoked internally as a value-returning subroutine, ...
+    1  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend B ...

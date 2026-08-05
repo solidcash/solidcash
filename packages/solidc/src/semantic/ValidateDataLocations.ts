@@ -2,9 +2,12 @@ import {
   ArrayType, BytesType, FunctionType, MappingType, PrimitiveType, StructType, Type,
 } from '@solidcash/utils';
 import {
-  AbiDecodeNode, ArrayAccessNode, AssignNode, BranchNode, ContractNode, ExpressionNode, FunctionCallNode,
+  AbiDecodeNode, ArrayAccessNode, AssemblyStatementNode, AssignNode, BranchNode, ContractNode, ExpressionNode,
+  FunctionCallNode,
   FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode,
-  StateAssignNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode, TryCatchNode,
+  StateAssignNode, StringLiteralNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
+  TryCatchNode,
+  WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { Modifier } from '../ast/Globals.js';
@@ -26,6 +29,9 @@ export default class ValidateDataLocations extends AstTraversal {
   private stateTypes = new Map<string, Type>();
   private calldataLocals = new Set<string>();
   private initializedCalldataLocals = new Set<string>();
+  private storagePointerLocals = new Set<string>();
+  private initializedStoragePointerLocals = new Set<string>();
+  private currentFunctionHasAssembly = false;
   private immutableStateNames = new Set<string>();
   private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
 
@@ -182,6 +188,11 @@ export default class ValidateDataLocations extends AstTraversal {
     if (this.immutableStateNames.has(node.name) && this.currentFunction?.name !== '__construct') {
       throw new ImmutableStateVariableAssignmentError(node, node.name);
     }
+    const storagePointer = this.storagePointerRoot(node.name);
+    if (storagePointer && !this.initializedStoragePointerLocals.has(storagePointer)) {
+      throw new InvalidDataLocationError(node,
+        `storage pointer '${storagePointer}' may be accessed before it is initialized`);
+    }
     return super.visitStateAssign(node);
   }
 
@@ -216,6 +227,9 @@ export default class ValidateDataLocations extends AstTraversal {
     const previousTypes = this.bindingTypes;
     const previousCalldataLocals = this.calldataLocals;
     const previousInitializedCalldataLocals = this.initializedCalldataLocals;
+    const previousStoragePointerLocals = this.storagePointerLocals;
+    const previousInitializedStoragePointerLocals = this.initializedStoragePointerLocals;
+    const previousFunctionHasAssembly = this.currentFunctionHasAssembly;
     this.currentFunction = node;
     this.bindingLocations = new Map(node.parameters.map((parameter) => [
       parameter.name,
@@ -224,13 +238,26 @@ export default class ValidateDataLocations extends AstTraversal {
     this.bindingTypes = new Map(node.parameters.map((parameter) => [parameter.name, parameter.type]));
     this.calldataLocals = new Set();
     this.initializedCalldataLocals = new Set();
+    this.storagePointerLocals = new Set();
+    this.initializedStoragePointerLocals = new Set();
+    this.currentFunctionHasAssembly = this.containsAssembly(node.body);
     node.body = this.visit(node.body) as typeof node.body;
     this.currentFunction = previous;
     this.bindingLocations = previousLocations;
     this.bindingTypes = previousTypes;
     this.calldataLocals = previousCalldataLocals;
     this.initializedCalldataLocals = previousInitializedCalldataLocals;
+    this.storagePointerLocals = previousStoragePointerLocals;
+    this.initializedStoragePointerLocals = previousInitializedStoragePointerLocals;
+    this.currentFunctionHasAssembly = previousFunctionHasAssembly;
     return node;
+  }
+
+  private containsAssembly(node: Node): boolean {
+    if (node instanceof AssemblyStatementNode) return true;
+    return Object.values(node).some((value) => value instanceof Node
+      ? this.containsAssembly(value)
+      : Array.isArray(value) && value.some((item) => item instanceof Node && this.containsAssembly(item)));
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
@@ -249,12 +276,19 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node,
         `cannot initialize calldata local '${node.name}' from non-calldata binding '${node.expression.name}'`);
     }
+    if (location === Modifier.STORAGE && node.expression) {
+      this.validateStoragePointerSource(node.name, node.type, node.expression);
+    }
     const visited = super.visitVariableDefinition(node) as VariableDefinitionNode;
     this.bindingLocations.set(node.name, location);
     this.bindingTypes.set(node.name, node.type);
     if (location === Modifier.CALLDATA) {
       this.calldataLocals.add(node.name);
       if (node.expression) this.initializedCalldataLocals.add(node.name);
+    }
+    if (location === Modifier.STORAGE && !this.currentFunctionHasAssembly) {
+      this.storagePointerLocals.add(node.name);
+      if (node.expression) this.initializedStoragePointerLocals.add(node.name);
     }
     return visited;
   }
@@ -287,9 +321,9 @@ export default class ValidateDataLocations extends AstTraversal {
         const callee = candidates[0];
         for (let index = 0; index < callee.parameters.length; index += 1) {
           const expectedLocation = this.locations(callee.parameters[index].modifier)[0];
-          if (expectedLocation !== Modifier.CALLDATA) continue;
           const actualLocation = this.sliceSourceLocation(node.parameters[index]);
-          if (actualLocation !== undefined && actualLocation !== Modifier.CALLDATA) {
+          if (expectedLocation === Modifier.CALLDATA
+            && actualLocation !== undefined && actualLocation !== Modifier.CALLDATA) {
             throw new InvalidDataLocationError(
               node.parameters[index],
               `cannot pass ${actualLocation} reference to calldata parameter '${callee.parameters[index].name}'`,
@@ -362,9 +396,24 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node,
         `cannot rebind calldata local '${node.identifier.name}' from non-calldata binding '${node.expression.name}'`);
     }
+    if (this.bindingLocations.get(node.identifier.name) === Modifier.STORAGE) {
+      this.validateStoragePointerSource(
+        node.identifier.name,
+        this.bindingTypes.get(node.identifier.name)!,
+        node.expression,
+      );
+    }
+    const storagePointer = this.storagePointerRoot(node.identifier.name);
+    if (storagePointer && storagePointer !== node.identifier.name
+      && !this.initializedStoragePointerLocals.has(storagePointer)) {
+      throw new InvalidDataLocationError(node,
+        `storage pointer '${storagePointer}' may be accessed before it is initialized`);
+    }
     node.expression = this.visit(node.expression);
     if (this.calldataLocals.has(node.identifier.name)) {
       this.initializedCalldataLocals.add(node.identifier.name);
+    } else if (this.storagePointerLocals.has(node.identifier.name)) {
+      this.initializedStoragePointerLocals.add(node.identifier.name);
     } else {
       node.identifier = this.visit(node.identifier) as IdentifierNode;
     }
@@ -377,6 +426,9 @@ export default class ValidateDataLocations extends AstTraversal {
       if (element.existing && element.name && this.calldataLocals.has(element.name)) {
         this.initializedCalldataLocals.add(element.name);
       }
+      if (element.existing && element.name && this.storagePointerLocals.has(element.name)) {
+        this.initializedStoragePointerLocals.add(element.name);
+      }
     }
     return visited;
   }
@@ -386,25 +438,75 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node,
         `calldata local '${node.name}' may be read before it is initialized`);
     }
+    if (this.storagePointerLocals.has(node.name) && !this.initializedStoragePointerLocals.has(node.name)) {
+      throw new InvalidDataLocationError(node,
+        `storage pointer '${node.name}' may be accessed before it is initialized`);
+    }
     return node;
+  }
+
+  private storagePointerRoot(name: string): string | undefined {
+    return [...this.storagePointerLocals].find((candidate) =>
+      name === candidate || name.startsWith(`${candidate}.`) || name.startsWith(`${candidate}__`));
+  }
+
+  private validateStoragePointerSource(name: string, targetType: Type, source: ExpressionNode): void {
+    const sourceLocation = this.sliceSourceLocation(source);
+    if (sourceLocation !== undefined && sourceLocation !== Modifier.STORAGE) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from ${sourceLocation} reference`);
+    }
+    if (source instanceof StringLiteralNode) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from a literal value`);
+    }
+    if (source instanceof IdentifierNode) {
+      const sourceType = this.bindingTypes.get(source.name) ?? this.stateTypes.get(source.name);
+      if (sourceType && sourceType.toString() !== targetType.toString()) {
+        throw new InvalidDataLocationError(source,
+          `storage pointer '${name}' of type '${targetType}' cannot bind '${source.name}' of type '${sourceType}'`);
+      }
+    }
   }
 
   visitBranch(node: BranchNode): Node {
     node.condition = this.visit(node.condition);
     const localsBefore = new Set(this.calldataLocals);
     const initializedBefore = new Set(this.initializedCalldataLocals);
+    const storageLocalsBefore = new Set(this.storagePointerLocals);
+    const initializedStorageBefore = new Set(this.initializedStoragePointerLocals);
     node.ifBlock = this.visit(node.ifBlock) as typeof node.ifBlock;
     const initializedIf = new Set(this.initializedCalldataLocals);
+    const initializedStorageIf = new Set(this.initializedStoragePointerLocals);
 
     this.calldataLocals = new Set(localsBefore);
     this.initializedCalldataLocals = new Set(initializedBefore);
+    this.storagePointerLocals = new Set(storageLocalsBefore);
+    this.initializedStoragePointerLocals = new Set(initializedStorageBefore);
     if (node.elseBlock) node.elseBlock = this.visit(node.elseBlock) as typeof node.elseBlock;
     const initializedElse = new Set(this.initializedCalldataLocals);
+    const initializedStorageElse = new Set(this.initializedStoragePointerLocals);
 
     this.calldataLocals = localsBefore;
     this.initializedCalldataLocals = new Set(
       [...initializedIf].filter((name) => initializedElse.has(name)),
     );
+    this.storagePointerLocals = storageLocalsBefore;
+    this.initializedStoragePointerLocals = new Set(
+      [...initializedStorageIf].filter((name) => initializedStorageElse.has(name)),
+    );
+    return node;
+  }
+
+  visitWhile(node: WhileNode): Node {
+    node.condition = this.visit(node.condition);
+    const initializedCalldataBefore = new Set(this.initializedCalldataLocals);
+    const initializedStorageBefore = new Set(this.initializedStoragePointerLocals);
+    node.block = this.visit(node.block) as typeof node.block;
+    // A while/for body may execute zero times. Assignments made only inside it are therefore not definite after
+    // the loop; assignments made by a desugared for initializer occur before this WhileNode and remain definite.
+    this.initializedCalldataLocals = initializedCalldataBefore;
+    this.initializedStoragePointerLocals = initializedStorageBefore;
     return node;
   }
 
@@ -426,13 +528,6 @@ export default class ValidateDataLocations extends AstTraversal {
     isConstructor = false, isLibraryFunction = false, isAbstractConstructor = false): void {
     const locations = this.locations(modifiers);
     if (locations.length === 0) {
-      if (this.solidityImportCompat && this.isReferenceType(type)
-        && (context === 'parameter' || context === 'return')) {
-        throw new InvalidDataLocationError(
-          node,
-          `Data location must be 'storage', 'memory' or 'calldata' for ${context} in function, but none was given`,
-        );
-      }
       return;
     }
     if (locations.length > 1) {

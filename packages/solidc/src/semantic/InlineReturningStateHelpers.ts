@@ -190,9 +190,12 @@ export default class InlineReturningStateHelpers extends AstTraversal {
             directive, binding.funcName, `invalid parameter count ${params.length} for '${binding.operator}'`,
           );
         }
-        if (!fn.isFreeFunction || !fn.modifiers.includes(FunctionModifier.PURE)) {
+        if (!fn.isFreeFunction
+          || (this.solidityImportCompat && !fn.modifiers.includes(FunctionModifier.PURE))) {
           throw new OperatorOverloadSignatureError(
-            directive, binding.funcName, 'operator implementations must be pure free functions',
+            directive, binding.funcName, this.solidityImportCompat
+              ? 'operator implementations must be pure free functions'
+              : 'operator implementations must be free functions',
           );
         }
         if (params.some((p) => !(p.type instanceof ValueType) || p.type.toString() !== targetName)) {
@@ -350,12 +353,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // chain can then be dropped even when they reference one another.
         this.inlinedFns.add(fn.name);
         this.rawSlotFreeFns.add(fn.name);
-      }
       // A returning library helper that makes an EXTERNAL call (`UniswapV2Library.getReserves` ->
       // `IPair(..).getReserves()`) must inline like a low-level-call one: the external-call covenant param is only
       // threaded at an entry point, so a subroutine holding it surfaces phantom params at the call site. Transitive
       // so a helper reaching the external call only through another inlined helper inlines too.
-      else if (this.eligibleShape(fn)
+      } else if (this.eligibleShape(fn)
         && (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
       }
@@ -950,6 +952,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
 
     const rename = new Map<string, string>();
     const subs = new Map<string, ExpressionNode>();
+    const aliasedValueParams = new Set<string>();
     const rmwPrologue: StatementNode[] = [];
     const rmwEpilogue: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
@@ -976,7 +979,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
         }
       } else {
-        rename.set(p.name, `${PREFIX}${n}_${p.name}`);
+        const arg = args[i];
+        // A read-only value parameter supplied by a plain local is already a stable, eagerly-evaluated value.
+        // Alias it directly instead of introducing a second stack local. Besides producing the canonical direct
+        // lowering, this keeps covenant OP_PICK depths independent of whether the call was source-inlined.
+        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name)) {
+          rename.set(p.name, arg.name);
+          aliasedValueParams.add(p.name);
+        } else {
+          rename.set(p.name, `${PREFIX}${n}_${p.name}`);
+        }
       }
     });
     this.walk(cloned.body, (node) => {
@@ -1003,6 +1015,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     const bindings: StatementNode[] = [];
     callee.parameters.forEach((p, i) => {
       if (p.modifier.includes(Modifier.STORAGE)) return; // storage params are substituted, not bound to a value
+      if (aliasedValueParams.has(p.name)) return;
       const def = new VariableDefinitionNode(p.type, [], rename.get(p.name)!, cloneNode(args[i]) as ExpressionNode);
       def.location = args[i].location ?? callee.location;
       bindings.push(def);

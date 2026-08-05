@@ -6,11 +6,9 @@ describe('inline-only library declaration validation', () => {
   const cc = (src: string): string =>
     compileString(src, { solidityImportCompat: true }).contractName;
 
-  it('requires locations on reference-type parameters and returns before the declaration-artifact return', () => {
-    expect(() => cc('library L { function f(uint[] values) internal pure {} }'))
-      .toThrow(/data location must be.*but none was given/i);
-    expect(() => cc('library L { function f() private pure returns(uint[]) {} }'))
-      .toThrow(/data location must be.*but none was given/i);
+  it('infers locations on reference-type parameters and returns before the declaration-artifact return', () => {
+    expect(cc('library L { function f(uint[] values) internal pure {} }')).toBe('L');
+    expect(cc('library L { function f() private pure returns(uint[]) {} }')).toBe('L');
   });
 
   it('retains explicit library parameter and return locations', () => {
@@ -632,7 +630,7 @@ describe('using-for external-call library method on an interface-typed struct FI
     + ' require(token.transfer(to, v), "f"); } }';
   const ok = (body: string): void => {
     expect(() => compileString(`pragma solidity ^0.8.0; ${lib} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
-      + ` Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)`
+      + ' Pool[] poolInfo; using SafeERC20 for IERC20; uint256 s; function f(uint256 pid, address to, uint256 v)'
       + ` public { Pool storage pool = poolInfo[pid]; ${body} } }`, { solidityImportCompat: true })).not.toThrow();
   };
   it('compiles safeTransfer on an interface-typed struct field', () => ok('pool.lpToken.safeTransfer(to, v);'));
@@ -766,12 +764,12 @@ describe('parenthesized using-for calls with named arguments', () => {
 describe('experimental standard-library imports', () => {
   it('accepts direct, aliased, and namespace std.module imports as compiler-provided no-ops', () => {
     for (const directive of [
-        'import std.stub;',
-        'import std.stub as stub;',
-        'import * as stub from std.stub;',
-        'import { identity } from std.stub;',
-        'import { identity as id, other } from std.stub;',
-      ]) {
+      'import std.stub;',
+      'import std.stub as stub;',
+      'import * as stub from std.stub;',
+      'import { identity } from std.stub;',
+      'import { identity as id, other } from std.stub;',
+    ]) {
       expect(() => compileString(`pragma experimental solidity; ${directive}`,
         { solidityImportCompat: true })).not.toThrow();
     }

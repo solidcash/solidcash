@@ -1,0 +1,21 @@
+contract GoldenToken(pubkey owner) {
+  bigint totalSupply;
+  bigint ownerBalance;
+
+  event Mint(bigint amount, bigint totalSupply);
+
+  function mint(bigint amount, sig s) {
+    require(checkSig(s, owner));
+    require(amount > 0, "Amount must be positive");
+    this.totalSupply = this.totalSupply + amount;
+    this.ownerBalance = this.ownerBalance + amount;
+    emit Mint(amount, this.totalSupply);
+  }
+
+  function burn(bigint amount, sig s) {
+    require(checkSig(s, owner));
+    require(amount <= this.ownerBalance, "Insufficient balance");
+    this.totalSupply = this.totalSupply - amount;
+    this.ownerBalance = this.ownerBalance - amount;
+  }
+}

@@ -1,3 +1,4 @@
+// cspell:words invalidateblock setmocktime
 import { Contract, SignatureTemplate } from '../../../src/index.js';
 import {
   bobAddress,
@@ -12,6 +13,27 @@ import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
 import twtArtifact from '../../fixture/transfer_with_timeout.artifact.js';
 import { TransactionBuilder } from '../../../src/TransactionBuilder.js';
 import { createTestProvider, getTxOutputs } from '../../test-util.js';
+import { compileString } from 'solidc';
+import RegtestNetworkProvider from '../../../src/network/RegtestNetworkProvider.js';
+import type { Transaction } from '@bitauth/libauth';
+
+const RPC_URL = process.env.REGTEST_RPC_URL ?? 'http://localhost:18443';
+const RPC_USER = process.env.REGTEST_RPC_USER ?? 'user';
+const RPC_PASSWORD = process.env.REGTEST_RPC_PASSWORD ?? 'password';
+
+async function rpc(method: string, params: unknown[] = []): Promise<any> {
+  const response = await fetch(RPC_URL, {
+    method: 'POST',
+    headers: {
+      'content-type': 'text/plain;',
+      authorization: `Basic ${Buffer.from(`${RPC_USER}:${RPC_PASSWORD}`).toString('base64')}`,
+    },
+    body: JSON.stringify({ jsonrpc: '1.0', id: 'timelocks', method, params }),
+  });
+  const body = await response.json() as { result?: any; error?: unknown };
+  if (body.error) throw new Error(`BCHN RPC ${method} failed: ${JSON.stringify(body.error)}`);
+  return body.result;
+}
 
 describe('Timelocks', () => {
   const provider = createTestProvider();
@@ -82,7 +104,87 @@ describe('Timelocks', () => {
     });
   });
 
-  // bip68 relative timelock
-  it.todo('test sequence numbers');
-  // Get utxo age on chipnet with provider.performRequest('blockchain.utxo.get_info', utxo.txid, utxo.vout);
+  describe.runIf(Boolean(process.env.TESTS_USE_REGTEST))('BIP68 relative timelock', () => {
+    it('rejects a short sequence in script, rejects an immature valid sequence in BCHN, then accepts it', async () => {
+      const artifact = compileString(`
+        contract RelativeLock() {
+          function spend() {
+            require(this.age >= 2);
+          }
+        }
+      `);
+      const instance = new Contract(artifact, [], { provider });
+      await provider.addUtxo(instance.address, randomUtxo());
+      const [utxo] = (await instance.getUtxos()).filter(isNonTokenUtxo).sort(utxoComparator).reverse();
+      const amount = utxo.satoshis - 1000n;
+
+      const spend = (sequence: number): Promise<Transaction> => new TransactionBuilder({ provider })
+        .addInput(utxo, instance.unlock.spend(), { sequence })
+        .addOutput({ to: instance.address, amount })
+        .send();
+
+      // The covenant itself binds nSequence to the declared relative age.
+      await expect(spend(1)).rejects.toThrow();
+
+      // nSequence=2 satisfies OP_CHECKSEQUENCEVERIFY, but BCHN still rejects the spend until the prevout has
+      // reached the consensus-defined BIP68 age. This is the proof a script-only VM cannot provide.
+      await expect(spend(2)).rejects.toThrow(/non-BIP68-final|non-final/i);
+
+      expect(provider).toBeInstanceOf(RegtestNetworkProvider);
+      await (provider as RegtestNetworkProvider).mine(1);
+      const tx = await spend(2);
+      expect(getTxOutputs(tx, provider.network)).toEqual(expect.arrayContaining([
+        { to: instance.address, amount },
+      ]));
+    });
+
+    it('enforces a 512-second BIP68 age against BCHN median-time-past', async () => {
+      const regtest = provider as RegtestNetworkProvider;
+      expect(provider).toBeInstanceOf(RegtestNetworkProvider);
+      const start = await rpc('getblockchaininfo') as {
+        blocks: number; bestblockhash: string; mediantime: number;
+      };
+      let firstTestBlock: string | undefined;
+
+      try {
+        const timeSequence = (1 << 22) | 1; // BIP68 time flag + one 512-second unit
+        const artifact = compileString(`
+          contract RelativeTimeLock() {
+            function spend() {
+              require(this.age >= ${timeSequence});
+            }
+          }
+        `);
+        const instance = new Contract(artifact, [], { provider });
+        await provider.addUtxo(instance.address, randomUtxo());
+        firstTestBlock = await provider.getBlockHash(start.blocks + 1);
+        const [utxo] = (await instance.getUtxos()).filter(isNonTokenUtxo).sort(utxoComparator).reverse();
+        const amount = utxo.satoshis - 1000n;
+        const spend = (): Promise<Transaction> => new TransactionBuilder({ provider })
+          .addInput(utxo, instance.unlock.spend(), { sequence: timeSequence })
+          .addOutput({ to: instance.address, amount })
+          .send();
+
+        await expect(spend()).rejects.toThrow(/non-BIP68-final|non-final/i);
+
+        // Move MTP forward on a disposable branch. Eleven blocks replace the complete median window; the finally
+        // block invalidates this branch, then mines one ordinary-time cleanup block on the preserved ancestor.
+        const future = Math.max(Math.floor(Date.now() / 1000) + 600, start.mediantime + 1024);
+        await rpc('setmocktime', [future]);
+        await regtest.mine(11);
+        const tx = await spend();
+        expect(getTxOutputs(tx, provider.network)).toEqual(expect.arrayContaining([
+          { to: instance.address, amount },
+        ]));
+      } finally {
+        await rpc('setmocktime', [0]);
+        if (firstTestBlock) {
+          await rpc('invalidateblock', [firstTestBlock]);
+          await regtest.mine(1);
+        }
+        expect(await provider.getBlockHash(start.blocks)).toBe(start.bestblockhash);
+        expect(await provider.getBlockHeight()).toBe(start.blocks + 1);
+      }
+    });
+  });
 });

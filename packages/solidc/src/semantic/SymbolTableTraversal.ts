@@ -787,7 +787,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.eventDefinitions.length > 0
       // A Solidity-style selfdestruct call needs the master NFT even when the source declares no storage.
       // Treat the lifecycle operation itself like forceStateful so its destruction covenant has a UTXO to consume.
-      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
+      || node.functions.some((func) => func.impliedSelfdestruct
+        || (this.compilerOptions.solidityImportCompat
+          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
       || (this.compilerOptions.forceStateful ?? false)
       || node.usesBlockhash
       // Deploying a stateful child (`new T()` where T has state) IS a deploy, and the deploy covenant rides the
@@ -1973,6 +1975,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sym = this.symbolTables[0].get('__internal__blockhashInputIndex');
       if (sym) sym.references.push({ name: '__internal__blockhashInputIndex' } as IdentifierNode);
       this.pushToStack(idxParam);
+    }
+
+    // An upgrade intentionally changes the master locking bytecode, so ordinary self-preservation cannot bind
+    // it. Carry the SDK-selected replacement bytecode as an authenticated covenant argument instead. This must
+    // be compiler-owned: a wallet signature may legally use SIGHASH_NONE and cannot be the security boundary.
+    if (node.modifiers.includes(FunctionModifier.UPGRADE)) {
+      const targetParam = new ParameterNode(new BytesType(), '__internal__upgradeBytecode');
+      targetParam.location = node.location;
+      node.parameters.push(targetParam);
+      this.symbolTables[0].set(Symbol.variable(targetParam));
+      const sym = this.symbolTables[0].get('__internal__upgradeBytecode');
+      if (sym) sym.references.push({ name: '__internal__upgradeBytecode' } as IdentifierNode);
+      this.pushToStack(targetParam);
     }
 
     // External-library pre-scan: record which libraries the function calls and how many times, so codegen
@@ -3419,7 +3434,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
-      || contract.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT))
+      || contract.functions.some((func) => func.impliedSelfdestruct
+        || (this.compilerOptions.solidityImportCompat
+          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
       || contract.deploysWithValue
       || contract.usesBlockhash
       || (this.compilerOptions.forceStateful ?? false);
@@ -3873,8 +3890,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop, seen)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) {
+        if (this.keccakCallInLoop(value, nowInLoop, seen)) return true;
+      } else if (Array.isArray(value)) {
         for (const item of value) {
           if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop, seen)) return true;
         }
@@ -6255,8 +6273,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // A compile-time-constant uint mapping key (the OZ StorageSlot idiom `uint256(SLOT)` with a bytes32 constant
   // SLOT, or any `uint(<const>)`) folds to a fixed value the SDK matches the entry by - without it, a non-arg key
-  // can't be located on a read. `uint(bytesN)` reinterprets the bytes as a little-endian script number; a numeric
-  // constant folds directly. Returns the value, or undefined if not a resolvable constant uint key.
+  // can't be located on a read. In Solidity-compatible mode `uint(bytesN)` interprets the fixed bytes as a
+  // big-endian integer; these storage-pointer constants only exist on that compatibility path. A numeric constant
+  // folds directly. Returns the value, or undefined if not a resolvable constant uint key.
   private tryEvalConstantUintKey(key: ExpressionNode): bigint | undefined {
     if (!(key instanceof CastNode) || !(key.type instanceof IntType) || key.type.signed) return undefined;
     return this.evalConstantOperand(key.expression);
@@ -6266,7 +6285,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof IntLiteralNode) return expr.value;
     if (expr instanceof HexLiteralNode) {
       let v = 0n;
-      for (let i = expr.value.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(expr.value[i]); // little-endian
+      for (const byte of expr.value) v = (v << 8n) | BigInt(byte);
       return v;
     }
     if (expr instanceof IdentifierNode) {
@@ -6330,10 +6349,30 @@ export default class SymbolTableTraversal extends AstTraversal {
   // insert-loop SDK derivation) - a loop var is NOT a single-assignment computed value.
   private collectLocalKeyDefs(node: Node | undefined): void {
     this.localKeyDefs = new Map();
+    const assignmentCounts = new Map<string, number>();
+    const adjacentInitializers = new Map<string, ExpressionNode>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof VariableDefinitionNode && n.expression && !n.isLoopVariable && !this.localKeyDefs.has(n.name)) {
         this.localKeyDefs.set(n.name, n.expression);
+      }
+      if (n instanceof AssignNode) {
+        assignmentCounts.set(n.identifier.name, (assignmentCounts.get(n.identifier.name) ?? 0) + 1);
+      }
+      // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
+      // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
+      // assignment, and the whole-body count below rules out subsequent reassignment. This gives C2 key metadata
+      // the same canonical source as `T key = expr` without changing runtime evaluation of the local itself.
+      if (n instanceof BlockNode) {
+        const statements = n.statements ?? [];
+        for (let i = 0; i + 1 < statements.length; i += 1) {
+          const definition = statements[i];
+          const assignment = statements[i + 1];
+          if (definition instanceof VariableDefinitionNode && !definition.expression && !definition.isLoopVariable
+            && assignment instanceof AssignNode && assignment.identifier.name === definition.name) {
+            adjacentInitializers.set(definition.name, assignment.expression);
+          }
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;
@@ -6343,6 +6382,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(node);
+    for (const [name, expression] of adjacentInitializers) {
+      if (!this.localKeyDefs.has(name) && assignmentCounts.get(name) === 1) {
+        this.localKeyDefs.set(name, expression);
+      }
+    }
   }
 
   // Returns the state array name A if `expr` is exactly `A[A.length - 1]` (a state array's last element), else
@@ -7887,7 +7931,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       && msgValueForbidden) {
       throw new InvalidModifierCombinationError(
         this.currentFunction,
-        `'msg.value' can only be read by payable constructors or payable public/external functions`,
+        '\'msg.value\' can only be read by payable constructors or payable public/external functions',
       );
     }
     if (node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN) {
@@ -7912,6 +7956,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = this.contractMap.get(contractName);
 
     if (contract) {
+      if (this.compilerOptions.solidityImportCompat
+        && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+          || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+        throw new InvalidModifierCombinationError(
+          this.currentFunction, 'pure or view functions cannot create contracts',
+        );
+      }
       // Contract deployment mode
       node.referencedContract = contract;
 
@@ -7938,7 +7989,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
 
       if (node.callOptions?.value) {
-        if (!contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
+        if (!this.isStatefulContract) {
+          throw new DeployValueInNonStatefulError(node, contract.name);
+        }
+        if (this.compilerOptions.solidityImportCompat
+          && !contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
           throw new InvalidDeploymentValueError(
             node, `cannot set deployment value because constructor of '${contract.name}' is not payable`,
           );
@@ -7949,10 +8004,6 @@ export default class SymbolTableTraversal extends AstTraversal {
             node, 'value-bearing deployment is not valid in a pure or view function',
           );
         }
-      }
-
-      if (node.callOptions?.value && !this.isStatefulContract) {
-        throw new DeployValueInNonStatefulError(node, contract.name);
       }
 
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
@@ -8297,7 +8348,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!selector || !address) return arg;
         selector.location = arg.location;
         address.location = address.location ?? arg.location;
-        const addressBytes = new CastNode(new BytesType(), address, true);
+        const addressBytes = new CastNode(new BytesType(), address, false);
         addressBytes.location = address.location;
         const blob = new BytesConcatNode([selector, addressBytes]);
         blob.location = arg.location;
@@ -9648,7 +9699,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         selector.location = node.location;
         selector.type = new BytesType(4);
         const address = this.visit(node.expression.parameters[0]) as ExpressionNode;
-        const addressBytes = new CastNode(new BytesType(), address, true);
+        const addressBytes = new CastNode(new BytesType(), address, false);
         addressBytes.location = address.location ?? node.location;
         const blob = new BytesConcatNode([selector, addressBytes]);
         blob.location = node.location;
@@ -10023,7 +10074,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     const operator = binding.operator!;
     const funcName = binding.funcName;
 
-    if (!node.isGlobal || !this.processingFileUsingDirective) {
+    if (this.compilerOptions.solidityImportCompat
+      && (!node.isGlobal || !this.processingFileUsingDirective)) {
       throw new OperatorOverloadSignatureError(
         node, funcName, "operators can only be defined in a file-level global 'using for' directive",
       );
@@ -10053,7 +10105,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!func.isFreeFunction) {
       throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be free functions');
     }
-    if (!func.modifiers.includes(FunctionModifier.PURE)) {
+    if (this.compilerOptions.solidityImportCompat && !func.modifiers.includes(FunctionModifier.PURE)) {
       throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be declared pure');
     }
 

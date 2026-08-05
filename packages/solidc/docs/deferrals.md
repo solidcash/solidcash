@@ -1614,6 +1614,23 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
   OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
 - **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
   capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.
+
+### RESOLVED (verified 2026-08-04) - sorted key hashing tracks its working stack
+
+`emitSortedKeyHash` now tracks the picked key/accumulator while hashing every key, so expression/local-key visits
+resolve offsets against the real working stack rather than the stale pre-layout view. The exact former trigger
+(`bytes20 localUser = user; this.result = this.balances[localUser];`, with `localUser` dead after the read) now passes
+through the SDK and BCH VM with the expected stored value. The regression is
+`SortedMappingComputedKeyRmw.test.ts` (“reads through a last-use local copy of a parameter with the correct C2 stack
+offset”). The earlier failed approaches above remain useful historical context, not active release deferrals.
+
+The 2026-08-05 neighboring-shape audit also covered direct parameters, computed locals, live locals, and returning
+helpers. It found one remaining syntax-equivalent form: `T key; key = expr; m[key]`. The artifact kept `id:key`
+instead of the derivable expression, so transaction construction selected the wrong entry witness and local
+execution failed. `collectLocalKeyDefs` now treats only an adjacent straight-line declaration/assignment with
+exactly one assignment as the initializer expression. Conditional and subsequently reassigned locals remain on
+the conservative path. `SortedMappingOptIn.test.ts` pins the metadata and the expanded VM regression reads the
+stored value through all neighboring forms.
 ## Split deployment follow-ups: constructor resolved; authenticated CREATE identity remains (2026-07-22)
 
 - **RESOLVED: imported multi-NFT constructor deployment.** The 23.8 KB Unicrow monolith correctly fails because its

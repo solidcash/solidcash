@@ -1,0 +1,632 @@
+export default {
+  contractName: 'GoldenToken',
+  constructorInputs: [
+    {
+      name: 'owner',
+      type: 'pubkey',
+    },
+  ],
+  abi: [
+    {
+      name: 'mint',
+      selector: '86a6f222',
+      inputs: [
+        {
+          name: 'amount',
+          type: 'bigint',
+        },
+        {
+          name: 's',
+          type: 'sig',
+        },
+      ],
+      writesState: true,
+      requiredNftIndices: [
+        0,
+      ],
+      emits: [
+        {
+          eventName: 'Mint',
+          eventSignature: 'Mint(bigint,bigint)',
+          emitIndex: 0,
+        },
+      ],
+      signatureGuard: {
+        key: {
+          kind: 'constructorArg',
+          name: 'owner',
+        },
+      },
+      blockLayout: {
+        blockSize: 3,
+        slots: [
+          {
+            kind: 'master',
+            offset: 0,
+          },
+          {
+            kind: 'dataNft',
+            offset: 1,
+            nftIndex: 0,
+          },
+          {
+            kind: 'event',
+            offset: 2,
+            slotIndex: 0,
+          },
+        ],
+      },
+    },
+    {
+      name: 'burn',
+      selector: 'b37fd68f',
+      inputs: [
+        {
+          name: 'amount',
+          type: 'bigint',
+        },
+        {
+          name: 's',
+          type: 'sig',
+        },
+      ],
+      writesState: true,
+      requiredNftIndices: [
+        0,
+      ],
+      signatureGuard: {
+        key: {
+          kind: 'constructorArg',
+          name: 'owner',
+        },
+      },
+      blockLayout: {
+        blockSize: 2,
+        slots: [
+          {
+            kind: 'master',
+            offset: 0,
+          },
+          {
+            kind: 'dataNft',
+            offset: 1,
+            nftIndex: 0,
+          },
+        ],
+      },
+    },
+  ],
+  bytecode: '517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f6868686868 OP_1NEGATE OP_DEFINE 7682008763757501006782518763764f87637575014f6776817651a27c60a19a63758101509351806775517c7e686867758276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e68686868 83 OP_DEFINE c0ce00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c00686600a26975 85 OP_DEFINE c0c6c0cc88c0d0c0d3a169 86 OP_DEFINE 01207f75c0ce01207f7588 87 OP_DEFINE c05193cf4f8a7c817c7c754f8a7c817c75 8d OP_DEFINE c05193c7c05193cd88c05193cec05193d188 8f OP_DEFINE 7b7cad7600a069c08bcf4f8a7c8177789301838a018d8a52799301838a7b01838a52794f8a7c817701838a7ec08bce01878a527952797ec08bd288018f8a7b757776c05293d288c0ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101878ac05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a 86a6f222 OP_DEFINE 7b7cad76018d8aa169c08bcf4f8a7c8177789401838a018d8a7b9401838ac08bce01878a6e7ec08bd288018f8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a b37fd68f OP_DEFINE c0c7c0cd88c0cec0d18801858ac0ce01207f75517e00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c006866009d75c0ce01207f75c0c48c 98 OP_DEFINE 6d01868ac08bc6c08bcc88c08bd0c08bd3a16951 99 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+  source: 'contract GoldenToken(pubkey owner) {\n  bigint totalSupply;\n  bigint ownerBalance;\n\n  event Mint(bigint amount, bigint totalSupply);\n\n  function mint(bigint amount, sig s) {\n    require(checkSig(s, owner));\n    require(amount > 0, "Amount must be positive");\n    this.totalSupply = this.totalSupply + amount;\n    this.ownerBalance = this.ownerBalance + amount;\n    emit Mint(amount, this.totalSupply);\n  }\n\n  function burn(bigint amount, sig s) {\n    require(checkSig(s, owner));\n    require(amount <= this.ownerBalance, "Insufficient balance");\n    this.totalSupply = this.totalSupply - amount;\n    this.ownerBalance = this.ownerBalance - amount;\n  }\n}\n',
+  debug: {
+    bytecode: '4c4e517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f68686868684f894c5d7682008763757501006782518763764f87637575014f6776817651a27c60a19a63758101509351806775517c7e686867758276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e6868686801838937c0ce00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c00686600a269750185890bc0c6c0cc88c0d0c0d3a1690186890b01207f75c0ce01207f758801878911c05193cf4f8a7c817c7c754f8a7c817c75018d8912c05193c7c05193cd88c05193cec05193d188018f894cd07b7cad7600a069c08bcf4f8a7c8177789301838a018d8a52799301838a7b01838a52794f8a7c817701838a7ec08bce01878a527952797ec08bd288018f8a7b757776c05293d288c0ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101878ac05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a0486a6f222894c507b7cad76018d8aa169c08bcf4f8a7c8177789401838a018d8a7b9401838ac08bce01878a6e7ec08bd288018f8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a04b37fd68f894c52c0c7c0cd88c0cec0d18801858ac0ce01207f75517e00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c006866009d75c0ce01207f75c0c48c019889146d01868ac08bc6c08bcc88c08bd0c08bd3a16951019989748c7a82549d8a',
+    sourceMap: '1::21:1;;;;;;;;;;;;;;;;;;;;;7:2:13:3;;;15::20;;;1:0:21:1;;;;;;;;;;;;',
+    logs: [],
+    requires: [],
+    functionDebug: {
+      '86a6f222': {
+        requires: [
+          {
+            ip: 2,
+            line: 8,
+          },
+          {
+            ip: 6,
+            line: 9,
+            message: 'Amount must be positive',
+          },
+        ],
+        logs: [],
+        sourceMap: '8:21:8:22;:24::29;:4::32:1;9:12:9:18:0;:21::22;:12:::1;:4::51;10:23:10:39:0;;;;;;;;:42::48;:23:::1;:4::49;;11:24:11:41:0;;:44::50;;:24:::1;:4::51;;12:14:12:20:0;:4::40:1;;:22::38:0;;;;;;;:4::40:1;;;7:2:13:3:0;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;',
+      },
+      b37fd68f: {
+        requires: [
+          {
+            ip: 2,
+            line: 16,
+          },
+          {
+            ip: 7,
+            line: 17,
+            message: 'Insufficient balance',
+          },
+        ],
+        logs: [],
+        sourceMap: '16:21:16:22;:24::29;:4::32:1;17:12:17:18:0;:22::39;;:12:::1;:4::65;18:23:18:39:0;;;;;;;;:42::48;:23:::1;:4::49;;19:24:19:41:0;;:44::50;:24:::1;:4::51;;15:2:20:3:0;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;',
+      },
+    },
+  },
+  functionBodies: {
+    '86a6f222': '7b7cad7600a069c08bcf4f8a7c8177789301838a018d8a52799301838a7b01838a52794f8a7c817701838a7ec08bce01878a527952797ec08bd288018f8a7b757776c05293d288c0ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101878ac05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a',
+    b37fd68f: '7b7cad76018d8aa169c08bcf4f8a7c8177789401838a018d8a7b9401838ac08bce01878a6e7ec08bd288018f8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a',
+  },
+  fingerprint: '5bf0843c22fc7145e02341a026dd4106c6e95cc388fd84695670e398501e505d',
+  stateLayout: {
+    variables: [
+      {
+        name: 'totalSupply',
+        type: 'bigint',
+        nftIndex: 0,
+        fieldIndex: 0,
+      },
+      {
+        name: 'ownerBalance',
+        type: 'bigint',
+        nftIndex: 0,
+        fieldIndex: 1,
+      },
+    ],
+    dataNftCount: 1,
+    commitmentLimit: 128,
+  },
+  events: [
+    {
+      name: 'Mint',
+      signature: 'Mint(bigint,bigint)',
+      parameters: [
+        {
+          name: 'amount',
+          type: 'bigint',
+        },
+        {
+          name: 'totalSupply',
+          type: 'bigint',
+        },
+      ],
+    },
+  ],
+  compiler: {
+    name: 'solidc',
+    version: '0.13.1',
+    options: {
+      enforceFunctionParameterTypes: true,
+      enforceLocktimeGuard: true,
+      commitmentLimit: 128,
+      messageBus: true,
+    },
+  },
+  updatedAt: '2026-08-05T19:27:58.163Z',
+  invocationAnalysis: {
+    version: 1,
+    protocolVersions: [
+      1,
+    ],
+    functions: [
+      {
+        id: 0,
+        name: 'mint',
+        arity: 2,
+        entryPoint: true,
+        selector: '86a6f222',
+        calls: [],
+        closure: [
+          0,
+        ],
+        component: 0,
+        recursive: false,
+        reads: [
+          'state:ownerBalance',
+          'state:totalSupply',
+        ],
+        writes: [
+          'state:ownerBalance',
+          'state:totalSupply',
+        ],
+        effects: [
+          'events',
+        ],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+        emits: [
+          {
+            eventName: 'Mint',
+            eventSignature: 'Mint(bigint,bigint)',
+            emitIndex: 0,
+          },
+        ],
+        blockLayout: {
+          blockSize: 3,
+          slots: [
+            {
+              kind: 'master',
+              offset: 0,
+            },
+            {
+              kind: 'dataNft',
+              offset: 1,
+              nftIndex: 0,
+            },
+            {
+              kind: 'event',
+              offset: 2,
+              slotIndex: 0,
+            },
+          ],
+        },
+      },
+      {
+        id: 1,
+        name: 'burn',
+        arity: 2,
+        entryPoint: true,
+        selector: 'b37fd68f',
+        calls: [],
+        closure: [
+          1,
+        ],
+        component: 1,
+        recursive: false,
+        reads: [
+          'state:ownerBalance',
+          'state:totalSupply',
+        ],
+        writes: [
+          'state:ownerBalance',
+          'state:totalSupply',
+        ],
+        effects: [],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            {
+              kind: 'master',
+              offset: 0,
+            },
+            {
+              kind: 'dataNft',
+              offset: 1,
+              nftIndex: 0,
+            },
+          ],
+        },
+      },
+    ],
+    components: [
+      {
+        id: 0,
+        functions: [
+          0,
+        ],
+        recursive: false,
+      },
+      {
+        id: 1,
+        functions: [
+          1,
+        ],
+        recursive: false,
+      },
+    ],
+  },
+  diagnostics: [
+    {
+      severity: 'error',
+      code: 'message-bus-route-not-synthesized',
+      message: 'No message-bus route was synthesized for \'GoldenToken\': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - \'mint\': transaction-signature-route-binding-required; \'burn\': transaction-signature-route-binding-required.',
+    },
+  ],
+  delegateArtifact: {
+    contractName: 'GoldenToken',
+    constructorInputs: [
+      {
+        name: 'owner',
+        type: 'pubkey',
+      },
+    ],
+    abi: [
+      {
+        name: 'mint',
+        selector: '86a6f222',
+        inputs: [
+          {
+            name: 'amount',
+            type: 'bigint',
+          },
+          {
+            name: 's',
+            type: 'sig',
+          },
+          {
+            name: '__internal__proxyMasterIndex',
+            type: 'bigint',
+          },
+        ],
+        modifiers: [
+          'delegate',
+        ],
+        writesState: true,
+        requiredNftIndices: [
+          0,
+        ],
+        emits: [
+          {
+            eventName: 'Mint',
+            eventSignature: 'Mint(bigint,bigint)',
+            emitIndex: 0,
+          },
+        ],
+        signatureGuard: {
+          key: {
+            kind: 'constructorArg',
+            name: 'owner',
+          },
+        },
+        blockLayout: {
+          blockSize: 3,
+          slots: [
+            {
+              kind: 'master',
+              offset: 0,
+            },
+            {
+              kind: 'dataNft',
+              offset: 1,
+              nftIndex: 0,
+            },
+            {
+              kind: 'event',
+              offset: 2,
+              slotIndex: 0,
+            },
+          ],
+        },
+      },
+      {
+        name: 'burn',
+        selector: 'b37fd68f',
+        inputs: [
+          {
+            name: 'amount',
+            type: 'bigint',
+          },
+          {
+            name: 's',
+            type: 'sig',
+          },
+          {
+            name: '__internal__proxyMasterIndex',
+            type: 'bigint',
+          },
+        ],
+        modifiers: [
+          'delegate',
+        ],
+        writesState: true,
+        requiredNftIndices: [
+          0,
+        ],
+        signatureGuard: {
+          key: {
+            kind: 'constructorArg',
+            name: 'owner',
+          },
+        },
+        blockLayout: {
+          blockSize: 2,
+          slots: [
+            {
+              kind: 'master',
+              offset: 0,
+            },
+            {
+              kind: 'dataNft',
+              offset: 1,
+              nftIndex: 0,
+            },
+          ],
+        },
+      },
+    ],
+    bytecode: '517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f6868686868 OP_1NEGATE OP_DEFINE 7682008763757501006782518763764f87637575014f6776817651a27c60a19a63758101509351806775517c7e686867758276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e68686868 83 OP_DEFINE 4f8a7c817c7c754f8a7c817c75 8d OP_DEFINE 019b8aad7600a069748c798bcf4f8a7c8177789301838a748c798bcf018d8a52799301838a7b01838a52794f8a7c817701838a7e748c798bce01207f019c8a8852795279019a8a7b757776c05293d288748c79ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101207f019c8a88c05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a 86a6f222 OP_DEFINE 019b8aad76748c798bcf018d8aa169748c798bcf4f8a7c8177789401838a748c798bcf018d8a7b9401838a748c798bce01207f019c8a886e019a8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a b37fd68f OP_DEFINE 748c79c7748c79cd88748c79ce748c79d188748c79019d8ac0c7c0cd88c0c6c0cc88c0cec0d188c0ce01207f775288c0cfc0d288c0d0c0d3a169c0019d8a748c79019e8a8b019e8ace01207f75c0c48c 98 OP_DEFINE 6d748c79c6748c79cc88748c79d0748c79d3a169748c798bc6748c798bcc88748c798bd0748c798bd3a1697551 99 OP_DEFINE 7e748c798bd288748c798bc7748c798bcd88748c798bce748c798bd188 9a OP_DEFINE 537976ce01207f7752887676c77ccd8876c09e69c052949d7b7c 9b OP_DEFINE 75748c79ce01207f75 9c OP_DEFINE ce00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c00686600a26975 9d OP_DEFINE c700c48c6576009f6375516776cd537987637c8b7c688c006866519d75748c79 9e OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+    source: 'contract GoldenToken(pubkey owner) {\n  bigint totalSupply;\n  bigint ownerBalance;\n\n  event Mint(bigint amount, bigint totalSupply);\n\n  function mint(bigint amount, sig s) {\n    require(checkSig(s, owner));\n    require(amount > 0, "Amount must be positive");\n    this.totalSupply = this.totalSupply + amount;\n    this.ownerBalance = this.ownerBalance + amount;\n    emit Mint(amount, this.totalSupply);\n  }\n\n  function burn(bigint amount, sig s) {\n    require(checkSig(s, owner));\n    require(amount <= this.ownerBalance, "Insufficient balance");\n    this.totalSupply = this.totalSupply - amount;\n    this.ownerBalance = this.ownerBalance - amount;\n  }\n}\n',
+    debug: {
+      bytecode: '4c4e517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f68686868684f894c5d7682008763757501006782518763764f87637575014f6776817651a27c60a19a63758101509351806775517c7e686867758276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e686868680183890d4f8a7c817c7c754f8a7c817c75018d894cdf019b8aad7600a069748c798bcf4f8a7c8177789301838a748c798bcf018d8a52799301838a7b01838a52794f8a7c817701838a7e748c798bce01207f019c8a8852795279019a8a7b757776c05293d288748c79ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101207f019c8a88c05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a0486a6f222894c5e019b8aad76748c798bcf018d8aa169748c798bcf4f8a7c8177789401838a748c798bcf018d8a7b9401838a748c798bce01207f019c8a886e019a8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a04b37fd68f894c50748c79c7748c79cd88748c79ce748c79d188748c79019d8ac0c7c0cd88c0c6c0cc88c0cec0d188c0ce01207f775288c0cfc0d288c0d0c0d3a169c0019d8a748c79019e8a8b019e8ace01207f75c0c48c0198892d6d748c79c6748c79cc88748c79d0748c79d3a169748c798bc6748c798bcc88748c798bd0748c798bd3a16975510199891d7e748c798bd288748c798bc7748c798bcd88748c798bce748c798bd188019a891a537976ce01207f7752887676c77ccd8876c09e69c052949d7b7c019b890975748c79ce01207f75019c8936ce00c38c6576009f6375516776ce537987637c8b7c688c006866c48c6576009f6375516776d1537987637c8c7c688c00686600a26975019d8920c700c48c6576009f6375516776cd537987637c8b7c688c006866519d75748c79019e89748c7a82549d8a',
+      sourceMap: '1::21:1;;;;;;;;;7:2:13:3;;;15::20;;;1:0:21:1;;;;;;;;;;;;;;;;;;;;;;;;;;;',
+      logs: [],
+      requires: [],
+      functionDebug: {
+        '86a6f222': {
+          requires: [
+            {
+              ip: 2,
+              line: 8,
+            },
+            {
+              ip: 6,
+              line: 9,
+              message: 'Amount must be positive',
+            },
+          ],
+          logs: [],
+          sourceMap: '7:2:13:3;;8:4:8:32:1;9:12:9:18:0;:21::22;:12:::1;:4::51;10:23:10:39:0;;;;;;;;;;:42::48;:23:::1;:4::49;;11:24:11:41:0;;;;;;;:44::50;;:24:::1;:4::51;;12:14:12:20:0;:4::40:1;;:22::38:0;;;;;;;:4::40:1;;;7:2:13:3:0;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;',
+        },
+        b37fd68f: {
+          requires: [
+            {
+              ip: 2,
+              line: 16,
+            },
+            {
+              ip: 12,
+              line: 17,
+              message: 'Insufficient balance',
+            },
+          ],
+          logs: [],
+          sourceMap: '15:2:20:3;;16:4:16:32:1;17:12:17:18:0;:22::39;;;;;;;:12:::1;:4::65;18:23:18:39:0;;;;;;;;;;:42::48;:23:::1;:4::49;;19:24:19:41:0;;;;;;;:44::50;:24:::1;:4::51;;15:2:20:3:0;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;',
+        },
+      },
+    },
+    functionBodies: {
+      '86a6f222': '019b8aad7600a069748c798bcf4f8a7c8177789301838a748c798bcf018d8a52799301838a7b01838a52794f8a7c817701838a7e748c798bce01207f019c8a8852795279019a8a7b757776c05293d288748c79ce01207f7506c0ce01207f7c01207b7e7e1f880088142d6fc68fce23556114a77b20278e9dca11bb521f75029000b275517eaa02aa207c7e01877ec05293cd88c05293d101207f019c8a88c05293d101207f770088c05293d30088c05293cc02b004a1697501988a6576009f6375516776d15379876376d3009c63765279945253a56968688c00686601998a',
+      b37fd68f: '019b8aad76748c798bcf018d8aa169748c798bcf4f8a7c8177789401838a748c798bcf018d8a7b9401838a748c798bce01207f019c8a886e019a8a7c6d01988a6576009f6375516776d15379876376d3009c63006968688c00686601998a',
+    },
+    fingerprint: '503a35c38a0251a159ef29dc8d827286aa42412acd3549617d32ceff6e7aa3ed',
+    stateLayout: {
+      variables: [
+        {
+          name: 'totalSupply',
+          type: 'bigint',
+          nftIndex: 0,
+          fieldIndex: 0,
+        },
+        {
+          name: 'ownerBalance',
+          type: 'bigint',
+          nftIndex: 0,
+          fieldIndex: 1,
+        },
+      ],
+      dataNftCount: 1,
+      commitmentLimit: 128,
+    },
+    events: [
+      {
+        name: 'Mint',
+        signature: 'Mint(bigint,bigint)',
+        parameters: [
+          {
+            name: 'amount',
+            type: 'bigint',
+          },
+          {
+            name: 'totalSupply',
+            type: 'bigint',
+          },
+        ],
+      },
+    ],
+    compiler: {
+      name: 'solidc',
+      version: '0.13.1',
+      options: {
+        enforceFunctionParameterTypes: true,
+        enforceLocktimeGuard: true,
+        commitmentLimit: 128,
+        messageBus: false,
+      },
+    },
+    updatedAt: '2026-08-05T19:27:58.276Z',
+    delegateProxyStateOutputCountPinned: true,
+    invocationAnalysis: {
+      version: 1,
+      protocolVersions: [
+        1,
+      ],
+      functions: [
+        {
+          id: 0,
+          name: 'mint',
+          arity: 2,
+          entryPoint: true,
+          selector: '86a6f222',
+          calls: [],
+          closure: [
+            0,
+          ],
+          component: 0,
+          recursive: false,
+          reads: [
+            'state:ownerBalance',
+            'state:totalSupply',
+          ],
+          writes: [
+            'state:ownerBalance',
+            'state:totalSupply',
+          ],
+          effects: [
+            'events',
+          ],
+          unknown: false,
+          bounded: true,
+          maximumDirectInvocations: 0,
+          emits: [
+            {
+              eventName: 'Mint',
+              eventSignature: 'Mint(bigint,bigint)',
+              emitIndex: 0,
+            },
+          ],
+          blockLayout: {
+            blockSize: 3,
+            slots: [
+              {
+                kind: 'master',
+                offset: 0,
+              },
+              {
+                kind: 'dataNft',
+                offset: 1,
+                nftIndex: 0,
+              },
+              {
+                kind: 'event',
+                offset: 2,
+                slotIndex: 0,
+              },
+            ],
+          },
+        },
+        {
+          id: 1,
+          name: 'burn',
+          arity: 2,
+          entryPoint: true,
+          selector: 'b37fd68f',
+          calls: [],
+          closure: [
+            1,
+          ],
+          component: 1,
+          recursive: false,
+          reads: [
+            'state:ownerBalance',
+            'state:totalSupply',
+          ],
+          writes: [
+            'state:ownerBalance',
+            'state:totalSupply',
+          ],
+          effects: [],
+          unknown: false,
+          bounded: true,
+          maximumDirectInvocations: 0,
+          blockLayout: {
+            blockSize: 2,
+            slots: [
+              {
+                kind: 'master',
+                offset: 0,
+              },
+              {
+                kind: 'dataNft',
+                offset: 1,
+                nftIndex: 0,
+              },
+            ],
+          },
+        },
+      ],
+      components: [
+        {
+          id: 0,
+          functions: [
+            0,
+          ],
+          recursive: false,
+        },
+        {
+          id: 1,
+          functions: [
+            1,
+          ],
+          recursive: false,
+        },
+      ],
+    },
+  },
+} as const;

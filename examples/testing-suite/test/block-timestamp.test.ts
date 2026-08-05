@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type */
 /**
  * block.timestamp time-travel demo (the Solidity/Hardhat time surface - NOT tx.locktime). A TimeVault covenant
  * reads `block.timestamp`, which on SolidCash is an oracle-backed state register. The harness `time.increaseTo`

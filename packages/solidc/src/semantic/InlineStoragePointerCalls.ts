@@ -714,8 +714,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
           if (path) {
             collectionPaths.set(p.name, path);
             subs.set(p.name, cloneNode(arg) as ExpressionNode);
-          }
-          else subs.set(p.name, cloneNode(arg) as ExpressionNode);
+          } else subs.set(p.name, cloneNode(arg) as ExpressionNode);
         } else {
           // A complex read-only access path is substituted by expression.
           subs.set(p.name, cloneNode(arg) as ExpressionNode);
@@ -1027,8 +1026,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       if (v instanceof Node) this.walk(v, visit);
       else if (Array.isArray(v)) {
         for (const it of v) if (it instanceof Node) this.walk(it, visit);
-      }
-      else if (key === 'callOptions' && v && typeof v === 'object') {
+      } else if (key === 'callOptions' && v && typeof v === 'object') {
         // Call/deploy options are a plain object rather than an AST Node. They can still refer to helper
         // parameters (`new D{value: amount}()`), so descend into each expression during alpha-renaming.
         for (const opt of Object.values(v as unknown as Record<string, unknown>)) {

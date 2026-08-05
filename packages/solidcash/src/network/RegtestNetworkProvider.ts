@@ -38,6 +38,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   public network: Network = Network.REGTEST;
 
   private rpc: BchnRpcClient;
+  private readRpc: BchnRpcClient;
   private probeRpc: BchnRpcClient;
   private miningAddress: string = '';
   private ready: Promise<void> | undefined;
@@ -62,10 +63,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       rpcPassword = 'password',
     } = options;
 
-    // 30s (vs the wrapper's 5s default): network-heavy flows like external-call auto-derivation make many
-    // sequential getUtxos round-trips against a live node, which can exceed the default per-request timeout.
+    // 60s (vs the wrapper's 5s default): resource-heavy live transactions can occasionally keep one BCHN RPC
+    // request active for slightly more than 30s. This remains below the 180s per-test regtest budget.
     this.rpc = new BchnRpcClient({
-      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 30_000,
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000,
+    });
+    // Read requests are idempotent and state derivation can issue many of them, so retry a transient dropped
+    // connection. Mutation requests deliberately stay on the non-retrying client above.
+    this.readRpc = new BchnRpcClient({
+      url: rpcUrl, rpcUser, rpcPassword, timeoutMs: 60_000, maxRetries: 2, retryDelayMs: 250,
     });
     // A second client for probes whose FAILURE is the answer. The wrapper logs every failed request through
     // its logger, and `categoryExistsOnChain` misses once per seeded placeholder UTXO, so those misses would
@@ -90,8 +96,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     const decoded = isHex(address) ? undefined : cashAddressToLockingBytecode(address);
     const includeTokens = typeof decoded === 'object' ? decoded.tokenSupport : true;
     const result = includeTokens
-      ? await this.rpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false, { includeTokens: true })
-      : await this.rpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false);
+      ? await this.readRpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false, { includeTokens: true })
+      : await this.readRpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false);
     return result.map((u) => this.listUnspentItemToUtxo(u));
   }
 
@@ -117,17 +123,17 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   async getBlockHeight(): Promise<number> {
     await this.ensureReady();
-    return this.rpc.request<GetBlockCount>('getblockcount');
+    return this.readRpc.request<GetBlockCount>('getblockcount');
   }
 
   async getBlockHash(height: number): Promise<string> {
     await this.ensureReady();
-    return this.rpc.request<GetBlockHash>('getblockhash', height);
+    return this.readRpc.request<GetBlockHash>('getblockhash', height);
   }
 
   async getRawTransaction(txid: string): Promise<string> {
     await this.ensureReady();
-    return this.rpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
+    return this.readRpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
   }
 
   async sendRawTransaction(txHex: string): Promise<string> {
@@ -434,13 +440,13 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Query only large coins (mature coinbases): the shared wallet can list spent small coins as
   // spendable, which fundrawtransaction then picks, breaking broadcast with "Missing inputs".
   private async pickLiveFundingInput(vout0Only: boolean): Promise<ListUnspentItem> {
-    const candidates = (await this.rpc.request<ListUnspent>(
+    const candidates = (await this.readRpc.request<ListUnspent>(
       'listunspent', 1, 9999999, [], true, { minimumAmount: 1 },
     ))
       .filter((u) => u.spendable && (!vout0Only || u.vout === 0))
       .sort((a, b) => (a.amount < b.amount ? 1 : -1));
     for (const u of candidates) {
-      const out = await this.rpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
+      const out = await this.readRpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
         GetTxOut['response'] | null;
       if (out) return u;
     }
@@ -465,7 +471,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // The requested output is always built first and `fundSignSend` appends change AFTER every output it was
   // given, so the caller's output is at a known vout rather than one searched for by satoshi value.
   private async decodeOutputAt(txid: string, vout: number): Promise<Utxo> {
-    const rawHex = await this.rpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
+    const rawHex = await this.readRpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
     const decoded = decodeTransactionUnsafe(hexToBin(rawHex));
     const match = decoded.outputs[vout];
     return {
@@ -485,7 +491,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private async collectCreatedUtxos(
     txid: string, categoryId: string, outputs: TokenGenesisOutput[], retainedVout?: number,
   ): Promise<{ categoryId: string; utxos: Utxo[] }> {
-    const rawHex = await this.rpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
+    const rawHex = await this.readRpc.request<GetRawTransactionVerbosity0>('getrawtransaction', txid, false);
     const decoded = decodeTransactionUnsafe(hexToBin(rawHex));
 
     const tokenOutputs = decoded.outputs
@@ -553,7 +559,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     // capability survives for the life of the provider.
     this.retainAddress = await this.rpc.request<GetNewAddress>('getnewaddress', 'retained-minting');
     this.retainLockingBytecode = this.toLockingBytecode(this.retainAddress);
-    const height = await this.rpc.request<GetBlockCount>('getblockcount');
+    const height = await this.readRpc.request<GetBlockCount>('getblockcount');
     if (height < 200) {
       await this.rpc.request<GenerateToAddress>('generatetoaddress', 200 - height, this.miningAddress);
     }

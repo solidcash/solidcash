@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
-import { getContractFactory } from '../src/index.js';
+import { getContractFactory, MockNetworkProvider } from '../src/index.js';
 import { fundedSigner } from './test-util.js';
 
 // Tuple assignment where a target is a STATE variable (mixed with transient-lowered locals). The tuple
@@ -77,5 +77,15 @@ describe('tuple assignment onto state variables (VM-verified)', () => {
     expect(await sc.check()).toMatchObject({
       txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
     });
+  });
+
+  it('derives immutable tuple initialization from a full VM trace', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: { maximumInputBytes: 10_000 } });
+    const signer = provider.getCachedSigner();
+    await provider.addUtxo(signer.getAddress(), {
+      txid: '11'.repeat(32), vout: 0, satoshis: 1_000_000n,
+    });
+    const sc = await getContractFactory(compileString(CTOR_SOURCE), signer).deploy();
+    await expect(sc.check()).resolves.toBeDefined();
   });
 });

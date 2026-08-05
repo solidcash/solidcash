@@ -241,7 +241,6 @@ import SolidCashVisitor from '../grammar/SolidCashVisitor.js';
 import { Location, withSourceFile } from './Location.js';
 import { buildYulBlock } from './YulAstBuilder.js';
 import { findReservedYulIdentifier, isBchAsmBlock } from './YulAST.js';
-import AstTraversal from './AstTraversal.js';
 import {
   Modifier,
   NumberUnit,
@@ -249,7 +248,11 @@ import {
 } from './Globals.js';
 import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
-import { ParseError, StateVariableNameCollisionError, UnsupportedTypeError, VersionError } from '../Errors.js';
+import {
+  InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
+  TernaryTypeMismatchError,
+  UnsupportedTypeError, VersionError,
+} from '../Errors.js';
 
 // Compound-assignment operators desugared to `target <binop> rhs`.
 const COMPOUND_OPS: Record<string, BinaryOperator> = {
@@ -313,6 +316,7 @@ export default class AstBuilder
   private stateStructVars: Map<string, StructType> = new Map();
   // All state variable names, so a tuple assignment to state vars `(x, y) = (a, b)` desugars to state assigns.
   private stateVarNames: Set<string> = new Set();
+  private stateVarTypes: Map<string, Type> = new Map();
   private transientStateVarNames: Set<string> = new Set();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
@@ -352,6 +356,10 @@ export default class AstBuilder
   // `container[k]`; reads/writes of `x` are rewritten to that path. Per-function (cleared at each entry).
   private storageAliases: Map<string, { container: string; keys: ExpressionNode[]; access: ExpressionNode }> =
     new Map();
+
+  // Source-level types of storage-reference parameters and locals. Kept separately from storageAliases because
+  // alias lowering may erase a declaration before the semantic type checker can validate a later rebind.
+  private storageReferenceTypes: Map<string, Type> = new Map();
 
   // State vars of a mapping-bearing struct type, flattened to per-field `<var>__<field>` collections/state
   // vars; reads of `<var>.<field>` are rewritten to the flattened name (visitFieldAccess).
@@ -414,9 +422,11 @@ export default class AstBuilder
   private simpleStorageReturnAliases: Map<string, {
     name: string; type: Type; keys: ExpressionNode[]; prefix: StatementNode[];
   }> = new Map();
+
   private pendingStorageReturnPushes: Map<string, Array<{
     block: BlockNode; value: ExpressionNode | undefined; noArg: boolean; ctx: ParserRuleContext;
   }>> = new Map();
+
   // True while building the body of a function/constructor/modifier with NO return values, so `return f();`
   // (Solidity's void tail form) can desugar to `f(); return;`. undefined = unknown scope (do not desugar).
   private currentFnIsVoid: boolean | undefined = undefined;
@@ -1091,7 +1101,7 @@ export default class AstBuilder
             }
             if (node.callOptions && freeFunctionNames.has(node.identifier.name)) {
               throw new ParseError(
-                `Function call options can only be set on external function calls or contract creations`,
+                'Function call options can only be set on external function calls or contract creations',
                 node.location,
               );
             }
@@ -1638,6 +1648,7 @@ export default class AstBuilder
         .map((sv) => [sv.name, sv.type as StructType]),
     );
     this.stateVarNames = new Set(stateVariables.map((sv) => sv.name));
+    this.stateVarTypes = new Map(stateVariables.map((sv) => [sv.name, sv.type]));
     this.stateArrayVarTypes = new Map(
       stateVariables
         .filter((sv) => sv.type instanceof ArrayType)
@@ -1800,6 +1811,7 @@ export default class AstBuilder
 
   visitConstructorDefinition(ctx: ConstructorDefinitionContext): FunctionDefinitionNode {
     this.storageAliases = new Map();
+    this.storageReferenceTypes = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
@@ -1810,7 +1822,9 @@ export default class AstBuilder
     const parameters = ctx.parameterList().parameter_list().map((p) => this.visit(p) as ParameterNode);
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      if (p.modifier.includes(Modifier.STORAGE)) this.storageReferenceTypes.set(p.name, p.type);
       this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
@@ -1926,6 +1940,7 @@ export default class AstBuilder
     this.selfExternalFunctionAliases = new Map();
     this.indexedExternalFunctionAliases = new Map();
     this.storageAliases = new Map();
+    this.storageReferenceTypes = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
@@ -1939,7 +1954,9 @@ export default class AstBuilder
     // so `d.x = v` in a library/helper body rebuilds the struct as for a local.
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      if (p.modifier.includes(Modifier.STORAGE)) this.storageReferenceTypes.set(p.name, p.type);
       this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
@@ -1965,19 +1982,6 @@ export default class AstBuilder
     const modifierContexts = ctx.functionModifier_list();
     if (modifierContexts && modifierContexts.length > 0) {
       this.parseFunctionModifiers(modifierContexts, functionDefinition);
-    }
-    if (this.solidityImportCompat
-      && !this.usesLegacySolidityDefaultFunctionVisibility()
-      && !functionDefinition.modifiers.some((modifier) => [
-        FunctionModifier.PUBLIC,
-        FunctionModifier.EXTERNAL,
-        FunctionModifier.INTERNAL,
-        FunctionModifier.PRIVATE,
-      ].includes(modifier))) {
-      throw new ParseError(
-        `No visibility specified for function '${name}'. Did you intend to add 'public'?`,
-        functionDefinition.location,
-      );
     }
     // Parse custom modifier invocations (split/merge are handled specially)
     const customModCtxs = ctx.customModifierInvocation_list();
@@ -2025,8 +2029,8 @@ export default class AstBuilder
     }
     if (parameters.length === 0 && functionDefinition.returnTypes.length === 1
       && functionDefinition.returnModifiers?.[0]?.includes(Modifier.STORAGE)) {
-      const statements = functionDefinition.body.statements ?? [];
-      const tail = statements[statements.length - 1];
+      const bodyStatements = functionDefinition.body.statements ?? [];
+      const tail = bodyStatements[bodyStatements.length - 1];
       const returned = tail instanceof ReturnNode && tail.expressions.length === 1 ? tail.expressions[0] : undefined;
       let targetName = returned instanceof IdentifierNode ? returned.name
         : returned instanceof StateAccessNode ? returned.name : undefined;
@@ -2071,6 +2075,7 @@ export default class AstBuilder
     if (functionDefinition.body.statements!.some((s) => s instanceof SelfdestructStatementNode)
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
       functionDefinition.modifiers.push(FunctionModifier.SELFDESTRUCT);
+      functionDefinition.impliedSelfdestruct = true;
     }
 
     return functionDefinition;
@@ -2162,6 +2167,7 @@ export default class AstBuilder
     this.selfExternalFunctionAliases = new Map();
     this.indexedExternalFunctionAliases = new Map();
     this.storageAliases = new Map();
+    this.storageReferenceTypes = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
@@ -2174,7 +2180,9 @@ export default class AstBuilder
     // Struct-typed params (incl. `storage` struct pointers) participate in struct-field-write desugaring.
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      if (p.modifier.includes(Modifier.STORAGE)) this.storageReferenceTypes.set(p.name, p.type);
       this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
@@ -2249,6 +2257,7 @@ export default class AstBuilder
 
   visitModifierDefinition(ctx: ModifierDefinitionContext): ModifierDefinitionNode {
     this.storageAliases = new Map();
+    this.storageReferenceTypes = new Map();
     this.localStructTypes = new Map();
     this.localBytesVars = new Set();
     this.localSimpleTypeKeys = new Map();
@@ -2262,7 +2271,9 @@ export default class AstBuilder
       : [];
     for (const p of parameters) {
       if (p.type instanceof StructType) this.localStructTypes.set(p.name, p.type);
+      if (p.type instanceof ArrayType) this.localArrayVarTypes.set(p.name, p.type);
       if (p.type instanceof BytesType && p.type.bound === undefined) this.localBytesVars.add(p.name);
+      if (p.modifier.includes(Modifier.STORAGE)) this.storageReferenceTypes.set(p.name, p.type);
       this.recordUsingForReceiver(p.name, p.type);
     }
     const structPtrParams = this.registerStructPointerParams(parameters);
@@ -2515,6 +2526,10 @@ export default class AstBuilder
 
     // An omitted initializer (`int x;`) leaves expression undefined; codegen emits the type's zero value.
     const expression = ctx.expression() ? this.visit(ctx.expression()) : undefined;
+    if (modifiers.includes(Modifier.STORAGE)) {
+      if (expression && !ctx.DotPush()) this.validateStorageReferenceBinding(name, type, expression);
+      this.storageReferenceTypes.set(name, type);
+    }
     let functionPointerMethodAlias: string | undefined;
     if (type instanceof FunctionType && type.isExternal && expression instanceof StateAccessNode
       && this.currentContractFunctionNames.has(expression.name)) {
@@ -2558,18 +2573,19 @@ export default class AstBuilder
       const defName = `__pushPtr_def_${uid}`;
       // uint __idx = arr.length;  (pre-push length = the appended element's index)
       const idxDef = stamp(new VariableDefinitionNode(
-        PrimitiveType.BIGINT, [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
+        this.solidityImportCompat ? new IntType(false, 256) : PrimitiveType.BIGINT,
+        [], idxName, stamp(new UnaryOpNode(UnaryOperator.SIZE, ident(arrName)))));
       idxDef.allowUnused = true;
       // alias x -> arr[__idx]  (same shape as `T storage x = arr[k]`; not a real local, so not tracked as one)
       const access = stamp(new ArrayAccessNode(ident(arrName), ident(idxName)));
       this.storageAliases.set(name, { container: arrName, keys: [ident(idxName)], access });
       // `uint[] storage p = c.push();` (2D): an array-typed element has no scalar __def local encoding -
       // append the inner default via the no-arg push path instead.
-      if (type instanceof ArrayType || type instanceof StructType) {
+      if (type instanceof ArrayType) {
         const push = this.buildArrayPush(arrName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx);
         return stamp(new BlockNode([idxDef, push]));
       }
-    // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
+      // T __def;  (uninitialized -> the element type's zero value, pushed as the new element)
       const defDef = stamp(new VariableDefinitionNode(type, [], defName, undefined));
       defDef.allowUnused = true;
       const push = this.buildArrayPush(arrName, false, [], undefined, ident(defName), false, ctx);
@@ -2621,6 +2637,29 @@ export default class AstBuilder
     const variable = this.finishVariableDefinition(ctx, type, modifiers, name, expression as ExpressionNode | undefined);
     variable.functionPointerMethodAlias = functionPointerMethodAlias;
     return variable;
+  }
+
+  private validateStorageReferenceBinding(name: string, targetType: Type, source: ExpressionNode): void {
+    if (source instanceof StringLiteralNode) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from a literal value`);
+    }
+    if (!(source instanceof IdentifierNode)) return;
+    const sourceType = this.storageReferenceTypes.get(source.name)
+      ?? this.stateArrayVarTypes.get(source.name)
+      ?? this.stateCollectionArrayTypes.get(source.name)
+      ?? this.mappingStateVarTypes.get(source.name)
+      ?? this.stateStructVars.get(source.name)
+      ?? this.mappingStructStateVars.get(source.name);
+    if (!sourceType && (this.localArrayVarTypes.has(source.name)
+      || this.localStructTypes.has(source.name) || this.localBytesVars.has(source.name))) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from memory reference '${source.name}'`);
+    }
+    if (sourceType && sourceType.toString() !== targetType.toString()) {
+      throw new InvalidDataLocationError(source,
+        `storage pointer '${name}' of type '${targetType}' cannot bind '${source.name}' of type '${sourceType}'`);
+    }
   }
 
   // Local-type tracking + node construction shared by every variableDefinition path (plain, chain-init,
@@ -3132,6 +3171,33 @@ export default class AstBuilder
       const block = new BlockNode(stmts);
       block.location = Location.fromCtx(ctx);
       return block;
+    }
+    // `(x, y) = f()` where f returns a tuple: capture the complete RHS before writing state, just as the
+    // per-component form above does. Leaving this on TupleAssignmentNode makes codegen look for stack-local
+    // slots named x/y, so constructor probes can appear green only under a sparse trace and fail on the full VM.
+    if (exprs.length === 1
+      && elements.every((e) => e.existing && e.name !== undefined && this.stateVarNames.has(e.name))) {
+      const types = elements.map((e) => this.stateVarTypes.get(e.name!));
+      if (types.every((type): type is Type => type !== undefined)) {
+        const loc = Location.fromCtx(ctx);
+        const tempNames = elements.map(() => `__state_tuple_${this.nestedLvalueCounter++}`);
+        const capture = new TupleAssignmentNode(
+          tempNames.map((name, i) => ({ name, type: types[i] })),
+          this.visit(exprs[0]) as ExpressionNode,
+          true,
+        );
+        capture.location = loc;
+        const writes = elements.map((element, i) => {
+          const value = new IdentifierNode(tempNames[i]);
+          value.location = loc;
+          const assign = new StateAssignNode(element.name!, value);
+          assign.location = loc;
+          return assign;
+        });
+        const block = new BlockNode([capture, ...writes]);
+        block.location = loc;
+        return block;
+      }
     }
     const tupleAssignment = exprs.length > 1
       ? new TupleAssignmentNode(elements, undefined as unknown as ExpressionNode, parenthesised,
@@ -4448,6 +4514,11 @@ export default class AstBuilder
     const ifFalse = this.visit(ctx._ifFalse);
     const ternary = new TernaryOpNode(condition, ifTrue, ifFalse);
     ternary.location = Location.fromCtx(ctx);
+    if (!this.solidityImportCompat
+      && ((ifTrue instanceof IntLiteralNode && ifFalse instanceof HexLiteralNode)
+        || (ifFalse instanceof IntLiteralNode && ifTrue instanceof HexLiteralNode))) {
+      throw new TernaryTypeMismatchError(ternary);
+    }
     return ternary;
   }
 
@@ -4554,7 +4625,7 @@ export default class AstBuilder
       if (match) {
         const digits = match[1];
         const shift = Number(match[2]);
-        if (shift < 0) {
+        if (shift < 0 && this.solidityImportCompat) {
           const padded = digits.padStart(-shift + 1, '0');
           const cut = padded.length + shift;
           const node = new DecimalLiteralNode(`${padded.slice(0, cut)}.${padded.slice(cut)}`);
@@ -4846,7 +4917,12 @@ export default class AstBuilder
     }
     const hexValue = hexToBin(hexContent);
     const hexLiteral = new HexLiteralNode(hexValue);
-    hexLiteral.numericValue = BigInt(`0x${hexContent.replace(/_/g, '')}`);
+    // A bare `0x` is the empty byte sequence. JavaScript's BigInt parser rejects
+    // the spelling even though the language parser accepts it, so only attach a
+    // numeric interpretation when at least one digit is present.
+    hexLiteral.numericValue = hexContent.length === 0
+      ? undefined
+      : BigInt(`0x${hexContent.replace(/_/g, '')}`);
     hexLiteral.sourceHexDigits = hexContent.length;
     hexLiteral.location = Location.fromCtx(ctx);
     return hexLiteral;
@@ -5245,6 +5321,7 @@ export default class AstBuilder
     if (!isThis && segs.length === 0 && op === '=' && this.storageAliases.has(rawName) && valueCtx) {
       const alias = this.storageAliases.get(rawName)!;
       const rhs = valueNode ?? this.visit(valueCtx) as ExpressionNode;
+      this.validateStorageReferenceBinding(rawName, this.storageReferenceTypes.get(rawName)!, rhs);
       if (alias.keys.length === 0 && rhs instanceof IdentifierNode && this.mappingStateVarTypes.has(rhs.name)) {
         this.storageAliases.set(rawName, { container: rhs.name, keys: [], access: rhs });
         const dropped = new BlockNode([]);
@@ -6358,7 +6435,9 @@ export default class AstBuilder
     // fixed value-type arrays as StateVariableNode, and zero/uint256-overflow dimensions must be rejected in every
     // declaration context before that representation choice is made.
     if (value <= 0n) {
-      throw new ParseError('Array bound must be a positive integer', Location.fromCtx(ctx));
+      const invalid = new IntLiteralNode(value);
+      invalid.location = Location.fromCtx(ctx);
+      throw new InvalidArrayBoundError(invalid);
     }
     if (value >= (1n << 256n)) {
       throw new ParseError('Array length too large, maximum is 2**256 - 1', Location.fromCtx(ctx));
@@ -7283,7 +7362,6 @@ export default class AstBuilder
   }
 
   visitAbiEncodeCall(ctx: AbiEncodeCallContext): AbiEncodeCallNode {
-    const ids = ctx.Identifier_list();
     const targetText = ctx.getText().slice('abi.encodeCall('.length).split(',')[0];
     let interfaceName: string;
     let functionName: string;
@@ -7883,7 +7961,7 @@ export default class AstBuilder
     const storageType = this.stateArrayVarTypes.get(storageName)
       ?? this.stateCollectionArrayTypes.get(storageName);
     const isStorage = isThis || alias !== undefined || storageType !== undefined;
-    if (!isStorage && this.localArrayVarTypes.has(rawName)) {
+    if (!isStorage && this.localArrayVarTypes.has(rawName) && !this.storageReferenceTypes.has(rawName)) {
       throw new ParseError(
         'Array push/pop is only available for dynamic arrays in storage',
         Location.fromCtx(ctx),
@@ -8419,8 +8497,8 @@ export default class AstBuilder
       stmts.push(iDef);
       stmts.push(this.buildArrayPush(rawName, false, [], undefined, this.noArgPushPlaceholder(ctx), true, ctx));
       if (hasThird) {
-        const rootType = this.resolvePushReceiverArrayType(lv);
-        const secondType = rootType?.elementType;
+        const nestedRootType = this.resolvePushReceiverArrayType(lv);
+        const secondType = nestedRootType?.elementType;
         const thirdType = secondType instanceof ArrayType ? secondType.elementType : undefined;
         if (!(secondType instanceof ArrayType) || !(thirdType instanceof ArrayType)) {
           throw new ParseError('Three chained .push() calls require a three-dimensional array', loc);

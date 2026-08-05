@@ -1,11 +1,10 @@
-# Simple automation of tests on pushes to master branch
 name: tests
 
 on:
   push:
     branches:
       - 'master'
-      # - 'next'
+      - 'solidcash_v*'
 
   pull_request:
     branches:
@@ -21,24 +20,43 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Setup node
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: yarn
 
       - name: Install dependencies
-        run: yarn
+        run: yarn --frozen-lockfile
+
+      - name: Build packages and testing suite
+        run: yarn build
 
       - name: Run tests
         run: yarn test -- -- --coverage --coverage.provider=v8
+
+      - name: Run release application conformance gate
+        run: yarn test:application-conformance
+
+      - name: Run generated-project smoke gate
+        run: yarn test:generated-project-smoke
+
+      - name: Run release security conformance gate
+        run: yarn test:security-conformance
 
       - name: Run linter
         run: yarn lint
 
       - name: Run spellchecker
         run: yarn spellcheck
+
+      - name: Run maintained examples
+        run: yarn examples
+
+      - name: Test packed release packages in a clean consumer
+        run: yarn test:package-smoke
 
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5

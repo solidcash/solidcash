@@ -37,7 +37,7 @@ function abiTypeString(type: Type | undefined): string {
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
 const STATE_WRITING_MODIFIERS = [
-  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
+  FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
 ];
 
 /** Multiply two reached-count factors, where undefined means "not proven" and poisons the product. */

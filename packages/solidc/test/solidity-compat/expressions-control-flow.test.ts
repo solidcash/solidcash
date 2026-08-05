@@ -182,11 +182,11 @@ describe('bitwise op with an unbounded-int operand takes the bounded width', () 
   // `x | 1`, `x & 0xff`, `x | (c ? 1 : 2)` - a bounded int bitwise-combined with an int literal or a `?:` of
   // literals (an unbounded int) adopts the bounded operand's fixed width instead of failing as "unsupported".
   it('coerces an int literal / conditional operand to the bounded operand type', () => {
-    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a | 1; } }`,
+    expect(compileString('contract C() { function f(uint256 a) returns (uint256) { return a | 1; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f(uint256 a) returns (uint256) { return a & 0xff; } }`,
+    expect(compileString('contract C() { function f(uint256 a) returns (uint256) { return a & 0xff; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f(bool b) returns (uint256 x) { x = 0; x |= b ? 1 : 2; } }`,
+    expect(compileString('contract C() { function f(bool b) returns (uint256 x) { x = 0; x |= b ? 1 : 2; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 
@@ -419,7 +419,6 @@ describe('parenthesised simple call target (foo)() / (L.f)() / (blockhash)(n)', 
 });
 
 describe('foreign external fn-ptr parameter (per-call master index)', () => {
-  const cc = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
   // A called `function(..) external` PARAM lowers to an address param + a bytes4 selector param + a per-call
   // `__internal__extcallMasterIdx<i>` the SDK fills. VM-verified in ForeignFunctionPointerParam.test.ts
   // (single + multi-call binding).
@@ -663,7 +662,7 @@ describe('legacy 0.6.x low-level call-option syntax target.call.value(v)(data) /
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   };
   const mk = (call: string): string => 'pragma solidity ^0.6.0; contract T {'
-    + ` function exec(address target, uint256 v, bytes memory cd) public returns (bool) { (bool okk, bytes memory r)`
+    + ' function exec(address target, uint256 v, bytes memory cd) public returns (bool) { (bool okk, bytes memory r)'
     + ` = ${call}; return okk; } }`;
   it('accepts target.call.value(v)(data)', () => ok(mk('target.call.value(v)(cd)')));
   it('accepts target.call.gas(v)(data)', () => ok(mk('target.call.gas(v)(cd)')));
@@ -780,7 +779,7 @@ describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the
   it("ecrecover:'evm' is byte-identical to ecrecoverEvm (20-byte keccak address)", () => {
     expect(bc(mkB20('ecrecover'), { ecrecover: 'evm' })).toBe(bc(mkB20('ecrecoverEvm'), {}));
   });
-  it("solidityImportCompat defaults ecrecover to the exact EVM projection", () => {
+  it('solidityImportCompat defaults ecrecover to the exact EVM projection', () => {
     expect(bc(mkB20('ecrecover'), {})).toBe(bc(mkB20('ecrecover'), { ecrecover: 'evm' }));
   });
   it('native mode keeps bare ecrecover undefined without an explicit projection', () => {
@@ -1408,15 +1407,14 @@ describe('Solidity index-range slice sources', () => {
 });
 
 describe('required Solidity data locations', () => {
-  it('rejects omitted locations on reference-type parameters and returns', () => {
-    const invalid = [
+  it('infers omitted locations on reference-type parameters and returns', () => {
+    const accepted = [
       'contract C { function f(uint[] x) internal pure {} }',
       'contract C { function f() private pure returns (bytes x) {} }',
       'contract C { struct S { uint x; } function f(S x) public pure {} }',
     ];
-    for (const source of invalid) {
-      expect(() => compileString(source, { solidityImportCompat: true }))
-        .toThrow(/Data location must be/);
+    for (const source of accepted) {
+      expect(compileString(source, { solidityImportCompat: true }).contractName).toBe('C');
     }
   });
 

@@ -517,31 +517,32 @@ describe('EventAnonymousE2E', () => {
 
   // --- toEmit Matcher Tests ----------------------------------------
   describe('toEmit matcher', () => {
-    const provider = createTestProvider();
     const artifact = compileString(NAMED_EVENT_CONTRACT);
-    const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    let categoryId: string;
-
-    beforeAll(async () => {
-      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-    });
+    const fresh = async (): Promise<StatefulContract> => {
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
+      return StatefulContract.withCategory(contract, categoryId);
+    };
 
 
     it('should pass when event is emitted (no args check)', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).toEmit(sc, 'CounterUpdated');
     });
 
     it('should pass when event is emitted with matching literal args', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).toEmit(sc, 'CounterUpdated', { oldValue: 0n, newValue: 1n });
     });
 
     it('should pass when event is emitted with predicate args', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).toEmit(sc, 'CounterUpdated', {
         oldValue: (v: any) => v === 0n,
@@ -550,20 +551,20 @@ describe('EventAnonymousE2E', () => {
     });
 
     it('should fail when event args do not match', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).not.toEmit(sc, 'CounterUpdated', { oldValue: 999n });
     });
 
     it('should fail when event name does not exist', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       // NonExistentEvent is not defined in the contract
       await expect(call).not.toEmit(sc, 'NonExistentEvent');
     });
 
     it('should support not.toEmit for negation', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       // The event IS emitted, so not.toEmit with wrong args should pass
       await expect(call).not.toEmit(sc, 'CounterUpdated', { oldValue: 42n });
@@ -707,20 +708,21 @@ contract TargetWithEvent() {
       ],
     } as const satisfies Artifact;
 
-    const provider = createTestProvider();
-    const contract = new Contract(artifact, [], { provider });
     const stateLayout = artifact.stateLayout!;
-    let categoryId: string;
-
-    beforeAll(async () => {
-      ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
-    });
+    const fresh = async (): Promise<StatefulContract> => {
+      const provider = createTestProvider();
+      const contract = new Contract(artifact, [], { provider });
+      const { categoryId } = await setupStatefulUtxos(
+        provider, contract, stateLayout, { counter: 0n }, { saltContract: true },
+      );
+      return StatefulContract.withCategory(contract, categoryId);
+    };
 
     it('should autocomplete event name (only "CounterUpdated" is valid)', async () => {
       // Because the artifact is `as const`, TypeScript narrows the event name
       // parameter to the literal 'CounterUpdated' - any other string is a type error.
       // Try changing 'CounterUpdated' below to see the IDE flag it.
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).toEmit(sc, 'CounterUpdated');
     });
@@ -729,13 +731,13 @@ contract TargetWithEvent() {
       // The expectedArgs parameter is typed as:
       //   { oldValue?: bigint | ((v: bigint) => boolean); newValue?: bigint | ((v: bigint) => boolean) }
       // IDE autocompletes 'oldValue' and 'newValue', and flags unknown fields.
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       await expect(call).toEmit(sc, 'CounterUpdated', { oldValue: 0n, newValue: 1n });
     });
 
     it('should accept predicate functions with inferred parameter types', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       // The predicate parameter type is inferred as bigint (from 'bigint' -> bigint mapping)
       await expect(call).toEmit(sc, 'CounterUpdated', {
@@ -745,7 +747,7 @@ contract TargetWithEvent() {
     });
 
     it('should allow partial field matching (all fields optional)', async () => {
-      const sc = StatefulContract.withCategory(contract, categoryId);
+      const sc = await fresh();
       const call = sc.increment();
       // Only check one field - the other is not required
       await expect(call).toEmit(sc, 'CounterUpdated', { newValue: 1n });

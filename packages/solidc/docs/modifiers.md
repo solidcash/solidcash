@@ -188,7 +188,7 @@ allowed in an `unsafe` body.
 
 | EVM | SolidCash |
 | --- | --- |
-| Upgradeability is a pattern (a proxy that `delegatecall`s a swappable implementation), not a keyword. | A function modifier that relaxes only the master's locking-bytecode self-pin, so the spend may move state to a master with *different* bytecode while keeping category and capability. This is the migration primitive. SDK: `StatefulContract.upgrade()`. |
+| Upgradeability is a pattern (a proxy that `delegatecall`s a swappable implementation), not a keyword. | A function modifier that permits the master to move to *different* bytecode while keeping category and capability. The compiler adds a hidden replacement-bytecode witness and the covenant requires the master output to match it, so the SDK-selected artifact remains bound even under `SIGHASH_NONE`. SDK: `StatefulContract.upgrade()`. Artifacts predating this witness are rejected by the current SDK and must be recompiled before upgrades are enabled. |
 
 ### `deploy` (inferred, not written)
 

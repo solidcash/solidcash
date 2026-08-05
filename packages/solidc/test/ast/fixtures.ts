@@ -195,7 +195,9 @@ export const fixtures: Fixture[] = [
                     new IdentifierNode('x'),
                   ),
                   BinaryOperator.AND,
-                  new CastNode(PrimitiveType.BOOL, new IdentifierNode('x'), false),
+                  Object.assign(new CastNode(PrimitiveType.BOOL, new IdentifierNode('x'), false), {
+                    sourceCast: true,
+                  }),
                 ),
                 new BlockNode([
                   new VariableDefinitionNode(
@@ -401,21 +403,21 @@ export const fixtures: Fixture[] = [
               new IntType(true, 256),
               [],
               'blockHeight',
-              new CastNode(
+              Object.assign(new CastNode(
                 new IntType(true, 256),
                 new IdentifierNode('blockHeightBin'),
                 false,
-              ),
+              ), { sourceCast: true }),
             ),
             new VariableDefinitionNode(
               new IntType(true, 256),
               [],
               'price',
-              new CastNode(
+              Object.assign(new CastNode(
                 new IntType(true, 256),
                 new IdentifierNode('priceBin'),
                 false,
-              ),
+              ), { sourceCast: true }),
             ),
             new RequireNode(
               new BinaryOpNode(
@@ -862,11 +864,11 @@ export const fixtures: Fixture[] = [
                 new IdentifierNode(Class.LOCKING_BYTECODE_NULLDATA),
                 [new ArrayNode([
                   new HexLiteralNode(hexToBin('6d02')),
-                  new CastNode(
+                  Object.assign(new CastNode(
                     new BytesType(),
                     new StringLiteralNode('A contract may not injure a human being or, through inaction, allow a human being to come to harm.', '\''),
                     false,
-                  ),
+                  ), { sourceCast: true }),
                 ])],
               ),
             ),

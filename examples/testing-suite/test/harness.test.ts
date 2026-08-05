@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/explicit-function-return-type, @typescript-eslint/no-unused-expressions */
 import exampleArtifact from '../artifacts/solidcash/example.artifact.js';
 import { Contract, TransactionBuilder, randomUtxo } from 'solidcash';
 // Hardhat-parity harness surface (see ../HARDHAT-PARITY.md)

@@ -366,9 +366,6 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
       ...ast.contract.functions
         .filter((fn) => fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
         .map((fn) => ({ node: fn as Node, name: fn.name })),
-      ...[...ast.contract.stateVariables, ...ast.contract.collections]
-        .filter((declaration) => declaration.isOverride && declaration.overrideBases.length === 0)
-        .map((declaration) => ({ node: declaration as Node, name: declaration.name })),
       ...ast.contract.modifierDefinitions
         .filter((modifier) => modifier.isOverride && modifier.overrideBases.length === 0)
         .map((modifier) => ({ node: modifier as Node, name: modifier.name })),
@@ -377,7 +374,7 @@ export default function expandInheritance(ast: SourceFileNode, solidityImportCom
           fn !== undefined && fn.modifiers.includes(FunctionModifier.OVERRIDE) && fn.overrideBases.length === 0)
         .map((fn) => ({ node: fn as Node, name: fn.isFallback ? 'fallback' : 'receive' })),
     ];
-    if (bareOverrides.length > 0) {
+    if (solidityImportCompat && bareOverrides.length > 0) {
       throw new OverrideNothingError(bareOverrides[0].node, bareOverrides[0].name);
     }
     resolveSuperAndBaseCalls(ast.contract, [], new Set());
@@ -776,7 +773,7 @@ function expandContract(
     const providers = [...new Set(matches.map(({ origin }) => origin))]
       .filter((origin, _index, all) => !all.some((other) =>
         other !== origin && isAncestor(origin, other)));
-    if (providers.length > 1
+    if (solidityImportCompat && providers.length > 1
       && providers.some((provider) => !declaration.overrideBases.includes(provider))) {
       throw new MissingOverrideBasesError(declaration, declaration.name, providers);
     }
@@ -802,7 +799,7 @@ function expandContract(
         throw new OverrideBaseListError(fn, fn.name, base);
       }
     }
-    if (providers.length > 1
+    if (solidityImportCompat && providers.length > 1
       && providers.some((provider) => !fn.overrideBases.includes(provider))) {
       throw new MissingOverrideBasesError(fn, fn.name, providers);
     }
@@ -853,6 +850,7 @@ function expandContract(
     const rawOrigins = [...new Set(parentNames.flatMap((parentName) =>
       effectiveOrigins(parentName, signature)))];
     const origins = rawOrigins.filter((origin) => {
+      if (rawOrigins.some((other) => other !== origin && isAncestor(origin, other))) return false;
       const declaration = contractMap.get(origin)?.functions.find((fn) =>
         fn.inheritedFrom === undefined && functionSignature(fn) === signature);
       return !declaration?.isAbstract || !rawOrigins.some((other) =>

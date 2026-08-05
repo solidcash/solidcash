@@ -127,6 +127,21 @@ describe('sorted mapping opt-in (C2)', () => {
   });
 });
 
+describe('sorted mapping local-key metadata', () => {
+  it('canonicalizes an adjacent declaration/assignment like an initialized local', () => {
+    const artifact = compileString(`contract C() {
+      mapping(bytes20 => int) balances;
+      function f(bytes20 user) {
+        bytes20 localUser;
+        localUser = user;
+        require(balances[localUser] >= 0);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((fn) => fn.name === 'f')?.entryAccesses?.[0]?.keySources?.[0])
+      .toMatchObject({ kind: 'expression', expressionLabel: 'id:user' });
+  });
+});
+
 // A sorted (C2) mapping keyed by msg.sender / tx.origin compiles and records a `msgSender` keySource: on BCH a direct
 // call's msg.sender = tx.origin = the first native P2PKH input, so the SDK computes slot = keyToSlot(the sender's
 // P2PKH lockscript) and forces the signer's native P2PKH funder. End-to-end VM proof (write/update/read + cross-sender

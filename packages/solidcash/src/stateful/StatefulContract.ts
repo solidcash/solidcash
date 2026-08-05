@@ -631,7 +631,11 @@ function extractCommitmentMapFromTrace(
     // instructions too (enclosing OP_IF/OP_NOTIF false => controlStack contains a `false`). A
     // dynamic-write loop's exit iteration skips its inline OP_OUTPUTTOKENCOMMITMENT verify, leaving a
     // phantom step whose frozen stack would otherwise be misread as a commitment.
-    if (!scanFullTrace && step.controlStack.some((c) => c === false)) continue;
+    // This applies in full-trace mode too. That mode broadens the invocation phases scanned for delegate and
+    // journal calls; it must not turn skipped instructions back into observations. In particular, the exit
+    // iteration of a multi-chunk loop retains a frozen stack that can look like `<02> <output 2> OTC EQVERIFY`
+    // and overwrite the already-derived chunk-0 commitment with `02`.
+    if (step.controlStack.some((c) => c === false)) continue;
 
     if (instruction.opcode === Op.OP_OUTPUTTOKENCOMMITMENT) {
       sawOutputTokenCommitment = true;
@@ -2430,6 +2434,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = [...finalArgs, new Uint8Array(32)]; // zero bytes = direct call
     }
 
+    const upgradeTargetParam = upgradeAbi.inputs.find(
+      (input) => input.name === '__internal__upgradeBytecode',
+    );
+    if (!upgradeTargetParam) {
+      throw new Error(
+        `Upgrade function '${upgradeFunctionName}' was compiled without an authenticated replacement-bytecode `
+        + 'witness. Recompile the old contract with the current compiler before enabling upgrades.',
+      );
+    }
+    finalArgs = [...finalArgs, addressToLockScript(newContract.tokenAddress)];
+
     const entryAccesses = upgradeAbi.entryAccesses;
     if (entryAccesses && entryAccesses.length > 0) {
     }
@@ -2624,6 +2639,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // The child's category is the funding UTXO's txid (vout 0), so its address derives forward from
     // (artifact, constructorArgs, category) - no extra input and no trace reverse-derivation needed.
     const deployTarget = deployAbi.deployTargets?.[0];
+    if (!deployTarget) {
+      throw new Error(
+        `Deploy function '${deployFunctionName}' does not contain a typed 'new Contract(...)' deployment. `
+        + 'The child artifact, address, and state-NFT layout would be supplied only by the caller and are not '
+        + 'authenticated by the factory covenant. Recompile the factory with an explicit typed deployment.',
+      );
+    }
+    if ((deployAbi.entryAccesses?.length ?? 0) > 0 && deployTarget.dataNftCount > 0) {
+      throw new Error(
+        `Deploy function '${deployFunctionName}' combines a typed stateful child with C2 mapping access. `
+        + 'The C2 insert tail and child data-NFT outputs currently share the first trailing slot, so this shape '
+        + 'is refused until the output layout authenticates both regions.',
+      );
+    }
     const childArtifact = (options.childArtifact
       ?? (deployTarget ? (factory as StatefulContract)._getChild(deployTarget.contractName) : undefined)) as T;
     if (!childArtifact) {
@@ -4170,7 +4199,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
-        })) {
+        }, true)) {
           learnedEntryCommits[outputIndex - entryOutputBase] = commitment;
           learnedAnyEntry = true;
         }
@@ -4263,7 +4292,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
         };
-        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange)) {
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange, true)) {
           entryCommits[outputIndex - entryOutputBase] = commitment;
         }
       }
@@ -4275,7 +4304,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const eventOutputRange = {
           min: eventBase, max: eventBase + emitCount,
         };
-        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange)) {
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange, true)) {
           eventCommits[outputIndex - eventBase] = commitment;
         }
       }
@@ -5948,7 +5977,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const map2 = extractCommitmentMapFromTrace(evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx, sourceOutputs: generateLibauthSourceOutputs(pb2.inputs),
                 transaction: pb2.buildLibauthTransaction(),
-              }));
+              }) as AuthenticationProgramStateCommon[]);
               for (const { handle, newIdx, planned } of insertHandles) {
                 const newCommit = map2.get(newIdx);
                 if (newCommit !== undefined) stb.setExternalCallEntryInsertCommitment(handle, newCommit);
@@ -6689,7 +6718,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const existing = stb.getChunkRawCommitments(dv.name);
               const range = { min: chunkOffset, max: chunkOffset + existing.length };
               const commitMap = extractCommitmentMapFromTrace(fullTrace2, range, true);
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -6705,7 +6735,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 fullTrace2, { min: chunkOffset, max: chunkOffset + existing.length },
                 true,
               );
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -6867,7 +6898,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   }),
                 });
               }
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 commitmentProgress += next.length;
@@ -7094,7 +7126,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const commitMap = extractCommitmentMapFromTrace(
                 cleanedTrace, { min: chunkOffset, max: chunkOffset + existing.length }, true,
               );
-              const next = existing.map((commit, i) => commitMap.get(chunkOffset + i) ?? commit);
+              const currentChunkOffset = chunkOffset;
+              const next = existing.map((commit, i) => commitMap.get(currentChunkOffset + i) ?? commit);
               if (next.some((commit, i) => commit !== existing[i])) {
                 stb.setChunkRawCommitments(dv.name, next);
                 changed = true;
@@ -7434,7 +7467,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
     const valueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
-    const loopValueChunkMints: Array<{ collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[] }> = [];
+    const loopValueChunkMints: Array<{
+      collection: string; slot: Uint8Array; digest: Uint8Array; chunks: Uint8Array[];
+    }> = [];
     // P5b COMPUTED chunkable writes (no resolvable value param): the covenant pins the chunks, so the SDK derives
     // their commitments from the trace (registered as valueChunkVars after the builder is created).
     const computedValueChunkCollections = new Set<string>();
@@ -8547,7 +8582,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .sort((a, b) => a.chunkIndex - b.chunkIndex);
           const raw = joinValueChunks(headData, chunks, len);
           if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-            throw new Error(`C2 value chunks do not match the authenticated root`);
+            throw new Error('C2 value chunks do not match the authenticated root');
           }
           return raw;
         };
@@ -8633,6 +8668,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const loopRawValue = collection.chunkableValue && info.op === 'set'
           ? rawValueBytes(perKeyRawbytes ? (valsArr as unknown[])[i] : rawScalar)
           : undefined;
+        if (perKeyRawbytes && loopRawValue && loopRawValue.length > 60) {
+          throw new Error(
+            `Sorted mapping loop value is ${loopRawValue.length} bytes (> 60); `
+            + 'per-key chunked values in a runtime loop are unsupported.',
+          );
+        }
         if (loopRawValue && loopRawValue.length > 60) {
           loopValueChunkMints.push({
             collection: info.collection, slot, digest: sha256Sync(loopRawValue),
@@ -10521,6 +10562,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 && selectedLayout && selectedLayout.blockSize > 1) {
                 childBlockInputs = [];
                 let dataIndex = 0;
+                // This closure is awaited synchronously and owns the monotonically increasing local counter.
+                // eslint-disable-next-line @typescript-eslint/no-loop-func
                 const takeFunder = async (): Promise<UnlockableUtxo> => {
                   const funder = sharedFunderPool?.shift();
                   if (funder) return funder;
@@ -10849,9 +10892,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           continue;
         }
         nestedMasterIndices[groupIdx] = nestedInputBase;
+        const childMasterIndex = nestedInputBase;
         child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
           ...utxo,
-          unlocker: createDataNftUnlocker(child.externalContract.inner, nestedInputBase, child.categoryId),
+          unlocker: createDataNftUnlocker(child.externalContract.inner, childMasterIndex, child.categoryId),
         }));
         nestedInputBase += child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
         // Delegate implementations associated with a nested proxy are placed
@@ -11040,16 +11084,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const denseCallInputBase = 1 + requiredNftIndices.length
         + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
-      // A plain send intentionally materializes no returnEvent input/output; .emitReturn() materializes both.
-      // Keep the facet master aligned at the same input/output index in either mode. All other fixed block slots
-      // are materialized, so blockSize minus an inactive return slot remains authoritative for positional gaps.
-      const inactiveReturnSlots = returnEmitOutputIndex < 0
-        ? (abiFunction?.blockLayout?.slots.filter((s) => s.kind === 'returnEvent').length ?? 0) : 0;
-      const materializedBlockSize = (abiFunction?.blockLayout?.blockSize ?? 0) - inactiveReturnSlots;
       const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
-      const explicitLowLevelCallOffset = abiFunction?.blockLayout?.slots
-        .find((slot) => slot.kind === 'lowLevelCall')?.offset
-        ?? delegateEventSlots.find((slot) => slot.kind === 'lowLevelCall')?.offset;
       lowLevelCallInputBase = hasDelegatecallGroup
         // Delegate bytecode binds its proxy-master witness to the physical relation
         // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.

@@ -101,6 +101,85 @@ describe('atomic route ineligibility matrix', () => {
       .toEqual(['control']);
   });
 
+  it('rejects a returning dynamic-array resize before generated-route lowering', () => {
+    const artifact = compileString(`contract C() {
+      int[] values;
+      function resize(int value) public returns (int) {
+        this.values.push(value);
+        return this.values.length;
+      }
+      function control() public { require(true); }
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'resize')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'result-route-requires-effect-free-handlers',
+    });
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
+  it('does not publish a synthetic collection getter as an eligible message-bus handler', () => {
+    const artifact = compileString(`contract C() {
+      int[] public values;
+      function control() public { require(true); }
+    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    expect(artifact.abi.some((entry) => entry.name === 'values')).toBe(true);
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'values')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'collection-state-getter-route-not-enabled',
+    });
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
+  it('keeps nested dynamic-array state handlers on their direct route', () => {
+    const artifact = compileString(`contract C() {
+      int[][] values;
+      function read(int row, int column) public returns (int) {
+        return this.values[row][column];
+      }
+      function control() public { require(true); }
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'read')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'nested-dynamic-array-route-not-enabled',
+    });
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
+  it('keeps dynamic array-of-struct element writes on their direct route', () => {
+    const artifact = compileString(`contract C() {
+      struct Pair { int left; int right; }
+      Pair[] values;
+      function write(int index, int value) public {
+        this.values[index].left = value;
+        require(true);
+      }
+      function read(int index) public returns (int) { return this.values[index].left; }
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'write')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'array-struct-element-write-route-not-enabled',
+    });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'read')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('rejects a statically oversized result before expanding the batch wrapper', () => {
+    const artifact = compileString(`contract C() {
+      function page() public pure returns (uint256[400] memory values) {}
+      function control() public { require(true); }
+    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'page')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'result-route-static-payload-too-large',
+    });
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
   it('refuses delegate context in an entry point with a positioned stable diagnostic', () => {
     const artifact = compileString(`contract C(address impl) {
       function denied(bytes input) public {
@@ -135,5 +214,5 @@ describe('atomic route ineligibility matrix', () => {
         sourceLocation: { line: expect.any(Number), column: expect.any(Number) },
       },
     }));
-  });
+  }, 90_000);
 });

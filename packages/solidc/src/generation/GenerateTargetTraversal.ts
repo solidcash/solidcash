@@ -192,7 +192,8 @@ import {
   InvalidModifierCombinationError, MsgDataInSubroutineError, MsgSigInInternalFunctionError, EntryWriteInLoopError,
   SortedMappingCodegenPendingError,
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
-  UnboundReturnCallError,
+  RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
+  BlockLayoutUnavailableError, StackVariableUnavailableError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -1121,7 +1122,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const index = this.stack.indexOf(value);
 
     if (index === -1 && !canBeUndefined) {
-      throw new Error(`Expected variable '${value}' does not exist on the stack`);
+      throw new StackVariableUnavailableError(value);
     }
 
     return index;
@@ -1140,7 +1141,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private getBlockSlotOffset(kind: BlockSlotKind, slotIndex?: number): number {
     const layout = this.currentFunction.blockLayout;
-    if (!layout) throw new Error(`Block layout not available while compiling '${this.currentFunction.name}'`);
+    if (!layout) throw new BlockLayoutUnavailableError(this.currentFunction.name);
     if (kind === 'entry' && slotIndex !== undefined) {
       slotIndex = this.currentFunction.messageBusPhysicalEntrySlots?.[slotIndex] ?? slotIndex;
     }
@@ -4015,7 +4016,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitExternalReturnEventVerification(node);
       }
       // Master self-preservation + uniqueness (upgrade-aware)
-      // 'upgrade' functions use emitUpgradeSelfPreservation (category+capability only, no bytecode check)
+      // 'upgrade' functions use emitUpgradeSelfPreservation (category/capability + replacement-bytecode witness)
       // Delegate functions: verify proxy's state transitions + delegate's own self-preservation
       // Selfdestruct functions skip master preservation but ALWAYS verify minting uniqueness
       // to prevent minting NFT duplication during destruction
@@ -4545,7 +4546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const stackIndex = this.getStackIndex(parameter.name, true);
         if (stackIndex === -1) {
           if (!this.finalStackUsage[parameter.name]) {
-            throw new Error(`Expected variable '${parameter.name}' does not exist on the stack or in final stack usage`);
+            throw new StackVariableUnavailableError(parameter.name, ' or in final stack usage');
           }
           return this.finalStackUsage[parameter.name];
         }
@@ -6356,7 +6357,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.expression = this.visit(node.expression);
 
     this.emit(
-      compileCast(node.expression.type as Type, node.type, node.isUnsafe),
+      compileCast(
+        node.expression.type as Type,
+        node.type,
+        node.isUnsafe,
+        this.compilerOptions.solidityImportCompat ?? false,
+      ),
       { location: node.location, positionHint: PositionHint.END },
     );
     this.popFromStack();
@@ -12346,7 +12352,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private emitPushdataSkipCompositeInline(type: StructType | ArrayType, locationData: SingleLocationData): void {
     if (type instanceof StructType) {
       if (this.pushdataSkipStructs.has(type)) {
-        throw new Error('recursive struct types are not supported (no finite inline encoding on BCH)');
+        throw new RecursiveStructUnsupportedError(this.currentFunction);
       }
       this.pushdataSkipStructs.add(type);
       for (const field of type.fields) this.emitPushdataSkip(field.type, locationData);
@@ -18460,7 +18466,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           this.emit(Op.OP_SUB, loc);
         }
       } else {
-        this.emitTrailingBlockBase(blockSize, loc);
+        const returningExternalSlots = this.externalCallSlots
+          .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch);
+        if (returningExternalSlots.length > 0) {
+          // Returning co-spends publish their event after every callee block and before this caller's dynamic
+          // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
+          // callee widths: an interface may legally under-declare state, so only the runtime index reflects the
+          // physical transaction footprint.
+          const lastReturnSlot = returningExternalSlots[returningExternalSlots.length - 1];
+          const returnParamName = returningExternalSlots.length === 1
+            ? '__internal__externalReturnOutputIdx'
+            : `__internal__externalReturnOutputIdx${lastReturnSlot.returnSlotIndex}`;
+          this.emit(encodeInt(BigInt(this.getStackIndex(returnParamName))), loc);
+          this.emit(Op.OP_PICK, loc);
+          this.emit(Op.OP_1ADD, loc);
+        } else {
+          this.emitTrailingBlockBase(blockSize, loc);
+          // Non-returning callee blocks still precede local dynamic chunks. Their declared footprint is the only
+          // available compile-time anchor; identity/selector checks remain fail-closed if the declaration is wrong.
+          const externalCallOutputCount = this.externalCallSlots
+            .filter((slot) => !slot.inlineLoopDispatch)
+            .reduce((sum, slot) => sum + 1 + slot.requiredDataNftIndices.length, 0);
+          if (externalCallOutputCount > 0) {
+            this.emit(encodeInt(BigInt(externalCallOutputCount)), loc);
+            this.emit(Op.OP_ADD, loc);
+          }
+        }
         this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
         const batchCountIdx = this.getStackIndex('__internal__c2BatchTrailingCount', true);
         if (batchCountIdx >= 0) {
@@ -19225,9 +19256,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const isConditional = this.conditionalTransferIndices.has(transferIndex);
       if (this.getStackIndex(lockingBytecodeStackName, true) < 0
         || this.getStackIndex(amountStackName, true) < 0) {
-        throw new Error(
-          `Function '${node.name}' lost pre-allocated transfer ${transferIndex} before covenant verification`,
-        );
+        throw new TransferFrameUnavailableError(node, transferIndex);
       }
 
       // For conditional transfers, check if the LBC slot is non-empty (active)
@@ -19613,6 +19642,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.loopValueTransferNode = node.callOptions!.value;
     }
 
+    // Positional checks prove the required genesis outputs, but without cardinality an attacker can use the
+    // genesis minting input to append another child master or mutable state NFT of the same category. Count both
+    // capabilities across the whole transaction so this child's genesis set is exact.
+    this.emitDeployCapabilityOutputCount(categoryName, 0x02, 1, locationData);
+    this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount, locationData);
+
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
     // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
     if (useCounter) {
@@ -19817,6 +19852,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
       }
+
+      // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
+      // Enforce exact capability counts for this child category across all transaction outputs.
+      this.emitDeployCapabilityOutputCount(undefined, 0x02, 1, locationData, deployIndex);
+      this.emitDeployCapabilityOutputCount(undefined, 0x01, dataNftCount, locationData, deployIndex);
     }
 
     // Clean up deploy stack values
@@ -19833,6 +19873,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(lbIdx);
     }
+  }
+
+  /** Require exactly `expected` outputs with childCategory||capability. */
+  private emitDeployCapabilityOutputCount(
+    categoryStackName: string | undefined,
+    capability: number,
+    expected: number,
+    locationData: SingleLocationData,
+    fixedDeployIndex?: number,
+  ): void {
+    if (fixedDeployIndex !== undefined) {
+      // Re-derive from the authenticated vout-0 genesis input. This is independent of tracked-stack liveness
+      // after mapping/dynamic-state epilogues and is the same category source used to build the child address.
+      this.emitBlockSlotIndex('deploy', fixedDeployIndex, locationData);
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName!))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    }
+    this.pushToStack('(deploy_target_cat)');
+    this.emit(new Uint8Array([capability]), locationData);
+    this.pushToStack('(deploy_cap)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(deploy_target_token_category)');
+
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(deploy_output_count)');
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.pushToStack('(deploy_output_index)');
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeBool(true), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(encodeInt(3n), locationData); // target category below output index + counter
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(encodeBool(false), locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.popFromStack();
+
+    this.emit(encodeInt(BigInt(expected)), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
   }
 
   /**
@@ -21843,7 +21943,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * equality between input and output. The master output is allowed to have
    * different locking bytecode (the new contract version).
    *
-   * Enforces only token category+capability preservation:
+   * Enforces token category+capability preservation and binds the replacement locking bytecode to the
+   * compiler-owned `__internal__upgradeBytecode` argument supplied by the lifecycle SDK:
    * OP_UTXOTOKENCATEGORY returns 33 bytes (32-byte categoryId + 1-byte capability).
    * Comparing input vs output ensures both the categoryId and the minting
    * capability (0x02) are preserved - the minting NFT cannot be downgraded
@@ -21859,6 +21960,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
     this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    const targetDepth = this.getStackIndex('__internal__upgradeBytecode');
+    this.emit(encodeInt(BigInt(targetDepth)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(upgrade_target_bytecode)');
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.pushToStack('(upgrade_output_bytecode)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
   }

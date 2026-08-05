@@ -313,6 +313,7 @@ export class StatefulTransactionBuilder {
   private pendingReturnEventOutputs: Array<{
     categoryId: string; commitment: Uint8Array; identity: string;
   }> = [];
+
   private entryRawCommitments: Map<number, string> = new Map(); // slotIndex -> hex commitment (from auto-derivation)
   private pinnedEntrySlots: Set<number> = new Set(); // slots whose commitment is known exactly (never re-derive)
   private dynamicChunkVars: Array<{ name: string; type: string; lockingBytecode: Uint8Array }> = [];
@@ -398,8 +399,7 @@ export class StatefulTransactionBuilder {
 
     // Flatten external call inputs - use full block when available
     const externalCallInputs: UnlockableUtxo[] = [];
-    for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
-      const group = this.externalCallUtxoGroups[groupIndex];
+    for (const group of this.externalCallUtxoGroups) {
       if (group.sharedGroupIndex !== undefined) continue;
       if (group.blockInputs) {
         // Full block: master + dataNfts + entries + SC + TCs + funders (all ordered by blockLayout)
@@ -1163,7 +1163,17 @@ export class StatefulTransactionBuilder {
       : this.lowLevelCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       ) + this.lowLevelCallRawInputs.length;
-    const trailingBase = base + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+    // External call blocks and their tail return events are emitted before local dynamic chunks, but they are
+    // outside this function's blockLayout. Include their physical span so trace extraction observes the same
+    // output indices that the compiler's dynamic-write covenant verifies.
+    const externalCallOutputCount = this.externalCallUtxoGroups.reduce((sum, group) => {
+      if (group.sharedGroupIndex !== undefined) return sum;
+      return sum + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length);
+    }, 0);
+    const externalReturnOutputCount = this.tailReturnEventOutputs()
+      .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
+    const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
+      + lowLevelCallOutputCount + this.iterationEntryInputs.length;
     if (this.delegateEntriesAfterLowLevel) {
       return trailingBase + this._loopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;
@@ -1680,18 +1690,24 @@ export class StatefulTransactionBuilder {
       }
     };
     if (this.delegateEntriesAfterLowLevel) {
-      for (const re of this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId)) {
-        builder.addOutput({
-          to: new Uint8Array([0x51]), amount: 800n,
-          token: {
-            amount: 0n, category: re.categoryId,
-            nft: { capability: 'none', commitment: binToHex(re.commitment) },
-          },
-        });
-      }
       this.lowLevelCallUtxoGroups.forEach((_group, groupIndex) => {
         if (!associatedDelegateOutputs.has(groupIndex)) appendDelegateGroupOutputs(groupIndex);
       });
+      const proxyReturnEvents = this.pendingReturnEventOutputs
+        .filter((returnEvent) => returnEvent.categoryId === this.categoryId);
+      if (this.delegateReturnEventAfterEvents) {
+        deferredDelegateReturnEvents.push(...proxyReturnEvents);
+      } else {
+        for (const returnEvent of proxyReturnEvents) {
+          builder.addOutput({
+            to: new Uint8Array([0x51]), amount: 800n,
+            token: {
+              amount: 0n, category: returnEvent.categoryId,
+              nft: { capability: 'none', commitment: binToHex(returnEvent.commitment) },
+            },
+          });
+        }
+      }
     }
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
@@ -2032,7 +2048,7 @@ export class StatefulTransactionBuilder {
       // deferring the return channel past the event outputs is what makes the two agree. `deferred` is empty
       // for every implementation without an event slot, so a plain returning delegate keeps this exact index.
       const externalReturnEvents = this.pendingReturnEventOutputs.filter((r) => r.categoryId !== this.categoryId);
-      if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents = externalReturnEvents;
+      if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents.push(...externalReturnEvents);
       for (const re of (this.delegateReturnEventAfterEvents ? [] : externalReturnEvents)) {
         builder.addOutput({
           to: new Uint8Array([0x51]),

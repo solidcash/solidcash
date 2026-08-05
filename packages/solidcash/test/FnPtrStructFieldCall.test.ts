@@ -13,6 +13,21 @@ const NON_TRUTHY_INPUT_0 = new RegExp(INPUT_0_PREFIX
 const STATEFUL_OP_VERIFY_INPUT_0 = new RegExp(
   '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
+const STATEFUL_VM_OP_VERIFY_INPUT_0 = /error in evaluating input index 0: Program failed an OP_VERIFY operation/;
+
+interface StatefulCall {
+  build: () => Promise<TransactionBuilder>;
+  send: () => Promise<unknown>;
+}
+
+async function expectStatefulFailure(call: StatefulCall): Promise<void> {
+  if (process.env.TESTS_USE_REGTEST) {
+    const builder = await call.build();
+    expect(() => verifyTransaction(builder)).toThrow(STATEFUL_VM_OP_VERIFY_INPUT_0);
+    return;
+  }
+  await expect(call.send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
+}
 
 // Calling a function-POINTER struct field directly: `s.x()`, `t[i].x()`, `s.inner.x()`. These parse as a
 // namespaced function call / method call, not an indirect call; SymbolTableTraversal rewrites them to an
@@ -95,7 +110,7 @@ describe('fn-ptr struct field call (s.x(), t[i].x(), s.inner.x()) - VM-verified'
 // but that hoist has no VM test of its own, so verify the covenant end-to-end here (write the pointer into the
 // entry, read it back, invoke). Also covers the arg form, whose bytecode differs from the hoist.
 describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (stateful)', () => {
-  const deploy = async (src: string): Promise<Record<string, () => { send: () => Promise<unknown> }>> =>
+  const deploy = async (src: string): Promise<Record<string, () => StatefulCall>> =>
     getContractFactory(compileString(src, { solidityImportCompat: true }), await fundedSigner()).deploy() as never;
 
   const MAP = (expected: string): string => `contract C {
@@ -121,7 +136,7 @@ describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (
   it('m[k].x() wrong value rejects (== 8)', async () => {
     const sc = await deploy(MAP('8'));
     await sc.set().send();
-    await expect(sc.f().send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
+    await expectStatefulFailure(sc.f());
   });
   it('m[k].x(3) passes the arg through the entry pointer (== 4)', async () => {
     const sc = await deploy(MAP_ARGS('4'));
@@ -131,6 +146,6 @@ describe('fn-ptr call on a MAPPING-value struct field (m[k].x()) - VM-verified (
   it('m[k].x(3) wrong value rejects (== 9)', async () => {
     const sc = await deploy(MAP_ARGS('9'));
     await sc.set().send();
-    await expect(sc.f().send()).rejects.toThrow(STATEFUL_OP_VERIFY_INPUT_0);
+    await expectStatefulFailure(sc.f());
   });
 });

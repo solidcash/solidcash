@@ -1,4 +1,4 @@
-import { BytesType, IntType, Type, ValueType } from '@solidcash/utils';
+import { BytesType, IntType, PrimitiveType, Type, ValueType } from '@solidcash/utils';
 import {
   Node,
   AssignNode,
@@ -14,8 +14,10 @@ import {
   BlockNode,
   StatementNode,
   ExpressionNode,
+  FunctionCallNode,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
+import { GlobalFunction } from '../ast/Globals.js';
 
 // Shared lowering of the one function-scoped `__yulmem` linear-memory buffer, used by BOTH the high-level memory
 // model (LowerMemoryModel) and the Yul runtime-memory lowering (LowerInlineAssembly). Both address ONE buffer with
@@ -50,6 +52,24 @@ function add(l: ExpressionNode, r: ExpressionNode, src: Src): ExpressionNode {
   return stamp(new BinaryOpNode(l, BinaryOperator.PLUS, r), src);
 }
 
+// Encode a numeric word in the runtime model's BCH-native little-endian order. Fixed bytes remain byte sequences
+// (important when a memory string is serialized). Signed/generic integers retain their 32-byte sign-magnitude
+// marker; bounded unsigned words use a 33rd sign pad for top-bit-set uint256 values, then trim that pad.
+function rawWordBytes(value: ExpressionNode, src?: Src): ExpressionNode {
+  if (value.type instanceof BytesType && value.type.bound === Number(MEM_WORD)) {
+    return value;
+  }
+  const width = (value.type instanceof IntType && value.type.signed) || value.type === PrimitiveType.INT
+    ? MEM_WORD : MEM_WORD + 1n;
+  const wide = stamp(new FunctionCallNode(
+    stamp(new IdentifierNode(GlobalFunction.TO_PADDED_BYTES), src),
+    [value, intLit(width, src)],
+  ), src);
+  return width === MEM_WORD ? wide : stamp(new SliceNode(
+    wide, intLit(0n, src), intLit(MEM_WORD, src),
+  ), src);
+}
+
 // The `__yulmem` identifier.
 export function memId(src?: Src): IdentifierNode {
   return stamp(new IdentifierNode(YULMEM), src);
@@ -73,7 +93,7 @@ export function memZeroBytes(size: ExpressionNode, src?: Src): NewArrayNode {
 export function memReservedInit(src?: Src): BytesConcatNode {
   const init = stamp(new BytesConcatNode([
     memZeroBytes(intLit(0x40n, src), src),
-    stamp(new CastNode(new BytesType(32), intLit(0x80n, src), false), src),
+    rawWordBytes(intLit(0x80n, src), src),
     memZeroBytes(intLit(0x20n, src), src),
   ]), src);
   init.type = new BytesType();
@@ -84,7 +104,7 @@ export function memReservedInit(src?: Src): BytesConcatNode {
 // covers [off, off+32) - the Yul side prepends memGrowTo, the high-level side pre-grows on allocation.
 export function memWordStore(off: OffFactory, val: ExpressionNode, src?: Src): AssignNode {
   const head = stamp(new SliceNode(memId(src), intLit(0n, src), off()), src);
-  const word = stamp(new CastNode(new BytesType(32), val, false), src);
+  const word = rawWordBytes(val, src);
   const tail = stamp(new SliceNode(memId(src), add(off(), intLit(MEM_WORD, src), src), memLen(src)), src);
   return stamp(new AssignNode(memId(src), stamp(new BytesConcatNode([head, word, tail]), src)), src);
 }
@@ -98,17 +118,18 @@ export function memWordLoad(off: OffFactory, opts: { pad?: boolean; decodeType: 
     ? stamp(new BytesConcatNode([memId(src), memZeroBytes(intLit(MEM_WORD, src), src)]), src)
     : memId(src);
   const slice = stamp(new SliceNode(base, off(), add(off(), intLit(MEM_WORD, src), src)), src);
-  return stamp(new CastNode(opts.decodeType, stamp(new CastNode(new BytesType(32), slice, false), src), false), src);
+  const raw = stamp(new CastNode(new BytesType(), slice, false), src);
+  return stamp(new CastNode(opts.decodeType, raw, false), src);
 }
 
 // mstore8(off, val): splice val's low byte in place at off. The two encodings live here (single home of the
-// byte-write formula): `fullWord` (a Yul mstore8 on an arbitrary 256-bit word) takes bytes32(val)[0:1] - the low
-// byte under BCH little-endian, valid for any word; otherwise (a high-level byte-typed value already in [0,255])
+// byte-write formula): `fullWord` (a Yul mstore8 on an arbitrary 256-bit word) takes rawWord(val)[0:1] - the low
+// byte under BCH little-endian word order, valid for any word; otherwise (a high-level byte-typed value in [0,255])
 // bytes1(val), which is cheaper but would OP_NUM2BIN-overflow for a value >= 256. Callers pick by domain, not
 // duplicate the encoding.
 export function memByteStore(off: OffFactory, val: ExpressionNode, opts: { fullWord: boolean }, src?: Src): AssignNode {
   const byteExpr = opts.fullWord
-    ? stamp(new SliceNode(stamp(new CastNode(new BytesType(32), val, false), src), intLit(0n, src), intLit(1n, src)), src)
+    ? stamp(new SliceNode(rawWordBytes(val, src), intLit(0n, src), intLit(1n, src)), src)
     : stamp(new CastNode(new BytesType(1), val, false), src);
   const head = stamp(new SliceNode(memId(src), intLit(0n, src), off()), src);
   const tail = stamp(new SliceNode(memId(src), add(off(), intLit(1n, src), src), memLen(src)), src);

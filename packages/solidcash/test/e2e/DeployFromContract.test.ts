@@ -1,9 +1,10 @@
 /* eslint-disable @typescript-eslint/explicit-function-return-type */
 import { compileString as _csRawSolidc } from '../direct-compile.js';
+import { compileStringMulti } from '../direct-compile.js';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin } from '@bitauth/libauth';
 import {
-  Contract, SignatureTemplate, StatefulContract, decodeEntryCommitment, keyToSlot,
+  Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import {
@@ -18,10 +19,15 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 // Simple factory with deploy modifier
 const FACTORY = `
+contract Child(bytes20 owner) {
+    int counter;
+    function increment() { require(owner != bytes20(0)); this.counter = this.counter + 1; }
+}
 contract Factory() {
     int childCount;
 
-    function createChild(int fundingInputIndex) {
+    function createChild(bytes20 owner, int fundingInputIndex) {
+        new Child(owner);
         require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
         this.childCount = this.childCount + 1;
     }
@@ -32,29 +38,18 @@ contract Factory() {
 }
 `;
 
-// Child contract - a simple stateful counter
-const CHILD = `
-contract Child(bytes20 owner) {
-    int counter;
-
-    function increment() {
-        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(owner));
-        this.counter = this.counter + 1;
-    }
-
-    function getCounter() {
-        require(this.counter > 0);
-    }
-}
-`;
-
 // Create3 factory with mapping(salt -> categoryId)
 const CREATE3_FACTORY = `
+contract Child(bytes20 owner) {
+    int counter;
+    function increment() { require(owner != bytes20(0)); this.counter = this.counter + 1; }
+}
 contract Create3Factory() {
     int childCount;
     mapping(bytes32 => bytes32) children;
 
-    function create3(bytes32 salt, int fundingInputIndex) {
+    function create3(bytes20 owner, bytes32 salt, int fundingInputIndex) {
+        new Child(owner);
         bytes32 childCategoryId = tx.inputs[fundingInputIndex].outpointTransactionHash;
         require(this.children[salt] == 0x0000000000000000000000000000000000000000000000000000000000000000);
         this.children[salt] = childCategoryId;
@@ -66,11 +61,16 @@ contract Create3Factory() {
 // Factory whose deploy function overwrites a mapping entry (no `== 0` guard), to exercise
 // deployFrom's existing-entry write path.
 const OVERWRITE_FACTORY = `
+contract Child(bytes20 owner) {
+    int counter;
+    function increment() { require(owner != bytes20(0)); this.counter = this.counter + 1; }
+}
 contract OverwriteFactory() {
     int childCount;
     mapping(bytes32 => bytes32) children;
 
-    function recreate(bytes32 salt, int fundingInputIndex) {
+    function recreate(bytes20 owner, bytes32 salt, int fundingInputIndex) {
+        new Child(owner);
         bytes32 childCategoryId = tx.inputs[fundingInputIndex].outpointTransactionHash;
         this.children[salt] = childCategoryId;
         this.childCount = this.childCount + 1;
@@ -92,24 +92,26 @@ contract NoDeployFactory() {
     }
 }
 `;
+const UNTYPED_DEPLOY_FACTORY = `contract UntypedFactory() {
+    int childCount;
+    function createChild(int fundingInputIndex) {
+        require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
+        this.childCount = this.childCount + 1;
+    }
+}`;
 
 describe('StatefulContract.deployFrom()', () => {
   const provider = createTestProvider();
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
-  const findC2Entry = (outputs: ReturnType<typeof getTxOutputs>, category: string, key: Uint8Array) => {
-    const slotHex = binToHex(keyToSlot(key));
-    const output = outputs.find((o) => o.token?.category === category
-      && o.token?.nft?.capability === 'mutable'
-      && o.token.nft.commitment.slice(0, 64) === slotHex);
-    if (!output?.token?.nft?.commitment) throw new Error('C2 target output not found');
-    return decodeEntryCommitment(hexToBin(output.token.nft.commitment));
-  };
-
-  const factoryArtifact = compileString(FACTORY);
-  const childArtifact = compileString(CHILD);
-  const create3FactoryArtifact = compileString(CREATE3_FACTORY);
-  const overwriteFactoryArtifact = compileString(OVERWRITE_FACTORY);
+  const factoryArtifacts = compileStringMulti(FACTORY);
+  const factoryArtifact = factoryArtifacts.Factory;
+  const childArtifact = factoryArtifacts.Child;
+  const create3Artifacts = compileStringMulti(CREATE3_FACTORY);
+  const create3FactoryArtifact = create3Artifacts.Create3Factory;
+  const overwriteArtifacts = compileStringMulti(OVERWRITE_FACTORY);
+  const overwriteFactoryArtifact = overwriteArtifacts.OverwriteFactory;
   const noDeployArtifact = compileString(NO_DEPLOY_FACTORY);
+  const untypedDeployArtifact = compileString(UNTYPED_DEPLOY_FACTORY);
 
   describe('deploy modifier in artifact ABI', () => {
     it('should include deploy in ABI modifiers', () => {
@@ -177,7 +179,7 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory: factoryContract,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [BigInt(fundingInputIndex)],
+        deployFunctionArgs: [alicePkh, BigInt(fundingInputIndex)],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
@@ -241,7 +243,7 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory: factoryContract,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [BigInt(fundingInputIndex)],
+        deployFunctionArgs: [alicePkh, BigInt(fundingInputIndex)],
         childArtifact,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
@@ -288,7 +290,7 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    it('should deploy a child via create3 with salt', async () => {
+    it('should refuse typed child deployment combined with a C2 insert', async () => {
       const salt = '00'.repeat(31) + '01'; // salt = 1
       const childFundingUtxo: Utxo = {
         txid: 'd2cd'.repeat(16),
@@ -303,56 +305,19 @@ describe('StatefulContract.deployFrom()', () => {
         ?? create3FactoryArtifact.stateLayout!.dataNftCount;
       const fundingInputIndex = 2 + requiredNftCount; // master + data NFTs + C2 predecessor
 
-      const result = await StatefulContract.deployFrom({
+      const attempt = StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'create3',
-        deployFunctionArgs: [salt, BigInt(fundingInputIndex)],
-        childArtifact,
+        deployFunctionArgs: [alicePkh, salt, BigInt(fundingInputIndex)],
+        childArtifact: create3Artifacts.Child,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
         fundingUtxo: childFundingUtxo,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-
-      expect(result.childCategoryId).toBe(childFundingUtxo.txid);
-      expect(result.child).toBeDefined();
-      expect(result.tx.txid).toBeDefined();
-
-      // Verify the factory's state includes the mapping entry
-      const txOutputs = getTxOutputs(result.tx);
-
-      // Factory master preserved
-      expect(txOutputs[0].token?.nft?.capability).toBe('minting');
-      expect(txOutputs[0].token?.category).toBe(factory.categoryId);
-
-      // Factory data NFT (output 1) childCount incremented to 1
-      const factoryState = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, create3FactoryArtifact.stateLayout!, 0,
-      );
-      expect(factoryState.childCount).toBe(1n);
-
-      // Factory entry NFT (output 2): children[salt] = child category, factory-keyed
-      const entryOutput = txOutputs[2];
-      expect(entryOutput.token?.category).toBe(factory.categoryId);
-      expect(entryOutput.token?.nft?.capability).toBe('mutable');
-      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
-      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
-      // Stored value is outpointTransactionHash (internal byte order = reversed txid)
-      const childCategoryInternal = binToHex(hexToBin(result.childCategoryId).reverse());
-      expect(binToHex(entry.value as Uint8Array)).toBe(childCategoryInternal);
-
-      const enumerated = await factory.getEntries('children');
-      expect(enumerated.length).toBe(1);
-
-      // Child minting NFT created
-      const childOutputIndex = txOutputs.findIndex(
-        (o) => o.token?.category === result.childCategoryId && o.token?.nft?.capability === 'minting',
-      );
-      expect(childOutputIndex).toBeGreaterThan(0);
-
-      factory = result.factory;
+      await expect(attempt).rejects.toThrow('share the first trailing slot');
     });
   });
 
@@ -376,71 +341,44 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    it('should create the entry on first deploy with a C2 predecessor proof', async () => {
+    it('should refuse a typed child deployment with a C2 predecessor proof', async () => {
       const childFundingUtxo: Utxo = { txid: 'e2cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
       // HEAD fills the C2 proof slot, so funding follows it at input 3.
-      const result = await StatefulContract.deployFrom({
+      const attempt = StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'recreate',
-        deployFunctionArgs: [salt, 3n],
-        childArtifact,
+        deployFunctionArgs: [alicePkh, salt, 3n],
+        childArtifact: overwriteArtifacts.Child,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
         fundingUtxo: childFundingUtxo,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-
-      const txOutputs = getTxOutputs(result.tx);
-      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
-      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
-      expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
-
-      const entries = await factory.getEntries('children');
-      expect(entries.length).toBe(1);
-
-      factory = result.factory;
+      await expect(attempt).rejects.toThrow('share the first trailing slot');
     });
 
-    it('should overwrite the existing C2 entry on second deploy', async () => {
+    it('should refuse a typed child deployment with a C2 update shape', async () => {
       const childFundingUtxo: Utxo = { txid: 'e3cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
       // Entry now exists: it takes the entry slot, funding shifts to the deploy slot (index 3)
-      const result = await StatefulContract.deployFrom({
+      const attempt = StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'recreate',
-        deployFunctionArgs: [salt, 3n],
-        childArtifact,
+        deployFunctionArgs: [alicePkh, salt, 3n],
+        childArtifact: overwriteArtifacts.Child,
         childConstructorArgs: [alicePkh],
         childInitialState: { counter: 0n },
         fundingUtxo: childFundingUtxo,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-
-      const txOutputs = getTxOutputs(result.tx);
-
-      // childCount incremented to 2 (state preserved across the overwrite)
-      const factoryState = parsePushdataCommitment(
-        txOutputs[1].token!.nft!.commitment, overwriteFactoryArtifact.stateLayout!, 0,
-      );
-      expect(factoryState.childCount).toBe(2n);
-
-      // Entry overwritten in place with the new child's category, same key
-      const entry = findC2Entry(txOutputs, factory.categoryId, hexToBin(salt));
-      expect(binToHex(entry.slot)).toBe(binToHex(keyToSlot(hexToBin(salt))));
-      expect(binToHex(entry.value as Uint8Array)).toBe(binToHex(hexToBin(result.childCategoryId).reverse()));
-
-      // Exactly one entry remains - overwritten, not duplicated
-      const entries = await factory.getEntries('children');
-      expect(entries.length).toBe(1);
-
-      factory = result.factory;
+      await expect(attempt).rejects.toThrow('share the first trailing slot');
     });
   });
 
@@ -498,7 +436,7 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [BigInt(1 + (factoryArtifact.abi.find((f) => f.name === 'createChild')!.requiredNftIndices?.length
+        deployFunctionArgs: [alicePkh, BigInt(1 + (factoryArtifact.abi.find((f) => f.name === 'createChild')!.requiredNftIndices?.length
           ?? factoryArtifact.stateLayout!.dataNftCount))],
         childArtifact,
         childConstructorArgs: [alicePkh],
@@ -609,13 +547,31 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory: noDeployContract,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [],
+        deployFunctionArgs: [alicePkh, 0n],
         childArtifact,
         childConstructorArgs: [alicePkh],
         fundingUtxo: childFunding,
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       })).rejects.toThrow('does not have the \'deploy\' modifier');
+    });
+
+    it('rejects an untyped deploy function whose caller-supplied child is not covenant-authenticated', async () => {
+      const generic = StatefulContract.withCategory(
+        new Contract(untypedDeployArtifact, [], { provider }), '91'.repeat(32),
+      );
+      const childFunding: Utxo = { txid: '92'.repeat(32), vout: 0, satoshis: 100000n };
+      await expect(StatefulContract.deployFrom({
+        provider,
+        factory: generic,
+        deployFunctionName: 'createChild',
+        deployFunctionArgs: [1n],
+        childArtifact,
+        childConstructorArgs: [alicePkh],
+        fundingUtxo: childFunding,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
+        changeAddress: p2pkh.address,
+      })).rejects.toThrow("does not contain a typed 'new Contract(...)' deployment");
     });
 
     it('should reject deployFrom if function name does not exist', async () => {
@@ -652,7 +608,7 @@ describe('StatefulContract.deployFrom()', () => {
         provider,
         factory: deployedFactory,
         deployFunctionName: 'createChild',
-        deployFunctionArgs: [],
+        deployFunctionArgs: [alicePkh, 0n],
         childArtifact,
         childConstructorArgs: [alicePkh],
         fundingUtxo: childFunding,

@@ -5411,3 +5411,30 @@ The focused suite is **1109/1109**. The full corpus remains **4443/4587**, 144 f
 
 The focused suite remains green. The full corpus remains **4443/4587**, 144 failed, while NEG-ACCEPTED falls to
 337, plus 275 multifile and 289 cmdline fixtures excluded.
+
+### 2026-08-05 release reassessment and strictness deferral
+
+**Effort status: POSTPONED.** Do not run the entire Solidity bench or continue the over-accepted correctness
+queue for the current release. The retained measurements below remain informational evidence; protocol and
+covenant soundness work has priority.
+
+The release bench scope is now explicitly limited to single-file fixtures under Solidity's semantic and syntax
+suites. On corpus revision `816d9b2a`, the retained positive result is **2698/2805**, with 107 named failures and
+zero residual timeouts after the published 30-second and 120-second fresh-worker retry tiers.
+
+The primary-run timeouts are wall-clock budget expirations in long-lived parallel workers, where accumulated
+parser/compiler state and a small number of unusually expensive fixtures make completion time uneven. Fresh-worker
+retries isolate those fixtures and recovered every retained result; no residual timeout is currently an unknown
+release result.
+
+All 2,158 negative fixtures were audited. The retained baseline is **1,835 rejected / 323 over-accepted**, with
+zero unchecked fixtures and zero timeouts. Storage-pointer definite-assignment tracking closed five accepted
+negatives and is covered by the complete **3,145/3,145** compiler suite. A subsequent alias-source hardening pass
+also rejects memory-to-storage rebinding, mismatched storage-reference types, and literal-to-storage string
+bindings in focused upstream checks; per release prioritization, the 323-fixture recheck and any full corpus sweep
+are postponed, so the retained scorecard is intentionally not adjusted from indirect evidence.
+
+Further over-accepted-negative correctness work is **deferred from the current release gate**. It remains a
+post-release Solidity-compatibility backlog and must not be conflated with the separate protocol/covenant
+soundness gates. Resume efficiently with `RECHECK_ACCEPTED_NEGATIVES=true`; do not repeat the full 7,343-file bench
+unless the release scope or positive baseline changes.

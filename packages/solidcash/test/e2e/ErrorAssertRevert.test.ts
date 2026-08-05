@@ -2,6 +2,7 @@ import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 const nullFail = 'messageBus: BCH-2026 preflight failed at input 0: Program failed a signature verification '
@@ -346,6 +347,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
 
     it('artifact has all error declarations', () => {
       const artifact = compileString(combinedCode);
+      assertApplicationScriptSize('customErrorBehavior', artifact);
 
       expect(artifact.errors).toBeDefined();
       expect(artifact.errors).toHaveLength(3);

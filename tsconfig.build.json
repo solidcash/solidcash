@@ -12,6 +12,7 @@
       "vitest/globals"
     ],
     "sourceMap": true,
+    "inlineSources": true,
     "strict": true,
     "strictPropertyInitialization": false,
     "experimentalDecorators": true,

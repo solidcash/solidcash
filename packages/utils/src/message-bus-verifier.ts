@@ -10,6 +10,14 @@ export interface MessageBusVerifierProgram {
   functions: readonly { id: number; name: string; bytecode: string }[];
 }
 
+/** The specialized verifier cannot fit within BCH's consensus script-size limit. */
+export class MessageBusVerifierCapacityError extends Error {
+  constructor(byteLength: number, maximumInputBytes = 10_000) {
+    super(`message bus verifier covenant is ${byteLength} bytes; active consensus permits at most ${maximumInputBytes}`);
+    this.name = this.constructor.name;
+  }
+}
+
 /** Commitment domain for one genesis-deployed composition-verifier instance. */
 export const MESSAGE_BUS_VERIFIER_COMMITMENT_DOMAIN = new Uint8Array([0x4c, 0x33, 0x56, 0x31]); // L3V1
 
@@ -120,9 +128,7 @@ export function buildMessageBusVerifierCovenantScript(
   ];
   const byteLength = scriptToBytecode(script).length;
   if (byteLength > maximumInputBytes) {
-    throw new Error(
-      `message bus verifier covenant is ${byteLength} bytes; active consensus permits at most ${maximumInputBytes}`,
-    );
+    throw new MessageBusVerifierCapacityError(byteLength, maximumInputBytes);
   }
   return script;
 }

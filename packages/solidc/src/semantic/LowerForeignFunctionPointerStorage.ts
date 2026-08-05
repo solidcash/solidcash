@@ -79,6 +79,8 @@ export default class LowerForeignFunctionPointerStorage extends AstTraversal {
       if (!(sv.type instanceof FunctionType) || sv.type.isExternal || sv.initializer) continue;
       let assigned = false;
       for (const fn of bodies) {
+        // The callback is invoked synchronously during this traversal.
+        // eslint-disable-next-line @typescript-eslint/no-loop-func
         this.forEachAssignTo(fn.body!, sv.name, () => { assigned = true; });
       }
       if (!assigned) this.uninitializedInternal.set(sv.name, sv.type);

@@ -5,7 +5,8 @@ import {
   AbiDecodeNode, ArrayAccessNode, AssemblyStatementNode, AssignNode, BranchNode, ContractNode, ExpressionNode,
   FunctionCallNode,
   FunctionDefinitionNode, FunctionModifier, IdentifierNode, Node, NullaryOpNode, SliceNode, SourceFileNode,
-  StateAssignNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode, TryCatchNode,
+  StateAssignNode, StringLiteralNode, TupleAssignmentNode, ReturnNode, TupleIndexOpNode, VariableDefinitionNode,
+  TryCatchNode,
   WhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -275,6 +276,9 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node,
         `cannot initialize calldata local '${node.name}' from non-calldata binding '${node.expression.name}'`);
     }
+    if (location === Modifier.STORAGE && node.expression) {
+      this.validateStoragePointerSource(node.name, node.type, node.expression);
+    }
     const visited = super.visitVariableDefinition(node) as VariableDefinitionNode;
     this.bindingLocations.set(node.name, location);
     this.bindingTypes.set(node.name, node.type);
@@ -317,9 +321,9 @@ export default class ValidateDataLocations extends AstTraversal {
         const callee = candidates[0];
         for (let index = 0; index < callee.parameters.length; index += 1) {
           const expectedLocation = this.locations(callee.parameters[index].modifier)[0];
-          if (expectedLocation !== Modifier.CALLDATA) continue;
           const actualLocation = this.sliceSourceLocation(node.parameters[index]);
-          if (actualLocation !== undefined && actualLocation !== Modifier.CALLDATA) {
+          if (expectedLocation === Modifier.CALLDATA
+            && actualLocation !== undefined && actualLocation !== Modifier.CALLDATA) {
             throw new InvalidDataLocationError(
               node.parameters[index],
               `cannot pass ${actualLocation} reference to calldata parameter '${callee.parameters[index].name}'`,
@@ -392,6 +396,13 @@ export default class ValidateDataLocations extends AstTraversal {
       throw new InvalidDataLocationError(node,
         `cannot rebind calldata local '${node.identifier.name}' from non-calldata binding '${node.expression.name}'`);
     }
+    if (this.bindingLocations.get(node.identifier.name) === Modifier.STORAGE) {
+      this.validateStoragePointerSource(
+        node.identifier.name,
+        this.bindingTypes.get(node.identifier.name)!,
+        node.expression,
+      );
+    }
     const storagePointer = this.storagePointerRoot(node.identifier.name);
     if (storagePointer && storagePointer !== node.identifier.name
       && !this.initializedStoragePointerLocals.has(storagePointer)) {
@@ -437,6 +448,25 @@ export default class ValidateDataLocations extends AstTraversal {
   private storagePointerRoot(name: string): string | undefined {
     return [...this.storagePointerLocals].find((candidate) =>
       name === candidate || name.startsWith(`${candidate}.`) || name.startsWith(`${candidate}__`));
+  }
+
+  private validateStoragePointerSource(name: string, targetType: Type, source: ExpressionNode): void {
+    const sourceLocation = this.sliceSourceLocation(source);
+    if (sourceLocation !== undefined && sourceLocation !== Modifier.STORAGE) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from ${sourceLocation} reference`);
+    }
+    if (source instanceof StringLiteralNode) {
+      throw new InvalidDataLocationError(source,
+        `cannot bind storage pointer '${name}' from a literal value`);
+    }
+    if (source instanceof IdentifierNode) {
+      const sourceType = this.bindingTypes.get(source.name) ?? this.stateTypes.get(source.name);
+      if (sourceType && sourceType.toString() !== targetType.toString()) {
+        throw new InvalidDataLocationError(source,
+          `storage pointer '${name}' of type '${targetType}' cannot bind '${source.name}' of type '${sourceType}'`);
+      }
+    }
   }
 
   visitBranch(node: BranchNode): Node {

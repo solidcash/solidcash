@@ -133,6 +133,15 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
       + ' S storage p = s; while (b) { p = s; b = false; } p; }')).toBe('C');
   });
 
+  it('rejects invalid storage-pointer sources before alias lowering erases their location and type', () => {
+    expect(() => compiles('uint[] data; function f(uint[] memory x) internal {'
+      + ' uint[] storage p = data; p = x; }')).toThrow(/cannot bind storage pointer 'p' from memory reference/);
+    expect(() => compiles('uint[] data; uint8[] small; function f() internal {'
+      + ' uint[] storage p = data; p = small; }')).toThrow(/storage pointer 'p'.*cannot bind.*uint8\[\]/);
+    expect(() => compiles('function f() internal { string storage p = "abc"; }'))
+      .toThrow(/cannot bind storage pointer 'p' from a literal value/);
+  });
+
   it('does not mistake a file-level free function for a library function', () => {
     expect(() => compileString('function f(bytes storage x) external returns (bytes storage) { return x; }',
       { solidityImportCompat: true })).toThrow(/free functions cannot have/i);

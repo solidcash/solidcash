@@ -15,7 +15,9 @@ const UPSTREAM = '/Code/mistswap/mistswap';
 export default defineConfig(solidcashHardhatPreset({
   test: {
     include: [`${UPSTREAM}/test/**/*.test.ts`],
+    // These suites deploy real split contracts in `before` hooks, which is far past Vitest's 10s hook default.
     testTimeout: 120000,
+    hookTimeout: 300000,
     server: { deps: { inline: [/mistswap\/mistswap/] } },
   },
   resolve: {

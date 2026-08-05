@@ -247,12 +247,12 @@ These items do not block the first release when the unsupported boundary is docu
 
 ## Known skipped/TODO-test review
 
-At the 2026-08-05 audit snapshot, 16 executable skipped or TODO occurrences remain under `packages` and
+At the 2026-08-05 audit snapshot, 15 executable skipped or TODO occurrences remain under `packages` and
 `examples`, down from 24 after removing six empty placeholder suites and one obsolete manual-proof TODO. Every remaining occurrence is classified in
-[`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); two groups remain release-blocking coverage gaps.
+[`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); one group remains a release-blocking coverage gap.
 
-- [~] Fix or explicitly reject writing an unbounded cross-contract return directly to dynamic state. The return
-  channel itself is now actively proven; SDK chunk auto-derivation for the direct-write composition remains a blocker.
+- [x] Prove writing an unbounded cross-contract return directly to dynamic state, including an interface that
+  under-declares the callee's physical state footprint. Dynamic chunks anchor after the authenticated return event.
 - [~] Add BCHN sequence-number/timelock coverage; compiler coverage alone is not release proof.
 - [x] Remove the stale optimizer-equivalence TODO; 102 active equivalence proofs already cover this area.
 - [-] Nested-loop and optimized-value debugger enhancements are post-release.
@@ -319,4 +319,4 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
-| Known `.skip`/`.todo` review | **PASS (classification)** — 16 executable occurrences classified; two groups remain release blockers | `codex/release-readiness-fixes` | 2026-08-05 |
+| Known `.skip`/`.todo` review | **PASS (classification)** — 15 executable occurrences classified; only BCHN timelock proof remains blocking in this register | `codex/release-readiness-fixes` | 2026-08-05 |

@@ -1149,7 +1149,17 @@ export class StatefulTransactionBuilder {
       : this.lowLevelCallUtxoGroups.reduce(
         (sum, g) => sum + 1 + g.dataNftUtxos.length, 0,
       ) + this.lowLevelCallRawInputs.length;
-    const trailingBase = base + lowLevelCallOutputCount + this.iterationEntryInputs.length;
+    // External call blocks and their tail return events are emitted before local dynamic chunks, but they are
+    // outside this function's blockLayout. Include their physical span so trace extraction observes the same
+    // output indices that the compiler's dynamic-write covenant verifies.
+    const externalCallOutputCount = this.externalCallUtxoGroups.reduce((sum, group) => {
+      if (group.sharedGroupIndex !== undefined) return sum;
+      return sum + (group.blockInputs?.length ?? 1 + group.dataNftUtxos.length);
+    }, 0);
+    const externalReturnOutputCount = this.tailReturnEventOutputs()
+      .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length;
+    const trailingBase = base + externalCallOutputCount + externalReturnOutputCount
+      + lowLevelCallOutputCount + this.iterationEntryInputs.length;
     if (this.delegateEntriesAfterLowLevel) {
       return trailingBase + this._loopEntryOutputCount() + this._valueChunkOutputCount()
         + this.pendingOutputs.length;

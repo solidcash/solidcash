@@ -17987,7 +17987,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
       // outIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(foreign-read counts)
       //          + sum(prior written-var counts) + i
-      this.emitTrailingBlockBase(blockSize, loc);
+      const returningExternalSlots = this.externalCallSlots
+        .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch);
+      if (returningExternalSlots.length > 0) {
+        // Returning co-spends publish their event after every callee block and before this caller's dynamic
+        // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
+        // callee widths: an interface may legally under-declare state, so only the runtime index reflects the
+        // physical transaction footprint.
+        const lastReturnSlot = returningExternalSlots[returningExternalSlots.length - 1];
+        const returnParamName = returningExternalSlots.length === 1
+          ? '__internal__externalReturnOutputIdx'
+          : `__internal__externalReturnOutputIdx${lastReturnSlot.returnSlotIndex}`;
+        this.emit(encodeInt(BigInt(this.getStackIndex(returnParamName))), loc);
+        this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_1ADD, loc);
+      } else {
+        this.emitTrailingBlockBase(blockSize, loc);
+        // Non-returning callee blocks still precede local dynamic chunks. Their declared footprint is the only
+        // available compile-time anchor; identity/selector checks remain fail-closed if the declaration is wrong.
+        const externalCallOutputCount = this.externalCallSlots
+          .filter((slot) => !slot.inlineLoopDispatch)
+          .reduce((sum, slot) => sum + 1 + slot.requiredDataNftIndices.length, 0);
+        if (externalCallOutputCount > 0) {
+          this.emit(encodeInt(BigInt(externalCallOutputCount)), loc);
+          this.emit(Op.OP_ADD, loc);
+        }
+      }
       this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
       const batchCountIdx = this.getStackIndex('__internal__c2BatchTrailingCount', true);
       if (batchCountIdx >= 0) {

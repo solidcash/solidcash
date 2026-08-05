@@ -12,7 +12,6 @@ removed during this review.
 | Tests | Classification | Required release evidence |
 |---|---|---|
 | `packages/solidcash/test/e2e/misc/timelocks.test.ts` — sequence numbers | Supported language feature, missing BCHN integration proof | Add BIP68 height/time sequence tests against BCHN and keep the compiler's `this.age` coverage. This remains part of the BCHN release gate. |
-| `packages/solidcash/test/e2e/CrossContractCallInfra.test.ts` — unbounded `bytes` return written directly to dynamic state | Known fail-closed SDK auto-derivation gap | The return-event channel is actively proven by hashing the returned bytes into scalar state. Either fix dynamic chunk derivation for the direct-write composition or reject/document that composition in the 0.13.1 compatibility manifest. |
 
 ## Explicit first-release deferrals
 
@@ -47,6 +46,6 @@ rg -n --glob '*.{test,spec}.ts' \
   packages examples -g '!**/node_modules/**'
 ```
 
-Expected 2026-08-05 result: **16 classified executable occurrences**. The obsolete manual-proof TODO was removed
+Expected 2026-08-05 result: **15 classified executable occurrences**. The obsolete manual-proof TODO was removed
 because `optimisation-equivalence.test.ts` already contains 102 active proofs. Any new occurrence fails the classification
 gate until this register assigns it a release-blocking, explicitly deferred, or permanent-difference status.

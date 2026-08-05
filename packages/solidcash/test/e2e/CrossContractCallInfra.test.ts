@@ -71,9 +71,9 @@ describe('unbounded bytes return', () => {
       );
     });
 
-    // The return channel itself is covered above. Composing that result directly into a dynamic-storage write
-    // currently leaves the SDK's trailing chunk commitment unresolved during auto-derivation.
-    it.skip('CROSS-CONTRACT: B stores A.echo(b) bytes return in dynamic state [BLOCKED: chunk derivation]', async () => {
+    // Regression: the interface under-declares A's data-NFT footprint. The dynamic chunk must follow the
+    // authenticated runtime return event, not an offset inferred from the narrower interface layout.
+    it('CROSS-CONTRACT: B stores A.echo(b) bytes return in dynamic state', async () => {
       const arts = compileStringMulti(XC_DYNAMIC_SRC, { solidityImportCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(

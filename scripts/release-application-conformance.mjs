@@ -7,6 +7,7 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 // Keep this list small, deterministic, and application-shaped. Feature-unit tests
 // belong in the ordinary package suites; this gate is the release smoke matrix.
 const applications = [
+  ['ERC-20-like ledger, event, and error flow', 'test/e2e/Erc20LikeApplication.test.ts'],
   ['token integration', 'test/e2e/SafeErc20ChainTargetPinning.test.ts'],
   ['ownership / access control', 'test/e2e/CustomModifier.test.ts'],
   ['escrow, oracle release, and absolute timelock', 'test/e2e/HodlVault.test.ts'],

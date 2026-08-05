@@ -128,6 +128,10 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
         .filter((sv) => sv.visibility === StateVariableVisibility.PUBLIC
           || sv.visibility === StateVariableVisibility.EXTERNAL)
         .map((sv) => sv.name),
+      ...contract.collections
+        .filter((collection) => collection.visibility === StateVariableVisibility.PUBLIC
+          || collection.visibility === StateVariableVisibility.EXTERNAL)
+        .map((collection) => collection.name),
     ]);
     for (const c of node.importedContracts as ContractNode[]) {
       this.typeNames.add(c.name);

@@ -30,6 +30,28 @@ contract SplitCounter() {
 `;
 
 describe('large-contract state-local splitting', () => {
+  it('retains resolved logical self types when compiling renamed facets', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      contract SelfTyped {
+        SelfTyped public immutable masterContract;
+        mapping(address => bool) public approved;
+        int public value;
+        constructor() { masterContract = this; }
+        function invoke(bytes memory data) internal {
+          (address callee, bytes memory payload) = abi.decode(data, (address, bytes));
+          (bool ok,) = callee.call(payload);
+          require(ok);
+        }
+        function set(int next, address who, bytes memory data) external {
+          require(masterContract.approved(who));
+          invoke(data);
+          value = next;
+        }
+      }`, { solidityImportCompat: true, forceStateful: true, forceSplit: true });
+
+    expect(bundle.manifest.facets.length).toBeGreaterThan(0);
+  });
+
   it('preserves the ordinary compiler result when splitting is unnecessary', () => {
     const ordinary = compileString(SOURCE);
     const bundle = compileStringSplit(SOURCE);

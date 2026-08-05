@@ -5063,9 +5063,14 @@ export default class SymbolTableTraversal extends AstTraversal {
   private findTupleInit(node: Node | undefined, name: string, seen: Set<Node> = new Set()): ExpressionNode | undefined {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
-    if (node instanceof TupleAssignmentNode && node.tupleExpressions) {
+    if (node instanceof TupleAssignmentNode) {
       const idx = node.elements.findIndex((el) => el.name === name && !el.skip);
-      if (idx >= 0 && node.tupleExpressions[idx]) return node.tupleExpressions[idx];
+      if (idx >= 0 && node.tupleExpressions?.[idx]) return node.tupleExpressions[idx];
+      if (idx >= 0 && node.tuple) {
+        const value = new TupleIndexOpNode(cloneNode(node.tuple) as ExpressionNode, idx);
+        value.location = node.location;
+        return value;
+      }
     }
     for (const v of Object.values(node)) {
       if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
@@ -5087,7 +5092,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         && (!stateMember.visibilityExplicit
           || (stateMember.visibility !== StateVariableVisibility.PUBLIC
             && stateMember.visibility !== StateVariableVisibility.EXTERNAL));
-      if (concreteCallee && (stateMemberHidden
+      // Split facets deliberately suppress physical getter entry points, but carry a synthetic logical interface
+      // with the root-owned getter declarations needed by self-typed master-contract calls.
+      const splitLogicalGetter = concreteCallee?.isSplitFacet
+        && this.interfaceMap.get(callInfo.interfaceName)?.functions.some(
+          (fn) => fn.name === callInfo.functionName,
+        );
+      if (concreteCallee && !splitLogicalGetter && (stateMemberHidden
         || !concreteCallee.functions.some((f) => f.name === callInfo.functionName))) {
         const missing = new IdentifierNode(`${callInfo.interfaceName}.${callInfo.functionName}`);
         missing.location = node.location;
@@ -5102,6 +5113,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (expression instanceof IdentifierNode) return expression;
         if (expression instanceof CastNode && expression.type instanceof AddressType) {
           return directAddressIdentifier(expression.expression);
+        }
+        return undefined;
+      };
+      const directAddressStateAccess = (expression: ExpressionNode): StateAccessNode | undefined => {
+        if (expression instanceof StateAccessNode) return expression;
+        if (expression instanceof CastNode && expression.type instanceof AddressType) {
+          return directAddressStateAccess(expression.expression);
         }
         return undefined;
       };
@@ -5124,8 +5142,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
+      const directStateTarget = addressParam ? this.stateVariableMap.get(addressParam) : undefined;
       const addressStateVar = addressParam?.startsWith('__extaddr_')
-        ? addressParam.slice('__extaddr_'.length) : undefined;
+        ? addressParam.slice('__extaddr_'.length)
+        : directStateTarget?.type instanceof AddressType && directStateTarget.type.interfaceName
+          ? addressParam : directAddressStateAccess(node.addressExpression)?.name;
       // Loop-body local aliasing a per-iteration array element `address input = path[i]; IToken(input).m()`
       // (Router02 fee-on-transfer swap binds `(input, output) = (path[i], path[i+1])`). The local holds `arr[i]`
       // for the CURRENT iteration, so the co-spend target is per-iteration - NOT a function-top fixed slot (which

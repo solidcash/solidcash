@@ -16,7 +16,7 @@ import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifa
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode,
-  FunctionCallNode, FunctionDefinitionNode,
+  FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
@@ -5215,10 +5215,30 @@ function prepareSplitAst(
 
 function compileFacet(code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
   plans: PlannedFunction[], facetName: string): Artifact {
-  const ast = prepareSplitAst(code, options, listener);
+  let ast = prepareSplitAst(code, options, listener);
   const keep = new Set(plans.flatMap((p) => [...p.closure]));
   const contract = ast.contract;
-  contract.name = facetName;
+  // Derive getter declarations on a clone so the getter pass cannot rewrite the retained handler bodies before
+  // the ordinary facet pipeline. These declarations exist only for self-typed external-call resolution.
+  const getterProbe = cloneNode(contract);
+  const sourceFunctionCount = getterProbe.functions.length;
+  const getterProbeAst = new SourceFileNode(getterProbe);
+  getterProbeAst.importedContracts = ast.importedContracts;
+  getterProbeAst.interfaceDefinitions = ast.interfaceDefinitions;
+  getterProbeAst.accept(new SynthesizePublicGetters(options.solidityImportCompat ?? false));
+  const getterDeclarations = getterProbe.functions.slice(sourceFunctionCount);
+  if (getterDeclarations.length > 0) {
+    ast.interfaceDefinitions.push(new InterfaceNode(contract.name, [], [], getterDeclarations.map((getter) =>
+      new InterfaceFunctionNode(
+        getter.name,
+        getter.parameters.map((parameter) => new ParameterNode(parameter.type, parameter.name)),
+        getter.returnTypes,
+        'view',
+      ))));
+  }
+  // Keep the logical name through semantic rebuilding. Solidity self-typed fields and calls such as
+  // `Pair masterContract; masterContract.swappers(x)` resolve against this name; the physical facet name is
+  // artifact metadata and is applied after compilation.
   contract.parameters = [new ParameterNode(new BytesType(32), '__brand')];
   contract.parameters[0].location = contract.location;
   contract.parameters[0].syntheticallyUsed = true;
@@ -5235,15 +5255,10 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   // unrelated selectors on every shard, those getters make each facet synthesize the full incoming message-bus
   // route (UniswapV2Pair's one-entry `approve` facet measured 13,066 bytes for this reason). The logical root keeps
   // all getters and their ABI routes; a facet contains only the entries assigned to it and their call closure.
-  for (const state of contract.stateVariables) state.visibility = StateVariableVisibility.INTERNAL;
-  for (const collection of contract.collections) collection.visibility = StateVariableVisibility.INTERNAL;
-  for (const constant of contract.constantDefinitions) {
-    if (constant.visibility !== undefined) constant.visibility = StateVariableVisibility.INTERNAL;
-  }
   contract.flattenedPublicStructGetters = [];
-  // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets are
-  // renamed synthetic contracts with no Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make
-  // the idempotent inheritance pass validate resolved source metadata against the synthetic facet and reject it.
+  // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets have no
+  // Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make the idempotent inheritance pass reject
+  // already-resolved source metadata.
   for (const resolved of [contract, ...ast.importedContracts]) {
     for (const fn of resolved.functions) {
       fn.overrideBases = [];
@@ -5279,6 +5294,7 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   const artifact = compileResolvedAst(
     ast, code, options, true, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
   );
+  artifact.contractName = facetName;
   artifact.delegateOnly = true;
   return artifact;
 }

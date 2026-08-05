@@ -239,6 +239,13 @@ export default class SynthesizePublicGetters extends AstTraversal {
     this.enumTypes = new Map(node.enumDefinitions.map((definition) => [
       definition.name, new EnumType(definition.name, definition.members),
     ]));
+    // A split facet needs the logical contract's public state declarations intact while semantic analysis treats
+    // that contract as its own external-call interface (e.g. `masterContract.swappers(x)`). It must not regain
+    // those declarations as dispatchable getter entry points: the logical root owns the complete getter surface.
+    if (node.isSplitFacet) {
+      node.functions = node.functions.map((fn) => this.visit(fn) as FunctionDefinitionNode);
+      return node;
+    }
     const isPub = (v: StateVariableVisibility): boolean =>
       v === StateVariableVisibility.PUBLIC || v === StateVariableVisibility.EXTERNAL;
     // A retained inherited ABSTRACT declaration does not occupy the implementation slot: a public

@@ -119,7 +119,7 @@ it must not silently compile to incorrect covenant behavior.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,
     lost compiler-tracked stack values, and recursive traversal overflow now fail with named diagnostics. The
     retained result reports 107 named failures and no generic `Error` or raw `RangeError` bucket.
-- [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
+- [x] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
   - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 81/81 executed tests cover C2 batch
     witness tampering, dynamic-loop entry tampering, external-call target substitution, cross-contract
@@ -129,7 +129,9 @@ it must not silently compile to incorrect covenant behavior.
     bytecode is carried by a compiler-owned covenant witness, so the SDK-selected master remains authenticated
     even with `SIGHASH_NONE`. Ordinary scalar/data-NFT and dynamic-chunk transitions reject missing, duplicated,
     semantically significant reordered, redirected, and commitment-forged state elements without relying on any
-    signature guard. Old chunks themselves are an identity-authenticated unordered input set. Satoshi-container
+    signature guard. C2 entries additionally cover missing, duplicated, reordered, redirected, capability/value,
+    link, proof, successor, predecessor-output, and orphan rows; nested mappings, array values, and flattened
+    struct fields share that physical backend. Old chunks themselves are an identity-authenticated unordered input set. Satoshi-container
     and fungible-token container transitions additionally preserve container presence, position, destination,
     and value/amount. Ordinary events and emitted returns preserve their required position, destination, and
     commitment, rejecting missing, duplicated, reordered, redirected, or changed outputs. The built-in
@@ -139,9 +141,9 @@ it must not silently compile to incorrect covenant behavior.
     child artifact cannot be covenant-authenticated; typed stateful deploy combined with a C2 access also rejects
     until their trailing output regions can be separated. The gate also covers the built-in proxy lifecycle,
     multi-NFT initialization/state preservation, delegated events and returns, nested initializer helpers, and
-    compiler/SDK refusal of implementation functions that reach ineligible operations.
-  - Remaining before this item can close: equivalent matrix closure for the remaining supported state-mutation
-    families and early refusal for delegate shapes outside the supported built-in proxy profile.
+    compiler/SDK refusal of implementation functions that reach ineligible operations. This closes the stable
+    physical backends: scalar/data NFT, dynamic chunks, C2 entries, satoshi/token containers, events/returns,
+    external/delegate composition, and lifecycle elements. Experimental profiles remain outside the stable claim.
 
 ### Cross-contract state bus and nested calls
 
@@ -442,5 +444,5 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
-| Integrity conformance suite | **PARTIAL** — deterministic fifteen-scenario gate passes 81/81 executed tests (one documented skip), including lifecycle, scalar/data-NFT, dynamic-chunk, satoshi/token containers, events/returns, and the built-in proxy lifecycle/refusal profile; remaining state-mutation matrices remain open | `yarn test:security-conformance` | 2026-08-05 |
+| Integrity conformance suite | **PASS** — deterministic fifteen-scenario gate passes 81/81 executed tests (one documented skip), covering every stable physical state backend plus external/delegate composition and lifecycle elements | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

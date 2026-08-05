@@ -208,6 +208,13 @@ const MAX_MATERIALIZED_ARRAY_ELEMENTS = 10000;
 // uninitialized internal fn-ptr reverts, matching Solidity. See emitDefaultValue.
 const INVALID_FUNCTION_POINTER_ID = 0x7fffffffn;
 
+// Immutable CREATE-anchor commitment written by contract genesis, read by the proxy identity proof in
+// emitLogicalIdentityOrDirectIdentity. Must stay byte-identical to encodeLogicalIdentityCommitment in
+// packages/solidcash/src/stateful/logical-identity.ts: "SCID" || version, then a fixed-width nonce and
+// canonical P2PKH deployer, so the trailing root field always begins at the same offset.
+const LOGICAL_IDENTITY_PREFIX = Uint8Array.from([0x53, 0x43, 0x49, 0x44, 0x01]);
+const LOGICAL_IDENTITY_ROOT_OFFSET = 4 + 1 + 8 + 1 + 25; // magic, version, nonce, deployerLen, deployer
+
 // X29. Hidden context an message-bus batch route pushes at every call site of an effect-carrying graph emission handler:
 // the dispatch-site ordinal that selects the handler's owner-local event/transfer frame in the route's block.
 const GRAPH_EFFECT_SITE = '__internal__handlerEffectSite';
@@ -20306,6 +20313,75 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * 3. Verify B's master retains minting capability
    * 4. Verify B's function selector matches _externalCallSelector
    */
+  /**
+   * IDENTITY with an optional proxy logical-identity proof, selected by the SDK-filled anchor index.
+   *
+   * `anchorIdx < 0` (ordinary contract): the visible address IS the physical master locking bytecode, so the
+   * direct equality holds and is emitted unchanged.
+   *
+   * `anchorIdx >= 0` (upgrade proxy): the visible address is the stable logical CREATE address (a P2SH20 of
+   * `<seed> OP_DROP OP_1`), which can never equal the physical state-holder covenant. Prove the binding from
+   * the co-spent immutable SCID anchor minted by that contract's genesis:
+   *   a. the anchor input's locking bytecode IS the expected (logical) address;
+   *   b. the anchor is an immutable NFT (32-byte category, no capability byte) of the callee's own category;
+   *   c. its commitment's trailing root field is exactly the co-spent master's locking bytecode.
+   * Only the genuine contract can mint (b), and (a)+(c) pin the visible address to that physical master, so a
+   * caller cannot pair an unrelated P2SH20 with an unrelated master. Commitment layout is fixed-width up to the
+   * root field (SCID|ver|nonce8|len=25|deployer25|len|root), so the parse is a constant-offset split that fails
+   * closed on any other shape. See packages/solidcash/src/stateful/logical-identity.ts.
+   */
+  private emitLogicalIdentityOrDirectIdentity(
+    anchorIdxStack: number,
+    pushExpectedAddress: (untracked: number) => void,
+    locationData: SingleLocationData,
+  ): void {
+    // Stack in: [idx, B_master_bytecode] (2 untracked)
+    this.emit(encodeInt(BigInt(anchorIdxStack + 2)), locationData);
+    this.emit(Op.OP_PICK, locationData);            // [idx, bc, anchorIdx]
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);        // [idx, bc, anchorIdx, anchorIdx < 0]
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);            // [idx, bc]
+    pushExpectedAddress(2);                          // [idx, bc, expected]
+    this.emit(Op.OP_EQUALVERIFY, locationData);     // [idx]
+    this.emit(Op.OP_ELSE, locationData);
+    // (a) the anchor sits AT the expected logical address.
+    this.emit(Op.OP_DUP, locationData);             // [idx, bc, anchorIdx, anchorIdx]
+    this.emit(Op.OP_UTXOBYTECODE, locationData);    // [idx, bc, anchorIdx, anchor_bytecode]
+    pushExpectedAddress(4);                          // [idx, bc, anchorIdx, anchor_bytecode, expected]
+    this.emit(Op.OP_EQUALVERIFY, locationData);     // [idx, bc, anchorIdx]
+    // (b) immutable NFT of the callee master's own category. A 32-byte category means capability 'none';
+    // a mutable/minting NFT appends its capability byte and fails this size check.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData); // [idx, bc, anchorIdx, anchorCat]
+    this.emit(Op.OP_SIZE, locationData);
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);   // [idx, bc, anchorIdx, anchorCat]
+    this.emit(encodeInt(3n), locationData);
+    this.emit(Op.OP_PICK, locationData);             // [idx, bc, anchorIdx, anchorCat, idx]
+    this.emit(Op.OP_UTXOTOKENCATEGORY, locationData); // [idx, bc, anchorIdx, anchorCat, masterCat+cap]
+    this.emit(encodeInt(32n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);             // [idx, bc, anchorIdx, anchorCat, masterCat32]
+    this.emit(Op.OP_EQUALVERIFY, locationData);      // [idx, bc, anchorIdx]
+    // (c) the commitment's root field is the co-spent master's locking bytecode.
+    this.emit(Op.OP_UTXOTOKENCOMMITMENT, locationData); // [idx, bc, commitment]
+    this.emit(encodeInt(BigInt(LOGICAL_IDENTITY_ROOT_OFFSET)), locationData);
+    this.emit(Op.OP_SPLIT, locationData);            // [idx, bc, head, rootLen||root]
+    this.emit(Op.OP_SWAP, locationData);             // [idx, bc, rootLen||root, head]
+    this.emit(encodeInt(BigInt(LOGICAL_IDENTITY_PREFIX.length)), locationData);
+    this.emit(Op.OP_SPLIT, locationData);
+    this.emit(Op.OP_DROP, locationData);             // [idx, bc, rootLen||root, prefix]
+    this.emit(LOGICAL_IDENTITY_PREFIX, locationData);
+    this.emit(Op.OP_EQUALVERIFY, locationData);      // [idx, bc, rootLen||root]
+    this.emit(encodeInt(1n), locationData);
+    this.emit(Op.OP_SPLIT, locationData);            // [idx, bc, rootLen, root]
+    this.emit(Op.OP_NIP, locationData);              // [idx, bc, root]
+    this.emit(Op.OP_EQUALVERIFY, locationData);      // [idx]
+    this.emit(Op.OP_ENDIF, locationData);
+  }
+
   private emitExternalCallVerification(node: FunctionDefinitionNode): void {
     const locationData = { location: node.location, positionHint: PositionHint.END };
 
@@ -20378,20 +20454,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // No silent fall-through: any other target shape still throws (conservative - the collect phase records
       // addressParam/addressLiteral ONLY for the recognised sound forms).
       const addrName = slot.addressIsMsgSender ? msgSenderTemp! : slot.addressParam;
-      if (addrName) {
-        // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
-        const addrParamIdx = this.getStackIndex(addrName);
-        this.emit(encodeInt(BigInt(addrParamIdx + 2)), locationData);
-        this.emit(Op.OP_PICK, locationData);          // [idx, B_master_bytecode, expected_addr]
-      } else if (slot.addressLiteral !== undefined) {
-        this.emit(hexToBin(slot.addressLiteral), locationData); // [idx, B_master_bytecode, expected_addr]
+      const anchorIdxStack = addrName
+        ? this.getStackIndex(`__internal__extcallAnchorIdx${slot.slotIndex}`, true) : -1;
+      const pushExpectedAddress = (untracked: number): void => {
+        if (addrName) {
+          const addrParamIdx = this.getStackIndex(addrName);
+          this.emit(encodeInt(BigInt(addrParamIdx + untracked)), locationData);
+          this.emit(Op.OP_PICK, locationData);
+        } else if (slot.addressLiteral !== undefined) {
+          this.emit(hexToBin(slot.addressLiteral), locationData);
+        } else {
+          throw new Error(
+            'external call target address must be a constructor/function parameter or self-pinned state value '
+            + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
+          );
+        }
+      };
+      if (anchorIdxStack >= 0) {
+        this.emitLogicalIdentityOrDirectIdentity(anchorIdxStack, pushExpectedAddress, locationData);
       } else {
-        throw new Error(
-          'external call target address must be a constructor/function parameter or self-pinned state value '
-          + `(target '${slot.interfaceName}.${slot.functionName}' in function '${node.name}')`,
-        );
+        // +2 for the 2 untracked values on the real stack: B_master_bytecode and B_master_inputIdx
+        pushExpectedAddress(2);                     // [idx, B_master_bytecode, expected_addr]
+        this.emit(Op.OP_EQUALVERIFY, locationData); // [idx]
       }
-      this.emit(Op.OP_EQUALVERIFY, locationData);   // [idx]
       // Stack: [B_master_inputIdx] (1 untracked)
 
       // .call / .delegatecall mode: minting capability verification

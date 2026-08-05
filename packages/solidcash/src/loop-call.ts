@@ -171,6 +171,8 @@ export function buildOpaqueLoopCallTransaction(opts: BuildOpaqueLoopCallOptions)
   const internalArgs: bigint[] = [];
   for (const inp of abiFn.inputs) {
     if (inp.name === '__internal__externalCallInputBase') internalArgs.push(1n);
+    // Loop dispatch pins each callee against the on-chain target list, so identity takes the direct proof.
+    else if (inp.name.startsWith('__internal__extcallAnchorIdx')) internalArgs.push(-1n);
     else if (inp.name === '__internal__externalReturnOutputIdx') internalArgs.push(BigInt(1 + n));
     else if (inp.name === '__internal__returnOutputIdx') internalArgs.push(-1n);
   }
@@ -290,6 +292,7 @@ export function buildTypedLoopCallTransaction(opts: BuildTypedLoopCallOptions): 
   let viewCursor = 0;
   for (const inp of abiFn.inputs) {
     if (inp.name === '__internal__externalCallInputBase') fullArgs.push(1n);
+    else if (inp.name.startsWith('__internal__extcallAnchorIdx')) fullArgs.push(-1n);
     else if (inp.name.startsWith('__internal__loopTargets')) fullArgs.push(targetsArg);
     else if (inp.name.startsWith('__internal__viewReturn')) {
       const vals = opts.viewReturns?.[viewCursor];

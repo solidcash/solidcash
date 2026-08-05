@@ -8922,6 +8922,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // each callee's master input index from ONE witness list, so the fill below appends that list (at the
     // range's position) instead of per-group indices.
     const loopIdxRanges: { start: number; count: number; fnPtrCall: boolean }[] = [];
+    // Direct-group index -> co-spent logical-identity anchor input index, for callees whose Solidity-visible
+    // address is a logical CREATE address rather than their physical covenant. Absent entries fall back to -1
+    // (direct identity proof), which is every ordinary contract.
+    const externalCallAnchorIndices = new Map<number, bigint>();
     if (externalCalls?.some((ec) => ec.loopArrayVar)) {
       const expanded: ExternalCallAbi[] = [];
       presetResolved = [];
@@ -9848,6 +9852,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const thisGroupEnd = currentInputBase
               + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length);
             bFinalArgs.push(BigInt(thisGroupEnd));
+          } else if (paramName.startsWith('__internal__extcallAnchorIdx')) {
+            // Batch-route callees address their own callees physically; -1 selects the direct identity proof.
+            bFinalArgs.push(-1n);
           } else if (paramName === '__internal__msgSenderCategory') {
             bFinalArgs.push(hexToBin(meta.callerCategoryId));
           } else if (paramName === '__internal__blockhashInputIndex') {
@@ -10030,6 +10037,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (ecSlot.fnPtrCall || (!hasLoopSlotAbi && directGroupCount > 1)) {
           finalArgs = [...finalArgs, BigInt(groupMasterIndices[i])];
         }
+      }
+
+      // Per-slot logical-identity anchor input index. -1 selects the direct identity proof (the visible address
+      // IS the co-spent master's locking bytecode); a real index selects the proxy anchor proof. Mirrors the
+      // compiler's synthesis condition: fixed-slot calls whose target is a value rather than a baked literal or
+      // tx-derived msg.sender. Loop-expanded groups own no anchor param, exactly as for the master index above.
+      for (let i = 0; i < directGroupCount; i++) {
+        if (loopIdxRanges.some((r) => i >= r.start && i < r.start + r.count)) continue;
+        const anchorSlot = groupMetas[i].ecSlot as {
+          addressParam?: string; addressLiteral?: string; addressIsMsgSender?: boolean;
+        };
+        if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
+          || anchorSlot.addressIsMsgSender) continue;
+        finalArgs = [...finalArgs, externalCallAnchorIndices.get(i) ?? -1n];
       }
 
       // Append per-slot _externalReturnOutputIdx params for A's args (direct returning calls only)
@@ -11013,6 +11034,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const value = child.compilerRoute?.internalArgs?.[input.name];
             if (value !== undefined) return value;
           }
+          // A nested callee reaches its own callees by their physical address, so its identity checks take the
+          // direct proof. -1 keeps that branch selected without co-spending an anchor.
+          if (input.name.startsWith('__internal__extcallAnchorIdx')) return -1n;
           throw new Error(
             `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
           );

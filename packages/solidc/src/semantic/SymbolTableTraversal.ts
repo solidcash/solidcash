@@ -2600,6 +2600,26 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
             this.pushToStack(idxParam);
           }
+
+          // Per-call logical-identity anchor input index. An upgrade proxy's Solidity-visible address is its
+          // stable logical CREATE address, while the co-spent state holder carries the physical covenant
+          // bytecode, so `master bytecode == expected address` cannot hold for a proxied target. The SDK fills
+          // the input index of the callee's co-spent immutable SCID anchor here, or -1 for an ordinary contract
+          // whose visible address IS its physical one. See emitExternalCallVerification for the proof.
+          // Only value-sourced targets need it: a baked literal and a tx-derived msg.sender are already physical.
+          for (let i = 0; i < slotCount; i++) {
+            const slot = externalCallSlots[i];
+            if (slot.loopArrayVar || slot.inlineLoopDispatch) continue;
+            if (slot.addressLiteral !== undefined || slot.addressIsMsgSender || !slot.addressParam) continue;
+            const anchorName = `__internal__extcallAnchorIdx${slot.slotIndex}`;
+            const anchorParam = new ParameterNode(PrimitiveType.BIGINT, anchorName);
+            anchorParam.location = node.location;
+            node.parameters.push(anchorParam);
+            this.symbolTables[0].set(Symbol.variable(anchorParam));
+            const anchorSymbol = this.symbolTables[0].get(anchorName);
+            if (anchorSymbol) anchorSymbol.references.push({ name: anchorName } as IdentifierNode);
+            this.pushToStack(anchorParam);
+          }
         }
       }
     }

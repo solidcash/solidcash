@@ -858,10 +858,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Register event definitions (keyed by full signature to allow overloading). The redefinition check is
     // within-contract only: a same-sig event registered by a sibling/library scope is not a redefinition.
     const localEventSigs = new Set<string>();
+    if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
+      throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
+    }
+    const interfaceEventSigs = new Set<string>();
+    if (this.compilerOptions.solidityImportCompat) {
+      const visitedInterfaces = new Set<string>();
+      const collectInterfaceEvents = (name: string): void => {
+        if (visitedInterfaces.has(name)) return;
+        visitedInterfaces.add(name);
+        const iface = this.interfaceMap.get(name);
+        if (!iface) return;
+        for (const event of iface.eventDefinitions) {
+          interfaceEventSigs.add(computeEventSignature(
+            event.name, event.parameters.map((parameter) => parameter.type?.toString() ?? 'address'),
+          ));
+        }
+        for (const parent of iface.parents) collectInterfaceEvents(parent);
+      };
+      for (const name of node.implements) collectInterfaceEvents(name);
+    }
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (localEventSigs.has(sig)) {
+      if (localEventSigs.has(sig) || interfaceEventSigs.has(sig)) {
         throw new EventRedefinitionError(ev);
       }
       localEventSigs.add(sig);

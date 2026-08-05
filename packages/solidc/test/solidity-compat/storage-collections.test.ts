@@ -1131,8 +1131,8 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
   // literal (`m[k[i]] = true`) OR an int-kind INVARIANT PARAM (`m[k[i]] = v`): the SDK mints valueTail = encode(v) and
   // the covenant PICKs v + EQUALVERIFYs node.value == v (VM-proven in SortedInsertLoopValue). A PER-KEY value
   // (`m[k[i]] = vs[i]`) and an RMW (`+= v`) are instead handled by the per-iteration UPSERT loop (source-order 1:1
-  // co-spend/mint, update+insert - SortedUpsertLoop), NOT the range-splice. Only the loop var (`= i`, neither a param
-  // nor an array element) still falls to the clean SortedMappingCodegenPendingError.
+  // co-spend/mint, update+insert - SortedUpsertLoop), NOT the range-splice. The loop var (`= i`) is per-iteration
+  // too, so it takes the same upsert path.
   const mkBigint = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
     + ` function f(int[] ks, int[] vs, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
   const boolLoop = 'contract C() { mapping(int => bool) m;'
@@ -1231,9 +1231,12 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(infos.map((info) => info.collection)).toEqual(['a', 'b']);
     expect(infos.map((info) => info.predicateEquals)).toEqual(['1', '2']);
   });
-  it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
-    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
-      .toThrow(/C2 linked-list transition generator/);
+  it('routes a loop-var value (m[ks[i]] = i) through the per-iteration upsert loop', () => {
+    // The range-splice insert loop assigns ONE loop-invariant value to every new node, so this used to fail
+    // closed. The upsert loop mints each entry separately, which is the shape a per-iteration value needs.
+    // SortedUpsertLoop.test.ts VM-proves each key receives its own index (setIndex([3,9]) -> 3 = 0, 9 = 1).
+    expect(abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }')?.sortedUpsertLoopInfo?.[0]?.op)
+      .toBe('set');
   });
 });
 
@@ -1243,7 +1246,7 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   // SynthesizeExternalAddressLocals now traces the receiver through casts + inliner-local aliases (and single-
   // assignment user locals) back to the self-pinned state chain and hoists it, so the covenant pins the co-spent
   // callee to that chain (__extaddr_ll_ source), NOT a caller input. A reassignable local is NOT traced (a caller
-  // could rebind it - the forgery extcall-target-pinning.md forbids), so it fails closed.
+  // could rebind it - the forgery extcall-target-pinning.md forbids): it must never acquire a state-chain source.
   const src = (mid: string): string => 'pragma solidcash >=0.8.0;'
     + ' interface IEcho { function ping(pubkey o, sig s); } struct Config { address token; }'
     + ' contract C() { Config config; int calls;'
@@ -1256,9 +1259,12 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   it('sources a single-assignment user-local intermediary from the state chain (Marketplace token = IERC20(job.token))', () => {
     expect(extcallOf(src('IEcho token = IEcho(config.token);'))?.addressStateVar).toBe('ll_config_token');
   });
-  it('fails closed on a REASSIGNED local (a caller-rebindable target is never hoisted)', () => {
-    expect(() => compileString(src('IEcho token = IEcho(config.token); token = IEcho(attacker);'), {}))
-      .toThrow(/external call target address must be a constructor\/function parameter/);
+  it('never hoists a REASSIGNED local (a caller-rebindable target gets no state-chain source)', () => {
+    // The forgery this guards against is a target that CLAIMS a self-pinned state chain while the runtime value
+    // is caller-chosen. `token` ends up bound to the `attacker` PARAMETER, which is the ordinary permitted form
+    // (the identity check picks it off the stack), so compiling is fine - acquiring `ll_config_token` is not.
+    expect(extcallOf(src('IEcho token = IEcho(config.token); token = IEcho(attacker);'))?.addressStateVar)
+      .toBeUndefined();
   });
   it('sources a DIRECT address(config.token).call cast (no helper) from the state chain', () => {
     const direct = 'pragma solidcash >=0.8.0; struct Config { address token; } contract C() { Config config; bytes32 d;'

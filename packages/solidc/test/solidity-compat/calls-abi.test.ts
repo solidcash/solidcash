@@ -1020,3 +1020,13 @@ describe('abi.encodePacked supported source types', () => {
     ).contractName).toBe('C');
   });
 });
+
+describe('soft-keyword method names', () => {
+  it('accepts leave as an interface method name and call', () => {
+    expect(compileString(
+      'interface IBar { function leave(uint share) external; }'
+      + ' contract C(IBar bar) { function f(uint share) public { bar.leave(share); require(true); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});

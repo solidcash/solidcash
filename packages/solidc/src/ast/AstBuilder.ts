@@ -6968,7 +6968,7 @@ export default class AstBuilder
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier()?.getText()
+    const methodName = ctx.anyIdentifier()?.getText()
       ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
@@ -8913,7 +8913,8 @@ export default class AstBuilder
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     const ctx = lhsCtx as MethodCallContext;
-    const method = ctx.Identifier()?.getText() ?? 'length';
+    const method = ctx.anyIdentifier()?.getText()
+      ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
     const callArgs = this.buildCallArguments(ctx.expressionList());

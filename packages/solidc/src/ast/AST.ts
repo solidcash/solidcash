@@ -381,6 +381,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
   hadInlineAssembly?: boolean;
+  // Parse-shape proof that a Solidity <0.8 compatibility helper implements exactly one checked bounded
+  // arithmetic operation (or narrowing cast). Split-facet codegen may replace the wrapper with the native
+  // SolidCash operation, whose bounds check has the same success/failure behavior.
+  nativeCheckedMath?: '+' | '-' | '*' | 'cast';
   // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
   // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
   returnedSelfFunctionName?: string;

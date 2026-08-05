@@ -758,6 +758,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
+  private nativeLegacyMathFunctions = new Set<FunctionDefinitionNode>();
   private compactHelperIds: {
     next: bigint;
     nextPositive?: bigint;
@@ -1446,6 +1447,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.constantExpressions.set(cd.name, cd.expression);
     }
 
+    // Solidity <0.8 compatibility libraries emulate checked arithmetic with a wrapping operation followed by a
+    // require. SolidCash bounded arithmetic is already checked. On split facets, lower the well-known BoringMath
+    // helpers directly and omit their now-redundant OP_DEFINE bodies.
+    this.nativeLegacyMathFunctions = new Set(node.contract.isSplitFacet && this.compilerOptions.solidityImportCompat
+      ? node.freeFunctions.filter((fn) => fn.nativeCheckedMath !== undefined)
+      : []);
+
     // Register free functions in userFunctionDefs map
     for (const f of node.freeFunctions) {
       this.userFunctionDefs.set(f.name, f);
@@ -1453,6 +1461,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
+      if (this.nativeLegacyMathFunctions.has(f)) continue;
       this.emitFunctionDefine(f);
     }
 
@@ -6797,6 +6806,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // User-defined function call via OP_INVOKE
     const targetFunc = node.resolvedFunction;
     if (targetFunc && targetFunc.functionId !== undefined) {
+      if (this.nativeLegacyMathFunctions.has(targetFunc) && node.parameters.length === 1) {
+        const cast = new CastNode(targetFunc.returnTypes[0], node.parameters[0], false);
+        cast.location = node.location;
+        return this.visitCast(cast);
+      }
+      if (this.nativeLegacyMathFunctions.has(targetFunc) && node.parameters.length === 2) {
+        const operator = targetFunc.nativeCheckedMath === '+' ? BinaryOperator.PLUS
+          : targetFunc.nativeCheckedMath === '-' ? BinaryOperator.MINUS : BinaryOperator.MUL;
+        const binary = new BinaryOpNode(node.parameters[0], operator, node.parameters[1]);
+        binary.location = node.location;
+        binary.type = node.type;
+        return this.visitBinaryOp(binary);
+      }
       return this.visitUserFunctionCall(node, targetFunc);
     }
 

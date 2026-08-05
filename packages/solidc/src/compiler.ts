@@ -40,6 +40,7 @@ import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
+import MarkLegacyCheckedMath from './semantic/MarkLegacyCheckedMath.js';
 import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
@@ -3857,6 +3858,9 @@ function compileResolvedAst(
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);
+
+  // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
+  if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   ast = ast.accept(new NamedReturnTransformation()) as Ast;

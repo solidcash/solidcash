@@ -84,6 +84,10 @@ export interface OutlineResult {
 const elementKey = (element: Script[number]): string =>
   (typeof element === 'number' ? `o${element}` : `d${binToHex(element)}`);
 
+const isParameterElement = (element: Script[number]): boolean => element instanceof Uint8Array
+  || (typeof element === 'number' && (element === Op.OP_0 || element === Op.OP_1NEGATE
+    || (element >= Op.OP_1 && element <= Op.OP_16)));
+
 /** Encoded size of one Script element, mirroring libauth's minimal `encodeDataPush`. */
 const elementByteSize = (element: Script[number]): number => {
   if (typeof element === 'number') return 1;
@@ -160,20 +164,32 @@ function longestBalancedSpan(
 }
 
 interface Occurrence { body: number; start: number }
+interface CandidateOccurrence extends Occurrence {
+  parameters: Script;
+  originalBytes: number;
+}
 
 interface Candidate {
   span: Script;
   bytes: number;
-  occurrences: Occurrence[];
+  sourceSpanLength: number;
+  parameterOffsets: number[];
+  occurrences: CandidateOccurrence[];
   saved: number;
 }
 
-/** Net bytes saved by sharing `count` copies of a `bytes`-sized span behind `idPushBytes`-sized invocations. */
-function savingsOf(bytes: number, count: number, idPushBytes: number): number {
-  const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
-  const definitionCost = definitionOverhead + bytes + idPushBytes + 1; // body push + id push + OP_DEFINE
-  const siteCost = idPushBytes + 1; // id push + OP_INVOKE
-  return count * bytes - definitionCost - count * siteCost;
+function candidateSavings(
+  candidate: Pick<Candidate, 'bytes'>,
+  occurrences: readonly CandidateOccurrence[],
+  idPushBytes: number,
+): number {
+  const definitionOverhead = candidate.bytes < 76 ? 1 : candidate.bytes < 256 ? 2 : 3;
+  const definitionCost = definitionOverhead + candidate.bytes + idPushBytes + 1;
+  const original = occurrences.reduce((total, occurrence) => total + occurrence.originalBytes, 0);
+  const sites = occurrences.reduce<number>((total, occurrence) => total
+    + occurrence.parameters.reduce<number>((bytes, parameter) => bytes + elementByteSize(parameter), 0)
+    + idPushBytes + 1, 0);
+  return original - definitionCost - sites;
 }
 
 /**
@@ -182,7 +198,8 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
  * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
  * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
  */
-function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[] {
+function findCandidates(bodies: OutlineBody[], idPushBytes: number, parameterize: boolean): Candidate[] {
+  const windowElements = MINIMUM_WINDOW_ELEMENTS;
   const keyIds = new Map<string, number>();
   const idOf = (element: Script[number]): number => {
     const key = elementKey(element);
@@ -193,12 +210,17 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
+  // In the second phase data pushes are parameters at discovery; opcodes must still match exactly. Profitability
+  // below decides whether moving the differing pushes to the callsite actually saves bytes.
+  const templateIds = bodies.map((body) => body.script.map((element) =>
+    (isParameterElement(element) ? 0 : idOf(element))));
+  const matchingIds = parameterize ? templateIds : bodyIds;
 
   const windows = new Map<number, Occurrence[]>();
-  bodyIds.forEach((ids, bodyIndex) => {
-    for (let i = 0; i + MINIMUM_WINDOW_ELEMENTS <= ids.length; i += 1) {
+  matchingIds.forEach((ids, bodyIndex) => {
+    for (let i = 0; i + windowElements <= ids.length; i += 1) {
       let hash = 0;
-      for (let j = 0; j < MINIMUM_WINDOW_ELEMENTS; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      for (let j = 0; j < windowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
       const group = windows.get(hash) ?? [];
       group.push({ body: bodyIndex, start: i });
       windows.set(hash, group);
@@ -211,8 +233,8 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
     if (bucket.length < 2) continue;
     const exact = new Map<string, Occurrence[]>();
     for (const occurrence of bucket) {
-      const ids = bodyIds[occurrence.body];
-      const key = ids.slice(occurrence.start, occurrence.start + MINIMUM_WINDOW_ELEMENTS).join(',');
+      const ids = matchingIds[occurrence.body];
+      const key = ids.slice(occurrence.start, occurrence.start + windowElements).join(',');
       const group = exact.get(key) ?? [];
       group.push(occurrence);
       exact.set(key, group);
@@ -224,14 +246,14 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
   const candidates: Candidate[] = [];
   for (const group of groups.slice(0, CANDIDATE_GROUPS_PER_ROUND)) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    let length = MINIMUM_WINDOW_ELEMENTS;
+    let length = windowElements;
     for (;;) {
       const first = group[0];
       const at = length;
-      if (first.start + at >= bodyIds[first.body].length) break;
-      const id = bodyIds[first.body][first.start + at];
+      if (first.start + at >= matchingIds[first.body].length) break;
+      const id = matchingIds[first.body][first.start + at];
       const agrees = group.every((occurrence) => {
-        const ids = bodyIds[occurrence.body];
+        const ids = matchingIds[occurrence.body];
         return occurrence.start + at < ids.length && ids[occurrence.start + at] === id;
       });
       if (!agrees) break;
@@ -256,19 +278,50 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
     const starts = group
       .map((occurrence) => ({ body: occurrence.body, start: occurrence.start + balanced.start }))
       .sort((left, right) => left.body - right.body || left.start - right.start);
-    const occurrences: Occurrence[] = [];
+    const startsKept: Occurrence[] = [];
     for (const occurrence of starts) {
-      const previous = occurrences[occurrences.length - 1];
+      const previous = startsKept[startsKept.length - 1];
       if (previous && previous.body === occurrence.body && occurrence.start < previous.start + spanLength) continue;
-      occurrences.push(occurrence);
+      startsKept.push(occurrence);
     }
-    if (occurrences.length < 2) continue;
+    if (startsKept.length < 2) continue;
 
-    const saved = savingsOf(balanced.bytes, occurrences.length, idPushBytes);
+    const parameterOffsets: number[] = [];
+    for (let offset = 0; parameterize && offset < spanLength; offset += 1) {
+      const values = startsKept.map((occurrence) => bodies[occurrence.body].script[occurrence.start + offset]);
+      if (values.every((value) => elementKey(value) === elementKey(values[0]))) continue;
+      if (!values.every(isParameterElement)) {
+        parameterOffsets.length = 0;
+        break;
+      }
+      parameterOffsets.push(offset);
+    }
+    // Parameter pushes are parked on the altstack before the shared body starts. A body that manipulates the
+    // altstack or conditionally skips a placeholder could consume or strand them, so parameterization is limited
+    // to straight-line, altstack-free spans. Exact candidates retain the broader balanced-control-flow support.
+    const sourceSpan = region.slice(balanced.start, balanced.end);
+    if (parameterOffsets.length > 0 && sourceSpan.some((element) => typeof element === 'number'
+      && (OPEN_OPS.has(element) || CLOSE_OPS.has(element) || element === Op.OP_ELSE
+        || element === Op.OP_TOALTSTACK || element === Op.OP_FROMALTSTACK))) continue;
+    const span = [...new Array(parameterOffsets.length).fill(Op.OP_TOALTSTACK), ...sourceSpan];
+    for (const offset of parameterOffsets) span[parameterOffsets.length + offset] = Op.OP_FROMALTSTACK;
+    const bytes = span.reduce((total, element) => total + elementByteSize(element), 0);
+    const occurrences: CandidateOccurrence[] = startsKept.map((occurrence) => ({
+      ...occurrence,
+      parameters: parameterOffsets.map((offset) =>
+        bodies[occurrence.body].script[occurrence.start + offset]),
+      originalBytes: bodies[occurrence.body].script
+        .slice(occurrence.start, occurrence.start + spanLength)
+        .reduce<number>((total, element) => total + elementByteSize(element), 0),
+    }));
+    const candidate = { span, bytes, sourceSpanLength: spanLength, parameterOffsets, occurrences, saved: 0 };
+    const saved = candidateSavings(candidate, occurrences, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span: region.slice(balanced.start, balanced.end),
-      bytes: balanced.bytes,
+      span,
+      bytes,
+      sourceSpanLength: spanLength,
+      parameterOffsets,
       occurrences,
       saved,
     });
@@ -300,75 +353,94 @@ export function outlineSharedSpans(
   const functions: OutlinedFunction[] = [];
   let savedBytes = 0;
 
-  for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
+  // Exact spans reach their fixed point first. Parameterized spans then operate only on that compressed grammar,
+  // so they can add savings without displacing a stronger exact candidate from an earlier round.
+  for (const parameterize of [false, true]) {
+    for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
-    const corpus = [
-      ...working,
-      ...functions.map((fn) => ({
-        script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
-      })),
-    ];
-    // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
-    const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES);
-    if (candidates.length === 0) break;
+      const corpus = [
+        ...working,
+        ...functions.map((fn) => ({
+          script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
+        })),
+      ];
+      // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
+      const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES, parameterize);
+      if (candidates.length === 0) break;
 
-    // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
-    // a claimed range makes every overlapping candidate stale until the next round re-measures.
-    const claimed = corpus.map(() => new Set<number>());
-    const applied: { definition: OutlinedFunction; occurrences: Occurrence[]; saved: number }[] = [];
-    for (const candidate of candidates) {
-      if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
-      const spanLength = candidate.span.length;
-      const free = candidate.occurrences.filter((occurrence) => {
-        for (let i = 0; i < spanLength; i += 1) {
-          if (claimed[occurrence.body].has(occurrence.start + i)) return false;
+      // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
+      // a claimed range makes every overlapping candidate stale until the next round re-measures.
+      const claimed = corpus.map(() => new Set<number>());
+      const applied: {
+        definition: OutlinedFunction;
+        candidate: Candidate;
+        occurrences: CandidateOccurrence[];
+        saved: number;
+      }[] = [];
+      for (const candidate of candidates) {
+        if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
+        const spanLength = candidate.sourceSpanLength;
+        const free = candidate.occurrences.filter((occurrence) => {
+          for (let i = 0; i < spanLength; i += 1) {
+            if (claimed[occurrence.body].has(occurrence.start + i)) return false;
+          }
+          return true;
+        });
+        if (free.length < 2) continue;
+        const saved = candidateSavings(candidate, free, PROBE_IDENTIFIER_PUSH_BYTES);
+        if (saved <= 0) continue;
+        for (const occurrence of free) {
+          for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
         }
-        return true;
-      });
-      if (free.length < 2) continue;
-      if (savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES) <= 0) continue;
-      for (const occurrence of free) {
-        for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
+        applied.push({
+          definition: {
+            id: allocateId(),
+            script: candidate.span,
+            // The shared body inherits its first site's locations; every site maps to the same source construct.
+            locationData: [
+              ...new Array(candidate.parameterOffsets.length).fill(corpus[free[0].body].locationData[free[0].start]),
+              ...corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
+            ],
+          },
+          candidate,
+          occurrences: free,
+          saved,
+        });
       }
-      applied.push({
-        definition: {
-          id: allocateId(),
-          script: candidate.span,
-          // The shared body inherits its first site's locations; every site maps to the same source construct.
-          locationData: corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
-        },
-        occurrences: free,
-        saved: savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES),
-      });
-    }
-    if (applied.length === 0) break;
+      if (applied.length === 0) break;
 
-    // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
-    const edits = applied.flatMap((entry) =>
-      entry.occurrences.map((occurrence) => ({ occurrence, entry })));
-    edits.sort((left, right) =>
-      right.occurrence.body - left.occurrence.body || right.occurrence.start - left.occurrence.start);
-    for (const { occurrence, entry } of edits) {
-      const target = corpus[occurrence.body];
-      const spanLength = entry.definition.script.length;
-      const location = target.locationData[occurrence.start];
-      target.script.splice(occurrence.start, spanLength, entry.definition.id, Op.OP_INVOKE);
-      target.locationData.splice(occurrence.start, spanLength, location, location);
-      if (target.origins) {
-        const origin = target.origins[occurrence.start];
-        target.origins.splice(occurrence.start, spanLength, origin, origin);
-      }
-      if (target.anchors) {
+      // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
+      const edits = applied.flatMap((entry) =>
+        entry.occurrences.map((occurrence) => ({ occurrence, entry })));
+      edits.sort((left, right) =>
+        right.occurrence.body - left.occurrence.body || right.occurrence.start - left.occurrence.start);
+      for (const { occurrence, entry } of edits) {
+        const target = corpus[occurrence.body];
+        const spanLength = entry.candidate.sourceSpanLength;
+        const location = target.locationData[occurrence.start];
+        const replacement: Script = [...occurrence.parameters, entry.definition.id, Op.OP_INVOKE];
+        const parameterLocations = entry.candidate.parameterOffsets
+          .map((offset) => target.locationData[occurrence.start + offset]);
+        target.script.splice(occurrence.start, spanLength, ...replacement);
+        target.locationData.splice(occurrence.start, spanLength, ...parameterLocations, location, location);
+        if (target.origins) {
+          const origin = target.origins[occurrence.start];
+          const parameterOrigins = entry.candidate.parameterOffsets
+            .map((offset) => target.origins![occurrence.start + offset]);
+          target.origins.splice(occurrence.start, spanLength, ...parameterOrigins, origin, origin);
+        }
+        if (target.anchors) {
         // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
-        const shrink = spanLength - 2;
-        target.anchors = target.anchors.map((index) =>
-          (index >= occurrence.start + spanLength ? index - shrink : index));
+          const shrink = spanLength - replacement.length;
+          target.anchors = target.anchors.map((index) =>
+            (index >= occurrence.start + spanLength ? index - shrink : index));
+        }
       }
-    }
 
-    for (const entry of applied) {
-      functions.push(entry.definition);
-      savedBytes += entry.saved;
+      for (const entry of applied) {
+        functions.push(entry.definition);
+        savedBytes += entry.saved;
+      }
     }
   }
 

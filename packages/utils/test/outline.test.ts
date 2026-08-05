@@ -119,4 +119,31 @@ describe('cross-function bytecode outlining', () => {
       expect(isAlias).toBe(false);
     }
   });
+
+  it('shares straight-line spans whose pushed constants differ', () => {
+    const operations: Script[] = [
+      [Op.OP_ADD, Op.OP_SWAP, Op.OP_SUB, Op.OP_OVER, Op.OP_BOOLAND, Op.OP_ROT, Op.OP_BOOLOR, Op.OP_TUCK],
+      [Op.OP_NUMEQUAL, Op.OP_NIP, Op.OP_LESSTHAN, Op.OP_DROP, Op.OP_SHA256, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+      [Op.OP_HASH160, Op.OP_OVER, Op.OP_GREATERTHAN, Op.OP_NIP, Op.OP_SHA1, Op.OP_SWAP, Op.OP_ADD, Op.OP_TUCK],
+      [Op.OP_HASH256, Op.OP_ROT, Op.OP_NUMNOTEQUAL, Op.OP_DROP, Op.OP_RIPEMD160, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+    ];
+    const parameterized = (offset: number): Script => operations.flatMap((segment, index) => [
+      Uint8Array.of(offset + index + 17), ...segment,
+    ]);
+    const result = outlineSharedSpans([
+      body(parameterized(0)),
+      body(parameterized(32)),
+    ], allocateId);
+
+    const shared = result.functions.find((fn) => fn.script.includes(Op.OP_TOALTSTACK));
+    expect(shared).toBeDefined();
+    const parameterCount = shared!.script.filter((element) => element === Op.OP_TOALTSTACK).length;
+    expect(parameterCount).toBeGreaterThan(0);
+    expect(shared!.script.filter((element) => element === Op.OP_FROMALTSTACK)).toHaveLength(parameterCount);
+    for (const rewritten of result.bodies) {
+      expect(rewritten.script.slice(0, parameterCount).every((element) => element instanceof Uint8Array)).toBe(true);
+      expect(rewritten.script.slice(-2)).toEqual([shared!.id, Op.OP_INVOKE]);
+      expect(rewritten.locationData).toHaveLength(rewritten.script.length);
+    }
+  });
 });

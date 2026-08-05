@@ -11237,6 +11237,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
             if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
+            // Logical-identity anchor index for a call the delegated implementation makes. -1 selects the direct
+            // identity proof; resolving real anchors for proxied callees is the remaining piece of that feature.
+            if (inp.name.startsWith('__internal__extcallAnchorIdx')) return -1n;
             throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
           });
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

@@ -4761,7 +4761,13 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
     seen.add(contract.name);
-    if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
+    // Before Solidity 0.7, an `internal` constructor was the way to mark a contract abstract. The parser
+    // deliberately accepts that legacy spelling without rewriting `isAbstract` (single-contract compilation
+    // still needs the declaration for inheritance), but solc's multi-artifact output must not expose it as a
+    // deployable contract. In particular, compiling such a constructor as an entry point gives inherited
+    // constructor effects (events/state writes) no transaction block layout.
+    if (contract.isAbstract
+      || contract.constructorDef?.modifiers.includes(FunctionModifier.INTERNAL)) continue;
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     const artifact = compileWithExternalAdmissionFallback(
       code, mergedCompilerOptions, errorListener, contract.name,

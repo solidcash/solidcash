@@ -29,6 +29,18 @@ describe('constructor visibility compatibility', () => {
 });
 
 describe('abstract contract instantiation eligibility', () => {
+  it('excludes legacy internal-constructor bases from multi-artifact output', () => {
+    const artifacts = compileStringMulti(`
+      pragma solidity 0.6.12;
+      contract Base {
+        event Initialized(int value);
+        constructor() internal { emit Initialized(1); }
+      }
+      contract Child is Base { function use() public { require(true); } }
+    `, { solidityImportCompat: true });
+    expect(Object.keys(artifacts)).toEqual(['Child']);
+  });
+
   it('rejects a forward reference instantiated before its abstract declaration', () => {
     expect(() => compileStringRaw(
       'contract B { A a; constructor() { a = new A(address(this)); } }'

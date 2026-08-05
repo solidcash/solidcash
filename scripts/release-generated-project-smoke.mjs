@@ -19,10 +19,10 @@ const checks = [
     ],
   },
   {
-    name: 'stateless calls, stateful deployment/call, signers, and fixture reset',
+    name: 'stateless calls and maintained stateful deploy/call/assert/reset golden path',
     args: [
       'workspace', 'testing-suite', 'vitest', 'run',
-      'test/example.test.ts', 'test/harness.test.ts', 'test/block-timestamp.test.ts',
+      'test/example.test.ts', 'test/harness.test.ts', 'test/block-timestamp.test.ts', 'test/golden-path.test.ts',
     ],
   },
 ];

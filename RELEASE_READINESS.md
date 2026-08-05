@@ -241,12 +241,17 @@ it must not silently compile to incorrect covenant behavior.
   superseded.
   - The integrated compiler task owns the current cache. `yarn test:generated-project-smoke` proves cold and warm
     runs, dependency invalidation, qualified factory lookup, last-valid-artifact retention, and clean removal.
-- [ ] Demonstrate one maintained golden path:
+- [x] Demonstrate one maintained golden path:
 
   ```text
   initialize project → compile → obtain signers → deploy → call →
   assert event/revert/state → reset fixture → rerun
   ```
+
+  - `examples/testing-suite/test/golden-path.test.ts` compiles and resolves `GoldenToken`, obtains funded
+    signers, deploys initialized state, sends calls, checks decoded positional event arguments, checks a named
+    require reason and state, restores a named fixture, and reruns the successful path. It is part of
+    `yarn test:generated-project-smoke`.
 
 - [x] Complete or explicitly defer HRE injection.
   - `createHardhatRuntimeEnvironment` injects config, the selected network/provider, `ethers`, network helpers,
@@ -254,14 +259,20 @@ it must not silently compile to incorrect covenant behavior.
 - [-] Defer hardhat-deploy-style deployment scripts, tags, and dependency graphs.
   - The first-release golden path uses factories, `deployContract`, and `upgrades.deployProxy`; no selected example
     or release gate requires the separate hardhat-deploy workflow.
-- [ ] Complete stateless contract factory behavior needed by the golden path.
+- [-] Defer additional stateless contract-factory behavior not needed by the maintained golden path.
+  - The release path is stateful; existing stateless calls remain covered by the same generated-project gate.
 - [x] Verify fixture/snapshot behavior on mocknet and document regtest behavior.
   - `harness.test.ts` proves snapshot restoration without fixture reruns on mocknet. Regtest deliberately has no
     rollback snapshot primitive: live-node tests use fresh deployments/categories and run serially, as the
     application regtest gate does.
-- [ ] Support the event and custom-error argument assertions used by the golden path.
+- [-] Support event arguments; defer custom-error runtime argument matching.
+  - The golden path proves Chai-style positional event arguments. BCH failed calls do not transport EVM-style
+    revert payloads, so typed custom-error argument recovery is not a first-release requirement; declarations
+    remain artifact metadata and the maintained path checks a named require reason.
 - [ ] Publish a Hardhat/ethers/chai-to-SolidCash migration table.
-- [ ] Include a complete stateful or token-contract test project.
+- [x] Include a complete stateful or token-contract test project.
+  - `GoldenToken` and `golden-path.test.ts` provide the maintained compile/deploy/call/event/revert/state/reset
+    project.
   - Detailed tracker: [`examples/testing-suite/HARDHAT-PARITY.md`](examples/testing-suite/HARDHAT-PARITY.md).
 
 ### Application-level conformance
@@ -399,10 +410,10 @@ Update this table whenever a release candidate is cut.
 | Compiler tests | **PASS** — 3,145/3,145, including storage-pointer definite-assignment and alias-source regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,095 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
+| Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
-| Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
-| Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 18/18 | `yarn test:generated-project-smoke` | 2026-08-05 |
+| Testing-suite golden path | **PASS** — maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `examples/testing-suite/test/golden-path.test.ts` | 2026-08-05 |
+| Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |

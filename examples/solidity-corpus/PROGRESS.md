@@ -5422,6 +5422,11 @@ The release bench scope is now explicitly limited to single-file fixtures under 
 suites. On corpus revision `816d9b2a`, the retained positive result is **2698/2805**, with 107 named failures and
 zero residual timeouts after the published 30-second and 120-second fresh-worker retry tiers.
 
+The primary-run timeouts are wall-clock budget expirations in long-lived parallel workers, where accumulated
+parser/compiler state and a small number of unusually expensive fixtures make completion time uneven. Fresh-worker
+retries isolate those fixtures and recovered every retained result; no residual timeout is currently an unknown
+release result.
+
 All 2,158 negative fixtures were audited. The retained baseline is **1,835 rejected / 323 over-accepted**, with
 zero unchecked fixtures and zero timeouts. Storage-pointer definite-assignment tracking closed five accepted
 negatives and is covered by the complete **3,145/3,145** compiler suite. A subsequent alias-source hardening pass

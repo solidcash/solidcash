@@ -8523,9 +8523,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // large endpoints (particularly costly for int256/uint256) while preserving the original value below it.
     this.emit(Op.OP_DUP, locationData);
     if (type.signed) {
+      // OP_LSHIFTNUM, not OP_LSHIFT: the latter is OP_LSHIFTBIN, which shifts a byte string within its existing
+      // length, so 1 << 255 would collapse to a non-minimal 0x00 rather than producing 2^255.
       this.emit(Op.OP_1, locationData);
       this.emit(encodeInt(BigInt(type.bits - 1)), locationData);
-      this.emit(Op.OP_LSHIFT, locationData);
+      this.emit(Op.OP_LSHIFTNUM, locationData);
       this.emit(Op.OP_ADD, locationData);
     }
     const width = type.bits / 8;
@@ -8534,7 +8536,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(width)), locationData);
     this.emit(Op.OP_SPLIT, locationData);
     this.emit(Op.OP_NIP, locationData);
-    this.emit(Op.OP_0, locationData);
+    // The remainder is a one-byte string. Compare it as data against a one-byte zero: OP_0 pushes the EMPTY
+    // string, and OP_BIN2NUM would decode 0x80 (a negative value's sign byte) to zero and admit it.
+    this.emit(hexToBin('00'), locationData);
     this.emit(Op.OP_EQUALVERIFY, locationData);
   }
 

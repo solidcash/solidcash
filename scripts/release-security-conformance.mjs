@@ -11,6 +11,7 @@ const cases = [
   ['delegate identity and selector pinning', 'test/e2e/Delegatecall.test.ts'],
   ['lifecycle auxiliary-element integrity', 'test/e2e/LifecycleAuxiliaryAdversarial.test.ts'],
   ['scalar data-NFT state integrity', 'test/e2e/ScalarStateAdversarial.test.ts'],
+  ['dynamic state-chunk integrity', 'test/e2e/DynamicChunkAdversarial.test.ts'],
   ['message-envelope and return forgery', 'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
 ];
 

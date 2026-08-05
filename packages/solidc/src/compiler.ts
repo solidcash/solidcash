@@ -5779,7 +5779,11 @@ export function parseCode(
   const diagnosticTrailer = code.search(/\n\/\/ ----/);
   const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
   if (solidityImportCompat) validateUnicodeDirectionMarkers(spdxSource);
-  if (solidityImportCompat && countSpdxIdentifiersInComments(spdxSource) > 1) {
+  // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
+  // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
+  // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
+  const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
+  if (solidityImportCompat && !flattenedSource && countSpdxIdentifiersInComments(spdxSource) > 1) {
     throw new Error(
       'Multiple SPDX license identifiers found in source file. '
       + 'Use "AND" or "OR" to combine multiple licenses.',

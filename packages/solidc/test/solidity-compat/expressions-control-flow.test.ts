@@ -1460,4 +1460,12 @@ describe('SPDX source-unit identifiers', () => {
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });
+
+  it('accepts retained SPDX headers in explicitly flattened source units', () => {
+    expect(compileString(
+      '// SPDX-License-Identifier: MIT\n// File contracts/C.sol\n'
+      + '// SPDX-License-Identifier: GPL-3.0\ncontract C {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
 });

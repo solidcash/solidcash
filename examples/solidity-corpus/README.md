@@ -21,6 +21,8 @@ RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUTS=false RETRY_ERROR_NAMES=Error,Ra
   RETRY_TIMEOUT_MS=60000 node examples/solidity-corpus/bench.mjs        # reclassify selected error names
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
   node examples/solidity-corpus/bench.mjs                               # audit only unchecked/timeout negatives
+RECHECK_ACCEPTED_NEGATIVES=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
+  node examples/solidity-corpus/bench.mjs                               # recheck retained over-accepted negatives
 CORPUS_OUTPUT_DIR=/tmp/corpus-run node examples/solidity-corpus/bench.mjs      # alternate artifact directory
 ```
 
@@ -64,6 +66,9 @@ recompile selected diagnostic classes after hardening their compiler boundary.
 that are unchecked or previously timed out. Negative timeouts remain explicitly unresolved rather than counting
 as safe rejection; repeat the command with a larger `NEGATIVE_TIMEOUT_MS` to resolve them. Metadata retains every
 negative-audit pass alongside its worker and timeout budget.
+`RECHECK_ACCEPTED_NEGATIVES=true` similarly preserves every other result and recompiles only negatives that the
+retained run accepted. Use it after semantic hardening to update the negative score without repeating all 2,158
+fixtures; the pass and its resulting accepted count are appended to the same metadata history.
 
 ## Scorecard (2026-07, 7343 files)
 

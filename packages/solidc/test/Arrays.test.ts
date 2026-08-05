@@ -14,9 +14,11 @@ describe('Array return types, unnamed params, array locals, bare delete', () => 
     expect(a.contractName).toBe('C');
   });
 
-  it('accepts an uninitialized array local (zero-init)', () => {
-    const a = compileString('contract C() { int n; function f() { int[] r; this.n = r.length; } }');
-    expect(a.contractName).toBe('C');
+  it('rejects access through an uninitialized storage array pointer in Solidity compatibility mode', () => {
+    expect(() => compileString(
+      'contract C() { int n; function f() { int[] storage r; this.n = r.length; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/storage pointer 'r' may be accessed before it is initialized/);
   });
 
   it('accepts bare `delete m[k]` (routed to state)', () => {

@@ -7,14 +7,15 @@ Runtime: Node 22.22.0, linux-arm64
 ## Result
 
 All 2,158 in-scope Solidity-negative fixtures were compiled in fresh workers. The 30-second/four-worker pass
-left 104 timeouts; a 120-second/four-worker retry resolved every one.
+left 104 timeouts; a 120-second/four-worker retry resolved every one. After storage-pointer definite-assignment
+hardening, a 30-second/four-worker pass rechecked all 328 formerly accepted fixtures with zero timeouts.
 
-- 1,830 rejected by SolidCash;
-- 328 accepted by SolidCash although solc expects a diagnostic;
+- 1,835 rejected by SolidCash;
+- 323 accepted by SolidCash although solc expects a diagnostic;
 - zero unchecked fixtures;
 - zero residual timeouts.
 
-All 328 over-accepted fixtures are from `test/libsolidity/syntaxTests`; none are semantic-execution negatives.
+All 323 over-accepted fixtures are from `test/libsolidity/syntaxTests`; none are semantic-execution negatives.
 Acceptance still needs review: a syntax-test fixture can encode an important type-system or safety invariant even
 when it has no execution trailer.
 
@@ -27,7 +28,7 @@ SolidCash intentionally models differently; it does not mean the fixture is auto
 | Bucket | Count | Typical upstream diagnostic |
 |---|---:|---|
 | Platform/backend-policy divergence | 95 | EVM-version gates, custom base storage slots, legacy-codegen limitations, fixed point not implemented by solc |
-| Data-location and storage-reference strictness | 83 | uninitialized storage/calldata references, missing data locations, invalid storage-reference conversions |
+| Data-location and storage-reference strictness | 78 | uninitialized storage/calldata references, missing data locations, invalid storage-reference conversions |
 | Other semantic strictness — review required | 75 | ABI/function-type mismatches, invalid operators/calls, immutable and getter restrictions |
 | Constant/range strictness | 22 | rational/constant overflow, fractional encoding, bounds and precision errors |
 | Parser/syntax strictness | 19 | constructs solc's parser rejects but SolidCash currently accepts |
@@ -36,7 +37,7 @@ SolidCash intentionally models differently; it does not mean the fixture is auto
 | Assembly strictness | 6 | invalid builtin use, shadowing, or access to Solidity locals from Yul functions |
 
 The 95 platform/backend-policy candidates should be mapped to documented permanent BCH differences or explicit
-first-release extensions. The other 233 are the strictness-review queue; the first priority is the 83
+first-release extensions. The other 228 are the strictness-review queue; the first priority is the 78
 data-location/storage-reference cases because accepting an undefined or incorrectly-aliased reference can affect
 state safety rather than only source compatibility.
 
@@ -46,6 +47,8 @@ state safety rather than only source compatibility.
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
   node examples/solidity-corpus/bench.mjs
 CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=120000 NEGATIVE_WORKERS=4 \
+  node examples/solidity-corpus/bench.mjs
+RECHECK_ACCEPTED_NEGATIVES=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
   node examples/solidity-corpus/bench.mjs
 ```
 

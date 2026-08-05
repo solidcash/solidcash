@@ -22,8 +22,8 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   sweep compiled 2,622/2,805 with 72 named diagnostics and 111 timeouts. Fresh-worker retries at 30 and 120
   seconds resolved all 111: the retained result is 2,698/2,805 with 107 named failures, zero generic/raw buckets,
   and zero timeouts. The matching negative audit checked all 2,158 fixtures with zero residual timeouts: SolidCash
-  rejects 1,830 and over-accepts 328 that solc rejects;
-- the integrated compiler suite passes all 3,138 tests, the SDK suite passes 3,808 tests, and the testing-suite
+  rejects 1,835 and over-accepts 323 that solc rejects;
+- the integrated compiler suite passes all 3,144 tests, the SDK suite passes 3,808 tests, and the testing-suite
   golden path passes all 22 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
   fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
 - 14 executable `.skip`/`.todo` occurrences remain under `packages` and `examples`; all are classified as explicit
@@ -104,7 +104,7 @@ it must not silently compile to incorrect covenant behavior.
   - A complete fresh positive-fixture sweep and its isolated retry tiers have zero generic/raw error buckets and
     zero residual timeouts. The primary sweep produced 111 timeouts; 30-second fresh-worker retries recovered 27
     as compilations and one as a named diagnostic, then the 120-second tier recovered 49 as compilations and 34
-    as named diagnostics. All negative fixtures are now checked, but 328 over-accepted cases remain a strictness
+    as named diagnostics. All negative fixtures are now checked, but 323 over-accepted cases remain a strictness
     review queue, so this gate is not yet complete.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
@@ -169,7 +169,7 @@ it must not silently compile to incorrect covenant behavior.
   - Current retained positive-only result: 2,698/2,805 compiled; 107 fixtures failed with named diagnostics and
     zero timed out. The complete 30-second/eight-worker primary sweep compiled 2,622 with 72 named diagnostics
     and 111 timeouts; isolated 30-second/four-worker and 120-second/four-worker tiers resolved every timeout.
-  - Negative result: all 2,158 checked; 1,830 rejected, 328 over-accepted, zero unchecked, zero timeouts. The
+  - Negative result: all 2,158 checked; 1,835 rejected, 323 over-accepted, zero unchecked, zero timeouts. The
     conservative screening inventory is [`NEGATIVE_AUDIT.md`](examples/solidity-corpus/NEGATIVE_AUDIT.md).
 - [x] Make the corpus command deterministic and record its Solidity corpus revision and tool versions.
   - The scoped runner uses stable file ordering, isolated reusable workers, a per-fixture timeout, configurable
@@ -182,8 +182,9 @@ it must not silently compile to incorrect covenant behavior.
   - [ ] reviewed changes to grouped failure reasons.
 - [~] Triage `NEG-ACCEPTED` cases that indicate missing safety or semantic strictness separately from harmless
   NatSpec/EVM-only diagnostic differences.
-  - All 328 are syntax-test negatives. Initial screening identifies 95 platform/backend-policy candidates and a
-    233-case strictness-review queue, led by 83 data-location/storage-reference cases. No case is waived yet.
+  - All 323 are syntax-test negatives. Initial screening identifies 95 platform/backend-policy candidates and a
+    228-case strictness-review queue, led by 78 data-location/storage-reference cases. Five uninitialized-storage-
+    pointer cases now reject after branch/zero-iteration-loop definite-assignment tracking. No case is waived yet.
 - [ ] Keep the corpus README, scorecard, and progress log numerically consistent.
   - Current source material: [`examples/solidity-corpus/README.md`](examples/solidity-corpus/README.md),
     [`scorecard.txt`](examples/solidity-corpus/scorecard.txt), and
@@ -336,13 +337,13 @@ Update this table whenever a release candidate is cut.
 |---|---|---|---|
 | Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
 | Build | **PASS** — all six packages plus testing-suite fixture compilation | `codex/release-readiness-fixes` | 2026-08-04 |
-| Compiler tests | **PASS** — 3,138/3,138 after correcting two realistic per-test timeout budgets | `codex/release-readiness-fixes` | 2026-08-04 |
+| Compiler tests | **PASS** — 3,144/3,144, including storage-pointer definite-assignment regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,081 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
-| Solidity corpus | **PARTIAL PASS** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 328 over-accepted and triage incomplete | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4 | 2026-08-05 |
+| Solidity corpus | **PARTIAL PASS** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted and triage incomplete | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

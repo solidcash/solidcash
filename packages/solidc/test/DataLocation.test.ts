@@ -120,6 +120,19 @@ describe('calldata read-only enforcement (Solidity data-location parity)', () =>
     )).toThrow(/storage pointer .* must be initialized/i);
   });
 
+  it('tracks storage-pointer initialization across branches', () => {
+    expect(compiles('struct S { int x; } S s; function f(bool b) internal {'
+      + ' S storage p; if (b) p = s; else p = s; p; }')).toBe('C');
+    expect(() => compiles('struct S { int x; } S s; function f(bool b) internal {'
+      + ' S storage p; if (b) p = s; p; }'))
+      .toThrow(/storage pointer 'p' may be accessed before it is initialized/);
+    expect(() => compiles('struct S { int x; } S s; function f(bool b) internal {'
+      + ' S storage p; while (b) { p = s; b = false; } p; }'))
+      .toThrow(/storage pointer 'p' may be accessed before it is initialized/);
+    expect(compiles('struct S { int x; } S s; function f(bool b) internal {'
+      + ' S storage p = s; while (b) { p = s; b = false; } p; }')).toBe('C');
+  });
+
   it('does not mistake a file-level free function for a library function', () => {
     expect(() => compileString('function f(bytes storage x) external returns (bytes storage) { return x; }',
       { solidityImportCompat: true })).toThrow(/free functions cannot have/i);

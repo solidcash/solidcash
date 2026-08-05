@@ -45,6 +45,12 @@ describe('cross-function bytecode outlining', () => {
     expect(result.savedBytes).toBe(0);
   });
 
+  it('honours caller-provided search bounds', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    expect(outlineSharedSpans(source, allocateId, 0).functions).toEqual([]);
+    expect(outlineSharedSpans(source, allocateId, 512, 0).functions).toEqual([]);
+  });
+
   it('keeps a conditional whole rather than stranding its OP_ELSE', () => {
     // The repeated run sits between OP_IF and OP_ELSE. A depth-only balance check would happily share
     // "<run> OP_ELSE <run>" - depth never moves - and the invoked body would abort with "OP_ELSE outside of a

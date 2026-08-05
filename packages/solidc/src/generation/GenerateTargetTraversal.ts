@@ -3100,6 +3100,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return { script: record.script, locationData: record.locationData, anchors };
       }),
       () => encodeInt(this.allocateCompactHelperId()),
+      this.currentContractIsSplitFacet ? 128 : undefined,
+      this.currentContractIsSplitFacet ? 4 : undefined,
     );
     if (result.functions.length === 0) return;
 

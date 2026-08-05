@@ -198,7 +198,9 @@ function candidateSavings(
  * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
  * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
  */
-function findCandidates(bodies: OutlineBody[], idPushBytes: number, parameterize: boolean): Candidate[] {
+function findCandidates(
+  bodies: OutlineBody[], idPushBytes: number, parameterize: boolean, candidateLimit: number,
+): Candidate[] {
   const windowElements = MINIMUM_WINDOW_ELEMENTS;
   const keyIds = new Map<string, number>();
   const idOf = (element: Script[number]): number => {
@@ -327,7 +329,7 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number, parameterize
     });
   }
   candidates.sort((left, right) => right.saved - left.saved);
-  return candidates.slice(0, PROFITABLE_CANDIDATES_PER_ROUND);
+  return candidates.slice(0, candidateLimit);
 }
 
 /**
@@ -341,6 +343,8 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number, parameterize
 export function outlineSharedSpans(
   bodies: OutlineBody[],
   allocateId: () => Uint8Array,
+  candidateLimit = PROFITABLE_CANDIDATES_PER_ROUND,
+  maximumRounds = MAXIMUM_ROUNDS,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -356,7 +360,7 @@ export function outlineSharedSpans(
   // Exact spans reach their fixed point first. Parameterized spans then operate only on that compressed grammar,
   // so they can add savings without displacing a stronger exact candidate from an earlier round.
   for (const parameterize of [false, true]) {
-    for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
+    for (let round = 0; round < maximumRounds; round += 1) {
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
       const corpus = [
         ...working,
@@ -365,7 +369,7 @@ export function outlineSharedSpans(
         })),
       ];
       // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
-      const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES, parameterize);
+      const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES, parameterize, candidateLimit);
       if (candidates.length === 0) break;
 
       // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:

@@ -24,7 +24,7 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   and zero timeouts. The matching negative audit checked all 2,158 fixtures with zero residual timeouts: SolidCash
   rejects 1,835 and over-accepts 323 that solc rejects;
 - the integrated compiler suite passes all 3,145 tests, the SDK suite passes 3,808 tests, and the testing-suite
-  golden path passes all 22 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
+  passes all 25 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
   fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
 - 14 executable `.skip`/`.todo` occurrences remain under `packages` and `examples`; all are classified as explicit
   first-release deferrals, permanent BCH/model differences, or mock/debug API limitations, with no skipped release
@@ -325,7 +325,9 @@ it must not silently compile to incorrect covenant behavior.
   - The packed smoke covers exports, type declarations, licenses, READMEs, source maps for every emitted
     JavaScript file, installed versions, and internal dependency resolution. Every packed map is now required to
     embed all referenced source content, so consumers do not depend on unpublished `src/` trees.
-- [ ] Produce release notes separating supported parity, experimental features, deferrals, and breaking changes.
+- [x] Produce release notes separating supported parity, experimental features, deferrals, and breaking changes.
+  - [`RELEASE_NOTES_0.13.1.md`](RELEASE_NOTES_0.13.1.md) is the candidate draft; it deliberately leaves the exact
+    release commit/tag and final clean-checkout attestation pending.
 - [ ] Tag the exact tested commit and record the corpus/regtest results in the release notes.
 
 ## P2 — Valuable after the first release
@@ -416,7 +418,7 @@ Update this table whenever a release candidate is cut.
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
-| Testing-suite golden path | **PASS** — maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `examples/testing-suite/test/golden-path.test.ts` | 2026-08-05 |
+| Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |

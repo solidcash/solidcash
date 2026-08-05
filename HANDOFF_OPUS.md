@@ -103,11 +103,13 @@ A second, authenticated identity proof, selected per slot by an SDK-filled witne
   Only the genuine contract can mint the anchor, so an unrelated P2SH20 cannot be paired with an unrelated
   master. `LOGICAL_IDENTITY_PREFIX` / `LOGICAL_IDENTITY_ROOT_OFFSET` must stay byte-identical to
   `encodeLogicalIdentityCommitment` in `packages/solidcash/src/stateful/logical-identity.ts`.
-- The SDK fills the witness at all five sites: direct (`StatefulContract`, next to the `groupMasterIndices`
-  fill), nested delegate (the `encoded` map), batch route (`bFinalArgs` loop), and both `loop-call.ts` sites.
+- The SDK fills the witness at all six sites: direct (`StatefulContract`, next to the `groupMasterIndices`
+  fill), delegate forward, nested delegate (the `encoded` map), batch route (`bFinalArgs` loop), and both
+  `loop-call.ts` sites. Each throws on an unrecognized `__internal__` name, so a missed site fails loudly.
 
-It is `-1` everywhere so far, which reproduces the previous behavior exactly. 78 external-call e2e tests pass
-unchanged, so the covenant path and the ABI change are regression-free.
+It is `-1` everywhere so far, which reproduces the previous behavior exactly. 78 external-call e2e tests and 51
+upgrade/proxy tests pass unchanged, and the focused marketplace test reaches the same BCH-2026 preflight
+OP_VERIFY at input 3 as before, so the covenant path and the ABI change are regression-free.
 
 ### Remaining work: resolve real anchors
 

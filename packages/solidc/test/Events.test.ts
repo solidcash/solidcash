@@ -22,6 +22,30 @@ describe('A4: address is a valid event parameter type', () => {
 });
 
 describe('Qualified + named-arg event emit', () => {
+  it('reindexes events introduced by inlined helpers and modifiers in physical execution order', () => {
+    const expanded = compileString(`
+      contract C {
+        int n;
+        event A(int x); event B(int x); event Cc(int x);
+        function helper() internal { emit A(1); }
+        modifier afterBody() { _; emit Cc(3); }
+        function f() public afterBody { helper(); emit B(2); this.n = 1; }
+      }`);
+    const flat = compileString(`
+      contract C {
+        int n;
+        event A(int x); event B(int x); event Cc(int x);
+        function f() public { emit A(1); emit B(2); this.n = 1; emit Cc(3); }
+      }`);
+    expect(expanded.abi.find((entry) => entry.name === 'f')?.emits).toEqual([
+      expect.objectContaining({ eventName: 'A', emitIndex: 0 }),
+      expect.objectContaining({ eventName: 'B', emitIndex: 1 }),
+      expect.objectContaining({ eventName: 'Cc', emitIndex: 2 }),
+    ]);
+    expect(expanded.functionBodies?.[expanded.abi.find((entry) => entry.name === 'f')!.selector!])
+      .toBe(flat.functionBodies?.[flat.abi.find((entry) => entry.name === 'f')!.selector!]);
+  });
+
   it('accepts a qualified emit `emit C.E(...)` (qualifier stripped)', () => {
     const a = compileString(`
       contract C() {

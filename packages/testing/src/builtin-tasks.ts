@@ -44,6 +44,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     const compilerOptions = {
       ...hre.config.solc,
+      maximumInputBytes,
       commitmentLimit: Math.min(
         (hre.config.solc?.commitmentLimit as number | undefined) ?? maximumNftCommitmentBytes,
         maximumNftCommitmentBytes,

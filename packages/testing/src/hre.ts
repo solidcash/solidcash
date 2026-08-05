@@ -29,6 +29,7 @@ import {
 import { solidcashArtifactsPath } from './artifact-paths.js';
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
+const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 
 /** Build a network provider from a resolved network config. */
 export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
@@ -213,7 +214,11 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // Hardhat accounts are effectively pre-funded for large deployment suites. Split BCH contracts consume
       // several genesis outputs, so use a similarly generous mock default while retaining an explicit override.
       return anyProvider.getSigners(count, {
-        satoshis: 100_000_000n, fundingUtxos: 32, mnemonic, path: accountsPath, ...o,
+        // Bounded message-bus participant blocks can require dozens of
+        // category-neutral filler inputs in one call. Keep the Hardhat-style
+        // mock accounts generously pre-split so those compiler-owned slots do
+        // not turn into an artificial wallet-funding limit.
+        satoshis: 100_000_000n, fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
       });
     }
     return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
@@ -307,7 +312,9 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
   const mnemonic = config.mnemonic ?? DEFAULT_MNEMONIC;
   const ethersOpts: EthersOptions = {
     artifactsDir: config.paths.artifacts,
-    accountsPath: config.accounts?.path,
+    // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
+    // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
+    accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
   };
   const base = buildConnection(name, config.networks[name], mnemonic, ethersOpts);
   // The active provider backs the module-global network helpers (loadFixture/time/...).
@@ -345,7 +352,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
 export function hardhatCompatConfig(resolved: ResolvedConfig): Record<string, unknown> {
   const accounts = {
     mnemonic: resolved.mnemonic ?? DEFAULT_MNEMONIC,
-    path: resolved.accounts?.path ?? "m/44'/60'/0'/0",
+    path: resolved.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
     count: resolved.accounts?.count ?? 20,
     initialIndex: resolved.accounts?.initialIndex ?? 0,
   };

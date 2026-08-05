@@ -52,6 +52,10 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   // CONST-factory structs actually USED (aliased or inline), collected during the visit, promoted after it.
   private constStructsToPromote = new Map<string, StructType>();
 
+  private factoryForCall(name: string): Factory | undefined {
+    return this.factories.get(name) ?? this.factories.get(name.split('.').pop()!);
+  }
+
   visitSourceFile(node: SourceFileNode): Node {
     const contracts = [node.contract, ...(node.importedContracts ?? [])].filter(Boolean) as ContractNode[];
     const allFns = [...(node.freeFunctions ?? []), ...contracts.flatMap((c) => c.functions ?? [])];
@@ -207,7 +211,7 @@ export default class LowerStorageSlotPointers extends AstTraversal {
   // slot expression (routes to __evm_storage[slot]); CONST factory (ERC-7201) marks the struct for promotion.
   visitVariableDefinition(node: VariableDefinitionNode): Node {
     if (node.expression instanceof FunctionCallNode) {
-      const factory = this.factories.get(node.expression.identifier.name);
+      const factory = this.factoryForCall(node.expression.identifier.name);
       if (factory) {
         if (factory.isConst) {
           this.aliases.set(node.name, { struct: factory.struct, isConst: true });
@@ -300,7 +304,7 @@ export default class LowerStorageSlotPointers extends AstTraversal {
       return this.fromUint(read, alias.struct.fields[0].type);
     }
     if (node.expression instanceof FunctionCallNode) {
-      const factory = this.factories.get(node.expression.identifier.name);
+      const factory = this.factoryForCall(node.expression.identifier.name);
       if (factory?.isConst && !this.isMappingField(factory.struct, node.name)) {
         this.constStructsToPromote.set(factory.struct.name, factory.struct);
         return this.promotedRead(factory.struct, node.name, node.location);

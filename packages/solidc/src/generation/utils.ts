@@ -161,10 +161,27 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
   if (from instanceof ArrayType && to instanceof ArrayType && from.toString() === to.toString()) return [];
 
   // Solidity-compat narrowing casts: `bytes20(address)` / `uint160(address)`. A SolidCash address is a
-  // variable-length locking bytecode, not a 20-byte value, so we narrow to the embedded 20-byte hash (the
-  // P2PKH pubkey-hash at offset 3: 0x76a914 <20-byte hash> 0x88ac) first. This is lossy and warned in
-  // TypeCheckTraversal. Only bytes20 and int targets narrow; `bytes(address)` keeps the full locking bytecode.
-  const narrowAddressTo20 = [encodeInt(3n), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP];
+  // variable-length locking bytecode, not necessarily a 20-byte value. Preserve an already-raw Solidity
+  // address, extract the hash at offset 2 from P2SH20 (a914 <20> 87), or at offset 3 from P2PKH
+  // (76a914 <20> 88ac). This is lossy and warned in TypeCheckTraversal. Only bytes20 and int targets narrow;
+  // `bytes(address)` keeps the full locking bytecode. Other lengths deliberately take the P2PKH path and fail
+  // closed at OP_SPLIT if they cannot contain a 20-byte payload.
+  const extractAddressHash = (offset: bigint): Script => [
+    encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
+  ];
+  const narrowAddressTo20: Script = [
+    Op.OP_SIZE, encodeInt(20n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // Raw 20-byte address: already narrowed.
+    Op.OP_ELSE,
+    Op.OP_SIZE, encodeInt(23n), Op.OP_EQUAL,
+    Op.OP_IF,
+    ...extractAddressHash(2n),
+    Op.OP_ELSE,
+    ...extractAddressHash(3n),
+    Op.OP_ENDIF,
+    Op.OP_ENDIF,
+  ];
   if (from instanceof AddressType && to instanceof BytesType && to.bound === 20) {
     return narrowAddressTo20;
   }

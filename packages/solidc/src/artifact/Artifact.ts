@@ -262,6 +262,7 @@ const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean
  * covenant-bypass modifier. Any doubt -> true, so a misclassified writer never gets the SDK's derivation skip.
  */
 function computeWritesState(func: FunctionDefinitionNode): boolean {
+  if (func.sourceReadOnly) return false;
   if (func.scalarJournal) return true;
   if (containsStatefulOperation(func.body?.statements)) return true;
   if ((func.externalCalls?.length ?? 0) > 0) return true;
@@ -717,6 +718,7 @@ function buildFunctionAbiMetadata(
           possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
         }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(ec.addressSource && { addressSource: ec.addressSource }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
         // witness selector; call/staticcall/delegatecall inject no selector param.
@@ -730,6 +732,8 @@ function buildFunctionAbiMetadata(
         ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
+        ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
+        ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
         ...(ec.batchInvocations && {
           batchInvocations: ec.batchInvocations.map((row) => ({

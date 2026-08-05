@@ -46,6 +46,8 @@ interface JournalEntry {
   keyParameters: string[];
   journalName: string;
   valueType: Type;
+  /** Scope in which the source helper legally accessed an inherited private collection. */
+  sourceScope?: string;
 }
 
 interface MultiCandidate {
@@ -168,7 +170,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       if (!fn.body || fn.returnTypes.length !== 0
         || !(fn.modifiers.includes(FunctionModifier.INTERNAL)
           || fn.modifiers.includes(FunctionModifier.PRIVATE))
-        || fn.inheritedFrom || constructorCalls.has(fn.name)
+        // Compiler-owned graph clones retain `inheritedFrom` so private storage access is checked in the source
+        // declaration's scope. They are nevertheless concrete helpers owned by this route and must be journalled.
+        || (fn.inheritedFrom && !fn.graphEmissionHandler) || constructorCalls.has(fn.name)
         || (nameCounts.get(fn.name) ?? 0) > 1) continue;
       // X118. An event emitted inside a value-threaded OP_INVOKE handler is dropped at the subroutine exit, so
       // code generation refuses this shape outright. It compiles on the pre-existing inline path, so do not
@@ -177,7 +181,10 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       this.walk(fn.body, (candidate) => {
         if (candidate instanceof EmitStatementNode) emitsEvent = true;
       });
-      if (emitsEvent) continue;
+      // A message-bus graph clone does not emit directly from the OP_INVOKE frame: code generation projects its
+      // event into the authenticated route-owned effect frame. It can therefore share the value-threaded
+      // collection-journal exit. Ordinary internal helpers still have no such projection and retain X118's gate.
+      if (emitsEvent && !fn.graphEmissionHandler) continue;
       const accesses: Array<{
         name: string;
         keys: ExpressionNode[];
@@ -229,6 +236,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
             keyParameters,
             journalName: `__cj_${fn.name}_${distinct.size}`,
             valueType: collection.innermostValueType,
+            sourceScope: fn.inheritedFrom,
           });
         }
       }
@@ -261,6 +269,23 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         fn, collection: entry.collection, keyParameters: entry.keyParameters, journalName,
         valueType: entry.valueType,
       });
+    }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
+      console.error('collection-journal-message-bus-candidates', JSON.stringify({
+        candidates: [...this.candidates.keys()],
+        multiCandidates: [...this.multiCandidates.entries()].map(([key, candidate]) => ({
+          key,
+          entries: candidate.entries.map((entry) => ({
+            collection: entry.collection,
+            keys: entry.keyParameters,
+            journalName: entry.journalName,
+          })),
+        })),
+        graphFunctions: node.functions.filter((fn) => fn.graphEmissionHandler).map((fn) => ({
+          name: fn.name, arity: fn.parameters.length, returns: fn.returnTypes.map((type) => type.toString()),
+          statements: fn.body?.statements?.map((statement) => statement.constructor.name),
+        })),
+      }, null, 2));
     }
 
     // Rewrite call sites before changing arities.
@@ -300,7 +325,14 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       candidate.fn.parameters.unshift(...candidate.entries.map((entry) =>
         this.at(new ParameterNode(entry.valueType, entry.journalName, []), candidate.fn)));
       for (const parameter of candidate.fn.parameters) {
-        if (candidate.entries.some((entry) => entry.keyParameters.includes(parameter.name))) {
+        // Graph handlers may use an ordinary argument again inside a conditional effect after the journal
+        // assignment (OZ ERC20 `_approve`: assign `value`, then emit Approval(..., value)). The pre-lowering
+        // liveness metadata describes the original mapping statement and can classify that assignment operand
+        // as its last use; OP_ROLL then removes the declared argument from the OP_INVOKE frame and the later
+        // conditional encoder reads an adjacent empty journal value. Keep the small declared handler frame
+        // stable through its single exit, just as the entry-key parameters already are.
+        if (candidate.fn.graphEmissionHandler
+          || candidate.entries.some((entry) => entry.keyParameters.includes(parameter.name))) {
           parameter.syntheticallyUsed = true;
         }
       }
@@ -531,6 +563,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       ? this.at(new IdentifierNode(this.current!.journalName), call)
       : this.at(new MappingAccessNode(target.collection, keyArgs.map((key) =>
         cloneNode(key) as ExpressionNode)), call);
+    if (read instanceof MappingAccessNode) read.fromModifier = target.fn.inheritedFrom;
     const invoked = this.at(new FunctionCallNode(
       this.at(new IdentifierNode(call.identifier.name), call), [read, ...args],
     ), call);
@@ -539,7 +572,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new IdentifierNode(this.current!.journalName), call), invoked,
       ), call);
     }
-    return this.at(new MappingAssignNode(target.collection, keyArgs, invoked), call);
+    const write = this.at(new MappingAssignNode(target.collection, keyArgs, invoked), call);
+    write.fromModifier = target.fn.inheritedFrom;
+    return write;
   }
 
   private rewriteMultiCall(call: FunctionCallNode, target: MultiCandidate): StatementNode[] {
@@ -601,7 +636,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         if (identity === undefined) {
           throw new Error(
             `Collection journal helper '${target.fn.name}' requires a stable key expression; `
-            + 'use a wrapper parameter, literal, or transaction global',
+            + `use a wrapper parameter, literal, or transaction global (found ${key.constructor.name}: ${
+              key instanceof IdentifierNode ? key.name : key.toString()})`,
           );
         }
         return identity;
@@ -633,6 +669,24 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       });
       cache.calls.set(statement.call, callLocals);
     }
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1'
+      && caches.size > 0) {
+      console.error('collection-journal-message-bus-pool', JSON.stringify({
+        pools: [...caches.entries()].map(([key, cache]) => ({
+          key,
+          targetEntries: cache.target.entries.map((entry) => ({
+            collection: entry.collection,
+            keys: entry.keyParameters,
+            journalName: entry.journalName,
+          })),
+          locals: cache.locals.map((local) => ({
+            name: local.name,
+            collection: local.entry.collection,
+            keyIdentity: local.keyIdentity,
+          })),
+        })),
+      }, null, 2));
+    }
     return caches;
   }
 
@@ -647,7 +701,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     key: ExpressionNode,
     wrapperParameters: Set<string>,
   ): string | undefined {
-    if (key instanceof IdentifierNode && wrapperParameters.has(key.name)) {
+    if (key instanceof IdentifierNode && (wrapperParameters.has(key.name)
+      || key.name.startsWith('__message_bus_key_'))) {
       return `parameter:${key.name}`;
     }
     if (key instanceof LiteralNode) {
@@ -661,18 +716,21 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // Every cache shares one locals pool, so collapse to the distinct locals before emitting reads/write-backs.
     const pooled = [...new Set([...this.activeMultiCaches.values()].flatMap((cache) => cache.locals))];
     const caches = [{ locals: pooled }];
-    const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) =>
-      this.at(new VariableDefinitionNode(
-        entry.valueType, [], name,
-        this.at(new MappingAccessNode(entry.collection, keys.map((key) =>
-          cloneNode(key) as ExpressionNode)), body),
-      ), body)));
-    const writes = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) =>
-      this.at(new MappingAssignNode(
+    const declarations = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
+      const read = this.at(new MappingAccessNode(entry.collection, keys.map((key) =>
+        cloneNode(key) as ExpressionNode)), body);
+      read.fromModifier = entry.sourceScope;
+      return this.at(new VariableDefinitionNode(entry.valueType, [], name, read), body);
+    }));
+    const writes = caches.flatMap((cache) => cache.locals.map(({ entry, name, keys }) => {
+      const write = this.at(new MappingAssignNode(
         entry.collection,
         keys.map((key) => cloneNode(key) as ExpressionNode),
         this.at(new IdentifierNode(name), body),
-      ), body)));
+      ), body);
+      write.fromModifier = entry.sourceScope;
+      return write;
+    }));
     const statements = body.statements ?? [];
     // Keep a top-level tail return structurally visible to the later all-paths-return analysis. Its flush is
     // inserted immediately before it; only earlier/nested returns need block replacement.

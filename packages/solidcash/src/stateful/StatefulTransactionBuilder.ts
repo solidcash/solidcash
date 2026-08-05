@@ -119,6 +119,7 @@ export interface ExternalCallUtxoGroup {
     blob: Uint8Array;
     args: any[];
     internalArgs?: Record<string, any>;
+    eventSignaturesBySlot?: Array<string | undefined>;
   };
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
@@ -132,7 +133,9 @@ export interface ExternalCallUtxoGroup {
    * emitted at that offset instead of appended after the whole participant region. */
   returnEventInBlock?: boolean;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
-  eventOutputs?: Array<{ eventSignature: string; commitment: string; lockingBytecode: Uint8Array }>;
+  eventOutputs?: Array<{
+    eventSignature: string; commitment: string; lockingBytecode: Uint8Array;
+  } | undefined>;
   /** B's keccak256 compute side-car INPUTS (outState path: appended after dataNfts; externalCall path already
    * carries them inside blockInputs). In B's keccak-call order. */
   keccakInputs?: UnlockableUtxo[];
@@ -150,6 +153,10 @@ export interface ExternalCallUtxoGroup {
   plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number }>;
   /** Internal handles for the placeholders above. */
   plannedEntryInsertHandles?: number[];
+  /** Exact C2 predecessor recreations reserved in compiler-route trailing slots. */
+  batchPredecessorOutputs?: Array<{
+    outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
+  }>;
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
 }
@@ -211,6 +218,9 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   minRelayFeePerKb?: bigint;  // satoshis per 1000 bytes; default 1000n (1 sat/byte)
   blockLayout?: FunctionBlockLayout;
   funderUtxos?: UnlockableUtxo[];     // funder UTXOs for output-only slots
+  /** Immutable SCID anchor co-spent outside every fixed participant block so callees can authenticate the
+   * Solidity-visible logical caller address. */
+  logicalIdentityUtxo?: UnlockableUtxo;
 }
 
 /**
@@ -284,6 +294,7 @@ export class StatefulTransactionBuilder {
   private keccakLoopSideCars: UnlockableUtxo[];
   private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
+  private logicalIdentityUtxo?: UnlockableUtxo;
   funderUtxos: UnlockableUtxo[];
   private funderChangeAddress?: Uint8Array;
 
@@ -369,6 +380,7 @@ export class StatefulTransactionBuilder {
     this._maximumFeeSatoshis = options.maximumFeeSatoshis;
     this.blockLayout = options.blockLayout;
     this.funderUtxos = options.funderUtxos ?? [];
+    this.logicalIdentityUtxo = options.logicalIdentityUtxo;
 
     // Default to all NFT indices if not specified
     this.requiredNftIndices = options.requiredNftIndices
@@ -386,7 +398,8 @@ export class StatefulTransactionBuilder {
 
     // Flatten external call inputs - use full block when available
     const externalCallInputs: UnlockableUtxo[] = [];
-    for (const group of this.externalCallUtxoGroups) {
+    for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
+      const group = this.externalCallUtxoGroups[groupIndex];
       if (group.sharedGroupIndex !== undefined) continue;
       if (group.blockInputs) {
         // Full block: master + dataNfts + entries + SC + TCs + funders (all ordered by blockLayout)
@@ -425,6 +438,7 @@ export class StatefulTransactionBuilder {
       externalOutStateInputs, externalCallInputs,
       lowLevelCallInputs,
     );
+    if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
   }
 
   /** @internal Mark an impossible-output-index master used only by atomic VM derivation probes. */
@@ -725,6 +739,7 @@ export class StatefulTransactionBuilder {
       entryInputs, tokenContainerInputs, satoshiContainerInputs,
       externalOutStateInputs, externalCallInputs, lowLevelCallInputs,
     );
+    if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
   }
 
   /**
@@ -1274,13 +1289,13 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external call group.
    */
   getExternalCallMasterInputIndex(groupIdx: number): number {
-    // A sparse message-bus batch oracle band makes the active co-spend count smaller than its physical width. Resolve the
-    // already-positioned callee master directly rather than reconstructing its base from dense resource counts.
-    if (this.blockhashCoSpendSlotOrdinals) {
-      const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
-      const found = master && this.allInputs.findIndex((input) => input.txid === master.txid && input.vout === master.vout);
-      if (found !== undefined && found >= 0) return found;
-    }
+    // Resolve an already-positioned master directly. This is authoritative for
+    // delegate graphs, where implementation bands are interleaved with nested
+    // callees and cannot be reconstructed from dense resource counts.
+    const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
+    const found = master && this.allInputs.findIndex((input) => input.txid === master.txid
+      && input.vout === master.vout);
+    if (found !== undefined && found >= 0) return found;
     let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs
@@ -1302,6 +1317,8 @@ export class StatefulTransactionBuilder {
    * Output layout: master(1) + A's dataNfts + A's readOnlyNfts + preceding groups' (1+dataNfts).
    */
   getExternalCallOutputBase(groupIdx: number): number {
+    const requested = this.externalCallUtxoGroups[groupIdx];
+    if (requested?.sharedGroupIndex !== undefined) groupIdx = requested.sharedGroupIndex;
     let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState outputs
@@ -1311,10 +1328,26 @@ export class StatefulTransactionBuilder {
     // Loop external-call case: the read array's chunk preservation outputs precede the callee outputs
     // (see build()), shifting them by the chunk count. Zero when no dynamic-array read is co-spent.
     base += this.iterationEntryInputs.length;
+    const associatedDelegates = new Set(this.externalCallUtxoGroups
+      .map((group) => group.delegateCallGroupIndex)
+      .filter((index): index is number => index !== undefined));
+    if (this.delegateEntriesAfterLowLevel) {
+      base += this.pendingReturnEventOutputs.filter((r) => r.categoryId === this.categoryId).length;
+      this.lowLevelCallUtxoGroups.forEach((group, index) => {
+        if (group.callMode === 'delegatecall' && !associatedDelegates.has(index)) {
+          base += 1 + group.dataNftUtxos.length;
+        }
+      });
+    }
     for (let i = 0; i < groupIdx; i++) {
       const g = this.externalCallUtxoGroups[i];
+      if (g.sharedGroupIndex !== undefined) continue;
       // Use full block size when available
       base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
+      if (this.delegateEntriesAfterLowLevel && g.delegateCallGroupIndex !== undefined) {
+        const delegate = this.lowLevelCallUtxoGroups[g.delegateCallGroupIndex];
+        if (delegate?.callMode === 'delegatecall') base += 1 + delegate.dataNftUtxos.length;
+      }
     }
     return base;
   }
@@ -1662,7 +1695,8 @@ export class StatefulTransactionBuilder {
     }
 
     // Create external call outputs (B's master preserved + B's data NFTs with updated state)
-    for (const group of this.externalCallUtxoGroups) {
+    for (let groupIndex = 0; groupIndex < this.externalCallUtxoGroups.length; groupIndex++) {
+      const group = this.externalCallUtxoGroups[groupIndex];
       if (group.sharedGroupIndex !== undefined) continue;
       // B's master output: preserved unchanged
       const bMaster = group.masterUtxo as UnlockableUtxo;
@@ -1790,6 +1824,21 @@ export class StatefulTransactionBuilder {
           const slot = group.blockLayout.slots[si];
           const plannedInsertIndex = group.plannedEntryInserts
             ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
+          const batchPredecessor = group.batchPredecessorOutputs
+            ?.find((planned) => planned.outputBlockSlot === si);
+
+          if (batchPredecessor) {
+            builder.addOutput({
+              to: batchPredecessor.lockingBytecode,
+              amount: 1000n,
+              token: {
+                amount: 0n,
+                category: group.categoryId,
+                nft: { capability: 'mutable', commitment: batchPredecessor.commitment },
+              },
+            });
+            continue;
+          }
 
           if (plannedInsertIndex >= 0) {
             const handle = group.plannedEntryInsertHandles?.[plannedInsertIndex];
@@ -1869,7 +1918,8 @@ export class StatefulTransactionBuilder {
           // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now
           // carries at the same offset. The commitment comes from B's VM trace (setReturnEventOutput).
           if (slot?.kind === 'returnEvent' && group.returnEventInBlock) {
-            const re = this.pendingReturnEventOutputs.find((r) => r.categoryId === group.categoryId);
+            const returnIdentity = `external-call:${group.fusedReturnGroupIndex ?? groupIndex}`;
+            const re = this.pendingReturnEventOutputs.find((r) => r.identity === returnIdentity);
             builder.addOutput({
               to: new Uint8Array([0x51]),
               amount: BALANCED_SLOT_SATOSHIS,
@@ -1884,9 +1934,9 @@ export class StatefulTransactionBuilder {
 
           // Event slots: use auto-derived event NFT output or placeholder
           if (slot?.kind === 'event') {
-            if (group.eventOutputs && eventIdx < group.eventOutputs.length) {
+            const eo = group.eventOutputs?.[eventIdx];
+            if (eo) {
               // Use auto-derived commitment
-              const eo = group.eventOutputs[eventIdx];
               builder.addOutput({
                 to: eo.lockingBytecode,
                 amount: 1200n,
@@ -1895,6 +1945,16 @@ export class StatefulTransactionBuilder {
                   category: group.categoryId,
                   nft: { capability: 'none', commitment: eo.commitment },
                 },
+              });
+            } else if (group.compilerRoute) {
+              // A message-bus route reserves the union of every handler's event slots. Slots not reached by
+              // this dispatch are ordinary balanced funding slots and the route covenant binds them by
+              // preservation. Mirroring the input also works as the active-slot probe: its empty commitment
+              // lets the trace expose the expected event blob, after which `eventOutputs` replaces this slot.
+              builder.addOutput({
+                to: input.unlocker.generateLockingBytecode(),
+                amount: input.satoshis,
+                token: input.token,
               });
             } else {
               // Placeholder: create event NFT with empty commitment so B's VM can
@@ -2485,7 +2545,7 @@ export class StatefulTransactionBuilder {
     }
 
     // P5b value chunks (Design D), placed AFTER every covenant-managed output (entries, dynamic chunks, loop-entry
-    // NEW nodes), matching the covenant's base masterInput+blockSize+isInsert. DIRECT values are injected exactly
+    // NEW nodes). DIRECT values are injected exactly
     // (valueChunkOutputs); COMPUTED values are trace-derived (valueChunkVars, commitments filled by auto-derivation).
     if (!this.delegateEntriesAfterLowLevel) appendValueChunks();
 
@@ -2513,6 +2573,13 @@ export class StatefulTransactionBuilder {
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
+    }
+    if (this.logicalIdentityUtxo) {
+      builder.addOutput({
+        to: this.logicalIdentityUtxo.unlocker.generateLockingBytecode(),
+        amount: this.logicalIdentityUtxo.satoshis,
+        token: this.logicalIdentityUtxo.token,
+      });
     }
     if (this.delegateEntriesAfterLowLevel) appendDynamicChunks();
 
@@ -2770,12 +2837,15 @@ export class StatefulTransactionBuilder {
   }
 
   /** Return events that are NOT emitted inside a callee block, in emission order. */
-  private tailReturnEventOutputs(): Array<{ categoryId: string; commitment: Uint8Array }> {
+  private tailReturnEventOutputs(): Array<{ categoryId: string; commitment: Uint8Array; identity: string }> {
     const inBlock = new Set<string>();
     for (let i = 0; i < this.externalCallUtxoGroups.length; i += 1) {
-      if (this.isInBlockReturnEventGroup(i)) inBlock.add(this.externalCallUtxoGroups[i].categoryId);
+      if (this.isInBlockReturnEventGroup(i)) {
+        const group = this.externalCallUtxoGroups[i];
+        inBlock.add(`external-call:${group.fusedReturnGroupIndex ?? i}`);
+      }
     }
-    return this.pendingReturnEventOutputs.filter((re) => !inBlock.has(re.categoryId));
+    return this.pendingReturnEventOutputs.filter((re) => !inBlock.has(re.identity));
   }
 
   /**
@@ -2789,7 +2859,8 @@ export class StatefulTransactionBuilder {
     if (this.isInBlockReturnEventGroup(groupIdx) && offset !== undefined) {
       return this.getExternalCallOutputBase(groupIdx) + offset;
     }
-    const tailOrder = this.tailReturnEventOutputs().findIndex((re) => re.categoryId === group.categoryId);
+    const returnIdentity = `external-call:${group.fusedReturnGroupIndex ?? groupIdx}`;
+    const tailOrder = this.tailReturnEventOutputs().findIndex((re) => re.identity === returnIdentity);
     return tailOrder < 0 ? -1 : this.getReturnEventOutputBase() + tailOrder;
   }
 
@@ -2941,7 +3012,7 @@ export class StatefulTransactionBuilder {
                 return hex.length > 40 ? `${hex.slice(0, 40)}..` : hex;
               }),
             });
-            if (ring.length > 16) ring.shift();
+            if (ring.length > 520) ring.shift();
           },
         });
         const finalState = vm.evaluate({ inputIndex: idx, sourceOutputs, transaction }) as { error?: string };
@@ -3189,7 +3260,12 @@ export class StatefulTransactionBuilder {
     // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
     // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
     if (!this.strictVmPreflight) {
-      assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+      try {
+        assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+      } catch (error) {
+        this._logCovenantFailureTrace(finalBuilder, error instanceof Error ? error.message : String(error));
+        throw error;
+      }
     }
 
     const rawTx = finalBuilder.build();
@@ -3246,7 +3322,10 @@ export class StatefulTransactionBuilder {
     // change output still reports as a fee problem rather than as whichever relay observation is also true.
     // X158: the same input subjects as site 2, read off the builder that produced these exact bytes, so an
     // over-limit refusal names the contract rather than only an index.
-    assertFinalizedTransactionBytes(decodedTx, { inputSubjects: inputSubjectsOfBuilder(finalBuilder) });
+    assertFinalizedTransactionBytes(decodedTx, {
+      inputSubjects: inputSubjectsOfBuilder(finalBuilder),
+      consensusLimits: provider.consensusLimits,
+    });
 
     // -- Phase 5: submit --
     let txid: string;

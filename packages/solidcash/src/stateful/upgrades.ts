@@ -14,7 +14,7 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { registerDeployment } from './deployment-registry.js';
+import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -183,6 +183,38 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
+    // Solidity-facing proxy handles expose their stable CREATE-style logical address, while BCH covenants call
+    // the physical state-holder locking bytecode. For an address-typed argument naming a deployment registered
+    // on this provider, pass that authenticated physical target into the covenant. This makes address.code and
+    // the external-call target pin describe the same co-spent script; ordinary wallet/zero addresses are left
+    // untouched. The compatibility surface still reports the logical address from getAddress().
+    const visibleInputs = abiFn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+    const physicalTargetParams = new Set((abiFn.externalCalls ?? []).flatMap((call) => {
+      if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
+        return [call.addressSource.paramIndex];
+      }
+      const index = call.addressParam
+        ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+      return index >= 0 ? [index] : [];
+    }));
+    const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
+      if (!physicalTargetParams.has(index) || visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
+        return arg;
+      }
+      const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
+      if (!deployment) return arg;
+      const registered = deployment.contract as { proxy?: StatefulContract };
+      for (const call of abiFn.externalCalls ?? []) {
+        const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
+        const namedIndex = call.addressParam
+          ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+        if (sourceIndex === index || namedIndex === index) {
+          implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+        }
+      }
+      const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
+      return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
+    });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
     // tx and - crucially - is what the delegatecall'd impl's `emitTxOrigin` resolves `msg.sender` to. Without this
     // the proxy call has no _signer, the SDK funds with a dummy input, and a delegate impl that uses msg.sender
@@ -208,7 +240,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
         builder = proxyCall[name](selector, implLbc, ...authArgs, ...extraForwardArgs);
       }
     }
-    return builder.withDelegatecall(implSc, implFunction, implArgs);
+    return builder.withDelegatecall(implSc, implFunction, covenantArgs);
   }
 }
 
@@ -399,8 +431,22 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       },
     };
   });
+  // The shipped proxy remains strictly conserving. Current compiler-produced delegates additionally pin the
+  // exact proxy master/data output population, so their per-storage covenants can safely authorize mapping and
+  // dynamic-storage cardinality changes. Use a derived forwarder only for that explicitly certified artifact.
+  const strictTail = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
+  const relaxedTail = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
+  if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
+    throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
+  }
   return {
     ...defaultProxyArtifact,
+    ...(canDelegateCardinality && {
+      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + relaxedTail,
+      debug: undefined,
+      fingerprint: undefined,
+    }),
     abi,
     stateLayout: { ...impl.stateLayout, constructorInputs: defaultProxyArtifact.stateLayout?.constructorInputs },
   } as Artifact;

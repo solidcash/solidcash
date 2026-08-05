@@ -32,7 +32,9 @@ export const messageBusVerifierCommitment = (instance: number): Uint8Array => {
  * these preservation checks are the stable deployment and recreation boundary. The mutable NFT commitment
  * identifies one of N independently spendable verifier instances deployed with the contract.
  */
-export function buildMessageBusVerifierCovenantScript(program: MessageBusVerifierProgram): Script {
+export function buildMessageBusVerifierCovenantScript(
+  program: MessageBusVerifierProgram, maximumInputBytes = 10_000,
+): Script {
   const verify = program.functions.find((fn) => fn.id === program.verifyFunctionId);
   if (!verify) throw new Error('message bus verifier program omits its verify function');
   if (!Number.isSafeInteger(program.inputCount) || program.inputCount < 1) {
@@ -117,18 +119,24 @@ export function buildMessageBusVerifierCovenantScript(program: MessageBusVerifie
     Op.OP_NUMEQUAL,
   ];
   const byteLength = scriptToBytecode(script).length;
-  if (byteLength > 10_000) {
-    throw new Error(`message bus verifier covenant is ${byteLength} bytes; BCH permits at most 10000`);
+  if (byteLength > maximumInputBytes) {
+    throw new Error(
+      `message bus verifier covenant is ${byteLength} bytes; active consensus permits at most ${maximumInputBytes}`,
+    );
   }
   return script;
 }
 
-export const messageBusVerifierCovenantBytecode = (program: MessageBusVerifierProgram): Uint8Array =>
-  scriptToBytecode(buildMessageBusVerifierCovenantScript(program));
+export const messageBusVerifierCovenantBytecode = (
+  program: MessageBusVerifierProgram, maximumInputBytes = 10_000,
+): Uint8Array => scriptToBytecode(buildMessageBusVerifierCovenantScript(program, maximumInputBytes));
 
 export const messageBusVerifierCovenantHex = (program: MessageBusVerifierProgram): string =>
   Array.from(messageBusVerifierCovenantBytecode(program), (byte) => byte.toString(16).padStart(2, '0')).join('');
 
 /** Artifact-fixed P2SH32 lock; the NFT category supplies deployment-specific branding. */
-export const messageBusVerifierLockingBytecode = (program: MessageBusVerifierProgram): Uint8Array =>
-  Uint8Array.from([0xaa, 0x20, ...hash256(messageBusVerifierCovenantBytecode(program)), 0x87]);
+export const messageBusVerifierLockingBytecode = (
+  program: MessageBusVerifierProgram, maximumInputBytes = 10_000,
+): Uint8Array => Uint8Array.from([
+  0xaa, 0x20, ...hash256(messageBusVerifierCovenantBytecode(program, maximumInputBytes)), 0x87,
+]);

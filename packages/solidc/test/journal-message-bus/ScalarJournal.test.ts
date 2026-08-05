@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { compileString as compileMessageBusString } from '../../src/compiler.js';
 
 const PREFIX = 'pragma solidcash >=0.8.0; contract C() { int x;';
 const HELPER_BODY = 'this.x = ((this.x + n) * 3 - n) / 2;';
@@ -165,5 +166,42 @@ describe('Release 1 scalar journal lowering', () => {
     // ABSENT here while the `update` case above (void as written, made returning by the journal) carries it.
     // Without this the message could claim a cause that is not the cause.
     expect(raised?.message).not.toContain('it is void as written');
+  });
+
+  it('admits a returning event writer only through an authenticated graph effect frame', () => {
+    const artifact = compileMessageBusString(`pragma solidcash >=0.8.0;
+      contract Token {
+        mapping(address => uint) balances;
+        mapping(address => mapping(address => uint)) allowances;
+        event Approval(address indexed owner, address indexed spender, uint value);
+        function balanceOf(address who) public view returns (uint) { return balances[who]; }
+        function approve(address spender, uint value) public returns (bool) {
+          address owner = msg.sender;
+          allowances[owner][spender] = value;
+          emit Approval(owner, spender, value);
+          return true;
+        }
+      }
+    `, { forceStateful: true, messageBus: true, maximumInputBytes: 10_000_000 });
+
+    expect(artifact.messageBus?.handlers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ name: 'balanceOf', eligible: true, outputs: [{ type: 'uint256' }] }),
+      expect.objectContaining({
+        name: 'approve',
+        eligible: true,
+        outputs: [{ type: 'bool' }],
+        emits: [expect.objectContaining({ eventName: 'Approval' })],
+        batchKeyWitnesses: expect.arrayContaining([
+          expect.objectContaining({ inputIndex: -2, source: 'msgSender' }),
+        ]),
+      }),
+    ]));
+    expect(artifact.invocationAnalysis?.functions).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        name: '__message_bus_graph_approve',
+        writes: ['collection:allowances:*'],
+        effects: ['events'],
+      }),
+    ]));
   });
 });

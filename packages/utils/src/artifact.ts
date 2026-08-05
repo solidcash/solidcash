@@ -6,6 +6,8 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
+  /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
+  maximumInputBytes?: number;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
@@ -740,6 +742,12 @@ export interface Artifact {
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
+  /**
+   * Every delegate entry point pins the exact number of outputs using the proxy's locking bytecode. This closes
+   * duplicate proxy master/data-NFT outputs and allows a proxy to delegate mutable-NFT cardinality changes to
+   * the implementation's per-storage-path covenant checks.
+   */
+  delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and

@@ -130,7 +130,9 @@ export function getMessageBusVerifierAddress(contract: Contract<any, any>, categ
   const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
   return scriptToAddress(
-    buildMessageBusVerifierCovenantScript(program),
+    buildMessageBusVerifierCovenantScript(
+      program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+    ),
     contract.provider.network,
     'p2sh32',
     true,
@@ -143,7 +145,9 @@ export function getMessageBusVerifierLockingBytecode(
   validateCategoryId(categoryId);
   const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
-  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(program), 'p2sh32');
+  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(
+    program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  ), 'p2sh32');
 }
 
 export function getEntryNftAddress(
@@ -281,6 +285,12 @@ export async function getContractState(
   }
 
   const reader = new StateReader(contract.artifact.stateLayout);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+    console.error('get-contract-state-addresses', {
+      contract: contract.name, categoryId, tokenAddress: contract.tokenAddress,
+      allAddresses, dataNftOnlyAddresses,
+    });
+  }
   return reader.readStateFromChain(
     contract.provider, categoryId, allAddresses, dataNftOnlyAddresses, dynamicChunkAddresses,
   );
@@ -306,7 +316,9 @@ export function createMessageBusVerifierUnlocker(
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }
-  const covenantScript = buildMessageBusVerifierCovenantScript(program);
+  const covenantScript = buildMessageBusVerifierCovenantScript(
+    program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  );
   const abiInputs: AbiInput[] = [
     { name: '__internal__densityReserve', type: 'bytes' },
     ...program.inputs,

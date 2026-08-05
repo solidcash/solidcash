@@ -1391,6 +1391,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       || [
         '__internal__msgData',
         '__internal__msgSig',
+        '__internal__msgSenderCategory',
         '__internal__graphCallManifest',
         '__internal__graphParticipantOffset',
         '__internal__graphFixedSize', '__internal__graphBlockSize',
@@ -2199,6 +2200,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Internal-call expansion can splice a LowLevelCallNode into this body after its own visitor opportunity
+    // has passed (notably OZ SafeERC20's tuple-bound `address(token).call(data)`). Normalize those late nodes at
+    // the semantic boundary so external-call collection and block-layout scanning see the same raw graph edge
+    // as the ordinary MethodCall path. Calls with real options remain low-level calls: conditional `{value: 0}`
+    // fallback attempts are not unconditional graph rows.
+    this.normalizeLateRawCallExpressions(node.body);
+
     // External calls pre-scan: collect all external function call results and assign slot indices
     {
       const externalCallSlots: ExternalCallSlot[] = [];
@@ -2252,22 +2260,28 @@ export default class SymbolTableTraversal extends AstTraversal {
                 inferredSelectors.set(slot, computeFunctionSelector(signature));
               }
             }
-            const identity = slot.addressParam ? `param:${slot.addressParam}`
+            const identity = slot.addressSource ? `source:${JSON.stringify(slot.addressSource)}`
+              : slot.addressParam ? `param:${slot.addressParam}`
               : slot.addressStateVar ? `state:${slot.addressStateVar}`
                 : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
             if (identity !== '') {
-              const ownerKey = `${identity}|${slot.interfaceName}`;
+              const ownerKey = identity;
               const allGroup = allByTarget.get(ownerKey) ?? [];
               allGroup.push(slot);
               allByTarget.set(ownerKey, allGroup);
             }
-            const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
-              && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
+            const decodedRaw = slot.interfaceName === '__raw__'
+              && slot.rawFunctionName && slot.rawParameters && slot.rawParameterTypes
+              && slot.rawParameters.length === slot.rawParameterTypes.length;
+            const rawSelector = decodedRaw ? slot.rawSelector : undefined;
+            const eligible = identity !== ''
+              && (directCalls.has(slot.sourceCallNode!) || (slot.addressSource && slot.hasReturnValues))
+              && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
-              && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot))
-              && !(slot.argSources ?? []).some((source) => source.kind === 'expression');
+              && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot) ?? rawSelector)
+              && (decodedRaw || !(slot.argSources ?? []).some((source) => source.kind === 'expression'));
             if (!eligible) continue;
-            const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
+            const key = `${identity}|${slot.requiredDataNftIndices.join(',')}`;
             const group = byTarget.get(key) ?? [];
             group.push(slot);
             byTarget.set(key, group);
@@ -2285,29 +2299,53 @@ export default class SymbolTableTraversal extends AstTraversal {
               { functionName: node.name, callChains: chains, option: 'messageBus' },
             );
           }
-          // V1 permits exactly one repeated callee group in a root invocation.
-          if (repeated.length === 1) {
-            const group = repeated[0];
-            const representative = group[0];
-            representative.batchInvocations = group.map((slot, logicalIndex) => {
+          // Each distinct owner gets one physical message-bus input. Several owners may each be repeated in
+          // the same root invocation, so synthesize an independent batch representative for every group.
+          if (repeated.length > 0) {
+            const grouped = new Set<ExternalCallSlot>();
+            for (const group of repeated) {
+              const representative = group[0];
+              representative.batchInvocations = group.map((slot, logicalIndex) => {
+              slot.batchRepresentative = representative;
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
-              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
+              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)
+                ?? slot.rawSelector!;
               slot.compileTimeSelector = selector;
               const iface = this.interfaceMap.get(slot.interfaceName);
               const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
                 .find((fn) => fn.name === slot.functionName);
+              const rawIface = slot.rawInterfaceName
+                ? this.interfaceMap.get(slot.rawInterfaceName) : undefined;
+              const rawFuncFromInterface = rawIface && this.getAllInterfaceFunctions(rawIface)
+                .find((fn) => fn.name === slot.rawFunctionName);
+              // Late helper outlining can preserve a decoded abi.encodeCall selector and arguments while losing
+              // the payload node's interface tag. Do not fall back to the low-level call's opaque `bytes` return
+              // in that case: resolve the actual method by its already-authenticated selector. This is safe across
+              // duplicate interface declarations because an identical selector/signature has identical ABI types.
+              const rawFunc = rawFuncFromInterface ?? (slot.rawFunctionName
+                ? [...this.interfaceMap.values()].flatMap((candidate) => this.getAllInterfaceFunctions(candidate))
+                  .find((fn) => fn.name === slot.rawFunctionName && binToHex(computeFunctionSelector(
+                    computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString())),
+                  )) === binToHex(selector))
+                : undefined);
               return {
                 selector,
-                parameters: slot.sourceCallNode!.parameters,
-                parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
+                parameters: slot.rawParameters ?? slot.sourceCallNode!.parameters,
+                parameterTypes: slot.rawParameterTypes
+                  ?? ifaceFunc?.parameters.map((parameter) => parameter.type)
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
-                argSources: slot.argSources,
+                argSources: slot.rawArgSources ?? slot.argSources,
+                ...(slot.opaqueReturn && { opaqueReturn: true }),
+                ...((rawFunc?.returnTypes ?? slot.returnTypes) && {
+                  returnTypes: rawFunc?.returnTypes ?? slot.returnTypes,
+                }),
               };
-            });
-            representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
-            representative.needsSelectorVerification = true;
-            const grouped = new Set(group.slice(1));
+              });
+              representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
+              representative.needsSelectorVerification = true;
+              for (const logical of group.slice(1)) grouped.add(logical);
+            }
             externalCallSlots.splice(0, externalCallSlots.length,
               ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
           }
@@ -2329,9 +2367,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         // representative's one physical slot.
         for (const slot of logicalCallSlots) {
           if (externalCallSlots.includes(slot)) continue;
-          const representative = externalCallSlots.find((candidate) =>
-            candidate.batchInvocations?.some((row) => row.parameters === slot.sourceCallNode?.parameters));
-          if (representative) slot.slotIndex = representative.slotIndex;
+          const representative = slot.batchRepresentative;
+          if (representative) {
+            slot.slotIndex = representative.slotIndex;
+            slot.returnSlotIndex = representative.returnSlotIndex;
+          }
         }
         node.externalCalls = externalCallSlots;
 
@@ -3095,6 +3135,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       startIndex = this.assignTransferIndices((node as any).block, startIndex);
     }
     return startIndex;
+  }
+
+  /**
+   * Recompute emit ordinals after this traversal has expanded internal calls and modifiers. The initial pre-scan
+   * necessarily runs before those expansions, so copied emit nodes otherwise retain their callee-local ordinal
+   * (usually zero) while the published transitive emit metadata uses distinct slots.
+   */
+  reindexExpandedFunctionEmits(node: FunctionDefinitionNode): void {
+    const emitInfos: EmitInfo[] = [];
+    this.collectEmitStatements(node.body, emitInfos, 0);
+    node.emitInfos = emitInfos.length > 0 ? emitInfos : undefined;
   }
 
   private collectEmitStatements(node: Node, emitInfos: EmitInfo[], emitIndex: number): number {
@@ -5459,6 +5510,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(addressSource && { addressSource }),
         ...(rawFunctionName && { rawFunctionName }),
         ...(rawArgSources && { rawArgSources }),
+        ...(rawPayload instanceof AbiEncodeCallNode && {
+          rawParameters: rawPayload.parameters,
+          rawParameterTypes: rawPayload.resolvedParamTypes,
+          rawSelector: rawPayload.computedSelector,
+          rawInterfaceName: rawPayload.interfaceName,
+        }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
@@ -10891,6 +10948,35 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
+    // AstBuilder represents tuple-bound `address.call(data)` directly as a LowLevelCallNode, so it bypasses
+    // the MethodCall lowering which normally turns a returning raw call into an authenticated graph edge.
+    // Normalize the option-free expression form here, before the low-level-call pre-scan allocates physical
+    // block slots. Calls with `{value: ...}` retain their existing lowering: they may be conditional fallback
+    // attempts (e.g. SafeERC20.forceApprove) and are not equivalent to an unconditional graph row.
+    const hasCallOption = node.callOptions?.value !== undefined
+      || node.callOptions?.gas !== undefined || node.callOptions?.salt !== undefined;
+    if (!hasCallOption && (node.callMode === 'call' || node.callMode === 'staticcall')) {
+      const receiver = node.targetExpression;
+      // A LowLevelCallNode is only constructed after the receiver has already passed the low-level-call type
+      // check. Do not repeat that check here: imported/inlined `address(interfaceValue)` casts can lose their
+      // transient AddressType annotation before this pass even though the node itself remains authoritative.
+      const mode = node.callMode === 'staticcall'
+        ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
+      const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
+      callNode.opaqueReturn = true;
+      callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
+      callNode.callInfo = {
+        interfaceName: '__raw__',
+        functionName: '__raw__',
+        externalCallSlotIndex: -1,
+        hasReturnValues: true,
+        returnTypes: [new BytesType()],
+        returnEventSignature: '_Return___raw__(bytes)',
+        callMode: mode,
+      };
+      callNode.location = node.location;
+      return callNode;
+    }
     return node;
   }
 
@@ -10968,6 +11054,89 @@ export default class SymbolTableTraversal extends AstTraversal {
     statement.expression = callNode;
     statement.location = node.location;
     return statement;
+  }
+
+  private normalizeLateRawCallExpressions(root: Node): void {
+    const seen = new WeakSet<Node>();
+    const isZero = (expression: ExpressionNode, resolving = new Set<Node>()): boolean => {
+      if (resolving.has(expression)) return false;
+      resolving.add(expression);
+      if (expression instanceof IntLiteralNode) return expression.value === 0n;
+      if (expression instanceof CastNode) return isZero(expression.expression, resolving);
+      if (expression instanceof IdentifierNode) {
+        const definition = expression.definition?.definition;
+        const initializer = definition instanceof VariableDefinitionNode
+          ? definition.expression : this.currentFunction?.body
+            ? this.findLocalInit(this.currentFunction.body, expression.name) : undefined;
+        return initializer !== undefined && isZero(initializer, resolving);
+      }
+      return false;
+    };
+    const normalize = (candidate: Node, conditional = false): Node => {
+      if (candidate instanceof LowLevelCallNode) {
+        const hasCallOption = candidate.callOptions?.value !== undefined
+          || candidate.callOptions?.gas !== undefined || candidate.callOptions?.salt !== undefined;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ROUTE === '1' && this.currentFunction?.name === 'publishJobPost') {
+          console.error('late-raw-call-shape', {
+            line: candidate.location?.start.line,
+            mode: candidate.callMode,
+            conditional,
+            hasCallOption,
+            value: candidate.callOptions?.value?.constructor.name,
+            valueName: candidate.callOptions?.value instanceof IdentifierNode
+              ? candidate.callOptions.value.name : undefined,
+            valueDefinition: candidate.callOptions?.value instanceof IdentifierNode
+              ? candidate.callOptions.value.definition?.definition?.constructor.name : undefined,
+            valueInitializer: candidate.callOptions?.value instanceof IdentifierNode
+              ? this.findLocalInit(root, candidate.callOptions.value.name)?.constructor.name : undefined,
+            zeroValue: candidate.callOptions?.value !== undefined
+              ? isZero(candidate.callOptions.value) : undefined,
+            gas: candidate.callOptions?.gas?.constructor.name,
+            salt: candidate.callOptions?.salt?.constructor.name,
+          });
+        }
+        const zeroValueOnly = !conditional && candidate.callOptions?.value !== undefined
+          && candidate.callOptions.gas === undefined && candidate.callOptions.salt === undefined
+          && isZero(candidate.callOptions.value);
+        if ((!hasCallOption || zeroValueOnly)
+          && (candidate.callMode === 'call' || candidate.callMode === 'staticcall')) {
+          const mode = candidate.callMode === 'staticcall'
+            ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
+          const callNode = new ExternalFunctionCallNode(
+            '__raw__', candidate.targetExpression, '__raw__', [candidate.data],
+          );
+          callNode.opaqueReturn = true;
+          callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
+          callNode.callInfo = {
+            interfaceName: '__raw__', functionName: '__raw__', externalCallSlotIndex: -1,
+            hasReturnValues: true, returnTypes: [new BytesType()],
+            returnEventSignature: '_Return___raw__(bytes)', callMode: mode,
+          };
+          callNode.location = candidate.location;
+          return callNode;
+        }
+      }
+      if (seen.has(candidate)) return candidate;
+      seen.add(candidate);
+      if (candidate instanceof BranchNode) {
+        candidate.condition = normalize(candidate.condition, conditional) as ExpressionNode;
+        candidate.ifBlock = normalize(candidate.ifBlock, true) as BlockNode;
+        if (candidate.elseBlock) candidate.elseBlock = normalize(candidate.elseBlock, true) as BlockNode;
+        return candidate;
+      }
+      for (const [key, value] of Object.entries(candidate as unknown as Record<string, unknown>)) {
+        if (value instanceof Node) {
+          (candidate as unknown as Record<string, unknown>)[key] = normalize(value, conditional);
+        } else if (Array.isArray(value)) {
+          for (let index = 0; index < value.length; index += 1) {
+            if (value[index] instanceof Node) value[index] = normalize(value[index], conditional);
+          }
+        }
+      }
+      return candidate;
+    };
+    normalize(root);
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {

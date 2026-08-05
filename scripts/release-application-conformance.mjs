@@ -13,6 +13,8 @@ const applications = [
   ['proxy upgrade with preserved state', 'test/e2e/Upgrade.test.ts'],
   ['mapping plus dynamic-array state', 'test/e2e/IterableMappingPattern.test.ts'],
   ['cross-contract read and mutation', 'test/e2e/ExternalFunctionCalls.test.ts'],
+  ['event argument and filtering facade', 'test/e2e/EventsFacade.test.ts'],
+  ['custom-error, assert, and revert behavior', 'test/e2e/ErrorAssertRevert.test.ts'],
 ];
 
 if (process.argv.includes('--list')) {

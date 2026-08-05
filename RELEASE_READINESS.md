@@ -253,7 +253,7 @@ it must not silently compile to incorrect covenant behavior.
 ### Application-level conformance
 
 - [x] Select and freeze at least five representative release scenarios in
-  `yarn test:application-conformance` (six files, 63 executed tests on 2026-08-05):
+  `yarn test:application-conformance` (eight files, 91 executed tests on 2026-08-05):
   - [ ] ERC-20-like fungible token;
   - [x] token integration and target pinning (`SafeErc20ChainTargetPinning.test.ts`);
   - [x] ownership/access control (`CustomModifier.test.ts`);
@@ -261,13 +261,16 @@ it must not silently compile to incorrect covenant behavior.
   - [x] proxy upgrade with preserved state (`Upgrade.test.ts`);
   - [x] mapping plus dynamic-array state (`IterableMappingPattern.test.ts`);
   - [x] cross-contract read and mutation (`ExternalFunctionCalls.test.ts`).
+  - Supporting release-interface coverage: decoded event arguments/filtering (`EventsFacade.test.ts`) and
+    custom-error metadata plus assert/revert behavior (`ErrorAssertRevert.test.ts`).
 - [x] Make the selected mock-provider scenarios a deterministic, named release command. The gate rejects ordinary
   test failures and does not include the environment-gated timelock file, whose four tests otherwise report as
   skipped without chipnet/regtest configuration. CI runs the named gate separately so its result remains visible
   even though the same files are also part of the broad SDK suite.
 - [ ] For each selected application, require compilation, behavioral tests, event/error tests, and script-size
-  measurements. The first frozen gate proves compilation and behavior; event/error coverage and a machine-readable
-  per-application size budget still need to be added before this section is complete.
+  measurements. The frozen gate now proves compilation/behavior and shared event/custom-error interfaces;
+  per-application applicability assertions and a machine-readable size budget still need to be added before this
+  section is complete.
 - [~] Decide whether `.worktrees/n-erc20` and its quarantined-admission design are release scope.
 - [ ] Document any source changes required when porting the corresponding Solidity pattern.
 
@@ -377,6 +380,6 @@ Update this table whenever a release candidate is cut.
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
-| Application conformance suite | **PARTIAL** — deterministic six-scenario mock-provider gate passes 63/63; full ERC-20 application, per-app event/error assertions, size budgets, and BCHN runs remain open | `yarn test:application-conformance` | 2026-08-05 |
+| Application conformance suite | **PARTIAL** — deterministic eight-file mock-provider gate passes 91/91, including decoded event arguments/filtering and custom-error/assert/revert behavior; full ERC-20 application, per-app applicability assertions, size budgets, and BCHN runs remain open | `yarn test:application-conformance` | 2026-08-05 |
 | Security conformance suite | **PARTIAL** — deterministic thirteen-scenario integrity gate passes 44/44, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, emitted-return, and built-in proxy transitions; remaining state-mutation matrices and early refusal for experimental delegate shapes remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

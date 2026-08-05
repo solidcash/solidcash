@@ -4335,9 +4335,9 @@ function compileResolvedAst(
     const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
     const functionNameById = new Map(ast.contract.functions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
-    // Compiler compact helpers occupy the reserved >= 0x80 range and are selected dynamically from IDs kept
-    // in the verifier frame, so they cannot be recovered by scanning only literal OP_INVOKE predecessors.
-    // User/handler functions occupy the lower range; include the verifier plus the compact-helper namespace.
+    // Compiler compact helpers are selected dynamically from IDs kept in the verifier frame, so they cannot be
+    // recovered by scanning only literal OP_INVOKE predecessors. Split facets compact that namespace into unused
+    // positive IDs as well as negatives; named contract functions remain the exact exclusion set.
     const verifierBytecodes = new Map([
       ...traversal.invokedFunctionBytecodes,
       ...traversal.outlinedSubroutineBytecodes,
@@ -4383,7 +4383,7 @@ function compileResolvedAst(
     // with the verifier and the dynamically selected compact-helper namespace, then add only statically invoked
     // outlines, transitively. OP_INVOKE hard-fails on an omitted definition, so this is an exact fail-closed closure.
     const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()]
-      .filter((id) => id <= -12 || id === verifierFunction?.functionId));
+      .filter((id) => !functionNameById.has(id) || id === verifierFunction?.functionId));
     if (verifierFunction?.functionId !== undefined) requiredVerifierIds.add(verifierFunction.functionId);
     const pendingVerifierIds = [...requiredVerifierIds];
     while (pendingVerifierIds.length > 0) {

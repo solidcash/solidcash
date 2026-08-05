@@ -758,10 +758,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
-  private compactHelperIds = {
-    next: -12n,
-    used: new Set<bigint>(),
-  };
+  private compactHelperIds: {
+    next: bigint;
+    nextPositive?: bigint;
+    used: Set<bigint>;
+  } = {
+      next: -12n,
+      used: new Set<bigint>(),
+    };
 
   // Function IDs are allocated monotonically from zero, so reserve compact negative script numbers for
   // compiler helpers. This saves one byte at nearly every fixed-helper definition and invocation.
@@ -791,6 +795,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   private allocateCompactHelperId(): bigint {
+    while (this.compactHelperIds.nextPositive !== undefined
+      && this.compactHelperIds.nextPositive <= 127n) {
+      const id = this.compactHelperIds.nextPositive;
+      this.compactHelperIds.nextPositive += 1n;
+      if (!this.compactHelperIds.used.has(id)) {
+        this.compactHelperIds.used.add(id);
+        return id;
+      }
+    }
     while (true) {
       const id = this.compactHelperIds.next;
       this.compactHelperIds.next -= 1n;
@@ -799,6 +812,69 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return id;
       }
     }
+  }
+
+  /**
+   * A split facet's usage probe discovers many shape-specific helpers that are ultimately inlined. Keeping those
+   * probe-only IDs in the descending allocator creates hundreds of holes before shared-span outlining begins,
+   * making every later live OP_DEFINE/OP_INVOKE pay for a wider script number. Reassign the probed namespace before
+   * emitting anything: likely shared helpers receive the shortest collision-free IDs first, while inline-only
+   * bookkeeping IDs move out of the allocator's path (they are never encoded).
+   */
+  private compactSplitFacetProbeIds(probe: Map<bigint, number>): void {
+    if (!this.currentContractIsSplitFacet) return;
+    const maps: Array<Map<unknown, bigint>> = [
+      this.sortedEntryAddressIds,
+      this.structSkipIds,
+      this.structFieldPrefixIds,
+      this.structFieldExtractIds,
+      this.scanLoopIds,
+      this.arrayElementIds,
+      this.arraySplitIds,
+      this.arrayTruncateIds,
+      this.stateDecodeIds,
+      this.stateReadIds,
+      this.dataNftPreserveIds,
+      this.dataNftCommitPreserveIds,
+      this.dataNftOutputCommitmentIds,
+    ] as Array<Map<unknown, bigint>>;
+    const oldIds = [...new Set(maps.flatMap((map) => [...map.values()]))];
+    const oldIdSet = new Set(oldIds);
+    const used = new Set([...this.compactHelperIds.used].filter((id) => !oldIdSet.has(id)));
+    const active = oldIds.filter((id) => (probe.get(id) ?? 0) >= 2);
+    const inactive = oldIds.filter((id) => (probe.get(id) ?? 0) < 2);
+    const replacements = new Map<bigint, bigint>();
+    let nextPositive = 1n;
+    let nextNegative = -12n;
+    const allocateEncoded = (): bigint => {
+      while (nextPositive <= 127n) {
+        const candidate = nextPositive++;
+        if (!used.has(candidate)) { used.add(candidate); return candidate; }
+      }
+      for (;;) {
+        const candidate = nextNegative--;
+        if (!used.has(candidate)) { used.add(candidate); return candidate; }
+      }
+    };
+    for (const id of active) replacements.set(id, allocateEncoded());
+    // These IDs participate only in use-count bookkeeping. Keeping them far from both encoded namespaces lets
+    // subsequent shared-span IDs continue immediately after the last live captured helper.
+    let nextBookkeeping = 1_000_000n;
+    for (const id of inactive) {
+      while (used.has(nextBookkeeping)) nextBookkeeping += 1n;
+      replacements.set(id, nextBookkeeping);
+      used.add(nextBookkeeping);
+      nextBookkeeping += 1n;
+    }
+    for (const map of maps) for (const [key, id] of map) map.set(key, replacements.get(id)!);
+    const remappedProbe = new Map<bigint, number>();
+    for (const [id, uses] of probe) {
+      const remapped = replacements.get(id) ?? id;
+      remappedProbe.set(remapped, (remappedProbe.get(remapped) ?? 0) + uses);
+    }
+    probe.clear();
+    for (const [id, uses] of remappedProbe) probe.set(id, uses);
+    this.compactHelperIds = { next: nextNegative, nextPositive, used };
   }
 
   // State-related tracking
@@ -1492,6 +1568,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const INTENC = GenerateTargetTraversalWithLocation.INT_ENCODE_SUBROUTINE_ID;
     const loc: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
     const probe = this.subroutineUseProbe(node);
+    if (probe) this.compactSplitFacetProbeIds(probe);
     const count = (id: bigint): number => probe?.get(id) ?? 0;
 
     const emitFrame = (t: GenerateTargetTraversalWithLocation): void => t.emitStandardPushdataFrame(loc);

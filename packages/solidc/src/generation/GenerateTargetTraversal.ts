@@ -841,7 +841,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const oldIds = [...new Set(maps.flatMap((map) => [...map.values()]))];
     const oldIdSet = new Set(oldIds);
     const used = new Set([...this.compactHelperIds.used].filter((id) => !oldIdSet.has(id)));
-    const active = oldIds.filter((id) => (probe.get(id) ?? 0) >= 2);
+    // OP_1..OP_16 are single-byte encodings. Give those scarce IDs to the most frequently invoked helpers;
+    // preserve discovery order for equal counts so output remains deterministic.
+    const discoveryOrder = new Map(oldIds.map((id, index) => [id, index]));
+    const active = oldIds.filter((id) => (probe.get(id) ?? 0) >= 2).sort((a, b) =>
+      (probe.get(b) ?? 0) - (probe.get(a) ?? 0)
+      || discoveryOrder.get(a)! - discoveryOrder.get(b)!);
     const inactive = oldIds.filter((id) => (probe.get(id) ?? 0) < 2);
     const replacements = new Map<bigint, bigint>();
     let nextPositive = 1n;

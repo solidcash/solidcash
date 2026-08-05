@@ -446,7 +446,7 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   - **WS11**: demo tests plus the maintained `test/golden-path.test.ts`; `solidcash.config.ts`; vitest aliases
     (hardhat/chai/network-helpers); and the stateful `GoldenToken` example. The golden path covers compile,
     signers, deployment, calls, positional event arguments, named refusal, state, fixture reset, and rerun.
-    The broader migration guide remains TODO.
+    The supported first-release mapping and permanent BCH differences are published in `MIGRATION.md`.
   - **Regression**: SDK unit 770/780 pass (1 pre-existing `debugging.test.ts` BCH_2023_05 debug-log failure,
     provider-independent - `debug()` is pure libauth). BlockOracle e2e 52/52. mem-cash 331/331. Full e2e running.
   - **Pre-existing (NOT us)**: `test/transfer_with_timeout.test.ts` fails on `tx.time` covenant (fork codegen

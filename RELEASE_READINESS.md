@@ -269,7 +269,9 @@ it must not silently compile to incorrect covenant behavior.
   - The golden path proves Chai-style positional event arguments. BCH failed calls do not transport EVM-style
     revert payloads, so typed custom-error argument recovery is not a first-release requirement; declarations
     remain artifact metadata and the maintained path checks a named require reason.
-- [ ] Publish a Hardhat/ethers/chai-to-SolidCash migration table.
+- [x] Publish a Hardhat/ethers/chai-to-SolidCash migration table.
+  - [`examples/testing-suite/MIGRATION.md`](examples/testing-suite/MIGRATION.md) maps configuration, CLI/HRE,
+    signers, factories, fixtures, time, assertions, balances, utilities, and permanent BCH differences.
 - [x] Include a complete stateful or token-contract test project.
   - `GoldenToken` and `golden-path.test.ts` provide the maintained compile/deploy/call/event/revert/state/reset
     project.

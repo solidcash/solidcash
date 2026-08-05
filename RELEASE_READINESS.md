@@ -316,11 +316,13 @@ it must not silently compile to incorrect covenant behavior.
   - `yarn test:package-smoke` packs all six release packages, validates README/license and every concrete
     main/types/bin/export target, installs only those tarballs into a temporary consumer, exercises runtime and
     subpath imports, compiles public types, checks all CLIs, and compiles/constructs a contract through packed APIs.
-- [ ] Run the golden-path smoke test against the packed artifacts rather than workspace links.
+- [x] Run the golden-path smoke test against the packed artifacts rather than workspace links.
+  - `yarn test:package-smoke` installs only the six release tarballs plus consumer tooling, compiles the stateful
+    `GoldenToken`, and passes the deploy/call/event/revert/state/fixture-reset path 3/3 in that isolated project.
 - [x] Verify package exports, type declarations, source maps, licenses, READMEs, and dependency ranges.
   - The packed smoke covers exports, type declarations, licenses, READMEs, source maps for every emitted
-    JavaScript file, installed versions, and internal dependency resolution. Source maps are no longer excluded
-    from the compiler, SDK, and utils tarballs.
+    JavaScript file, installed versions, and internal dependency resolution. Every packed map is now required to
+    embed all referenced source content, so consumers do not depend on unpublished `src/` trees.
 - [ ] Produce release notes separating supported parity, experimental features, deferrals, and breaking changes.
 - [ ] Tag the exact tested commit and record the corpus/regtest results in the release notes.
 
@@ -374,7 +376,7 @@ rg -n --glob '*.{test,spec}.ts' \
 - [ ] Compatibility manifest is complete and published.
 - [ ] Corpus baseline is reproducible, crash-free, and non-regressing.
 - [ ] Clean-checkout CI and BCHN regtest gates pass.
-- [ ] The Hardhat-style golden path passes using packed release artifacts.
+- [x] The Hardhat-style golden path passes using packed release artifacts.
 - [ ] Representative application suite passes with script-size measurements.
 - [ ] Package versions and exports are consistent.
 - [ ] Release documentation clearly separates parity from intentional BCH differences.
@@ -415,7 +417,7 @@ Update this table whenever a release candidate is cut.
 | Testing-suite golden path | **PASS** — maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `examples/testing-suite/test/golden-path.test.ts` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
-| Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
+| Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
 | Security conformance suite | **PARTIAL** — deterministic thirteen-scenario integrity gate passes 44/44, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, emitted-return, and built-in proxy transitions; remaining state-mutation matrices and early refusal for experimental delegate shapes remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

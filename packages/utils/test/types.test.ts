@@ -67,19 +67,6 @@ describe('type utilities', () => {
 
     // TODO: fully test cast combinations
   });
-
-  describe.skip('TODO: implicitlyCastable()', () => {
-  });
-
-  describe.skip('TODO: resultingType()', () => {
-  });
-
-  describe.skip('TODO: arrayType()', () => {
-  });
-
-  describe.skip('TODO: implicitlyCastableSignature()', () => {
-  });
-
   describe('parseType()', () => {
     it('should parse primitive type strings', () => {
       expect(parseType('bigint')).toEqual(PrimitiveType.BIGINT);

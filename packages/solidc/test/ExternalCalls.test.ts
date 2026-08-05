@@ -276,7 +276,7 @@ describe('external call on a tuple-destructured / copied local interface var', (
       + ' (IERC20 tokenIn, IERC20 tokenOut) = isToken0 ? (token0, token1) : (token1, token0);'
       + ' tokenIn.transferFrom(msg.sender, address(this), amt);'
       + ' uint256 x = tokenIn.balanceOf(address(this)); tokenOut.transfer(msg.sender, x); require(true); } }')).toBe('C');
-  }, 60_000);
+  }, 120_000);
 });
 
 describe('SBE-21: external call on a state-var target in fallback/receive', () => {

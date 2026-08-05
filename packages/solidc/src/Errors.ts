@@ -137,6 +137,43 @@ export class SolidCashError extends Error {
   }
 }
 
+export class TransferFrameUnavailableError extends SolidCashError {
+  constructor(node: FunctionDefinitionNode, transferIndex: number) {
+    super(node, `Value transfer ${transferIndex} in function '${node.name}' cannot preserve its covenant frame across`
+      + ' this control-flow shape; rewrite the conditional send/transfer so it is reached from the function body');
+  }
+}
+
+/** A generated effect path requires transaction slots, but no block layout owns them. */
+export class BlockLayoutUnavailableError extends Error {
+  constructor(functionName: string) {
+    super(`Block layout not available while compiling '${functionName}'`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** Code generation lost a compiler-tracked value before a path that still requires it. */
+export class StackVariableUnavailableError extends Error {
+  constructor(variable: string, detail = '') {
+    super(`Expected variable '${variable}' does not exist on the stack${detail}`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** A source shape exceeds the compiler's recursive traversal capacity. */
+export class CompilerRecursionLimitError extends Error {
+  constructor() {
+    super('Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive type shapes');
+    this.name = this.constructor.name;
+  }
+}
+
+export class RecursiveStructUnsupportedError extends SolidCashError {
+  constructor(node: FunctionDefinitionNode) {
+    super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');
+  }
+}
+
 export class UnsupportedMemoryAliasingError extends SolidCashError {
   constructor(node: VariableDefinitionNode, names: string[]) {
     super(node, `Memory alias group '${names.join(', ')}' reaches an operation that cannot yet preserve Solidity aliasing`);

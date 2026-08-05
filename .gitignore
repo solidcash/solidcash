@@ -111,3 +111,4 @@ manual-test.ts
 /codex/
 
 .worktrees
+packages/solidcash/.regtest-progress.json

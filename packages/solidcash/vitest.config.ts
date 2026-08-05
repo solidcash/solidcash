@@ -19,5 +19,6 @@ export default defineConfig({
     // one green in isolation, all four relying on this default. 120s still catches hangs (a hang is unbounded)
     // and stays under the regtest budget.
     testTimeout: process.env.TESTS_USE_REGTEST ? 180000 : 120000,
+    hookTimeout: process.env.TESTS_USE_REGTEST ? 180000 : 10000,
   },
 });

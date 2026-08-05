@@ -19,7 +19,8 @@ import {
   FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
-  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
+  ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
+  StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
   LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
@@ -115,6 +116,7 @@ import { ImportResolver } from './ImportResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
+  CompilerRecursionLimitError, UnsupportedInlineAssemblyError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -291,6 +293,31 @@ function admittedHandlerCount(artifact: Artifact): number {
 /** Rounds of one-handler-at-a-time attribution before the whole-route refusal is reached. */
 const MAX_ATTRIBUTED_EXTERNAL_REFUSALS = 4;
 
+/** A source-owned refusal whose outcome cannot depend on which optional message-bus handlers are admitted. */
+function isAdmissionIndependentSourceError(error: unknown): boolean {
+  return error instanceof UnsupportedInlineAssemblyError && !generatedOriginOf(error.node.location);
+}
+
+/** EVM ABI bytes occupied by a static type, or undefined when the type has a dynamic tail. */
+function staticAbiByteSize(type: Type): number | undefined {
+  if (type === PrimitiveType.STRING || (type instanceof BytesType && type.bound === undefined)) return undefined;
+  if (type instanceof ArrayType) {
+    if (type.bound === undefined) return undefined;
+    const elementBytes = staticAbiByteSize(type.elementType);
+    return elementBytes === undefined ? undefined : type.bound * elementBytes;
+  }
+  if (type instanceof StructType) {
+    let bytes = 0;
+    for (const field of type.fields) {
+      const fieldBytes = staticAbiByteSize(field.type);
+      if (fieldBytes === undefined) return undefined;
+      bytes += fieldBytes;
+    }
+    return bytes;
+  }
+  return 32;
+}
+
 /**
  * X73 SAFETY NET. Admitting `external` entry points must never make a contract WORSE, and a contract that used
  * to compile as a bus participant and now does not is strictly worse.
@@ -365,6 +392,10 @@ function compileWithExternalAdmissionFallback(
     } catch (error) {
       firstError ??= error;
       latestError = error;
+      // Unsupported source assembly also fails the direct artifact. Replaying the five route-admission rungs can
+      // neither lower it nor produce a better diagnostic, and on large contracts can turn a two-second refusal
+      // into a corpus timeout. Generated-route assembly remains retryable because it is a compiler-owned gap.
+      if (isAdmissionIndependentSourceError(error)) throw error;
       // X229. A newly admitted bare forwarder may expose a pre-existing route-generation gap. Retrying the
       // SAME rung with only that new admission disabled preserves every previously dispatchable sibling and
       // every unrelated relaxation. Falling to the next rung instead can demote a proven handler even though
@@ -450,7 +481,7 @@ function compileWithExternalAdmissionFallback(
   }
 }
 
-export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, primaryContractName, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver;
@@ -482,6 +513,17 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, primaryContractName);
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? cloneArtifact(artifact) : artifact;
+}
+
+export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  try {
+    return compileStringUnchecked(code, compilerOptions);
+  } catch (cause) {
+    if (cause instanceof RangeError && cause.message === 'Maximum call stack size exceeded') {
+      throw new CompilerRecursionLimitError();
+    }
+    throw cause;
+  }
 }
 
 /**
@@ -769,6 +811,18 @@ const MESSAGE_BUS_REJECTION_REMEDIES: Record<string, string> = {
     'a handler that ITERATES a collection reads every entry of it, and the route addresses entries through '
     + 'per-entry witnesses fixed at compile time, so an unbounded iteration has no representation in the '
     + 'block layout: read the entries the batch needs by key, or keep the iteration on the direct route',
+  'nested-dynamic-array-route-not-enabled':
+    'nested dynamic-array state does not yet have a bounded message-bus row encoding; keep this handler on the '
+    + 'direct route or flatten the nested array into separately keyed state',
+  'collection-state-getter-route-not-enabled':
+    'collection getters remain available as ordinary entry points; message-bus routes batch state-changing '
+    + 'handlers rather than synthesizing a second getter surface',
+  'array-struct-element-write-route-not-enabled':
+    'partial writes to a struct stored in a dynamic array remain available on the direct route; batch the '
+    + 'equivalent scalar or keyed fields only after their row encoding is enabled',
+  'result-route-static-payload-too-large':
+    'the statically encoded return payload exceeds the batch route\'s 10,000-byte result profile; keep this '
+    + 'function on its direct route or return a bounded page that fits in one invocation',
   'mixed-scalar-and-collection-route-not-enabled':
     'a handler that addresses no collection entry is refused on two route shapes. On a route that allocates a '
     + 'ROW-LOCAL entry slot per row, those slots are bound by the entry handler\'s own row, so a row that '
@@ -919,6 +973,15 @@ function synthesizeMessageBusRoute(
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
+  const nestedDynamicArrayState = new Set(contract.stateVariables.filter((state) => {
+    let type = state.type;
+    let arrayDepth = 0;
+    while (type instanceof ArrayType) {
+      arrayDepth += 1;
+      type = type.elementType;
+    }
+    return arrayDepth > 1;
+  }).map((state) => state.name));
   const fixedArrayCollections = new Set(contract.collections.filter((collection) =>
     collection.type instanceof ArrayType && collection.type.bound !== undefined)
     .map((collection) => collection.name));
@@ -1515,8 +1578,17 @@ function synthesizeMessageBusRoute(
       resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
     const reachesCollection = [...footprint.reads, ...footprint.writes]
       .some((resource) => resource.startsWith('collection:'));
+    const reachesNestedDynamicArray = [...footprint.reads, ...footprint.writes].some((resource) =>
+      [...nestedDynamicArrayState].some((name) =>
+        resource === `state:${name}` || resource === `collection:${name}`
+        || resource.startsWith(`collection:${name}:`)));
     let hasTokenContainerEffect = false;
     let consumesLowLevelReturn = false;
+    let resizesDynamicArrayState = false;
+    let writesArrayStructElement = false;
+    const minimumResultBytes = fn.returnTypes.reduce<number>(
+      (total, type) => total + (staticAbiByteSize(type) ?? 32), 0,
+    );
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const candidateLocals = locallyBoundNames(candidate);
@@ -1541,6 +1613,17 @@ function synthesizeMessageBusRoute(
               consumesLowLevelReturn = true;
             }
           }
+          if (node instanceof StateArrayAssignNode) {
+            const state = contract.stateVariables.find((candidateState) => candidateState.name === node.name);
+            if (state?.type instanceof ArrayType && state.type.elementType instanceof StructType) {
+              writesArrayStructElement = true;
+            }
+          }
+          if (node instanceof StateArrayPushNode || node instanceof StateArrayPopNode
+            || ((node instanceof ArrayPushNode || node instanceof ArrayPopNode)
+              && dynamicState.has(node.name) && !candidateLocals.has(node.name))) {
+            resizesDynamicArrayState = true;
+          }
           // Before symbol resolution, Solidity-compatible bare state writes
           // are still ordinary AssignNodes and are absent from the footprint.
           if (node instanceof AssignNode && dynamicState.has(node.identifier.name)
@@ -1548,7 +1631,27 @@ function synthesizeMessageBusRoute(
         });
       }
     }
-    if (!reason && writesDynamicState && reachesCollection) {
+    if (!reason && minimumResultBytes > MAX_INPUT_BYTESIZE) {
+      // The batch wrapper concatenates `abi.encode` of every return value into one result. Cap that static result
+      // at the same 10,000-byte profile as a deployable input script: attempting to synthesize anything larger
+      // expands enormous fixed arrays before every fallback rung rejects the generated route. The ordinary entry
+      // point is unchanged, so applications that need a larger direct result keep it.
+      reason = 'result-route-static-payload-too-large';
+    } else if (!reason && writesArrayStructElement) {
+      // Partial array-of-struct writes currently reach a direct-only fallback after every admission rung. Reads
+      // of the same struct remain batchable; refuse only the mutation shape until it has a row encoding.
+      reason = 'array-struct-element-write-route-not-enabled';
+    } else if (!reason && fn.returnTypes.length > 0 && resizesDynamicArrayState) {
+      // Result rows cannot also carry a dynamic-state resize. The generated result route eventually rejects this
+      // after cloning and lowering several variants; identify the same invariant at eligibility time so the direct
+      // entry point remains available without paying for route shapes that cannot settle.
+      reason = 'result-route-requires-effect-free-handlers';
+    } else if (!reason && reachesNestedDynamicArray) {
+      // A nested dynamic-array state handler currently reaches the same direct-only fallback after several
+      // expensive generated-route attempts. Refuse it before cloning: no message-bus handler survives today,
+      // while the ordinary entry point compiles and remains unchanged.
+      reason = 'nested-dynamic-array-route-not-enabled';
+    } else if (!reason && writesDynamicState && reachesCollection) {
       reason = 'dynamic-and-collection-route-not-enabled';
     }
     const readsTokenContainer = footprint.reads.some((resource) => resource.startsWith('collection:tokens:'));
@@ -1660,7 +1763,14 @@ function synthesizeMessageBusRoute(
     .map((definition) => definition.name));
   for (const fn of eligible) {
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
-    if (fn.parameters.length === 0 && state
+    const collection = collectionByName.get(fn.name);
+    if (collection || state?.type instanceof ArrayType) {
+      // Public collection getters are synthesized into the function list for direct ABI dispatch, but are not
+      // published as message-bus handlers. Excluding them here avoids repeatedly compiling an unobservable route
+      // candidate during fallback selection; the ordinary getter and every real mutating handler are unchanged.
+      fn.messageBusEligible = false;
+      fn.messageBusRejectionReason = 'collection-state-getter-route-not-enabled';
+    } else if (fn.parameters.length === 0 && state
       && (state.type instanceof StructType || routeStructNames.has(state.type.toString()))) {
       fn.messageBusEligible = false;
       fn.messageBusRejectionReason = 'struct-state-getter-route-not-enabled';
@@ -5774,10 +5884,7 @@ function spdxIdentifiersInComments(code: string): string[] {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) {
-          i += 1; break;
-        }
-        else i += 1;
+        else if (code[i] === quote) { i += 1; break; } else i += 1;
       }
       continue;
     }
@@ -5829,10 +5936,7 @@ function validateUnicodeDirectionMarkers(code: string): void {
       i += 1;
       while (i < code.length) {
         if (code[i] === '\\') i += 2;
-        else if (code[i] === quote) {
-          i += 1; break;
-        }
-        else i += 1;
+        else if (code[i] === quote) { i += 1; break; } else i += 1;
       }
       validateToken(code.slice(start, i));
       continue;
@@ -5973,6 +6077,7 @@ export function parseCode(
   // `is A` tail rather than consuming it as part of the layout expression. Retain the older post-inheritance
   // spelling below for compatibility with sources SolidCash already accepted.
   code = code.replace(
+    // eslint-disable-next-line max-len
     /(\bcontract\s+\w+\b)(\s+(?:(?:\/\/[^\r\n]*|\/\*[\s\S]*?\*\/)\s*)*layout\s+at\s+)([^{};]+?)(\s+is\s+[^{}]*?)(?=\s*\{)/g,
     (_m, header, layoutPrefix, expr, inheritance) => {
       if (/\berc7201\b/.test(expr)) {

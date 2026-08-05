@@ -88,7 +88,7 @@ describe('user external library (side-car) e2e', () => {
 
   it('rejects a wrong expected value (side-car)', async () => {
     await expect(spendViaSidecar(5n, 7n)).rejects.toThrow(
-      /mandatory-script-verify-flag-failed .*input index 0: Unsuccessful evaluation/,
+      /mandatory-script-verify-flag-failed.*(?:input index 0: Unsuccessful evaluation|false\/empty top stack)/,
     );
   });
 });

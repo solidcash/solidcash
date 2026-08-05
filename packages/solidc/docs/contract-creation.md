@@ -37,10 +37,15 @@ honoring - not bypassing - the self-pin.
   (`deployTargets[].salt` = a forwarded param name, a hex literal, or `{ computed: true }`), and `deployFrom`
   derives it (or takes an explicit `childSalt`) and builds the child `Contract` with it, so the SDK-supplied
   genesis address equals the covenant's.
-- **create3** - a `deploy` factory writes `mapping(salt => categoryId)` (no `new T()`); `StatefulContract
-  .deployFrom` mints the child whose category is the funding-UTXO txid and records `children[salt] =
-  categoryId` as an entry NFT. The salt is the user-chosen logical key; the lookup `factory.children[salt]`
-  is the deterministic handle. See DeployFromContract.test.ts `CREATE3_FACTORY`.
+- **create3** - a factory may use a salt-keyed registry, but `deployFrom` requires an explicit typed `new T()` so
+  the covenant can authenticate the supplied child artifact and layout. A typed stateful child deployment that
+  also accesses a C2 mapping currently rejects before broadcast because both layouts claim the first trailing
+  output slot. This combination remains deferred until those regions are separated.
+
+For every supported stateful child deployment, the covenant requires exactly one child minting NFT and exactly
+the child's declared number of mutable data NFTs. Missing, duplicated, reordered, or redirected child genesis
+outputs are rejected. An SDK call cannot substitute an arbitrary `childArtifact`: a deploy entry point without a
+typed `new Contract(...)` target fails before transaction construction.
 
 ## Conditional and loop deploys (`if (c) new C()`, `for (i<n) new C()`)
 

@@ -165,7 +165,6 @@ import {
 } from '../Errors.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { Symbol } from '../ast/SymbolTable.js';
-import { createDefaultValueExpression } from '../ast/defaults.js';
 import { GlobalFunction, Modifier } from '../ast/Globals.js';
 import { isNumericType, resultingTypeForBinaryOp } from '../utils.js';
 import { getStackEffect } from '../asmStackEffects.js';

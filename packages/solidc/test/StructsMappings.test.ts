@@ -155,7 +155,8 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
       + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', {
       solidityImportCompat: true, messageBus: false,
     });
-    const route = (artifact: typeof sugar) => artifact.abi.find((fn) => fn.name === 'f');
+    const route = (artifact: typeof sugar): typeof artifact.abi[number] | undefined =>
+      artifact.abi.find((fn) => fn.name === 'f');
     expect(route(sugar)).toEqual(route(hand));
     expect(sugar.bytecode.length).toBeGreaterThan(0);
   });

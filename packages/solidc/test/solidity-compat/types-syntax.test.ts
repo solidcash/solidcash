@@ -436,9 +436,9 @@ describe('return-site literal coercion (string / hex -> bytesN)', () => {
   // The same literal coercion applied at assignment sites also applies to a `return` value: a string or hex
   // literal returned where a wider bytesN is declared is right-padded to the return type.
   it('coerces a string / hex literal to the declared bytesN return type', () => {
-    expect(compileString(`contract C() { function f() returns (bytes32) { return "abc"; } }`,
+    expect(compileString('contract C() { function f() returns (bytes32) { return "abc"; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
-    expect(compileString(`contract C() { function f() returns (bytes8) { return hex"0102"; } }`,
+    expect(compileString('contract C() { function f() returns (bytes8) { return hex"0102"; } }',
       { solidityImportCompat: true }).contractName).toBe('C');
   });
 });

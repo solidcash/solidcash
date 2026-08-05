@@ -556,7 +556,7 @@ describe('call options on function-pointer identifiers', () => {
 describe('Solidity function-type mutability conversions', () => {
   const declaration = (actual: string, expected: string): string =>
     `contract C { function h() ${actual === 'nonpayable' ? '' : actual} external {}`
-    + ` function f() external view returns (bytes4) {`
+    + ' function f() external view returns (bytes4) {'
     + ` function() ${expected === 'nonpayable' ? '' : expected} external g = this.h; return g.selector; } }`;
 
   it.each([

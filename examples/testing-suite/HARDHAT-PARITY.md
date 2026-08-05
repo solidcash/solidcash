@@ -106,7 +106,8 @@ clear message where a ported test may call it.
 
 ## WS2 - Task system, HRE and CLI  (Phase B, P1)
 
-Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task registry, HRE, or config loader.
+Current implementation: the `solidcash` CLI, task registry, config loader, and v2/v3-shaped HRE are integrated in
+`@solidcash/testing` and exercised by the generated-project smoke gate.
 
 - [x] CLI entry: `@solidcash/testing` bin `solidcash` -> `dist/cli.js`, `solidcash <task> [--network n] [args]`.
   Runs via `node packages/testing/dist/cli.js` (or `npx solidcash` after `yarn install` relinks the bin). DONE.
@@ -114,14 +115,17 @@ Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task 
   `clean`, `node` (info). DONE. `console` REPL TODO.
 - [x] Task registry API (hardhat v2): `task(name, desc?).addParam/.addOptionalParam/.addFlag/
   .addPositionalParam/.addVariadicPositionalParam(...).setAction(async (args, hre) => ...)` + `subtask`. DONE.
-- [ ] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
+- [x] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
   where `harness` exposes `getSigners`, `getContractFactory`, `getContractAt`, `deployContract`, providers.
   D2 LOCKED: primary shape = v2 global `hre.ethers.*`; build it over a **connection/HRE seam** so a v3
   `hre.network.create() -> { ethers, networkHelpers }` mode can layer on. `hre.ethers` = a thin binding of the
-  WS8 ethers-shim + WS3/WS4 helpers to the active network.
+  WS8 ethers-shim + WS3/WS4 helpers to the active network. DONE: the HRE supplies config, network
+  connection/create, ethers, network helpers, task lookup, and `hre.run`; the CLI injects it into task actions and
+  exposes it to `solidcash run` scripts.
 - [x] `hre.run(name, args)` programmatic task invocation. DONE. (v3 `hre.tasks.getTask` accessor also present.)
-- [ ] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
-  graph + `deployments.createFixture`). P2 unless MS deploy scripts must run.
+- [-] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
+  graph + `deployments.createFixture`). Deferred from the first release: its maintained path uses factories,
+  `deployContract`, and `upgrades.deployProxy` directly.
 
 ## WS3 - Signers and accounts  (Phase A, P0)
 
@@ -227,18 +231,18 @@ BCH sats, ERC-20 -> CashToken FT.
 Revert / require:
 - [x] `revertedWith(reason|regex)` (`toBeRevertedWith`/`toRevertWith`). EA: 123, MS: 50.
 - [x] `reverted` / `to.be.reverted` (`toBeReverted`/`toRevert`). EA: 32, MS: 4.
-- [~] **`revertedWithCustomError(target, name).withArgs(...)`** - best-effort in the chai shim (asserts a revert
-  whose message mentions the error name). Full custom-error selector decoding from failed-VM state + typed
-  `withArgs` still TODO. EA: 21.
+- [-] **`revertedWithCustomError(target, name).withArgs(...)`** - name matching remains best-effort in the chai
+  shim. BCH failed calls do not carry EVM-style revert payloads, so typed runtime argument recovery is deferred
+  from the first release; custom-error declarations remain artifact metadata. EA: 21.
 - [ ] `revertedWithoutReason()` P2. `revertedWithPanic(code?)` - map to VM error classes if meaningful, else
   descope. P2. (EA/MS: 0.)
 
 Events:
-- [~] **`emit(contract, event).withArgs(...)`** - present as `toEmit(contract, name, args)` (Vitest) with
-  literal OR predicate args, but NOT the chai `.to.emit(...).withArgs(...)` chaining shape, and it decodes from
-  a freshly built tx (not a post-`send()` receipt). Add: (1) chai-plugin chaining form; (2) **function-predicate
-  withArgs** (EA relies on this heavily, 51 uses - callback that throws on mismatch, returns true on match);
-  (3) post-send/mined-tx event assertion path; (4) `.not.to.emit`. EA: emit 59 / withArgs 51, MS: emit 71 / withArgs 55. P0.
+- [x] **`emit(contract, event).withArgs(...)`** - present as `toEmit(contract, name, args)` (Vitest) with
+  literal or predicate args, plus the chai `.to.emit(...).withArgs(...)` chaining shape. The maintained
+  `golden-path.test.ts` proves positional decoding from a stateful call. Post-send receipt assertions and the
+  broader imported-suite matrix remain outside this release gate. EA: emit 59 / withArgs 51, MS: emit 71 /
+  withArgs 55.
 
 Balance change (chai shim; `actual` is an action fn/promise, measured before/after):
 - [x] **`changeBchBalance(s)(account(s), delta(s))`** (ether-balance analogue, sats). DONE.
@@ -439,8 +443,10 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   - **WS8 ethers utils (forwarded to ethers v6 per user)**: re-export parseEther/formatEther/parseUnits/keccak256/
     id/AbiCoder/getBytes/hexlify/toUtf8Bytes/ZeroAddress/MaxUint256/SigningKey/Mnemonic/getCreateAddress/... + v5
     shims `BigNumber`, `getBigNumber`, `ethers.utils.*`, `ethers.constants.*`. DONE.
-  - **WS11**: demo tests `test/{harness,ported-style,block-timestamp}.test.ts` (14 pass); `solidcash.config.ts`;
-    vitest aliases (hardhat/chai/network-helpers). Migration-guide doc + expanded contracts still TODO.
+  - **WS11**: demo tests plus the maintained `test/golden-path.test.ts`; `solidcash.config.ts`; vitest aliases
+    (hardhat/chai/network-helpers); and the stateful `GoldenToken` example. The golden path covers compile,
+    signers, deployment, calls, positional event arguments, named refusal, state, fixture reset, and rerun.
+    The supported first-release mapping and permanent BCH differences are published in `MIGRATION.md`.
   - **Regression**: SDK unit 770/780 pass (1 pre-existing `debugging.test.ts` BCH_2023_05 debug-log failure,
     provider-independent - `debug()` is pure libauth). BlockOracle e2e 52/52. mem-cash 331/331. Full e2e running.
   - **Pre-existing (NOT us)**: `test/transfer_with_timeout.test.ts` fails on `tx.time` covenant (fork codegen

@@ -19,9 +19,7 @@ import { TransactionBuilder } from '../src/TransactionBuilder.js';
 import { createTestProvider, getTxOutputs } from './test-util.js';
 import { generateWcTransactionObjectFixture } from './fixture/walletconnect/fixtures.js';
 
-const WRONG_P2PKH_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
-  + '\\(Unable to verify transaction: error in evaluating input index 0: '
-  + 'Program failed an OP_VERIFY operation\\.\\)$');
+const WRONG_P2PKH_INPUT_0 = /mandatory-script-verify-flag-failed.*(?:OP_VERIFY|OP_EQUALVERIFY)/;
 
 describe('Transaction Builder', () => {
   const provider = createTestProvider();

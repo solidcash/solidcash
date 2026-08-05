@@ -24,6 +24,12 @@ export default {
           type: 'sig',
         },
       ],
+      signatureGuard: {
+        key: {
+          kind: 'constructorArg',
+          name: 'recipient',
+        },
+      },
     },
     {
       name: 'timeout',
@@ -34,6 +40,12 @@ export default {
           type: 'sig',
         },
       ],
+      signatureGuard: {
+        key: {
+          kind: 'constructorArg',
+          name: 'sender',
+        },
+      },
     },
   ],
   bytecode: '537a7bac7777 3486e360 OP_DEFINE 537a7cad7cb16d51 2203057b OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
@@ -81,8 +93,78 @@ export default {
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
-      commitmentLimit: 128,
+      commitmentLimit: 1000000,
+      messageBus: true,
     },
   },
-  updatedAt: '2026-07-19T14:07:06.192Z',
+  updatedAt: '2026-08-05T14:46:57.141Z',
+  invocationAnalysis: {
+    version: 1,
+    protocolVersions: [
+      1,
+    ],
+    functions: [
+      {
+        id: 0,
+        name: 'transfer',
+        arity: 1,
+        entryPoint: true,
+        selector: '3486e360',
+        calls: [],
+        closure: [
+          0,
+        ],
+        component: 0,
+        recursive: false,
+        reads: [],
+        writes: [],
+        effects: [],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+      },
+      {
+        id: 1,
+        name: 'timeout',
+        arity: 1,
+        entryPoint: true,
+        selector: '2203057b',
+        calls: [],
+        closure: [
+          1,
+        ],
+        component: 1,
+        recursive: false,
+        reads: [],
+        writes: [],
+        effects: [],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+      },
+    ],
+    components: [
+      {
+        id: 0,
+        functions: [
+          0,
+        ],
+        recursive: false,
+      },
+      {
+        id: 1,
+        functions: [
+          1,
+        ],
+        recursive: false,
+      },
+    ],
+  },
+  diagnostics: [
+    {
+      severity: 'error',
+      code: 'message-bus-route-not-synthesized',
+      message: 'No message-bus route was synthesized for \'TransferWithTimeout\': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - \'transfer\': not-examined-by-route-synthesis; \'timeout\': not-examined-by-route-synthesis.',
+    },
+  ],
 } as const;

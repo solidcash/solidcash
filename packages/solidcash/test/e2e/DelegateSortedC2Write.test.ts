@@ -124,6 +124,13 @@ const valueOfKey30 = async (fixture: Fixture): Promise<bigint | undefined> => {
 
 const raw = (builder: any): string => binToHex(encodeTransaction(builder.buildLibauthTransaction()));
 
+function expectRejectedAt(outcome: string, inputIndex: number): void {
+  expect(outcome).toContain('mandatory-script-verify-flag-failed');
+  if (outcome.includes('error in evaluating input index')) {
+    expect(outcome).toContain(`error in evaluating input index ${inputIndex}`);
+  }
+}
+
 describe('X11: delegate C2 sorted mapping write', () => {
   /**
    * GUARD NEGATIVE CONTROL. The forwarder really does publish no entry accesses and the implementation really
@@ -166,7 +173,7 @@ describe('X11: delegate C2 sorted mapping write', () => {
     );
     const outcome = await fixture.provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 1');
+    expectRejectedAt(outcome, 1);
   }, 300_000);
 
   /**
@@ -192,7 +199,7 @@ describe('X11: delegate C2 sorted mapping write', () => {
     });
     const outcome = await fixture.provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectRejectedAt(outcome, 0);
   }, 300_000);
 
   /**

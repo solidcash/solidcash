@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../../../solidc/src/index.js';
-import { getContractFactory } from '../../src/index.js';
+import { getContractFactory, StatefulContract } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
-async function deploy(source: string) {
+async function deploy(source: string): Promise<StatefulContract> {
   const artifact = compileString(source, { forceStateful: true, solidityImportCompat: true, messageBus: false });
   return getContractFactory(artifact, await fundedSigner()).deploy();
 }
@@ -436,7 +436,7 @@ describe('Solidity corpus behavioral parity', () => {
   // test/libsolidity/semanticTests/immutable/assign_at_declaration.sol
   // test/libsolidity/semanticTests/immutable/getter.sol
   // test/libsolidity/semanticTests/memoryManagement/memory_types_initialisation.sol
-  // Pass 16: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_return_param_zeroed_memory_index_access.sol
+  // Pass 16: semanticTests/array/arrayMemoryAllocation/array_static_return_param_zeroed_memory_index_access.sol
   // Pass 17: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_array_static.sol
   // Pass 18: test/libsolidity/semanticTests/array/array_2d_assignment.sol
   // Pass 19: test/libsolidity/semanticTests/array/arrayMemoryAllocation/array_static_zeroed_memory_index_access.sol

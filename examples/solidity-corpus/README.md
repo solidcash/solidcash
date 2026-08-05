@@ -4,10 +4,26 @@ A breadth stress-test parallel to `../solidity-by-example`: attempt to compile e
 ethereum/solidity compiler test corpus (`../solidity`, i.e. `/Code/solidity`) with SolidCash, reusing the SBE
 bench shape (`compileFile` + `solidityImportCompat` + an OK/FAIL scorecard).
 
+The release compatibility denominator is intentionally limited to upstream `test/libsolidity/semanticTests/**`
+and `test/libsolidity/syntaxTests/**`. Other Solidity compiler subsystem fixtures are inventoried but excluded.
+
 ```bash
 node examples/solidity-corpus/bench.mjs          # full run -> scorecard on stdout + results.json
 SOLC_CORPUS=/path/to/solidity node examples/solidity-corpus/bench.mjs   # override corpus path
 LIMIT=200 node examples/solidity-corpus/bench.mjs                       # smoke test on N files
+FIXTURE_TIMEOUT_MS=10000 node examples/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
+CORPUS_WORKERS=4 node examples/solidity-corpus/bench.mjs                # override the default 8 workers
+CHECK_NEGATIVES=false node examples/solidity-corpus/bench.mjs          # positive-only diagnostic pass
+RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 node examples/solidity-corpus/bench.mjs  # isolated retry tier
+RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 \
+  node examples/solidity-corpus/bench.mjs                               # resume only retained timeouts
+RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUTS=false RETRY_ERROR_NAMES=Error,RangeError \
+  RETRY_TIMEOUT_MS=60000 node examples/solidity-corpus/bench.mjs        # reclassify selected error names
+CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
+  node examples/solidity-corpus/bench.mjs                               # audit only unchecked/timeout negatives
+RECHECK_ACCEPTED_NEGATIVES=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
+  node examples/solidity-corpus/bench.mjs                               # recheck retained over-accepted negatives
+CORPUS_OUTPUT_DIR=/tmp/corpus-run node examples/solidity-corpus/bench.mjs      # alternate artifact directory
 ```
 
 ## What this bench is (and is NOT)
@@ -25,7 +41,34 @@ Buckets (so the denominator is meaningful):
 - **CMDLINE** - files under `test/cmdlineTests/`; these exercise CLI modes and diagnostic rendering rather than
   positive standalone compilation. Many are intentionally invalid without a semantic-test error trailer, so both
   accepting and rejecting them are meaningless for the language-parity denominator (excluded).
+- **BENCHMARK** - files under `test/benchmarks/`; these are Solidity compiler throughput/optimizer stress inputs,
+  not language-conformance fixtures. They are excluded from the compatibility denominator and should be exercised
+  by a separately budgeted compiler-performance gate.
+- **COMPILATION** - files under `test/compilationTests/`; these are full-project/imported-application compiler
+  integration fixtures rather than isolated language fixtures. They are excluded here and belong in the separately
+  budgeted application-conformance gate.
+- **EXTERNAL** - files under `test/externalTests/`; these are imported third-party application projects, likewise
+  excluded from the language denominator and assigned to application conformance.
+- **HARNESS** - all compiler-subsystem fixtures outside the semantic and syntax suites (AST/ABI JSON rendering,
+  gas estimation, SMT checker, LSP, Yul optimizer, and similar). SolidCash does not advertise compatibility with
+  those compiler subsystems, so they are inventoried but excluded.
 - Denominator = **OK + FAIL** (single files that should compile).
+
+Each run also writes `run-metadata.json` with the exact Solidity corpus commit, Node version, platform, and fixture
+count. Release scorecards must retain this file beside `results.json`. Compilation runs in a reusable worker; a
+fixture exceeding the default five-second budget is terminated, recorded as `CorpusTimeoutError`, and cannot block
+the remaining scorecard. Release runs should configure `RETRY_TIMEOUT_MS`: every primary timeout is then compiled
+again in a fresh worker under the larger budget, so worker cache growth and parallel contention do not decide the
+accepted count. `RETRY_TIMEOUTS_FROM_RESULTS=true` resumes that isolated tier from matching retained artifacts
+without repeating the primary sweep. Set `RETRY_TIMEOUTS=false` with a comma-separated `RETRY_ERROR_NAMES` list to
+recompile selected diagnostic classes after hardening their compiler boundary.
+`CHECK_NEGATIVES_FROM_RESULTS=true` preserves the retained positive result and compiles only negative fixtures
+that are unchecked or previously timed out. Negative timeouts remain explicitly unresolved rather than counting
+as safe rejection; repeat the command with a larger `NEGATIVE_TIMEOUT_MS` to resolve them. Metadata retains every
+negative-audit pass alongside its worker and timeout budget.
+`RECHECK_ACCEPTED_NEGATIVES=true` similarly preserves every other result and recompiles only negatives that the
+retained run accepted. Use it after semantic hardening to update the negative score without repeating all 2,158
+fixtures; the pass and its resulting accepted count are appended to the same metadata history.
 
 ## Scorecard (2026-07, 7343 files)
 

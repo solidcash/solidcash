@@ -22,6 +22,7 @@ You can run the tests with `yarn test`.
 
 This suite doubles as a **drop-in replacement for a Hardhat + ethers + chai testing workflow**, so contracts
 ported from Solidity/Hardhat keep their test style. See `HARDHAT-PARITY.md` for the full roadmap/checklist.
+See `MIGRATION.md` for the supported API mapping and permanent BCH differences.
 
 - **Config**: `solidcash.config.ts` (`defineConfig`) - paths, networks, mnemonic. Loaded by the `solidcash` CLI.
 
@@ -58,8 +59,8 @@ standalone `solidcash.config.ts` instead; the Hardhat config is never modified.
 - **ethers utils**: `import { parseEther, keccak256, AbiCoder, getBigNumber } from '@solidcash/testing/ethers'` (forwarded
   to ethers v6, plus v5-compat `BigNumber`/`ethers.utils`/`ethers.constants`).
 
-Demo tests: `test/harness.test.ts`, `test/ported-style.test.ts` (bare `hardhat`/`chai` imports via Vitest
-aliases in `vitest.config.ts`), and `test/block-timestamp.test.ts`.
+Demo tests: `test/golden-path.test.ts`, `test/harness.test.ts`, `test/ported-style.test.ts` (bare
+`hardhat`/`chai` imports via Vitest aliases in `vitest.config.ts`), and `test/block-timestamp.test.ts`.
 
 ## Next steps
 

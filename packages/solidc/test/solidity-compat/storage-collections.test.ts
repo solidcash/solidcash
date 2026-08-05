@@ -420,6 +420,17 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
     expect(bc('(x, y) = (y, x);')).toBe(bc('x = y; y = x;'));
   });
 
+  it('(x, y) = f() captures the multi-return before writing state', () => {
+    const compileConstructor = (body: string): string => compileString(`contract C() {
+      uint256 immutable x; uint256 immutable y;
+      constructor() { ${body} }
+      function f() private pure returns (uint256, uint256) { return (3, 4); }
+      function check() { require(x == 3 && y == 4); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(compileConstructor('(x, y) = f();'))
+      .toBe(compileConstructor('uint256 a, uint256 b = f(); x = a; y = b;'));
+  });
+
   it('a tuple assignment to locals is unaffected', () => {
     expect(compileString(`contract C() {
       function f(uint256 a, uint256 b) { uint256 p; uint256 q; (p, q) = (a, b); require(p == a); }
@@ -441,7 +452,7 @@ describe('string / hex literal coercion at array & mapping element writes', () =
   });
 
   it('right-pads to the element width (byte-identical to the padded literal)', () => {
-    const bc = (v) => compileString(`contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
+    const bc = (v: string): string => compileString(`contract C() { bytes4[] a; function f(uint256 i) { a[i] = ${v}; } }`,
       { solidityImportCompat: true, forceStateful: true }).bytecode;
     expect(bc('"abcd"')).toBe(bc('0x61626364'));
   });
@@ -479,7 +490,7 @@ describe('bytes state-var element write (data[i] = v)', () => {
     const hand = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
       + ' data = data.slice(0, i) + v + data.slice(i + 1, data.length); require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -498,7 +509,7 @@ describe('bytes element compound write (data[i] |= v / &=)', () => {
     const h = compileString('contract C { bytes data;'
       + ' function f(uint256 i, bytes1 v) external {'
       + ' data = data.slice(0, i) + (data[i] | v) + data.slice(i + 1, data.length); require(true); } }',
-      { solidityImportCompat: true });
+    { solidityImportCompat: true });
     expect(s.bytecode).toBe(h.bytecode);
   });
 });
@@ -553,7 +564,7 @@ describe('recursive struct types reject cleanly (no compiler stack overflow)', (
     const src = 'contract C { struct R { R[] vals; } '
       + 'function f() public pure { R[1] memory v = [ R(new R[](2)) ]; require(v[0].vals.length == 2); } }';
     expect(() => compileString(src, { solidityImportCompat: true }))
-      .toThrow(/recursive struct types are not supported/);
+      .toThrow(/Recursive struct types are unsupported/);
   });
   it('a non-recursive struct with a dynamic array field still compiles', () => {
     expect(compileString('contract C { struct S { uint x; uint[] a; } S s; function f() external view { require(s.x == 0); } }',
@@ -1057,13 +1068,13 @@ describe('inlined value helper: local sharing a struct-field name does not corru
     // `JobPost storage jobPost = jobs[jobId]; jobPost.roles.creator = msg.sender`.
     const S = 'struct Roles { address creator; address arbitrator; address worker; }'
       + ' struct Post { uint8 state; Roles roles; uint256 amount; }';
-    const ok = (body: string): string => compileString(
+    const compileBody = (body: string): string => compileString(
       `${S} contract C { Post[] jobs; function f(uint id) public { ${body} require(true); } }`,
       { solidityImportCompat: true },
     ).contractName;
-    expect(ok('jobs[id].roles.creator = msg.sender;')).toBe('C');            // direct
-    expect(ok('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C'); // via storage pointer
-    expect(ok('jobs[id].roles.worker = msg.sender; jobs[id].amount = 5;')).toBe('C'); // nested + flat, same elem
+    expect(compileBody('jobs[id].roles.creator = msg.sender;')).toBe('C');            // direct
+    expect(compileBody('Post storage p = jobs[id]; p.roles.creator = msg.sender;')).toBe('C'); // via storage pointer
+    expect(compileBody('jobs[id].roles.worker = msg.sender; jobs[id].amount = 5;')).toBe('C'); // nested + flat, same elem
   });
   it('rebuilds a DEEPER (3-level) nested struct-array element write', () => {
     const S = 'struct Inner { address a; address b; } struct Mid { Inner inner; uint8 tag; }'

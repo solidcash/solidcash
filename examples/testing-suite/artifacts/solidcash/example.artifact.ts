@@ -47,8 +47,52 @@ export default {
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
-      commitmentLimit: 128,
+      commitmentLimit: 1000000,
+      messageBus: true,
     },
   },
-  updatedAt: '2026-07-19T14:07:06.155Z',
+  updatedAt: '2026-08-05T14:46:56.569Z',
+  invocationAnalysis: {
+    version: 1,
+    protocolVersions: [
+      1,
+    ],
+    functions: [
+      {
+        id: 0,
+        name: 'test',
+        arity: 1,
+        entryPoint: true,
+        selector: '78cae886',
+        calls: [],
+        closure: [
+          0,
+        ],
+        component: 0,
+        recursive: false,
+        reads: [],
+        writes: [],
+        effects: [],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+      },
+    ],
+    components: [
+      {
+        id: 0,
+        functions: [
+          0,
+        ],
+        recursive: false,
+      },
+    ],
+  },
+  diagnostics: [
+    {
+      severity: 'error',
+      code: 'message-bus-route-not-synthesized',
+      message: 'No message-bus route was synthesized for \'Example\': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - \'test\': not-examined-by-route-synthesis.',
+    },
+  ],
 } as const;

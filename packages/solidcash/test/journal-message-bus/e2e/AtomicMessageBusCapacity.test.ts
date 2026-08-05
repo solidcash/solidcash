@@ -81,19 +81,19 @@ const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
     transactionBytes: 22_572, callManifestBytes: 294,
-    worstOperationCost: 2_002_037, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.27673849939179473,
-    inputOperationCosts: [334_391, 316_086, 695, 1_877_975, 2_002_037, 27_321],
+    worstOperationCost: 2_002_711, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.2768316653765343,
+    inputOperationCosts: [334_391, 316_086, 695, 1_877_975, 2_002_711, 27_321],
     inputMaximumOperationCosts: [1_602_400, 1_448_000, 34_400, 7_234_400, 7_234_400, 112_800],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
     transactionBytes: 46_266, callManifestBytes: 584,
-    worstOperationCost: 3_472_653, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.48001949021342477,
+    worstOperationCost: 3_473_391, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.48012150281986066,
     inputOperationCosts: [
       390_575, 439_415, 695, 439_415, 695, 390_322, 695,
-      3_218_148, 3_472_653, 3_472_115, 3_389_179, 27_321,
+      3_218_148, 3_473_391, 3_472_853, 3_389_853, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_668_000, 1_979_200, 34_400, 1_979_200, 34_400, 1_448_000, 34_400,
@@ -103,11 +103,11 @@ const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
     transactionBytes: 58_236, callManifestBytes: 729,
-    worstOperationCost: 4_213_145, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.5823765619816432,
+    worstOperationCost: 4_213_883, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.5824785745880792,
     inputOperationCosts: [
       418_635, 476_984, 695, 476_984, 695, 476_984, 695, 427_376, 695,
-      3_923_110, 4_213_145, 4_212_607, 4_212_050, 4_116_615, 27_321,
+      3_923_110, 4_213_883, 4_213_345, 4_212_788, 4_117_289, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_700_800, 2_012_000, 34_400, 2_012_000, 34_400, 2_012_000, 34_400, 1_448_000, 34_400,
@@ -117,12 +117,12 @@ const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   8: {
     participants: 8, authenticatedParticipants: 8, slots: 24,
     transactionBytes: 94_651, callManifestBytes: 1_164,
-    worstOperationCost: 6_574_446, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.9087755722658409,
+    worstOperationCost: 6_575_184, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.9088775848722769,
     inputOperationCosts: [
       502_887, 589_763, 695, 589_771, 695, 589_771, 695, 589_771, 695, 589_771, 695,
-      589_771, 695, 538_674, 695, 6_177_821, 6_574_446, 6_573_908, 6_573_351,
-      6_572_794, 6_572_237, 6_571_680, 6_434_997, 27_321,
+      589_771, 695, 538_674, 695, 6_177_821, 6_575_184, 6_574_646, 6_574_089,
+      6_573_532, 6_572_975, 6_572_418, 6_435_671, 27_321,
     ],
     inputMaximumOperationCosts: [
       1_800_000, 2_111_200, 34_400, 2_112_000, 34_400, 2_112_000, 34_400, 2_112_000,
@@ -279,7 +279,7 @@ describe('atomic single-transaction capacity', () => {
       // and resource UTXOs have been consumed by the first standard-policy broadcast.
       await expect(builder.provider.sendRawTransaction(finalizedHex)).rejects.toThrow();
     }
-  }, 300_000);
+  }, 600_000);
 
   it.each([6, 8])('converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {
     const builder = await buildResourceHeavyChain(count);

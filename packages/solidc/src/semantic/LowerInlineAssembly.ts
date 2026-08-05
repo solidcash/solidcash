@@ -16,6 +16,7 @@ import {
   FunctionModifier,
 } from '../ast/AST.js';
 import { BinaryOperator, UnaryOperator, NullaryOperator } from '../ast/Operator.js';
+import { GlobalFunction } from '../ast/Globals.js';
 import { cloneNode } from '../ast/clone.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import {
@@ -575,14 +576,19 @@ function fieldAsWordFrom(baseAccess: ExpressionNode, fieldType: Type, src: YulEx
   return loc(new CastNode(UINT256, access, false), src);
 }
 
-// A uint256 word -> N little-endian bytes (bytesN). N<=31: `bytes(N+1)(word)[0:N]` - NUM2BIN to N+1 bytes fits any
-// value in [0, 2^(8N)) as a positive sign-magnitude number, then drop the sign-pad byte (avoids the OP_NUM2BIN
-// failure of a bare bytesN(word) on a high-bit value). N==32: NUM2BIN(33) is not a valid bytesN cast, so split the
+// A uint256 word -> N little-endian bytes (bytesN). N<=31: `toPaddedBytes(word,N+1)[0:N]` - raw NUM2BIN to N+1
+// bytes fits any value in [0, 2^(8N)) as a positive sign-magnitude number, then drops the sign-pad byte. Use the
+// explicit raw-byte primitive rather than a typed int->bytes cast: Solidity-compatible casts are big-endian, and
+// trimming their first N bytes silently loses the high byte (0xbbbb became 0x00bb). N==32 cannot NUM2BIN to a
+// bytesN cast, so split the
 // word into two 128-bit halves (word = high*2^128 + low), encode each as 16 LE bytes via the N=16 path, and concat
 // low-first (= the 32-byte little-endian word).
 function wordToBytesN(word: ExpressionNode, n: number, src: YulExpressionNode): ExpressionNode {
   if (n <= 31) {
-    const wide = loc(new CastNode(new BytesType(n + 1), word, false), src);
+    const wide = loc(new FunctionCallNode(
+      loc(new IdentifierNode(GlobalFunction.TO_PADDED_BYTES), src),
+      [word, intLit(BigInt(n + 1), src)],
+    ), src);
     const low = loc(new SliceNode(wide, intLit(0n, src), intLit(BigInt(n), src)), src);
     return loc(new CastNode(new BytesType(n), low, false), src);
   }
@@ -1122,17 +1128,17 @@ function collectCalldataPointers(node: Node): void {
       ? node.expression.index.value
       : node.expression instanceof TupleIndexOpNode ? BigInt(node.expression.index) : undefined;
     if (array instanceof IdentifierNode && index !== undefined) {
-    const base = currentCalldataPointers.get(array.name);
-    const baseType = currentVars.get(array.name);
-    const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
-    const words = elementType ? compositeSlotWords(elementType) : 0;
-    if (base && words > 0) {
-      const delta = new IntLiteralNode(index * BigInt(words) * 32n);
-      delta.location = node.location;
-      const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
-      ptr.location = node.location;
-      currentCalldataPointers.set(node.name, ptr);
-    }
+      const base = currentCalldataPointers.get(array.name);
+      const baseType = currentVars.get(array.name);
+      const elementType = baseType instanceof ArrayType ? baseType.elementType : undefined;
+      const words = elementType ? compositeSlotWords(elementType) : 0;
+      if (base && words > 0) {
+        const delta = new IntLiteralNode(index * BigInt(words) * 32n);
+        delta.location = node.location;
+        const ptr = new BinaryOpNode(cloneNode(base) as ExpressionNode, BinaryOperator.PLUS, delta);
+        ptr.location = node.location;
+        currentCalldataPointers.set(node.name, ptr);
+      }
     }
   }
   for (const key of Object.keys(node)) {
@@ -1749,6 +1755,10 @@ function lowerValue(expr: YulExpressionNode): ExpressionNode {
     // A UDVT-typed operand is a raw word inside assembly; unwrap it to its underlying type so arithmetic /
     // bitwise ops type-check (e.g. shl(0x40, _duration) where _duration is a `Duration` = uint64).
     const t = currentVars.get(expr.base);
+    // Lowering runs before the ordinary type-check pass, but the runtime-memory helpers need to distinguish an
+    // already-encoded bytes32 word from an integer word. Preserve the type collected for Yul-visible locals on
+    // the synthesized identifier so those helpers can make that decision without reinterpreting bytes as ints.
+    id.type = t;
     if (t instanceof ValueType) {
       return loc(new CastNode(t.underlyingType, id, false), expr);
     }
@@ -1854,8 +1864,10 @@ function bytesSlotConstWrite(varName: string, valArg: YulExpressionNode, src: Yu
 
 // `sload(bytesVar.slot)` = the EVM byte-array slot ENCODING of the current value: a SHORT value (len < 32) is the
 // data left-aligned in the high bytes (big-endian) with `2*len` in the low byte; a LONG value stores `2*len+1`.
-// Built with the VM-proven formula `len < 32 ? uint256(bytes32((b ++ zeros(31-len) ++ bytes1(2*len)).reverse()))
-// : 2*len+1` (uint256(bytesN) is little-endian, so the big-endian data blob is reversed before the cast).
+// Built with the VM-proven formula `len < 32 ? uint256(bytes((b ++ zeros(31-len) ++ bytes1(2*len)).reverse()))
+// : 2*len+1`. The intermediate is deliberately unbounded `bytes`: its bytes->uint cast is raw BIN2NUM in both
+// language modes, while a bounded bytes32->uint cast reverses again in Solidity mode and cancels this explicit
+// EVM-big-endian conversion.
 function bytesSlotLoad(varName: string, src: YulExpressionNode): ExpressionNode {
   const size = (): ExpressionNode => loc(new UnaryOpNode(UnaryOperator.SIZE, loc(new IdentifierNode(varName), src)), src);
   const twoLen = (): ExpressionNode => loc(new BinaryOpNode(size(), BinaryOperator.MUL, intLit(2n, src)), src);
@@ -1864,7 +1876,7 @@ function bytesSlotLoad(varName: string, src: YulExpressionNode): ExpressionNode 
   const pad = newBytes(loc(new BinaryOpNode(intLit(31n, src), BinaryOperator.MINUS, size()), src), src);
   const blob = loc(new BytesConcatNode([loc(new IdentifierNode(varName), src), pad, lenByte]), src);
   const short = loc(new CastNode(UINT256,
-    loc(new CastNode(BYTES32, loc(new UnaryOpNode(UnaryOperator.REVERSE, blob), src), false), src), false), src);
+    loc(new CastNode(new BytesType(), loc(new UnaryOpNode(UnaryOperator.REVERSE, blob), src), false), src), false), src);
   const long = loc(new BinaryOpNode(twoLen(), BinaryOperator.PLUS, intLit(1n, src)), src);
   const cond = loc(new BinaryOpNode(size(), BinaryOperator.LT, intLit(32n, src)), src);
   return loc(new TernaryOpNode(cond, short, long), src);
@@ -2587,6 +2599,14 @@ function lowerStatement(stmt: YulStatementNode): StatementNode {
     const target = loc(new IdentifierNode(name), stmt);
     let value = lowerValue(stmt.value);
     const t = currentVars.get(name);
+    // Runtime memory keeps numeric words BCH-native, while a bytes32 store is preserved byte-for-byte so memory
+    // strings serialize in source order. Reversing the numeric mload result after its bytes32 cast reconstructs
+    // that original byte sequence for `bytes32 x; assembly { x := mload(p) }`.
+    if (runtimeMem && stmt.value instanceof YulFunctionCallNode && stmt.value.name === 'mload'
+      && t instanceof BytesType && t.bound === 32) {
+      const word = loc(new CastNode(t, value, false), stmt);
+      return loc(new AssignNode(target, loc(new UnaryOpNode(UnaryOperator.REVERSE, word), stmt)), stmt);
+    }
     // An address-to-address Yul assignment copies the same locking-bytecode value. Preserve its address type
     // directly; normalizing through uint256 would make the subsequent payable-address cast invalid even though
     // no representation conversion is required (`address payable r; assembly { r := z }`).

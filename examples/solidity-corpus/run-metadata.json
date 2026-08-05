@@ -7,7 +7,7 @@
   "fixtureTimeoutMs": 30000,
   "workers": 8,
   "checkedNegativeFixtures": false,
-  "retryTimeoutMs": 120000,
+  "retryTimeoutMs": 30000,
   "retryWorkers": 4,
   "retriedTimeoutFixtures": 258,
   "retryErrorNames": [
@@ -32,6 +32,22 @@
         "Error",
         "RangeError"
       ],
+      "isolatedWorkers": true
+    },
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 27,
+      "includeTimeouts": true,
+      "errorNames": [],
+      "isolatedWorkers": true
+    },
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 18,
+      "includeTimeouts": true,
+      "errorNames": [],
       "isolatedWorkers": true
     }
   ],

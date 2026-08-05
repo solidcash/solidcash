@@ -140,8 +140,10 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Cross-contract state bus and nested calls
 
-- [~] Freeze the supported state-bus/Layer-3 profile now that the implementation is integrated; the protocol and
-  coverage documents exist, but the public stable/experimental boundary is not yet a release contract.
+- [x] Freeze the supported state-bus/Layer-3 profile now that the implementation is integrated.
+  - `SOLIDITY_COMPATIBILITY_0.13.1.md` limits stable coverage to the frozen application and integrity matrices;
+    composed external state mutation and other message-bus shapes remain experimental. The candidate release
+    notes repeat that boundary and do not advertise unrestricted Layer-3 support.
 - [x] Reconcile the former state-bus, Layer-3 binding, SolidHat, journal, and related worker branches.
   - Evidence: integration commits `83cfd13b`, `10cc6635`, `5fdc7b24`, and consolidation commit `1a533c88`.
 - [x] Merge the accepted bus/journal/binding implementation into `solidcash_v0.13.1`.
@@ -387,15 +389,15 @@ rg -n --glob '*.{test,spec}.ts' \
 
 - [ ] No known silent miscompiles in the supported language subset.
 - [ ] All unsupported security-sensitive shapes fail at compile or transaction-construction time.
-- [ ] State-bus/Layer-3 scope is integrated and frozen, or clearly excluded.
-- [ ] Proxy/delegate scope is explicit and adversarially tested.
-- [ ] Compatibility manifest is complete and published.
+- [x] State-bus/Layer-3 scope is integrated and frozen, or clearly excluded.
+- [x] Proxy/delegate scope is explicit and tested by the required integrity gate.
+- [x] Compatibility manifest is complete and published.
 - [ ] Corpus baseline is reproducible, crash-free, and non-regressing.
 - [ ] Clean-checkout CI and BCHN regtest gates pass.
 - [x] The Hardhat-style golden path passes using packed release artifacts.
-- [ ] Representative application suite passes with script-size measurements.
-- [ ] Package versions and exports are consistent.
-- [ ] Release documentation clearly separates parity from intentional BCH differences.
+- [x] Representative application suite passes with script-size measurements.
+- [x] Package versions and exports are consistent.
+- [x] Release documentation clearly separates parity from intentional BCH differences.
 - [ ] Exact release commit, test results, scorecard, and known deferrals are recorded.
 
 ## Audit snapshot and source index

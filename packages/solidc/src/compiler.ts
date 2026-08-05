@@ -2370,6 +2370,28 @@ function synthesizeMessageBusRoute(
   // an accident of which lowering happens to erase the call, not a property of the shape, so every external
   // handler that still reaches its own name gets a clone. Runs LAST: the loops above skip a handler that
   // already has a clone, and claiming one here first would suppress the dynamic-state and fixed-array clones.
+  // Synthesized public collection getters can disappear from a split facet after route planning (facets suppress
+  // unrelated public getters), while their direct collection-read body is still valid in the route owner's state
+  // context. Give every such getter an internal clone, just like external handlers, so generated source never
+  // depends on a public symbol that shard filtering may remove.
+  for (const sourceHandler of eligible) {
+    if (!(contract.collections.some((collection) => collection.name === sourceHandler.name)
+      || contract.stateVariables.some((state) =>
+        state.name === sourceHandler.name && state.type instanceof ArrayType))
+      || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__message_bus_getter_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
   for (const sourceHandler of eligible) {
     if (sourceHandler.visibility !== 'external' || sourceHandler === resourceShapedHandler
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)

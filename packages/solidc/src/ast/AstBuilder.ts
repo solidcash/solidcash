@@ -459,7 +459,7 @@ export default class AstBuilder
   }
 
   private usesLegacySolidityNow(): boolean {
-    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
+    return /pragma\s+solidity\s+(?:[<>=~^]+\s*)?0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
   }
 
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
@@ -4365,6 +4365,10 @@ export default class AstBuilder
   visitNullaryOp(ctx: NullaryOpContext): NullaryOpNode {
     const operator = ctx.getText() as NullaryOperator;
     const nullaryOp = new NullaryOpNode(operator);
+    if (this.solidityImportCompat && this.usesLegacySolidityNow()
+      && (operator === NullaryOperator.MSG_SENDER || operator === NullaryOperator.TX_ORIGIN)) {
+      nullaryOp.legacyPayableAddress = true;
+    }
     nullaryOp.location = Location.fromCtx(ctx);
     return nullaryOp;
   }

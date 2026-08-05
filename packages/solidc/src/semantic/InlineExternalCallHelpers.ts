@@ -15,6 +15,9 @@ import {
   CastNode,
   TupleAssignmentNode,
   BranchNode,
+  MappingAccessNode,
+  MappingAssignNode,
+  MappingDeleteNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
@@ -86,7 +89,7 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
       // context and turns its external calls into inert ordinary-call nodes.
       if (!fn.graphEmissionHandler && fn.body && this.canDiscardCallResult(fn)
-        && this.makesExternalCall(fn)) {
+        && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         this.voidExternalCallHelpers.add(fn.name);
       }
     }
@@ -188,6 +191,27 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
+    });
+    return found;
+  }
+
+  // A collection journal hoists every helper entry read to its wrapper's prologue. That is not semantics-
+  // preserving when a branch selects the entry (SushiToken's `_moveDelegates`/`_writeCheckpoint`): a key can be
+  // derived from another entry, two runtime keys can alias, and the untaken arm must not require a physical NFT.
+  // Inline this narrow helper shape so IfConvertConditionalEntryOp and ordinary entry analysis retain the branch
+  // predicate. The same alpha-renaming machinery used for external-call helpers handles locals and repeated calls.
+  private hasConditionalCollectionAccess(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    const containsCollection = (root: Node): boolean => {
+      let contains = false;
+      this.walk(root, (candidate) => {
+        if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+          || candidate instanceof MappingDeleteNode) contains = true;
+      });
+      return contains;
+    };
+    this.walk(fn.body, (candidate) => {
+      if (candidate instanceof BranchNode && containsCollection(candidate)) found = true;
     });
     return found;
   }

@@ -10,6 +10,9 @@ describe('address payable Solidity parity', () => {
       + ' function f() public view returns (address payable) { return msg.sender; }'
       + ' function g() public view returns (address payable) { return tx.origin; } }',
     { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString('pragma solidity >=0.6.0 <0.8.0; contract C {'
+      + ' function f() public view returns (address payable) { return msg.sender; } }',
+    { solidityImportCompat: true })).not.toThrow();
     expect(() => compileString('pragma solidity ^0.8.0; contract C {'
       + ' function f() public view returns (address payable) { return msg.sender; } }',
     { solidityImportCompat: true })).toThrow();

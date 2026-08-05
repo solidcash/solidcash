@@ -123,7 +123,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           .map((match) => match[1]);
         const needsSplit = declarations.some((name) => {
           const artifact = result.artifacts[name];
-          return artifact && asmToBytecode(artifact.bytecode).length > maximumInputBytes;
+          // The lightweight declaration scan can see prose in comments (for example, "contract constructor").
+          // Artifact maps are ordinary objects, so a name like `constructor` can otherwise resolve an inherited
+          // Object.prototype member and reach asmToBytecode with no bytecode string.
+          return typeof artifact?.bytecode === 'string'
+            && asmToBytecode(artifact.bytecode).length > maximumInputBytes;
         });
         if (!needsSplit) continue;
         let split;

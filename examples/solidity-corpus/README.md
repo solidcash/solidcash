@@ -19,6 +19,8 @@ RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 \
   node examples/solidity-corpus/bench.mjs                               # resume only retained timeouts
 RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUTS=false RETRY_ERROR_NAMES=Error,RangeError \
   RETRY_TIMEOUT_MS=60000 node examples/solidity-corpus/bench.mjs        # reclassify selected error names
+CHECK_NEGATIVES_FROM_RESULTS=true NEGATIVE_TIMEOUT_MS=30000 NEGATIVE_WORKERS=4 \
+  node examples/solidity-corpus/bench.mjs                               # audit only unchecked/timeout negatives
 CORPUS_OUTPUT_DIR=/tmp/corpus-run node examples/solidity-corpus/bench.mjs      # alternate artifact directory
 ```
 
@@ -58,6 +60,10 @@ again in a fresh worker under the larger budget, so worker cache growth and para
 accepted count. `RETRY_TIMEOUTS_FROM_RESULTS=true` resumes that isolated tier from matching retained artifacts
 without repeating the primary sweep. Set `RETRY_TIMEOUTS=false` with a comma-separated `RETRY_ERROR_NAMES` list to
 recompile selected diagnostic classes after hardening their compiler boundary.
+`CHECK_NEGATIVES_FROM_RESULTS=true` preserves the retained positive result and compiles only negative fixtures
+that are unchecked or previously timed out. Negative timeouts remain explicitly unresolved rather than counting
+as safe rejection; repeat the command with a larger `NEGATIVE_TIMEOUT_MS` to resolve them. Metadata retains every
+negative-audit pass alongside its worker and timeout budget.
 
 ## Scorecard (2026-07, 7343 files)
 

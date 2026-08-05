@@ -25,6 +25,11 @@ const RETRY_WORKER_COUNT = process.env.RETRY_WORKERS ? Number(process.env.RETRY_
 const RETRY_TIMEOUTS_FROM_RESULTS = process.env.RETRY_TIMEOUTS_FROM_RESULTS === 'true';
 const RETRY_TIMEOUTS = process.env.RETRY_TIMEOUTS !== 'false';
 const RETRY_ERROR_NAMES = new Set((process.env.RETRY_ERROR_NAMES || '').split(',').filter(Boolean));
+const CHECK_NEGATIVES_FROM_RESULTS = process.env.CHECK_NEGATIVES_FROM_RESULTS === 'true';
+const NEGATIVE_TIMEOUT_MS = process.env.NEGATIVE_TIMEOUT_MS
+  ? Number(process.env.NEGATIVE_TIMEOUT_MS) : FIXTURE_TIMEOUT_MS;
+const NEGATIVE_WORKER_COUNT = process.env.NEGATIVE_WORKERS
+  ? Number(process.env.NEGATIVE_WORKERS) : WORKER_COUNT;
 const CHECK_NEGATIVES = process.env.CHECK_NEGATIVES !== 'false';
 const files = execSync(`find ${ROOT} -name '*.sol'`).toString().trim().split('\n').filter(Boolean).sort();
 const corpusRevision = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
@@ -107,14 +112,23 @@ const selectedFiles = files.slice(0, LIMIT);
 let results = new Array(selectedFiles.length);
 let resumedMetadata;
 const jobs = [];
-if (RETRY_TIMEOUTS_FROM_RESULTS) {
+const resumeResults = RETRY_TIMEOUTS_FROM_RESULTS || CHECK_NEGATIVES_FROM_RESULTS;
+if (resumeResults) {
   results = JSON.parse(readFileSync(join(OUTPUT_DIR, 'results.json'), 'utf8'));
   resumedMetadata = JSON.parse(readFileSync(join(OUTPUT_DIR, 'run-metadata.json'), 'utf8'));
   if (LIMIT !== Infinity || results.length !== selectedFiles.length) {
-    throw new Error('RETRY_TIMEOUTS_FROM_RESULTS requires a full results.json for the current corpus');
+    throw new Error('resuming the corpus requires a full results.json for the current corpus');
   }
   if (resumedMetadata.corpusRevision !== corpusRevision || resumedMetadata.corpusRoot !== ROOT) {
-    throw new Error('RETRY_TIMEOUTS_FROM_RESULTS metadata does not match the current corpus');
+    throw new Error('resumed corpus metadata does not match the current corpus');
+  }
+  if (CHECK_NEGATIVES_FROM_RESULTS) {
+    for (const [index, result] of results.entries()) {
+      if (result.status === 'NEGATIVE'
+        && (result.overAccepted === null || result.err?.startsWith('CorpusTimeoutError:'))) {
+        jobs.push({ index, file: selectedFiles[index], rel: result.rel, cls: 'NEGATIVE' });
+      }
+    }
   }
 } else {
   for (const [index, f] of selectedFiles.entries()) {
@@ -140,7 +154,9 @@ const runJobs = async (pending, workerCount, timeoutMs, retry = false) => {
       writeFileSync(join(OUTPUT_DIR, 'current.txt'), job.rel);
       const err = await runner.compile(job.file);
       if (job.cls === 'NEGATIVE') {
-        results[job.index] = { rel: job.rel, status: 'NEGATIVE', overAccepted: !err };
+        results[job.index] = {
+          rel: job.rel, status: 'NEGATIVE', overAccepted: !err, ...(err && { err }),
+        };
       } else {
         results[job.index] = {
           rel: job.rel,
@@ -157,9 +173,14 @@ const runJobs = async (pending, workerCount, timeoutMs, retry = false) => {
   await Promise.all(runners.map((runner) => runner.terminate()));
 };
 
-if (!RETRY_TIMEOUTS_FROM_RESULTS) await runJobs(jobs, WORKER_COUNT, FIXTURE_TIMEOUT_MS);
+if (!resumeResults) await runJobs(jobs, WORKER_COUNT, FIXTURE_TIMEOUT_MS);
+else if (CHECK_NEGATIVES_FROM_RESULTS && jobs.length > 0) {
+  process.stderr.write(`  checking ${jobs.length} negative fixtures at ${NEGATIVE_TIMEOUT_MS}ms `
+    + `with ${NEGATIVE_WORKER_COUNT} workers\n`);
+  await runJobs(jobs, NEGATIVE_WORKER_COUNT, NEGATIVE_TIMEOUT_MS);
+}
 
-const primaryResult = RETRY_TIMEOUTS_FROM_RESULTS ? resumedMetadata?.primaryResult : (() => {
+const primaryResult = resumeResults ? resumedMetadata?.primaryResult : (() => {
   const primaryOk = results.filter((result) => result.status === 'OK').length;
   const primaryFailures = results.filter((result) => result.status === 'FAIL');
   const primaryTimeouts = primaryFailures.filter((result) =>
@@ -193,6 +214,7 @@ const external = by('EXTERNAL');
 const harness = by('HARNESS');
 const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixtures we also accept (diagnostic only)
 const uncheckedNeg = neg.filter(r => r.overAccepted === null).length;
+const timedOutNeg = neg.filter(r => r.err?.startsWith('CorpusTimeoutError:')).length;
 const inScope = ok.length + fail.length;
 const priorRetryPasses = resumedMetadata?.retryPasses ?? (resumedMetadata?.retryTimeoutMs > 0 ? [{
   timeoutMs: resumedMetadata.retryTimeoutMs,
@@ -202,6 +224,7 @@ const priorRetryPasses = resumedMetadata?.retryPasses ?? (resumedMetadata?.retry
   errorNames: [],
   isolatedWorkers: true,
 }] : []);
+const priorNegativeAuditPasses = resumedMetadata?.negativeAuditPasses ?? [];
 writeFileSync(join(OUTPUT_DIR, 'results.json'), JSON.stringify(results, null, 1));
 writeFileSync(join(OUTPUT_DIR, 'run-metadata.json'), JSON.stringify({
   corpusRoot: ROOT,
@@ -211,7 +234,7 @@ writeFileSync(join(OUTPUT_DIR, 'run-metadata.json'), JSON.stringify({
   fixtureCount: files.length,
   fixtureTimeoutMs: resumedMetadata?.fixtureTimeoutMs ?? FIXTURE_TIMEOUT_MS,
   workers: resumedMetadata?.workers ?? WORKER_COUNT,
-  checkedNegativeFixtures: resumedMetadata?.checkedNegativeFixtures ?? CHECK_NEGATIVES,
+  checkedNegativeFixtures: uncheckedNeg === 0 && timedOutNeg === 0,
   ...(primaryResult && { primaryResult }),
   retryTimeoutMs: RETRY_TIMEOUT_MS || resumedMetadata?.retryTimeoutMs || 0,
   retryWorkers: RETRY_TIMEOUT_MS > 0 ? RETRY_WORKER_COUNT : (resumedMetadata?.retryWorkers ?? RETRY_WORKER_COUNT),
@@ -235,11 +258,22 @@ writeFileSync(join(OUTPUT_DIR, 'run-metadata.json'), JSON.stringify({
     }] : []),
   ],
   resumedTimeoutsFromResults: RETRY_TIMEOUTS_FROM_RESULTS,
+  negativeAuditPasses: [
+    ...priorNegativeAuditPasses,
+    ...(CHECK_NEGATIVES_FROM_RESULTS ? [{
+      timeoutMs: NEGATIVE_TIMEOUT_MS,
+      workers: NEGATIVE_WORKER_COUNT,
+      selectedFixtures: jobs.length,
+      accepted: overAcc,
+      timeouts: timedOutNeg,
+    }] : []),
+  ],
+  checkedNegativesFromResults: CHECK_NEGATIVES_FROM_RESULTS,
 }, null, 2) + '\n');
 
 const summary = `=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
-  + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} accepted, `
-  + `${uncheckedNeg} unchecked, `
+  + `(${fail.length} failed) | ${neg.length} negative-fixtures (solc rejects; ${overAcc} accepted, `
+  + `${uncheckedNeg} unchecked, ${timedOutNeg} timeouts, `
   + `diagnostic) | ${multi.length} multifile-skipped | ${cmdline.length} cmdline-skipped `
   + `| ${benchmark.length} benchmark-skipped `
   + `| ${compilation.length} compilation-project-skipped `

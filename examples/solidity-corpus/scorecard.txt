@@ -1,4 +1,4 @@
-=== SOLC-CORPUS SCORECARD: 2698/2805 single-file in-scope compiled (107 failed) | 2158 negative-skipped (solc rejects; 0 accepted, 2158 unchecked, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2698/2805 single-file in-scope compiled (107 failed) | 2158 negative-fixtures (solc rejects; 328 accepted, 0 unchecked, 0 timeouts, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
    19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not yet lowerable to BCH script ...

@@ -14,7 +14,13 @@ export default defineConfig({
     solidityImportCompat: true,
     ecrecover: 'p2pkh',
   },
-  networks: { mock: { type: 'mock' } },
+  networks: {
+    mock: {
+      type: 'mock',
+      // Exercise the real BCH deployment ceilings while retaining the deterministic in-memory provider.
+      consensus: { maximumInputBytes: 10_000, maximumNftCommitmentBytes: 128 },
+    },
+  },
   defaultNetwork: 'mock',
   typegen: {
     targets: [{ target: 'ethers5', layout: 'typechain', outDir: 'typechain-types' }],

@@ -1,6 +1,7 @@
 /* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
@@ -49,6 +50,7 @@ describe('SafeERC20-chain low-level .call with a self-pinned state-chain target 
   const sig = (): SignatureTemplate => new SignatureTemplate(alicePriv);
   const echoArt = compileString(ECHO);
   const callerArt = compileString(CALLER);
+  assertApplicationScriptSize('tokenIntegration', echoArt, callerArt);
 
   it('compiles the inlined SafeERC20-shape helper: the call target is sourced from the self-pinned state chain', () => {
     const fn = callerArt.abi.find((f) => f.name === 'pay')!;

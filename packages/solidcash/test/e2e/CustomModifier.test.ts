@@ -8,6 +8,7 @@ import {
 } from '../../src/index.js';
 import { createTestProvider, gatherUtxos } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv, bobPub } from '../fixture/vars.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 describe('CustomModifier', () => {
   describe('single placeholder', () => {
@@ -25,7 +26,8 @@ describe('CustomModifier', () => {
     `;
 
     it('should compile', () => {
-      expect(() => compileString(CODE)).not.toThrow();
+      const artifact = compileString(CODE);
+      assertApplicationScriptSize('ownershipAccess', artifact);
     });
 
     it('should produce same bytecode as manually inlined modifier', () => {

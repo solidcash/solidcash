@@ -7,6 +7,7 @@ import {
 import { alicePriv, alicePub, bobPub } from '../fixture/vars.js';
 import { compileString } from '../direct-compile.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 const SOURCE = `contract Erc20Like() {
   bigint totalSupply;
@@ -33,6 +34,7 @@ const SOURCE = `contract Erc20Like() {
 }`;
 
 const artifact = compileString(SOURCE);
+assertApplicationScriptSize('erc20Like', artifact);
 
 async function deploy(): Promise<{ provider: ReturnType<typeof createTestProvider>; sc: StatefulContract }> {
   const provider = createTestProvider();

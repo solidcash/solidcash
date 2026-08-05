@@ -16,6 +16,9 @@ import { createTestProvider, gatherUtxos, getTxOutputs } from '../test-util.js';
 import { FailedRequireError } from '../../src/Errors.js';
 import artifact from '../fixture/hodl_vault.artifact.js';
 import artifactUnenforcedTypes from '../fixture/hodl_vault-unenforced-types.artifact.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
+
+assertApplicationScriptSize('escrowTimelock', artifact);
 import { randomUtxo } from '../../src/utils.js';
 import { placeholder } from '@solidcash/utils';
 

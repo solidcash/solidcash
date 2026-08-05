@@ -16,6 +16,7 @@ import { Utxo } from '../../src/interfaces.js';
 import { SignatureTemplate } from '../../src/index.js';
 import { ExternalCallUtxoGroup } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 // ===== Contract Sources =====
 
@@ -116,6 +117,7 @@ describe('Cross-Contract External Function Calls', () => {
   describe('artifact metadata', () => {
     it('should include externalOutStateReads in the ABI', () => {
       const artifact = compileString(READER_CONTRACT);
+      assertApplicationScriptSize('crossContract', artifact);
       const fn = artifact.abi.find((f) => f.name === 'readAfterIncrement');
 
       expect(fn).toBeDefined();

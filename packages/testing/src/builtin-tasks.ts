@@ -143,7 +143,11 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           shardFailures.push(`${path.relative(contractsDir, full)}: ${error.message.split('\n')[0]}`);
           continue;
         }
-        if (split.manifest.facets.length > 0) fs.writeFileSync(
+        // Publish the bundle even when the split needed NO facets. We only get here because the unsplit artifact
+        // exceeded the consensus limit, and split preparation alone can bring a root under it (SushiBar: 13,474
+        // unsplit vs a 9,192-byte single root). Discarding that left the only deployable form on the floor and
+        // the unusable artifact in its place.
+        fs.writeFileSync(
           path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
           formatSplitArtifactBundle(split, 'json'),
         );

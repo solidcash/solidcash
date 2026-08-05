@@ -9,9 +9,9 @@ removed during this review.
 
 ## Release-blocking coverage gaps
 
-| Tests | Classification | Required release evidence |
-|---|---|---|
-| `packages/solidcash/test/e2e/misc/timelocks.test.ts` — sequence numbers | Supported language feature, missing BCHN integration proof | Add BIP68 height/time sequence tests against BCHN and keep the compiler's `this.age` coverage. This remains part of the BCHN release gate. |
+None remain in the executable skip/TODO inventory. Active BIP68 height and 512-second MTP cases prove covenant
+rejection, BCHN immature-spend rejection, and acceptance after the required relative age. Broader release gates
+remain tracked in `RELEASE_READINESS.md` rather than being disguised as skipped tests.
 
 ## Explicit first-release deferrals
 
@@ -46,6 +46,6 @@ rg -n --glob '*.{test,spec}.ts' \
   packages examples -g '!**/node_modules/**'
 ```
 
-Expected 2026-08-05 result: **15 classified executable occurrences**. The obsolete manual-proof TODO was removed
+Expected 2026-08-05 result: **14 classified executable occurrences**. The obsolete manual-proof TODO was removed
 because `optimisation-equivalence.test.ts` already contains 102 active proofs. Any new occurrence fails the classification
 gate until this register assigns it a release-blocking, explicitly deferred, or permanent-difference status.

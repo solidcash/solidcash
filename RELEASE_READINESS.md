@@ -5,9 +5,10 @@ Target: first public SolidCash release (`0.13.1`, unless the release version cha
 
 ## Current assessment
 
-**NO-GO for `0.13.1` at baseline `1a533c88` plus the findings-fix worktree.** The formerly separate Solidity-corpus, SolidHat, state-journal, and
-Layer-3/message-bus work is now integrated on `solidcash_v0.13.1`, but the integrated branch does not pass the
-basic release gates. A fresh 2026-08-04 run found:
+**NO-GO for `0.13.1` on the current findings-fix worktree.** The formerly separate Solidity-corpus, SolidHat,
+state-journal, and Layer-3/message-bus work is integrated, and the basic build/test/lint/package gates now pass.
+Release evidence is still incomplete in the higher-budget corpus, application-conformance, and full BCHN candidate
+matrix. The 2026-08-04 through 2026-08-05 reassessment found:
 
 - `yarn build` and `yarn lint` failed at baseline; both are fixed and pass on the findings-fix worktree as of
   2026-08-04;
@@ -21,17 +22,22 @@ basic release gates. A fresh 2026-08-04 run found:
 - the integrated compiler suite passes all 3,138 tests, the SDK suite passes 3,808 tests, and the testing-suite
   golden path passes all 22 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
   fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
-- 24 `.skip`/`.todo` occurrences remain under `packages` and `examples` (down from 25, but still unclassified);
-- the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
-  on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
+- 14 executable `.skip`/`.todo` occurrences remain under `packages` and `examples`; all are classified as explicit
+  first-release deferrals, permanent BCH/model differences, or mock/debug API limitations, with no skipped release
+  blocker remaining;
+- the findings-fix branch includes `testing-suite` compilation, lint, and tests in the root gates and runs CI on
+  `solidcash_v*`; the clean packed-package gate passes, while corpus, application-conformance, and the full BCHN
+  candidate matrix remain incomplete;
 - the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
 - all six publishable packages now pass a clean tarball-consumer gate: packed README/license and manifest targets
   are checked, the tarballs are installed together without workspace links, runtime and subpath imports execute,
   public types compile, all four CLIs answer `--help`, and the packed compiler produces an SDK-consumable artifact.
+- BCHN v29 regtest now proves BIP68 block-height and 512-second MTP ages end to end: the covenant rejects a short
+  sequence, BCHN rejects valid sequences while their prevouts are immature, and the spends succeed after maturity.
 
-The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; classify
-the skipped tests and prove the remaining covenant/delegate boundaries; then run the full packed golden path,
-application, and BCHN candidate matrix.
+The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; finish the
+remaining soundness audits and compatibility manifest; then define/run application conformance and the full BCHN
+candidate matrix.
 
 This is the maintained overview for the Solidity-parity and release-readiness effort. It is intentionally
 an action-oriented companion to the detailed design and research documents. Those documents remain the source
@@ -247,13 +253,14 @@ These items do not block the first release when the unsupported boundary is docu
 
 ## Known skipped/TODO-test review
 
-At the 2026-08-05 audit snapshot, 15 executable skipped or TODO occurrences remain under `packages` and
+At the 2026-08-05 audit snapshot, 14 executable skipped or TODO occurrences remain under `packages` and
 `examples`, down from 24 after removing six empty placeholder suites and one obsolete manual-proof TODO. Every remaining occurrence is classified in
-[`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); one group remains a release-blocking coverage gap.
+[`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); none is a release-blocking coverage gap.
 
 - [x] Prove writing an unbounded cross-contract return directly to dynamic state, including an interface that
   under-declares the callee's physical state footprint. Dynamic chunks anchor after the authenticated return event.
-- [~] Add BCHN sequence-number/timelock coverage; compiler coverage alone is not release proof.
+- [x] Prove BIP68 block-height and 512-second MTP maturity against BCHN: short sequence fails the covenant,
+  immature valid sequences fail node consensus, and the identical spends succeed after maturity.
 - [x] Remove the stale optimizer-equivalence TODO; 102 active equivalence proofs already cover this area.
 - [-] Nested-loop and optimized-value debugger enhancements are post-release.
 - [x] Keep circular-call tests skipped only with the permanent address-model limitation documented.
@@ -313,10 +320,10 @@ Update this table whenever a release candidate is cut.
 | Compiler tests | **PASS** — 3,138/3,138 after correcting two realistic per-test timeout budgets | `codex/release-readiness-fixes` | 2026-08-04 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,075 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-04 |
-| BCHN regtest | Not run | — | — |
+| Spellcheck | **PASS** — 2,080 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
+| BCHN regtest | **PARTIAL PASS** — BCHN v29 BIP68 height and 512-second MTP covenant/immaturity/maturity proofs pass; full release-candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
-| Known `.skip`/`.todo` review | **PASS (classification)** — 15 executable occurrences classified; only BCHN timelock proof remains blocking in this register | `codex/release-readiness-fixes` | 2026-08-05 |
+| Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

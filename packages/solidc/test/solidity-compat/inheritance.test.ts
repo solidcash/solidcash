@@ -428,6 +428,12 @@ describe('inherited modifier override and declaration namespace collisions', () 
     expect(cc('abstract contract A { function f() public mod returns (bool r) { return true; } modifier mod virtual; }'
       + ' contract C is A { modifier mod override { if (false) _; } }')).toBe('C');
   });
+  it('keeps modifier bindings distinct when one returning entry point is inlined into another', () => {
+    expect(cc('contract C { modifier ensure(uint deadline) { require(deadline > 0); _; }'
+      + ' function removeLiquidity(uint deadline) public ensure(deadline) returns (uint out) { return deadline; }'
+      + ' function removeLiquidityETH(uint deadline) public ensure(deadline) returns (uint out) {'
+      + ' return removeLiquidity(deadline); } }')).toBe('C');
+  });
   it('keeps same-name parent+child events when signatures differ (event overloading)', () => {
     expect(cc('contract A { event Deposit(); } contract B { event Deposit(address a); }'
       + ' contract C is A, B { event Deposit(address a, uint256 n);'

@@ -344,6 +344,10 @@ function expandFunctionModifiers(
   if (func.customModifiers.length === 0) return;
 
   let currentBody = func.body.statements ?? [];
+  // A returning helper can later be inlined into another modifier-bearing function. Include the source frame in
+  // compiler-owned bindings so the two already-expanded bodies remain disjoint even before the helper inliner's
+  // own alpha-renaming runs (the Uniswap Router removeLiquidityETH -> removeLiquidity shape).
+  const frameSuffix = `${func.location.start.line}_${func.location.start.column}`;
 
   // Expand right-to-left (innermost first)
   for (let i = func.customModifiers.length - 1; i >= 0; i--) {
@@ -399,7 +403,7 @@ function expandFunctionModifiers(
         bindingNames.push(arg.name);
         return;
       }
-      const uniqueName = `${param.name}__${i}`;
+      const uniqueName = `${param.name}__${frameSuffix}_${i}`;
       bindingNames.push(uniqueName);
       const binding = new VariableDefinitionNode(
         param.type,
@@ -420,7 +424,7 @@ function expandFunctionModifiers(
     // redeclare that name in one flat block. Runs before placeholder expansion, so the function body is untouched.
     const localNames = collectLocalDeclNames(clonedStatements);
     if (localNames.length > 0) {
-      renameLocalDecls(clonedStatements, localNames, localNames.map((n) => `${n}__mod${i}`));
+      renameLocalDecls(clonedStatements, localNames, localNames.map((n) => `${n}__mod${frameSuffix}_${i}`));
     }
 
     // Replace placeholder(s) with current body, recursing into nested blocks (if/else, loops).

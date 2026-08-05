@@ -434,6 +434,20 @@ describe('inherited modifier override and declaration namespace collisions', () 
       + ' function d() external { emit Deposit(); emit Deposit(address(0)); emit Deposit(address(0), 1); require(true); } }'))
       .toBe('C');
   });
+
+  it('deduplicates identical event declarations across inherited scopes', () => {
+    const artifacts = compileStringMulti(`
+      interface I { event PairCreated(address a, address b); }
+      contract A { event PairCreated(address a, address b); }
+      contract C is A, I {
+        event PairCreated(address a, address b);
+        function create() public { emit PairCreated(address(0), address(0)); require(true); }
+      }
+    `, { solidityImportCompat: true });
+    const events = artifacts.C.events ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe('PairCreated');
+  });
   it('rejects same-name parent+child errors even when signatures differ', () => {
     expect(() => cc('contract A { error E(); } contract B is A { error E(uint256 n);'
       + ' function f(bool b) external { if (b) revert E(); revert E(1); } }')).toThrow();

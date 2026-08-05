@@ -858,30 +858,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Register event definitions (keyed by full signature to allow overloading). The redefinition check is
     // within-contract only: a same-sig event registered by a sibling/library scope is not a redefinition.
     const localEventSigs = new Set<string>();
-    if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
-      throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
-    }
-    const interfaceEventSigs = new Set<string>();
-    if (this.compilerOptions.solidityImportCompat) {
-      const visitedInterfaces = new Set<string>();
-      const collectInterfaceEvents = (name: string): void => {
-        if (visitedInterfaces.has(name)) return;
-        visitedInterfaces.add(name);
-        const iface = this.interfaceMap.get(name);
-        if (!iface) return;
-        for (const event of iface.eventDefinitions) {
-          interfaceEventSigs.add(computeEventSignature(
-            event.name, event.parameters.map((parameter) => parameter.type?.toString() ?? 'address'),
-          ));
-        }
-        for (const parent of iface.parents) collectInterfaceEvents(parent);
-      };
-      for (const name of node.implements) collectInterfaceEvents(name);
-    }
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (localEventSigs.has(sig) || interfaceEventSigs.has(sig)) {
+      if (localEventSigs.has(sig)) {
         throw new EventRedefinitionError(ev);
       }
       localEventSigs.add(sig);
@@ -1723,6 +1703,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldType: (name: string) => Type | undefined,
   ): ExpressionNode | null {
     if (expr instanceof LiteralNode) return expr;
+    // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
+    // While folding that transition into the parent's deploy covenant, this is exactly the active input's
+    // locking bytecode. Preserve the EVM sequencing without introducing the child's impossible co-spend.
+    if (expr instanceof NullaryOpNode && expr.operator === NullaryOperator.MSG_SENDER) {
+      const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+      inputIndex.location = expr.location;
+      inputIndex.type = PrimitiveType.BIGINT;
+      const lockingBytecode = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+      lockingBytecode.location = expr.location;
+      lockingBytecode.type = new AddressType(false);
+      return lockingBytecode;
+    }
     if (expr instanceof IdentifierNode) {
       const sub = subs.get(expr.name);
       if (sub) return cloneNode(sub); // forwarded arg or earlier local
@@ -1785,6 +1777,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private foldStatementList(
     statements: StatementNode[], subs: Map<string, ExpressionNode>,
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
+    writableFieldType: (name: string) => Type | undefined = fieldType,
   ): false | { returnValue?: ExpressionNode, wrote: boolean } {
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
@@ -1808,7 +1801,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!folded) return false;
         if (subs.has(stmt.identifier.name)) {
           subs.set(stmt.identifier.name, folded);
-        } else if (fieldType(stmt.identifier.name)) {
+        } else if (writableFieldType(stmt.identifier.name)) {
           fieldExprs.set(stmt.identifier.name, folded);
           wrote = true;
         } else {
@@ -1860,11 +1853,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     });
     const fieldExprs = new Map<string, ExpressionNode>();
-    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
-    if (!res) {
-      deployNode.ctorFoldFailed = true; // genesis of ctor-written fields is unknown to later folds
-      return;
+    // Constructor inheritance may prepend an unrelated, non-foldable initialization (e.g. Uniswap's EIP-712
+    // DOMAIN_SEPARATOR) before a later independent `factory = msg.sender`. Retain every safely foldable prefix/
+    // suffix statement while remembering that reads of all other fields remain unknown. The substitutions map is
+    // shared, so straight-line locals still feed later foldable writes.
+    let failed = false;
+    for (const statement of statements) {
+      if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
     }
+    deployNode.ctorFoldFailed = failed;
     if (fieldExprs.size === 0) return;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
     for (const [k, v] of fieldExprs) init.set(k, v);
@@ -1895,15 +1892,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // An unfolded ctor means the genesis of fields it may have written is unknown: a read miss must fail
     // the fold (returning the type default would bake a wrong value into the covenant).
-    const fieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
-      ? undefined
-      : deployNode.referencedContract?.stateVariables.find((sv) => sv.name === name)?.type);
+    const stateFieldType = (name: string): Type | undefined => deployNode.referencedContract
+      ?.stateVariables.find((sv) => sv.name === name)?.type;
     const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
     foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
     // Seed with the genesis so far (ctor fold + earlier folded calls): a `this.field` read inside foo must
     // see the TRUE current value, not the type default.
     const fieldExprs = new Map<string, ExpressionNode>(deployNode.foldedStateInit ?? []);
-    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
+    const readableFieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
+      && !fieldExprs.has(name) ? undefined : stateFieldType(name));
+    const res = this.foldStatementList(statements, subs, fieldExprs, readableFieldType, stateFieldType);
     if (!res) return false;
     if (!res.wrote && !res.returnValue) return false; // neither a state transition nor a value
     if (res.wrote) {

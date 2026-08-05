@@ -268,6 +268,9 @@ it must not silently compile to incorrect covenant behavior.
   test failures and does not include the environment-gated timelock file, whose four tests otherwise report as
   skipped without chipnet/regtest configuration. CI runs the named gate separately so its result remains visible
   even though the same files are also part of the broad SDK suite.
+- [x] Run representative application flows on BCHN v29 regtest through a deterministic serial command.
+  - `yarn test:application-regtest` runs the ERC-20-like ledger/event/error flow and the independent
+    escrow/oracle/timelock flow without file parallelism; the 2026-08-05 run passes 9/9.
 - [x] For each selected application, require compilation, behavioral tests, event/error tests, and script-size
   measurements. The frozen gate proves compilation/behavior and shared event/custom-error interfaces;
   every row now measures its serialized locking bytecode against a named, machine-readable 10,000-byte ceiling in
@@ -387,6 +390,6 @@ Update this table whenever a release candidate is cut.
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
-| Application conformance suite | **PARTIAL** — deterministic nine-file mock-provider gate passes 94/94, including an ERC-20-like ledger flow, decoded event arguments/filtering, custom-error/assert/revert behavior, explicit per-row applicability, and named locking-script budgets; BCHN runs remain open | `yarn test:application-conformance` | 2026-08-05 |
+| Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
 | Security conformance suite | **PARTIAL** — deterministic thirteen-scenario integrity gate passes 44/44, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, emitted-return, and built-in proxy transitions; remaining state-mutation matrices and early refusal for experimental delegate shapes remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

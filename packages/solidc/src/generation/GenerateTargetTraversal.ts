@@ -3917,7 +3917,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitExternalReturnEventVerification(node);
       }
       // Master self-preservation + uniqueness (upgrade-aware)
-      // 'upgrade' functions use emitUpgradeSelfPreservation (category+capability only, no bytecode check)
+      // 'upgrade' functions use emitUpgradeSelfPreservation (category/capability + replacement-bytecode witness)
       // Delegate functions: verify proxy's state transitions + delegate's own self-preservation
       // Selfdestruct functions skip master preservation but ALWAYS verify minting uniqueness
       // to prevent minting NFT duplication during destruction
@@ -21201,7 +21201,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * equality between input and output. The master output is allowed to have
    * different locking bytecode (the new contract version).
    *
-   * Enforces only token category+capability preservation:
+   * Enforces token category+capability preservation and binds the replacement locking bytecode to the
+   * compiler-owned `__internal__upgradeBytecode` argument supplied by the lifecycle SDK:
    * OP_UTXOTOKENCATEGORY returns 33 bytes (32-byte categoryId + 1-byte capability).
    * Comparing input vs output ensures both the categoryId and the minting
    * capability (0x02) are preserved - the minting NFT cannot be downgraded
@@ -21217,6 +21218,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitMasterInputIndex(locationData);
     this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
     this.pushToStack('(value)');
+    this.emit(Op.OP_EQUALVERIFY, locationData);
+    this.popFromStack(2);
+
+    const targetDepth = this.getStackIndex('__internal__upgradeBytecode');
+    this.emit(encodeInt(BigInt(targetDepth)), locationData);
+    this.emit(Op.OP_PICK, locationData);
+    this.pushToStack('(upgrade_target_bytecode)');
+    this.emitMasterInputIndex(locationData);
+    this.emit(Op.OP_OUTPUTBYTECODE, locationData);
+    this.pushToStack('(upgrade_output_bytecode)');
     this.emit(Op.OP_EQUALVERIFY, locationData);
     this.popFromStack(2);
   }

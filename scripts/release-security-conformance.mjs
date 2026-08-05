@@ -9,7 +9,7 @@ const cases = [
   ['external-call target substitution', 'test/e2e/ExtcallTargetPinning.test.ts'],
   ['cross-contract unsupported subcases', 'test/e2e/CrossContractSubcaseSoundness.test.ts'],
   ['delegate identity and selector pinning', 'test/e2e/Delegatecall.test.ts'],
-  ['split and merge auxiliary-input integrity', 'test/e2e/LifecycleAuxiliaryAdversarial.test.ts'],
+  ['lifecycle auxiliary-element integrity', 'test/e2e/LifecycleAuxiliaryAdversarial.test.ts'],
   ['message-envelope and return forgery', 'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
 ];
 

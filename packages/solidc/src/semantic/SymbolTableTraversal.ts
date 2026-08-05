@@ -1974,6 +1974,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.pushToStack(idxParam);
     }
 
+    // An upgrade intentionally changes the master locking bytecode, so ordinary self-preservation cannot bind
+    // it. Carry the SDK-selected replacement bytecode as an authenticated covenant argument instead. This must
+    // be compiler-owned: a wallet signature may legally use SIGHASH_NONE and cannot be the security boundary.
+    if (node.modifiers.includes(FunctionModifier.UPGRADE)) {
+      const targetParam = new ParameterNode(new BytesType(), '__internal__upgradeBytecode');
+      targetParam.location = node.location;
+      node.parameters.push(targetParam);
+      this.symbolTables[0].set(Symbol.variable(targetParam));
+      const sym = this.symbolTables[0].get('__internal__upgradeBytecode');
+      if (sym) sym.references.push({ name: '__internal__upgradeBytecode' } as IdentifierNode);
+      this.pushToStack(targetParam);
+    }
+
     // External-library pre-scan: record which libraries the function calls and how many times, so codegen
     // loads each one's blob (side-car or inline) and the inline decision has call counts.
     const libraryCallCounts = this.countLibraryCalls(node.body);

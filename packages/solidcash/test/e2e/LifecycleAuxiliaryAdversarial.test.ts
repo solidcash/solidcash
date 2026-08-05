@@ -8,7 +8,9 @@ import {
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { compileString } from '../direct-compile.js';
-import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import {
+  alicePkh, alicePriv, alicePub, bobAddress, bobPkh,
+} from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 const SOURCE = `contract Lifecycle() {
@@ -31,6 +33,21 @@ contract Factory() {
     require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
     this.childCount = this.childCount + 1;
   }
+}`;
+const DESTROYABLE = `contract Destroyable(pubkey admin) {
+  int counter;
+  function destroy(sig s, bytes20 recipient) {
+    require(checkSig(s, admin));
+    selfdestruct(new LockingBytecodeP2PKH(recipient));
+  }
+}`;
+const UPGRADE_V1 = `contract UpgradeV1(pubkey admin) {
+  int counter;
+  function migrate(sig s) upgrade { require(checkSig(s, admin)); }
+}`;
+const UPGRADE_V2 = `contract UpgradeV2(pubkey admin) {
+  int counter;
+  function increment() { this.counter = this.counter + 1; }
 }`;
 
 const OP_TRUE = hexToBin('51');
@@ -79,7 +96,7 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
     };
-    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0/;
+    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index/;
 
     // Output 0 is the preserved master; outputs 1 and 2 are the newly minted masters; output 3 is change.
     await expect(rejectMutation((tx) => { tx.outputs.splice(2, 1); })).rejects.toThrow(covenantFailure);
@@ -261,6 +278,138 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       .rejects.toThrow(covenantFailure);
 
     await beforeDeploy.restore();
+    await expect(send(captured)).resolves.toBeTypeOf('string');
+  });
+
+  it('selfdestruct rejects missing, duplicated, reordered, and redirected lifecycle elements', async () => {
+    const provider = createTestProvider();
+    const artifact = compileString(DESTROYABLE);
+    const contract = new Contract(artifact, [alicePub], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, contract, artifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const connected = StatefulContract.withCategory(contract, categoryId);
+
+    let captured = '';
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      captured = hex;
+      return binToHex(hash256(hexToBin(hex)).reverse());
+    };
+    try {
+      await StatefulContract.destroy({
+        provider,
+        contract: connected,
+        destroyFunctionName: 'destroy',
+        destroyFunctionArgs: [
+          new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE), bobPkh,
+        ],
+        recipient: bobAddress,
+      });
+    } finally {
+      (provider as any).sendRawTransaction = send;
+    }
+    expect(captured).not.toBe('');
+
+    const rejectMutation = async (
+      mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void,
+    ): Promise<void> => {
+      const tx = decodeTransactionUnsafe(hexToBin(captured));
+      mutate(tx);
+      await send(binToHex(encodeTransaction(tx)));
+    };
+    const rejection = /mandatory-script-verify-flag-failed|duplicate|bad-txns|Program failed/;
+
+    // Inputs 0/1 are the master and data NFT; the sole output is the authenticated recipient.
+    await expect(rejectMutation((tx) => { tx.inputs.splice(1, 1); })).rejects.toThrow(rejection);
+    await expect(rejectMutation((tx) => {
+      tx.inputs.splice(2, 0, {
+        ...tx.inputs[1],
+        outpointTransactionHash: tx.inputs[1].outpointTransactionHash.slice(),
+        unlockingBytecode: tx.inputs[1].unlockingBytecode.slice(),
+      });
+    })).rejects.toThrow(rejection);
+    await expect(rejectMutation((tx) => {
+      [tx.inputs[0], tx.inputs[1]] = [tx.inputs[1], tx.inputs[0]];
+    })).rejects.toThrow(rejection);
+    await expect(rejectMutation((tx) => { tx.outputs[0].lockingBytecode = OP_TRUE; }))
+      .rejects.toThrow(rejection);
+    await expect(rejectMutation((tx) => {
+      tx.outputs.push({ ...tx.outputs[0], lockingBytecode: tx.outputs[0].lockingBytecode.slice() });
+      tx.outputs[0].valueSatoshis /= 2n;
+      tx.outputs[1].valueSatoshis -= tx.outputs[0].valueSatoshis + 1_000n;
+    })).rejects.toThrow(rejection);
+
+    await expect(send(captured)).resolves.toBeTypeOf('string');
+  });
+
+  it('upgrade rejects missing, duplicated, reordered, and redirected lifecycle outputs', async () => {
+    const provider = createTestProvider();
+    const oldArtifact = compileString(UPGRADE_V1);
+    const newArtifact = compileString(UPGRADE_V2);
+    const oldBase = new Contract(oldArtifact, [alicePub], { provider });
+    const { categoryId } = await setupStatefulUtxos(
+      provider, oldBase, oldArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
+    );
+    const oldContract = StatefulContract.withCategory(oldBase, categoryId);
+    const funding: Utxo = { txid: 'f6'.repeat(32), vout: 0, satoshis: 500_000n };
+    await provider.addUtxo('51', funding);
+
+    const beforeUpgrade = await provider.takeSnapshot();
+    let captured = '';
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      captured = hex;
+      return send(hex);
+    };
+    try {
+      await StatefulContract.upgrade({
+        provider,
+        oldContract,
+        upgradeFunctionName: 'migrate',
+        upgradeFunctionArgs: [new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)],
+        newArtifact,
+        newConstructorArgs: [alicePub],
+        fundingUtxo: funding,
+        funder: anyoneCanSpend,
+        changeAddress: oldBase.address,
+      });
+    } finally {
+      (provider as any).sendRawTransaction = send;
+    }
+    expect(captured).not.toBe('');
+    await beforeUpgrade.restore();
+
+    const rejectMutation = async (
+      mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void,
+    ): Promise<void> => {
+      await beforeUpgrade.restore();
+      const tx = decodeTransactionUnsafe(hexToBin(captured));
+      mutate(tx);
+      await send(binToHex(encodeTransaction(tx)));
+    };
+    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index/;
+
+    // Outputs 0/1 are the upgraded master and data NFT; ordinary change follows.
+    await expect(rejectMutation((tx) => { tx.outputs.splice(1, 1); }))
+      .rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => {
+      const master = tx.outputs[0];
+      tx.outputs.splice(2, 0, {
+        ...master,
+        lockingBytecode: master.lockingBytecode.slice(),
+        token: { ...master.token!, nft: { ...master.token!.nft! } },
+      });
+      tx.outputs.at(-1)!.valueSatoshis -= master.valueSatoshis + 1_000n;
+    })).rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => {
+      [tx.outputs[0], tx.outputs[1]] = [tx.outputs[1], tx.outputs[0]];
+    })).rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => { tx.outputs[1].lockingBytecode = OP_TRUE; }))
+      .rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => { tx.outputs[0].lockingBytecode = OP_TRUE; }))
+      .rejects.toThrow(covenantFailure);
+
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

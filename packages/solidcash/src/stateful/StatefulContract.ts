@@ -2349,6 +2349,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = [...finalArgs, new Uint8Array(32)]; // zero bytes = direct call
     }
 
+    const upgradeTargetParam = upgradeAbi.inputs.find(
+      (input) => input.name === '__internal__upgradeBytecode',
+    );
+    if (!upgradeTargetParam) {
+      throw new Error(
+        `Upgrade function '${upgradeFunctionName}' was compiled without an authenticated replacement-bytecode `
+        + 'witness. Recompile the old contract with the current compiler before enabling upgrades.',
+      );
+    }
+    finalArgs = [...finalArgs, addressToLockScript(newContract.tokenAddress)];
+
     const entryAccesses = upgradeAbi.entryAccesses;
     if (entryAccesses && entryAccesses.length > 0) {
     }

@@ -119,7 +119,12 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const ctorCount = this.artifact.constructorInputs.length;
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
-    const initCount = this.artifact.abi.find((f) => f.name === '__construct')?.inputs.length ?? 0;
+    // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, C2 slot/proof
+    // operands) are SDK-filled, so counting them made `expected` too large and the trailing-overrides check
+    // below never matched: the overrides object was then taken as a constructor argument and forwarded to
+    // __construct, which failed with an off-by-one argument count.
+    const initCount = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
+      .filter((input) => !input.name.startsWith('__internal__')).length ?? 0;
     const expected = ctorCount + initCount;
     let overrides: DeployContractOptions = {};
     if ((args.length === expected + 1 || args.length === ctorCount + 1)

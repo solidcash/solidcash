@@ -448,6 +448,15 @@ describe('discarded qualified base-function references', () => {
     );
     expect(qualified.bytecode).toBe(direct.bytecode);
   });
+  it('resolves a qualified inherited overload when the child has the same function name', () => {
+    const artifact = compileString(
+      'contract LibraryLock { bool initialized; function initialize() internal { initialized = true; } }'
+      + ' contract C is LibraryLock { function initialize(uint value) external {'
+      + ' require(!initialized && value > 0); LibraryLock.initialize(); } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.contractName).toBe('C');
+  });
   it('preserves every overload of an explicitly callable overridden base function', () => {
     const src = 'contract A { function f(uint a) public virtual {} function f(uint a,uint b) public virtual {} }'
       + ' contract B is A { function f(uint a) public override {}'

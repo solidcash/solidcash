@@ -1448,8 +1448,12 @@ function preserveOverriddenFunction(
 function superImplFor(contract: ContractNode, definingContract: string, fnName: string): string | undefined {
   const mangled = superImplName(definingContract, fnName);
   if (contract.functions.some((f) => f.name === mangled)) return mangled;
-  const plain = contract.functions.find((f) => f.name === fnName);
-  if (plain && (plain.definingContract ?? plain.inheritedFrom ?? contract.name) === definingContract) {
+  // Same-name overloads from the child and base coexist after flattening. Search by both name and origin:
+  // taking the first name match makes `Base.initialize()` disappear when the child also declares
+  // `initialize(uint)` (FlexUSD's LibraryLock initializer).
+  const plain = contract.functions.find((f) => f.name === fnName
+    && (f.definingContract ?? f.inheritedFrom ?? contract.name) === definingContract);
+  if (plain) {
     return fnName;
   }
   return undefined;

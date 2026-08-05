@@ -2543,6 +2543,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // The child's category is the funding UTXO's txid (vout 0), so its address derives forward from
     // (artifact, constructorArgs, category) - no extra input and no trace reverse-derivation needed.
     const deployTarget = deployAbi.deployTargets?.[0];
+    if (!deployTarget) {
+      throw new Error(
+        `Deploy function '${deployFunctionName}' does not contain a typed 'new Contract(...)' deployment. `
+        + 'The child artifact, address, and state-NFT layout would be supplied only by the caller and are not '
+        + 'authenticated by the factory covenant. Recompile the factory with an explicit typed deployment.',
+      );
+    }
+    if ((deployAbi.entryAccesses?.length ?? 0) > 0 && deployTarget.dataNftCount > 0) {
+      throw new Error(
+        `Deploy function '${deployFunctionName}' combines a typed stateful child with C2 mapping access. `
+        + 'The C2 insert tail and child data-NFT outputs currently share the first trailing slot, so this shape '
+        + 'is refused until the output layout authenticates both regions.',
+      );
+    }
     const childArtifact = (options.childArtifact
       ?? (deployTarget ? (factory as StatefulContract)._getChild(deployTarget.contractName) : undefined)) as T;
     if (!childArtifact) {

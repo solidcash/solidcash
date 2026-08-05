@@ -19138,6 +19138,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.loopValueTransferNode = node.callOptions!.value;
     }
 
+    // Positional checks prove the required genesis outputs, but without cardinality an attacker can use the
+    // genesis minting input to append another child master or mutable state NFT of the same category. Count both
+    // capabilities across the whole transaction so this child's genesis set is exact.
+    this.emitDeployCapabilityOutputCount(categoryName, 0x02, 1, locationData);
+    this.emitDeployCapabilityOutputCount(categoryName, 0x01, dataNftCount, locationData);
+
     // Loop deploy: increment the runtime deploy counter (deploys-fired-so-far) in place, so the next iteration's
     // genesis lands at the next slot. Mirrors the in-place stack-var update in visitDeleteLocal.
     if (useCounter) {
@@ -19342,6 +19348,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_EQUALVERIFY, locationData);
         this.popFromStack(2);
       }
+
+      // The fixed-slot checks above authenticate every required output but do not reject extra genesis NFTs.
+      // Enforce exact capability counts for this child category across all transaction outputs.
+      this.emitDeployCapabilityOutputCount(undefined, 0x02, 1, locationData, deployIndex);
+      this.emitDeployCapabilityOutputCount(undefined, 0x01, dataNftCount, locationData, deployIndex);
     }
 
     // Clean up deploy stack values
@@ -19358,6 +19369,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_DROP, locationData);
       this.removeFromStack(lbIdx);
     }
+  }
+
+  /** Require exactly `expected` outputs with childCategory||capability. */
+  private emitDeployCapabilityOutputCount(
+    categoryStackName: string | undefined,
+    capability: number,
+    expected: number,
+    locationData: SingleLocationData,
+    fixedDeployIndex?: number,
+  ): void {
+    if (fixedDeployIndex !== undefined) {
+      // Re-derive from the authenticated vout-0 genesis input. This is independent of tracked-stack liveness
+      // after mapping/dynamic-state epilogues and is the same category source used to build the child address.
+      this.emitBlockSlotIndex('deploy', fixedDeployIndex, locationData);
+      this.emit(Op.OP_OUTPOINTTXHASH, locationData);
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(categoryStackName!))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    }
+    this.pushToStack('(deploy_target_cat)');
+    this.emit(new Uint8Array([capability]), locationData);
+    this.pushToStack('(deploy_cap)');
+    this.emit(Op.OP_CAT, locationData);
+    this.popFromStack(2);
+    this.pushToStack('(deploy_target_token_category)');
+
+    this.emit(encodeInt(0n), locationData);
+    this.pushToStack('(deploy_output_count)');
+    this.emit(Op.OP_TXOUTPUTCOUNT, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.pushToStack('(deploy_output_index)');
+    this.emit(Op.OP_BEGIN, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(0n), locationData);
+    this.emit(Op.OP_LESSTHAN, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_DROP, locationData);
+    this.emit(encodeBool(true), locationData);
+    this.emit(Op.OP_ELSE, locationData);
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(Op.OP_OUTPUTTOKENCATEGORY, locationData);
+    this.emit(encodeInt(3n), locationData); // target category below output index + counter
+    this.emit(Op.OP_PICK, locationData);
+    this.emit(Op.OP_EQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_1ADD, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_1SUB, locationData);
+    this.emit(encodeBool(false), locationData);
+    this.emit(Op.OP_ENDIF, locationData);
+    this.emit(Op.OP_UNTIL, locationData);
+    this.popFromStack();
+
+    this.emit(encodeInt(BigInt(expected)), locationData);
+    this.emit(Op.OP_NUMEQUALVERIFY, locationData);
+    this.popFromStack();
+    this.emit(Op.OP_DROP, locationData);
+    this.popFromStack();
   }
 
   /**

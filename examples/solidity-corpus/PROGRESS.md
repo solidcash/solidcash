@@ -5414,6 +5414,10 @@ The focused suite remains green. The full corpus remains **4443/4587**, 144 fail
 
 ### 2026-08-05 release reassessment and strictness deferral
 
+**Effort status: POSTPONED.** Do not run the entire Solidity bench or continue the over-accepted correctness
+queue for the current release. The retained measurements below remain informational evidence; protocol and
+covenant soundness work has priority.
+
 The release bench scope is now explicitly limited to single-file fixtures under Solidity's semantic and syntax
 suites. On corpus revision `816d9b2a`, the retained positive result is **2698/2805**, with 107 named failures and
 zero residual timeouts after the published 30-second and 120-second fresh-worker retry tiers.

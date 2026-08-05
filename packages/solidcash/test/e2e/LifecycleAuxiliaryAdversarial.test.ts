@@ -2,15 +2,35 @@ import { describe, expect, it } from 'vitest';
 import {
   binToHex, decodeTransactionUnsafe, encodeTransaction, hash256, hexToBin,
 } from '@bitauth/libauth';
-import { Contract, StatefulContract } from '../../src/index.js';
+import {
+  Contract, HashType, SignatureTemplate, StatefulContract,
+} from '../../src/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { compileString } from '../direct-compile.js';
+import { alicePkh, alicePriv, alicePub } from '../fixture/vars.js';
+import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
 const SOURCE = `contract Lifecycle() {
   int counter;
   function fork(bigint n) split(n) { require(n >= 1); }
   function consolidate(bigint n) merge(n) { require(n >= 1); }
+}`;
+const CHILD = `contract Child(bytes20 owner) {
+  int counter;
+  function increment() {
+    this.counter = this.counter + 1;
+    require(owner != bytes20(0));
+  }
+}`;
+const FACTORY = `${CHILD}
+contract Factory() {
+  int childCount;
+  function createChild(bytes20 owner, int fundingInputIndex) {
+    new Child(owner);
+    require(tx.inputs[fundingInputIndex].outpointTransactionHash != 0x0000000000000000000000000000000000000000000000000000000000000000);
+    this.childCount = this.childCount + 1;
+  }
 }`;
 
 const OP_TRUE = hexToBin('51');
@@ -162,6 +182,85 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       tx.outputs[0].lockingBytecode = OP_TRUE;
     })).rejects.toThrow(rejection);
 
+    await expect(send(captured)).resolves.toBeTypeOf('string');
+  });
+
+  it('deployFrom rejects missing, duplicated, reordered, and redirected child outputs', async () => {
+    const provider = createTestProvider();
+    const factoryArtifact = compileString(FACTORY);
+    const childArtifact = compileString(CHILD);
+    const baseFactory = new Contract(factoryArtifact, [], { provider });
+    const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
+    const factoryFunding: Utxo = { txid: 'f4'.repeat(32), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo('51', factoryFunding);
+    const { contract: factory } = await StatefulContract.deploy(factoryArtifact, [], {
+      provider,
+      fundingUtxo: factoryFunding,
+      funder: anyoneCanSpend,
+      initialState: { childCount: 0n },
+      changeAddress: baseFactory.address,
+    });
+
+    const childFunding: Utxo = { txid: 'f5'.repeat(32), vout: 0, satoshis: 100_000n };
+    await provider.addUtxo(p2pkh.address, childFunding);
+    const createAbi = factoryArtifact.abi.find((entry) => entry.name === 'createChild')!;
+    const requiredNfts = createAbi.requiredNftIndices?.length ?? factoryArtifact.stateLayout!.dataNftCount;
+    const fundingInputIndex = 1 + requiredNfts;
+
+    const beforeDeploy = await provider.takeSnapshot();
+    let captured = '';
+    const send = provider.sendRawTransaction.bind(provider);
+    (provider as any).sendRawTransaction = async (hex: string): Promise<string> => {
+      captured = hex;
+      return send(hex);
+    };
+    try {
+      await StatefulContract.deployFrom({
+        provider,
+        factory,
+        deployFunctionName: 'createChild',
+        deployFunctionArgs: [alicePkh, BigInt(fundingInputIndex)],
+        childArtifact,
+        childConstructorArgs: [alicePkh],
+        childInitialState: { counter: 0n },
+        fundingUtxo: childFunding,
+        funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv, HashType.SIGHASH_NONE)),
+        changeAddress: p2pkh.address,
+      });
+    } finally {
+      (provider as any).sendRawTransaction = send;
+    }
+    expect(captured).not.toBe('');
+    await beforeDeploy.restore();
+
+    const rejectMutation = async (
+      mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void,
+    ): Promise<void> => {
+      await beforeDeploy.restore();
+      const tx = decodeTransactionUnsafe(hexToBin(captured));
+      mutate(tx);
+      await send(binToHex(encodeTransaction(tx)));
+    };
+    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0/;
+
+    // Outputs 0/1 preserve the factory; outputs 2/3 are the child's master and data NFT; change follows.
+    await expect(rejectMutation((tx) => { tx.outputs.splice(3, 1); })).rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => {
+      const childMaster = tx.outputs[2];
+      tx.outputs.splice(4, 0, {
+        ...childMaster,
+        lockingBytecode: childMaster.lockingBytecode.slice(),
+        token: { ...childMaster.token!, nft: { ...childMaster.token!.nft! } },
+      });
+      tx.outputs.at(-1)!.valueSatoshis -= childMaster.valueSatoshis + 1_000n;
+    })).rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => {
+      [tx.outputs[2], tx.outputs[3]] = [tx.outputs[3], tx.outputs[2]];
+    })).rejects.toThrow(covenantFailure);
+    await expect(rejectMutation((tx) => { tx.outputs[2].lockingBytecode = OP_TRUE; }))
+      .rejects.toThrow(covenantFailure);
+
+    await beforeDeploy.restore();
     await expect(send(captured)).resolves.toBeTypeOf('string');
   });
 });

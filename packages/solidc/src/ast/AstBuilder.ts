@@ -3180,7 +3180,7 @@ export default class AstBuilder
       const types = elements.map((e) => this.stateVarTypes.get(e.name!));
       if (types.every((type): type is Type => type !== undefined)) {
         const loc = Location.fromCtx(ctx);
-        const tempNames = elements.map(() => `__stup_${this.nestedLvalueCounter++}`);
+        const tempNames = elements.map(() => `__state_tuple_${this.nestedLvalueCounter++}`);
         const capture = new TupleAssignmentNode(
           tempNames.map((name, i) => ({ name, type: types[i] })),
           this.visit(exprs[0]) as ExpressionNode,

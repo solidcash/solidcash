@@ -34,4 +34,3 @@ The maintained executable example is
 [`test/golden-path.test.ts`](test/golden-path.test.ts). It covers compilation, funded signers, stateful deployment,
 calls, event and named-failure assertions, state reads, fixture restoration, and rerunning the successful path.
 `yarn test:package-smoke` repeats that lifecycle in an isolated project installed only from release tarballs.
-

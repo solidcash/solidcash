@@ -414,6 +414,7 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
    */
   it('has the FT-carrying variant refused by CashTokens itself, not by the pin', async () => {
     const row = await runSelfdestruct('ownWithFt');
+    // cspell:disable-next-line -- exact BCHN rejection text
     expect(row.outcome).toMatch(/sum of fungible tokens in the transaction outputs exceed|bad-txns-token-in-belowout/);
   }, 300_000);
 

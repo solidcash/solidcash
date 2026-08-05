@@ -1,6 +1,6 @@
 # SolidCash 0.13.1 Solidity Compatibility Manifest
 
-Status: release-candidate contract (conservative)  
+Status: release-candidate contract (conservative)
 Applies to: `solidc` 0.13.1 with `solidityImportCompat: true`
 
 This manifest defines the compatibility claims for 0.13.1. “Supported” means the construct has parser, semantic,

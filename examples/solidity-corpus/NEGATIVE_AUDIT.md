@@ -1,7 +1,7 @@
 # Solidity negative-fixture audit
 
-Last run: 2026-08-05  
-Corpus: `816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762`  
+Last run: 2026-08-05
+Corpus: `816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762`
 Runtime: Node 22.22.0, linux-arm64
 
 ## Result

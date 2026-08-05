@@ -116,7 +116,7 @@ it must not silently compile to incorrect covenant behavior.
     retained result reports 107 named failures and no generic `Error` or raw `RangeError` bucket.
 - [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
-  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 44/44 tests cover C2 batch
+  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 81/81 executed tests cover C2 batch
     witness tampering, dynamic-loop entry tampering, external-call target substitution, cross-contract
     fail-closed subcases, delegate identity/selector pinning, split/merge missing/duplicated/reordered/redirected
     lifecycle elements, deploy child-genesis and upgrade/selfdestruct
@@ -132,7 +132,9 @@ it must not silently compile to incorrect covenant behavior.
     co-spend. Untyped deploy
     factories reject before broadcast because the supplied
     child artifact cannot be covenant-authenticated; typed stateful deploy combined with a C2 access also rejects
-    until their trailing output regions can be separated.
+    until their trailing output regions can be separated. The gate also covers the built-in proxy lifecycle,
+    multi-NFT initialization/state preservation, delegated events and returns, nested initializer helpers, and
+    compiler/SDK refusal of implementation functions that reach ineligible operations.
   - Remaining before this item can close: equivalent matrix closure for the remaining supported state-mutation
     families and early refusal for delegate shapes outside the supported built-in proxy profile.
 
@@ -153,10 +155,15 @@ it must not silently compile to incorrect covenant behavior.
   - The compatibility manifest supports the built-in `upgrades.deployProxy` path for scalar/data-NFT state.
     Custom forwarders and other delegate shapes remain experimental; delegate-mode satoshi/token movement and
     fallback-only transparent proxies remain deferred below.
-- [ ] Confirm all unsupported delegate operations fail before broadcast rather than reverting unexpectedly
-  on-chain.
+- [x] Confirm unsupported operations are excluded from inferred delegate artifacts and rejected during SDK
+  construction.
+  - `DelegateInferred.test.ts` covers direct and internal-helper transfer/token operations, contracts with no
+    eligible implementation entry points, standalone artifacts supplied as implementations, and non-delegate
+    functions selected from delegate artifacts.
 - [ ] Reconcile outstanding delegate input-layout and proxy-context worker changes.
-- [ ] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
+- [x] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
+  - `UpgradesDeployProxy.test.ts`, `DelegateInferred.test.ts`, and `DefaultProxyIntegrity.test.ts` are required by
+    `yarn test:security-conformance`; the expanded gate passes 81/81 executed tests with one documented skip.
 - [-] Delegate-mode satoshi and token-container movement, unless explicitly brought into scope.
 - [-] Fallback-only proxy operation, unless the selector-less forwarding protocol is fixed.
 - [-] One identical address for standalone and delegate deployments; the current separate-artifact design is an
@@ -423,5 +430,5 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
-| Security conformance suite | **PARTIAL** — deterministic thirteen-scenario integrity gate passes 44/44, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, emitted-return, and built-in proxy transitions; remaining state-mutation matrices and early refusal for experimental delegate shapes remain open | `yarn test:security-conformance` | 2026-08-05 |
+| Integrity conformance suite | **PARTIAL** — deterministic fifteen-scenario gate passes 81/81 executed tests (one documented skip), including lifecycle, scalar/data-NFT, dynamic-chunk, satoshi/token containers, events/returns, and the built-in proxy lifecycle/refusal profile; remaining state-mutation matrices remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

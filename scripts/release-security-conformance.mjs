@@ -16,6 +16,8 @@ const cases = [
   ['token-container integrity', 'test/e2e/TokenContainerIntegrity.test.ts'],
   ['event and emitted-return integrity', 'test/e2e/EventReturnIntegrity.test.ts'],
   ['default proxy integrity', 'test/e2e/DefaultProxyIntegrity.test.ts'],
+  ['built-in proxy lifecycle and state preservation', 'test/e2e/UpgradesDeployProxy.test.ts'],
+  ['delegate eligibility and early refusal', 'test/e2e/DelegateInferred.test.ts'],
   ['message-envelope and return forgery', 'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
 ];
 

@@ -70,7 +70,7 @@ diagnostic when the required transaction shape cannot be produced.
 - Generated-project gate: initialization 1/1, cache lifecycle 1/1, maintained harness 21/21.
 - Packed-package gate: six tarballs and maintained stateful golden path 3/3.
 - Application gates: mock-provider matrix 94/94 and serial BCHN v29 matrix 9/9.
-- Integrity matrix: 44/44; the remaining explicit profile audits are tracked in
+- Integrity matrix: 81/81 executed tests with one documented skip; the remaining explicit profile audits are tracked in
   [`RELEASE_READINESS.md`](RELEASE_READINESS.md).
 - Solidity corpus: 2,698/2,805 retained positives and 1,835/2,158 rejected negatives, with no residual timeout;
   strictness work is deferred as stated above.

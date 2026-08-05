@@ -316,6 +316,7 @@ export default class AstBuilder
   private stateStructVars: Map<string, StructType> = new Map();
   // All state variable names, so a tuple assignment to state vars `(x, y) = (a, b)` desugars to state assigns.
   private stateVarNames: Set<string> = new Set();
+  private stateVarTypes: Map<string, Type> = new Map();
   private transientStateVarNames: Set<string> = new Set();
   // State array variables -> ArrayType, so `using L for T[]` desugars `arr.method(args)` to `L.method(arr, args)`.
   private stateArrayVarTypes: Map<string, ArrayType> = new Map();
@@ -1647,6 +1648,7 @@ export default class AstBuilder
         .map((sv) => [sv.name, sv.type as StructType]),
     );
     this.stateVarNames = new Set(stateVariables.map((sv) => sv.name));
+    this.stateVarTypes = new Map(stateVariables.map((sv) => [sv.name, sv.type]));
     this.stateArrayVarTypes = new Map(
       stateVariables
         .filter((sv) => sv.type instanceof ArrayType)
@@ -3169,6 +3171,33 @@ export default class AstBuilder
       const block = new BlockNode(stmts);
       block.location = Location.fromCtx(ctx);
       return block;
+    }
+    // `(x, y) = f()` where f returns a tuple: capture the complete RHS before writing state, just as the
+    // per-component form above does. Leaving this on TupleAssignmentNode makes codegen look for stack-local
+    // slots named x/y, so constructor probes can appear green only under a sparse trace and fail on the full VM.
+    if (exprs.length === 1
+      && elements.every((e) => e.existing && e.name !== undefined && this.stateVarNames.has(e.name))) {
+      const types = elements.map((e) => this.stateVarTypes.get(e.name!));
+      if (types.every((type): type is Type => type !== undefined)) {
+        const loc = Location.fromCtx(ctx);
+        const tempNames = elements.map(() => `__stup_${this.nestedLvalueCounter++}`);
+        const capture = new TupleAssignmentNode(
+          tempNames.map((name, i) => ({ name, type: types[i] })),
+          this.visit(exprs[0]) as ExpressionNode,
+          true,
+        );
+        capture.location = loc;
+        const writes = elements.map((element, i) => {
+          const value = new IdentifierNode(tempNames[i]);
+          value.location = loc;
+          const assign = new StateAssignNode(element.name!, value);
+          assign.location = loc;
+          return assign;
+        });
+        const block = new BlockNode([capture, ...writes]);
+        block.location = loc;
+        return block;
+      }
     }
     const tupleAssignment = exprs.length > 1
       ? new TupleAssignmentNode(elements, undefined as unknown as ExpressionNode, parenthesised,

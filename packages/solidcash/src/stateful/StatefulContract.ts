@@ -4107,7 +4107,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
-        })) {
+        }, true)) {
           learnedEntryCommits[outputIndex - entryOutputBase] = commitment;
           learnedAnyEntry = true;
         }
@@ -4132,7 +4132,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const outputIndex = sortedPlans.get(collectionName)!.trailingOutput;
           const learned = extractCommitmentMapFromTrace(fullTrace, {
             min: outputIndex, max: outputIndex + 1,
-          }).get(outputIndex);
+          }, true).get(outputIndex);
           if (learned !== undefined && learned !== learnedTrailing[collectionIndex]) {
             learnedTrailing[collectionIndex] = learned;
             trailingChanged = true;
@@ -4149,7 +4149,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         min: 1, max: 1 + requiredIndices.length,
       };
       const stateCommitmentMap = extractCommitmentMapFromTrace(
-        fullTrace, stateOutputRange,
+        fullTrace, stateOutputRange, true,
       );
       // A mapping-only contract has no scalar/data-NFT commitments to learn; its constructor evidence is carried
       // entirely by the entry commitments below. An empty state map is only an error when fixed state outputs exist.
@@ -4186,7 +4186,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           min: entryOutputBase,
           max: entryOutputBase + entryOutputCount,
         };
-        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange)) {
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, entryOutputRange, true)) {
           entryCommits[outputIndex - entryOutputBase] = commitment;
         }
       }
@@ -4198,7 +4198,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const eventOutputRange = {
           min: eventBase, max: eventBase + emitCount,
         };
-        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange)) {
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, eventOutputRange, true)) {
           eventCommits[outputIndex - eventBase] = commitment;
         }
       }

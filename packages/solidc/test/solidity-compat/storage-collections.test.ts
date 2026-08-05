@@ -420,6 +420,17 @@ describe('tuple assignment to state variables ((x, y) = (a, b))', () => {
     expect(bc('(x, y) = (y, x);')).toBe(bc('x = y; y = x;'));
   });
 
+  it('(x, y) = f() captures the multi-return before writing state', () => {
+    const compileConstructor = (body: string): string => compileString(`contract C() {
+      uint256 immutable x; uint256 immutable y;
+      constructor() { ${body} }
+      function f() private pure returns (uint256, uint256) { return (3, 4); }
+      function check() { require(x == 3 && y == 4); }
+    }`, { solidityImportCompat: true }).bytecode;
+    expect(compileConstructor('(x, y) = f();'))
+      .toBe(compileConstructor('uint256 a, uint256 b = f(); x = a; y = b;'));
+  });
+
   it('a tuple assignment to locals is unaffected', () => {
     expect(compileString(`contract C() {
       function f(uint256 a, uint256 b) { uint256 p; uint256 q; (p, q) = (a, b); require(p == a); }

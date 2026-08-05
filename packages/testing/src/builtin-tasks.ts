@@ -117,6 +117,7 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       }
       // Splitting is needed only for roots whose normal artifact exceeds the consensus script limit. Preserve the
       // project DAG/cache fast path for ordinary contracts rather than independently recompiling every source.
+      const shardFailures: string[] = [];
       for (const full of solFiles) {
         const source = fs.readFileSync(full, 'utf8');
         const declarations = [...source.matchAll(/\b(?:abstract\s+)?contract\s+([A-Za-z_$][\w$]*)/g)]
@@ -136,12 +137,19 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
             solidityImportCompat: true, ...compilerOptions, maxShardBytes: maximumInputBytes,
           });
         } catch (error: any) {
-          throw new Error(`Failed to shard ${path.relative(contractsDir, full)}: ${error.message}`, { cause: error });
+          // Keep sharding the remaining sources. Aborting here reports one wall per run, which on a large
+          // project turns wall discovery into a sequence of multi-tens-of-minutes compiles; the run still fails,
+          // it just fails with the COMPLETE list.
+          shardFailures.push(`${path.relative(contractsDir, full)}: ${error.message.split('\n')[0]}`);
+          continue;
         }
         if (split.manifest.facets.length > 0) fs.writeFileSync(
           path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
           formatSplitArtifactBundle(split, 'json'),
         );
+      }
+      if (shardFailures.length > 0) {
+        throw new Error(`Failed to shard ${shardFailures.length} source(s):\n  ${shardFailures.join('\n  ')}`);
       }
       solOk = solFiles.length;
       compilerJobs = result.compiledRoots.length;
@@ -159,12 +167,15 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       failures.push(new Error(`Solidity project: ${e.message}`));
     }
 
-    if (failures.length > 0) {
-      fs.rmSync(outputDir, { recursive: true, force: true });
-      throw new AggregateError(failures, `Compilation failed for ${failures.length} source group(s)`);
-    }
+    // Publish whatever compiled even when some sources failed. Discarding the fresh output left the PREVIOUS
+    // run's artifacts in place, which is strictly more misleading than partial-but-current ones. The run still
+    // fails loudly with the full failure list, so this cannot be mistaken for success.
     fs.rmSync(artifactsDir, { recursive: true, force: true });
     fs.renameSync(outputDir, artifactsDir);
+    if (failures.length > 0) {
+      console.error(`Wrote artifacts for the sources that did compile; ${failures.length} group(s) failed.`);
+      throw new AggregateError(failures, `Compilation failed for ${failures.length} source group(s)`);
+    }
     const typegen = generateTypechainTargets({
       artifactsDir,
       contractsDir,

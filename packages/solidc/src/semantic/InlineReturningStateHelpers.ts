@@ -45,7 +45,7 @@ import {
   AmbiguousInlineOverloadError, OperatorOverloadSignatureError, UsingForInvalidFunctionReferenceError,
 } from '../Errors.js';
 import {
-  StructType, AddressType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
+  StructType, AddressType, BytesType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
 } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -983,7 +983,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // A read-only value parameter supplied by a plain local is already a stable, eagerly-evaluated value.
         // Alias it directly instead of introducing a second stack local. Besides producing the canonical direct
         // lowering, this keeps covenant OP_PICK depths independent of whether the call was source-inlined.
-        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name)) {
+        // MEMORY-located arguments are excluded: a `bytes`/`string`/array/struct local can be relocated into the
+        // shared buffer by the memory lowering, leaving the alias naming a variable that no longer exists on the
+        // stack (OZ SafeERC20: `_callOptionalReturnBool(token, approvalCall)` reading `approvalCall` in assembly).
+        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name)
+          && !p.modifier.includes(Modifier.MEMORY) && !this.isMemoryLocated(p.type)) {
           rename.set(p.name, arg.name);
           aliasedValueParams.add(p.name);
         } else {
@@ -1079,6 +1083,14 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return { read: clone(arg), writeBack: (l) => at(new StateAssignNode(arg.name, id(l))) };
     }
     return undefined;
+  }
+
+  // A reference type whose local can be relocated into the shared memory buffer by the memory lowering.
+  private isMemoryLocated(type: Type | undefined): boolean {
+    return type === PrimitiveType.STRING
+      || (type instanceof BytesType && type.bound === undefined)
+      || type instanceof ArrayType
+      || type instanceof StructType;
   }
 
   // The body writes storage pointer `name` (an AssignNode target, or a state/mapping/array/field assign on it).

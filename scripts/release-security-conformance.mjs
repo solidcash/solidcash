@@ -15,6 +15,7 @@ const cases = [
   ['satoshi-container integrity', 'test/e2e/SatoshiContainerIntegrity.test.ts'],
   ['token-container integrity', 'test/e2e/TokenContainerIntegrity.test.ts'],
   ['event and emitted-return integrity', 'test/e2e/EventReturnIntegrity.test.ts'],
+  ['default proxy integrity', 'test/e2e/DefaultProxyIntegrity.test.ts'],
   ['message-envelope and return forgery', 'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
 ];
 

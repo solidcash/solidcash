@@ -116,7 +116,7 @@ it must not silently compile to incorrect covenant behavior.
     retained result reports 107 named failures and no generic `Error` or raw `RangeError` bucket.
 - [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
-  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 43/43 tests cover C2 batch
+  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 44/44 tests cover C2 batch
     witness tampering, dynamic-loop entry tampering, external-call target substitution, cross-contract
     fail-closed subcases, delegate identity/selector pinning, split/merge missing/duplicated/reordered/redirected
     lifecycle elements, deploy child-genesis and upgrade/selfdestruct
@@ -127,12 +127,14 @@ it must not silently compile to incorrect covenant behavior.
     signature guard. Old chunks themselves are an identity-authenticated unordered input set. Satoshi-container
     and fungible-token container transitions additionally preserve container presence, position, destination,
     and value/amount. Ordinary events and emitted returns preserve their required position, destination, and
-    commitment, rejecting missing, duplicated, reordered, redirected, or changed outputs. Untyped deploy
+    commitment, rejecting missing, duplicated, reordered, redirected, or changed outputs. The built-in
+    `upgrades.deployProxy` profile preserves the proxy state block and requires the pinned implementation
+    co-spend. Untyped deploy
     factories reject before broadcast because the supplied
     child artifact cannot be covenant-authenticated; typed stateful deploy combined with a C2 access also rejects
     until their trailing output regions can be separated.
   - Remaining before this item can close: equivalent matrix closure for the remaining supported state-mutation
-    families and the supported proxy profile.
+    families and early refusal for delegate shapes outside the supported built-in proxy profile.
 
 ### Cross-contract state bus and nested calls
 
@@ -147,7 +149,10 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Proxy and delegate behavior
 
-- [~] Define the exact proxy/delegate feature profile supported by the first release.
+- [x] Define the exact proxy/delegate feature profile supported by the first release.
+  - The compatibility manifest supports the built-in `upgrades.deployProxy` path for scalar/data-NFT state.
+    Custom forwarders and other delegate shapes remain experimental; delegate-mode satoshi/token movement and
+    fallback-only transparent proxies remain deferred below.
 - [ ] Confirm all unsupported delegate operations fail before broadcast rather than reverting unexpectedly
   on-chain.
 - [ ] Reconcile outstanding delegate input-layout and proxy-context worker changes.
@@ -373,5 +378,5 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | **PARTIAL** — deterministic six-scenario mock-provider gate passes 63/63; full ERC-20 application, per-app event/error assertions, size budgets, and BCHN runs remain open | `yarn test:application-conformance` | 2026-08-05 |
-| Security conformance suite | **PARTIAL** — deterministic twelve-scenario integrity gate passes 43/43, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, and emitted-return transitions; remaining state-mutation and supported-proxy matrices remain open | `yarn test:security-conformance` | 2026-08-05 |
+| Security conformance suite | **PARTIAL** — deterministic thirteen-scenario integrity gate passes 44/44, including the full lifecycle matrix plus scalar/data-NFT, dynamic-chunk, satoshi-container, token-container, event, emitted-return, and built-in proxy transitions; remaining state-mutation matrices and early refusal for experimental delegate shapes remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

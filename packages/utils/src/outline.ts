@@ -37,7 +37,10 @@ const BARRIER_OPS = new Set<number>([
 // Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
 const MINIMUM_WINDOW_ELEMENTS = 8;
 // Candidate groups examined per round, most-repeated first. Bounds the per-round extension work.
-const CANDIDATE_GROUPS_PER_ROUND = 512;
+const CANDIDATE_GROUPS_PER_ROUND = 4096;
+// Only the strongest measured candidates enter the overlap-selection phase. Separating this from the search
+// frontier lets large lower-frequency spans compete without allowing thousands of marginal spans to crowd it.
+const PROFITABLE_CANDIDATES_PER_ROUND = 512;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
 const MAXIMUM_ROUNDS = 6;
@@ -271,7 +274,7 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
     });
   }
   candidates.sort((left, right) => right.saved - left.saved);
-  return candidates;
+  return candidates.slice(0, PROFITABLE_CANDIDATES_PER_ROUND);
 }
 
 /**
@@ -369,6 +372,44 @@ export function outlineSharedSpans(
     }
   }
 
+  // A later round can outline the complete body of an earlier helper. That leaves the earlier definition as a
+  // one-instruction trampoline (`<new id> OP_INVOKE`) while every original callsite still invokes the old id.
+  // Outlined spans exclude every bytecode-relative/signing opcode, so bypassing this extra invoke frame is
+  // observationally identical. Collapse all such aliases before emission; large generated handlers can otherwise
+  // retain hundreds of tiny trampoline definitions after multi-round outlining.
+  const functionById = new Map(functions.map((fn) => [elementKey(fn.id), fn]));
+  const aliases = new Map<string, Uint8Array>();
+  for (const fn of functions) {
+    if (fn.script.length !== 2 || fn.script[1] !== Op.OP_INVOKE
+      || !(fn.script[0] instanceof Uint8Array)) continue;
+    const target = fn.script[0];
+    if (functionById.has(elementKey(target))) aliases.set(elementKey(fn.id), target);
+  }
+  const resolveAlias = (id: Uint8Array): Uint8Array => {
+    let resolved = id;
+    const seen = new Set<string>();
+    for (;;) {
+      const key = elementKey(resolved);
+      if (seen.has(key)) return id;
+      seen.add(key);
+      const next = aliases.get(key);
+      if (!next) return resolved;
+      resolved = next;
+    }
+  };
+  const rewriteAliases = (script: Script): void => {
+    for (let i = 1; i < script.length; i += 1) {
+      const id = script[i - 1];
+      if (script[i] !== Op.OP_INVOKE || !(id instanceof Uint8Array)) continue;
+      script[i - 1] = resolveAlias(id);
+    }
+  };
+  if (aliases.size > 0) {
+    for (const body of working) rewriteAliases(body.script);
+    for (const fn of functions) rewriteAliases(fn.script);
+  }
+  const liveFunctions = functions.filter((fn) => !aliases.has(elementKey(fn.id)));
+
   const rewritten: OutlinedBody[] = working.map((body, index) => {
     const originalLength = bodies[index].script.length;
     // One entry longer than the body: a trailing `require` records the position of the implicit final verify,
@@ -384,5 +425,5 @@ export function outlineSharedSpans(
     return { script: body.script, locationData: body.locationData, indexMap };
   });
 
-  return { bodies: rewritten, functions, savedBytes };
+  return { bodies: rewritten, functions: liveFunctions, savedBytes };
 }

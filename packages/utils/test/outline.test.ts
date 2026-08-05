@@ -103,4 +103,20 @@ describe('cross-function bytecode outlining', () => {
     // Instructions before the shared span keep their position.
     expect(first.indexMap[0]).toBe(0);
   });
+
+  it('does not retain one-invoke aliases after multi-round outlining', () => {
+    const repeatedBlock: Script = [...REPEATED, ...FILLER, ...REPEATED, ...FILLER];
+    const result = outlineSharedSpans([
+      body([...repeatedBlock, Op.OP_2DROP, ...repeatedBlock]),
+      body([...FILLER, ...repeatedBlock, Op.OP_NIP, ...repeatedBlock]),
+    ], allocateId);
+    const key = (id: Uint8Array): string => [...id].join(',');
+    const ids = new Set(result.functions.map((fn) => key(fn.id)));
+    for (const fn of result.functions) {
+      const isAlias = fn.script.length === 2 && fn.script[1] === Op.OP_INVOKE
+        && fn.script[0] instanceof Uint8Array
+        && ids.has(key(fn.script[0]));
+      expect(isAlias).toBe(false);
+    }
+  });
 });

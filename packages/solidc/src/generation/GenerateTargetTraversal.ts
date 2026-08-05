@@ -1146,7 +1146,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
     );
     if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''}`
-      + ` while compiling '${this.currentFunction.name}'`);
+      + ` while compiling '${this.currentFunction.name}'`
+      + (kind === 'entry' && slotIndex !== undefined && this.entrySlots[slotIndex]
+        ? ` (${this.entrySlots[slotIndex].collection}; operations=${this.entrySlots[slotIndex].operations.join(',')}; `
+          + `inLoop=${this.entrySlots[slotIndex].inLoop === true})` : ''));
     return slot.offset;
   }
 
@@ -16263,6 +16266,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     locationData: SingleLocationData,
     extraStackOffset: number,
   ): void {
+    const entry = this.entrySlots[slotIndex];
+    const loopContext = entry?.inLoop ? this.sortedUpsertLoopContexts.get(entry.collection) : undefined;
+    if (loopContext) {
+      // A varying-key C2 RMW first reads the same entry/predecessor that its loop body later updates. It lives in
+      // the runtime trailing region, not a fixed `entry[N]` block slot. The counter is incremented only after the
+      // write, so every read during this iteration addresses the exact co-spend consumed by the transition body.
+      const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
+      this.emitTrailingBlockBase(blockSize, locationData);
+      if (loopContext.grouped) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(loopContext.inputBaseName) + extraStackOffset + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_ADD, locationData);
+      }
+      this.emit(encodeInt(BigInt(this.getStackIndex(loopContext.inCountName) + extraStackOffset + 1)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+      this.emit(Op.OP_ADD, locationData);
+      return;
+    }
     if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
       const name = `__internal__c2BatchProof_${slotIndex}`;
       const depth = this.getStackIndex(this.c2WitnessName(name), true);
@@ -16999,7 +17020,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         // rawbytes (whole bytes/array) is inline-only in a loop (chunked-in-loop fails closed at runtime, see body):
         // invariant param `= a` OR per-key `= vs[i]`.
         const rawbytesOk = upsertVk === 'rawbytes' && (isParamSet || isPerKeySet);
-        if (rawbytesOk || upsertVk === 'int') {
+        const isLoopCachedSet = n.entrySlotIndex >= 0 && this.entrySlots[n.entrySlotIndex]?.inLoop === true
+          && e instanceof IdentifierNode;
+        if (isLoopCachedSet || rawbytesOk || upsertVk === 'int') {
           found = n; return;
         }
       }
@@ -17281,8 +17304,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
     const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
-    const valueRuntimeExpression = !isDelete && !!decodedKeyRecipe
-      && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined);
+    const valueRuntimeExpression = !isDelete && (
+      (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
+      || (!hasValue && writeNode.entrySlotIndex >= 0
+        && this.entrySlots[writeNode.entrySlotIndex]?.inLoop === true && !!varyingArrayParam)
+    );
     if (!varyingArrayParam || (!isDelete && !hasValue && !valueRuntimeExpression)) return false;
     this.sortedUpsertLoopOp = op;
     const infos = (this.currentFunction.sortedUpsertLoopInfo ??= []);

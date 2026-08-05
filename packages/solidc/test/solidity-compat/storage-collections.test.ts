@@ -1174,6 +1174,17 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info).toMatchObject({ collection: 'balanceOf', fixedKeyParams: ['token'],
       varyingArrayParam: 'tos', valueArrayParam: 'shares', op: '+' });
   });
+  it('compiles a storage-library field RMW over loop-varying struct-mapping keys', () => {
+    const art = compileString('struct R { uint128 elastic; uint128 base; } library L {'
+      + ' function addElastic(R storage total,uint128 fee) internal returns(uint128 n){n=total.elastic=total.elastic+fee;}'
+      + '} contract C { using L for R; mapping(address=>R) totals;'
+      + ' function f(address[] tokens,uint128[] fees) public {'
+      + ' for(uint i=0;i<tokens.length;i++){address token=tokens[i];require(totals[token].addElastic(fees[i])>=0);}'
+      + ' require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    expect(art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      collection: 'totals', varyingArrayParam: 'tokens', op: 'set', valueRuntimeExpression: true,
+    });
+  });
   it('traces an ABI-decoded key through an inlined external-call helper parameter', () => {
     const art = compileString('library M { function add(uint a, uint b) internal pure returns (uint) { return a+b; } }'
       + ' interface IV { function ping() external; } contract C { using M for uint; mapping(address => uint) m; IV v;'

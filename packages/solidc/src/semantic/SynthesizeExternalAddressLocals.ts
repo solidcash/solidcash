@@ -23,6 +23,7 @@ import {
   CollectionIterationNode,
   ContractReferenceNode,
   FunctionModifier,
+  StateVariableVisibility,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
@@ -121,11 +122,21 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return out;
     };
     for (const iface of ifaces) { this.typeNames.add(iface.name); this.ifaceMethods.set(iface.name, methodsOf(iface.name)); }
+    const contractMethods = (contract: ContractNode): Set<string> => new Set([
+      ...(contract.functions ?? []).map((f) => f.name),
+      ...contract.stateVariables
+        .filter((sv) => sv.visibility === StateVariableVisibility.PUBLIC
+          || sv.visibility === StateVariableVisibility.EXTERNAL)
+        .map((sv) => sv.name),
+    ]);
     for (const c of node.importedContracts as ContractNode[]) {
       this.typeNames.add(c.name);
-      this.ifaceMethods.set(c.name, new Set((c.functions ?? []).map((f) => f.name)));
+      this.ifaceMethods.set(c.name, contractMethods(c));
     }
-    if (node.contract) this.typeNames.add(node.contract.name);
+    if (node.contract) {
+      this.typeNames.add(node.contract.name);
+      this.ifaceMethods.set(node.contract.name, contractMethods(node.contract));
+    }
     for (const fn of node.freeFunctions ?? []) {
       const ret = fn.returnTypes?.length === 1 ? fn.returnTypes[0] : undefined;
       if (fn.modifiers.includes(FunctionModifier.PURE)

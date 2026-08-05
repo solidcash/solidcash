@@ -296,6 +296,25 @@ describe('redundant interface cast on a state-var external-call target', () => {
   });
 });
 
+describe('public state getter on a self-pinned contract target', () => {
+  it('treats a public mapping getter as a callable contract member', () => {
+    const artifact = compileString(
+      'interface ISwapper {} contract Master { mapping(ISwapper => bool) public swappers; }'
+      + ' contract C { Master public immutable masterContract;'
+      + ' constructor(Master _master) { masterContract = _master; }'
+      + ' function liquidate(ISwapper swapper) public {'
+      + ' require(masterContract.swappers(swapper), "invalid swapper"); } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.contractName).toBe('C');
+    expect(artifact.abi.find((entry) => entry.name === 'liquidate')?.externalCalls?.[0]).toMatchObject({
+      interfaceName: 'Master',
+      functionName: 'swappers',
+      addressStateVar: 'masterContract',
+    });
+  });
+});
+
 // An external-call address local must survive to the covenant epilogue. Reading the same handle another way in
 // the same function (`address(car).balance` alongside `car.method()`) must not OP_ROLL-consume it as a last use.
 describe('external-call address local survives a same-function balance read', () => {

@@ -40,6 +40,7 @@ import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
+import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
@@ -117,7 +118,8 @@ import {
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
-  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, directCallNames,
+  walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
@@ -889,6 +891,30 @@ function synthesizeMessageBusRoute(
     group.push(fn);
     byName.set(fn.name, group);
   }
+  // Message-bus graph rows must have a finite statically representable outgoing-edge expansion. A recursive
+  // helper closure that can make an external call has no such bound: even when each execution reaches only one
+  // eventual edge (SushiMaker `_convertStep`), the route cannot pre-publish how many recursive frames precede it.
+  // Refuse only the optional batch route; the ordinary source entry point remains available and is compiled with
+  // its direct covenant frame. Name-level resolution is deliberately conservative here, matching the closure
+  // analysis used throughout route admission before overload resolution.
+  const hasRecursiveClosure = (root: FunctionDefinitionNode): boolean => {
+    const visited = new Set<string>();
+    const active = new Set<string>();
+    const visit = (name: string): boolean => {
+      if (active.has(name)) return true;
+      if (visited.has(name)) return false;
+      visited.add(name);
+      active.add(name);
+      for (const candidate of byName.get(name) ?? []) {
+        for (const called of directCallNames(candidate)) {
+          if (byName.has(called) && visit(called)) return true;
+        }
+      }
+      active.delete(name);
+      return false;
+    };
+    return visit(root.name);
+  };
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
@@ -1090,7 +1116,8 @@ function synthesizeMessageBusRoute(
     // NullaryOp representation.
     if (fn.usesMsgSender) routeUsesMsgSender = true;
     fn.usesMsgValue = routeUsesMsgValue;
-    let reason: string | undefined;
+    let reason: string | undefined = statefulExternalCall && hasRecursiveClosure(fn)
+      ? 'external-recursion-unbounded' : undefined;
     const bodyStatements = fn.body.statements ?? [];
     // X187. A namespaced call on a contract-typed receiver is deliberately NOT counted here. Its target is a
     // synthesized `__extaddr_*` LOCAL of the handler, never a route parameter, so the wrapper-epilogue emission
@@ -3776,6 +3803,7 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
+  ast = ast.accept(new LowerTailRecursion()) as Ast;
   ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already

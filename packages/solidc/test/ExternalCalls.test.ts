@@ -146,6 +146,21 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 
+  it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
+    const src = 'interface P { function swap(uint x) external; }'
+      + ' interface F { function pair(address a) external returns (P); }'
+      + ' contract C(F factory) { uint total;'
+      + ' function step(address a, uint n) internal returns (uint result) {'
+      + ' P p = factory.pair(a); p.swap(n);'
+      + ' if (n == 0) result = n; else result = step(a, n - 1); }'
+      + ' function run(address a, uint n) public {'
+      + ' total = step(a, n); require(true); } }';
+    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const run = artifact.abi.find((entry) => entry.name === 'run');
+    expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
+    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+  });
+
   // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the
   // arity-keyed overload lookup + recursion stack, and the {value: value} option's param alpha-rename.
   it('resolves overloads in a chain (call/2 -> call/3 with a {value:} low-level call)', () => {

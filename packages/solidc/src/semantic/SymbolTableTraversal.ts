@@ -4778,11 +4778,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     const gather = (n: Node | undefined, seen: Set<Node>): void => {
       if (!n || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof ExternalFunctionCallNode && n.addressExpression instanceof IdentifierNode) {
-        const nm = n.addressExpression.name;
-        const list = byLocal.get(nm) ?? [];
-        list.push(n);
-        byLocal.set(nm, list);
+      if (n instanceof ExternalFunctionCallNode) {
+        const nm = this.externalReceiverLocal(n.addressExpression);
+        if (nm) {
+          const list = byLocal.get(nm) ?? [];
+          list.push(n);
+          byLocal.set(nm, list);
+        }
       }
       for (const v of Object.values(n)) {
         if (v instanceof Node) gather(v, seen);
@@ -4791,7 +4793,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     gather(body, new Set());
     for (const [localName, calls] of byLocal) {
-      if (calls.length < 2 || !this.findLocalInit(body, localName)) continue;
+      if (calls.length < 2
+        || (!this.findLocalInit(body, localName) && !this.findAssignmentValue(body, localName))) continue;
       // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
       // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
       // sound proxy - the one void mutate's covenant bounds a wrong witness, and a misclassified returning-mutate
@@ -4801,13 +4804,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const c of calls) {
         if (c.callInfo?.hasReturnValues) views.push(c); else mutateCount += 1;
       }
-      // Exactly one mutate (the co-spend) + at least one view. A MULTI-return view (getReserves() -> 3 values) must
+      // Exactly one mutate (the co-spend) + at least one view, OR an all-view compatibility aggregator. A BCH
+      // master UTXO cannot be co-spent twice in one transaction; for an all-view loop the SDK-provided witnesses
+      // are the native query inputs and the function has no state effect for forged values to influence. A
+      // MULTI-return view (getReserves() -> 3 values) must
       // be the RHS of a tuple destructure `(r0, r1,) = pair.getReserves()`, so it can be replaced by per-slot witness
       // accesses; else leave the whole local to fail closed.
-      if (mutateCount !== 1 || views.length === 0) continue;
+      if (!((mutateCount === 1 && views.length > 0) || (mutateCount === 0 && views.length === calls.length))) continue;
       if (views.some((v) => (v.callInfo?.returnTypes?.length ?? 0) !== 1
         && !this.findTupleAssignmentWithRhs(body, v))) continue;
-      const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body);
+      const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body)
+        ?? this.findLoopOrdinalForLocal(body, localName);
       if (!loopIdx) continue;
       const mkWitness = (retType: Type): ArrayAccessNode => {
         const witnessName = `__internal__viewReturn${this.viewReturnCounter}`;
@@ -4825,7 +4832,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const view of views) {
         const rets = view.callInfo!.returnTypes!;
         if (rets.length === 1) {
-          this.replaceNodeInTree(body, view, mkWitness(rets[0]));
+          const tuple = view.opaqueReturn ? this.findTupleAssignmentWithRhs(body, view) : undefined;
+          if (tuple) {
+            const success = new BoolLiteralNode(true);
+            success.location = view.location;
+            const witness = mkWitness(rets[0]);
+            tuple.tupleExpressions = [success, witness];
+            tuple.tuple = success;
+          } else {
+            this.replaceNodeInTree(body, view, mkWitness(rets[0]));
+          }
         } else {
           const ta = this.findTupleAssignmentWithRhs(body, view)!;
           const accesses = rets.map((rt) => mkWitness(rt));
@@ -4837,6 +4853,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private externalReceiverLocal(expression: ExpressionNode): string | undefined {
+    if (expression instanceof IdentifierNode) return expression.name;
+    if (expression instanceof CastNode) return this.externalReceiverLocal(expression.expression);
+    if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+      && (this.interfaceMap.has(expression.identifier.name) || this.contractMap.has(expression.identifier.name))) {
+      return this.externalReceiverLocal(expression.parameters[0]);
+    }
+    return undefined;
+  }
+
   // Count, per bare-local name, how many external calls use it as their RECEIVER (`local.m()`). Restricts the
   // loop-body local-receiver rewrite to single-use locals: a multi-use receiver (`pair.getReserves(); pair.swap()`)
   // would need ONE co-spend to serve several calls (a read + a write on the same UTXO), which the per-call witness
@@ -4845,9 +4871,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen: Set<Node> = new Set()): Map<string, number> {
     if (!node || seen.has(node)) return acc;
     seen.add(node);
-    if (node instanceof ExternalFunctionCallNode && node.addressExpression instanceof IdentifierNode) {
-      const nm = node.addressExpression.name;
-      acc.set(nm, (acc.get(nm) ?? 0) + 1);
+    if (node instanceof ExternalFunctionCallNode) {
+      const nm = this.externalReceiverLocal(node.addressExpression);
+      if (nm) {
+        acc.set(nm, (acc.get(nm) ?? 0) + 1);
+      }
     }
     for (const v of Object.values(node)) {
       if (v instanceof Node) this.buildExtCallReceiverCounts(v, acc, seen);
@@ -4890,7 +4918,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
         seen.add(n.name);
         // resolve a plain local, then a tuple-destructure element (`(input,output)=(path[i],path[i+1])`) to its RHS
-        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name);
+        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
+          ?? this.findAssignmentValue(body, n.name);
         if (init) { walk(init); return; }
       }
       for (const k of Object.keys(n as Record<string, unknown>)) {
@@ -4901,6 +4930,91 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     walk(expr);
     return found;
+  }
+
+  private findAssignmentValue(node: Node | undefined, name: string,
+    seen: Set<Node> = new Set()): ExpressionNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node instanceof AssignNode && node.identifier.name === name) return node.expression;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        const found = this.findAssignmentValue(value, name, seen);
+        if (found) return found;
+      } else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) {
+          const found = this.findAssignmentValue(item, name, seen);
+          if (found) return found;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findLoopArrayInComputedTarget(expr: Node, body: Node | undefined): ArrayAccessNode | undefined {
+    let found: ArrayAccessNode | undefined;
+    const names = new Set<string>();
+    const nodes = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || found || nodes.has(node)) return;
+      nodes.add(node);
+      if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
+        && node.index instanceof IdentifierNode) { found = node; return; }
+      if (node instanceof IdentifierNode && !names.has(node.name)) {
+        names.add(node.name);
+        const value = this.findLocalInit(body, node.name) ?? this.findTupleInit(body, node.name)
+          ?? this.findAssignmentValue(body, node.name);
+        if (value) { walk(value); return; }
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(expr);
+    return found;
+  }
+
+  // Numeric range aggregators (`for (id=from; id<to; id++) { token=factory.allPairs(id); i=id-from;
+  // out[i].x=token.x(); }`) have no address-array leaf in the receiver initializer. Reuse an array index local
+  // from the same enclosing loop as the zero-based witness ordinal. Prefer conventional `i`, otherwise the first
+  // loop-local array index; this is used only for all-view witness lowering, never for state-changing dispatch.
+  private findLoopOrdinalForLocal(body: Node | undefined, localName: string): IdentifierNode | undefined {
+    let result: IdentifierNode | undefined;
+    const containsDecl = (node: Node | undefined, seen = new Set<Node>()): boolean => {
+      if (!node || seen.has(node)) return false;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName) return true;
+      return Object.values(node).some((value) => value instanceof Node ? containsDecl(value, seen)
+        : Array.isArray(value) && value.some((item) => item instanceof Node && containsDecl(item, seen)));
+    };
+    const scan = (node: Node | undefined, seen = new Set<Node>()): void => {
+      if (!node || result || seen.has(node)) return;
+      seen.add(node);
+      if ((node instanceof WhileNode || node instanceof DoWhileNode) && containsDecl(node)) {
+        const candidates: IdentifierNode[] = [];
+        const collect = (candidate: Node | undefined, visited = new Set<Node>()): void => {
+          if (!candidate || visited.has(candidate)) return;
+          visited.add(candidate);
+          if (candidate instanceof ArrayAccessNode && candidate.index instanceof IdentifierNode) {
+            candidates.push(candidate.index);
+          }
+          for (const value of Object.values(candidate)) {
+            if (value instanceof Node) collect(value, visited);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) collect(item, visited);
+          }
+        };
+        collect(node);
+        result = candidates.find((candidate) => candidate.name === 'i') ?? candidates[0];
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) scan(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item, seen);
+      }
+    };
+    scan(body);
+    return result;
   }
 
   // The per-slot RHS of a tuple-destructure element `(input, output) = (path[i], path[i+1])` -> input := path[i].
@@ -4986,6 +5100,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // MappingAccessNode (the flattened state-array model); a real mapping reaches the same branch and is
       // rejected later in emitArrayExternalCallLoop ("must be a state array"). Local arrays use ArrayAccessNode.
       let loopArrayVar: string | undefined;
+      let loopIndexExpression: ExpressionNode | undefined;
       let loopArrayElemStructType: StructType | undefined;
       let loopArrayElemFieldName: string | undefined;
       let loopWitnessArrayIds: IdentifierNode[] = [];
@@ -5020,6 +5135,17 @@ export default class SymbolTableTraversal extends AstTraversal {
             loopArrayVar = witnessName;
             loopWitnessArrayIds.push(call.arrayId);
             addressParam = undefined; // the local is not the address source; the witness is
+          }
+        }
+      }
+      if (addressParam && !addressStateVar && !loopArrayVar && this.loopDeclaredLocals.has(addressParam)) {
+        const access = this.findLoopArrayInComputedTarget(node.addressExpression, this.currentFunction?.body);
+        if (access && access.array instanceof IdentifierNode) {
+          const arrayName = this.resolveInlineAliasName(access.array.name, this.currentFunction?.body);
+          if (this.currentFunction?.parameters.some((parameter) => parameter.name === arrayName)) {
+            loopArrayVar = arrayName;
+            loopIndexExpression = cloneNode(access.index) as ExpressionNode;
+            addressParam = undefined;
           }
         }
       }
@@ -5481,6 +5607,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(loopIndexExpression && { loopIndexExpression }),
         ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),

@@ -21,10 +21,10 @@ import {
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, CollectionIterationNode,
   FunctionCallStatementNode,
-  LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
-  SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
+  SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, StateVariableVisibility,
 } from './ast/AST.js';
@@ -4785,7 +4785,12 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     );
   }
 
-  const plans = (baseline.stateLayout ? functions.filter((fn) => isMovableSplitEntry(fn)) : []).map((fn) => ({
+  // Keep read-only selectors on the root for ordinary/forced splits. If the unsplit contract itself exceeds BCH
+  // consensus capacity, they must become delegate-return facets too; otherwise an oversized query surface can
+  // leave the forwarding root undeployable (BoringHelperV1).
+  const moveReadOnlyEntries = byteSize(baseline) > maxShardBytes;
+  const plans = (baseline.stateLayout
+    ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)) : []).map((fn) => ({
     name: fn.name,
     closure: collectNamedFunctionClosure(fn, byName),
     footprint: analyseFunctionFootprint(fn, byName),
@@ -5072,9 +5077,10 @@ function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactB
   };
 }
 
-function isMovableSplitEntry(fn: FunctionDefinitionNode): boolean {
+function isMovableSplitEntry(fn: FunctionDefinitionNode, includeReadOnly = false): boolean {
   return fn.isEntryPoint && !fn.name.startsWith('__') && !fn.isFallback && !fn.isReceive
-    && !fn.modifiers.includes(FunctionModifier.VIEW) && !fn.modifiers.includes(FunctionModifier.PURE)
+    && (includeReadOnly || (!fn.modifiers.includes(FunctionModifier.VIEW)
+      && !fn.modifiers.includes(FunctionModifier.PURE)))
     && !fn.modifiers.some((m) => LIFECYCLE_MODIFIERS.has(m));
 }
 
@@ -5267,15 +5273,50 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
     // forwarder therefore becomes an ordinary covenant entry, while the facet remains `delegate`: root -> facet
     // is one delegate hop, avoiding the unsupported proxy -> implementation -> facet nested-delegate topology.
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.DELEGATE);
+    fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW
+      && modifier !== FunctionModifier.PURE);
     for (const param of fn.parameters) param.syntheticallyUsed = true;
     const signature = computeFunctionSignature(fn.name, fn.parameters.map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;
     const data = new HexLiteralNode(computeFunctionSelector(signature)); data.location = fn.location;
-    const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
-    call.synthesizedFromLibraryCall = true;
-    const truth = new BoolLiteralNode(true); truth.location = fn.location;
-    const guard = new RequireNode(truth); guard.location = fn.location;
-    fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
+    if (fn.returnTypes.length === 0) {
+      const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
+      call.synthesizedFromLibraryCall = true;
+      const truth = new BoolLiteralNode(true); truth.location = fn.location;
+      const guard = new RequireNode(truth); guard.location = fn.location;
+      fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
+    } else {
+      const call = new LowLevelCallNode(target, data, 'delegatecall'); call.location = fn.location;
+      const okName = `__split_ok_${fn.name}`;
+      const dataName = `__split_data_${fn.name}`;
+      const capture = new TupleAssignmentNode([
+        { name: okName, type: PrimitiveType.BOOL, existing: false },
+        { name: dataName, type: new BytesType(), existing: false },
+      ], call, true);
+      capture.location = fn.location;
+      const ok = new IdentifierNode(okName); ok.location = fn.location;
+      const guard = new RequireNode(ok); guard.location = fn.location;
+      const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
+      const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
+      let returnStatement: ReturnNode;
+      const statements: StatementNode[] = [capture, guard];
+      if (fn.returnTypes.length === 1) {
+        returnStatement = new ReturnNode([decode]); returnStatement.location = fn.location;
+      } else {
+        const names = fn.returnTypes.map((_, index) => `__split_ret_${fn.name}_${index}`);
+        const decoded = new TupleAssignmentNode(names.map((name, index) => ({
+          name, type: fn.returnTypes[index], existing: false,
+        })), decode, true);
+        decoded.location = fn.location;
+        statements.push(decoded);
+        const results = names.map((name) => {
+          const id = new IdentifierNode(name); id.location = fn.location; return id;
+        });
+        returnStatement = new ReturnNode(results); returnStatement.location = fn.location;
+      }
+      statements.push(returnStatement);
+      fn.body = new BlockNode(statements); fn.body.location = fn.location;
+    }
   }
 }
 

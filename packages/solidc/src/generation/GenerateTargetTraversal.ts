@@ -12871,10 +12871,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return expression;
     };
     const ilcAe = unwrapInlineLoopTarget(node.addressExpression);
-    const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
-      || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode);
-    if (node.callInfo && ilcIsLoopElem) {
+    if (node.callInfo) {
       const loopSlot = this.externalCallSlots[node.callInfo.externalCallSlotIndex];
+      const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
+        || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode)
+        || !!loopSlot?.loopIndexExpression;
+      if (!ilcIsLoopElem) {
+        // continue with the ordinary fixed-slot call path below
+      } else
       if (loopSlot?.loopArrayVar
           && this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
         // opaqueReturn -> `targets[i].call(data[i])` (Multicall2, reads the return-event); a TYPED call
@@ -20562,7 +20566,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // live loop index lives on the inner ArrayAccess either way. visit(addressExpression) below extracts the address.
     const ilcArrAccess = node.addressExpression instanceof FieldAccessNode
       ? node.addressExpression.expression as ArrayAccessNode : node.addressExpression as ArrayAccessNode;
-    const idxExpr = ilcArrAccess.index;
+    const idxExpr = slot.loopIndexExpression ?? ilcArrAccess.index;
 
     // --- evaluate the live index i and the target address targets[i] (both tracked) ---
     this.visit(idxExpr);                  // [..., i]

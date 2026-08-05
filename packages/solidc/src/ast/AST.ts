@@ -2185,6 +2185,9 @@ export interface ExternalCallSlot {
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
   loopArrayVar?: string;
+  // Runtime-loop receiver held in a local rather than written directly as arr[i]. The array supplies iteration
+  // cardinality to the SDK; this expression supplies the live index while codegen identity-checks the local.
+  loopIndexExpression?: ExpressionNode;
   // Set alongside loopArrayVar when the target is an interface-typed FIELD of a struct-array element
   // (`structArr[i].field.m()`, e.g. MasterChef `poolInfo[i].lpToken.balanceOf(..)`): the epilogue decodes that
   // field from each packed struct element before the identity check (compiler-internal, not serialized). The

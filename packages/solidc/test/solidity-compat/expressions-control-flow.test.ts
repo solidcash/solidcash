@@ -773,8 +773,23 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
           out[i] = target.a() + target.b() + bytes(ignored).length + bytes(direct).length; }
       } }`, opts);
     const fn = art.abi.find((a) => a.name === 'f');
-    // The two identical label() call shapes share one homogeneous loop witness route.
-    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__loopTargets'))).toHaveLength(3);
+    // A BCH master UTXO cannot service several view methods in one transaction; the compatibility query receives
+    // one value-witness array per distinct return slot instead of attempting duplicate co-spends.
+    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__viewReturn'))).toHaveLength(3);
+  });
+  it('dispatches an inlined loop-local receiver assigned from an external result', () => {
+    expect(() => compileString(`pragma solidity 0.6.12;
+      interface IPair { function reserve() external view returns (uint); }
+      interface IFactory { function pair(address token) external view returns (IPair); }
+      contract C { IFactory factory;
+        function rate(address token) public view returns (uint) {
+          IPair p; p = factory.pair(token); return p.reserve();
+        }
+        function rates(address[] memory tokens) public view returns (uint[] memory out) {
+          out = new uint[](tokens.length);
+          for (uint i; i < tokens.length; i++) out[i] = rate(tokens[i]);
+        }
+      }`, opts)).not.toThrow();
   });
 });
 

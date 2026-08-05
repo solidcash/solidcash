@@ -251,8 +251,8 @@ At the 2026-08-05 audit snapshot, 16 executable skipped or TODO occurrences rema
 `examples`, down from 24 after removing six empty placeholder suites and one obsolete manual-proof TODO. Every remaining occurrence is classified in
 [`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); two groups remain release-blocking coverage gaps.
 
-- [~] Fix or explicitly reject unbounded-bytes cross-contract returns; the current fail-closed gap remains a
-  release blocker.
+- [~] Fix or explicitly reject writing an unbounded cross-contract return directly to dynamic state. The return
+  channel itself is now actively proven; SDK chunk auto-derivation for the direct-write composition remains a blocker.
 - [~] Add BCHN sequence-number/timelock coverage; compiler coverage alone is not release proof.
 - [x] Remove the stale optimizer-equivalence TODO; 102 active equivalence proofs already cover this area.
 - [-] Nested-loop and optimized-value debugger enhancements are post-release.

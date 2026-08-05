@@ -12,7 +12,7 @@ removed during this review.
 | Tests | Classification | Required release evidence |
 |---|---|---|
 | `packages/solidcash/test/e2e/misc/timelocks.test.ts` — sequence numbers | Supported language feature, missing BCHN integration proof | Add BIP68 height/time sequence tests against BCHN and keep the compiler's `this.age` coverage. This remains part of the BCHN release gate. |
-| `packages/solidcash/test/e2e/CrossContractCallInfra.test.ts` — unbounded `bytes` return | Known fail-closed implementation gap | Either fix the return-event encoding and enable the VM test, or reject/document unbounded cross-contract returns in the 0.13.1 compatibility manifest. Do not advertise this shape while skipped. |
+| `packages/solidcash/test/e2e/CrossContractCallInfra.test.ts` — unbounded `bytes` return written directly to dynamic state | Known fail-closed SDK auto-derivation gap | The return-event channel is actively proven by hashing the returned bytes into scalar state. Either fix dynamic chunk derivation for the direct-write composition or reject/document that composition in the 0.13.1 compatibility manifest. |
 
 ## Explicit first-release deferrals
 

@@ -11,6 +11,10 @@ describe('unbounded bytes return', () => {
   const XC_SRC = `
   interface IA { function echo(bytes b) external returns (bytes); }
   contract A { bigint d; function echo(bytes b) public returns (bytes) { return b; } }
+  contract B { bytes32 last; function use(address a, bytes b) public { this.last = sha256(IA(a).echo(b)); } }`;
+  const XC_DYNAMIC_SRC = `
+  interface IA { function echo(bytes b) external returns (bytes); }
+  contract A { bigint d; function echo(bytes b) public returns (bytes) { return b; } }
   contract B { bytes last; function use(address a, bytes b) public { this.last = IA(a).echo(b); } }`;
 
   const VAL = hexToBin('11223344abcd');
@@ -49,10 +53,28 @@ describe('unbounded bytes return', () => {
       expect(Buffer.from((await bSc.getState()).last as Uint8Array).toString('hex')).toBe('11223344abcd');
     });
 
-    // Known pre-existing bug: an UNBOUNDED cross-contract `bytes` return fails at a covenant OP_VERIFY
-    // (generic-pushdata return-event path); bounded bytes<N>/uint returns work, blob returns use bounded.
-    it.skip('CROSS-CONTRACT: B receives A.echo(b) bytes return [BLOCKED: unbounded-bytes return-event bug]', async () => {
+    it('CROSS-CONTRACT: B receives and hashes A.echo(b) unbounded bytes return', async () => {
       const arts = compileStringMulti(XC_SRC, { solidityImportCompat: true });
+      const a = new Contract(arts.A, [], { provider });
+      const { categoryId: ac } = await setupStatefulUtxos(
+        provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },
+      );
+      const aAddr = a.withCategory(hexToBin(ac)).lockingBytecode;
+      const b = new Contract(arts.B, [], { provider });
+      const { categoryId: bc } = await setupStatefulUtxos(
+        provider, b, arts.B.stateLayout!, { last: new Uint8Array(32) }, { saltContract: true },
+      );
+      const aSc = StatefulContract.withCategory(a, ac); const bSc = StatefulContract.withCategory(b, bc);
+      await bSc.use(hexToBin(aAddr), VAL).withExternalCall(aSc, 'echo', [VAL]).send();
+      expect(Buffer.from((await bSc.getState()).last as Uint8Array).toString('hex')).toBe(
+        '8f33bbbe76e4f01dd1b24499fc6ab72e92f704f9444722cd3805ba8cc18fd2c6',
+      );
+    });
+
+    // The return channel itself is covered above. Composing that result directly into a dynamic-storage write
+    // currently leaves the SDK's trailing chunk commitment unresolved during auto-derivation.
+    it.skip('CROSS-CONTRACT: B stores A.echo(b) bytes return in dynamic state [BLOCKED: chunk derivation]', async () => {
+      const arts = compileStringMulti(XC_DYNAMIC_SRC, { solidityImportCompat: true });
       const a = new Contract(arts.A, [], { provider });
       const { categoryId: ac } = await setupStatefulUtxos(
         provider, a, arts.A.stateLayout!, { d: 0n }, { saltContract: true },

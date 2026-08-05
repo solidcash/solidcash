@@ -160,7 +160,12 @@ it must not silently compile to incorrect covenant behavior.
   - `DelegateInferred.test.ts` covers direct and internal-helper transfer/token operations, contracts with no
     eligible implementation entry points, standalone artifacts supplied as implementations, and non-delegate
     functions selected from delegate artifacts.
-- [ ] Reconcile outstanding delegate input-layout and proxy-context worker changes.
+- [x] Reconcile outstanding delegate input-layout and proxy-context worker changes.
+  - The `delegate-drop` tip (`1d516022`) is an ancestor of this branch. Option B from
+    `packages/solidc/docs/delegate-modifier-drop-evaluation.md` is integrated: ordinary source emits a lazy
+    `delegateArtifact`, the SDK selects it with `asDelegate()`/`withDelegatecall`, hidden proxy/delegate input
+    indices are derived by the transaction builder, and the expanded 81-test release gate exercises the merged
+    compiler/SDK paths.
 - [x] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
   - `UpgradesDeployProxy.test.ts`, `DelegateInferred.test.ts`, and `DefaultProxyIntegrity.test.ts` are required by
     `yarn test:security-conformance`; the expanded gate passes 81/81 executed tests with one documented skip.

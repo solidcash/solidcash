@@ -49,6 +49,14 @@
       "includeTimeouts": true,
       "errorNames": [],
       "isolatedWorkers": true
+    },
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 5,
+      "includeTimeouts": true,
+      "errorNames": [],
+      "isolatedWorkers": true
     }
   ],
   "resumedTimeoutsFromResults": true

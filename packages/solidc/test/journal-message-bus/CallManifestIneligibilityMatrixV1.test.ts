@@ -148,6 +148,38 @@ describe('atomic route ineligibility matrix', () => {
       .toEqual(['control']);
   });
 
+  it('keeps dynamic array-of-struct element writes on their direct route', () => {
+    const artifact = compileString(`contract C() {
+      struct Pair { int left; int right; }
+      Pair[] values;
+      function write(int index, int value) public {
+        this.values[index].left = value;
+        require(true);
+      }
+      function read(int index) public returns (int) { return this.values[index].left; }
+    }`, { forceStateful: true, messageBus: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'write')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'array-struct-element-write-route-not-enabled',
+    });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'read')).toMatchObject({
+      eligible: true,
+    });
+  });
+
+  it('rejects a statically oversized result before expanding the batch wrapper', () => {
+    const artifact = compileString(`contract C() {
+      function page() public pure returns (uint256[400] memory values) {}
+      function control() public { require(true); }
+    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
+    expect(artifact.messageBus!.handlers.find((handler) => handler.name === 'page')).toMatchObject({
+      eligible: false,
+      rejectionReason: 'result-route-static-payload-too-large',
+    });
+    expect(artifact.messageBus!.handlers.filter((handler) => handler.eligible).map((handler) => handler.name))
+      .toEqual(['control']);
+  });
+
   it('refuses delegate context in an entry point with a positioned stable diagnostic', () => {
     const artifact = compileString(`contract C(address impl) {
       function denied(bytes input) public {

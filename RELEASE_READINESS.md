@@ -115,11 +115,12 @@ it must not silently compile to incorrect covenant behavior.
     retained result reports 107 named failures and no generic `Error` or raw `RangeError` bucket.
 - [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
-  - A deterministic hostile baseline now runs as `yarn test:security-conformance`: 32/32 tests cover C2 batch
+  - A deterministic hostile baseline now runs as `yarn test:security-conformance`: 34/34 tests cover C2 batch
     witness tampering, dynamic-loop entry tampering, external-call target substitution, cross-contract
-    fail-closed subcases, delegate identity/selector pinning, and message-envelope/return forgery.
-  - Remaining before this item can close: an explicit attack matrix for deploy, upgrade, selfdestruct, split, and
-    merge auxiliary inputs, plus reordered/duplicated/missing cases for every supported state-mutation family.
+    fail-closed subcases, delegate identity/selector pinning, split/merge missing/duplicated/reordered/redirected
+    lifecycle elements, and message-envelope/return forgery.
+  - Remaining before this item can close: an explicit attack matrix for deploy, upgrade, and selfdestruct
+    auxiliary inputs, plus reordered/duplicated/missing cases for every supported state-mutation family.
 
 ### Cross-contract state bus and nested calls
 
@@ -360,5 +361,5 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | **PARTIAL** — deterministic six-scenario mock-provider gate passes 63/63; full ERC-20 application, per-app event/error assertions, size budgets, and BCHN runs remain open | `yarn test:application-conformance` | 2026-08-05 |
-| Security conformance suite | **PARTIAL** — deterministic six-scenario hostile gate passes 32/32; lifecycle and complete state-mutation auxiliary-input attack matrices remain open | `yarn test:security-conformance` | 2026-08-05 |
+| Security conformance suite | **PARTIAL** — deterministic seven-scenario hostile gate passes 34/34, including split/merge lifecycle mutations; deploy/upgrade/selfdestruct and complete state-mutation attack matrices remain open | `yarn test:security-conformance` | 2026-08-05 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

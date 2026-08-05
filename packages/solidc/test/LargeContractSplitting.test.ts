@@ -117,6 +117,29 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.facets[bundle.manifest.facets[0].name].abi.some((fn) => fn.name === 'helper')).toBe(false);
   });
 
+  it('forwards the proxy master witness across calls between delegate facet entries', () => {
+    // Once the unsplit contract is too large, view entries move into facets too. `a` and `b` both call the
+    // view entry `owner` through their expanded modifier, so all three share a facet and `owner()` is an
+    // internal call to a delegate entry. Its compiler-owned proxy witness must propagate just like the
+    // return-output witness (FlexUSD's Ownable.onlyOwner shape).
+    const unrelated = Array.from({ length: 10 }, (_, i) =>
+      `function p${i}(uint v) public { x = x + v + ${i}; require(v >= 0); }`).join('');
+    const source = `contract C {
+      uint x; address private _owner;
+      modifier onlyOwner() { require(owner() == msg.sender); _; }
+      function owner() public view returns (address) { return _owner; }
+      function a(uint v) public onlyOwner { x = v; }
+      function b(uint v) public onlyOwner { x = v + 1; }
+      ${unrelated}
+    }`;
+    const unsplitBytes = asmToBytecode(compileString(source, { solidityImportCompat: true }).bytecode).length;
+    const bundle = compileStringSplit(source, {
+      solidityImportCompat: true, maxShardBytes: unsplitBytes - 1,
+    });
+    expect(bundle.manifest.facets.some((facet) =>
+      ['a', 'b', 'owner'].every((name) => facet.functions.includes(name)))).toBe(true);
+  });
+
   it('fails closed when a measured facet or root cannot fit', () => {
     try {
       compileStringSplit(SOURCE, { forceSplit: true, maxShardBytes: 100 });

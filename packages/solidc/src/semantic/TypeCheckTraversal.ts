@@ -2250,7 +2250,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
-    const FORWARDABLE = new Set(['__internal__msgSenderCategory', '__internal__blockhashInputIndex']);
+    const FORWARDABLE = new Set([
+      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterIndex',
+    ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
       const callerParam = callerParams.get(p.name);

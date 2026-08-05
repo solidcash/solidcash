@@ -24,6 +24,7 @@ describe('constructor visibility compatibility', () => {
   it('accepts the inverse legacy visibility combinations', () => {
     expect(cc('abstract contract C { constructor() internal {} }')).toBe('C');
     expect(cc('contract C { constructor() public {} }')).toBe('C');
+    expect(cc('pragma solidity 0.6.12; contract C { constructor() internal {} }')).toBe('C');
   });
 });
 

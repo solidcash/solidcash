@@ -762,6 +762,20 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
     const fn = art.abi.find((a) => a.name === 'f');
     expect(fn?.inputs.some((inp) => inp.name.startsWith('__internal__loopTargets'))).toBe(true);
   });
+  it('supports several calls through one per-iteration interface local', () => {
+    const art = compileString(`pragma solidity 0.6.12;
+      interface IFoo { function a() external view returns (uint); function b() external view returns (uint);
+        function label() external view returns (string memory); }
+      contract C { function f(address[] memory targets) public view returns (uint[] memory out) {
+        out = new uint[](targets.length);
+        for (uint i; i < targets.length; i++) { IFoo target = IFoo(targets[i]);
+          string memory ignored = target.label(); string memory direct = IFoo(targets[i]).label();
+          out[i] = target.a() + target.b() + bytes(ignored).length + bytes(direct).length; }
+      } }`, opts);
+    const fn = art.abi.find((a) => a.name === 'f');
+    // The two identical label() call shapes share one homogeneous loop witness route.
+    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__loopTargets'))).toHaveLength(3);
+  });
 });
 
 describe('ecrecover(hash, v, r, s) alias maps to a recovery projection under the ecrecover option', () => {

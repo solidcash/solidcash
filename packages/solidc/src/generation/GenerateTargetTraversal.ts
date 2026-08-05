@@ -12863,7 +12863,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // so this runs once per iteration with the live index. Marks the slot so both epilogues skip it.
     // The target is either a direct element `targets[i]` or a struct FIELD of a struct-array element
     // `calls[i].target` (Multicall2 `Call[] { address target; bytes callData; }`).
-    const ilcAe = node.addressExpression;
+    const unwrapInlineLoopTarget = (expression: ExpressionNode): ExpressionNode => {
+      if (expression instanceof CastNode) return unwrapInlineLoopTarget(expression.expression);
+      if (expression instanceof FunctionCallNode && expression.parameters.length === 1) {
+        return unwrapInlineLoopTarget(expression.parameters[0]);
+      }
+      return expression;
+    };
+    const ilcAe = unwrapInlineLoopTarget(node.addressExpression);
     const ilcIsLoopElem = ilcAe instanceof ArrayAccessNode
       || (ilcAe instanceof FieldAccessNode && ilcAe.expression instanceof ArrayAccessNode);
     if (node.callInfo && ilcIsLoopElem) {
@@ -20718,7 +20725,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     // --- return event: idx = externalReturnOutputIdx + i ; verify + read commitment as returnData ---
-    this.emit(encodeInt(BigInt(this.getStackIndex('__internal__externalReturnOutputIdx'))), loc);
+    const opaqueReturningCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
+    const opaqueReturnParam = opaqueReturningCount === 1
+      ? '__internal__externalReturnOutputIdx' : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
+    this.emit(encodeInt(BigInt(this.getStackIndex(opaqueReturnParam))), loc);
     this.emit(Op.OP_PICK, loc);           // [..., retbase]
     this.emit(encodeInt(BigInt(this.getStackIndex('(ilc_i)') + 1)), loc); // +1: retbase
     this.emit(Op.OP_PICK, loc);           // [..., retbase, i]
@@ -20923,11 +20933,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 2. The event UTXO commitment encodes the expected return values
     // (The actual return value reading is done in visitExternalFunctionCall)
 
+    const allReturningSlotCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
     const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues && !s.inlineLoopDispatch);
 
     for (const slot of returningSlots) {
       // Determine the parameter name for this slot's return output index
-      const returnParamName = returningSlots.length === 1
+      const returnParamName = allReturningSlotCount === 1
         ? '__internal__externalReturnOutputIdx'
         : `__internal__externalReturnOutputIdx${slot.returnSlotIndex}`;
 

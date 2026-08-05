@@ -28,12 +28,14 @@ export default class ValidateDataLocations extends AstTraversal {
   private initializedCalldataLocals = new Set<string>();
   private immutableStateNames = new Set<string>();
   private functionDefinitions = new Map<string, FunctionDefinitionNode[]>();
+  private solidityLegacyNow = false;
 
   constructor(private solidityImportCompat = false) {
     super();
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.solidityLegacyNow = node.solidityLegacyNow;
     if (node.abiCoderVersion === 'v1') this.validateAbiV1Source(node);
     for (const fn of [
       ...node.freeFunctions,
@@ -170,7 +172,8 @@ export default class ValidateDataLocations extends AstTraversal {
     if (node.modifiers.includes(FunctionModifier.EXTERNAL)) {
       throw new InvalidModifierCombinationError(node, 'constructor cannot have external visibility');
     }
-    if (node.modifiers.includes(FunctionModifier.INTERNAL) && !this.currentContractIsAbstract) {
+    if (node.modifiers.includes(FunctionModifier.INTERNAL) && !this.currentContractIsAbstract
+      && !this.solidityLegacyNow) {
       throw new InvalidModifierCombinationError(node, 'non-abstract contracts cannot have internal constructors');
     }
     if (node.modifiers.includes(FunctionModifier.PUBLIC) && this.currentContractIsAbstract) {

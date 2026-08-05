@@ -4994,15 +4994,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       // un-hoisted - a loop-body local is not single-assign), which the co-spend epilogue cannot read (the local
       // is loop-consumed). Rewrite the call to the witness (like a direct computed target) AND neutralize the now
       // dead initializer to read the same witness, so `pairFor` is not recomputed on-chain (defeating the witness
-      // and risking a size fault). Restricted to a SINGLE-use local with a cast/reference init: a multi-use receiver
-      // would need one co-spend to serve several calls (left to fail closed).
-      if (addressParam && !addressStateVar && node.interfaceName
+      // and risking a size fault). A MULTI-use receiver gets one independently authenticated call slot per method;
+      // keep its cheap source initializer intact so every call can still recover the common loop index.
+      if (addressParam && !addressStateVar
         && node.addressExpression instanceof IdentifierNode) {
         const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
-        const canNeutralize = initExpr instanceof CastNode
+        const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
+          && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
+        const canNeutralize = initExpr instanceof CastNode || legacyInterfaceCast
           || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
-        if (initExpr && canNeutralize
-          && this.extCallReceiverCounts.get(addressParam) === 1) {
+        if (initExpr && canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
@@ -5010,16 +5011,37 @@ export default class SymbolTableTraversal extends AstTraversal {
             const call = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
             node.addressExpression = call.access;
             const init = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
-            if (initExpr instanceof CastNode) initExpr.expression = init.access;
-            else (initExpr as ContractReferenceNode).constructorArgs[0] = init.access;
+            if (this.extCallReceiverCounts.get(addressParam) === 1) {
+              if (initExpr instanceof CastNode) initExpr.expression = init.access;
+              else if (initExpr instanceof FunctionCallNode) initExpr.parameters[0] = init.access;
+              else (initExpr as ContractReferenceNode).constructorArgs[0] = init.access;
+              loopWitnessArrayIds.push(init.arrayId);
+            }
             loopArrayVar = witnessName;
-            loopWitnessArrayIds = [call.arrayId, init.arrayId];
+            loopWitnessArrayIds.push(call.arrayId);
             addressParam = undefined; // the local is not the address source; the witness is
           }
         }
       }
       if (!addressParam && !loopArrayVar) {
-        const ae = node.addressExpression;
+        const seenLoopAliases = new Set<string>();
+        const unwrapLoopTarget = (expression: ExpressionNode): ExpressionNode => {
+          if (expression instanceof CastNode) return unwrapLoopTarget(expression.expression);
+          if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+            && (this.interfaceMap.has(expression.identifier.name) || this.contractMap.has(expression.identifier.name))) {
+            return unwrapLoopTarget(expression.parameters[0]);
+          }
+          if (expression instanceof IdentifierNode && !seenLoopAliases.has(expression.name)) {
+            seenLoopAliases.add(expression.name);
+            const initializer = this.findLocalInit(this.currentFunction?.body, expression.name);
+            if (initializer) return unwrapLoopTarget(initializer);
+          }
+          return expression;
+        };
+        const ae = unwrapLoopTarget(node.addressExpression);
+        if (ae !== node.addressExpression && (ae instanceof ArrayAccessNode || ae instanceof MappingAccessNode)) {
+          node.addressExpression = cloneNode(ae) as ExpressionNode;
+        }
         // A loop over a dynamic state array read multiple times is cached to a `__dlcache_V` local by
         // CacheDynamicArrayInLoop; strip the prefix so the co-spend epilogue reads the self-pinned STATE array V.
         const stripCache = (n: string): string => (n.startsWith('__dlcache_') ? n.slice('__dlcache_'.length) : n);
@@ -5051,7 +5073,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
             }
           }
-        } else if (ae instanceof FunctionCallNode && node.interfaceName) {
+        } else if (ae instanceof FunctionCallNode) {
           // A per-iteration COMPUTED external-call target `IFoo(pairFor(factory, path[i], path[i+1]))` in a loop:
           // SEAL could not hoist it (a leaf is loop-dependent, so addressParam stays undefined). Rewrite the target
           // to read the callee address from a synthesized witness array `__internal__loopTargets<n>[i]` (the SDK

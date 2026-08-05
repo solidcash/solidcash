@@ -192,7 +192,7 @@ import {
   SortedMappingCodegenPendingError,
   ChainedEntryElementReadError, ConditionalDeployError, NegativeExponentError, SolidCashError,
   RecursiveStructUnsupportedError, TransferFrameUnavailableError, UnboundReturnCallError,
-  BlockLayoutUnavailableError,
+  BlockLayoutUnavailableError, StackVariableUnavailableError,
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
@@ -1096,7 +1096,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const index = this.stack.indexOf(value);
 
     if (index === -1 && !canBeUndefined) {
-      throw new Error(`Expected variable '${value}' does not exist on the stack`);
+      throw new StackVariableUnavailableError(value);
     }
 
     return index;
@@ -4407,7 +4407,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const stackIndex = this.getStackIndex(parameter.name, true);
         if (stackIndex === -1) {
           if (!this.finalStackUsage[parameter.name]) {
-            throw new Error(`Expected variable '${parameter.name}' does not exist on the stack or in final stack usage`);
+            throw new StackVariableUnavailableError(parameter.name, ' or in final stack usage');
           }
           return this.finalStackUsage[parameter.name];
         }

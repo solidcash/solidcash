@@ -6,5 +6,34 @@
   "fixtureCount": 7343,
   "fixtureTimeoutMs": 30000,
   "workers": 8,
-  "checkedNegativeFixtures": false
+  "checkedNegativeFixtures": false,
+  "retryTimeoutMs": 120000,
+  "retryWorkers": 4,
+  "retriedTimeoutFixtures": 258,
+  "retryErrorNames": [
+    "Error",
+    "RangeError"
+  ],
+  "retryPasses": [
+    {
+      "timeoutMs": 120000,
+      "workers": 4,
+      "selectedFixtures": 258,
+      "includeTimeouts": true,
+      "errorNames": [],
+      "isolatedWorkers": true
+    },
+    {
+      "timeoutMs": 120000,
+      "workers": 4,
+      "selectedFixtures": 5,
+      "includeTimeouts": false,
+      "errorNames": [
+        "Error",
+        "RangeError"
+      ],
+      "isolatedWorkers": true
+    }
+  ],
+  "resumedTimeoutsFromResults": true
 }

@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { Worker } from 'worker_threads';
 
 const BENCH_DIR = dirname(fileURLToPath(import.meta.url));
+const OUTPUT_DIR = process.env.CORPUS_OUTPUT_DIR || BENCH_DIR;
 const compilerUrl = new URL('../../packages/solidc/dist/index.js', import.meta.url).href;
 
 // Parallel bench to solidity-by-example: attempt to compile every .sol in the ethereum/solidity compiler test
@@ -19,6 +20,11 @@ const ROOT = process.env.SOLC_CORPUS || '/Code/solidity';
 const LIMIT = process.env.LIMIT ? Number(process.env.LIMIT) : Infinity;
 const FIXTURE_TIMEOUT_MS = process.env.FIXTURE_TIMEOUT_MS ? Number(process.env.FIXTURE_TIMEOUT_MS) : 5000;
 const WORKER_COUNT = process.env.CORPUS_WORKERS ? Number(process.env.CORPUS_WORKERS) : 8;
+const RETRY_TIMEOUT_MS = process.env.RETRY_TIMEOUT_MS ? Number(process.env.RETRY_TIMEOUT_MS) : 0;
+const RETRY_WORKER_COUNT = process.env.RETRY_WORKERS ? Number(process.env.RETRY_WORKERS) : 1;
+const RETRY_TIMEOUTS_FROM_RESULTS = process.env.RETRY_TIMEOUTS_FROM_RESULTS === 'true';
+const RETRY_TIMEOUTS = process.env.RETRY_TIMEOUTS !== 'false';
+const RETRY_ERROR_NAMES = new Set((process.env.RETRY_ERROR_NAMES || '').split(',').filter(Boolean));
 const CHECK_NEGATIVES = process.env.CHECK_NEGATIVES !== 'false';
 const files = execSync(`find ${ROOT} -name '*.sol'`).toString().trim().split('\n').filter(Boolean).sort();
 const corpusRevision = execSync('git rev-parse HEAD', { cwd: ROOT }).toString().trim();
@@ -54,7 +60,7 @@ function classify(src, rel) {
 const startWorker = () => new Worker(new URL('./bench-worker.mjs', import.meta.url), {
   workerData: { compilerUrl },
 });
-const createRunner = () => {
+const createRunner = (timeoutMs, isolateEachFixture = false) => {
   let worker;
   let requestId = 0;
   return {
@@ -71,6 +77,10 @@ const createRunner = () => {
         const onMessage = (message) => {
           if (message.id !== id) return;
           cleanup();
+          if (isolateEachFixture && worker === activeWorker) {
+            worker = undefined;
+            void activeWorker.terminate();
+          }
           resolve(message.error);
         };
         const onError = (error) => {
@@ -82,8 +92,8 @@ const createRunner = () => {
           cleanup();
           if (worker === activeWorker) worker = undefined;
           void activeWorker.terminate();
-          resolve(`CorpusTimeoutError: fixture exceeded ${FIXTURE_TIMEOUT_MS}ms`);
-        }, FIXTURE_TIMEOUT_MS);
+          resolve(`CorpusTimeoutError: fixture exceeded ${timeoutMs}ms`);
+        }, timeoutMs);
         activeWorker.on('message', onMessage);
         activeWorker.on('error', onError);
         activeWorker.postMessage({ id, file });
@@ -94,32 +104,74 @@ const createRunner = () => {
 };
 
 const selectedFiles = files.slice(0, LIMIT);
-const results = new Array(selectedFiles.length);
+let results = new Array(selectedFiles.length);
+let resumedMetadata;
 const jobs = [];
-for (const [index, f] of selectedFiles.entries()) {
-  const rel = f.replace(ROOT + '/', '');
-  let src; try { src = readFileSync(f, 'utf8'); } catch { results[index] = { rel, status: 'READERR' }; continue; }
-  const cls = classify(src, rel);
-  if (cls === 'NEGATIVE' && !CHECK_NEGATIVES) {
-    results[index] = { rel, status: 'NEGATIVE', overAccepted: null };
-  } else if (cls !== 'NEGATIVE' && cls !== 'INSCOPE') results[index] = { rel, status: cls };
-  else jobs.push({ index, file: f, rel, cls });
+if (RETRY_TIMEOUTS_FROM_RESULTS) {
+  results = JSON.parse(readFileSync(join(OUTPUT_DIR, 'results.json'), 'utf8'));
+  resumedMetadata = JSON.parse(readFileSync(join(OUTPUT_DIR, 'run-metadata.json'), 'utf8'));
+  if (LIMIT !== Infinity || results.length !== selectedFiles.length) {
+    throw new Error('RETRY_TIMEOUTS_FROM_RESULTS requires a full results.json for the current corpus');
+  }
+  if (resumedMetadata.corpusRevision !== corpusRevision || resumedMetadata.corpusRoot !== ROOT) {
+    throw new Error('RETRY_TIMEOUTS_FROM_RESULTS metadata does not match the current corpus');
+  }
+} else {
+  for (const [index, f] of selectedFiles.entries()) {
+    const rel = f.replace(ROOT + '/', '');
+    let src; try { src = readFileSync(f, 'utf8'); } catch { results[index] = { rel, status: 'READERR' }; continue; }
+    const cls = classify(src, rel);
+    if (cls === 'NEGATIVE' && !CHECK_NEGATIVES) {
+      results[index] = { rel, status: 'NEGATIVE', overAccepted: null };
+    } else if (cls !== 'NEGATIVE' && cls !== 'INSCOPE') results[index] = { rel, status: cls };
+    else jobs.push({ index, file: f, rel, cls });
+  }
 }
 
-let jobIndex = 0;
-let completed = 0;
-const runners = Array.from({ length: Math.max(1, WORKER_COUNT) }, createRunner);
-await Promise.all(runners.map(async (runner) => {
-  while (jobIndex < jobs.length) {
-    const job = jobs[jobIndex++];
-    writeFileSync(join(BENCH_DIR, 'current.txt'), job.rel);
-    const err = await runner.compile(job.file);
-    results[job.index] = job.cls === 'NEGATIVE'
-      ? { rel: job.rel, status: 'NEGATIVE', overAccepted: !err }
-      : { rel: job.rel, status: err ? 'FAIL' : 'OK', err };
-    if (++completed % 500 === 0) process.stderr.write(`  ...${completed}/${jobs.length} compilations\n`);
-  }
-}));
+const runJobs = async (pending, workerCount, timeoutMs, retry = false) => {
+  let jobIndex = 0;
+  let completed = 0;
+  const runners = Array.from(
+    { length: Math.max(1, workerCount) }, () => createRunner(timeoutMs, retry),
+  );
+  await Promise.all(runners.map(async (runner) => {
+    while (jobIndex < pending.length) {
+      const job = pending[jobIndex++];
+      writeFileSync(join(OUTPUT_DIR, 'current.txt'), job.rel);
+      const err = await runner.compile(job.file);
+      if (job.cls === 'NEGATIVE') {
+        results[job.index] = { rel: job.rel, status: 'NEGATIVE', overAccepted: !err };
+      } else {
+        results[job.index] = {
+          rel: job.rel,
+          status: err ? 'FAIL' : 'OK',
+          ...(err && { err }),
+          ...(retry && { retriedAfterTimeout: true, retryTimeoutMs: timeoutMs }),
+        };
+      }
+      if (++completed % 100 === 0 || completed === pending.length) {
+        process.stderr.write(`  ...${completed}/${pending.length} ${retry ? 'isolated retries' : 'compilations'}\n`);
+      }
+    }
+  }));
+  await Promise.all(runners.map((runner) => runner.terminate()));
+};
+
+if (!RETRY_TIMEOUTS_FROM_RESULTS) await runJobs(jobs, WORKER_COUNT, FIXTURE_TIMEOUT_MS);
+
+const retryJobs = results.flatMap((result, index) => (
+  result.status === 'FAIL' && result.err && (
+    (RETRY_TIMEOUTS && result.err.startsWith('CorpusTimeoutError:'))
+    || RETRY_ERROR_NAMES.has(result.err.slice(0, result.err.indexOf(':')))
+  )
+    ? [{ index, file: selectedFiles[index], rel: result.rel, cls: 'INSCOPE' }]
+    : []
+));
+if (RETRY_TIMEOUT_MS > 0 && retryJobs.length > 0) {
+  process.stderr.write(`  retrying ${retryJobs.length} selected failures at ${RETRY_TIMEOUT_MS}ms `
+    + `with ${RETRY_WORKER_COUNT} isolated workers\n`);
+  await runJobs(retryJobs, RETRY_WORKER_COUNT, RETRY_TIMEOUT_MS, true);
+}
 
 const by = (s) => results.filter(r => r.status === s);
 const ok = by('OK'), fail = by('FAIL'), neg = by('NEGATIVE'), multi = by('MULTIFILE'), cmdline = by('CMDLINE');
@@ -130,19 +182,46 @@ const harness = by('HARNESS');
 const overAcc = neg.filter(r => r.overAccepted).length; // solc-negative fixtures we also accept (diagnostic only)
 const uncheckedNeg = neg.filter(r => r.overAccepted === null).length;
 const inScope = ok.length + fail.length;
-writeFileSync(join(BENCH_DIR, 'results.json'), JSON.stringify(results, null, 1));
-writeFileSync(join(BENCH_DIR, 'run-metadata.json'), JSON.stringify({
+const priorRetryPasses = resumedMetadata?.retryPasses ?? (resumedMetadata?.retryTimeoutMs > 0 ? [{
+  timeoutMs: resumedMetadata.retryTimeoutMs,
+  workers: resumedMetadata.retryWorkers,
+  selectedFixtures: resumedMetadata.retriedTimeoutFixtures,
+  includeTimeouts: true,
+  errorNames: [],
+  isolatedWorkers: true,
+}] : []);
+writeFileSync(join(OUTPUT_DIR, 'results.json'), JSON.stringify(results, null, 1));
+writeFileSync(join(OUTPUT_DIR, 'run-metadata.json'), JSON.stringify({
   corpusRoot: ROOT,
   corpusRevision,
   node: process.version,
   platform: `${process.platform}-${process.arch}`,
   fixtureCount: files.length,
-  fixtureTimeoutMs: FIXTURE_TIMEOUT_MS,
-  workers: WORKER_COUNT,
-  checkedNegativeFixtures: CHECK_NEGATIVES,
+  fixtureTimeoutMs: resumedMetadata?.fixtureTimeoutMs ?? FIXTURE_TIMEOUT_MS,
+  workers: resumedMetadata?.workers ?? WORKER_COUNT,
+  checkedNegativeFixtures: resumedMetadata?.checkedNegativeFixtures ?? CHECK_NEGATIVES,
+  retryTimeoutMs: RETRY_TIMEOUT_MS || resumedMetadata?.retryTimeoutMs || 0,
+  retryWorkers: RETRY_TIMEOUT_MS > 0 ? RETRY_WORKER_COUNT : (resumedMetadata?.retryWorkers ?? RETRY_WORKER_COUNT),
+  retriedTimeoutFixtures: resumedMetadata?.retriedTimeoutFixtures
+    ?? (RETRY_TIMEOUT_MS > 0 && RETRY_TIMEOUTS ? retryJobs.length : 0),
+  retryErrorNames: RETRY_ERROR_NAMES.size > 0
+    ? [...RETRY_ERROR_NAMES]
+    : (resumedMetadata?.retryErrorNames ?? []),
+  retryPasses: [
+    ...priorRetryPasses,
+    ...(RETRY_TIMEOUT_MS > 0 ? [{
+      timeoutMs: RETRY_TIMEOUT_MS,
+      workers: RETRY_WORKER_COUNT,
+      selectedFixtures: retryJobs.length,
+      includeTimeouts: RETRY_TIMEOUTS,
+      errorNames: [...RETRY_ERROR_NAMES],
+      isolatedWorkers: true,
+    }] : []),
+  ],
+  resumedTimeoutsFromResults: RETRY_TIMEOUTS_FROM_RESULTS,
 }, null, 2) + '\n');
 
-origLog(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
+const summary = `=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-scope compiled `
   + `(${fail.length} failed) | ${neg.length} negative-skipped (solc rejects; ${overAcc} accepted, `
   + `${uncheckedNeg} unchecked, `
   + `diagnostic) | ${multi.length} multifile-skipped | ${cmdline.length} cmdline-skipped `
@@ -150,11 +229,20 @@ origLog(`\n=== SOLC-CORPUS SCORECARD: ${ok.length}/${inScope} single-file in-sco
   + `| ${compilation.length} compilation-project-skipped `
   + `| ${external.length} external-project-skipped `
   + `| ${harness.length} non-language-harness-skipped `
-  + `| ${results.length} total ===\n`);
+  + `| ${results.length} total ===`;
+origLog(`\n${summary}\n`);
 
 // Top failure reasons (grouped by error head) - the actionable gap signal.
 const groups = {};
-for (const r of fail) { const head = (r.err || '').replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N').slice(0, 90); groups[head] = (groups[head] || 0) + 1; }
+for (const r of fail) {
+  const normalized = (r.err || '').replace(/'[^']*'/g, "'..'").replace(/\d+/g, 'N');
+  const head = normalized.length <= 120
+    ? normalized
+    : `${normalized.slice(0, 120).replace(/\s+\S*$/, '')} ...`;
+  groups[head] = (groups[head] || 0) + 1;
+}
+const failureLines = Object.entries(groups).sort((a, b) => b[1] - a[1]).slice(0, 30)
+  .map(([head, n]) => `${String(n).padStart(5)}  ${head}`);
 origLog('--- TOP FAILURE REASONS ---');
-for (const [head, n] of Object.entries(groups).sort((a, b) => b[1] - a[1]).slice(0, 30)) origLog(`${String(n).padStart(5)}  ${head}`);
-await Promise.all(runners.map((runner) => runner.terminate()));
+for (const line of failureLines) origLog(line);
+writeFileSync(join(OUTPUT_DIR, 'scorecard.txt'), `${summary}\n\n--- TOP FAILURE REASONS ---\n${failureLines.join('\n')}\n`);

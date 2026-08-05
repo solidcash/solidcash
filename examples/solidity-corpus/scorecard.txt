@@ -1,36 +1,33 @@
-  ...500/2805 compilations
-  ...1000/2805 compilations
-  ...1500/2805 compilations
-  ...2000/2805 compilations
-  ...2500/2805 compilations
-
-=== SOLC-CORPUS SCORECARD: 2488/2805 single-file in-scope compiled (317 failed) | 2158 negative-skipped (solc rejects; 0 accepted, 2158 unchecked, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2663/2805 single-file in-scope compiled (142 failed) | 2158 negative-skipped (solc rejects; 0 accepted, 2158 unchecked, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-  258  CorpusTimeoutError: fixture exceeded Nms
-   10  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..'
-    9  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not y
+   27  CorpusTimeoutError: fixture exceeded Nms
+   16  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not yet lowerable to BCH script ...
+    7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equivalent (deploying runtime ...
     7  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-    5  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equival
+    6  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code, so its element selectors ...
+    4  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend D ...
+    4  BlockLayoutUnavailableError: Block layout not available while compiling '..'
+    3  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend ...
     3  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
+    3  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters ...
+    3  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column N
+    3  MessageBusVerifierCapacityError: message bus verifier covenant is N bytes; BCH permits at most N
+    3  CompilerRecursionLimitError: Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend C ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend A ...
+    2  StackVariableUnavailableError: Expected variable '..' does not exist on the stack
+    2  UndefinedReferenceError: Undefined reference to symbol s__d at Line N, Column N - a position in the message-bus route ...
     2  CastTypeError: Type '..' is not castable to type '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol a at Line N, Column N
+    2  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol s__a at Line N, Column N - a position in the message-bus route ...
+    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line N, Column N
     2  UndefinedReferenceError: Undefined reference to symbol A at Line N, Column N
-    2  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expression
-    2  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code
-    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column
-    1  TransferFrameUnavailableError: Value transfer N in function '..' cannot preserve its coven
+    2  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expression at Line N, Column N
+    1  UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
+    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column N
+    1  TransferFrameUnavailableError: Value transfer N in function '..' cannot preserve its covenant frame across this ...
+    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot yet preserve Solidity aliasing ...
     1  UnresolvedImportError: Cannot resolve import '..' from '..'
-    1  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function defi
-    1  EmittingStateHelperEventError: Helper '..' emits an event and is invoked internally as a v
-    1  MessageBusVerifierCapacityError: message bus verifier covenant is N bytes; BCH permits at
-    1  RecursiveStructUnsupportedError: Recursive struct types are unsupported because BCH requires a finite encoding
-    1  UndefinedReferenceError: Undefined reference to symbol s__x at Line N, Column N - a position in generated source
-    1  ParseError: Redefinition of function '..' at Line N, Column N
-    1  UnsupportedArrayElementTypeError: Unsupported array element type '..' at Line N, Column N
-    1  UndefinedReferenceError: Undefined reference to symbol id at Line N, Column N
-    1  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
-    1  ParseError: Missing '..' at '..' at Line N, Column N
-    1  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (
-    1  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
-    1  InvalidParameterTypeError: Found parameters (int,function() external returns (address)) in call
-    1  UndefinedReferenceError: Undefined reference to symbol b at Line N, Column N
+    1  InvalidParameterTypeError: Found parameters (uintN,uintN,uintN) in call to function '..' where parameters ...

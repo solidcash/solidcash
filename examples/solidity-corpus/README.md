@@ -14,6 +14,12 @@ LIMIT=200 node examples/solidity-corpus/bench.mjs                       # smoke 
 FIXTURE_TIMEOUT_MS=10000 node examples/solidity-corpus/bench.mjs        # override the 5s per-fixture budget
 CORPUS_WORKERS=4 node examples/solidity-corpus/bench.mjs                # override the default 8 workers
 CHECK_NEGATIVES=false node examples/solidity-corpus/bench.mjs          # positive-only diagnostic pass
+RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 node examples/solidity-corpus/bench.mjs  # isolated retry tier
+RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUT_MS=60000 RETRY_WORKERS=2 \
+  node examples/solidity-corpus/bench.mjs                               # resume only retained timeouts
+RETRY_TIMEOUTS_FROM_RESULTS=true RETRY_TIMEOUTS=false RETRY_ERROR_NAMES=Error,RangeError \
+  RETRY_TIMEOUT_MS=60000 node examples/solidity-corpus/bench.mjs        # reclassify selected error names
+CORPUS_OUTPUT_DIR=/tmp/corpus-run node examples/solidity-corpus/bench.mjs      # alternate artifact directory
 ```
 
 ## What this bench is (and is NOT)
@@ -47,7 +53,11 @@ Buckets (so the denominator is meaningful):
 Each run also writes `run-metadata.json` with the exact Solidity corpus commit, Node version, platform, and fixture
 count. Release scorecards must retain this file beside `results.json`. Compilation runs in a reusable worker; a
 fixture exceeding the default five-second budget is terminated, recorded as `CorpusTimeoutError`, and cannot block
-the remaining scorecard.
+the remaining scorecard. Release runs should configure `RETRY_TIMEOUT_MS`: every primary timeout is then compiled
+again in a fresh worker under the larger budget, so worker cache growth and parallel contention do not decide the
+accepted count. `RETRY_TIMEOUTS_FROM_RESULTS=true` resumes that isolated tier from matching retained artifacts
+without repeating the primary sweep. Set `RETRY_TIMEOUTS=false` with a comma-separated `RETRY_ERROR_NAMES` list to
+recompile selected diagnostic classes after hardening their compiler boundary.
 
 ## Scorecard (2026-07, 7343 files)
 

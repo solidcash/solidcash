@@ -152,6 +152,22 @@ export class BlockLayoutUnavailableError extends Error {
   }
 }
 
+/** Code generation lost a compiler-tracked value before a path that still requires it. */
+export class StackVariableUnavailableError extends Error {
+  constructor(variable: string, detail = '') {
+    super(`Expected variable '${variable}' does not exist on the stack${detail}`);
+    this.name = this.constructor.name;
+  }
+}
+
+/** A source shape exceeds the compiler's recursive traversal capacity. */
+export class CompilerRecursionLimitError extends Error {
+  constructor() {
+    super('Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive type shapes');
+    this.name = this.constructor.name;
+  }
+}
+
 export class RecursiveStructUnsupportedError extends SolidCashError {
   constructor(node: FunctionDefinitionNode) {
     super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');

@@ -113,6 +113,7 @@ import { ImportResolver } from './ImportResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
+  CompilerRecursionLimitError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -447,7 +448,7 @@ function compileWithExternalAdmissionFallback(
   }
 }
 
-export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, primaryContractName, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
     && !errorListener && !artifactCompilerOptions.importResolver;
@@ -479,6 +480,17 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
   attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, primaryContractName);
   if (cacheable) compileCache.set(cacheKey, artifact);
   return cacheable ? cloneArtifact(artifact) : artifact;
+}
+
+export function compileString(code: string, compilerOptions: CompileOptions = {}): Artifact {
+  try {
+    return compileStringUnchecked(code, compilerOptions);
+  } catch (cause) {
+    if (cause instanceof RangeError && cause.message === 'Maximum call stack size exceeded') {
+      throw new CompilerRecursionLimitError();
+    }
+    throw cause;
+  }
 }
 
 /**

@@ -239,8 +239,11 @@ task('test', 'Run the test suite (Vitest)')
   .setAction(async (args) => {
     const extra = (args.paths as string[]) ?? [];
     const solidhatConfig = ['vitest.solidhat.config.ts', 'vitest.solidhat.config.js']
-      .find((candidate) => fs.existsSync(path.resolve(candidate)));
-    const configArgs = solidhatConfig ? ['--config', solidhatConfig] : [];
+      .map((candidate) => path.resolve(candidate))
+      .find((candidate) => fs.existsSync(candidate));
+    // Pass the config and root as ABSOLUTE paths. Vitest resolves a relative --config against its own inferred
+    // root, which in a monorepo is not necessarily this project, and it then fails to load the config at all.
+    const configArgs = solidhatConfig ? ['--config', solidhatConfig, '--root', process.cwd()] : [];
     const res = spawnSync('npx', ['vitest', 'run', ...configArgs, ...extra], { stdio: 'inherit' });
     if (res.status !== 0) process.exitCode = res.status ?? 1;
     return { status: res.status };

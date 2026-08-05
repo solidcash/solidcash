@@ -861,7 +861,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
       throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
     }
-    const interfaceEventSigs = new Set<string>();
+    // Signature -> indexed layout of every event an implemented interface declares. A contract that redeclares an
+    // interface event IDENTICALLY is the ordinary Solidity shape and simply reuses it; one that redeclares it with
+    // different `indexed` flags is a conflicting redefinition, because the two disagree on the topic layout.
+    const indexedKey = (ev: { parameters: { indexed?: boolean }[] }): string =>
+      ev.parameters.map((parameter) => (parameter.indexed ? '1' : '0')).join(',');
+    const interfaceEventIndexed = new Map<string, string>();
     if (this.compilerOptions.solidityImportCompat) {
       const visitedInterfaces = new Set<string>();
       const collectInterfaceEvents = (name: string): void => {
@@ -870,9 +875,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const iface = this.interfaceMap.get(name);
         if (!iface) return;
         for (const event of iface.eventDefinitions) {
-          interfaceEventSigs.add(computeEventSignature(
+          interfaceEventIndexed.set(computeEventSignature(
             event.name, event.parameters.map((parameter) => parameter.type?.toString() ?? 'address'),
-          ));
+          ), indexedKey(event));
         }
         for (const parent of iface.parents) collectInterfaceEvents(parent);
       };
@@ -881,7 +886,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (localEventSigs.has(sig) || interfaceEventSigs.has(sig)) {
+      const interfaceIndexed = interfaceEventIndexed.get(sig);
+      if (localEventSigs.has(sig) || (interfaceIndexed !== undefined && interfaceIndexed !== indexedKey(ev))) {
         throw new EventRedefinitionError(ev);
       }
       localEventSigs.add(sig);

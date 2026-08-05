@@ -65,7 +65,7 @@ diagnostic when the required transaction shape cannot be produced.
 
 ## Candidate evidence recorded on 2026-08-05
 
-- Compiler suite: 3,145/3,145.
+- Compiler suite: 3,146/3,146 across the complete run and isolated retries for three load-sensitive cases.
 - SDK unit/e2e/mock suite: 3,808 passed, 39 skipped, 9 todo in the recorded full run.
 - Generated-project gate: initialization 1/1, cache lifecycle 1/1, maintained harness 21/21.
 - Packed-package gate: six tarballs and maintained stateful golden path 3/3.

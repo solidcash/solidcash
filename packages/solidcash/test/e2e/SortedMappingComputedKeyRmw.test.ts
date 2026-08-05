@@ -135,6 +135,30 @@ describe('sorted mapping RMW with a computed/local key', () => {
         this.result = lookup(user);
         require(true);
       }
+      function readAssigned(bytes20 user) {
+        bytes20 localUser;
+        localUser = user;
+        this.result = this.balances[localUser];
+        require(true);
+      }
+      function readComputed(pubkey pk) {
+        bytes20 localUser = hash160(pk);
+        this.result = this.balances[localUser];
+        require(true);
+      }
+      function readLive(bytes20 user) {
+        bytes20 localUser = user;
+        this.result = this.balances[localUser];
+        require(localUser == user);
+      }
+      function lookupComputed(pubkey pk) internal view returns (bigint) {
+        bytes20 localUser = hash160(pk);
+        return this.balances[localUser];
+      }
+      function readComputedInlined(pubkey pk) {
+        this.result = lookupComputed(pk);
+        require(true);
+      }
     }`;
     const art = compileString(source, {});
     const contract = new Contract(art, [], { provider });
@@ -167,6 +191,14 @@ describe('sorted mapping RMW with a computed/local key', () => {
     await expect(sc.read(key).send()).resolves.toHaveProperty('txid');
     await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
     await expect(sc.readInlined(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readAssigned(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readComputed(alicePub).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readLive(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readComputedInlined(alicePub).send()).resolves.toHaveProperty('txid');
     await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
   });
 });

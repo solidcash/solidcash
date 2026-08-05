@@ -6290,10 +6290,30 @@ export default class SymbolTableTraversal extends AstTraversal {
   // insert-loop SDK derivation) - a loop var is NOT a single-assignment computed value.
   private collectLocalKeyDefs(node: Node | undefined): void {
     this.localKeyDefs = new Map();
+    const assignmentCounts = new Map<string, number>();
+    const adjacentInitializers = new Map<string, ExpressionNode>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof VariableDefinitionNode && n.expression && !n.isLoopVariable && !this.localKeyDefs.has(n.name)) {
         this.localKeyDefs.set(n.name, n.expression);
+      }
+      if (n instanceof AssignNode) {
+        assignmentCounts.set(n.identifier.name, (assignmentCounts.get(n.identifier.name) ?? 0) + 1);
+      }
+      // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
+      // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
+      // assignment, and the whole-body count below rules out subsequent reassignment. This gives C2 key metadata
+      // the same canonical source as `T key = expr` without changing runtime evaluation of the local itself.
+      if (n instanceof BlockNode) {
+        const statements = n.statements ?? [];
+        for (let i = 0; i + 1 < statements.length; i += 1) {
+          const definition = statements[i];
+          const assignment = statements[i + 1];
+          if (definition instanceof VariableDefinitionNode && !definition.expression && !definition.isLoopVariable
+            && assignment instanceof AssignNode && assignment.identifier.name === definition.name) {
+            adjacentInitializers.set(definition.name, assignment.expression);
+          }
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;
@@ -6303,6 +6323,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(node);
+    for (const [name, expression] of adjacentInitializers) {
+      if (!this.localKeyDefs.has(name) && assignmentCounts.get(name) === 1) {
+        this.localKeyDefs.set(name, expression);
+      }
+    }
   }
 
   // Returns the state array name A if `expr` is exactly `A[A.length - 1]` (a state array's last element), else

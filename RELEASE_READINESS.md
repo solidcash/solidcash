@@ -23,7 +23,7 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   seconds resolved all 111: the retained result is 2,698/2,805 with 107 named failures, zero generic/raw buckets,
   and zero timeouts. The matching negative audit checked all 2,158 fixtures with zero residual timeouts: SolidCash
   rejects 1,835 and over-accepts 323 that solc rejects;
-- the integrated compiler suite passes all 3,145 tests, the SDK suite passes 3,808 tests, and the testing-suite
+- the integrated compiler suite passes all 3,146 tests, the SDK suite passes 3,808 tests, and the testing-suite
   passes all 25 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
   fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
 - 14 executable `.skip`/`.todo` occurrences remain under `packages` and `examples`; all are classified as explicit
@@ -95,7 +95,12 @@ it must not silently compile to incorrect covenant behavior.
     preventing recurrence through desugaring or inlining.
   - Evidence: `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` exercises the exact local-copy
     trigger through compiler, SDK transaction construction, VM execution, and state readback.
-- [ ] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
+- [x] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
+  - The audit added direct parameter, initialized-copy, declaration-then-assignment, computed-local, live-local,
+    and inlined-helper reads to `SortedMappingComputedKeyRmw.test.ts`. It found that the adjacent
+    `T key; key = expr;` form retained an opaque local metadata label and failed local execution. The compiler now
+    canonicalizes only a straight-line adjacent pair with exactly one assignment, while leaving conditional or
+    reassigned locals on the conservative path. The artifact metadata unit test and VM-backed sequence pass.
 - [x] Fix the six EVM-storage/message-bus VM regressions in `packages/solidcash/test/e2e/EvmStorageLayout.test.ts`.
   - Root cause: Solidity-compatible big-endian scalar casts exposed older storage and Yul-memory lowering paths
     that assumed BCH-native typed casts. The fix uses sign-safe raw word encoding, preserves fixed-byte order,
@@ -427,7 +432,7 @@ Update this table whenever a release candidate is cut.
 |---|---|---|---|
 | Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
 | Build | **PASS** — all six packages plus testing-suite fixture compilation | `codex/release-readiness-fixes` | 2026-08-04 |
-| Compiler tests | **PASS** — 3,145/3,145, including storage-pointer definite-assignment and alias-source regressions | `codex/release-readiness-fixes` | 2026-08-05 |
+| Compiler tests | **PASS** — 3,146/3,146 across the complete run plus fresh-process retries for three load-sensitive cases; includes storage-pointer, alias-source, and adjacent C2 local-key regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |

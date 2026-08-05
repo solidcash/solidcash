@@ -13,6 +13,7 @@ const cases = [
   ['scalar data-NFT state integrity', 'test/e2e/ScalarStateAdversarial.test.ts'],
   ['dynamic state-chunk integrity', 'test/e2e/DynamicChunkAdversarial.test.ts'],
   ['satoshi-container integrity', 'test/e2e/SatoshiContainerIntegrity.test.ts'],
+  ['token-container integrity', 'test/e2e/TokenContainerIntegrity.test.ts'],
   ['message-envelope and return forgery', 'test/journal-message-bus/e2e/MessageBusEnvelopeBindingAudit.test.ts'],
 ];
 

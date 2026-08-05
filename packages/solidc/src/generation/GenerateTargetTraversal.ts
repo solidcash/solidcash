@@ -3939,7 +3939,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // B-side: return event covenant verification for entry-point functions with return types
       if (!this.functionHasDelegatecall && node.returnTypes.length > 0 && node.isEntryPoint
-        && !node.graphEmissionHandler) {
+        && !node.graphEmissionHandler && !this.blockEndsWithRevert(node.body)) {
         this.emitReturnEventCovenantVerification(node);
       }
       // A-side: verify return event UTXO from external function calls with return values

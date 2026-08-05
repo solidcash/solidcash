@@ -140,6 +140,16 @@ describe('large-contract state-local splitting', () => {
       ['a', 'b', 'owner'].every((name) => facet.functions.includes(name)))).toBe(true);
   });
 
+  it('does not require a return blob from an unconditionally reverting facet entry', () => {
+    const bundle = compileStringSplit(
+      'contract BrokenRewarder { uint touched;'
+      + ' function pending() public returns (uint[] memory amounts) { touched = 1; revert(); }'
+      + ' function notify() public { require(true); } }',
+      { solidityImportCompat: true, forceSplit: true },
+    );
+    expect(bundle.manifest.routes.find((route) => route.function === 'pending')?.target).not.toBe('root');
+  });
+
   it('fails closed when a measured facet or root cannot fit', () => {
     try {
       compileStringSplit(SOURCE, { forceSplit: true, maxShardBytes: 100 });

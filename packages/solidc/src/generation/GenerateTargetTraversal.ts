@@ -1459,10 +1459,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.userFunctionDefs.set(f.name, f);
     }
 
-    // Emit OP_DEFINE for each free function
+    const reachableFreeFunctionIds = this.reachableInvokedFunctionIds(node.contract, node.freeFunctions);
+
+    // Compile every retained free function so code-generation diagnostics remain fail-closed, but omit dead
+    // OP_DEFINE bodies from consensus-limited locking bytecode.
     for (const f of node.freeFunctions) {
-      if (this.nativeLegacyMathFunctions.has(f)) continue;
-      this.emitFunctionDefine(f);
+      if (this.nativeLegacyMathFunctions.has(f) || f.functionId === undefined) continue;
+      this.emitFunctionDefine(f, reachableFreeFunctionIds.has(f.functionId));
     }
 
     node.contract = this.visit(node.contract) as ContractNode;
@@ -2014,6 +2017,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return ids;
   }
 
+  /** Internal/function-pointer targets reachable from a physical dispatch root, transitively. */
+  private reachableInvokedFunctionIds(
+    node: ContractNode, additionalFunctions: FunctionDefinitionNode[] = [],
+  ): Set<number> {
+    const functions = [
+      ...node.functions,
+      ...additionalFunctions,
+      ...(node.constructorDef ? [node.constructorDef] : []),
+      ...(node.fallbackDef ? [node.fallbackDef] : []),
+      ...(node.receiveDef ? [node.receiveDef] : []),
+    ];
+    const byId = new Map(functions
+      .filter((fn) => fn.functionId !== undefined)
+      .map((fn) => [fn.functionId!, fn]));
+    const roots = functions.filter((fn) => fn.isEntryPoint
+      || fn === node.constructorDef || fn === node.fallbackDef || fn === node.receiveDef);
+    const invoked = new Set<number>();
+    const scanned = new Set<FunctionDefinitionNode>();
+    const pending = [...roots];
+    while (pending.length > 0) {
+      const fn = pending.pop()!;
+      if (scanned.has(fn)) continue;
+      scanned.add(fn);
+      if (!fn.body) continue;
+      for (const id of this.collectInvokedFunctionIds(fn.body)) {
+        if (!invoked.has(id)) invoked.add(id);
+        const target = byId.get(id);
+        if (target && !scanned.has(target)) pending.push(target);
+      }
+    }
+    return invoked;
+  }
+
   private computeScalarJournalClosures(node: ContractNode): void {
     const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
     const internallyInvoked = this.collectInvokedFunctionIds(node);
@@ -2328,14 +2364,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
     // `!isEntryPoint`, not `visibility !== 'public'`, so external entry points (also non-'public') are not broken.
-    const invoked = this.collectInvokedFunctionIds(node);
+    const invoked = this.reachableInvokedFunctionIds(node);
     // The fallback is a subroutine candidate too: a self low-level call (`address(this).call(data)`) lowers
     // to an internal `__fallback(data)` invocation, so it needs an internal OP_DEFINE when invoked.
     const subroutineCandidates = node.fallbackDef ? [...node.functions, node.fallbackDef] : node.functions;
-    const definedFunctions = subroutineCandidates.filter((f) =>
-      f.functionId !== undefined && (!f.isEntryPoint || invoked.has(f.functionId)));
-    for (const f of definedFunctions) {
-      this.emitFunctionDefine(f);
+    for (const f of subroutineCandidates) {
+      if (f.functionId === undefined) continue;
+      const isInvoked = invoked.has(f.functionId);
+      // Historically every subroutine-only body was compiled, even if dead, so its fail-closed diagnostics
+      // remain part of source validation. Entry points are compiled as definitions only when internally invoked;
+      // compiling an ordinary entry as a parameter-less subroutine can itself be invalid.
+      if (!f.isEntryPoint || isInvoked) this.emitFunctionDefine(f, isInvoked);
     }
 
     // Build dispatcher: only include entry-point functions (external/public) + constructor
@@ -2685,7 +2724,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * accesses the function's own params/locals regardless of the caller's
    * stack depth below.
    */
-  private emitFunctionDefine(func: FunctionDefinitionNode): void {
+  private emitFunctionDefine(func: FunctionDefinitionNode, emitDefinition = true): void {
     const locationData = { location: func.location, positionHint: PositionHint.START };
 
     // Create a sub-traversal to compile the function body independently
@@ -2759,6 +2798,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Serialize the function body to bytecode data
     const bodyScript = asmToScript(scriptToAsm(subTraversal.output));
+
+    // Unreachable functions are still compiled above: code-generation performs a number of important
+    // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
+    // however, need to occupy consensus-limited locking bytecode.
+    if (!emitDefinition) return;
 
     // Emit: <body_bytecode> <function_id> OP_DEFINE
     this.definedBodyRecords.push({

@@ -32,6 +32,7 @@
     "test:e2e": "yarn workspace solidcash test:e2e",
     "test:regtest": "yarn workspace solidcash test:regtest",
     "test:package-smoke": "node scripts/release-package-smoke.mjs",
+    "test:application-conformance": "node scripts/release-application-conformance.mjs",
     "lint": "lerna run lint --ignore solidcash-examples && yarn workspace testing-suite lint",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",
     "postinstall": "lerna bootstrap && yarn build",

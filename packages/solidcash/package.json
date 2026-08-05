@@ -48,7 +48,7 @@
     "test:unit": "vitest run --exclude 'test/e2e/**'",
     "test:e2e": "vitest run test/e2e",
     "test:fast": "vitest run --exclude 'test/e2e/**'",
-    "test:regtest": "TESTS_USE_REGTEST=true vitest run --no-file-parallelism"
+    "test:regtest": "node scripts/run-regtest-matrix.mjs"
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",

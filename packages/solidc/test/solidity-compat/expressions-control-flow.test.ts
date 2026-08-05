@@ -1510,12 +1510,18 @@ describe('SPDX source-unit identifiers', () => {
     const invalid = [
       '// SPDX-License-Identifier: MIT\n// SPDX-License-Identifier: GPL-3.0\ncontract C {}',
       '/* SPDX-License-Identifier: MIT\\nSPDX-License-Identifier: GPL-3.0 */ contract C {}',
-      '/* SPDX-License-Identifier: MIT */ /* SPDX-License-Identifier: MIT */ contract C {}',
     ];
     for (const source of invalid) {
       expect(() => compileString(source, { solidityImportCompat: true }))
         .toThrow(/Multiple SPDX license identifiers/);
     }
+  });
+
+  it('accepts repeated identical identifiers', () => {
+    expect(compileString(
+      '// SPDX-License-Identifier: MIT\n/* SPDX-License-Identifier: MIT */ contract C {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
   });
 
   it('accepts one combined identifier and ignores tag-shaped string contents', () => {

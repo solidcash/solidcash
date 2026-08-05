@@ -5695,10 +5695,21 @@ function topologicalSort(
   return sorted;
 }
 
-// Count SPDX tags only inside actual comments. A plain regex over the source would incorrectly reject a string
+// Collect SPDX tags only inside actual comments. A plain regex over the source would incorrectly inspect a string
 // literal containing `SPDX-License-Identifier:`; this scanner skips quoted strings and handles line/block comments.
-function countSpdxIdentifiersInComments(code: string): number {
-  let count = 0;
+function spdxIdentifiersInComments(code: string): string[] {
+  const identifiers: string[] = [];
+  const collect = (comment: string): void => {
+    const pattern = /SPDX-License-Identifier\s*:/g;
+    const matches = [...comment.matchAll(pattern)];
+    for (let index = 0; index < matches.length; index += 1) {
+      const start = matches[index].index! + matches[index][0].length;
+      const newline = comment.indexOf('\n', start);
+      const next = matches[index + 1]?.index ?? comment.length;
+      const end = Math.min(newline < 0 ? comment.length : newline, next);
+      identifiers.push(comment.slice(start, end).trim().replace(/\\n$/, '').trim());
+    }
+  };
   for (let i = 0; i < code.length;) {
     const ch = code[i];
     if (ch === '"' || ch === "'") {
@@ -5716,20 +5727,20 @@ function countSpdxIdentifiersInComments(code: string): number {
     if (ch === '/' && code[i + 1] === '/') {
       const end = code.indexOf('\n', i + 2);
       const comment = code.slice(i + 2, end < 0 ? code.length : end);
-      count += comment.match(/SPDX-License-Identifier\s*:/g)?.length ?? 0;
+      collect(comment);
       i = end < 0 ? code.length : end + 1;
       continue;
     }
     if (ch === '/' && code[i + 1] === '*') {
       const end = code.indexOf('*/', i + 2);
       const comment = code.slice(i + 2, end < 0 ? code.length : end);
-      count += comment.match(/SPDX-License-Identifier\s*:/g)?.length ?? 0;
+      collect(comment);
       i = end < 0 ? code.length : end + 2;
       continue;
     }
     i += 1;
   }
-  return count;
+  return identifiers;
 }
 
 // Solidity requires directional formatting controls to balance within each individual comment or string token.
@@ -5858,7 +5869,8 @@ export function parseCode(
   // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
   // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
   const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
-  if (solidityImportCompat && !flattenedSource && countSpdxIdentifiersInComments(spdxSource) > 1) {
+  const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
+  if (solidityImportCompat && !flattenedSource && new Set(spdxIdentifiers).size > 1) {
     throw new Error(
       'Multiple SPDX license identifiers found in source file. '
       + 'Use "AND" or "OR" to combine multiple licenses.',

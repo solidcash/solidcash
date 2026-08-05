@@ -88,10 +88,13 @@ function entryOutputIndices(tx: Tx): number[] {
 
 function appendEntryOutput(tx: Tx, sourceIndex: number, commitment: Uint8Array): void {
   const source = tx.outputs[sourceIndex];
-  tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  const change = tx.outputs[tx.outputs.length - 1];
+  const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+  const appendedValue = liveRegtest ? 1200n : 1n;
+  change.valueSatoshis = liveRegtest ? change.valueSatoshis - appendedValue - 500n : 1n;
   tx.outputs.push({
     ...source,
-    valueSatoshis: 1n,
+    valueSatoshis: appendedValue,
     lockingBytecode: source.lockingBytecode.slice(),
     token: { ...source.token!, nft: { ...source.token!.nft!, commitment } },
   });
@@ -101,7 +104,9 @@ async function expectCovenantRejection(provider: Provider, hex: string): Promise
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
+  if (outcome.includes('error in evaluating input index')) {
+    expect(outcome).toContain('error in evaluating input index 0');
+  }
 }
 
 const forged = (): Uint8Array =>

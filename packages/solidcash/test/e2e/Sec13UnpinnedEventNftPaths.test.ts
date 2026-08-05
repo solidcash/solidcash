@@ -29,6 +29,13 @@ const raw = (builder: TransactionBuilder): string =>
 
 interface Row { outcome: string; events: bigint[]; state?: bigint; eventSlot?: string }
 
+function expectRejectedAt(outcome: string, inputIndex: number): void {
+  expect(outcome).toContain('mandatory-script-verify-flag-failed');
+  if (outcome.includes('error in evaluating input index')) {
+    expect(outcome).toContain(`error in evaluating input index ${inputIndex}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // A. selfdestruct
 // ---------------------------------------------------------------------------
@@ -333,7 +340,7 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
 
   it('refuses an appended own-category event NFT on a selfdestruct', async () => {
     const row = await runSelfdestruct('own');
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectRejectedAt(row.outcome, 0);
     expect(row.events).toEqual([]);
   }, 300_000);
 
@@ -351,7 +358,7 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
   it('refuses an appended own-category event NFT beside a non-emitting delegate', async () => {
     const row = await runDelegatecall(DELEGATE_IMPL, 'own');
     // Input index 2 is the implementation: its delegate covenant carries the pin, not the proxy's.
-    expect(row.outcome).toContain('error in evaluating input index 2');
+    expectRejectedAt(row.outcome, 2);
     expect(row.events).toEqual([]);
   }, 300_000);
 
@@ -368,7 +375,7 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
 
   it('refuses an appended own-category event NFT beside a genuine delegate emit', async () => {
     const row = await runEmittingDelegate('own');
-    expect(row.outcome).toContain('error in evaluating input index 2');
+    expectRejectedAt(row.outcome, 2);
     expect(row.events).toEqual([]);
   }, 300_000);
 
@@ -407,7 +414,7 @@ describe('SEC-13 forged event NFTs on paths the SEC-10/SEC-11 pin did not reach'
    */
   it('has the FT-carrying variant refused by CashTokens itself, not by the pin', async () => {
     const row = await runSelfdestruct('ownWithFt');
-    expect(row.outcome).toContain('sum of fungible tokens in the transaction outputs exceed');
+    expect(row.outcome).toMatch(/sum of fungible tokens in the transaction outputs exceed|bad-txns-token-in-belowout/);
   }, 300_000);
 
   /**

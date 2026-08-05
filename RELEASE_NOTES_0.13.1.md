@@ -70,6 +70,10 @@ diagnostic when the required transaction shape cannot be produced.
 - Generated-project gate: initialization 1/1, cache lifecycle 1/1, maintained harness 21/21.
 - Packed-package gate: six tarballs and maintained stateful golden path 3/3.
 - Application gates: mock-provider matrix 94/94 and serial BCHN v29 matrix 9/9.
+- Additional BCHN candidate evidence: event-path, multi-slot, and delegated-C2 focused files pass 24/24 after
+  accepting live-node rejection wording and making the fabricated multi-slot output relay-valid. The full serial
+  candidate aggregate is still incomplete: it was stopped after a later file ran for more than 14 minutes without
+  returning a result.
 - Integrity matrix: 81/81 executed tests with one documented skip, covering every stable physical state backend,
   external/delegate composition, and lifecycle elements. Experimental profiles remain outside the stable claim.
 - Solidity corpus: 2,698/2,805 retained positives and 1,835/2,158 rejected negatives, with no residual timeout;

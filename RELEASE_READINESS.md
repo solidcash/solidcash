@@ -7,8 +7,9 @@ Target: first public SolidCash release (`0.13.1`, unless the release version cha
 
 **NO-GO for `0.13.1` on the current findings-fix worktree.** The formerly separate Solidity-corpus, SolidHat,
 state-journal, and Layer-3/message-bus work is integrated, and the basic build/test/lint/package gates now pass.
-Release evidence is still incomplete in the higher-budget corpus, application-conformance, and full BCHN candidate
-matrix. The 2026-08-04 through 2026-08-05 reassessment found:
+Release evidence is still incomplete in the full BCHN candidate matrix. The higher-budget Solidity corpus and
+over-accepted-correctness queue are explicitly postponed and informational for this release, and application
+conformance is complete. The 2026-08-04 through 2026-08-05 reassessment found:
 
 - `yarn build` and `yarn lint` failed at baseline; both are fixed and pass on the findings-fix worktree as of
   2026-08-04;
@@ -30,8 +31,8 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   first-release deferrals, permanent BCH/model differences, or mock/debug API limitations, with no skipped release
   blocker remaining;
 - the findings-fix branch includes `testing-suite` compilation, lint, and tests in the root gates and runs CI on
-  `solidcash_v*`; the clean packed-package gate passes, while application conformance and the full BCHN candidate
-  matrix remain incomplete. Solidity-corpus strictness gaps remain measured but are deferred from release gating;
+  `solidcash_v*`; the clean packed-package and application-conformance gates pass, while the full BCHN candidate
+  matrix remains incomplete. Solidity-corpus strictness gaps remain measured but are deferred from release gating;
 - the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
 - all six publishable packages now pass a clean tarball-consumer gate: packed README/license and manifest targets
   are checked, the tarballs are installed together without workspace links, runtime and subpath imports execute,
@@ -43,7 +44,7 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   fixture remains a relaxed semantic stress shape and is not claimed as standard-relay fit.
 
 The immediate release sequence is therefore: finish the remaining protocol/covenant soundness audits, then
-define/run application conformance and the full BCHN candidate matrix. Over-accepted Solidity negative-fixture
+complete the full BCHN candidate matrix. Over-accepted Solidity negative-fixture
 strictness is a post-release compatibility backlog, not a current release blocker. The corpus result remains
 reproducible with its published fresh-worker retry tiers; the 30-second eight-worker primary result alone is
 load-sensitive.
@@ -155,6 +156,10 @@ it must not silently compile to incorrect covenant behavior.
   - Evidence: integration commits `83cfd13b`, `10cc6635`, `5fdc7b24`, and consolidation commit `1a533c88`.
 - [x] Merge the accepted bus/journal/binding implementation into `solidcash_v0.13.1`.
 - [ ] Run compiler, SDK, mocknet, VM/adversarial, and BCHN regtest coverage after integration.
+  - Compiler, SDK/mocknet, and the 81-test VM/integrity gate pass. A full serial `yarn test:regtest` attempt on
+    2026-08-05 exposed nine mock-vs-BCHN rejection-harness mismatches, which were corrected; the three affected
+    files then passed 24/24 on BCHN v29. The aggregate attempt was stopped after a later file spent more than 14
+    minutes without returning a result, so the full BCHN matrix remains incomplete.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
 
@@ -438,7 +443,7 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
+| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. A full serial candidate attempt found nine portable rejection-assertion gaps; after correction, the affected event-path, multi-slot, and delegated-C2 files pass 24/24 live. The aggregate was stopped after a later file ran over 14 minutes without a result, so this is not a full-matrix pass | `yarn test:regtest`; focused live retries | 2026-08-05 |
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |

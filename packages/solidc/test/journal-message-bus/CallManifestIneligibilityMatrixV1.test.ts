@@ -13,6 +13,7 @@ const MATRIX = [
   ['lifecycle/upgrade/selfdestruct/split/merge', 'lifecycle-or-unsafe-handler', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
   ['unsafe', 'lifecycle-or-unsafe-handler', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
   ['opaque assembly call/state effects', 'opaque-assembly-effects-callManifest-ineligible', 'MESSAGE_BUS_EFFECT_UNSUMMARIZABLE'],
+  ['consumed low-level return with state effects', 'return-consuming-low-level-call-route-not-enabled', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
   ['arbitrary foreign `try/catch`', 'foreign-try-catch-callManifest-ineligible', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
   ['loops', 'unbounded-external-call-loop-callManifest-ineligible', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
   ['staticcall', 'has non-static descendant', 'MESSAGE_BUS_UNSUPPORTED_CONSTRUCT'],
@@ -20,7 +21,7 @@ const MATRIX = [
 
 describe('atomic route ineligibility matrix', () => {
   it('pins compiler-owned exclusions to exact reasons and structured classes', () => {
-    for (const [, reason, code] of MATRIX.slice(0, 5)) {
+    for (const [, reason, code] of MATRIX.slice(0, 6)) {
       expect(compiler, `compiler does not publish '${reason}'`).toContain(`'${reason}'`);
       expect(classifyMessageBusRejection(reason)).toBe(code);
     }

@@ -1019,6 +1019,19 @@ function synthesizeMessageBusRoute(
     node instanceof MethodCallNode
       && node.object instanceof IdentifierNode
       && ['abi', 'bytes', 'string'].includes(node.object.name);
+  let contractConsumesLowLevelReturn = false;
+  for (const candidate of contract.functions) {
+    walkInvocationAst(candidate.body, (node) => {
+      if (node instanceof LowLevelCallNode
+        || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)
+        || (node instanceof MethodCallNode
+          && ['call', 'staticcall', 'delegatecall'].includes(node.methodName))
+        || (node instanceof FunctionCallNode
+          && /\.(?:call|staticcall|delegatecall)$/.test(node.identifier.name))) {
+        contractConsumesLowLevelReturn = true;
+      }
+    });
+  }
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -1502,6 +1515,7 @@ function synthesizeMessageBusRoute(
     const reachesCollection = [...footprint.reads, ...footprint.writes]
       .some((resource) => resource.startsWith('collection:'));
     let hasTokenContainerEffect = false;
+    let consumesLowLevelReturn = false;
     for (const name of collectNamedFunctionClosure(fn, byName)) {
       for (const candidate of byName.get(name) ?? []) {
         const candidateLocals = locallyBoundNames(candidate);
@@ -1509,6 +1523,23 @@ function synthesizeMessageBusRoute(
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
           if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
+          // LowLevelCallNode is an expression form: unlike LowLevelCallStatementNode, its tuple result is consumed.
+          // Some AST walkers expose the call directly without revisiting it through its TupleAssignmentNode parent.
+          if (node instanceof LowLevelCallNode
+            || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)) {
+            consumesLowLevelReturn = true;
+          }
+          if (node instanceof TupleAssignmentNode) {
+            const call = node.tuple;
+            if ((call instanceof MethodCallNode
+                && ['call', 'staticcall', 'delegatecall'].includes(call.methodName))
+              || (call instanceof FunctionCallNode
+                && /\.(?:call|staticcall|delegatecall)$/.test(call.identifier.name))
+              || call instanceof LowLevelCallNode
+              || (call instanceof ExternalFunctionCallNode && call.opaqueReturn)) {
+              consumesLowLevelReturn = true;
+            }
+          }
           // Before symbol resolution, Solidity-compatible bare state writes
           // are still ordinary AssignNodes and are absent from the footprint.
           if (node instanceof AssignNode && dynamicState.has(node.identifier.name)
@@ -1522,6 +1553,16 @@ function synthesizeMessageBusRoute(
     const readsTokenContainer = footprint.reads.some((resource) => resource.startsWith('collection:tokens:'));
     if (!reason && hasTokenContainerEffect && !readsTokenContainer) {
       reason = 'token-container-effect-route-not-enabled';
+    }
+    // A low-level return is authenticated through the owning handler's external-return slot. If that handler
+    // itself returns a value or carries state/event/value effects, the current message-bus clone is inlined into
+    // the wrapper while its slot layout remains on the source handler; the relocated call would otherwise read an
+    // unauthenticated result.
+    if (!reason && (consumesLowLevelReturn || (fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
+      && (fn.returnTypes.length > 0
+        || footprint.writes.length > 0
+        || footprint.effects.some((effect) => effect !== 'external-call'))) {
+      reason = 'return-consuming-low-level-call-route-not-enabled';
     }
     // Atomic participants authenticate token-container resources and settlements directly in the
     // messageEnvelope callManifest. Slotless token effects remain refused later by the existing physical-layout guard.

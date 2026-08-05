@@ -4983,6 +4983,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!node || seen.has(node)) return false;
       seen.add(node);
       if (node instanceof VariableDefinitionNode && node.name === localName) return true;
+      if (node instanceof TupleAssignmentNode
+        && node.elements.some((element) => element.name === localName && !element.skip && !element.existing)) return true;
       return Object.values(node).some((value) => value instanceof Node ? containsDecl(value, seen)
         : Array.isArray(value) && value.some((item) => item instanceof Node && containsDecl(item, seen)));
     };
@@ -5048,6 +5050,25 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         };
         findCounter(node.block);
+        // Ordinary `for` loops are desugared to a while whose condition retains the source induction variable.
+        // Prefer the explicit tail-loop ordinal above, then use the canonical condition's first identifier.
+        if (!result) {
+          const findConditionCounter = (candidate: Node | undefined, visited = new Set<Node>()): void => {
+            if (!candidate || result || visited.has(candidate)) return;
+            visited.add(candidate);
+            if (candidate instanceof IdentifierNode && candidate.name !== localName) {
+              result = candidate;
+              return;
+            }
+            for (const value of Object.values(candidate)) {
+              if (value instanceof Node) findConditionCounter(value, visited);
+              else if (Array.isArray(value)) {
+                for (const item of value) if (item instanceof Node) findConditionCounter(item, visited);
+              }
+            }
+          };
+          findConditionCounter(node.condition);
+        }
         return;
       }
       for (const value of Object.values(node)) {
@@ -5198,13 +5219,12 @@ export default class SymbolTableTraversal extends AstTraversal {
           && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
         const canNeutralize = initExpr instanceof CastNode || legacyInterfaceCast
           || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
-        // A tail-recursive loop may receive its next callee from another contract (`P p = factory.pair(x)`).
-        // The local is live at the call site but cannot survive to the function epilogue. Give the call a
-        // per-iteration target witness while retaining `addressParam`: codegen binds the witness element to this
-        // exact runtime return value before verifying the co-spent callee, so the spender cannot substitute a
-        // different target. Unlike a pure computed initializer, the producing external call stays intact.
-        if (resolvedInit instanceof ExternalFunctionCallNode && this.loopDeclaredLocals.has(addressParam)) {
-          const loopIdx = this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
+        // A loop may receive its per-iteration callee from another contract or decode it from the current action
+        // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
+        // binds that witness to the live runtime local before verifying the co-spent callee.
+        if (resolvedInit && this.loopDeclaredLocals.has(addressParam)) {
+          const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
+            ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;

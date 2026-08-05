@@ -42,9 +42,9 @@ describe('large-contract state-local splitting', () => {
           (bool ok,) = callee.call(payload);
           require(ok);
         }
-        function set(int next, address who, bytes memory data) external {
+        function set(int next, address who, bytes[] memory data) external {
           require(masterContract.approved(who));
-          invoke(data);
+          for (uint i = 0; i < data.length; i++) { invoke(data[i]); }
           value = next;
         }
       }`, { solidityImportCompat: true, forceStateful: true, forceSplit: true });

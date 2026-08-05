@@ -46,7 +46,13 @@ if (process.env.REGTEST_LIST_ONLY === 'true') {
 }
 
 let completed = 0;
-if (existsSync(progressPath)) {
+const requestedStart = process.env.REGTEST_START_AT;
+if (requestedStart !== undefined) {
+  completed = Number.parseInt(requestedStart, 10);
+  if (!Number.isSafeInteger(completed) || completed < 0 || completed >= files.length || completed % batchSize !== 0) {
+    throw new Error('REGTEST_START_AT must be a zero-based file index aligned to REGTEST_BATCH_SIZE.');
+  }
+} else if (existsSync(progressPath)) {
   const progress = JSON.parse(readFileSync(progressPath, 'utf8'));
   if (progress.fingerprint === fingerprint && progress.batchSize === batchSize) completed = progress.completed;
 }

@@ -158,8 +158,14 @@ it must not silently compile to incorrect covenant behavior.
 - [ ] Run compiler, SDK, mocknet, VM/adversarial, and BCHN regtest coverage after integration.
   - Compiler, SDK/mocknet, and the 81-test VM/integrity gate pass. A full serial `yarn test:regtest` attempt on
     2026-08-05 exposed nine mock-vs-BCHN rejection-harness mismatches, which were corrected; the three affected
-    files then passed 24/24 on BCHN v29. The aggregate attempt was stopped after a later file spent more than 14
-    minutes without returning a result, so the full BCHN matrix remains incomplete.
+    files then passed 24/24 on BCHN v29. The original aggregate attempt was stopped after a later file spent more
+    than 14 minutes without returning a result. The runner now starts a fresh Vitest process for each eight-file
+    batch and records resumable progress, avoiding accumulation in one long-lived compiler process. On exact
+    commit `2e1014f0`, batches 1 through 7 passed 56/449 files. Batch 8 reached 221/222 passing tests and exposed
+    one mock-vs-live rejection-message mismatch in `UserLibrary.test.ts`; its corrected assertion passes the
+    focused case in both mock and BCHN modes. The full BCHN matrix remains incomplete. Resume diagnostic coverage
+    at batch 8 with `REGTEST_START_AT=56 yarn test:regtest`; the final release evidence must still run plain
+    `yarn test:regtest` from zero on the exact candidate revision.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
 
@@ -443,7 +449,7 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. A full serial candidate attempt found nine portable rejection-assertion gaps; after correction, the affected event-path, multi-slot, and delegated-C2 files pass 24/24 live. The aggregate was stopped after a later file ran over 14 minutes without a result, so this is not a full-matrix pass | `yarn test:regtest`; focused live retries | 2026-08-05 |
+| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. The matrix now runs in resumable eight-file processes. Exact commit `2e1014f0` passed batches 1–7 (56/449 files); batch 8 passed 221/222 tests before a portable `UserLibrary` rejection-message mismatch, whose correction passes focused mock and live checks. Resume diagnostics at file 56; a from-zero exact-candidate pass is still required | `REGTEST_START_AT=56 yarn test:regtest`; final `yarn test:regtest` | 2026-08-05 |
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |

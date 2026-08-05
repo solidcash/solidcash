@@ -1371,6 +1371,10 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
+  // destination width (e.g. `d & -d` in FullMath).
+  legacyWrappingNegation = false;
+
   constructor(
     public operator: UnaryOperator,
     public expression: ExpressionNode,

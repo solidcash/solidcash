@@ -2610,7 +2610,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         } else {
           expectInt(node, node.expression.type);
           if (this.solidityImportCompat && node.expression.type instanceof IntType
-            && !node.expression.type.signed) {
+            && !node.expression.type.signed && !node.legacyWrappingNegation) {
             throw new TypeError(
               node,
               node.expression.type,

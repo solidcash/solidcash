@@ -664,6 +664,8 @@ describe('bounded integer state assignments and unsigned negation', () => {
     expect(() => cc('contract C { function f(uint256 x) public pure { -x; } }'))
       .toThrow(/Unary negation cannot be applied to unsigned type/);
     expect(cc('contract C { function f(int256 x) public pure returns (int256) { return -x; } }')).toBe('C');
+    expect(cc('pragma solidity 0.6.12; contract C {'
+      + ' function f(uint256 x) public pure returns (uint256) { return -x; } }')).toBe('C');
   });
 });
 

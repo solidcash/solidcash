@@ -8046,7 +8046,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Emit overflow check for negation of bounded int types
     if (node.operator === UnaryOperator.NEGATE && node.type instanceof IntType) {
-      this.emitIntBoundsCheck(node.type, locationData);
+      if (node.legacyWrappingNegation) this.emitIntWrap(node.type, locationData);
+      else this.emitIntBoundsCheck(node.type, locationData);
     }
     if (node.operator === UnaryOperator.NEGATE && node.type instanceof FixedType) {
       this.emitFixedBoundsCheck(node.type, locationData);

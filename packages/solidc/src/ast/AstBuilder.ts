@@ -4399,6 +4399,8 @@ export default class AstBuilder
       return negated;
     }
     const unaryOp = new UnaryOpNode(operator, expression);
+    unaryOp.legacyWrappingNegation = this.solidityImportCompat
+      && this.usesLegacySolidityNow() && operator === UnaryOperator.NEGATE;
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
   }

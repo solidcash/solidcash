@@ -1,6 +1,6 @@
 # SolidCash First-Release Readiness Tracker
 
-Last reviewed: 2026-08-04  
+Last reviewed: 2026-08-05
 Target: first public SolidCash release (`0.13.1`, unless the release version changes)
 
 ## Current assessment
@@ -25,9 +25,12 @@ basic release gates. A fresh 2026-08-04 run found:
 - the findings-fix branch now includes `testing-suite` compilation, lint, and tests in the root gates and runs CI
   on `solidcash_v*`, but corpus, packed-package, application-conformance, and BCHN gates remain incomplete; and
 - the findings-fix branch aligns all publishable package versions and internal ranges at 0.13.1.
+- all six publishable packages now pass a clean tarball-consumer gate: packed README/license and manifest targets
+  are checked, the tarballs are installed together without workspace links, runtime and subpath imports execute,
+  public types compile, all four CLIs answer `--help`, and the packed compiler produces an SDK-consumable artifact.
 
 The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; classify
-the skipped tests and prove the remaining covenant/delegate boundaries; then run the packed-package,
+the skipped tests and prove the remaining covenant/delegate boundaries; then run the full packed golden path,
 application, and BCHN candidate matrix.
 
 This is the maintained overview for the Solidity-parity and release-readiness effort. It is intentionally
@@ -213,9 +216,15 @@ it must not silently compile to incorrect covenant behavior.
 ### Packaging and release engineering
 
 - [x] Align publishable package versions and internal dependency ranges at 0.13.1.
-- [ ] Build the exact publish tarballs and install them into an empty consumer project.
+- [x] Build the exact publish tarballs and install them into an empty consumer project.
+  - `yarn test:package-smoke` packs all six release packages, validates README/license and every concrete
+    main/types/bin/export target, installs only those tarballs into a temporary consumer, exercises runtime and
+    subpath imports, compiles public types, checks all CLIs, and compiles/constructs a contract through packed APIs.
 - [ ] Run the golden-path smoke test against the packed artifacts rather than workspace links.
-- [ ] Verify package exports, type declarations, source maps, licenses, READMEs, and dependency ranges.
+- [x] Verify package exports, type declarations, source maps, licenses, READMEs, and dependency ranges.
+  - The packed smoke covers exports, type declarations, licenses, READMEs, source maps for every emitted
+    JavaScript file, installed versions, and internal dependency resolution. Source maps are no longer excluded
+    from the compiler, SDK, and utils tarballs.
 - [ ] Produce release notes separating supported parity, experimental features, deferrals, and breaking changes.
 - [ ] Tag the exact tested commit and record the corpus/regtest results in the release notes.
 
@@ -306,6 +315,6 @@ Update this table whenever a release candidate is cut.
 | BCHN regtest | Not run | — | — |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
-| Packed-package consumer smoke test | Not run | — | — |
+| Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
 | Known `.skip`/`.todo` review | **FAIL** — 24 occurrences remain unclassified | `1a533c88` | 2026-08-04 |

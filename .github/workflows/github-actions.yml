@@ -46,6 +46,9 @@ jobs:
       - name: Run maintained examples
         run: yarn examples
 
+      - name: Test packed release packages in a clean consumer
+        run: yarn test:package-smoke
+
       - name: Upload coverage reports to Codecov
         uses: codecov/codecov-action@v5
         with:

@@ -34,6 +34,9 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   public types compile, all four CLIs answer `--help`, and the packed compiler produces an SDK-consumable artifact.
 - BCHN v29 regtest now proves BIP68 block-height and 512-second MTP ages end to end: the covenant rejects a short
   sequence, BCHN rejects valid sequences while their prevouts are immature, and the spends succeed after maturity.
+- BCHN v29 with mainnet standard relay policy accepts all five atomic message-bus composition capstones and the
+  published 24-input, eight-participant maximum at 94,651 serialized bytes. The distinct 32-input resource-heavy
+  fixture remains a relaxed semantic stress shape and is not claimed as standard-relay fit.
 
 The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; finish the
 remaining soundness audits and compatibility manifest; then define/run application conformance and the full BCHN
@@ -321,7 +324,7 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,080 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — BCHN v29 BIP68 height and 512-second MTP covenant/immaturity/maturity proofs pass; full release-candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
+| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |

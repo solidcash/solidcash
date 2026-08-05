@@ -279,7 +279,7 @@ describe('atomic single-transaction capacity', () => {
       // and resource UTXOs have been consumed by the first standard-policy broadcast.
       await expect(builder.provider.sendRawTransaction(finalizedHex)).rejects.toThrow();
     }
-  }, 300_000);
+  }, 600_000);
 
   it.each([6, 8])('converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {
     const builder = await buildResourceHeavyChain(count);

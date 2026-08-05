@@ -104,6 +104,29 @@ describe('inferred message-bus batching for repeated external callees', () => {
       .toMatchObject({ eligible: true });
   });
 
+  it('reconstructs deterministic raw calldata from constructor and handler arguments', () => {
+    const artifact = compileString(`
+      interface IERC20 { function transfer(address to, uint amount) external returns (bool); }
+      library SafeTransfer {
+        function send(address token, address to, uint amount) internal {
+          (bool success, bytes data) = token.call(
+            abi.encodeWithSelector(IERC20.transfer.selector, to, amount)
+          );
+          require(success);
+        }
+      }
+      contract Caller(address token, address vault) {
+        function withdraw(uint amount) public {
+          SafeTransfer.send(token, vault, amount);
+          require(amount >= 0);
+        }
+      }
+    `, { forceStateful: true, messageBus: true });
+
+    expect(artifact.contractName).toBe('Caller');
+    expect(artifact.bytecode.length).toBeGreaterThan(0);
+  });
+
   it('rejects explicit messageBus false when one UTXO owner must serve repeated calls', () => {
     expect(() => compileString(SOURCE, { forceStateful: true, messageBus: false }))
       .toThrow(/MESSAGE_BUS_REQUIRED.*cannot be built with `messageBus: false`/);

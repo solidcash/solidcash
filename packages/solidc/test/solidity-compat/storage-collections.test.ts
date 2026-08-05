@@ -1180,6 +1180,16 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info?.keyDecodeTupleIndex).toBe(0);
     expect(info?.valueRuntimeExpression).toBe(true);
   });
+  it('allocates independent C2 regions for multiple conditional collections in one runtime loop', () => {
+    const art = compileString('contract C { mapping(address=>uint) a; mapping(address=>uint) b;'
+      + ' function cook(uint[] actions,bytes[] datas) public { for(uint i=0;i<actions.length;i=i+1) {'
+      + ' if(actions[i]==1){(address k,uint v)=abi.decode(datas[i],(address,uint));a[k]=a[k]+v;}'
+      + ' else if(actions[i]==2){(address k,uint v)=abi.decode(datas[i],(address,uint));b[k]=b[k]+v;}'
+      + '} require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    const infos = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo ?? [];
+    expect(infos.map((info) => info.collection)).toEqual(['a', 'b']);
+    expect(infos.map((info) => info.predicateEquals)).toEqual(['1', '2']);
+  });
   it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
     expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
       .toThrow(/C2 linked-list transition generator/);

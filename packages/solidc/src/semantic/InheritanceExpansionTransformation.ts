@@ -18,6 +18,8 @@ import {
   TupleIndexOpNode,
   AbiEncodeNode,
   AbiEncodePackedNode,
+  AbiEncodeWithSelectorNode,
+  AbiEncodeWithSignatureNode,
   AbiDecodeNode,
   AbiDecodeAtNode,
   InstantiationNode,
@@ -1820,7 +1822,7 @@ function flattenedIndexedSubstitution(
  * Recursively substitute IdentifierNode references in an expression tree.
  * Returns a new expression if substitution occurred, otherwise returns the original.
  */
-function substituteInExpression(
+export function substituteInExpression(
   expr: ExpressionNode,
   subs: Map<string, ExpressionNode>,
 ): ExpressionNode {
@@ -1896,6 +1898,18 @@ function substituteInExpression(
   }
 
   if (expr instanceof AbiEncodePackedNode) {
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    return expr;
+  }
+
+  if (expr instanceof AbiEncodeWithSelectorNode) {
+    expr.selector = substituteInExpression(expr.selector, subs);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    return expr;
+  }
+
+  if (expr instanceof AbiEncodeWithSignatureNode) {
+    expr.signature = substituteInExpression(expr.signature, subs);
     expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
     return expr;
   }

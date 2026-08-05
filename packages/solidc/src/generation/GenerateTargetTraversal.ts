@@ -195,6 +195,8 @@ import {
 } from '../Errors.js';
 import { analyzeInlineAssembly } from '../semantic/InlineAssemblyDiagnostics.js';
 import { analyseContractInvocations } from '../analysis/InvocationAnalysis.js';
+import { cloneNode } from '../ast/clone.js';
+import { substituteInExpression } from '../semantic/InheritanceExpansionTransformation.js';
 
 // Upper bound on the element count of a bounded array whose default value is materialized inline. A covenant
 // array maps to transaction inputs/outputs, so it cannot exceed the tx input/output count (~3119 minimal outputs
@@ -677,6 +679,24 @@ class NftIndexCollector extends AstTraversal {
   }
 }
 
+interface SortedUpsertLoopContext {
+  collection: string;
+  grouped: boolean;
+  addrName: string;
+  inCountName: string;
+  outCountName: string;
+  inputBaseName: string;
+  outputBaseName: string;
+  op: '+' | '-' | 'set' | 'delete';
+  repointName: string;
+  mergeDebitSlot: number;
+  pendingRepoint: boolean;
+  pendSlotName: string;
+  pendValName: string;
+  pendNextName: string;
+  pendActive: boolean;
+}
+
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
   sourceMap: string;
@@ -940,6 +960,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
   private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
+  // A runtime dispatcher loop can touch several conditional C2 collections. Positions in the shared trailing
+  // region advance globally in source order, while each collection keeps independent authenticated counts and
+  // topology registers.
+  private sortedUpsertInputBaseName = '(sorted_upsert_input_base)';
+  private sortedUpsertOutputBaseName = '(sorted_upsert_output_base)';
+  private sortedUpsertLoopContexts = new Map<string, SortedUpsertLoopContext>();
+  private sortedUpsertGrouped = false;
   private keccakLoopCounterName: string = '(loop_keccak_counter)'; // keccak side-cars read-so-far (dynamic keccak loop)
   private keccakLoopActive: boolean = false;        // a dynamic keccak256 loop counter is live on the stack
   private ecrecoverLoopCounterName: string = '(loop_ecrecover_counter)'; // recovery pairs read-so-far (dynamic loop)
@@ -5205,7 +5232,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // co-spends the bracketing predecessor + mints one NEW node). Takes precedence over the default entry-mint loop.
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
     // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
-    const loopHasSortedUpsert = !loopHasSortedInsert && this.emitSortedUpsertLoopSetup(node.block, locationData);
+    const sortedUpsertContexts = !loopHasSortedInsert
+      ? this.emitSortedUpsertLoopSetups(node.block, locationData) : [];
+    const loopHasSortedUpsert = sortedUpsertContexts.length > 0;
     // Loop mapping write: precompute the entry NFT address + a runtime counter BEFORE OP_BEGIN (see visitWhile).
     const loopHasEntryWrite = !loopHasSortedInsert && !loopHasSortedUpsert
       && this.emitLoopEntryWriteSetup(node.block, locationData);
@@ -5249,7 +5278,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Pin the entry input/output counts (== N updates), drop the upsert-loop temps.
     if (loopHasSortedUpsert) {
-      this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
+      this.emitSortedUpsertLoopTeardowns(sortedUpsertContexts,
+        { location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic ecrecover / keccak loop counters now the loop is done (reverse push order).
     if (loopHasEcrecover) {
@@ -5368,7 +5398,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (takes precedence).
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
     // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
-    const loopHasSortedUpsert = !loopHasSortedInsert && this.emitSortedUpsertLoopSetup(node.block, locationData);
+    const sortedUpsertContexts = !loopHasSortedInsert
+      ? this.emitSortedUpsertLoopSetups(node.block, locationData) : [];
+    const loopHasSortedUpsert = sortedUpsertContexts.length > 0;
     // Loop mapping write: precompute the entry NFT address + a runtime counter (entries-written-so-far) BEFORE
     // OP_BEGIN; emitLoopEntryWrite verifies + increments per iteration, the teardown pins the entry-output count.
     const loopHasEntryWrite = !loopHasSortedInsert && !loopHasSortedUpsert
@@ -5433,7 +5465,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Pin the entry input/output counts (== N updates), drop the upsert-loop temps.
     if (loopHasSortedUpsert) {
-      this.emitSortedUpsertLoopTeardown({ location: node.location, positionHint: PositionHint.END });
+      this.emitSortedUpsertLoopTeardowns(sortedUpsertContexts,
+        { location: node.location, positionHint: PositionHint.END });
     }
     // Drop the dynamic ecrecover / keccak loop counters now the loop is done (reverse push order).
     if (loopHasEcrecover) {
@@ -12981,14 +13014,65 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     },
   ): number {
     const { disposition, parametersAreCallArguments = false } = verification;
+    const materializeGraphExpression = (expression: ExpressionNode): ExpressionNode => {
+      const substitutions = new Map<string, ExpressionNode>(handler.parameters.map((parameter, index) =>
+        [parameter.name, parameters[index]]));
+      const seen = new Set<VariableDefinitionNode>();
+      const collector = new (class extends AstTraversal {
+        visitIdentifier(identifier: IdentifierNode): Node {
+          const definition = identifier.definition?.definition;
+          if (definition instanceof VariableDefinitionNode && definition.expression && !seen.has(definition)) {
+            seen.add(definition);
+            substitutions.set(identifier.name, definition.expression);
+            this.visit(definition.expression);
+          }
+          return identifier;
+        }
+      })();
+      collector.visit(expression);
+      let resolved = cloneNode(expression);
+      // A helper-local can point at another helper-local. Repeating substitution to
+      // the number of discovered bindings resolves that finite acyclic initializer
+      // chain while the collector's `seen` guard prevents malformed cycles.
+      for (let i = 0; i <= substitutions.size; i += 1) {
+        resolved = substituteInExpression(resolved, substitutions);
+      }
+      return resolved;
+    };
     const rawCall = slot.interfaceName === '__raw__' && slot.functionName === '__raw__';
     if (!rawCall && !slot.compileTimeSelector && !slot.runtimeSelector) {
       throw new Error('Graph emission call lacks an authenticated selector');
     }
     const evaluatedTargetExpression = parametersAreCallArguments && slot.sourceCallNode !== undefined;
+    const constructorTarget = !parametersAreCallArguments
+      && slot.addressSource?.kind === 'constructorArg'
+      ? slot.addressSource.paramName : undefined;
+    // Solidity library inlining routes an immutable/state-bound low-level receiver through
+    // `__extaddr_ll_<name>`. Graph verification runs before the cloned handler body has
+    // materialized that local, but the authenticated constructor value is already in the
+    // wrapper frame. Recover only that compiler-owned spelling: use an existing constructor
+    // value when present, otherwise perform the ordinary authenticated state-field read.
+    const inlinedConstructorTarget = !parametersAreCallArguments
+      && slot.addressParam?.startsWith('__extaddr_ll_')
+      && this.stack.includes(slot.addressParam.slice('__extaddr_ll_'.length))
+      ? slot.addressParam.slice('__extaddr_ll_'.length) : undefined;
+    const inlinedStateTarget = !parametersAreCallArguments
+      && slot.addressParam?.startsWith('__extaddr_ll_')
+      ? this.stateVariables.find((stateVariable) =>
+        stateVariable.name === slot.addressParam!.slice('__extaddr_ll_'.length))
+      : undefined;
     let evaluatedSelectorExpression = false;
     if (evaluatedTargetExpression) {
       this.visit(slot.sourceCallNode!.addressExpression);
+    } else if (constructorTarget || inlinedConstructorTarget) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(constructorTarget ?? inlinedConstructorTarget!))), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else if (inlinedStateTarget) {
+      const access = new StateAccessNode(inlinedStateTarget.name);
+      access.stateVariable = inlinedStateTarget;
+      access.type = inlinedStateTarget.type;
+      access.location = slot.sourceCallNode?.location ?? handler.location;
+      this.visitStateAccess(access);
     } else if (slot.addressParam) {
       const parameterIndex = handler.parameters.findIndex((parameter) =>
         parameter.name === slot.addressParam);
@@ -13039,7 +13123,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       const source = slot.argSources?.[0];
       const payload = parametersAreCallArguments
         ? parameters[0]
-        : source?.paramIndex === undefined ? undefined : parameters[source.paramIndex];
+        : source?.kind === 'expression' && slot.sourceCallNode?.parameters[0]
+          ? materializeGraphExpression(slot.sourceCallNode.parameters[0])
+          : source?.paramIndex === undefined ? undefined : parameters[source.paramIndex];
       if (!payload) throw new Error('Raw graph call lacks its canonical calldata parameter');
       this.visit(payload);
       this.emit(encodeInt(4n), locationData);
@@ -13080,7 +13166,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(2);
     this.pushToStack('(__graph_target_selector)');
 
-    const argumentParameters = parametersAreCallArguments ? parameters : (slot.argSources ?? []).map((source) => {
+    const argumentParameters = parametersAreCallArguments ? parameters : (slot.argSources ?? []).map((source, index) => {
+      if (source.kind === 'expression' && slot.sourceCallNode?.parameters[index]) {
+        return materializeGraphExpression(slot.sourceCallNode.parameters[index]);
+      }
       if (source.kind !== 'forward' || source.paramIndex === undefined) {
         throw new Error('Graph argument source was not proven to be forwarded');
       }
@@ -13105,6 +13194,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       for (let i = 0; i < callManifestArgumentParameters.length; i++) {
         let parameter = callManifestArgumentParameters[i];
         if (parametersAreCallArguments) {
+          parameter = this.visit(parameter);
+          callManifestArgumentParameters[i] = parameter;
+        } else if ((slot.argSources?.[i]?.kind) === 'expression') {
           parameter = this.visit(parameter);
           callManifestArgumentParameters[i] = parameter;
         } else {
@@ -14742,9 +14834,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return this.emitSortedInsertLoopBody(node);
       }
       // Per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s existing entry.
-      if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name
-        && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
-        return this.emitSortedUpsertLoopBody(node);
+      const upsertContext = this.sortedUpsertLoopContexts.get(node.collection.name);
+      if (upsertContext && !node.arrayIndex && !node.arrayPush && !node.arrayPop) {
+        this.activateSortedUpsertLoopContext(upsertContext);
+        const emitted = this.emitSortedUpsertLoopBody(node);
+        this.updateSortedUpsertLoopContext(upsertContext);
+        return emitted;
       }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
     }
@@ -14755,7 +14850,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (int/bool/bytesN); composite keys are hashed together (emitSortedKeyHash).
     if (node.collection?.sorted && !node.arrayIndex && !node.arrayPush && !node.arrayPop
       && this.sortedValueKind(node.collection.innermostValueType) !== null) {
-      return this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
+      const context = this.sortedUpsertLoopContexts.get(node.collection.name);
+      if (context?.pendingRepoint) this.activateSortedUpsertLoopContext(context);
+      const emitted = this.emitSortedValueUpsert(node, () => { node.expression = this.visit(node.expression); });
+      if (context) this.updateSortedUpsertLoopContext(context);
+      return emitted;
     }
     if (node.collection?.sorted && (node.arrayIndex || node.arrayPush || node.arrayPop)
       && this.isChunkableValue(node.collection.innermostValueType)) {
@@ -15658,8 +15757,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       // Per-iteration DELETE loop `for(i) delete m[k[i]]` (batch nullify): route to the upsert loop (op=delete) - each
       // iteration co-spends k[i]'s existing entry + mints it nullified (value = default); absent keys fail closed.
-      if (this.sortedUpsertLoopActive && this.sortedUpsertLoopCollection === node.collection.name) {
-        return this.emitSortedUpsertLoopBody(node);
+      const upsertContext = this.sortedUpsertLoopContexts.get(node.collection.name);
+      if (upsertContext) {
+        this.activateSortedUpsertLoopContext(upsertContext);
+        const emitted = this.emitSortedUpsertLoopBody(node);
+        this.updateSortedUpsertLoopContext(upsertContext);
+        return emitted;
       }
       // A C2 `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
       // case visitMappingAssign fails closed on. emitSortedValueUpsert co-spends the entry at a FIXED block slot, so
@@ -16857,13 +16960,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // sorted int mapping whose expression is a self-read RMW (BinaryOp with left = a read of the SAME m[k], op
   // PLUS/MINUS). By GTT an INVARIANT-key RMW loop is already lifted out by CacheMappingEntryInLoop, so a sorted RMW
   // loop write that reaches here has a VARYING key (k[i]) - each iteration co-spends k[i]'s OWN existing entry.
-  private findSortedUpsertLoopWrite(node: Node): MappingAssignNode | MappingDeleteNode | null {
+  private findSortedUpsertLoopWrite(
+    node: Node, excludedCollections: ReadonlySet<string> = new Set(),
+  ): MappingAssignNode | MappingDeleteNode | null {
     let found: MappingAssignNode | MappingDeleteNode | null = null;
     const seen = new WeakSet<object>();
     const walk = (n: Node): void => {
       if (found || !n || seen.has(n)) return;
       seen.add(n);
       if (n instanceof MappingAssignNode && n.collection?.sorted
+        && !excludedCollections.has(n.collection.name)
         && !n.arrayIndex && !n.arrayPush && !n.arrayPop) {
         const upsertVk = this.sortedValueKind(n.collection.innermostValueType);
         const e = n.expression;
@@ -16887,6 +16993,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Per-iteration DELETE `for(i) delete m[k[i]]` (batch nullify): route through the upsert loop with op=delete
       // (UPDATE-to-default; absent keys fail closed). The key varying-ness is validated in setup (varyingArrayParam).
       if (n instanceof MappingDeleteNode && n.collection?.sorted
+        && !excludedCollections.has(n.collection.name)
         && this.sortedValueKind(n.collection.innermostValueType) === 'int') {
         found = n; return;
       }
@@ -17017,11 +17124,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * output[master+blockSize+counter]. Records the varying key array + value array so the SDK co-spends each existing
    * entry (SortedList.find) and mints its updated commitment. Returns false when no such loop write / already active.
    */
-  private emitSortedUpsertLoopSetup(block: Node, loc: SingleLocationData): boolean {
+  private captureSortedUpsertLoopContext(): SortedUpsertLoopContext {
+    return {
+      collection: this.sortedUpsertLoopCollection!,
+      grouped: this.sortedUpsertGrouped,
+      addrName: this.sortedUpsertLoopAddrName,
+      inCountName: this.sortedUpsertLoopCounterName,
+      outCountName: this.sortedUpsertLoopOutCounterName,
+      inputBaseName: this.sortedUpsertInputBaseName,
+      outputBaseName: this.sortedUpsertOutputBaseName,
+      op: this.sortedUpsertLoopOp,
+      repointName: this.sortedUpsertLoopRepointName,
+      mergeDebitSlot: this.sortedUpsertMergeDebitSlot,
+      pendingRepoint: this.sortedUpsertPendingRepoint,
+      pendSlotName: this.sortedUpsertPendSlotName,
+      pendValName: this.sortedUpsertPendValName,
+      pendNextName: this.sortedUpsertPendNextName,
+      pendActive: this.sortedUpsertPendActive,
+    };
+  }
+
+  private activateSortedUpsertLoopContext(context: SortedUpsertLoopContext): void {
+    this.sortedUpsertLoopCollection = context.collection;
+    this.sortedUpsertGrouped = context.grouped;
+    this.sortedUpsertLoopAddrName = context.addrName;
+    this.sortedUpsertLoopCounterName = context.inCountName;
+    this.sortedUpsertLoopOutCounterName = context.outCountName;
+    this.sortedUpsertInputBaseName = context.inputBaseName;
+    this.sortedUpsertOutputBaseName = context.outputBaseName;
+    this.sortedUpsertLoopOp = context.op;
+    this.sortedUpsertLoopRepointName = context.repointName;
+    this.sortedUpsertMergeDebitSlot = context.mergeDebitSlot;
+    this.sortedUpsertPendingRepoint = context.pendingRepoint;
+    this.sortedUpsertPendSlotName = context.pendSlotName;
+    this.sortedUpsertPendValName = context.pendValName;
+    this.sortedUpsertPendNextName = context.pendNextName;
+    this.sortedUpsertPendActive = context.pendActive;
+    this.sortedUpsertLoopActive = true;
+  }
+
+  private updateSortedUpsertLoopContext(context: SortedUpsertLoopContext): void {
+    Object.assign(context, this.captureSortedUpsertLoopContext());
+  }
+
+  private emitSortedUpsertLoopSetup(
+    block: Node, loc: SingleLocationData, excludedCollections: ReadonlySet<string> = new Set(),
+  ): boolean {
     if (this.sortedUpsertLoopActive) return false;
-    const writeNode = this.findSortedUpsertLoopWrite(block);
+    const writeNode = this.findSortedUpsertLoopWrite(block, excludedCollections);
     if (!writeNode) return false;
     const collection = writeNode.collection!;
+    const suffix = collection.name.replace(/[^A-Za-z0-9_]/g, '_');
+    this.sortedUpsertLoopAddrName = `(sorted_upsert_addr_${suffix})`;
+    this.sortedUpsertLoopCounterName = `(sorted_upsert_in_${suffix})`;
+    this.sortedUpsertLoopOutCounterName = `(sorted_upsert_out_${suffix})`;
+    this.sortedUpsertInputBaseName = `(sorted_upsert_input_base_${suffix})`;
+    this.sortedUpsertOutputBaseName = `(sorted_upsert_output_base_${suffix})`;
+    this.sortedUpsertLoopRepointName = `(sorted_upsert_repoint_${suffix})`;
+    this.sortedUpsertPendSlotName = `(pu_slot_${suffix})`;
+    this.sortedUpsertPendValName = `(pu_val_${suffix})`;
+    this.sortedUpsertPendNextName = `(pu_next_${suffix})`;
     // Conditional lowering may clone the write after slots were assigned. Recover the collection's unique
     // runtime-loop slot; key/value recipe validation below still rejects ambiguous unsupported shapes.
     const slotIndex = writeNode.entrySlotIndex >= 0 ? writeNode.entrySlotIndex
@@ -17152,6 +17314,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return true;
   }
 
+  private emitSortedUpsertLoopSetups(block: Node, loc: SingleLocationData): SortedUpsertLoopContext[] {
+    const contexts: SortedUpsertLoopContext[] = [];
+    const candidates = new Set<string>();
+    for (;;) {
+      const candidate = this.findSortedUpsertLoopWrite(block, candidates);
+      if (!candidate?.collection || candidates.has(candidate.collection.name)) break;
+      candidates.add(candidate.collection.name);
+    }
+    if (candidates.size <= 1) {
+      this.sortedUpsertGrouped = false;
+      if (this.emitSortedUpsertLoopSetup(block, loc)) contexts.push(this.captureSortedUpsertLoopContext());
+      this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.collection, context]));
+      return contexts;
+    }
+    this.sortedUpsertGrouped = true;
+    const excluded = new Set<string>();
+    const nextInputBase = '(sorted_upsert_next_input_base)';
+    const nextOutputBase = '(sorted_upsert_next_output_base)';
+    this.emit(encodeInt(0n), loc); this.pushToStack(nextInputBase);
+    this.emit(encodeInt(0n), loc); this.pushToStack(nextOutputBase);
+    while (this.emitSortedUpsertLoopSetup(block, loc, excluded)) {
+      // The builder groups trailing entries by collection. Snapshot this collection's group base, then derive the
+      // next base directly from the transaction's authenticated address count (minus fixed block entries).
+      for (const [running, base] of [[nextInputBase, this.sortedUpsertInputBaseName],
+        [nextOutputBase, this.sortedUpsertOutputBaseName]]) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(running))), loc); this.emit(Op.OP_PICK, loc);
+        this.pushToStack(base);
+      }
+      const context = this.captureSortedUpsertLoopContext();
+      contexts.push(context);
+      excluded.add(context.collection);
+      const nFixed = this.entrySlots.filter((slot) => slot.collection === context.collection && !slot.inLoop).length;
+      for (const [isOutput, running] of [[false, nextInputBase], [true, nextOutputBase]] as const) {
+        const result = `(sorted_upsert_actual_${isOutput ? 'out' : 'in'}_${context.collection})`;
+        this.emitChunkUtxoCount(result, isOutput, loc, context.addrName);
+        if (nFixed > 0) { this.emit(encodeInt(BigInt(nFixed)), loc); this.emit(Op.OP_SUB, loc); }
+        this.emit(encodeInt(BigInt(this.getStackIndex(running))), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+        this.emitReplace(this.getStackIndex(running), block);
+        this.popFromStack();
+      }
+      this.sortedUpsertLoopActive = false;
+      this.sortedUpsertLoopCollection = null;
+    }
+    for (const name of [nextOutputBase, nextInputBase]) {
+      const index = this.getStackIndex(name);
+      this.emit(encodeInt(BigInt(index)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
+      this.removeFromStack(index);
+    }
+    this.sortedUpsertLoopContexts = new Map(contexts.map((context) => [context.collection, context]));
+    return contexts;
+  }
+
   // CASE (b) pending-defer flush: if a deferred UPDATE entry is pending (pu_slot != empty), mint it NORMALLY (no
   // re-point) = [pu_slot|pu_next|pu_val] at output[master+blockSize+outCounter], outCounter += 1, clear pu_slot.
   // Stack-neutral (U=0 in/out). Used per-iteration (flush the prior pending before processing this key) and at
@@ -17170,6 +17384,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.scopeDepth += 1;
     // outIdx = master + blockSize + outCounter (U=1)
     this.emitTrailingBlockBase(blockSize, loc);
+    if (this.sortedUpsertGrouped) {
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertOutputBaseName) + 1)), loc);
+      this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+    }
     this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
     // mint [pu_slot | pu_next | pu_val] (identical bytes to the deferred UPDATE's commitment)
     this.emitVerifySortedValueOutput(loc, this.getStackIndex(this.sortedUpsertLoopAddrName) + 1,
@@ -17205,6 +17423,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const mintIdx = (add: number, u: number): void => {
       this.emitTrailingBlockBase(blockSize, loc);
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
+      if (this.sortedUpsertGrouped) {
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.sortedUpsertOutputBaseName) + u + 1)), loc);
+        this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex(outCtr) + u + 1)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
     };
     // pendingValid = size(pu_slot) > 0
@@ -17321,6 +17543,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const pushIdx = (counterName: string, add: number, u: number): void => {
       this.emitTrailingBlockBase(blockSize, loc);
       if (add !== 0) { this.emit(encodeInt(BigInt(add)), loc); this.emit(Op.OP_ADD, loc); }
+      if (this.sortedUpsertGrouped) {
+        const baseName = counterName === this.sortedUpsertLoopOutCounterName
+          ? this.sortedUpsertOutputBaseName : this.sortedUpsertInputBaseName;
+        this.emit(encodeInt(BigInt(this.getStackIndex(baseName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
+        this.emit(Op.OP_ADD, loc);
+      }
       this.emit(encodeInt(BigInt(this.getStackIndex(counterName) + u + 1)), loc); this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_ADD, loc);
     };
@@ -17389,7 +17617,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_0, loc);                                             // delta = 0 (U=4)
       } else {
         // ---- UPDATE (debit/delete loops): mint output[..+outCounter] = coSlot|coNext|newValue immediately ----
-        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                   // outIdx (U=4)
+        pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                  // outIdx (U=4)
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, 2, 1);        // addr, coSlot, coNext, newValue
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       }
@@ -17406,7 +17634,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(BigInt(hkIdx() + 4)), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_BIN2NUM, loc); // Hk#
       this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_LESSTHAN, loc); this.emit(Op.OP_VERIFY, loc);       // Hk < coNext (U=3)
       this.emit(Op.OP_ENDIF, loc);                                                                    // [.., coSlot, coNext, coValue] U=3
-      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                     // P' outIdx (U=4)
+      pushIdx(this.sortedUpsertLoopOutCounterName, 0, 3);                    // P' outIdx (U=4)
       this.emitVerifySortedValueOutput(loc, addrIdx() + 4, 3, hkIdx() + 4, 1); // P' = coSlot|Hk|coValue
       if (this.sortedUpsertPendActive) {
         // CHAIN-DEFER: defer the NEW node (pu_slot=Hk, pu_val=amt, pu_next=coNext) instead of minting it, so a further
@@ -17420,7 +17648,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitReplace(this.getStackIndex(this.sortedUpsertPendSlotName) + 4, node); // pu_slot = Hk -> U=3
         this.emit(Op.OP_1, loc);                                             // delta = 1 (U=4)
       } else {
-        pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                   // NEW outIdx2 (U=4)
+        pushIdx(this.sortedUpsertLoopOutCounterName, 1, 3);                  // NEW outIdx2 (U=4)
         this.emitVerifySortedValueOutput(loc, addrIdx() + 4, hkIdx() + 4, 2, amtIdx() + 4); // NEW = Hk|coNext|v[i]
         this.emit(Op.OP_2, loc);                                             // delta = 2 (U=4)
       }
@@ -17548,7 +17776,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(encodeInt(BigInt(idx)), loc); this.emit(Op.OP_ROLL, loc); this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
 
-    const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName, this.sortedUpsertLoopAddrName];
+    const dropNames = [this.sortedUpsertLoopOutCounterName, this.sortedUpsertLoopCounterName,
+      this.sortedUpsertLoopAddrName];
+    if (this.sortedUpsertGrouped) dropNames.push(this.sortedUpsertOutputBaseName, this.sortedUpsertInputBaseName);
     if (this.sortedUpsertPendActive) {
       dropNames.unshift(this.sortedUpsertPendSlotName, this.sortedUpsertPendValName, this.sortedUpsertPendNextName);
     }
@@ -17560,6 +17790,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedUpsertPendActive = false;
     this.sortedUpsertLoopActive = false;
     this.sortedUpsertLoopCollection = null;
+  }
+
+  private emitSortedUpsertLoopTeardowns(
+    contexts: SortedUpsertLoopContext[], loc: SingleLocationData,
+  ): void {
+    // Flush/count-pin each collection independently. All flushes consume the shared global output position, so
+    // their outputs remain contiguous even though their authenticated address counts are separate.
+    for (const context of contexts) {
+      this.activateSortedUpsertLoopContext(context);
+      this.emitSortedUpsertLoopTeardown(loc);
+      context.pendActive = false;
+    }
+    this.sortedUpsertLoopActive = false;
   }
 
   // A dynamic (runtime-bound) keccak256 loop reads one compute side-car per iteration from the region right after
@@ -18569,6 +18812,33 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_ROLL, loc);
     this.emit(Op.OP_DROP, loc);
     this.removeFromStack(idx);
+  }
+
+  /** Count inputs/outputs at an authenticated locking bytecode and leave the tracked result on the stack. */
+  private emitChunkUtxoCount(
+    resultName: string, isOutput: boolean, loc: SingleLocationData, addrName: string,
+  ): void {
+    const countOp = isOutput ? Op.OP_TXOUTPUTCOUNT : Op.OP_TXINPUTCOUNT;
+    const bytecodeOp = isOutput ? Op.OP_OUTPUTBYTECODE : Op.OP_UTXOBYTECODE;
+    this.emit(encodeInt(0n), loc); this.pushToStack(resultName);
+    this.emit(countOp, loc); this.emit(Op.OP_1SUB, loc); this.pushToStack('(chunk_count_i)');
+    this.scopeDepth += 1;
+    this.emit(Op.OP_BEGIN, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_DROP, loc); this.emit(encodeBool(true), loc);
+    this.emit(Op.OP_ELSE, loc);
+    this.emit(Op.OP_DUP, loc); this.emit(bytecodeOp, loc);
+    this.emit(encodeInt(BigInt(this.getStackIndex(addrName) + 1)), loc); this.emit(Op.OP_PICK, loc);
+    this.emit(Op.OP_EQUAL, loc);
+    this.emit(Op.OP_IF, loc);
+    this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_1ADD, loc); this.emit(Op.OP_SWAP, loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_1SUB, loc); this.emit(encodeBool(false), loc);
+    this.emit(Op.OP_ENDIF, loc);
+    this.emit(Op.OP_UNTIL, loc);
+    this.popFromStack();
+    this.scopeDepth -= 1;
   }
 
   /** Force every old chunk to be co-spent: ceil(oldLen/CHUNK) inputs carry the chunk address. */

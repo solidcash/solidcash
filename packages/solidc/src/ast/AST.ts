@@ -1390,6 +1390,10 @@ export class NullaryOpNode extends ExpressionNode {
   // Solidity permits msg.value in state-variable initializers even when the synthesized constructor is
   // nonpayable; preserve that source context after the initializer is lowered into a constructor assignment.
   fromStateInitializer: boolean = false;
+  // Retained when a Yul context builtin is lowered to its high-level equivalent.
+  // Solidity 0.6 admitted assembly chainid() inside pure functions even though a
+  // source-level block.chainid read is rejected by the compatibility checker.
+  fromInlineAssembly: boolean = false;
 
   constructor(
     public operator: NullaryOperator,

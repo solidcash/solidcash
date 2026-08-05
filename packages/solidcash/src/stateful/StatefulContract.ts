@@ -7703,6 +7703,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const fixedBins = info.fixedKeyParams.map((p, i) => encKey(argOf(p), keyTypes[i] ?? collection.keyType));
       const varyType = keyTypes[info.fixedKeyParams.length] ?? collection.keyType;
       let keysArr = argOf(info.varyingArrayParam) as unknown[];
+      const runtimeFiltered = info.keyDecodeTupleIndex !== undefined || info.predicateArrayParam !== undefined;
       if (info.keyDecodeTupleIndex !== undefined || info.predicateArrayParam) {
         const sourceKeys = keysArr;
         const predicate = info.predicateArrayParam ? argOf(info.predicateArrayParam) as unknown[] : undefined;
@@ -7819,11 +7820,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
           keysArr = order.map((i) => kArr[i]);
           const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          if (!runtimeFiltered && recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
           if (vArr) {
             valsArr = order.map((i) => merged.get(slotHexes[i])!);
             const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+            if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
               args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
             }
           }
@@ -7845,7 +7846,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           });
           keysArr = firstOrder.flatMap((h) => groups.get(h)!).map((i) => kArr[i]);
           const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          if (!runtimeFiltered && recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
         }
       }
       // SELF-TRANSFER: a recipient == the debited msg.sender nets out (`bal[msg.sender] -= a; bal[msg.sender] += a`).
@@ -7866,12 +7867,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (keepIdx.length < kArr.length) {
             keysArr = keepIdx.map((i) => kArr[i]);
             const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-            if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+            if (!runtimeFiltered && recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
             if (perKey && Array.isArray(valsArr)) {
               const vArr = valsArr as unknown[];
               valsArr = keepIdx.map((i) => vArr[i]);
               const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-              if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+              if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
                 args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
               }
             }
@@ -7922,12 +7923,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             emitGap(ph); // untouched / HEAD gap: place the whole ascending group here
           }
           for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
+          if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
+            throw new Error(`C2 upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
+              + 'split the action sequence so each selected mapping transition is already adjacent.');
+          }
           keysArr = order.map((i) => kArr[i]);
           // Write the reordered arrays to BOTH args (read by other derivations) AND finalArgs (already copied from
           // args by the msg.sender/synthetic injection above - it builds the master unlocker, so the ENCODED tx
           // argument must carry the same order the commitments were built in, else the covenant OP_VERIFY fails).
           const recipIdx = abiFunction!.inputs.findIndex((p) => p.name === info.varyingArrayParam);
-          if (recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
+          if (!runtimeFiltered && recipIdx >= 0) { args[recipIdx] = keysArr; finalArgs[recipIdx] = keysArr; }
           // Array-mutation operand arrays use the same loop index as the key array and must follow any covenant
           // adjacency reorder exactly.
           for (const pname of [info.mutationValueArrayParam, info.mutationIndexArrayParam]) {
@@ -7936,15 +7941,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const pv = pi >= 0 ? args[pi] : undefined;
             if (Array.isArray(pv)) {
               const reordered = order.map((i) => pv[i]);
-              args[pi] = reordered;
-              finalArgs[pi] = reordered;
+              if (!runtimeFiltered) {
+                args[pi] = reordered;
+                finalArgs[pi] = reordered;
+              }
             }
           }
           if (perKey && Array.isArray(valsArr)) {
             const vArr = valsArr as unknown[];
             valsArr = order.map((i) => vArr[i]);
             const amtIdx = abiFunction!.inputs.findIndex((p) => p.name === info.valueArrayParam);
-            if (amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
+            if (!runtimeFiltered && amtIdx >= 0 && info.valueArrayParam !== info.varyingArrayParam) {
               args[amtIdx] = valsArr; finalArgs[amtIdx] = valsArr;
             }
           }

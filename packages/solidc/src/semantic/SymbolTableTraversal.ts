@@ -2022,7 +2022,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // second loop-written mapping would have nowhere sound to land (multi-mapping loop-writes stay guarded).
       const loopWritten = new Set<string>();
       this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten, new Set());
-      if (loopWritten.size === 1) {
+      if (loopWritten.size >= 1) {
         for (const [sk, info] of entryAccessMap) {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
@@ -2034,7 +2034,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           // needs a CLEAN trailing region -> single access only. A NON-sorted RMW loop stays guarded (no handler).
           const coll = this.collectionMap.get(info.collection);
           const isSortedRmw = !!coll?.sorted && ops.length === 2 && ops.includes('read') && ops.includes('write');
-          if ((isPureWrite && entryAccessMap.size === 1) || isSortedRmw) info.inLoop = true;
+          if ((!!coll?.sorted && (isPureWrite || isSortedRmw))
+            || (loopWritten.size === 1 && isPureWrite && entryAccessMap.size === 1)) info.inLoop = true;
         }
       }
 
@@ -2397,10 +2398,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
             if (!node.graphRuntimeEmissionHandler
               && !(slot.argSources ?? []).every((source) =>
-                source.kind === 'forward'
-                && source.paramIndex !== undefined
-                && source.paramIndex >= 0
-                && source.paramIndex < node.parameters.length)) {
+                (source.kind === 'forward'
+                  && source.paramIndex !== undefined
+                  && source.paramIndex >= 0
+                  && source.paramIndex < node.parameters.length)
+                || (source.kind === 'expression' && slot.interfaceName === '__raw__'))) {
               throw new GraphHandlerShapeError(
                 node,
                 `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
@@ -2415,8 +2417,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             // directly; there is intentionally no interface method to resolve.
             if (slot.interfaceName === '__raw__' && slot.functionName === '__raw__') {
               if (slot.argSources?.length !== 1
-                || slot.argSources[0].kind !== 'forward'
-                || slot.argSources[0].paramIndex === undefined) {
+                || (slot.argSources[0].kind !== 'expression'
+                  && (slot.argSources[0].kind !== 'forward'
+                    || slot.argSources[0].paramIndex === undefined))) {
                 throw new GraphHandlerShapeError(
                   node, `Graph handler '${node.name}' requires one forwarded raw calldata argument`,
                 );
@@ -5243,6 +5246,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const sourceName = addressStateVar.slice('ll_'.length);
         const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
         if (sourceIndex >= 0) addressSource = { kind: 'forward', paramIndex: sourceIndex };
+        else if (this.currentContract?.parameters.some((param) => param.name === sourceName)) {
+          addressSource = { kind: 'constructorArg', paramName: sourceName };
+        }
       }
       const resolveInitializer = (
         expression: ExpressionNode, seen = new Set<Node>(),
@@ -7817,7 +7823,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     ]);
     if (this.compilerOptions.solidityImportCompat
       && this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
-      && environmentReads.has(node.operator)) {
+      && environmentReads.has(node.operator)
+      && !(node.operator === NullaryOperator.CHAIN_ID && node.fromInlineAssembly)) {
       throw new InvalidModifierCombinationError(
         this.currentFunction, `'pure' functions cannot read '${node.operator}'`,
       );

@@ -159,6 +159,18 @@ const runJobs = async (pending, workerCount, timeoutMs, retry = false) => {
 
 if (!RETRY_TIMEOUTS_FROM_RESULTS) await runJobs(jobs, WORKER_COUNT, FIXTURE_TIMEOUT_MS);
 
+const primaryResult = RETRY_TIMEOUTS_FROM_RESULTS ? resumedMetadata?.primaryResult : (() => {
+  const primaryOk = results.filter((result) => result.status === 'OK').length;
+  const primaryFailures = results.filter((result) => result.status === 'FAIL');
+  const primaryTimeouts = primaryFailures.filter((result) =>
+    result.err?.startsWith('CorpusTimeoutError:')).length;
+  return {
+    compiled: primaryOk,
+    namedFailures: primaryFailures.length - primaryTimeouts,
+    timeouts: primaryTimeouts,
+  };
+})();
+
 const retryJobs = results.flatMap((result, index) => (
   result.status === 'FAIL' && result.err && (
     (RETRY_TIMEOUTS && result.err.startsWith('CorpusTimeoutError:'))
@@ -200,10 +212,14 @@ writeFileSync(join(OUTPUT_DIR, 'run-metadata.json'), JSON.stringify({
   fixtureTimeoutMs: resumedMetadata?.fixtureTimeoutMs ?? FIXTURE_TIMEOUT_MS,
   workers: resumedMetadata?.workers ?? WORKER_COUNT,
   checkedNegativeFixtures: resumedMetadata?.checkedNegativeFixtures ?? CHECK_NEGATIVES,
+  ...(primaryResult && { primaryResult }),
   retryTimeoutMs: RETRY_TIMEOUT_MS || resumedMetadata?.retryTimeoutMs || 0,
   retryWorkers: RETRY_TIMEOUT_MS > 0 ? RETRY_WORKER_COUNT : (resumedMetadata?.retryWorkers ?? RETRY_WORKER_COUNT),
-  retriedTimeoutFixtures: resumedMetadata?.retriedTimeoutFixtures
-    ?? (RETRY_TIMEOUT_MS > 0 && RETRY_TIMEOUTS ? retryJobs.length : 0),
+  retriedTimeoutFixtures: Math.max(
+    resumedMetadata?.retriedTimeoutFixtures ?? 0,
+    ...priorRetryPasses.filter((pass) => pass.includeTimeouts).map((pass) => pass.selectedFixtures),
+    RETRY_TIMEOUT_MS > 0 && RETRY_TIMEOUTS ? retryJobs.length : 0,
+  ),
   retryErrorNames: RETRY_ERROR_NAMES.size > 0
     ? [...RETRY_ERROR_NAMES]
     : (resumedMetadata?.retryErrorNames ?? []),

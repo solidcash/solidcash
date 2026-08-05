@@ -7,18 +7,20 @@
   "fixtureTimeoutMs": 30000,
   "workers": 8,
   "checkedNegativeFixtures": false,
-  "retryTimeoutMs": 30000,
+  "primaryResult": {
+    "compiled": 2622,
+    "namedFailures": 72,
+    "timeouts": 111
+  },
+  "retryTimeoutMs": 120000,
   "retryWorkers": 4,
-  "retriedTimeoutFixtures": 258,
-  "retryErrorNames": [
-    "Error",
-    "RangeError"
-  ],
+  "retriedTimeoutFixtures": 111,
+  "retryErrorNames": [],
   "retryPasses": [
     {
-      "timeoutMs": 120000,
+      "timeoutMs": 30000,
       "workers": 4,
-      "selectedFixtures": 258,
+      "selectedFixtures": 111,
       "includeTimeouts": true,
       "errorNames": [],
       "isolatedWorkers": true
@@ -26,34 +28,7 @@
     {
       "timeoutMs": 120000,
       "workers": 4,
-      "selectedFixtures": 5,
-      "includeTimeouts": false,
-      "errorNames": [
-        "Error",
-        "RangeError"
-      ],
-      "isolatedWorkers": true
-    },
-    {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 27,
-      "includeTimeouts": true,
-      "errorNames": [],
-      "isolatedWorkers": true
-    },
-    {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 18,
-      "includeTimeouts": true,
-      "errorNames": [],
-      "isolatedWorkers": true
-    },
-    {
-      "timeoutMs": 30000,
-      "workers": 4,
-      "selectedFixtures": 5,
+      "selectedFixtures": 83,
       "includeTimeouts": true,
       "errorNames": [],
       "isolatedWorkers": true

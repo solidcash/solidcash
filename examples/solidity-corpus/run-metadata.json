@@ -1,0 +1,10 @@
+{
+  "corpusRoot": "/Code/solidity",
+  "corpusRevision": "816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762",
+  "node": "v22.22.0",
+  "platform": "linux-arm64",
+  "fixtureCount": 7343,
+  "fixtureTimeoutMs": 30000,
+  "workers": 8,
+  "checkedNegativeFixtures": false
+}

@@ -144,6 +144,14 @@ export class TransferFrameUnavailableError extends SolidCashError {
   }
 }
 
+/** A generated effect path requires transaction slots, but no block layout owns them. */
+export class BlockLayoutUnavailableError extends Error {
+  constructor(functionName: string) {
+    super(`Block layout not available while compiling '${functionName}'`);
+    this.name = this.constructor.name;
+  }
+}
+
 export class RecursiveStructUnsupportedError extends SolidCashError {
   constructor(node: FunctionDefinitionNode) {
     super(node, 'Recursive struct types are unsupported because BCH requires a finite inline encoding');

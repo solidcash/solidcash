@@ -15,10 +15,10 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
 - baseline `yarn spellcheck` failed with 7,615 occurrences; the findings-fix worktree now passes after recording
   the existing 890-term technical/corpus vocabulary in a reviewed project dictionary and fixing a first-party
   misspelling;
-- the historical broad corpus scorecard compiled 4,443/4,587 and contained 12 raw failures; the scoped 2026-08-04
-  diagnostic pass found two raw positive-fixture failures, both now converted to named, source-located diagnostics.
-  A release scorecard still requires a higher-budget rerun because 845 fixtures exceeded the intentionally tight
-  five-second diagnostic budget under eight workers;
+- the historical broad corpus scorecard compiled 4,443/4,587 and contained 12 raw failures. A completed 30-second
+  positive-fixture sweep now has zero generic/raw error buckets after naming the remaining block-layout and
+  verifier-capacity refusals, but it is not reproducible enough to gate a release: identical eight-worker runs
+  compiled 2,501 and 2,488 of 2,805, with 243 and 258 timeouts respectively;
 - the integrated compiler suite passes all 3,138 tests, the SDK suite passes 3,808 tests, and the testing-suite
   golden path passes all 22 tests. The six high-bit EVM-storage/message-bus failures found during reassessment are
   fixed with asymmetric byte-order, signed-memory, string-memory, and capacity regressions;
@@ -38,9 +38,9 @@ matrix. The 2026-08-04 through 2026-08-05 reassessment found:
   published 24-input, eight-participant maximum at 94,651 serialized bytes. The distinct 32-input resource-heavy
   fixture remains a relaxed semantic stress shape and is not claimed as standard-relay fit.
 
-The immediate release sequence is therefore: complete the higher-budget crash-free corpus scorecard; finish the
-remaining soundness audits and compatibility manifest; then define/run application conformance and the full BCHN
-candidate matrix.
+The immediate release sequence is therefore: make the higher-budget corpus scorecard reproducible and eliminate
+or separately budget its remaining timeouts; finish the remaining soundness audits and compatibility manifest;
+then define/run application conformance and the full BCHN candidate matrix.
 
 This is the maintained overview for the Solidity-parity and release-readiness effort. It is intentionally
 an action-oriented companion to the detailed design and research documents. Those documents remain the source
@@ -96,11 +96,15 @@ it must not silently compile to incorrect covenant behavior.
     and aligns compile-time storage-slot constant folding with runtime casts.
   - Evidence: all 39 `EvmStorageLayout` tests pass, including asymmetric `0x89ab1234`; the related memory/storage
     focus passes 63 tests with one intentional skip; the complete compiler and SDK suites pass.
-- [ ] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
+- [~] Make the release corpus complete with zero compiler crashes or raw internal exceptions.
+  - The retained 30-second positive-fixture run has zero generic/raw error buckets among completed fixtures.
+    However, 258/2,805 fixtures timed out and an identical preceding run timed out 243, so the timeout population
+    can still hide late failures and the accepted count is not yet a reproducible release baseline.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
-  - The scoped positive corpus now has named diagnostics for its last two raw paths: transfer-frame loss and
-    recursive inline struct encoding. A higher-budget corpus rerun must prove zero remaining raw failures.
+  - Transfer-frame loss, recursive inline struct encoding, missing block layout, and an oversized message-bus
+    verifier now fail with named diagnostics. The retained 30-second run reports 59 named non-timeout failures and
+    no generic `Error` bucket; the remaining timeout variability prevents closing the overall corpus gate.
 - [ ] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
 
@@ -156,8 +160,9 @@ it must not silently compile to incorrect covenant behavior.
 
 - [x] Reconcile the Solidity corpus work with the release branch (`10cc6635`).
 - [x] Regenerate the corpus scorecard on the integrated branch.
-  - Current result: 4,443/4,587 single-file in-scope compiled; 144 failed; 337 negative fixtures are also
-    accepted diagnostically. This is a baseline, not a passing release gate, because raw internal failures remain.
+  - Current retained positive-only result: 2,488/2,805 compiled; 59 completed fixtures failed with named
+    diagnostics and 258 timed out at 30 seconds. The immediately preceding identical run produced 2,501 compiled,
+    61 named failures, and 243 timeouts. Negative fixtures were deliberately unchecked in these crash-focused runs.
 - [x] Make the corpus command deterministic and record its Solidity corpus revision and tool versions.
   - The scoped runner uses stable file ordering, isolated reusable workers, a per-fixture timeout, configurable
     worker count/negative checking, and writes the corpus revision, Node/platform, scope, and budget metadata.
@@ -323,10 +328,10 @@ Update this table whenever a release candidate is cut.
 | Compiler tests | **PASS** — 3,138/3,138 after correcting two realistic per-test timeout budgets | `codex/release-readiness-fixes` | 2026-08-04 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,080 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
+| Spellcheck | **PASS** — 2,081 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
-| Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
+| Solidity corpus | **INCOMPLETE** — retained 30-second positive run 2,488/2,805, 59 named failures, zero generic/raw buckets, 258 timeouts; preceding identical run was 2,501/2,805 with 243 timeouts, so the gate is not reproducible | corpus `816d9b2a`, Node 22.22.0, linux-arm64, 8 workers | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

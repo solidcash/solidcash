@@ -702,8 +702,9 @@ describe('Debugging tests', () => {
       expect(Object.keys(result).length).toBeGreaterThan(0);
     });
 
-    // We currently don't have a way to properly handle non-matching UTXOs and unlockers
-    // Note: that also goes for Contract UTXOs where a user uses an unlocker of a different contract
+    // A bare UTXO does not carry its source locking bytecode, so a builder cannot prove that the caller paired it
+    // with the correct P2PKH unlocker. The network still rejects the real mismatched spend; see the release test
+    // deferral register for the API boundary required to make this mock/debug assertion meaningful.
     it.skip('should fail when spending from P2PKH inputs with an unlocker for a different public key', async () => {
       const provider = createTestProvider();
       await provider.addUtxo(aliceAddress, randomUtxo());

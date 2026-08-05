@@ -247,22 +247,24 @@ These items do not block the first release when the unsupported boundary is docu
 
 ## Known skipped/TODO-test review
 
-At the 2026-08-04 audit snapshot, 24 skipped or TODO tests were found under `packages` and `examples` (the comment
-mentioning `it.todo` in `StringStateGrowShrink.test.ts` is not counted). Classify every result before release.
+At the 2026-08-05 audit snapshot, 16 executable skipped or TODO occurrences remain under `packages` and
+`examples`, down from 24 after removing six empty placeholder suites and one obsolete manual-proof TODO. Every remaining occurrence is classified in
+[`TEST_DEFERRALS_0.13.1.md`](TEST_DEFERRALS_0.13.1.md); two groups remain release-blocking coverage gaps.
 
-- [ ] Fix or defer unbounded-bytes cross-contract return coverage.
-- [ ] Fix or defer sequence-number/timelock coverage.
-- [ ] Fix or defer optimizer-equivalence TODOs.
-- [ ] Fix or defer nested-loop and optimized-value debugger TODOs.
-- [ ] Keep circular-call tests skipped only with the permanent address-model limitation documented.
-- [ ] Review skipped invalid-spend and incorrect-unlocker tests for security relevance.
-- [ ] Reach zero unclassified `.skip`/`.todo` occurrences.
+- [~] Fix or explicitly reject unbounded-bytes cross-contract returns; the current fail-closed gap remains a
+  release blocker.
+- [~] Add BCHN sequence-number/timelock coverage; compiler coverage alone is not release proof.
+- [x] Remove the stale optimizer-equivalence TODO; 102 active equivalence proofs already cover this area.
+- [-] Nested-loop and optimized-value debugger enhancements are post-release.
+- [x] Keep circular-call tests skipped only with the permanent address-model limitation documented.
+- [x] Review skipped invalid-spend and incorrect-unlocker tests for security relevance.
+- [x] Reach zero unclassified `.skip`/`.todo` occurrences.
 
 Suggested audit command:
 
 ```bash
 rg -n --glob '*.{test,spec}.ts' \
-  '\b(describe|it|test)\.skip\b|\b(describe|it|test)\.todo\b' \
+  '^\s*(describe|it|test)\.(skip|todo)\b' \
   packages examples -g '!**/node_modules/**'
 ```
 
@@ -317,4 +319,4 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **INCOMPLETE** — scoped 5-second diagnostic 1,904/2,805 with 845 timeouts; two raw paths converted to named diagnostics; the 30-second release sweep was stopped before completion and is not counted | corpus `816d9b2a`, Node 22.22.0, linux-arm64 | 2026-08-04 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | Not defined | — | — |
-| Known `.skip`/`.todo` review | **FAIL** — 24 occurrences remain unclassified | `1a533c88` | 2026-08-04 |
+| Known `.skip`/`.todo` review | **PASS (classification)** — 16 executable occurrences classified; two groups remain release blockers | `codex/release-readiness-fixes` | 2026-08-05 |

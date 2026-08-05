@@ -5166,7 +5166,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // and risking a size fault). A MULTI-use receiver gets one independently authenticated call slot per method;
       // keep its cheap source initializer intact so every call can still recover the common loop index.
       if (addressParam && !addressStateVar
-        && node.addressExpression instanceof IdentifierNode) {
+        && directAddressIdentifier(node.addressExpression)?.name === addressParam) {
         const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
         let resolvedInit = initExpr;
         const resolvedNames = new Set<string>();

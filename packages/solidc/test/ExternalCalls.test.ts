@@ -161,6 +161,23 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
   });
 
+  it('rewrites a cast receiver introduced by nested helpers inside a lowered tail loop', () => {
+    const src = 'interface T { function move(uint x) external; }'
+      + ' library Safe { function sendSafe(T token, uint x) internal { token.move(x); } }'
+      + ' contract C { uint total;'
+      + ' function swap(address token, uint x) private returns (uint out) {'
+      + ' Safe.sendSafe(T(token), x); out = x; }'
+      + ' function step(address token, uint n) private returns (uint result) {'
+      + ' uint out = swap(token, n);'
+      + ' if (n == 0) result = out; else result = step(token, n - 1); }'
+      + ' function run(address token, uint n) public {'
+      + ' total = step(token, n); require(true); } }';
+    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const run = artifact.abi.find((entry) => entry.name === 'run');
+    expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['move']);
+    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+  });
+
   // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the
   // arity-keyed overload lookup + recursion stack, and the {value: value} option's param alpha-rename.
   it('resolves overloads in a chain (call/2 -> call/3 with a {value:} low-level call)', () => {

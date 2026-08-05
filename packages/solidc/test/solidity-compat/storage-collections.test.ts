@@ -1157,6 +1157,23 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info?.op).toBe('+');
     expect(info?.valueScalarParam).toBe('v');
   });
+  it('normalizes checked using-for add/sub wrappers in a per-key nested-mapping RMW loop', () => {
+    const art = compileString('library M {'
+      + ' function add(uint a,uint b) internal pure returns(uint c){require((c=a+b)>=b,"overflow");}'
+      + ' function sub(uint a,uint b) internal pure returns(uint c){require((c=a-b)<=a,"underflow");}'
+      + '} contract C { using M for uint; mapping(address=>mapping(address=>uint)) balanceOf;'
+      + ' mapping(address=>address) masterContractOf; mapping(address=>mapping(address=>bool)) masterContractApproved;'
+      + ' modifier allowed(address from){if(from!=msg.sender&&from!=address(this)){address master=masterContractOf[msg.sender];'
+      + ' require(master!=address(0));require(masterContractApproved[master][from]);}_;}'
+      + ' function f(address token,address from,address[] tos,uint[] shares) public allowed(from) {'
+      + ' uint total; for(uint i=0;i<tos.length;i++){address to=tos[i];'
+      + ' balanceOf[token][to]=balanceOf[token][to].add(shares[i]); total=total.add(shares[i]);}'
+      + ' balanceOf[token][from]=balanceOf[token][from].sub(total); require(true); } }',
+    { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info).toMatchObject({ collection: 'balanceOf', fixedKeyParams: ['token'],
+      varyingArrayParam: 'tos', valueArrayParam: 'shares', op: '+' });
+  });
   it('traces an ABI-decoded key through an inlined external-call helper parameter', () => {
     const art = compileString('library M { function add(uint a, uint b) internal pure returns (uint) { return a+b; } }'
       + ' interface IV { function ping() external; } contract C { using M for uint; mapping(address => uint) m; IV v;'

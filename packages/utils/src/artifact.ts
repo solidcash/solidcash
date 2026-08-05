@@ -190,6 +190,8 @@ export interface AbiFunction {
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
+  /** This source batch entry is an SDK alias for the artifact's ordered local message-bus route. */
+  nativeSelfBatchDispatcher?: boolean;
   /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
   graphBlockhashOracle?: {
     inputBaseParameter: '__internal__blockhashInputIndex';

@@ -1145,7 +1145,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const slot = layout.slots.find(
       (s) => s.kind === kind && (slotIndex === undefined || s.slotIndex === slotIndex),
     );
-    if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''}`);
+    if (!slot) throw new Error(`Block slot not found: ${kind}${slotIndex !== undefined ? `[${slotIndex}]` : ''}`
+      + ` while compiling '${this.currentFunction.name}'`);
     return slot.offset;
   }
 
@@ -17225,7 +17226,30 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
     } else {
-      const expr = (writeNode as MappingAssignNode).expression;
+      const assign = writeNode as MappingAssignNode;
+      // Solidity <0.8 projects conventionally express checked mapping RMWs through SafeMath/BoringMath:
+      // `m[k] = m[k].add(v)`. The resolved using-for call already carries its receiver as argument 0. SolidCash's
+      // bounded integer operators are checked, so a PURE two-argument library add/sub is equivalent at this
+      // transition boundary (including failure on overflow/underflow) and can use the native C2 RMW generator.
+      // Keep this deliberately narrow: arbitrary helpers, non-library calls, and other operators remain unsupported.
+      const wrapped = assign.expression;
+      if (wrapped instanceof FunctionCallNode
+        && wrapped.resolvedFunction?.modifiers.includes(FunctionModifier.PURE)
+        && wrapped.parameters.length === 2) {
+        // Imported Solidity libraries are flattened into namespaced free functions, so `isLibraryFunction` is not
+        // retained on every compatibility path. The resolved declaration plus the namespaced call identifier is
+        // the stable evidence that this is the using-for helper selected by semantic analysis.
+        const method = wrapped.identifier.name.split('.').pop();
+        const operator = method === 'add' ? BinaryOperator.PLUS
+          : method === 'sub' ? BinaryOperator.MINUS : undefined;
+        if (operator !== undefined && wrapped.parameters[0] instanceof MappingAccessNode) {
+          const binary = new BinaryOpNode(wrapped.parameters[0], operator, wrapped.parameters[1]);
+          binary.location = wrapped.location;
+          binary.type = wrapped.type;
+          assign.expression = binary;
+        }
+      }
+      const expr = assign.expression;
       const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
       op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign

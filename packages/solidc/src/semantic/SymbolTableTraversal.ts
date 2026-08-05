@@ -5052,8 +5052,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new UndefinedReferenceError(missing);
       }
       // Each call site gets its own slot (no de-duplication)
-      let addressParam = node.addressExpression instanceof IdentifierNode
-        ? node.addressExpression.name : undefined;
+      // Low-level helpers commonly make the receiver cast explicit (`address(token).call(data)`). The cast is an
+      // identity wrapper in BCH codegen; source the expected locking bytecode from the live identifier just as
+      // for `token.call(data)`. Without peeling it, the call was classified as opaque `__raw__.__raw__` with no
+      // pinned target (BentoBox deposit -> SafeERC20/Address helper).
+      const directAddressIdentifier = (expression: ExpressionNode): IdentifierNode | undefined => {
+        if (expression instanceof IdentifierNode) return expression;
+        if (expression instanceof CastNode && expression.type instanceof AddressType) {
+          return directAddressIdentifier(expression.expression);
+        }
+        return undefined;
+      };
+      let addressParam = directAddressIdentifier(node.addressExpression)?.name;
       // An interface/address constant is not a runtime stack source. Peel only the compile-time cast wrappers
       // produced by `IFoo(address(<literal>))`; arbitrary constant expressions remain unrecognized and therefore
       // fail closed below rather than being mistaken for code-baked target identities.

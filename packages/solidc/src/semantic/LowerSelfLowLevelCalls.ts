@@ -27,6 +27,7 @@ import {
   AbiEncodeNode,
   FieldAccessNode,
   StateAccessNode,
+  RequireNode,
 } from '../ast/AST.js';
 import { AddressType, BytesType, ValueType } from '@solidcash/utils';
 import { UnaryOperator, NullaryOperator } from '../ast/Operator.js';
@@ -62,9 +63,50 @@ export default class LowerSelfLowLevelCalls extends AstTraversal {
     this.contract = node;
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
-      if (fn?.body) fn.body = this.visit(fn.body) as BlockNode;
+      if (!fn?.body) continue;
+      if (this.lowerCanonicalSelfBatch(fn)) continue;
+      fn.body = this.visit(fn.body) as BlockNode;
     }
     return node;
+  }
+
+  /**
+   * Recognize BoringBatchable's self-delegate loop. One active BCH owner UTXO cannot be co-spent repeatedly;
+   * the artifact marks this ABI surface so the SDK can map it to the ordered local message-bus route, which executes
+   * all rows over one pre/post journal. Until that mapping is available, the direct selector fails closed.
+   */
+  private lowerCanonicalSelfBatch(fn: FunctionDefinitionNode): boolean {
+    if (fn.name !== 'batch' || fn.parameters.length !== 2
+      || fn.parameters[0].type.toString() !== 'bytes[]' || fn.parameters[1].type.toString() !== 'bool') return false;
+    let selfDelegate = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof MethodCallNode && node.methodName === 'delegatecall'
+        && this.isSelfAddressExpr(node.object)) selfDelegate = true;
+    });
+    if (!selfDelegate) return false;
+    fn.nativeSelfBatchDispatcher = true;
+    const fail = new BoolLiteralNode(false);
+    fail.location = fn.location;
+    const require = new RequireNode(fail, 'native BCH batch calls must use the ordered local route');
+    require.location = fn.location;
+    // Preserve the compiler-generated named-return declarations/terminal return so ordinary return validation and
+    // ABI typing remain intact. Remove only statements containing the physical self-delegate site; the fail-closed
+    // require makes every retained initialization unreachable at runtime but keeps the source ABI well-formed.
+    const containsSelfDelegate = (statement: StatementNode): boolean => {
+      let found = false;
+      this.walk(statement, (node) => {
+        if (node instanceof MethodCallNode && node.methodName === 'delegatecall'
+          && this.isSelfAddressExpr(node.object)) found = true;
+      });
+      return found;
+    };
+    const retained = (fn.body.statements ?? []).filter((statement) => !containsSelfDelegate(statement));
+    const terminal = retained.at(-1);
+    const statements = terminal instanceof ReturnNode
+      ? [...retained.slice(0, -1), require, terminal] : [...retained, require];
+    fn.body = new BlockNode(statements);
+    fn.body.location = fn.location;
+    return true;
   }
 
   visitBlock(node: BlockNode): Node {

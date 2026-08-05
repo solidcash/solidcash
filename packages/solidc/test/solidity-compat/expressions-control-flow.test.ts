@@ -513,6 +513,40 @@ describe('direct external call through an interface-valued state mapping', () =>
   });
 });
 
+describe('native lowering of canonical Solidity self batches', () => {
+  it('publishes batch(bytes[],bool) as an ordered local-route SDK alias', () => {
+    const artifact = compileString('contract C { uint public x; function set(uint v) public { x = v; }'
+      + ' function batch(bytes[] calldata calls, bool revertOnFail) external payable'
+      + ' returns (bool[] memory successes, bytes[] memory results) {'
+      + ' successes = new bool[](calls.length); results = new bytes[](calls.length);'
+      + ' for (uint i = 0; i < calls.length; i++) {'
+      + ' (bool success, bytes memory result) = address(this).delegatecall(calls[i]);'
+      + ' require(success || !revertOnFail); successes[i] = success; results[i] = result; } } }',
+    { solidityImportCompat: true });
+    expect(artifact.abi.find((fn) => fn.name === 'batch')?.nativeSelfBatchDispatcher).toBe(true);
+  });
+});
+
+describe('conditionally evaluated external-read helpers', () => {
+  it('beta-reduces a named-return helper inside a short-circuit RHS without hoisting it', () => {
+    const src = 'interface I { function balanceOf(address a) external view returns (uint); }'
+      + ' contract C { mapping(I => uint) public held;'
+      + ' function _balance(I token) internal view returns (uint amount) {'
+      + ' amount = token.balanceOf(address(this)) + held[token]; }'
+      + ' function f(I token, bool skip, uint total) public view {'
+      + ' require(skip || _balance(token) >= total); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
+describe('cast-wrapped low-level call targets', () => {
+  it('pins address(local).call(data) to the live local locking bytecode', () => {
+    const src = 'contract C { function f(address a, address b, bool pickA, bytes calldata data) public {'
+      + ' address target = pickA ? a : b; (bool ok,) = address(target).call(data); require(ok); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 // A low-level `.call`/`.staticcall`/`.delegatecall` on a struct-FIELD address receiver (`t.dest.call(..)`) was
 // rejected: resolveLowLevelReceiverType missed a state-var base (StateAccessNode) and a mapping collection base
 // (collectionMap), so it fell through to the interface path (MethodCallNotSupported); and the field receiver was

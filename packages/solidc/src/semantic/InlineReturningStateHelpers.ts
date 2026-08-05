@@ -845,6 +845,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       callee = this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[]) ?? callee;
     }
     if (callee) this.reorderNamedTail(node, callee);
+    // A helper reached only on the right side of Solidity's short-circuit `&&`/`||` cannot be hoisted before the
+    // statement: doing so would execute its external read even when the left side decides the result. A canonical
+    // expression helper (`T r; r = EXPR; return r`) can instead be beta-reduced IN PLACE, preserving the exact
+    // conditional evaluation point. BentoBox `_tokenBalanceOf(token).sub(..)` is this shape.
+    if (this.suppress && callee && this.inlinedFns.has(name)
+      && !this.stack.includes(inlineKey(name, arity)) && arity === callee.parameters.length
+      && callee.returnTypes.length === 1) {
+      const reduced = this.inlineConditionalExpression(callee, node.parameters as ExpressionNode[]);
+      if (reduced) return reduced;
+    }
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity))
       && arity === callee.parameters.length
@@ -860,6 +870,41 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return result;
     }
     return node;
+  }
+
+  /** Reduce a straight-line one-result helper to its return expression without emitting statement hoists. */
+  private inlineConditionalExpression(
+    callee: FunctionDefinitionNode, args: ExpressionNode[],
+  ): ExpressionNode | undefined {
+    // Identifier arguments are already evaluated values, so substituting one at several use sites neither
+    // duplicates effects nor changes order. More complex arguments stay on the ordinary hoist path/fail closed.
+    if (args.some((arg) => !(arg instanceof IdentifierNode))) return undefined;
+    const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    substituteInFunction(cloned, new Map(callee.parameters.map((parameter, index) =>
+      [parameter.name, cloneNode(args[index]) as ExpressionNode])));
+    const stmts = this.effectiveStmts(cloned.body.statements ?? []);
+    const tail = stmts.at(-1);
+    if (!(tail instanceof ReturnNode) || tail.expressions.length !== 1) return undefined;
+    let expression = tail.expressions[0];
+    if (expression instanceof IdentifierNode) {
+      const target = expression.name;
+      const prefix = stmts.slice(0, -1);
+      const assignment = prefix.at(-1);
+      if (!(assignment instanceof AssignNode) || assignment.identifier.name !== target) return undefined;
+      // Only the named-return default declaration may precede the defining assignment. Any other statement can
+      // carry effects/control flow and therefore requires the normal statement-level inline.
+      if (!prefix.slice(0, -1).every((statement) =>
+        statement instanceof VariableDefinitionNode && statement.name === target)) return undefined;
+      expression = assignment.expression;
+    } else if (stmts.length !== 1) {
+      return undefined;
+    }
+    if (callee.inheritedFrom) tagModifierStateAccess([expression], callee.inheritedFrom);
+    const saved = this.stack;
+    this.stack = [...saved, inlineKey(callee.name, callee.parameters.length)];
+    const reduced = this.visit(expression) as ExpressionNode;
+    this.stack = saved;
+    return reduced;
   }
 
   // Multi-value helpers inline only where the whole call is a statement's value: `return f()` (forward the N

@@ -34,6 +34,7 @@
     "test:package-smoke": "node scripts/release-package-smoke.mjs",
     "test:application-conformance": "node scripts/release-application-conformance.mjs",
     "test:application-regtest": "node scripts/release-application-regtest.mjs",
+    "test:generated-project-smoke": "node scripts/release-generated-project-smoke.mjs",
     "test:security-conformance": "node scripts/release-security-conformance.mjs",
     "lint": "lerna run lint --ignore solidcash-examples && yarn workspace testing-suite lint",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",

@@ -40,6 +40,9 @@ jobs:
       - name: Run release application conformance gate
         run: yarn test:application-conformance
 
+      - name: Run generated-project smoke gate
+        run: yarn test:generated-project-smoke
+
       - name: Run release security conformance gate
         run: yarn test:security-conformance
 

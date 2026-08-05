@@ -220,9 +220,14 @@ it must not silently compile to incorrect covenant behavior.
 
 - [x] Include `packages/testing` and `examples/testing-suite` in the root build/lint/test commands and required CI
   workflow (`codex/release-readiness-fixes`).
-- [ ] Add a clean generated-project smoke test.
-- [ ] Add at least one stateless and one stateful deployment/call test.
-- [ ] Add fixture/reset and compilation-cache invalidation tests.
+- [x] Add a clean generated-project smoke test.
+  - `yarn test:generated-project-smoke` creates a temporary SolidHat project, compiles it through the generated
+    CLI configuration, resolves its factory, and runs its generated test without reusing project artifacts.
+- [x] Add at least one stateless and one stateful deployment/call test.
+  - The same gate runs the stateless `Example` calls and the stateful oracle-backed `TimeVault` deployment/call.
+- [x] Add fixture/reset and compilation-cache invalidation tests.
+  - The gate proves named-fixture restoration and cold/warm/dependency-invalidated compilation, preserves the last
+    valid artifact after a failed rebuild, and verifies `clean` removes artifacts and cache data.
 - [ ] Add a required BCHN regtest smoke suite for release candidates.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
@@ -385,9 +390,10 @@ Update this table whenever a release candidate is cut.
 | Compiler tests | **PASS** — 3,145/3,145, including storage-pointer definite-assignment and alias-source regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
-| Spellcheck | **PASS** — 2,081 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
+| Spellcheck | **PASS** — 2,093 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
 | BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy; full candidate matrix not rerun | `codex/release-readiness-fixes` | 2026-08-05 |
 | Testing-suite golden path | **PASS** — 5 files, 22/22 tests | `codex/release-readiness-fixes` | 2026-08-04 |
+| Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 18/18 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, content/export/type/CLI/runtime/compiler checks | `codex/release-readiness-fixes` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |

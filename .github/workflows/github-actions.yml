@@ -40,6 +40,9 @@ jobs:
       - name: Run release application conformance gate
         run: yarn test:application-conformance
 
+      - name: Run release security conformance gate
+        run: yarn test:security-conformance
+
       - name: Run linter
         run: yarn lint
 

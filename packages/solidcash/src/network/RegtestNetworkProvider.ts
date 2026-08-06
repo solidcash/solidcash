@@ -153,6 +153,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private feeFunderPool = new Map<bigint, Utxo[]>();
   private feeFunderRefill = new Map<bigint, Promise<void>>();
   private feeFunderSizeRequests = new Map<bigint, number>();
+  // Cached `listunspent` candidates for `pickLiveFundingInput`; `undefined` forces a re-list.
+  private fundingCandidates: ListUnspentItem[] | undefined;
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
@@ -448,16 +450,34 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
   // Query only large coins (mature coinbases): the shared wallet can list spent small coins as
   // spendable, which fundrawtransaction then picks, breaking broadcast with "Missing inputs".
+  //
+  // `listunspent` scans the WHOLE wallet, and a long suite grows it without bound: measured at 18 ms on a fresh
+  // chain and 4,690 ms once the wallet reached about 20,000 UTXOs, called at every genesis and every funder
+  // refill. Cache the candidate list instead and re-list only when it runs out. Correctness does not rest on the
+  // cache being fresh: every candidate is still confirmed live with `gettxout` before use, and a stale entry is
+  // simply dropped, which is the same check this function always made.
   private async pickLiveFundingInput(vout0Only: boolean): Promise<ListUnspentItem> {
-    const candidates = (await this.readRpc.request<ListUnspent>(
-      'listunspent', 1, 9999999, [], true, { minimumAmount: 1 },
-    ))
-      .filter((u) => u.spendable && (!vout0Only || u.vout === 0))
-      .sort((a, b) => (a.amount < b.amount ? 1 : -1));
-    for (const u of candidates) {
-      const out = await this.readRpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
-        GetTxOut['response'] | null;
-      if (out) return u;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      if (this.fundingCandidates === undefined) {
+        this.fundingCandidates = (await this.readRpc.request<ListUnspent>(
+          'listunspent', 1, 9999999, [], true, { minimumAmount: 1 },
+        ))
+          .filter((u) => u.spendable)
+          .sort((a, b) => (a.amount < b.amount ? 1 : -1));
+      }
+      const pool = this.fundingCandidates;
+      for (let i = 0; i < pool.length; i += 1) {
+        const u = pool[i];
+        if (vout0Only && u.vout !== 0) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const out = await this.readRpc.request<GetTxOut>('gettxout', u.txid, u.vout, true) as
+          GetTxOut['response'] | null;
+        pool.splice(i, 1);
+        if (out) return u;
+        i -= 1;
+      }
+      // Nothing usable left in the cache. Re-list once; a second miss is a real exhaustion.
+      this.fundingCandidates = undefined;
     }
     throw new Error('No live wallet UTXOs available (>=1 BCH). Mine more blocks.');
   }
@@ -547,6 +567,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     }]);
     await this.fundSignSend(unsignedHex);
     await this.mine(1);
+    // The coin just minted is not in the cached list, and the caller is about to ask for exactly it.
+    this.fundingCandidates = undefined;
   }
 
   // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching 20 coins

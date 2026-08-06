@@ -602,7 +602,10 @@ function attachDelegateVariant(
     // Proxy implementation bytecode is selected by the SDK for delegate execution, not dispatched through the
     // atomic message-bus route. Keeping route synthesis enabled here can clone the soon-to-be-delegate handlers
     // before AutoMarkDelegateFunctions rewrites their covenant shape, producing an invalid hybrid artifact.
-    const variantOptions = { ...mergedCompilerOptions, autoDelegate: true, messageBus: false };
+    const variantOptions = {
+      ...mergedCompilerOptions, autoDelegate: true,
+      messageBus: process.env.SOLIDC_EXPERIMENT_DELEGATE_BUS === '1' ? mergedCompilerOptions.messageBus : false,
+    };
     const out = { delegateFunctionsMarked: 0 };
     let variantFailure: string | undefined;
     let built: Artifact | undefined;
@@ -1032,6 +1035,7 @@ function synthesizeMessageBusRoute(
     FunctionModifier.DEPLOY, FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT,
     FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE, FunctionModifier.UNSAFE,
   ]);
+  if (compilerOptions.autoDelegate) disallowedModifiers.delete(FunctionModifier.DELEGATE);
   let eligible: FunctionDefinitionNode[] = [];
   const graphTailHandlers = new Set<FunctionDefinitionNode>();
   const graphRuntimeHandlers = new Set<FunctionDefinitionNode>();
@@ -4498,13 +4502,24 @@ function compileResolvedAst(
             // that supplies them (ENTRY_KEY_PREFIX + routeInput), so when one collection has several route
             // entries the key NAME already identifies the physical slot. Narrow on it before giving up: shape
             // alone cannot separate `jobEvents[k]` read from `jobEvents[k]` read-write.
+            // Strip the entry-key wrapper AND the `_r<n>` per-row suffix. A row-local key is declared once per
+            // route row, so one clone access legitimately matches several route entries: they are runtime
+            // aliases of the same physical family (see runtimeAliasPriorSlots below), and the canonical one is
+            // the lowest slot. Distinct key SHAPES keep distinct bases - `..._users_sender_0` never collapses
+            // into `..._users_0`, so a msg.sender-keyed slot can never absorb a parameter-keyed access.
             const keyBase = (key: string): string => {
               const bare = key.startsWith('id:') ? key.slice(3) : key;
-              return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
+              const unwrapped = bare.startsWith('__message_bus_ek_')
+                ? bare.slice('__message_bus_ek_'.length) : bare;
+              return unwrapped.replace(/_r\d+$/, '');
             };
             const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
               .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
-            const candidates = byKeyName.length === 1 ? byKeyName : byShape;
+            const canonical = byKeyName.length > 1
+              ? [byKeyName.reduce((lowest, candidate) =>
+                (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
+              : byKeyName;
+            const candidates = canonical.length === 1 ? canonical : byShape;
             if (candidates.length !== 1) {
               throw new Error(
                 `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `

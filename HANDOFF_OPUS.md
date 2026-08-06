@@ -359,6 +359,32 @@ So the real shape is:
 
 That last rule is what keeps it sound: an unresolvable key is a genuine refusal, not something to paper over.
 
+### CURRENT FRONTIER: the transaction composes; a source-level `require` now fails
+
+As of 3b12109c all five MarketplaceData calls share ONE envelope and the focused test reaches a different
+failure. The trace is no longer a covenant structural check:
+
+```text
+ip=3 OP_ROLL   ip=4 OP_NOT   ip=5 OP_IF   ip=6 OP_0   ip=7 OP_VERIFY   <-- fails
+     stack carries the signer's P2PKH (76a914a554...)
+```
+
+`OP_NOT; OP_IF; OP_0; OP_VERIFY` is the lowering of a source `require(cond)` whose condition was FALSE. So the
+batch executes and the contract's own logic rejects it - the machinery is composing correctly and something in
+the batched RESULT is wrong.
+
+The likely candidate is `require(marketplaceData.userRegistered(msg.sender), "not registered")`
+(MarketplaceV1.sol:309): the test registers `user1` first via `registerPublicKey`, so that require should pass.
+A batched call returns its value through `__message_bus_results`, so the thing to check first is whether the
+result decoding lines up with the row order now that five rows share the envelope - a shifted or mis-decoded
+result would read `false` for a registered user.
+
+Useful next probes:
+- dump `__message_bus_results` decoding for the row that feeds this require;
+- confirm the row ORDER the SDK encodes matches `logicalIndex` order the covenant expects;
+- check whether `msg.sender` inside the batched row resolves to the signer or to the caller contract, since the
+  stack at the failure is carrying the signer's P2PKH.
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

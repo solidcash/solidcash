@@ -1070,6 +1070,32 @@ external-call resolution -- keep the implementation's delegate artifact reachabl
 Check the connect-time externals binding path, not just this call site: the row selectors and handler eligibility
 downstream must come from the same delegate artifact as the capability.
 
+### Blocker B: first fix ATTEMPTED and REVERTED -- where it stalls
+
+I implemented the obvious shape and it did NOT work; reverted, but the measurement is worth keeping:
+
+1. `deployment-registry.ts`: added `routeArtifact?: unknown` to `RegisteredDeployment`.
+2. `upgrades.ts` registration: `routeArtifact: implArtifact.delegateArtifact ?? implArtifact`.
+3. `StatefulContract.ts` ~12716: resolve `capability` (and `structs`) from
+   `findDeploymentByAddress(externalContract.inner.provider, externalContract.address)?.routeArtifact`.
+
+Builds clean, behaviour unchanged, because the lookup MISSES:
+
+```
+PROBE-B { addr: '...hfljkn5ftvxz', found: false, hasRouteArtifact: false }
+```
+
+`findDeploymentByAddress` returns undefined for the very address the external call is targeting, even though
+`upgrades.ts` registered `handle.address` for it. So the next step is NOT more plumbing on top -- it is finding
+why that lookup misses. Two candidates, both cheap to check: the address STRING FORM differs between
+registration and lookup (prefix/casing), or the PROVIDER identity differs (the registry is a
+`WeakMap<NetworkProvider, ...>`, so a second provider instance registers into a different bucket).
+`findDeploymentByLockingBytecode` is already imported at that call site and may be the more robust key.
+
+Note the good news: the whole batch builder derives from `capability` (handlers, route, blockLayout,
+maximumRows, maximumBlobBytes) plus `structs`, so once the callee artifact resolves correctly the rest of the
+function should follow without further changes.
+
 ### Recipe to bypass both blockers (for downstream work)
 
 Neither is a fix; both are diagnostics, and both were reverted. To reproduce the state above:

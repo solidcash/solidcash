@@ -129,60 +129,84 @@ share ONE physical input. The composition currently produces five logical groups
 most one can satisfy. The sound answer is the batch envelope the compiler already builds for slot 2: batched
 slots skip the ordinary selector check and are authenticated by `emitExternalBatchBlobVerification` instead.
 
-### Measured, not guessed: what actually blocks batching
+### Measured: what actually blocks batching
 
-Two independent gaps, both established by experiment (the experiments were reverted; only the findings remain).
+Everything below is measured, not inferred. Experiments were reverted; only the one real fix was kept.
 
-**Gap 1 - caller-side eligibility.** The `eligible` predicate that feeds `batchInvocations` in
-`SymbolTableTraversal` (around line 2290) refuses these slots. Relaxing ONLY the expression-argument clause
-changes nothing. The deciding clause is:
+**Gap 1 - caller-side eligibility (open).** The `eligible` predicate feeding `batchInvocations` in
+`SymbolTableTraversal` (~line 2290) refuses these slots. Relaxing ONLY the expression-argument clause changes
+nothing. The deciding clause is:
 
 ```text
 && (directCalls.has(slot.sourceCallNode!) || (slot.addressSource && slot.hasReturnValues))
 ```
 
 `directCalls` is built from `node.body.statements` alone, so it admits only unconditional TOP-LEVEL statement
-calls. Every MarketplaceData call here is inside a `require(...)`, an `if`, or a loop, and none has an
-`addressSource`, so all five are refused. Relaxing that clause (plus the expression clause) does produce exactly
-the composition the transaction needs:
+calls. Every MarketplaceData call here sits inside a `require(...)`, an `if`, or a loop, and none has an
+`addressSource`. Relaxing that clause (with the expression clause) does produce exactly the composition the
+transaction needs:
 
 ```text
 0 MarketplaceDataV1 arbitratorRegistered  batch=true rows=5   <- all five collapse into one envelope
 1 IERC20            balanceOf             batch=true rows=3
 ```
 
-Whether conditional calls are sound to batch needs a decision: the caller's covenant accumulates the blob along
-the executed path (`externalBatchAccumulator`), which suggests conditional rows are representable, but that
-should be confirmed rather than assumed.
+Whether conditional calls are sound to batch still needs a decision. The caller's covenant accumulates the blob
+along the executed path (`externalBatchAccumulator`), which suggests conditional rows are representable, but
+that was not verified.
 
-**Gap 2 - callee-side route generation, and this one is the real wall.** `MarketplaceDataV1` gets NO
-`messageBus` capability even compiled as its own root with no experiments. The capability is attached only when
-route synthesis produced a route function, and EVERY admitting rung of the ladder fails with the same error:
+**Gap 2 - callee-side route synthesis (FIXED, commit 02f1db00).** `MarketplaceDataV1` previously had no
+`messageBus` capability at all: every admitting rung of the ladder died on OZ SafeERC20's
+`address(token).functionCall(data)`. Root cause was `InlineReturningStateHelpers` collecting `freeFnRefs` from
+`FunctionCallNode` only, so a `using L for T` member call (a `MethodCallNode`) left no reference and
+`Address.functionCall` was dropped. `visitUsingForDirective` then treats a known library with no registrable
+functions as a NO-OP binding, so the receiver could not resolve. Invisible in a direct compile, where
+`_callOptionalReturn` is itself inlined away; fatal once a route makes it survive. The route now synthesizes.
 
-```bash
-SOLIDC_DEBUG_ROUTE=1 node -e "import('.../packages/solidc/dist/index.js').then(m =>
-  m.compileFileMulti('.../.marketplace/contracts/MarketplaceDataV1.sol', { solidityImportCompat: true }))"
-# message-bus-admission-rung-error ... x5, all:
-# 'Method calls are only supported on interface or contract instances
-#  ... at Line 96, Column 34 of imported ".../@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol"'
+**Gap 3 - handler admission (open, and this is the real wall).** The route exists, but only 1 of 46 handlers is
+admitted. The four `publishJobPost` needs:
+
+```text
+publishJobEvent      lifecycle-or-unsafe-handler
+userRegistered       lifecycle-or-unsafe-handler
+arbitratorRegistered lifecycle-or-unsafe-handler
+meceTags             collection-state-getter-route-not-enabled
 ```
 
-SafeERC20.sol:96 is `bytes memory returndata = address(token).functionCall(data);` inside
-`_callOptionalReturn` - a `using Address for address` member call on an `address` receiver.
-`MethodCallNotSupportedError` is thrown from `SymbolTableTraversal.visitMethodCall` (~line 10982) when the
-receiver resolves to neither an interface/contract instance nor a struct.
+Histogram over all 46: `lifecycle-or-unsafe-handler` 30, `collection-state-getter-route-not-enabled` 8,
+`batched-handler-forward-call-not-enabled` 3, `collection-helper-route-not-enabled` 2,
+`collection-route-requires-one-parameter-keyed-entry-per-collection` 1, `not-examined-by-route-synthesis` 1,
+eligible 1.
 
-The direct (non-route) compile survives this, which is the clue worth chasing: either the free function is
-inlined away before that traversal in direct mode and is not in route mode, or the using-for pre-desugar
-(`desugarLowLevelUsingForAddressCalls`, gated behind `inlinedFns.size > 0` in `InlineReturningStateHelpers`)
-covers it in direct mode only. Removing that gate alone does NOT fix it - tried and measured - so the next step
-is to instrument which pass drops `_callOptionalReturn` in direct mode and why that does not happen when a route
-is being synthesized.
+`lifecycle-or-unsafe-handler` fires because those functions carry the auto-inferred `delegate` modifier
+(MarketplaceDataV1 is an upgrade-proxy implementation) and `FunctionModifier.DELEGATE` is in
+`disallowedModifiers` (`compiler.ts` ~line 968). The compiler states the reason for the neighbouring delegate
+refusal explicitly: "A delegate executor shares the proxy's state authority rather than owning an independent
+participant block. Until the atomic callManifest publishes and verifies that execution frame, advertising the
+proxy handler as an ordinary graph edge would authorize the wrong owner/output context."
 
-Note this is the same SafeERC20 family as the two pre-existing `yul-evm` baseline failures
-(`external call target address must be a ... value (target '__raw__.__raw__')`). A standalone contract calling
-`SafeERC20.forceApprove` hits that wall directly. Fixing the OZ `Address.functionCall` lowering may resolve
-several of these at once.
+`collection-state-getter-route-not-enabled` is likewise deliberate: "collection getters remain available as
+ordinary entry points; message-bus routes batch state-changing handlers rather than synthesizing a second
+getter surface."
+
+So the remaining work is TWO message-bus protocol features, both explicitly deferred by design rather than
+broken:
+
+1. admit delegate (proxy-implementation) handlers as message-bus rows, which needs the atomic callManifest to
+   publish and verify the delegate execution frame;
+2. admit collection/mapping state getters as rows.
+
+Both are needed: `meceTags` is a mapping getter, so closing only the delegate gap still leaves one of the five
+calls outside the envelope, and a master NFT is spendable once.
+
+To reproduce the admission picture (about 5 minutes):
+
+```bash
+node -e "import('.../packages/solidc/dist/index.js').then(m => {
+  const a = m.compileFileMulti('.../.marketplace/contracts/MarketplaceDataV1.sol', {solidityImportCompat:true});
+  for (const h of a.MarketplaceDataV1.messageBus.handlers) console.log(h.name, h.eligible, h.rejectionReason);
+})"
+```
 
 ## Build/recompile commands
 

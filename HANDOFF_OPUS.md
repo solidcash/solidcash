@@ -1032,7 +1032,54 @@ differentiator either. The remaining untested ingredients are the cross-function
 `initializer` modifier, read inside `__Ownable_init`'s `onlyInitializing`) combined with entry writes under a
 delegate frame.
 
-## Blocker B (line 703): `MarketplaceDataV1 does not advertise a compatible message-bus route`
+## Blocker B ROOT CAUSE (line 703): the proxy loses the implementation's delegate route
+
+MEASURED, not inferred. With BOTH known blockers bypassed (see the recipe below) the fixture setup completes
+in full -- every deploy, `setMarketplaceDataAddress`, FakeToken, transfers, approvals -- and the test body runs
+to line 703, where it fails with `MarketplaceDataV1 does not advertise a compatible message-bus route`.
+
+The check is `StatefulContract.ts` ~12716:
+
+```ts
+const capability = externalContract.inner.artifact.messageBus;
+if (!capability || capability.version !== 1 || capability.selector !== '53434231') throw ...
+```
+
+The artifact actually carries the route, just not where that line looks:
+
+```
+MarketplaceDataV1.messageBus                  -> undefined
+MarketplaceDataV1.delegateArtifact.messageBus -> { version: 1, selector: '53434231', maximumRows: 8, ... }
+```
+
+and a probe on `externalContract.inner.artifact` at the throw site reports:
+
+```
+{ name: 'SolidCashProxy', hasMessageBus: false, hasDelegate: false, delegateHasBus: false }
+```
+
+So `externalContract` is the PROXY's StatefulContract. Its artifact is `SolidCashProxy`, which has neither the
+capability nor a `delegateArtifact`, and the implementation link is not reachable from there. The route that
+should apply is the IMPLEMENTATION's delegate-variant route -- the delegate variant is precisely the code that
+executes in the proxy's frame.
+
+This is the open item recorded earlier as "the SDK must use the callee's DELEGATE-variant route when the callee
+is a proxy". It is NOT a one-line fallback: `upgrades.ts` `registerDeployment` registers the ProxyContract
+`handle` (which does know its implementation), so the fix is to stop dropping that link on the way to the
+external-call resolution -- keep the implementation's delegate artifact reachable for capability/route lookups.
+Check the connect-time externals binding path, not just this call site: the row selectors and handler eligibility
+downstream must come from the same delegate artifact as the capability.
+
+### Recipe to bypass both blockers (for downstream work)
+
+Neither is a fix; both are diagnostics, and both were reverted. To reproduce the state above:
+
+1. Compile and run with `SOLIDC_DISABLE_SHARED_OUTLINE=1` (bypasses blocker A).
+2. In `preflight.ts`, guard the relay-size refusal:
+   `if (serializedBytes > RELAY_TRANSACTION_SIZE_LIMIT && process.env.SOLIDC_DIAG_IGNORE_RELAY_SIZE !== '1')`
+   (bypasses the 178 KB refusal that disabling outlining causes), then run with that variable set.
+
+## Blocker B, original symptom
 
 Revealed only once Blocker A is bypassed. This IS the route/eligibility subsystem the batching work targets,
 so that work is on the right path -- it was simply blocked behind an earlier, unrelated failure. Note the

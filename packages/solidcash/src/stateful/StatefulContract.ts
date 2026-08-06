@@ -841,6 +841,20 @@ function evalComputedKey(
     }
     return undefined;
   };
+  // An ADDRESS-typed key hashes as its LOCKING BYTECODE, matching the covenant's on-stack address and the
+  // default entry model - not as a VM number. `cast:address(lit:0)` (SushiToken's
+  // `_moveDelegates(address(0), ...)`) otherwise evaluates to 0n and encodes to the EMPTY byte array, which
+  // collides with every other unresolved key on sha256("") and fails the C2 batch as a duplicate slot.
+  const addressCast = label.match(/^cast:address\((.*)\)$/i);
+  if (addressCast) {
+    const value = evalValue(addressCast[1]);
+    if (typeof value === 'bigint' && value >= 0n) {
+      const hash160 = new Uint8Array(20);
+      let rest = value;
+      for (let i = 19; i >= 0 && rest > 0n; i--) { hash160[i] = Number(rest & 0xffn); rest >>= 8n; }
+      return Uint8Array.from([0x76, 0xa9, 0x14, ...hash160, 0x88, 0xac]);
+    }
+  }
   return encode(evalValue(label));
 }
 

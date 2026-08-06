@@ -11,7 +11,8 @@ import {
   PrimitiveType,
   TupleType,
   Script,
-  scriptToAsm,
+  scriptsEqual,
+  normaliseScript,
   scriptToBytecode,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
@@ -1473,7 +1474,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.contract = this.visit(node.contract) as ContractNode;
 
     // Minimally encode output by going Script -> ASM -> Script
-    this.output = asmToScript(scriptToAsm(this.output));
+    this.output = normaliseScript(this.output);
 
     this.sourceMap = generateSourceMap(this.locationData);
 
@@ -2491,7 +2492,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyScript = asmToScript(scriptToAsm(sub.output));
+    // Mainline dropped the asmToScript(scriptToAsm(...)) round-trip here for compile speed; cross-definition
+    // outlining still needs the Script form, so keep the binding and take the bytecode straight off it.
+    const bodyScript = sub.output;
     const bodyBytecode = scriptToBytecode(bodyScript);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
@@ -2541,7 +2544,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
-    const body = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    const body = scriptToBytecode(sub.output);
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;
@@ -2806,7 +2809,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Serialize the function body to bytecode data
-    const bodyScript = asmToScript(scriptToAsm(subTraversal.output));
+    const bodyScript = normaliseScript(subTraversal.output);
 
     // Unreachable functions are still compiled above: code-generation performs a number of important
     // fail-closed validations which must not disappear merely because a helper is dead. Their bodies do not,
@@ -3091,7 +3094,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Normalize the output
-    const normalizedOutput = asmToScript(scriptToAsm(subTraversal.output));
+    const normalizedOutput = normaliseScript(subTraversal.output);
 
     // Capture debug info for this function
     // Use the sub-traversal's location data (same-class private field access)
@@ -3109,7 +3112,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
-      if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
+      if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
         throw new Error('Function body optimisation mismatch - please report this issue');
       }
     }

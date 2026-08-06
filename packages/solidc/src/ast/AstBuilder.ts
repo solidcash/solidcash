@@ -3911,7 +3911,11 @@ export default class AstBuilder
   }
 
   visitBlock(ctx: BlockContext): BlockNode {
-    const statements = this.flattenStatements(ctx.statement_list().map((s) => this.visit(s) as StatementNode));
+    // A braced body arrives as a nested blockStatement. Read its statements directly rather than visiting it:
+    // visitBlockStatement marks a bare `{ .. }` STATEMENT `scoped`, which a control-flow body is not.
+    const braced = ctx.statement().blockStatement() as BlockStatementContext | null;
+    const statementCtxs = braced ? braced.statement_list() : [ctx.statement()];
+    const statements = this.flattenStatements(statementCtxs.map((s) => this.visit(s) as StatementNode));
     if (this.solidityImportCompat && !ctx.getText().startsWith('{')
       && statements.length === 1 && statements[0] instanceof VariableDefinitionNode) {
       throw new ParseError('Variable declarations can only be used inside blocks', statements[0].location);

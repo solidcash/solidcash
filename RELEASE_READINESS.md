@@ -156,11 +156,14 @@ it must not silently compile to incorrect covenant behavior.
     for variants that separate the two: the baseline of five `build + dispatch` calls passes only at 1,300; five
     builds with NO dispatch at all also pass only at 1,300; and building the array ONCE then performing five
     indexed dispatches through it passes at the real 800. Five ordinary direct calls also pass at 800.
-  - So allocating a ten-element function-pointer memory array and storing five elements is the expensive unit,
-    and it is repeated on every call because the array is a local. Dispatch through an already-built array is
-    cheap. The optimisation target is therefore the emitted cost of memory-array construction, and in this shape
-    specifically the array is call-invariant - identical on every invocation - so hoisting or constant-folding it
-    would remove the repetition outright.
+  - Within construction the cost is the per-element STORES, not the allocation. Holding the call count at five
+    and varying only the shape: capacity ten with five stores passes at 1,300, capacity five with five stores
+    also passes at 1,300, while capacity ten with a SINGLE store passes at the real 800, as does capacity two
+    with a single store. Allocation size is therefore irrelevant and each function-pointer element store carries
+    the weight.
+  - Two independent levers follow, either of which may be enough. Reduce the emitted cost of a single
+    function-pointer element store; or exploit the fact that in this shape the array is call-invariant, so
+    hoisting or constant-folding it removes all five stores from every call after the first.
   - An earlier revision of this entry blamed the indexed dispatch. That was wrong: the variant it rested on
     ("array built but never dispatched") still dispatched, because the `arr[i](x)` sat inside the helper it
     called, so it isolated nothing. Corrected by the construction-versus-dispatch measurement above.

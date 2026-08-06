@@ -934,7 +934,22 @@ synthetic repros all pass: they are tiny contracts that never outline at all.
 Outlining cannot simply be disabled -- it is what keeps these scripts inside the byte rules. The fix must be a
 targeted correctness fix in the outliner.
 
-LEAD (unverified, but it lines up): the call site builds require/log anchors ONLY when the body has a selector:
+FALSIFIED LEAD -- do not re-derive it. I proposed that a require had been relocated into a shared span. It has
+NOT been. A probe in `outlineSharedSpans` scanned every outlined function for the failing opcode sequence
+(`OP_0 OP_ROLL OP_NOT OP_IF OP_0 OP_VERIFY` = `00 7a 91 63 00 69`) across a full marketplace compile:
+ZERO hits, against 667 outlined functions that are nine instructions long. So the failing nine-instruction body
+is NOT an outlined function; it is some other OP_DEFINE'd body (an internal function or an extracted
+subroutine).
+
+Outlining is still the trigger -- the differential compile is unambiguous -- but the mechanism is NOT
+"a require moved into a shared body". Something else about the rewrite changes behaviour. Worth checking next:
+whether outlining perturbs body identifiers / the dispatcher / OP_INVOKE nesting depth in a way that changes
+which body runs, rather than changing any body's contents. Verify against the corpus before theorising: the
+outliner's own header documents the three properties it enforces (self-contained control flow, defines nothing,
+no bytecode-relative context incl. OP_ACTIVEBYTECODE / OP_CODESEPARATOR / OP_CHECKSIG family), and anchors ARE
+correctly remapped on every splice, so the defect is outside all of those.
+
+The anchor observation below is still TRUE but is NOT the cause, given the probe above:
 
 ```ts
 const debugInfo = record.selectorHex === undefined

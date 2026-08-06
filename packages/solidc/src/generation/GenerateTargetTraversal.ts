@@ -813,7 +813,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private allocateCompactHelperId(): bigint {
     // Single-byte-push ids first: they are a strictly cheaper encoding of the same identifier, and there are far
     // fewer of them than a large contract needs, so spending them before falling back is always the better trade.
-    while (this.compactHelperIds.cheap.length > 0) {
+    //
+    // Except on the usage probe. It emits EVERY function body, so it reaches helpers the real pass may never
+    // emit, and it runs first - handing the pool out in probe order spent all seventeen before the real pass
+    // began. The probe takes fallback ids and `rehomeHotHelperIds` then moves the pool onto the helpers the
+    // probe measured as hottest, which is the assignment that actually pays.
+    while (!this.isSubroutineUseProbe && this.compactHelperIds.cheap.length > 0) {
       const id = this.compactHelperIds.cheap.shift()!;
       if (!this.compactHelperIds.used.has(id)) {
         this.compactHelperIds.used.add(id);
@@ -835,6 +840,66 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /** Ids handed out to compiler helpers, for consumers that must tell a helper definition from a user one. */
   get allocatedHelperIds(): ReadonlySet<bigint> {
     return this.compactHelperIds.allocated;
+  }
+
+  /**
+   * Every map that remembers "this structural helper is function id N". A helper's id is looked up here each
+   * time it is emitted, so rewriting these before any real emission relocates the helper wholesale.
+   */
+  private helperIdMaps(): Map<never, bigint>[] {
+    return [
+      this.structSkipIds, this.structFieldPrefixIds, this.structFieldExtractIds, this.scanLoopIds,
+      this.arrayElementIds, this.arraySplitIds, this.arrayTruncateIds, this.stateDecodeIds, this.stateReadIds,
+      this.dataNftPreserveIds, this.dataNftCommitPreserveIds, this.dataNftOutputCommitmentIds,
+      this.sortedEntryAddressIds,
+    ] as unknown as Map<never, bigint>[];
+  }
+
+  /**
+   * Move the single-byte id pool onto the helpers the probe pushed most, saving a byte at each of those pushes.
+   *
+   * Runs between the probe and the real pass, so nothing has been emitted yet and relocating a helper is just a
+   * map rewrite. Ids are **relocated, never swapped, and a vacated id is never recycled**: every new id comes
+   * from the free pool and the old one stays marked used. A map missed by this rewrite therefore leaves that
+   * helper on an id nothing else can take - a saving not collected, never a collision.
+   */
+  private rehomeHotHelperIds(probe: GenerateTargetTraversalWithLocation): void {
+    const pool = this.compactHelperIds;
+    if (pool.cheap.length === 0) return;
+    // `bumpSubroutineUse` already counts a use at every site that reaches a helper, whether that site ends up
+    // an OP_INVOKE or inlined, so the probe's tally is the site count without re-deriving it from bytes.
+    // Two uses is the floor for a helper to be worth defining at all (`capturedSubroutineIsProfitable` refuses
+    // below it), and a helper that stays inlined never emits its id - so a single-use helper would spend a pool
+    // slot on nothing.
+    const hottest = [...probe.subroutineUseCount]
+      .filter(([id, uses]) => uses >= 2 && pool.allocated.has(id) && encodeDataPush(encodeInt(id)).length > 1)
+      .sort((left, right) => right[1] - left[1] || Number(right[0] - left[0]))
+      .slice(0, pool.cheap.length);
+    if (hottest.length === 0) return;
+
+    const relocated = new Map<bigint, bigint>();
+    for (const [id] of hottest) {
+      const cheapId = pool.cheap.shift();
+      if (cheapId === undefined) break;
+      relocated.set(id, cheapId);
+      pool.used.add(cheapId);
+      pool.allocated.add(cheapId);
+    }
+    for (const map of this.helperIdMaps()) {
+      for (const [key, id] of map) {
+        const moved = relocated.get(id);
+        if (moved !== undefined) map.set(key, moved);
+      }
+    }
+    // The probe's tally is what `visitContract` consults to decide which helpers are worth an OP_DEFINE, and it
+    // is keyed by id. Leaving it behind makes every relocated helper look unused, so it is inlined at each site
+    // instead of shared - which grew one corpus contract by 10% and pushed it past the 10,000-byte script limit.
+    for (const [id, moved] of relocated) {
+      const uses = probe.subroutineUseCount.get(id);
+      if (uses === undefined) continue;
+      probe.subroutineUseCount.delete(id);
+      probe.subroutineUseCount.set(moved, uses);
+    }
   }
 
   private snapshotCompactHelperIds(): { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] } {
@@ -2570,6 +2635,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.dataNftCommitPreserveIds = new Map(probe.dataNftCommitPreserveIds);
       this.dataNftOutputCommitmentIds = new Map(probe.dataNftOutputCommitmentIds);
       this.compactHelperIds = probe.compactHelperIds;
+      this.rehomeHotHelperIds(probe);
       return probe.subroutineUseCount;
     } catch {
       return new Map(GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.map((id) => [id, 2]));

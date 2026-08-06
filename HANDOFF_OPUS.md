@@ -218,11 +218,26 @@ route args: sourceCallArgs = 2 decoded strings, physicalEntryArgs = [__message_b
 final:      the clone ends up with FOUR visible params - a SECOND string entry key added after bind
 ```
 
-So a second entry key is appended to the clone later while `handlerEntryKeys` still records only the first, and
-`entryKeyArguments(fn)` therefore emits one key where two are needed. `meceTags` is `mapping(string => string)`,
-a chunkable value type, and `updateMeceTag` touches it under two key spellings (the `alternatives` logic in
-`bindEntryKeyParameters`). Next step: find what appends that second key after `handlerEntryKeys.set(source,
-ordered)` and record it there too, so the route emits both.
+The missing argument is NOT a second entry key. Dumping the clone's final signature shows the extra parameter is
+PREPENDED, not appended:
+
+```text
+string  __cj___message_bus_entry_updateMeceTag_0     <- prepended collection-journal pool parameter
+string  shortForm
+string  longForm
+string  __message_bus_ek___message_bus_key_meceTags_0
+bytes32 __internal__msgSenderCategory
+```
+
+The entry clone sets `forceCollectionJournalPool = true`, which sends it down the `multiCandidates` branch of
+`LowerCollectionJournalHelpers` (~line 260) and gives it a `__cj_<fnName>_<n>` journal parameter in leading
+position. The generated route's call site is never rewritten to supply it, so the call is one leading argument
+short. A `parameters.push` interceptor on the clone caught nothing, which is what pointed at a prepend/reassign
+rather than an append.
+
+Next step: find where `LowerCollectionJournalHelpers` rewrites CALL SITES for the pooled (`multiCandidates`)
+case and make the generated route's invocation of the entry clone carry the journal argument the same way an
+ordinary caller does.
 
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run

@@ -1115,7 +1115,36 @@ tail length suggests a p2sh32 rather than either p2sh20 proxy -- note it is also
 p2sh32 (`...hawrjzd6lchgg`). So a SolidCashProxy instance is being constructed at an address nobody registered,
 rather than the deployed proxy being reused.
 
-Likely place to look: how the caller resolves a callee address held in ITS OWN STATE. MarketplaceV1 stores the
+READ THE RESOLUTION ORDER AT `StatefulContract.ts` ~10366 -- it explains the unregistered instance:
+
+```ts
+const registeredCallee = (
+  callInfo.contract._externalRegistry.get(nested.interfaceName)
+  ?? this._externalRegistry.get(nested.interfaceName)
+  ?? deploymentAtAddress
+```
+
+The deployment found AT THE ADDRESS is the LAST resort. The interface-name entry in `_externalRegistry` wins,
+so whatever instance was bound at connect time for `MarketplaceDataV1` is used regardless of what the caller's
+state actually points at. That is consistent with every measurement: right artifact kind (SolidCashProxy),
+wrong instance, address absent from the registry. Start by logging what `_externalRegistry.get('MarketplaceDataV1')`
+holds and where it was bound.
+
+SEPARATE REAL DEFECT spotted in the same block (~10355, worth fixing on its own merits, and NOT yet proven to
+affect this test): in the `Uint8Array` branch, a successful `findDeploymentByLockingBytecode` hit is CLOBBERED
+by a subsequent address lookup:
+
+```ts
+deploymentAtAddress = findDeploymentByLockingBytecode(...)?.contract;   // may succeed
+...
+if (typeof address !== 'string') {
+  deploymentAtAddress = findDeploymentByAddress(..., address.address)?.contract;  // overwrites with undefined on a miss
+}
+```
+
+The second assignment should only apply when it finds something (`??=`, or assign to a temporary first).
+
+Also worth looking at: how the caller resolves a callee address held in ITS OWN STATE. MarketplaceV1 stores the
 MarketplaceData address via `setMarketplaceDataAddress`, and the external-call path derives a Contract from
 that stored value. If that derivation rebuilds a proxy contract from the interface + a recomputed address
 (rather than looking the deployment up), it would produce exactly this: right artifact kind, wrong instance,

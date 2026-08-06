@@ -93,7 +93,7 @@ function appendEntryOutput(tx: Tx, sourceIndex: number, commitment: Uint8Array):
   if (liveRegtest) {
     // Fund the appended output from the LARGEST output, not the last one. The last output is not reliably fat
     // change: the provider now serves fee funders at the size the builder actually requested (3,000-10,000)
-    // rather than a fixed 100,000, so subtracting from it underflowed and BCHN refused the forgery with
+    // rather than a fixed 100,000, so subtracting from it went negative and BCHN refused the forgery with
     // `bad-txns-vout-negative` before the covenant could object - which is not what these tests are proving.
     const donor = tx.outputs.reduce(
       (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,

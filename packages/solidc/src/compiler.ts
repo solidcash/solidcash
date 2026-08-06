@@ -134,13 +134,24 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 };
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-type InternalCompilerOptions = CompilerOptions & { __messageBusExplicitlyDisabled?: boolean };
+type MessageBusMode = 'disabled' | 'auto' | 'required';
+type InternalCompilerOptions = CompilerOptions & {
+  __messageBusExplicitlyDisabled?: boolean;
+  __messageBusMode?: MessageBusMode;
+};
 
 function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOptions {
+  const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
+    ? 'required'
+    : options.messageBus === false ? 'disabled'
+      : options.messageBus === true ? 'required' : 'auto';
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
-    messageBus: options.messageBus === false ? false : true,
+    // Auto starts enabled so semantic inference (e.g. repeated-owner batching) remains available. Once the AST
+    // is parsed, compileWithExternalAdmissionFallback narrows graph-free contracts to direct-only compilation.
+    messageBus: messageBusMode !== 'disabled',
+    __messageBusMode: messageBusMode,
     __messageBusExplicitlyDisabled: false,
     // Compiler-owned route locals are generated source and never user-actionable warning locations.
     __suppressGeneratedRouteWarnings: true,
@@ -337,6 +348,9 @@ function compileWithExternalAdmissionFallback(
   errorListener?: SolidCashErrorListener,
   primaryContractName?: string,
 ): Artifact {
+  // Auto selection is per primary contract. Multi-artifact compilation reuses its normalized option object, so
+  // never let one graph-free declaration disable route selection for a later sibling that has graph edges.
+  mergedCompilerOptions = { ...mergedCompilerOptions };
   const attribution: ExternalAdmissionAttribution = { refused: new Set(), spans: [] };
   // Parse exactly once before entering the route-admission retry ladder. Syntax errors and custom listener
   // failures are properties of the source, not of a route candidate; replaying them at every rung duplicates
@@ -344,16 +358,27 @@ function compileWithExternalAdmissionFallback(
   let initialAst: Ast | undefined = parseAndResolve(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  const messageBusMode = (mergedCompilerOptions as InternalCompilerOptions).__messageBusMode ?? 'auto';
+  if (messageBusMode === 'auto' && !hasMessageBusGraphEdge(initialAst)) {
+    mergedCompilerOptions.messageBus = false;
+  }
+  if (messageBusMode === 'required' && !supportsAtomicMessageBus(initialAst, mergedCompilerOptions)) {
+    throw new Error('messageBus: required route generation did not produce a composable artifact');
+  }
   const compileOnce = (
     admitExternalHandlers: boolean, normalizeBareEntries = true, relaxResultRouteEffects = true,
     admitMixedScalarHandlers = true, admitBareForwardingHandlers = true,
   ): Artifact => {
     const ast = initialAst ?? parseAndResolve(code, mergedCompilerOptions, errorListener, primaryContractName);
     initialAst = undefined;
-    return compileResolvedAst(
+    const artifact = compileResolvedAst(
       ast, code, mergedCompilerOptions, false, admitExternalHandlers, normalizeBareEntries, relaxResultRouteEffects,
       admitMixedScalarHandlers, admitBareForwardingHandlers, attribution,
     );
+    if (messageBusMode === 'required' && !artifact.messageBus) {
+      throw new Error('messageBus: required route generation did not produce a composable artifact');
+    }
+    return artifact;
   };
   if (!mergedCompilerOptions.messageBus) return compileOnce(true);
   // X76 joins the ladder for the same reason and with the same cost: normalizing the clone's bare entry
@@ -463,6 +488,12 @@ function compileWithExternalAdmissionFallback(
     throw firstError instanceof Error ? firstError : new Error(String(firstError));
   }
 
+  if (messageBusMode === 'required') {
+    throw firstError instanceof Error
+      ? firstError
+      : new Error('messageBus: required route generation did not produce a composable artifact');
+  }
+
   // Default-on route synthesis must not make an otherwise valid direct contract uncompilable. Every route rung
   // failed above, so compile once with the capability explicitly disabled. If the source itself is invalid this
   // attempt throws its original direct-mode diagnostic (rather than an incidental failure from a generated message-bus batch
@@ -493,6 +524,9 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   let artifact = compileWithExternalAdmissionFallback(
     code, mergedCompilerOptions, errorListener, primaryContractName,
   );
+  if (mergedCompilerOptions.__messageBusMode === 'required' && !artifact.messageBus) {
+    throw new Error('messageBus: required route generation did not produce a composable artifact');
+  }
   if (process.env.SOLIDC_SKIP_MESSAGE_BUS_BINDER !== '1'
     && !artifactCompilerOptions.__messageBusVerifierProgram && artifact.messageBus?.verifierProgram) {
     const verifierProgram = artifact.messageBus.verifierProgram;
@@ -920,6 +954,31 @@ function supportsAtomicMessageBus(ast: Ast, compilerOptions: CompilerOptions): b
     || !!compilerOptions.forceStateful || contract.usesBlockhash || contract.deploysStatefulChild
     || contract.deploysWithValue
     || contract.functions.some((fn) => fn.modifiers.includes(FunctionModifier.SELFDESTRUCT));
+}
+
+/**
+ * Source-level signal that a contract participates in an atomic call graph.
+ *
+ * Ordinary state, collections, events, and delegate-only proxy code all have complete direct transaction
+ * semantics and do not justify speculative route synthesis. Typed external calls and non-delegate low-level
+ * calls do: their caller needs call-manifest planning, repeated-owner batching, or an atomic graph route.
+ * A graph-free contract can still be compiled as a leaf participant by explicitly requesting `messageBus: true`.
+ */
+function hasMessageBusGraphEdge(ast: Ast): boolean {
+  const interfaceNames = new Set(ast.interfaceDefinitions.map((iface) => iface.name));
+  let found = false;
+  walkInvocationAst(ast.contract, (node) => {
+    if (found) return;
+    if (node instanceof ExternalFunctionCallNode
+      || (node instanceof LowLevelCallStatementNode && node.callMode !== 'delegatecall')
+      || (node instanceof MethodCallNode && node.methodName !== 'delegatecall'
+        && ((node.object instanceof InstantiationNode)
+          || (node.object instanceof FunctionCallNode && interfaceNames.has(node.object.identifier.name))))
+      || (node instanceof FunctionCallNode && /\.(call|staticcall)$/.test(node.identifier.name))) {
+      found = true;
+    }
+  });
+  return found;
 }
 
 function synthesizeMessageBusRoute(
@@ -3655,15 +3714,7 @@ function compileResolvedAst(
   // Materialize one syntactic edge per element of a compiler-bounded function-pointer loop before the pointer
   // table is lowered. This preserves exact invocation cardinality and lets each state-selected target/selector
   // be authenticated as an ordinary concrete graph callsite. Other loop classes retain the established pass.
-  let inferredGraphEdge = false;
-  walkInvocationAst(ast.contract, (node) => {
-    if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallStatementNode
-      || node instanceof MethodCallNode
-      || (node instanceof FunctionCallNode
-        && /\.(call|staticcall|delegatecall)$/.test(node.identifier.name))) {
-      inferredGraphEdge = true;
-    }
-  });
+  const inferredGraphEdge = hasMessageBusGraphEdge(ast);
   const messageBusGraphMode = !!mergedCompilerOptions.messageBus
     && inferredGraphEdge;
   // Reject the low-level call shapes the callManifest row cannot bind (call options, iterated and conditional

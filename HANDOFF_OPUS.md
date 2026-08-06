@@ -274,6 +274,39 @@ at the 4-failure baseline.
   for clones whose source carries an effect. An effect-free state writer (`userRefunded`) reached codegen with
   no layout. The assignment is now keyed on the `__message_bus_entry_` name instead.
 
+### Caller-side batching: measured state after 0830cd5e
+
+`publishJobPost` external-call slots, as compiled today:
+
+```text
+0 MarketplaceDataV1 arbitratorRegistered  batch=TRUE rows=3   (arbitratorRegistered + meceTags + userRegistered)
+1 IERC20            balanceOf             batch=TRUE rows=3
+2 MarketplaceDataV1 publishJobEvent       batch=false          <- conditional, occurrence: conditional max=1
+3 MarketplaceDataV1 publishJobEvent       batch=false          <- occurrence: loop, no proven bound
+```
+
+Three of the five MarketplaceData calls now share one envelope. The two `publishJobEvent` sites do not, and a
+master NFT is spendable once, so the transaction still cannot be built.
+
+What blocks each, measured by relaxing one clause at a time:
+
+- BOTH are refused by the expression-argSource clause. Relaxing it (measurement only, reverted) moves the batch
+  to `rows=4`, absorbing the `conditional` one. The covenant side is already capable here:
+  `emitCompleteExternalBatchBlob` passes `row.parameters[i]` - the AST expression - to
+  `emitExternalBatchArgSource`, so it encodes live values. The gap is that the SDK must build the SAME bytes
+  off-chain and `_resolveExternalArgs` has no `expression` case.
+- The remaining site is `occurrence: loop` with no proven bound (`maximumOccurrences: undefined`), so even with
+  expressions admitted it stays out of the group.
+
+Do NOT land the expression relaxation on its own: the compiler would emit a batch the SDK cannot construct,
+turning a clean refusal into "expression-based argSources that cannot be auto-resolved" at build time.
+
+The SDK-side answer is trace-derived blobs, and the shape is already established in this codebase. The covenant
+compares its accumulator against the callee's input push with `OP_EQUALVERIFY` inside
+`emitExternalBatchBlobVerification`, so a probe carrying a placeholder blob leaves the EXPECTED blob as the
+other operand - exactly how `extractCommitmentMapFromTrace` reads an expected commitment beside the actual one.
+A new `extractBatchBlobFromTrace` plus a rebuild pass would close it. There is no such path today (searched).
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

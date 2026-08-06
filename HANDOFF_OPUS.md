@@ -235,9 +235,34 @@ position. The generated route's call site is never rewritten to supply it, so th
 short. A `parameters.push` interceptor on the clone caught nothing, which is what pointed at a prepend/reassign
 rather than an append.
 
-Next step: find where `LowerCollectionJournalHelpers` rewrites CALL SITES for the pooled (`multiCandidates`)
-case and make the generated route's invocation of the entry clone carry the journal argument the same way an
-ordinary caller does.
+Chasing it further shows the cause is SYSTEMIC rather than one missing rewrite. `LowerCollectionJournalHelpers`
+keys everything on `name/arity`:
+
+```text
+registration      multiCandidates.set(`${fn.name}/${fn.parameters.length}`, ...)      (~261)
+function side     multiCandidates.get(`${fn.name}/${fn.parameters.length}`)           (~295)
+cache             activeMultiCaches.get(`${fn.name}/${fn.parameters.length}`)         (~601)
+call site         multiCandidates.get(`${call.identifier.name}/${call.parameters.length}`)  (~365, ~468)
+```
+
+Arity MUTATES as synthetic parameters are injected, and a compiler-generated route writes some synthetics at the
+call site itself. Measured for `updateMeceTag`:
+
+```text
+registered key:  __message_bus_entry_updateMeceTag/3
+call-site key:   __message_bus_entry_updateMeceTag/4     -> exact lookup misses
+```
+
+so the callee gains a leading `__cj_` journal parameter that its call site never supplies. Making the call-site
+lookup fall back to a name-unique match clears the arity error and then trips
+`Missing function-scoped collection journal`, because `activeMultiCaches` is keyed the same stale way; pointing
+the function-side lookup at the same resolver does not help either, since the cache key is built while visiting
+the CALLER.
+
+The fix is therefore to key this pass on function NODE IDENTITY (or name alone, with arity only as an overload
+tiebreak) across all four sites, rather than to patch one lookup. That is a contained refactor of one file, but
+it touches every message-bus journal path, so it needs the `journal-message-bus` suite run behind it. The
+name-unique fallback prototype was measured and reverted; it is not a correct fix on its own.
 
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run

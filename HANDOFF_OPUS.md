@@ -399,9 +399,27 @@ That points at derivation: the SDK precomputes a return commitment only for a NO
 `publishJobEvent` writes state, so `childWritesState` is true and no precomputed return is produced - leaving
 the return event carrying zeros, which is exactly what the decode sees.
 
-Next step: derive the batch RESULTS BLOB for a state-writing envelope from a VM probe (the same trace pattern
-used for commitments) instead of skipping the return-value derivation whenever the callee writes. Check
-`StatefulContract.ts` around the `precomputedReturnCommitment` computation.
+Instrumenting the gate settles WHERE the gap is. A probe placed on the return-derivation condition
+
+```text
+StatefulContract.ts ~5998    if (ec.hasReturnValues && (fusedReturnGroupIndex !== undefined
+                                 || !group.precomputedReturnCommitment)) { ...probe B, extract return event... }
+```
+
+prints NOTHING for this transaction. That loop is phase 1 of the DIRECT external-call composition. The
+marketplace's calls are not direct: `publishJobPost` runs through the proxy's `__forward` into the delegate
+implementation, so its external-call groups are built by the NESTED composition (roughly
+`StatefulContract.ts` 10300-11100) - which has no equivalent results-derivation step.
+
+So the missing piece is precise: a nested compiler-route group never has its return event derived, and the
+return event therefore carries zeros, which the caller decodes as a false boolean and rejects with the
+source-level require.
+
+Next step: give the nested composition the same return-event derivation the direct path has - probe the built
+transaction at the callee master, extract the return-event commitment for the group, and set it before the
+final build. `extractCommitmentsFromTrace(trace, 1, returnOutputRange, true)` at ~6021 is the pattern to
+mirror; `nestedMasterIndices[groupIdx]` gives the probe's input index and
+`physicalReturnIndexForGroup` already computes the return-event output index for nested groups.
 
 ### What remains, in dependency order
 

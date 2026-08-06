@@ -265,7 +265,32 @@ arity. That second condition is what keeps an under-supplied call failing (it is
 and the per-function cache is now keyed by the function NODE, which cannot go stale. Compiler suites unchanged
 at the 4-failure baseline.
 
-### Bug 4, where the queue now stands
+### Bugs 4 and 5 - FIXED and landed (commit b79a7cee)
+
+- `__internal__proxyMasterIndex` was not in TypeCheck's `FORWARDABLE` set, so a generated route could not call
+  ANY delegate-marked getter (`owner()` arrived with no arguments against a two-parameter definition). It is
+  constant within a delegate execution, exactly like the entries already there.
+- entry clones received the route's block layout only when `graphEmissionHandler` was set, which happens only
+  for clones whose source carries an effect. An effect-free state writer (`userRefunded`) reached codegen with
+  no layout. The assignment is now keyed on the `__message_bus_entry_` name instead.
+
+### Bug 6, where the queue now stands - and it is NOT another lookup mismatch
+
+```text
+Message-bus handler '__message_bus_entry_userRefunded' cannot uniquely map collection 'users'
+  handler entry:  key __message_bus_ek___message_bus_key_users_0   ops [read, write]
+  candidate 0:    key __message_bus_key_users_sender_0             ops [read, write]   (msg.sender keyed)
+  candidates 5..23: keys __message_bus_key_users_0_r0 .. _r7       ops [read]          (per-row, READ only)
+```
+
+`userRefunded(address address_)` is `onlyMarketplace` and writes `users[address_]` - keyed by a PARAMETER. The
+route reserved exactly one write-capable `users` slot and it is keyed by `msg.sender` (planned from a different
+handler, e.g. `registerUser`), plus eight read-only per-row slots. None of them is a param-keyed WRITE slot, so
+no normalization of key names can resolve this: the route genuinely did not plan a slot for this access shape.
+
+This is entry-slot PLANNING in `synthesizeMessageBusRoute`, not the mapper. Do not extend `keyBase` normalization
+to paper over it - stripping the `_r\d+` suffix would make eight read-only candidates collapse into one match and
+silently bind a WRITE to a READ slot.
 
 ```text
 Found parameters () in call to function 'owner' where parameters (bigint,bigint) were expected

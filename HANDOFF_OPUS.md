@@ -259,10 +259,24 @@ lookup fall back to a name-unique match clears the arity error and then trips
 the function-side lookup at the same resolver does not help either, since the cache key is built while visiting
 the CALLER.
 
-The fix is therefore to key this pass on function NODE IDENTITY (or name alone, with arity only as an overload
-tiebreak) across all four sites, rather than to patch one lookup. That is a contained refactor of one file, but
-it touches every message-bus journal path, so it needs the `journal-message-bus` suite run behind it. The
-name-unique fallback prototype was measured and reverted; it is not a correct fix on its own.
+FIXED and landed (commit fccd6143): one resolver per candidate map - exact key first, then a by-name match when
+the name identifies exactly one candidate AND the call carries at least as many arguments as the registered
+arity. That second condition is what keeps an under-supplied call failing (it is malformed for another reason),
+and the per-function cache is now keyed by the function NODE, which cannot go stale. Compiler suites unchanged
+at the 4-failure baseline.
+
+### Bug 4, where the queue now stands
+
+```text
+Found parameters () in call to function 'owner' where parameters (bigint,bigint) were expected
+  at Line 116 - a position in the message-bus route generated for 'MarketplaceDataV1'
+```
+
+`owner()` is OwnableUpgradeable's getter, called with no arguments, against a definition that now takes two
+`bigint`s - the shape of a journal-rewritten signature. Confirmed NOT caused by the fix above: the error is
+byte-identical with the by-name fallback constrained off. The likely cause is that a value-returning journal
+candidate called in EXPRESSION position is not rewritten - `rewriteStatement` and `visitFunctionCallStatement`
+both key off `FunctionCallStatementNode`, while `owner()` appears as a value.
 
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run

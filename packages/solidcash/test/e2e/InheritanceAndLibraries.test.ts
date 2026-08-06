@@ -1,4 +1,5 @@
-import { compileString, PrivateStateVariableAccessError } from 'solidc';
+import { PrivateStateVariableAccessError } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { ResolvedImport, buildInitialStateCommitments } from '@solidcash/utils';
 import {
   Contract, MockNetworkProvider, TransactionBuilder, FailedRequireError,

@@ -487,6 +487,28 @@ Start there with the same instrument-first discipline: confirm which function as
 input 3 fails, BEFORE editing anything. Three separate rounds have now been spent fixing the wrong subsystem
 because the owning code path was assumed rather than measured.
 
+### Measured composition of the failing build
+
+A probe at builder construction prints, for the build that then fails at input 3:
+
+```text
+composition { fn: '__forward', external: [], lowLevel: [], outState: 0 }
+```
+
+NOTHING is co-spent - no external-call group, no delegatecall group. (The earlier `initialize` build in the same
+run does show `lowLevel: ['initialize:delegatecall']`, so the probe is working and the difference is real.)
+
+That is the actual state to explain, and it is upstream of every result/derivation question: a `__forward` that
+co-spends neither the implementation nor MarketplaceData cannot execute `publishJobPost` at all, so the covenant
+failing is expected rather than mysterious.
+
+The most likely mechanism is the auto-resolve guard in the composition block: if ANY
+`ec.interfaceName` is missing from `_externalRegistry`, `canAutoResolve` goes false, `resolvedExternalCalls`
+stays undefined, and the entire `if (externalCalls && resolvedExternalCalls)` block - which builds every group -
+is skipped silently. Check first whether `MarketplaceDataV1` and `IERC20` are both registered as externals on
+the IMPLEMENTATION contract (not just the proxy) at the point `publishJobPost` is composed. A silent skip there
+would produce exactly this empty composition.
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

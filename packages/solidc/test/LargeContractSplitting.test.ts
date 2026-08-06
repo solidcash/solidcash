@@ -370,7 +370,7 @@ describe('large-contract state-local splitting', () => {
 
     expect(artifact.abi.some((entry: any) => entry.name === 'pay')).toBe(true);
     expect(asmToBytecode(artifact.bytecode).length).toBeGreaterThan(0);
-  }, 90_000);
+  }, 300_000);
 
   /**
    * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair

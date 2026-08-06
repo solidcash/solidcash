@@ -16,6 +16,9 @@ export default defineConfig(solidcashHardhatPreset({
   test: {
     include: [`${UPSTREAM}/test/**/*.test.ts`],
     // These suites deploy real split contracts in `before` hooks, which is far past Vitest's 10s hook default.
+    // `test/SushiRoll.test.ts` is a 0-byte file upstream. Vitest treats "no suite found" as a failure, which
+    // would report an empty upstream file as a MistSwap failure of ours.
+    passWithNoTests: true,
     testTimeout: 120000,
     hookTimeout: 300000,
     server: { deps: { inline: [/mistswap\/mistswap/] } },

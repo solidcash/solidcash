@@ -41,8 +41,9 @@ const CANDIDATE_GROUPS_PER_ROUND = 512;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
 const MAXIMUM_ROUNDS = 6;
-// Compact helper identifiers descend from -12, so an outlined id encodes in one or two VM-number bytes: a push
-// of at most three bytes. Costing every site at that width can under-state a saving but never over-state one.
+// Fallback identifier width when the caller does not report what its next allocation costs. Compact helper
+// identifiers descend from -12, so one encodes in one or two VM-number bytes: a push of at most three bytes.
+// Costing every site at that width can under-state a saving but never over-state one.
 const PROBE_IDENTIFIER_PUSH_BYTES = 3;
 // Keeps allocated identifiers inside the two-byte VM-number range the cost model above assumes.
 const MAXIMUM_OUTLINED_FUNCTIONS = 4096;
@@ -184,6 +185,27 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
   return count * bytes - definitionCost - count * siteCost;
 }
 
+const scriptBytes = (script: Script): number =>
+  script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
+
+/**
+ * Total bytes the caller will emit for this corpus: every body verbatim, plus one
+ * `<body-push> <id-push> OP_DEFINE` per outlined function.
+ *
+ * Per-candidate savings are estimated against the corpus as it stood at the start of a round, so a round that
+ * applies several overlapping-in-effect candidates can cost more than the sum of its parts promised. Measuring
+ * the whole corpus is what lets a round be judged on its actual result rather than on that estimate.
+ */
+function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[]): number {
+  let total = bodies.reduce((sum, body) => sum + scriptBytes(body.script), 0);
+  for (const fn of functions) {
+    const bytes = scriptBytes(fn.script);
+    const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
+    total += definitionOverhead + bytes + elementByteSize(fn.id) + 1;
+  }
+  return total;
+}
+
 /**
  * Every profitable outlining candidate across `bodies`, best-saving first.
  *
@@ -281,7 +303,10 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       saved,
     });
   }
-  candidates.sort((left, right) => right.saved - left.saved);
+  // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
+  // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
+  // remainder. Preferring length on equal savings keeps the containing span whole.
+  candidates.sort((left, right) => right.saved - left.saved || right.bytes - left.bytes);
   return candidates;
 }
 
@@ -296,6 +321,12 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
 export function outlineSharedSpans(
   bodies: OutlineBody[],
   allocateId: () => Uint8Array,
+  /**
+   * Encoded push width of the identifier `allocateId` would hand out next, without consuming it. Supplying it
+   * makes the cost model exact; without it every site is costed at the widest identifier a helper can need,
+   * which silently rejects candidates that are in fact profitable.
+   */
+  peekIdPushBytes?: () => number,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -316,8 +347,11 @@ export function outlineSharedSpans(
         script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
       })),
     ];
-    // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
-    const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES);
+    // The width every candidate is costed at. It decides both which candidates clear the bar and the order they
+    // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
+    // marginal candidates back.
+    const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
+    const candidates = findCandidates(corpus, idPushBytes);
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
@@ -334,7 +368,7 @@ export function outlineSharedSpans(
         return true;
       });
       if (free.length < 2) continue;
-      if (savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES) <= 0) continue;
+      if (savingsOf(candidate.bytes, free.length, idPushBytes) <= 0) continue;
       for (const occurrence of free) {
         for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
       }
@@ -346,10 +380,21 @@ export function outlineSharedSpans(
           locationData: corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
         },
         occurrences: free,
-        saved: savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES),
+        saved: savingsOf(candidate.bytes, free.length, idPushBytes),
       });
     }
     if (applied.length === 0) break;
+
+    // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
+    // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
+    const before = emittedBytes(working, functions);
+    const snapshot = corpus.map((entry) => ({
+      entry,
+      script: [...entry.script],
+      locationData: [...entry.locationData],
+      anchors: entry.anchors ? [...entry.anchors] : undefined,
+      origins: entry.origins ? [...entry.origins] : undefined,
+    }));
 
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits = applied.flatMap((entry) =>
@@ -374,10 +419,23 @@ export function outlineSharedSpans(
       }
     }
 
-    for (const entry of applied) {
-      functions.push(entry.definition);
-      savedBytes += entry.saved;
+    for (const entry of applied) functions.push(entry.definition);
+
+    const after = emittedBytes(working, functions);
+    if (after >= before) {
+      // The round did not pay for itself. Put every mutated array back and stop: the next round would re-measure
+      // the same corpus against the same identifier width and reach the same decision.
+      functions.length -= applied.length;
+      for (const saved of snapshot) {
+        saved.entry.script.splice(0, saved.entry.script.length, ...saved.script);
+        saved.entry.locationData.splice(0, saved.entry.locationData.length, ...saved.locationData);
+        if (saved.anchors) saved.entry.anchors = saved.anchors;
+        const { origins } = saved.entry;
+        if (saved.origins && origins) origins.splice(0, origins.length, ...saved.origins);
+      }
+      break;
     }
+    savedBytes += before - after;
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

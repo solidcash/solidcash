@@ -1,5 +1,5 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
@@ -738,13 +738,43 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
   }>();
 
+  private freeFunctionIds: bigint[] = [];
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
   private compactHelperIds = {
     next: -12n,
     used: new Set<bigint>(),
+    cheap: [] as bigint[],
+    /**
+     * Ids this allocator actually handed out, as opposed to the ones merely reserved against collision.
+     *
+     * Consumers that have to recover "which definitions are compiler helpers" from a finished script cannot do
+     * it by numeric range: an allocation can come from the single-byte pool, whose values are indistinguishable
+     * from small user function ids. This is the authoritative set. Shared by reference with every sub-traversal
+     * and probe, so an id allocated on any of them is recorded once.
+     */
+    allocated: new Set<bigint>(),
   };
+
+  /**
+   * Widest push a compact helper id can need, and the width outlining used before it could ask for the real
+   * one. Kept as the second cost model to try, because costing at it is what stops marginal candidates from
+   * claiming sites that longer spans would have shared.
+   */
+  private static readonly OUTLINE_CONSERVATIVE_ID_PUSH_BYTES = 3;
+
+  /**
+   * Script numbers whose push is a single byte, so an id drawn from here costs one byte less at its OP_DEFINE
+   * and at every OP_INVOKE of it.
+   *
+   * libauth's minimal `encodeDataPush` folds a one-byte push of 1..16 to OP_1..OP_16 and of -1 to OP_1NEGATE;
+   * every other one-byte script number needs OP_PUSHBYTES_1 plus its byte. -1 is permanently the int-decode
+   * subroutine, so in practice this is the 1..16 range minus whatever user function ids occupy it.
+   */
+  private static readonly SINGLE_BYTE_PUSH_IDS: readonly bigint[] = [
+    -1n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n,
+  ];
 
   /**
    * This traversal is the dry run `subroutineUseProbe` uses to count subroutine sites. Its emitted bytes are
@@ -781,14 +811,67 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   private allocateCompactHelperId(): bigint {
+    // Single-byte-push ids first: they are a strictly cheaper encoding of the same identifier, and there are far
+    // fewer of them than a large contract needs, so spending them before falling back is always the better trade.
+    while (this.compactHelperIds.cheap.length > 0) {
+      const id = this.compactHelperIds.cheap.shift()!;
+      if (!this.compactHelperIds.used.has(id)) {
+        this.compactHelperIds.used.add(id);
+        this.compactHelperIds.allocated.add(id);
+        return id;
+      }
+    }
     while (true) {
       const id = this.compactHelperIds.next;
       this.compactHelperIds.next -= 1n;
       if (id !== 0n && !this.compactHelperIds.used.has(id)) {
         this.compactHelperIds.used.add(id);
+        this.compactHelperIds.allocated.add(id);
         return id;
       }
     }
+  }
+
+  /** Ids handed out to compiler helpers, for consumers that must tell a helper definition from a user one. */
+  get allocatedHelperIds(): ReadonlySet<bigint> {
+    return this.compactHelperIds.allocated;
+  }
+
+  private snapshotCompactHelperIds(): { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] } {
+    const { next, used, cheap, allocated } = this.compactHelperIds;
+    return { next, used: [...used], cheap: [...cheap], allocated: [...allocated] };
+  }
+
+  /**
+   * Rewind the identifier pool so a speculative allocation run can be discarded.
+   *
+   * Restores in place rather than replacing the object: sub-traversals and probes are handed the same pool by
+   * reference, so swapping it here would leave them allocating out of an orphan.
+   */
+  private restoreCompactHelperIds(
+    snapshot: { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] },
+  ): void {
+    const pool = this.compactHelperIds;
+    pool.next = snapshot.next;
+    pool.used.clear();
+    for (const id of snapshot.used) pool.used.add(id);
+    pool.allocated.clear();
+    for (const id of snapshot.allocated) pool.allocated.add(id);
+    pool.cheap.splice(0, pool.cheap.length, ...snapshot.cheap);
+  }
+
+  /**
+   * Encoded push width to cost an as-yet-unallocated helper id at, without consuming one.
+   *
+   * Deliberately ignores the single-byte pool. A caller that allocates several ids in one batch gets at most a
+   * handful of cheap ones before the pool runs dry, so quoting the cheap width would over-state the saving on
+   * every id after the first - and a cost model that over-states makes the pass emit code it cannot pay for.
+   * The descending fallback range is what a batch actually draws from.
+   */
+  private peekCompactHelperIdPushBytes(): number {
+    let next = this.compactHelperIds.next;
+    while (next === 0n || this.compactHelperIds.used.has(next)) next -= 1n;
+    return encodeDataPush(encodeInt(next)).length;
   }
 
   // State-related tracking
@@ -1349,6 +1432,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.userFunctionDefs.set(f.name, f);
     }
 
+    // Free functions are OP_DEFINE'd here, before visitContract seeds the helper-id pool, so record their ids
+    // for that seeding: a helper drawn on top of one would redefine an already-defined identifier.
+    this.freeFunctionIds = node.freeFunctions
+      .filter((f) => f.functionId !== undefined)
+      .map((f) => BigInt(f.functionId!));
+
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
       this.emitFunctionDefine(f);
@@ -1392,13 +1481,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.fallbackDef ? [node.fallbackDef] : []),
       ...(node.receiveDef ? [node.receiveDef] : []),
     ];
-    this.compactHelperIds = { next: -12n, used: new Set() };
+    this.compactHelperIds = { next: -12n, used: new Set(), cheap: [], allocated: new Set() };
     for (const id of GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS) {
       this.compactHelperIds.used.add(id);
     }
+    // Reserve only the function ids that are actually emitted as identifiers. A function's number reaches the
+    // script in exactly two ways: `emitFunctionDefine` gives every non-entry-point function an OP_DEFINE, and a
+    // direct internal call or a function-pointer value pushes the number for an OP_INVOKE - the set
+    // `collectInvokedFunctionIds` returns. An entry point that is never called internally is reached only
+    // through its four-byte selector, so its number is free for a helper to take, which matters because those
+    // numbers are exactly the low ones the single-byte pool is drawn from.
+    const invokedFunctionIds = this.collectInvokedFunctionIds(node);
+    this.invokedFunctionIdsCache = { node, ids: invokedFunctionIds };
     for (const fn of contractFunctionsForIds) {
-      if (fn.functionId !== undefined) this.compactHelperIds.used.add(BigInt(fn.functionId));
+      if (fn.functionId === undefined) continue;
+      if (fn.isEntryPoint && !invokedFunctionIds.has(fn.functionId)) continue;
+      this.compactHelperIds.used.add(BigInt(fn.functionId));
     }
+    for (const id of invokedFunctionIds) this.compactHelperIds.used.add(BigInt(id));
+    for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
+    this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
+      .filter((id) => !this.compactHelperIds.used.has(id));
     // C2 sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
     // standard read-only preservation / satoshi epilogue must skip it (its output is not the co-spent input).
     this.sortedCollections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
@@ -1879,9 +1982,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // target). A public function only needs its internal-subroutine OP_DEFINE when it is actually invoked
   // internally; otherwise it compiles as an entry point only (like external) - so a constructor-param-using
   // entry point is not forced through the param-less subroutine path.
+  // Memo for the contract-level call, which visitContract and emitFunctionDefinesAndDispatch both need and which
+  // walks the whole contract AST. Keyed on the node so a different contract never reads a stale set.
+  private invokedFunctionIdsCache?: { node: Node; ids: Set<number> };
+
   private collectInvokedFunctionIds(
     node: Node, ids: Set<number> = new Set(), visited: Set<Node> = new Set(),
   ): Set<number> {
+    if (this.invokedFunctionIdsCache?.node === node && visited.size === 0 && ids.size === 0) {
+      return this.invokedFunctionIdsCache.ids;
+    }
     if (visited.has(node)) return ids;
     visited.add(node);
     if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
@@ -2986,27 +3096,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private outlineSharedFunctionBodies(locationData: SingleLocationData): void {
     if (this.definedBodyRecords.length === 0) return;
-    const result = outlineSharedSpans(
-      this.definedBodyRecords.map((record) => {
-        // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
-        // instruction pointer against these, and a pointer reported from inside a shared body would not match.
-        const debugInfo = record.selectorHex === undefined
-          ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
-        const anchors = [
-          ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
-          ...(debugInfo?.logs ?? []).flatMap((entry) => [
-            entry.ip,
-            // Each logged value records the pointer at which it is readable off the stack.
-            ...entry.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip])),
-          ]),
-        ];
-        return { script: record.script, locationData: record.locationData, anchors };
-      }),
-      () => encodeInt(this.allocateCompactHelperId()),
-    );
-    if (result.functions.length === 0) return;
+    const bodies = this.definedBodyRecords.map((record) => {
+      // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
+      // instruction pointer against these, and a pointer reported from inside a shared body would not match.
+      const debugInfo = record.selectorHex === undefined
+        ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
+      const anchors = [
+        ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
+        ...(debugInfo?.logs ?? []).flatMap((entry) => [
+          entry.ip,
+          // Each logged value records the pointer at which it is readable off the stack.
+          ...entry.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip])),
+        ]),
+      ];
+      return { script: record.script, locationData: record.locationData, anchors };
+    });
 
-    result.bodies.forEach((body, index) => {
+    // Outlining picks candidates greedily, and the identifier width it costs them at decides both which ones
+    // clear the bar and the order they claim sites in. A narrower width is the truthful one, but it also admits
+    // marginal candidates whose sites fragment the longer spans a later round would have shared - on one corpus
+    // contract that cost 47 bytes more than never admitting them. Neither width dominates, so run both and keep
+    // whichever actually emitted less. Attempts are independent: each starts from the same bodies and has the
+    // identifier pool restored underneath it.
+    const widths = [
+      this.peekCompactHelperIdPushBytes(),
+      GenerateTargetTraversalWithLocation.OUTLINE_CONSERVATIVE_ID_PUSH_BYTES,
+    ];
+    let result: ReturnType<typeof outlineSharedSpans> | undefined;
+    let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
+    const entryPool = this.snapshotCompactHelperIds();
+    for (const width of new Set(widths)) {
+      this.restoreCompactHelperIds(entryPool);
+      const attempt = outlineSharedSpans(
+        bodies.map((body) => ({ ...body, script: [...body.script], locationData: [...body.locationData] })),
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => width,
+      );
+      if (result === undefined || attempt.savedBytes > result.savedBytes) {
+        result = attempt;
+        winningPool = this.snapshotCompactHelperIds();
+      }
+    }
+    this.restoreCompactHelperIds(winningPool!);
+    const outcome = result!;
+    if (outcome.functions.length === 0) return;
+
+    outcome.bodies.forEach((body, index) => {
       const record = this.definedBodyRecords[index];
       const bytecode = scriptToBytecode(body.script);
       this.output[record.outputIndex] = bytecode;
@@ -3029,14 +3164,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         });
       }
     });
-    result.bodies.forEach((body, index) => {
+    outcome.bodies.forEach((body, index) => {
       const functionId = this.definedBodyRecords[index].functionId;
       if (functionId !== undefined) {
         this.invokedFunctionBytecodes.set(functionId, scriptToBytecode(body.script));
       }
     });
 
-    for (const outlined of result.functions) {
+    for (const outlined of outcome.functions) {
       this.emit(scriptToBytecode(outlined.script), locationData);
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);

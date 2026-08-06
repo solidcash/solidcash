@@ -342,10 +342,10 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d51 320abd58 OP_DEFINE 5279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c7777 a45a12c9 OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 8c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '5279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d51 320abd58 OP_DEFINE 5279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c7777 a45a12c9 OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract MultiFunctionIfStatements(int x, int y) {\n    function transfer(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x && bool(x)) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            d = a;\n        }\n        d = d + a;\n        require(d == y);\n    }\n\n    function timeout(int b) {\n        int d = b;\n        d = d + 2;\n        if (d == x) {\n            int c = d + b;\n            d = c + d;\n            require(c > d);\n        }\n        d = b;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '4b5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d5104320abd5889285279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c777704a45a12c989497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169018c89748c7a82549d8a',
+        'bytecode': '445279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d5104320abd5889255279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c777704a45a12c989497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695189748c7a82549d8a',
         'sourceMap': '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
@@ -381,8 +381,8 @@ export const fixtures: Fixture[] = [
         },
       },
       'functionBodies': {
-        '320abd58': '5279018c8a755379018c8a757093018c8a76547994018c8a7653799c635279926700686376567993018c8a55797893018c8a7b757c6e9f6975675479776876557a93018c8a547a9d6d6d51',
-        'a45a12c9': '5279018c8a75527976529376537a9c6376547993018c8a6e93018c8a7b757c6e9f697568729c7777',
+        '320abd58': '5279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d51',
+        'a45a12c9': '5279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c7777',
       },
       'compiler': {
         'name': 'solidc',
@@ -943,10 +943,10 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 8c OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {\n    function recvFunds() {\n        require(this.age >= period);\n\n        // Check that the first output sends to the recipient\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));\n\n        int minerFee = 1000;\n        int currentValue = tx.inputs[this.activeInputIndex].value;\n        int changeValue = currentValue - pledge - minerFee;\n\n        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient\n        // Otherwise we send the remainder to the recipient and the change back to the contract\n        if (changeValue <= pledge + minerFee) {\n            require(tx.outputs[0].value == currentValue - minerFee);\n        } else {\n            require(tx.outputs[0].value == pledge);\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeValue);\n        }\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == funder);\n        require(checkSig(s, pk));\n    }\n}\n',
       'debug': {
-        'bytecode': '4b537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169018c89748c7a82549d8a',
+        'bytecode': '47537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695189748c7a82549d8a',
         'sourceMap': '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
@@ -998,7 +998,7 @@ export const fixtures: Fixture[] = [
         },
       },
       'functionBodies': {
-        'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994018c8a527994018c8a765579547993018c8aa16300cc707c94018c8a9d6700cc55799d51cdc0c78851cc789d686d6d7551',
+        'e8e62fca': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551',
         '2f7ef34c': '5479a97b88547a547aac777777',
       },
       'compiler': {
@@ -1789,11 +1789,11 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_INPUTINDEX OP_UTXOBYTECODE OP_SIZE OP_NIP 24 OP_LESSTHAN OP_IF OP_ACTIVEBYTECODE OP_SIZE OP_NIP OP_DUP 4c OP_LESSTHAN OP_IF OP_1ADD OP_ELSE OP_DUP 0001 OP_LESSTHAN OP_IF OP_2 OP_ADD OP_ELSE OP_3 OP_ADD OP_ENDIF OP_ENDIF OP_ELSE OP_0 OP_ENDIF 78825488750479ede9d17b8777 79ede9d1 OP_DEFINE 76c0ca7682777b947f75827700a077 8d71cec7 OP_DEFINE 788254887504729bfbca7b8876c0ca7682777b947f75827754a077 729bfbca OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': 'OP_INPUTINDEX OP_UTXOBYTECODE OP_SIZE OP_NIP 24 OP_LESSTHAN OP_IF OP_ACTIVEBYTECODE OP_SIZE OP_NIP OP_DUP 4c OP_LESSTHAN OP_IF OP_1ADD OP_ELSE OP_DUP 0001 OP_LESSTHAN OP_IF OP_2 OP_ADD OP_ELSE OP_3 OP_ADD OP_ENDIF OP_ENDIF OP_ELSE OP_0 OP_ENDIF 78825488750479ede9d17b8777 79ede9d1 OP_DEFINE 518a00a077 8d71cec7 OP_DEFINE 788254887504729bfbca7b88518a54a077 729bfbca OP_DEFINE 76c0ca7682777b947f758277 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'pragma solidcash >=0.10.0;\n\ncontract MsgSigDataTest() {\n    function checkSig(bytes4 expectedSig) {\n        require(msg.sig == expectedSig);\n    }\n\n    function checkData() {\n        require(msg.data.length > 0);\n    }\n\n    function useBoth(bytes4 expectedSig) {\n        require(msg.sig == expectedSig);\n        bytes data = msg.data;\n        require(data.length > 4);\n    }\n}\n',
       'debug': {
-        'bytecode': 'c0c7827701249f63c1827776014c9f638b67760200019f63529367539368686700680d78825488750479ede9d17b87770479ede9d1890f76c0ca7682777b947f75827700a077048d71cec7891b788254887504729bfbca7b8876c0ca7682777b947f75827754a07704729bfbca89748c7a82549d8a',
-        'sourceMap': '3::17:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;4:4:6:5;;;8::10;;;12::16;;;3:0:17:1;;;;;;',
+        'bytecode': 'c0c7827701249f63c1827776014c9f638b67760200019f63529367539368686700680d78825488750479ede9d17b87770479ede9d18905518a00a077048d71cec78911788254887504729bfbca7b88518a54a07704729bfbca890c76c0ca7682777b947f7582775189748c7a82549d8a',
+        'sourceMap': '3::17:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;4:4:6:5;;;8::10;;;12::16;;;3:0:17:1;;;;;;;;;',
         'logs': [],
         'requires': [],
         'functionDebug': {
@@ -1810,11 +1810,11 @@ export const fixtures: Fixture[] = [
           '8d71cec7': {
             'requires': [
               {
-                'ip': 14,
+                'ip': 4,
                 'line': 9,
               },
             ],
-            'sourceMap': '9:16:9:24;;;;;;;;;;:::31:1;;:34::35:0;:8::37:1;8:4:10:5',
+            'sourceMap': '9:16:9:24;;:34::35;:8::37:1;8:4:10:5',
             'logs': [],
           },
           '729bfbca': {
@@ -1824,19 +1824,19 @@ export const fixtures: Fixture[] = [
                 'line': 13,
               },
               {
-                'ip': 22,
+                'ip': 12,
                 'line': 15,
               },
             ],
-            'sourceMap': '12:21:12:39;;;;;13:16:13:23;:27::38;:8::40:1;14:21:14:29:0;;;;;;;;;;15:16:15:27:1;;:30::31:0;:8::33:1;12:4:16:5',
+            'sourceMap': '12:21:12:39;;;;;13:16:13:23;:27::38;:8::40:1;14:21:14:29:0;;15:30:15:31;:8::33:1;12:4:16:5',
             'logs': [],
           },
         },
       },
       'functionBodies': {
         '79ede9d1': '78825488750479ede9d17b8777',
-        '8d71cec7': '76c0ca7682777b947f75827700a077',
-        '729bfbca': '788254887504729bfbca7b8876c0ca7682777b947f75827754a077',
+        '8d71cec7': '518a00a077',
+        '729bfbca': '788254887504729bfbca7b88518a54a077',
       },
       'compiler': {
         'name': 'solidc',

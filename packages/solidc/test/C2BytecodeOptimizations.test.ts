@@ -6,9 +6,13 @@ import { compileString } from './direct-compile.js';
 // Message-bus route synthesis has its own cost and structure regression suite.
 const DIRECT_ROUTE = { forceStateful: true, messageBus: false } as const;
 
+// Dynamically allocated helper ids render either as a hex push or, when the id came from the single-byte pool
+// (script numbers 1..16 and -1, which push as one opcode), as OP_1..OP_16 / OP_1NEGATE. Both are the same kind
+// of definition; only the encoding differs.
 const compactHelperDefinitions = (asm: string): string[] => (
-  [...asm.matchAll(/(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})) OP_DEFINE(?: |$)/g)]
-    .map((match) => match[1])
+  [...asm.matchAll(
+    /(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})|OP_1[0-6]|OP_[1-9]|OP_1NEGATE) OP_DEFINE(?: |$)/g,
+  )].map((match) => match[1])
 );
 
 describe('general C2 bytecode sharing', () => {

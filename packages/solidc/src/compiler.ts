@@ -4483,7 +4483,11 @@ function compileResolvedAst(
       })));
     }
     for (const fn of ast.contract.functions) {
-      if (fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')) {
+      // An entry clone executes inside the route's participant block whether or not it carries an EFFECT, so it
+      // needs the route's block layout either way. `graphEmissionHandler` is only set for clones whose source
+      // has effects, which left an effect-free state writer (`userRefunded`) reaching codegen with no layout.
+      if (fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
+        || fn.name.startsWith('__message_bus_entry_')) {
         fn.blockLayout = messageBusRoute.blockLayout;
         if (fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
           fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {

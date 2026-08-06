@@ -2262,7 +2262,12 @@ export default class TypeCheckTraversal extends AstTraversal {
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
-    const FORWARDABLE = new Set(['__internal__msgSenderCategory', '__internal__blockhashInputIndex']);
+    // `__internal__proxyMasterIndex` joins these for the same reason: within one delegate execution the proxy
+    // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
+    // route cannot call a delegate-marked getter (`owner()`) at all.
+    const FORWARDABLE = new Set([
+      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterIndex',
+    ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
       const callerParam = callerParams.get(p.name);

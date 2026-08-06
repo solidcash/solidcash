@@ -110,7 +110,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private multiCandidates = new Map<string, MultiCandidate>();
   private current?: Candidate;
   private currentMulti?: MultiCandidate;
-  private activeMultiCaches = new Map<string, ActiveMultiCache>();
+  private activeMultiCaches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
 
   visitSourceFile(node: SourceFileNode): Node {
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
@@ -291,8 +291,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // Rewrite call sites before changing arities.
     for (const fn of node.functions) {
       if (!fn.body) continue;
-      this.current = this.candidates.get(`${fn.name}/${fn.parameters.length}`);
-      this.currentMulti = this.multiCandidates.get(`${fn.name}/${fn.parameters.length}`);
+      this.current = this.resolveSingle(fn.name, fn.parameters.length);
+      this.currentMulti = this.resolveMulti(fn.name, fn.parameters.length);
       this.activeMultiCaches = this.currentMulti
         ? new Map()
         : this.prepareMultiCaches(fn.body, new Set(fn.parameters.map(({ name }) => name)));
@@ -359,12 +359,42 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     return block;
   }
 
+  /**
+   * Resolve a journal candidate for a call. Candidates are registered by name AND arity, but arity MUTATES:
+   * semantic analysis appends synthetic parameters after registration, and a compiler-generated message-bus
+   * route writes some of those synthetics at the call site itself. The exact key then misses on both sides -
+   * the callee keeps a leading `__cj_` parameter its call site never supplies. Fall back to the name when it
+   * identifies exactly one candidate; an overloaded name keeps the strict arity match.
+   */
+  private resolveMulti(name: string, argumentCount: number): MultiCandidate | undefined {
+    const exact = this.multiCandidates.get(`${name}/${argumentCount}`);
+    if (exact) return exact;
+    // Only when the call carries MORE arguments than the registered arity: that is the "route wrote a synthetic
+    // itself" case. A call with FEWER arguments is under-supplied for some other reason and must keep failing.
+    const byName = [...this.multiCandidates.entries()]
+      .filter(([key]) => key.slice(0, key.lastIndexOf('/')) === name
+        && argumentCount >= Number(key.slice(key.lastIndexOf('/') + 1)))
+      .map(([, value]) => value);
+    return byName.length === 1 ? byName[0] : undefined;
+  }
+
+  private resolveSingle(name: string, argumentCount: number): Candidate | undefined {
+    const exact = this.candidates.get(`${name}/${argumentCount}`);
+    if (exact) return exact;
+    const byName = [...this.candidates.entries()]
+      .filter(([key]) => key.slice(0, key.lastIndexOf('/')) === name
+        && argumentCount >= Number(key.slice(key.lastIndexOf('/') + 1)))
+      .map(([, value]) => value);
+    return byName.length === 1 ? byName[0] : undefined;
+  }
+
   private rewriteStatement(statement: StatementNode): StatementNode | StatementNode[] {
     if (statement instanceof FunctionCallStatementNode) {
-      const key = `${statement.call.identifier.name}/${statement.call.parameters.length}`;
-      const multiTarget = this.multiCandidates.get(key);
+      const multiTarget = this.resolveMulti(
+        statement.call.identifier.name, statement.call.parameters.length,
+      );
       if (multiTarget) return this.rewriteMultiCall(statement.call, multiTarget);
-      const target = this.candidates.get(key);
+      const target = this.resolveSingle(statement.call.identifier.name, statement.call.parameters.length);
       if (target) return this.rewriteCall(statement.call, target);
     }
     if (this.currentMulti && statement instanceof MappingAssignNode) {
@@ -465,7 +495,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   visitFunctionCallStatement(node: FunctionCallStatementNode): Node {
-    const multiTarget = this.multiCandidates.get(`${node.call.identifier.name}/${node.call.parameters.length}`);
+    const multiTarget = this.resolveMulti(node.call.identifier.name, node.call.parameters.length);
     if (multiTarget) {
       // A multi-journal invocation lowers to one tuple-capture statement, so
       // generic traversal through nested loop/switch wrappers can replace it
@@ -473,7 +503,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
       // list.
       return this.rewriteMultiCall(node.call, multiTarget)[0];
     }
-    const target = this.candidates.get(`${node.call.identifier.name}/${node.call.parameters.length}`);
+    const target = this.resolveSingle(node.call.identifier.name, node.call.parameters.length);
     return target ? this.rewriteCall(node.call, target) : super.visitFunctionCallStatement(node);
   }
 
@@ -578,7 +608,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   }
 
   private rewriteMultiCall(call: FunctionCallNode, target: MultiCandidate): StatementNode[] {
-    const cache = this.activeMultiCaches.get(`${target.fn.name}/${target.fn.parameters.length}`);
+    const cache = this.activeMultiCaches.get(target.fn);
     if (!cache) {
       throw new Error(`Missing function-scoped collection journal for '${target.fn.name}'`);
     }
@@ -611,8 +641,8 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
   private prepareMultiCaches(
     body: BlockNode,
     wrapperParameters: Set<string>,
-  ): Map<string, ActiveMultiCache> {
-    const caches = new Map<string, ActiveMultiCache>();
+  ): Map<FunctionDefinitionNode, ActiveMultiCache> {
+    const caches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
     // One physical entry gets one pending journal value per wrapper, however many different handlers touch it.
     // Keeping a pool per callee was enough while a route admitted a single handler; with several handlers over
     // one collection it allocated a separate cache local - and therefore a separate C2 slot - per handler for
@@ -624,8 +654,9 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     });
     for (const statement of calls) {
       if (!(statement instanceof FunctionCallStatementNode)) continue;
-      const candidateKey = `${statement.call.identifier.name}/${statement.call.parameters.length}`;
-      const target = this.multiCandidates.get(candidateKey);
+      const target = this.resolveMulti(
+        statement.call.identifier.name, statement.call.parameters.length,
+      );
       if (!target) continue;
       const keysFor = (entry: JournalEntry): ExpressionNode[] => entry.keyParameters.map((name) => {
         const parameterIndex = target.fn.parameters.findIndex((parameter) => parameter.name === name);
@@ -642,12 +673,12 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         }
         return identity;
       });
-      const cache = caches.get(candidateKey) ?? {
+      const cache = caches.get(target.fn) ?? {
         target,
         locals: sharedLocals,
         calls: new WeakMap(),
       };
-      if (!caches.has(candidateKey)) caches.set(candidateKey, cache);
+      if (!caches.has(target.fn)) caches.set(target.fn, cache);
       const callLocals = target.entries.map((entry) => {
         const keys = keysFor(entry);
         const keyIdentity = identitiesFor(keys);

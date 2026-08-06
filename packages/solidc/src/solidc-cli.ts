@@ -58,7 +58,7 @@ function run(): void {
     enforceFunctionParameterTypes: !opts.skipEnforceFunctionParameterTypes,
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
-    // CLI compilation retains the best-effort direct fallback; only the explicit opt-out needs publication.
+    // CLI compilation uses automatic selection rather than turning the absent flag into required mode.
     messageBus: opts.messageBus === false ? false : undefined,
   };
 

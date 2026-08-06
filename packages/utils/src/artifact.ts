@@ -62,9 +62,10 @@ export interface CompilerOptions {
   // proxy-implementable functions `delegate` so source never needs the keyword (Solidity has none). Not a user
   // option; setting it yields the delegate variant as the primary artifact.
   autoDelegate?: boolean;
-  // Compiler-generated atomic composition route and write-back journal. Eligibility is inferred from the
-  // contract when omitted. Explicit `false` requests direct-only compilation and is rejected when semantic
-  // analysis finds a transaction shape that cannot be built without one shared message bus.
+  // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from
+  // source-level atomic call-graph edges; `true` requires a composable route (and fails instead of falling back),
+  // while `false` requests direct-only compilation and is rejected when semantic analysis finds a transaction
+  // shape that cannot be built without one shared message bus.
   messageBus?: boolean;
 }
 

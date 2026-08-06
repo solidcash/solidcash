@@ -7460,9 +7460,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
         const list = SortedList.fromUtxos(collectionEntries);
-        const writes = batch.slotIndices.filter((slotIndex) => !batchAliasSkips.has(slotIndex)).map((slotIndex) => ({
-          slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array(),
-        }));
+        // Two batch slots can target the SAME key. `_moveDelegates(srcRep, dstRep, ...)` writes
+        // numCheckpoints[srcRep] and numCheckpoints[dstRep], which coincide whenever the two delegates are
+        // equal - the common never-delegated case, where Solidity's `if (srcRep != dstRep)` writes nothing at
+        // all. Every write on THIS path carries an empty value (it plans predecessor commitments only), so
+        // same-slot entries are byte-identical placeholders and collapsing them loses nothing. The loop below
+        // already expects this: slots sharing a proof UTXO are folded onto one owner via `ownerByUtxo`, and
+        // both resolve to the same planned output. Only planBatchUpsert rejected the pair outright.
+        const seenWriteSlots = new Set<string>();
+        const writes = batch.slotIndices
+          .filter((slotIndex) => !batchAliasSkips.has(slotIndex))
+          .map((slotIndex) => ({ slot: batchTargetSlots.get(slotIndex)!, value: new Uint8Array() }))
+          .filter((write) => {
+            if (!write.slot) return true; // let the missing-slot check below report it
+            const key = bytesToSlotValue(write.slot).toString();
+            if (seenWriteSlots.has(key)) return false;
+            seenWriteSlots.add(key);
+            return true;
+          });
         if (writes.some((w) => !w.slot)) throw new Error(`C2 batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));

@@ -169,6 +169,10 @@ it must not silently compile to incorrect covenant behavior.
     bytes, and since the budget scales at 800 per byte, those bytes grant far more budget than they consume in
     size. The store must therefore emit a great many operations for very few bytes, which is exactly what
     BCH-2026 density control penalises.
+  - It is NOT the per-function `OP_DEFINE` overhead of making each referenced function invokable. Five stores
+    pointing at a SINGLE function still need 1,200, against 1,300 for five distinct ones, so distinctness is only
+    a secondary increment and the store count dominates. The threshold sits between two stores, which pass at
+    800, and five. Recorded so this line is not re-investigated.
   - Two independent levers follow, either of which may be enough. Reduce the emitted operation count of a single
     function-pointer element store; or exploit the fact that in this shape the array is call-invariant, so
     hoisting or constant-folding it removes all five stores from every call after the first.

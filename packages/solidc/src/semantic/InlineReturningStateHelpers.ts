@@ -89,6 +89,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private freeFnRefs: Set<string> = new Set(); // names called from within another free-function body
+  private usingForLibraryNames: Set<string> = new Set(); // `using L for T` libraries reachable by member call
   private rawSlotFreeFns: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
   private usingBoundFns: Set<string> = new Set();
@@ -126,6 +127,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     this.usingBoundFns = new Set((node.usingForDirectives ?? [])
       .flatMap((directive) => directive.functionBindings?.map((binding) => binding.funcName) ?? []));
+    this.usingForLibraryNames = new Set([
+      ...(node.usingForDirectives ?? []),
+      ...node.importedContracts.flatMap((contract) => contract.usingForDirectives ?? []),
+      ...(node.contract?.usingForDirectives ?? []),
+    ].flatMap((directive) => (directive.libraryName ? [directive.libraryName] : [])));
     this.operatorBindings = new Map();
     this.operatorFns = new Set();
     this.validatePreloweredOperators(node);
@@ -339,6 +345,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           this.freeFnRefs.add(called);
           // A same-library sibling is called unqualified (`functionCallWithValue`); record its qualified form.
           if (libPrefix && !called.includes('.')) this.freeFnRefs.add(libPrefix + called);
+        }
+        // A `using L for T` member call (`address(token).functionCall(data)` in OZ SafeERC20) reaches its
+        // library function through a MethodCallNode, so it leaves no FunctionCallNode reference. Dropping the
+        // target while this caller survives strands the member call: the using-for binding then registers no
+        // functions and the receiver fails to resolve. Record every library-qualified spelling; retention is
+        // conservative and an unused free function is harmless.
+        if (n instanceof MethodCallNode) {
+          this.freeFnRefs.add(n.methodName);
+          if (libPrefix) this.freeFnRefs.add(libPrefix + n.methodName);
+          for (const library of this.usingForLibraryNames) this.freeFnRefs.add(`${library}.${n.methodName}`);
         }
       });
     }

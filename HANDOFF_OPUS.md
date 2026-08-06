@@ -274,6 +274,29 @@ at the 4-failure baseline.
   for clones whose source carries an effect. An effect-free state writer (`userRefunded`) reached codegen with
   no layout. The assignment is now keyed on the `__message_bus_entry_` name instead.
 
+### What remains, in dependency order
+
+**1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**
+
+- Admitting keyed mapping getters (deleting the `collection || ...` exclusion in `compiler.ts` ~1848 for
+  parameterised mapping getters) looks like a pure cost decision from its comment. It is not: route codegen then
+  fails with `Expected variable '__internal__state_write_jobs' does not exist on the stack`. GTT ~2055 documents
+  exactly this class - journaling applied to an ORDINARY entry point, where the table is read again by
+  `emitExternalCallVerification` in the EPILOGUE after the journal frame is settled. Tried and reverted.
+- Serving the read as a cross-contract STATE READ instead of a call would be the principled shape (a pure read
+  should not consume the callee master's single spend - external reads co-spend DATA NFTs read-only). But
+  `ExternalOutStateAbi` carries only `requiredDataNftIndices`: there is no cross-contract C2 mapping ENTRY read.
+  Adding one needs the entry-NFT co-spend plus its inclusion proof against the callee category.
+
+**2. Caller-side `directCalls` gate** - refuses to batch, and relaxing it yields the needed `rows=5` (verified
+much earlier). The open question is soundness: the covenant accumulates the blob along the EXECUTED path, which
+suggests conditional rows are representable, but the SDK must also predict the row set off-chain to build the
+callee's unlocking bytecode. Worth deciding deliberately rather than flipping.
+
+**3. SDK must use the callee's DELEGATE-variant route** when the callee is a proxy. The route now exists on
+`artifact.delegateArtifact.messageBus`, not on the main artifact, and `_buildRepeatedExternalBatch` reads
+`externalContract.inner.artifact.messageBus`.
+
 ### The callee-side wall is BROKEN (commit 5d68713e)
 
 `MarketplaceDataV1` now builds its delegate variant WITH a message-bus route and **31 of 46 handlers eligible**,

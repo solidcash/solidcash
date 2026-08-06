@@ -331,12 +331,24 @@ So the gate is doing its job, and the earlier "relaxing it yields rows=5" measur
 conditionality guarantee, not merely past an AST-position quirk. Batching these needs **conditional batch
 rows**: a row the envelope may or may not carry.
 
-That is representable on-chain - the caller's covenant accumulates the blob along the EXECUTED path
-(`externalBatchAccumulator`), so an untaken branch simply contributes no row. The work is on the SDK side, which
-must predict the executed row set to build the callee's unlocking bytecode; a wrong prediction is fail-closed
-(the accumulator comparison rejects the transaction) rather than unsound, and the SDK already derives far harder
-facts from VM probes. The widening prototype was reverted: it is a real improvement for calls sitting in a
-`require(...)` or an initializer, but it does not advance this test and carries its own blast radius.
+CORRECTION to an earlier claim in this file: the accumulator is NOT path-sensitive. Reading
+`emitCompleteExternalBatchBlob` (GTT ~21510) settles it - the blob is built ONCE from the STATIC row list, with
+`rows.length` emitted as a constant header byte and `for (const row of rows)` emitting every row's prefix and
+args at a single site (`canRebuildExternalBatch` even short-circuits to `logicalIndex !== 0` so later source
+sites append nothing). So the covenant always builds the full N-row blob, and the callee must always execute all
+N rows. An untaken branch does not "contribute no row" - it contributes a row whose arguments were never
+computed.
+
+That makes conditional rows a real envelope feature, not SDK-side prediction:
+
+- `arbitratorRegistered` is only reached when `arbitrator_ != address(0)`. Forcing the row always is arguably
+  harmless for a view, but its argument must still be materialized on the untaken path.
+- `meceTags` is called once per `tags_[i]` inside a `for` over a RUNTIME length, so the row COUNT is dynamic.
+  The envelope header encodes the count as a compile-time constant, so this cannot be expressed at all today.
+
+Closing this needs a dynamic/conditional row encoding in the v1 envelope (runtime row count, per-row presence),
+which is protocol work on both the covenant and the SDK. The `directCalls` widening prototype was reverted: it
+is a real improvement for calls in a `require(...)` or an initializer, but it does not advance this test.
 
 **3. SDK must use the callee's DELEGATE-variant route** when the callee is a proxy. The route now exists on
 `artifact.delegateArtifact.messageBus`, not on the main artifact, and `_buildRepeatedExternalBatch` reads

@@ -274,7 +274,28 @@ at the 4-failure baseline.
   for clones whose source carries an effect. An effect-free state writer (`userRefunded`) reached codegen with
   no layout. The assignment is now keyed on the `__message_bus_entry_` name instead.
 
-### Bug 6, where the queue now stands - and it is NOT another lookup mismatch
+### The callee-side wall is BROKEN (commit 5d68713e)
+
+`MarketplaceDataV1` now builds its delegate variant WITH a message-bus route and **31 of 46 handlers eligible**,
+up from 1. Of the four `publishJobPost` needs:
+
+```text
+publishJobEvent       eligible
+userRegistered        eligible
+arbitratorRegistered  eligible
+meceTags              collection-state-getter-route-not-enabled   <- last one
+```
+
+Two changes, both now landed rather than prototyped:
+
+- drop `DELEGATE` from `disallowedModifiers` ONLY when `autoDelegate` is set, and let the variant compile keep
+  the caller's `messageBus` setting. In that variant every handler already executes in the proxy's state
+  context, so the route is itself a delegate route - the uniform frame is exactly what the general refusal
+  protects against losing.
+- `keyBase` in the entry-slot mapper strips the `_r<n>` per-row suffix as well as the entry-key wrapper, and
+  several matches resolve to the LOWEST slot, which is the canonical member of a runtime-alias family.
+
+### Bug 6 - resolved by the above, kept here for the reasoning
 
 ```text
 Message-bus handler '__message_bus_entry_userRefunded' cannot uniquely map collection 'users'

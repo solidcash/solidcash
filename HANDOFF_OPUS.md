@@ -129,6 +129,45 @@ share ONE physical input. The composition currently produces five logical groups
 most one can satisfy. The sound answer is the batch envelope the compiler already builds for slot 2: batched
 slots skip the ordinary selector check and are authenticated by `emitExternalBatchBlobVerification` instead.
 
+### The innermost blocker: nested dynamic-array state (found by prototyping the delegate route)
+
+Enabling route synthesis in the DELEGATE variant was prototyped (`variantOptions` keeping `messageBus`, plus
+dropping `DELEGATE` from `disallowedModifiers` when `autoDelegate` is set - defensible, because in that variant
+EVERY handler already executes in the proxy's state context, so the route is a delegate route rather than an
+ordinary edge advertising a delegate executor). It compiles and reaches route synthesis, then fails on something
+deeper:
+
+```text
+Message-bus handler '__message_bus_entry_publishJobEvent' cannot uniquely map collection 'jobEvents'
+to its physical route entry slot
+  entry:      keyParams [__message_bus_ek___message_bus_key_jobEvents_0]  operations [read, write]
+  candidates: slot 2 keyParams [__message_bus_key_jobEvents_0]            operations [read]
+              slot 3 keyParams [AbiDecodeAtNode{data=rowArgs,index=0}]    operations [read]
+```
+
+The handler WRITES, but the route produced only read entries for that collection, and the mapper
+(`compiler.ts` ~4410) disambiguates on `collection` + `keyParams.length` alone, so it cannot choose.
+
+The reason there is no write entry is the state shape:
+
+```solidity
+mapping(uint256 => JobEventData[]) public jobEvents;   // MarketplaceDataV1.sol:111
+jobEvents[jobId_].push(event_);                        // publishJobEvent, line 166
+```
+
+That is nested dynamic-array state, which the compiler names explicitly as not yet routable:
+`nested-dynamic-array-route-not-enabled` - "nested dynamic-array state does not yet have a bounded message-bus
+row encoding; keep this handler on the direct route or flatten the nested array into separately keyed state".
+
+`publishJobEvent` is the one state-WRITING call of the five, so it must be a row of the envelope. It cannot be
+one until `mapping(K => Struct[])` has a bounded row encoding. This is the innermost blocker and it sits
+underneath the other three - closing delegate admission, getter rows and caller-side eligibility all still
+leaves this.
+
+None of these are impossibilities; they are unimplemented encodings and frames. But the order of work is now
+determined: **bounded row encoding for nested dynamic-array state first**, since everything else is wasted
+without it.
+
 ### Why batching is required for CORRECTNESS, not just to satisfy a check
 
 Worth stating plainly, because it rules out the tempting shortcut. The SDK already collapses the five logical

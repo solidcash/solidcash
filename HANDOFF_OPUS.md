@@ -919,7 +919,40 @@ that owns this 9-instruction span, or make the outliner preserve a require ident
 the leading candidate for WHICH require this is, but that is NOT yet established -- see the ruled-out repro
 below before assuming it.
 
-### Blocker A mechanism: the known-open deploy-fold + mapping-entries gap
+### Blocker A ROOT CAUSE: the shared-span outliner (VERIFIED)
+
+`SOLIDC_DISABLE_SHARED_OUTLINE=1`, full cache-wiped compile + focused run:
+
+- WITH outlining (default): fails at line 169, input 3, preflight OP_VERIFY.
+- WITHOUT outlining: that failure is GONE. The fixture proceeds and fails later at line 175 on SIZE
+  (`refused by 1 byte rule(s) (178257 serialized bytes, 8 inputs, 8 outputs)`).
+
+So `outlineSharedFunctionBodies` (`GenerateTargetTraversal.ts` ~3080, `outlineSharedSpans` in
+`packages/utils/src/outline.ts`) is what breaks `MarketplaceDataV1.initialize`. This also explains why FIVE
+synthetic repros all pass: they are tiny contracts that never outline at all.
+
+Outlining cannot simply be disabled -- it is what keeps these scripts inside the byte rules. The fix must be a
+targeted correctness fix in the outliner.
+
+LEAD (unverified, but it lines up): the call site builds require/log anchors ONLY when the body has a selector:
+
+```ts
+const debugInfo = record.selectorHex === undefined
+  ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
+const anchors = [ ...(debugInfo?.requires ?? []).map((e) => e.ip), ... ];
+```
+
+A body with no `selectorHex` therefore contributes NO anchors, so its requires are eligible for relocation into
+a shared span. That matches the observed failure exactly: the failing require sits inside a NINE-instruction
+shared body (`ip=8 instructionCount=9`), and the pinning comment right above that code says a pointer reported
+from inside a shared body would not match. Whether the breakage is merely attribution or genuine unsoundness
+(a byte-identical span that is only valid at one stack depth -- note the failing span begins `OP_0 OP_ROLL`,
+which is stack-relative) still needs to be established before changing anything.
+
+Next step: determine WHICH require/span is being shared and whether the two sites are truly equivalent, then
+either widen the anchor set to cover selector-less bodies or refuse to share spans containing requires.
+
+### Superseded: the deploy-fold + mapping-entries attribution was WRONG
 
 Narrowed by three experiments against the real project (each = wipe `.marketplace/cache/solidcash`, full compile,
 focused run):
@@ -941,11 +974,10 @@ the documented open limitation in `packages/solidc/docs/deploy-then-call-fold.md
 > folded deploy + factory mapping-entry writes unsupported (entry verify aborts before the child verify in the
 > extra pass)
 
-`upgrades.deployProxy(MarketplaceData, [...])` calls `initialize` in the deploy transaction, and `initialize`
-writes `meceTags` entries -- so it lands squarely on that gap. The fix belongs in the SDK's extra probe pass
-(`StatefulContract.deployFrom` / `_deriveCommitments`), where the entry verify currently aborts before the child
-verify. Confirm the abort point before changing it; the P4 note is 29 days old and describes the FACTORY
-deploy-fold shape, whereas this is the proxy-initializer shape -- related, but verify rather than assume.
+That attribution is WRONG and is kept here only so nobody re-derives it. `upgrades.deployProxy` does NOT call
+the initializer in the deploy transaction -- `upgrades.ts` ~573 runs it as its OWN transaction:
+`await handle.forward(initializer, args).withoutLogicalNonce().send()`. The deploy-fold P4 note describes the
+factory shape and does not apply. The real root cause is the outliner, above.
 
 CORRECTION to an earlier note in this file: `_disableInitializers()` IS present, in
 `MarketplaceDataV1`'s constructor. My earlier "appears nowhere in the sources" was wrong because `grep -r` does

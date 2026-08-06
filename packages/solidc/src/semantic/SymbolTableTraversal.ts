@@ -2306,7 +2306,11 @@ export default class SymbolTableTraversal extends AstTraversal {
               && slot.rawParameters.length === slot.rawParameterTypes.length;
             const rawSelector = decodedRaw ? slot.rawSelector : undefined;
             const eligible = identity !== ''
-              && (directCalls.has(slot.sourceCallNode!) || (slot.addressSource && slot.hasReturnValues))
+              // A value-producing call whose target is pinned (an addressSource OR a self-pinned interface-typed
+              // state var) is admissible wherever it sits: `balanceOf` is `occurrence: conditional` and batches
+              // today through the addressSource arm, so conditionality is not what this gate is protecting.
+              && (directCalls.has(slot.sourceCallNode!)
+                || ((slot.addressSource || slot.addressStateVar) && slot.hasReturnValues))
               && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
               && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot) ?? rawSelector)

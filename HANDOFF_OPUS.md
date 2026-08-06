@@ -328,6 +328,37 @@ re-run funding like the other derivation passes do.
 IMPORTANT: the SDK feature and the compiler's expression-clause relaxation must land TOGETHER. Either alone
 makes things worse - the compiler alone emits batches the SDK cannot build, the SDK alone is unreachable code.
 
+### The dependency that splits this problem in two (found while implementing)
+
+Blob derivation alone is NOT sufficient, and this is the thing to design around. Row arguments do more than fill
+blob bytes: `handler.batchKeyWitnesses` reads entry keys straight out of the resolved `args`
+(`StatefulContract.ts` ~12784). Those keys decide WHICH entry NFTs the SDK co-spends. A placeholder argument
+therefore co-spends the wrong entry, and no amount of after-the-fact blob derivation repairs that - the
+transaction was assembled around the wrong UTXOs.
+
+But the two roles separate cleanly, and for this contract they fall on different arguments:
+
+```text
+publishJobEvent(uint256 jobId_, JobEventData memory event_)
+  arg0  jobId_  = jobs.length - 1        -> feeds the jobEvents[jobId_] ENTRY KEY. Must be known off-chain.
+  arg1  event_  = JobEventData(...)      -> only blob bytes. Contains encodeString(...), a contract call.
+```
+
+arg0 is a PURE expression over caller state - `binary(-, unary(.length, state('jobs')), literal(1))` - and the
+serialized argSource already carries that AST (`{kind:'binary', operator:'-', left:{kind:'unary',
+operator:'.length', expression:{kind:'state', name:'jobs'}}, right:{kind:'literal', ...}}`). A small evaluator
+over the pure node kinds (state/.length/literal/binary/cast/source) resolves it from state the SDK can read.
+arg1 needs `encodeString`, a contract function, and can only come from the trace.
+
+So the real shape is:
+
+1. evaluate the PURE subset of expression argSources off-chain, which is what entry-key selection needs;
+2. derive the remaining blob bytes from the probe (the extractor sketched above - scan for the `SCB1` magic,
+   take the longest match, skip the placeholder);
+3. refuse a batch only when a KEY-feeding argument falls outside the pure subset.
+
+That last rule is what keeps it sound: an unresolvable key is a genuine refusal, not something to paper over.
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

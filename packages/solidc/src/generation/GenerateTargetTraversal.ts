@@ -2070,6 +2070,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           if (sv) slots.set(`${sv.nftIndex}:${sv.fieldIndex}`, sv);
         }
       }
+      // The mirror of the rule above, for the NON-clone case it deliberately skips. An ordinary entry point
+      // settles its journal frame before the epilogue runs, and `emitExternalCallVerification` re-reads a
+      // loop-array/selector table there via `emitReadStateArrayBlob`. Journaling such a table hands the epilogue
+      // a stack slot that settlement has already popped ("Expected variable '__internal__state_write_<table>'
+      // does not exist on the stack"). Keep those tables on the ordinary write lowering here; a clone has no
+      // epilogue of its own and keeps the journal, which is what X146 needs.
+      if (!fn.graphEmissionHandler) {
+        for (const slot of fn.externalCalls ?? []) {
+          for (const name of [slot.loopArrayVar, slot.selectorArrayVar]) {
+            if (!name) continue;
+            const sv = this.stateVariables.find((candidate) => candidate.name === name);
+            if (sv) slots.delete(`${sv.nftIndex}:${sv.fieldIndex}`);
+          }
+        }
+      }
       slotsById.set(fn.functionId, slots);
       callsById.set(fn.functionId, calls);
       if (writes.value) writerIds.add(fn.functionId);

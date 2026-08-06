@@ -1846,7 +1846,8 @@ function synthesizeMessageBusRoute(
   for (const fn of eligible) {
     const state = contract.stateVariables.find((candidate) => candidate.name === fn.name);
     const collection = collectionByName.get(fn.name);
-    if (collection || state?.type instanceof ArrayType) {
+    const keyedMappingGetter = collection?.type instanceof MappingType && fn.parameters.length > 0;
+    if ((collection || state?.type instanceof ArrayType) && !keyedMappingGetter) {
       // Public collection getters are synthesized into the function list for direct ABI dispatch, but are not
       // published as message-bus handlers. Excluding them here avoids repeatedly compiling an unobservable route
       // candidate during fallback selection; the ordinary getter and every real mutating handler are unchanged.

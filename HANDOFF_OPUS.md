@@ -307,6 +307,27 @@ compares its accumulator against the callee's input push with `OP_EQUALVERIFY` i
 other operand - exactly how `extractCommitmentMapFromTrace` reads an expected commitment beside the actual one.
 A new `extractBatchBlobFromTrace` plus a rebuild pass would close it. There is no such path today (searched).
 
+Concrete anchors for that work, all confirmed:
+
+```text
+StatefulContract.ts ~8988   throws "expression-based argSources that cannot be auto-resolved"
+                            -> must instead build a PLACEHOLDER-arg row and flag the route for derivation
+StatefulContract.ts ~9147   createCompilerRouteUnlocker(route.abiFunction, route.selector)(...route.args)
+                            -> the rebuild point once the real blob is known
+GTT ~21648                  emitExternalBatchBlobVerification: the accumulator is compared against the
+                            callee's input push; a probe carrying a wrong-size placeholder still leaves the
+                            EXPECTED blob as the other operand, because the caller computes it from live values
+                            regardless of what the callee input carries
+```
+
+Blob size is variable (expression args have unknown encoded length), so unlike a 32-byte commitment the
+placeholder cannot be pre-sized. That is fine for derivation - the caller's computed value does not depend on
+the callee's input - but it does mean the rebuild changes transaction size, so the derive/rebuild loop has to
+re-run funding like the other derivation passes do.
+
+IMPORTANT: the SDK feature and the compiler's expression-clause relaxation must land TOGETHER. Either alone
+makes things worse - the compiler alone emits batches the SDK cannot build, the SDK alone is unreachable code.
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

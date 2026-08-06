@@ -189,15 +189,40 @@ proxy handler as an ordinary graph edge would authorize the wrong owner/output c
 ordinary entry points; message-bus routes batch state-changing handlers rather than synthesizing a second
 getter surface."
 
-So the remaining work is TWO message-bus protocol features, both explicitly deferred by design rather than
-broken:
+**Where the `delegate` modifier actually comes from.** Not `AutoMarkDelegateFunctions` (that runs only in the
+variant compile, `autoDelegate: true`, which also sets `messageBus: false`). It comes from `compiler.ts` ~3930,
+in the MAIN compile:
 
-1. admit delegate (proxy-implementation) handlers as message-bus rows, which needs the atomic callManifest to
-   publish and verify the delegate execution frame;
-2. admit collection/mapping state getters as rows.
+```text
+if (solidityImportCompat && contract has any function with an `initializer`/`reinitializer` custom modifier) {
+  for every externally callable function: strip view/pure, push FunctionModifier.DELEGATE
+}
+```
 
-Both are needed: `meceTags` is a mapping getter, so closing only the delegate gap still leaves one of the five
-calls outside the envelope, and a master NFT is spendable once.
+`MarketplaceDataV1 is OwnableUpgradeable` with an `initializer`, so EVERY public function is force-marked
+delegate - including the `view` ones, whose VIEW modifier is stripped and replaced by `sourceReadOnly`. Since
+`DELEGATE` sits in the message-bus `disallowedModifiers`, the consequence is categorical: **an OZ-upgradeable
+contract can never advertise message-bus handlers.** That is an interaction between two features, not a single
+deliberate decision, and it is the reason 30 of 46 handlers are refused.
+
+### Three candidate paths, in increasing order of how much they change
+
+1. **Treat the read-only calls as external READS, not calls.** Three of the five (`arbitratorRegistered`,
+   `userRegistered`, `meceTags`) are declared `public view` in the source; only `publishJobEvent` writes, and
+   its two callsites share one selector and one `requiredDataNftIndices`, so they group as an ordinary 2-row
+   batch. If cross-contract public-getter reads lowered to the existing external-read machinery
+   (`externalReadSlots` / `emitExternalReadVerification`, a read-only co-spend that verifies commitments without
+   the callee executing anything) rather than to external CALLS, the whole conflict dissolves. Note the
+   force-marking above strips their `view` modifier, so this path likely needs `sourceReadOnly` respected at the
+   call site. This is the most promising path and the least protocol surface.
+2. **Admit delegate handlers as message-bus rows.** Needs the atomic callManifest to publish and verify the
+   delegate execution frame; the compiler's own comment says advertising them without it "would authorize the
+   wrong owner/output context". Do not simply remove `DELEGATE` from `disallowedModifiers` - that produces a
+   route that authorizes the wrong owner.
+3. **Admit collection/mapping state getters as rows** (`collection-state-getter-route-not-enabled`), needed for
+   `meceTags` if path 1 is not taken.
+
+Paths 2 and 3 are both required together if path 1 is not viable, since a master NFT is spendable once.
 
 To reproduce the admission picture (about 5 minutes):
 

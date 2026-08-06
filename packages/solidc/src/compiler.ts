@@ -1,11 +1,13 @@
-import { CharStream, CommonTokenStream } from 'antlr4';
+import {
+  CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache,
+} from 'antlr4';
 import { binToHex } from '@bitauth/libauth';
 import {
   Artifact, ArtifactMap, ArrayType, AddressType, asmToBytecode, BytesType, CompilerOptions,
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
-  optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm,
+  optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
   sourceMapToLocationData, SplitArtifactBundle, SplitStateFootprint, StructType, TupleType, Type,
@@ -134,7 +136,9 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 };
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-type MessageBusMode = 'disabled' | 'auto' | 'required';
+// `enabled` is the user-facing `messageBus: true`: skip graph-edge narrowing but keep the direct-only fallback.
+// `required` is the internal verifier-program route, where a composable artifact is mandatory and absence throws.
+type MessageBusMode = 'disabled' | 'auto' | 'enabled' | 'required';
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
@@ -144,7 +148,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
     : options.messageBus === false ? 'disabled'
-      : options.messageBus === true ? 'required' : 'auto';
+      : options.messageBus === true ? 'enabled' : 'auto';
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,
@@ -3627,11 +3631,16 @@ function synthesizeMessageBusRoute(
       all.findIndex((candidate) => candidate.name === definition.name) === index)
     .map((definition) => `type ${definition.name} is ${definition.valueType.underlyingType.toString()};`)
     .join('\n');
-  const source = `pragma solidcash >=0.8.0;
+  // The generated route is parsed in two halves. The helper half below is the bulk of it (the atomic verifier
+  // alone is ~470 of the route's ~590 lines) and its text is a function of the route SHAPE only - two different
+  // contracts produce byte-identical helpers and differ solely in `__message_bus1`'s handler dispatch. Parsing
+  // it is the single most expensive step of a message-bus compile, so it is memoized by its own text.
+  const preamble = `pragma solidcash >=0.8.0;
     ${routeEnums}
     ${routeTypes}
     ${routeStructs}
-    contract __MessageBusHost() {
+`;
+  const helperSource = `${preamble}    contract __MessageBusHost() {
       ${graphCallManifestLoader}
       ${atomicCallManifestLoader}
       function __message_bus_parse_row(
@@ -3722,6 +3731,8 @@ function synthesizeMessageBusRoute(
         }
         revert("foreign outState owner absent");
       }`}
+    }`;
+  const routeSource = `${preamble}    contract __MessageBusHost() {
       function __message_bus1(${routeParameters}) external${returnDeclaration} {
         ${fixedIterationEntryPins}
         require(batchBlob.length >= 7);
@@ -3771,21 +3782,22 @@ function synthesizeMessageBusRoute(
         ${returnStatement}
       }
     }`;
-  // X71. `source` is generated immediately above, so a parse failure here carries a Line/Column in THAT text.
-  // Reported bare, it reads as a position in the user's file and is not one: it even moves by tens of lines
-  // when an unrelated compile option changes the generated preamble. Say what the position is instead of
+  // X71. Both sources are generated immediately above, so a parse failure here carries a Line/Column in THAT
+  // text. Reported bare, it reads as a position in the user's file and is not one: it even moves by tens of
+  // lines when an unrelated compile option changes the generated preamble. Say what the position is instead of
   // handing back a number the user cannot act on.
-  let routeAst: Ast;
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_SOURCE === '1' && contract.name === 'FakeToken') console.error(source);
+  let helpers: FunctionDefinitionNode[];
+  let route: FunctionDefinitionNode;
   try {
+    helpers = parseMessageBusHelpers(helperSource, compilerOptions.chunkedArrays ?? true);
     // X92. Mark every position this parse builds as a position in generated source, so a diagnostic raised
     // LATER - during semantic analysis of the merged AST - says so too. X71's catch below covers only a
     // failure of the parse itself, which is one of the two sites this class has.
-    routeAst = withGeneratedSource(
+    const routeAst = withGeneratedSource(
       `the message-bus route generated for '${contract.name}'`,
-      () => parseCode(source, undefined, false, compilerOptions.chunkedArrays),
+      () => parseCode(routeSource, undefined, false, compilerOptions.chunkedArrays),
     );
+    route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
   } catch (error) {
     throw new Error(
       `The message-bus route generated for '${contract.name}' does not parse - ${(error as Error).message}. `
@@ -3794,7 +3806,6 @@ function synthesizeMessageBusRoute(
       + 'the contract can name that position.',
     );
   }
-  const route = routeAst.contract.functions[routeAst.contract.functions.length - 1];
   route.messageBusRoute = true;
   route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
     let count = 0;
@@ -3817,9 +3828,33 @@ function synthesizeMessageBusRoute(
       })))).flat();
   }
   route.location = contract.location;
-  const helpers = routeAst.contract.functions.slice(0, -1);
   for (const helper of helpers) helper.location = contract.location;
   contract.functions.push(...helpers, route);
+}
+
+/**
+ * Parsed message-bus helper functions, keyed by the generated text that produced them. The helpers are
+ * contract-independent by construction - their text depends only on the route shape - so one parse serves
+ * every contract in the process that generates the same shape.
+ *
+ * The cached functions are a TEMPLATE and are never handed out directly: every call returns clones, including
+ * the first, so no compile can mutate what a later compile reads.
+ */
+const messageBusHelperCache = new Map<string, FunctionDefinitionNode[]>();
+
+function parseMessageBusHelpers(source: string, chunkedArrays: boolean): FunctionDefinitionNode[] {
+  const key = `${chunkedArrays ? '1' : '0'}\x00${source}`;
+  let template = messageBusHelperCache.get(key);
+  if (!template) {
+    // The origin label stays contract-independent because the parsed helpers are: naming whichever contract
+    // happened to populate the cache would misattribute every later contract's diagnostic.
+    template = withGeneratedSource(
+      'the message-bus route helpers generated by the compiler',
+      () => parseCode(source, undefined, false, chunkedArrays),
+    ).contract.functions;
+    messageBusHelperCache.set(key, template);
+  }
+  return template.map((helper) => cloneNode(helper));
 }
 
 // Compile a parsed+resolved AST (whose `contract` is the chosen primary) into a single Artifact. Shared by
@@ -4569,7 +4604,7 @@ function compileResolvedAst(
 
   if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
-    if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
+    if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
       console.error(scriptToAsm(optimisedBytecodeOld));
       console.error(scriptToAsm(optimisationResult.script));
       throw new Error('New bytecode optimisation is not backwards compatible, please report this issue to the SolidCash team');
@@ -5809,7 +5844,7 @@ function compileReferencedContracts(
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
     if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);
-      if (scriptToAsm(optimisedOld) !== scriptToAsm(optimisationResult.script)) {
+      if (!scriptsEqual(optimisedOld, optimisationResult.script)) {
         throw new Error(`New bytecode optimisation is not backwards compatible (referenced contract '${contractName}'), `
           + 'please report this issue to the SolidCash team');
       }
@@ -6156,6 +6191,8 @@ function refuseEmittingReturningStateHelpers(contract: ContractNode): void {
   }
 }
 
+const SHARED_PREDICTION_CONTEXT_CACHE = new PredictionContextCache();
+
 export function parseCode(
   code: string,
   errorListener: SolidCashErrorListener = ThrowingErrorListener.INSTANCE,
@@ -6257,6 +6294,13 @@ export function parseCode(
 
     // Parsing (throwing on errors)
     const parser = new SolidCashParser(tokenStream);
+    // The TypeScript target gives every parser instance its own PredictionContextCache, so each parse rebuilds
+    // the prediction contexts backing the (statically shared) DFA from scratch. The Java target shares one cache
+    // across instances; do the same, so a process that parses many sources - a compile also parses the generated
+    // message-bus route - reuses that work instead of repaying it.
+    parser._interp = new ParserATNSimulator(
+      parser, SolidCashParser._ATN, SolidCashParser.DecisionsToDFA, SHARED_PREDICTION_CONTEXT_CACHE,
+    );
     parser.removeErrorListeners();
     parser.addErrorListener(syntaxErrorListener);
     const parseTree = parser.sourceFile();

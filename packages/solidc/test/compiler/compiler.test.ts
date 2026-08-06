@@ -29,7 +29,7 @@ describe('Compiler', () => {
       });
     });
 
-    it('keeps the default enabled while omitting a handler whose effects cannot be settled', () => {
+    it('keeps an explicit opt-in enabled while omitting a handler whose effects cannot be settled', () => {
       const artifact = _csRawSolidc(`contract ConditionalTokenContainerSend() {
         int counter;
         function sendConditional(bool flag, bytes32 category, bytes20 a, bytes20 b, int amount) {
@@ -37,16 +37,23 @@ describe('Compiler', () => {
           else this.tokens[category].transfer(b, amount);
           this.counter = this.counter + 1;
         }
-      }`);
+      }`, { messageBus: true });
 
       expect(artifact.messageBus).toBeUndefined();
       expect(artifact.compiler.options?.messageBus).toBe(true);
     });
 
     it('infers message-bus synthesis without an opt-in flag', () => {
-      const source = `contract Counter() {
-        int counter;
-        function increment() { this.counter = this.counter + 1; }
+      // Inference keys off a source-level graph edge, so the subject needs one; a graph-free contract is
+      // narrowed to direct-only by design (see MessageBusSelection.test.ts).
+      const source = `interface ISink { function set(int value) external; }
+      contract Caller(address sink) {
+        int calls;
+        function run(int value) public {
+          ISink(sink).set(value);
+          calls = calls + 1;
+          require(value >= 0);
+        }
       }`;
 
       const inferred = _csRawSolidc(source);
@@ -128,7 +135,8 @@ describe('Compiler', () => {
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
         commitmentLimit: 128,
-        messageBus: true,
+        // Graph-free source: auto selection narrows to direct-only and the artifact publishes the resolved value.
+        messageBus: false,
       });
     });
   });

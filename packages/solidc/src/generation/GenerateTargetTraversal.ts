@@ -11,8 +11,10 @@ import {
   PrimitiveType,
   TupleType,
   Script,
-  scriptToAsm,
+  scriptsEqual,
+  normaliseScript,
   scriptToBytecode,
+  scriptToAsm,
   buildDataNftCovenantScript,
   buildEntryNftCovenantScript,
   buildValueChunkCovenantScript,
@@ -1402,7 +1404,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.contract = this.visit(node.contract) as ContractNode;
 
     // Minimally encode output by going Script -> ASM -> Script
-    this.output = asmToScript(scriptToAsm(this.output));
+    this.output = normaliseScript(this.output);
 
     this.sourceMap = generateSourceMap(this.locationData);
 
@@ -2399,7 +2401,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyBytecode = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    const bodyBytecode = scriptToBytecode(sub.output);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
     this.emit(bodyBytecode, locationData);
@@ -2442,7 +2444,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
-    const body = scriptToBytecode(asmToScript(scriptToAsm(sub.output)));
+    const body = scriptToBytecode(sub.output);
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;
@@ -2707,7 +2709,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Serialize the function body to bytecode data
-    const bodyScript = asmToScript(scriptToAsm(subTraversal.output));
+    const bodyScript = normaliseScript(subTraversal.output);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1'
       && func.name === '__message_bus_handler_approve') {
       console.error('graph-approve-ops', JSON.stringify(subTraversal.output.map((op, index) => ({
@@ -2996,7 +2998,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
     // Normalize the output
-    const normalizedOutput = asmToScript(scriptToAsm(subTraversal.output));
+    const normalizedOutput = normaliseScript(subTraversal.output);
 
     // Capture debug info for this function
     // Use the sub-traversal's location data (same-class private field access)
@@ -3014,7 +3016,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     if (normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
-      if (scriptToAsm(optimisedBytecodeOld) !== scriptToAsm(optimisationResult.script)) {
+      if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
         throw new Error('Function body optimisation mismatch - please report this issue');
       }
     }

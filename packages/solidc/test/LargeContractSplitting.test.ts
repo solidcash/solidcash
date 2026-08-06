@@ -29,6 +29,10 @@ contract SplitCounter() {
 }
 `;
 
+// Every test here compiles a deliberately over-limit contract, several of them two or three times over
+// (plain, forceSplit, then forceSplit again with maxShardBytes forcing multi-shard). Individually they clear
+// the 30s project default, but under full-suite parallel load whichever one loses the scheduling draw exceeds
+// it, so the file fails on a different test each run. Budget the whole describe rather than chase them singly.
 describe('large-contract state-local splitting', () => {
   it('preserves the ordinary compiler result when splitting is unnecessary', () => {
     const ordinary = compileString(SOURCE);
@@ -576,4 +580,4 @@ contract Mixed() {
     );
   });
 
-});
+}, 120_000);

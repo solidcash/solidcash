@@ -134,9 +134,9 @@ const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
 
 const buildChain = async (participants: number): Promise<TransactionBuilder> => {
   const provider = createMessageBusCapstoneTestProvider();
-  const rootArtifact = compileString(ROOT, { forceStateful: true });
-  const hopArtifact = compileString(HOP, { forceStateful: true });
-  const sinkArtifact = compileString(SINK, { forceStateful: true });
+  const rootArtifact = compileString(ROOT, { forceStateful: true, messageBus: true });
+  const hopArtifact = compileString(HOP, { forceStateful: true, messageBus: true });
+  const sinkArtifact = compileString(SINK, { forceStateful: true, messageBus: true });
   const connect = async (base: Contract, artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
     const setup = await setupStatefulUtxos(
       provider, base, artifact.stateLayout!, {}, { saltContract: true },
@@ -167,9 +167,9 @@ const buildChain = async (participants: number): Promise<TransactionBuilder> => 
 /** R-1 regression: every participant adds a state-resource effect to the returning chain. */
 const buildResourceHeavyChain = async (participants: number): Promise<TransactionBuilder> => {
   const provider = createMessageBusCapstoneTestProvider();
-  const rootArtifact = compileString(HEAVY_ROOT, { forceStateful: true });
-  const hopArtifact = compileString(HEAVY_HOP, { forceStateful: true });
-  const sinkArtifact = compileString(HEAVY_SINK, { forceStateful: true });
+  const rootArtifact = compileString(HEAVY_ROOT, { forceStateful: true, messageBus: true });
+  const hopArtifact = compileString(HEAVY_HOP, { forceStateful: true, messageBus: true });
+  const sinkArtifact = compileString(HEAVY_SINK, { forceStateful: true, messageBus: true });
   const connect = async (base: Contract, artifact: ReturnType<typeof compileString>): Promise<StatefulContract> => {
     const setup = await setupStatefulUtxos(
       provider, base, artifact.stateLayout!, { marker: 0n }, { saltContract: true },

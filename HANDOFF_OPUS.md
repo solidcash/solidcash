@@ -165,6 +165,33 @@ An arity mismatch between the generated route's call site and the entry wrapper 
 produced for `userRefunded(address)` (which writes `users[address_].reputationDown`). The compiler labels it a
 defect itself.
 
+Bug 2 was then diagnosed precisely. The entry clone's final signature is:
+
+```text
+__message_bus_entry_userRefunded(
+  address address_,
+  address __message_bus_ek___message_bus_key_users_0,
+  bytes32 __internal__msgSenderCategory,
+  bytes   __internal__valueWitness_0)          <- the route's call site does not pass this
+```
+
+`__internal__valueWitness_0` is injected by the chunkable-value READ path in `SymbolTableTraversal` (~2129)
+because `users[address_]` has a chunkable value type. TypeCheck DOES have a forwarding mechanism for exactly
+this - `canForwardByName` (TypeCheckTraversal ~2253) threads `__internal__valueWitness_*` from the caller - but
+only when the CALLER declares a same-named parameter. The generated route never touches that collection itself,
+so it declares no witness and the call is one argument short.
+
+Two follow-on findings, both from prototypes that were NOT kept because they are unverified:
+
+- Declaring the witness on the `messageBusRoute` function removes the arity error, then trips
+  `Identifier '__internal__valueWitness_0' uses reserved prefix '__internal__'` in `visitParameter` (~1409),
+  whose compiler-owned allow-list has no `__internal__valueWitness_` prefix entry. Adding that prefix clears it.
+- With both applied the arity error returns, which means the function actually calling the clone is NOT the
+  `messageBusRoute` function. The next step is to identify that caller (instrument the
+  `expectParameters(node, parameterTypes, definition.parameters)` site in `TypeCheckTraversal` ~1757, printing
+  `this.currentFunction`) and declare the witness there instead - most likely a per-row dispatch or
+  `__message_bus_array_*` helper.
+
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run
 before. Each iteration is about 5 minutes (`dvar.mjs`-style `compileFileMulti` on MarketplaceDataV1.sol reading

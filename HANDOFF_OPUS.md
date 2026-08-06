@@ -897,6 +897,38 @@ at the entry/state member selection for the initializer's slot, but the exact me
 -- treat the `0x51` reading as a lead, not a conclusion. `_disableInitializers` appears nowhere in the sources,
 so do not assume the `ffffffffffffffff` on the stack is OZ's disabled-initializer sentinel.
 
+### Blocker A: where the failing require actually lives
+
+`SOLIDC_DEBUG_ROUTE=1` gives the decisive numbers:
+
+```
+message-bus-preflight-failure { inputIndex: 3, ip: 8, instructionCount: 9,
+  stack: [ '', '', '', '', '', '76a914a55476015c13afb8afb92160329a8cde976f1f2e88ac' ] }
+```
+
+`instructionCount: 9` -- the failing script is a NINE-instruction body, failing on its last instruction. That
+is an OUTLINED subroutine (OP_DEFINE/OP_INVOKE span sharing, see docs/subroutine-extraction.md), NOT
+`initialize`'s main body. This is why the `functionDebug.requires` ips for selector `d78a3125`
+(508 / 553 / 562 / 570, lines 121 / 180 / 180 / 57) do not line up with the trace ips, and why source
+attribution is fragmented (see docs/source-maps.md).
+
+So: DO NOT try to match the trace ip against `functionDebug.requires` directly. Either resolve the OP_DEFINE
+that owns this 9-instruction span, or make the outliner preserve a require identity across extraction.
+
+`InitializableStorage___initializing` (bool, fieldIndex 4) and the two line-180 `NotInitializing` reverts remain
+the leading candidate for WHICH require this is, but that is NOT yet established -- see the ruled-out repro
+below before assuming it.
+
+### Ruled out by experiment (do not redo)
+
+`packages/solidcash/test/e2e/InitFlagEntryWriteRepro.test.ts` -- a bool state var written, read back in the same
+function, in a function that ALSO writes mapping entries. BOTH variants PASS. So the bug is NOT the plain
+"bool read-after-write plus entry writes" class. Note also that `MarketplaceV1` uses `initializer`,
+`__Ownable_init` and `deployProxy` too and deploys fine, so the OZ/proxy machinery alone is not the
+differentiator either. The remaining untested ingredients are the cross-function read (write in the
+`initializer` modifier, read inside `__Ownable_init`'s `onlyInitializing`) combined with entry writes under a
+delegate frame.
+
 ## Blocker B (line 703): `MarketplaceDataV1 does not advertise a compatible message-bus route`
 
 Revealed only once Blocker A is bypassed. This IS the route/eligibility subsystem the batching work targets,

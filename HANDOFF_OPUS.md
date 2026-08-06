@@ -181,16 +181,30 @@ this - `canForwardByName` (TypeCheckTraversal ~2253) threads `__internal__valueW
 only when the CALLER declares a same-named parameter. The generated route never touches that collection itself,
 so it declares no witness and the call is one argument short.
 
-Two follow-on findings, both from prototypes that were NOT kept because they are unverified:
+Bug 2 is now FIXED and landed (commit 048f2886), in three coordinated parts:
 
-- Declaring the witness on the `messageBusRoute` function removes the arity error, then trips
-  `Identifier '__internal__valueWitness_0' uses reserved prefix '__internal__'` in `visitParameter` (~1409),
-  whose compiler-owned allow-list has no `__internal__valueWitness_` prefix entry. Adding that prefix clears it.
-- With both applied the arity error returns, which means the function actually calling the clone is NOT the
-  `messageBusRoute` function. The next step is to identify that caller (instrument the
-  `expectParameters(node, parameterTypes, definition.parameters)` site in `TypeCheckTraversal` ~1757, printing
-  `this.currentFunction`) and declare the witness there instead - most likely a per-row dispatch or
-  `__message_bus_array_*` helper.
+- `forwardInternalReturnOutputIdx` refused to forward anything unless the call site passed EXACTLY the visible
+  args. The generated route writes `__internal__msgSenderCategory` itself, so that guard tripped and nothing was
+  forwarded. It now forwards the remaining SUFFIX of synthetics.
+- the route declares the witness so `canForwardByName` resolves it (the route never touches that collection);
+- `visitParameter` accepts the `__internal__valueWitness_` prefix as compiler-owned.
+
+Getting there required instrumenting the throw itself: the call-site probes never fired because
+`expectParameters` is reached from the "single overload resolved" path (`TypeCheckTraversal` ~1741), and
+`forwardInternalReturnOutputIdx` returned early at its arity guard before any of the interesting logic ran.
+
+### Bug 3, the next one in the queue
+
+```text
+Found parameters (string,string,string,bytes32,bytes32) in call to '__message_bus_entry_updateMeceTag'
+where parameters (string,string,string,string,bytes32) were expected
+```
+
+Same argument COUNT, wrong types: the route passes three visible strings and then two `bytes32`, while the clone
+expects a FOURTH string. That fourth string is the entry key (`meceTags` is keyed by string), so this is the
+`entryKeyArguments(fn)` path failing to emit a string-typed key for this handler - a different defect from bug 2,
+in route source generation (`compiler.ts` ~2857, where `callArgs` is assembled from
+`sourceCallArgs + physicalEntryArgs + callerContextArgs`).
 
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run

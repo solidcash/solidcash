@@ -502,12 +502,31 @@ That is the actual state to explain, and it is upstream of every result/derivati
 co-spends neither the implementation nor MarketplaceData cannot execute `publishJobPost` at all, so the covenant
 failing is expected rather than mysterious.
 
-The most likely mechanism is the auto-resolve guard in the composition block: if ANY
-`ec.interfaceName` is missing from `_externalRegistry`, `canAutoResolve` goes false, `resolvedExternalCalls`
-stays undefined, and the entire `if (externalCalls && resolvedExternalCalls)` block - which builds every group -
-is skipped silently. Check first whether `MarketplaceDataV1` and `IERC20` are both registered as externals on
-the IMPLEMENTATION contract (not just the proxy) at the point `publishJobPost` is composed. A silent skip there
-would produce exactly this empty composition.
+The auto-resolve guard is NOT the cause - measured. A probe on the `!registered` branch (which sets
+`canAutoResolve = false`) never fires, so no interface is missing from `_externalRegistry`.
+
+The anomaly is narrower and is the thing to chase:
+
+```text
+initialize        -> composition { fn: '__forward', lowLevel: ['initialize:delegatecall'] }   OK
+publishJobPost    -> composition { fn: '__forward', lowLevel: [], external: [] }              NO delegate group
+```
+
+Both are proxy forwards in the same test run, and the probe sits at builder construction (after the nested and
+delegate composition has run), so this is the final state in both cases. For `publishJobPost` the proxy does not
+co-spend its implementation at all - which is why nothing downstream exists to derive, and why input 3's
+covenant fails.
+
+So the question is why the forward resolves a delegatecall group for `initialize` and not for `publishJobPost`.
+Both are delegate-marked implementation functions. Candidates worth checking IN THIS ORDER, each by
+instrumentation rather than inspection:
+
+1. the forward's own resolution of which implementation function it is dispatching (does it find
+   `publishJobPost` on the implementation ABI at all, given the impl is a SPLIT/large artifact?);
+2. whether an earlier throw inside the delegate composition is being swallowed, leaving the group list empty;
+3. whether the batch route changed the implementation's ABI entry name/selector such that the forward's lookup
+   misses (this appeared only after the batching work landed - worth checking against a build with
+   3b12109c reverted).
 
 ### What remains, in dependency order
 

@@ -313,10 +313,30 @@ reverted it.
   `ExternalOutStateAbi` carries only `requiredDataNftIndices`: there is no cross-contract C2 mapping ENTRY read.
   Adding one needs the entry-NFT co-spend plus its inclusion proof against the callee category.
 
-**2. Caller-side `directCalls` gate** - refuses to batch, and relaxing it yields the needed `rows=5` (verified
-much earlier). The open question is soundness: the covenant accumulates the blob along the EXECUTED path, which
-suggests conditional rows are representable, but the SDK must also predict the row set off-chain to build the
-callee's unlocking bytecode. Worth deciding deliberately rather than flipping.
+**2. Caller-side `directCalls` gate - the answer is now definitive: these calls are genuinely CONDITIONAL.**
+
+Widening the collection to every unconditionally-evaluated call (walk each top-level statement, never descend
+into `BranchNode`/`WhileNode`/`DoWhileNode`) does NOT admit them, and the source says why:
+
+```solidity
+if (arbitrator_ != address(0)) {                       // MarketplaceV1.sol:236
+    require(marketplaceData.arbitratorRegistered(arbitrator_), ...);
+}
+for (uint8 i = 0; i < tags_.length; i++) {             // :250
+    if (bytes(marketplaceData.meceTags(tags_[i])).length != 0) { ... }
+}
+```
+
+So the gate is doing its job, and the earlier "relaxing it yields rows=5" measurement was relaxing it PAST the
+conditionality guarantee, not merely past an AST-position quirk. Batching these needs **conditional batch
+rows**: a row the envelope may or may not carry.
+
+That is representable on-chain - the caller's covenant accumulates the blob along the EXECUTED path
+(`externalBatchAccumulator`), so an untaken branch simply contributes no row. The work is on the SDK side, which
+must predict the executed row set to build the callee's unlocking bytecode; a wrong prediction is fail-closed
+(the accumulator comparison rejects the transaction) rather than unsound, and the SDK already derives far harder
+facts from VM probes. The widening prototype was reverted: it is a real improvement for calls sitting in a
+`require(...)` or an initializer, but it does not advance this test and carries its own blast radius.
 
 **3. SDK must use the callee's DELEGATE-variant route** when the callee is a proxy. The route now exists on
 `artifact.delegateArtifact.messageBus`, not on the main artifact, and `_buildRepeatedExternalBatch` reads

@@ -129,49 +129,60 @@ share ONE physical input. The composition currently produces five logical groups
 most one can satisfy. The sound answer is the batch envelope the compiler already builds for slot 2: batched
 slots skip the ordinary selector check and are authenticated by `emitExternalBatchBlobVerification` instead.
 
-The gate is in `SymbolTableTraversal` (the `eligible` predicate that feeds `batchInvocations`, around line
-2290):
+### Measured, not guessed: what actually blocks batching
+
+Two independent gaps, both established by experiment (the experiments were reverted; only the findings remain).
+
+**Gap 1 - caller-side eligibility.** The `eligible` predicate that feeds `batchInvocations` in
+`SymbolTableTraversal` (around line 2290) refuses these slots. Relaxing ONLY the expression-argument clause
+changes nothing. The deciding clause is:
 
 ```text
-&& (decodedRaw || !(slot.argSources ?? []).some((source) => source.kind === 'expression'))
+&& (directCalls.has(slot.sourceCallNode!) || (slot.addressSource && slot.hasReturnValues))
 ```
 
-`publishJobEvent` passes an inline-built struct, so its arg sources are `expression` and it is refused. Slots 0,
-1 and 3 have resolvable sources and should already group; confirm whether `directCalls` admits them, since the
-grouping key is `${identity}|${requiredDataNftIndices}`.
+`directCalls` is built from `node.body.statements` alone, so it admits only unconditional TOP-LEVEL statement
+calls. Every MarketplaceData call here is inside a `require(...)`, an `if`, or a loop, and none has an
+`addressSource`, so all five are refused. Relaxing that clause (plus the expression clause) does produce exactly
+the composition the transaction needs:
 
-The direction that fits the existing design is to let the envelope carry expression-sourced arguments - the
-compiler already builds the aggregate request encoding on-chain for a batch - rather than making the SDK resolve
-them (it deliberately refuses: "expression-based argSources that cannot be auto-resolved"). Note the caller's
-covenant COMPUTES the expected blob on-chain (`emitCompleteExternalBatchBlob` feeds
-`emitExternalBatchBlobVerification`), so expression arguments are not a problem for verification; the gap is
-purely that the SDK must build the same bytes off-chain to compose the callee's unlocking bytecode. Deriving the
-blob from a VM probe, as the SDK already does for commitments and route entries, is the natural mechanism.
+```text
+0 MarketplaceDataV1 arbitratorRegistered  batch=true rows=5   <- all five collapse into one envelope
+1 IERC20            balanceOf             batch=true rows=3
+```
 
-### Why this is the whole blocker, not just a partial one
+Whether conditional calls are sound to batch needs a decision: the caller's covenant accumulates the blob along
+the executed path (`externalBatchAccumulator`), which suggests conditional rows are representable, but that
+should be confirmed rather than assumed.
 
-`MarketplaceDataV1` carries NO `messageBus` capability at all:
+**Gap 2 - callee-side route generation, and this one is the real wall.** `MarketplaceDataV1` gets NO
+`messageBus` capability even compiled as its own root with no experiments. The capability is attached only when
+route synthesis produced a route function, and EVERY admitting rung of the ladder fails with the same error:
 
 ```bash
-python3 -c "import json;print(bool(json.load(open('.marketplace/artifacts/solidcash/MarketplaceDataV1.json')).get('messageBus')))"
-# False   (MarketplaceV1 too; only FakeToken has one)
+SOLIDC_DEBUG_ROUTE=1 node -e "import('.../packages/solidc/dist/index.js').then(m =>
+  m.compileFileMulti('.../.marketplace/contracts/MarketplaceDataV1.sol', { solidityImportCompat: true }))"
+# message-bus-admission-rung-error ... x5, all:
+# 'Method calls are only supported on interface or contract instances
+#  ... at Line 96, Column 34 of imported ".../@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol"'
 ```
 
-The compile log confirms only FakeToken had a route generated ("the message-bus route generated for 'FakeToken'").
-Route generation for a callee is driven by a caller declaring a batch against it, so the chain is circular:
+SafeERC20.sol:96 is `bytes memory returndata = address(token).functionCall(data);` inside
+`_callOptionalReturn` - a `using Address for address` member call on an `address` receiver.
+`MethodCallNotSupportedError` is thrown from `SymbolTableTraversal.visitMethodCall` (~line 10982) when the
+receiver resolves to neither an interface/contract instance nor a struct.
 
-```text
-publishJobEvent has expression argSources
-  -> the five MarketplaceData slots are not batch-eligible
-  -> no batch representative is synthesized
-  -> MarketplaceDataV1 never gets a message-bus route
-  -> the SDK composes five logical groups on ONE physical input (master 6, __forward)
-  -> each slot's baked compile-time selector check runs against that single input; at most one can pass
-```
+The direct (non-route) compile survives this, which is the clue worth chasing: either the free function is
+inlined away before that traversal in direct mode and is not in route mode, or the using-for pre-desugar
+(`desugarLowLevelUsingForAddressCalls`, gated behind `inlinedFns.size > 0` in `InlineReturningStateHelpers`)
+covers it in direct mode only. Removing that gate alone does NOT fix it - tried and measured - so the next step
+is to instrument which pass drops `_callOptionalReturn` in direct mode and why that does not happen when a route
+is being synthesized.
 
-Partial batching does not help: slots 0, 1 and 3 have resolvable arg sources, but batching only those still
-leaves slots 4 and 5 wanting separate spends of the same master. All five must land in one envelope, so the
-expression-argument gate is the thing to move.
+Note this is the same SafeERC20 family as the two pre-existing `yul-evm` baseline failures
+(`external call target address must be a ... value (target '__raw__.__raw__')`). A standalone contract calling
+`SafeERC20.forceApprove` hits that wall directly. Fixing the OZ `Address.functionCall` lowering may resolve
+several of these at once.
 
 ## Build/recompile commands
 

@@ -450,7 +450,21 @@ So the fix has two parts, in this order:
    the callee ABI at the point the nested group is created);
 2. then derive each one's return-event commitment post-build, as above.
 
-The implementation of (2) was written and reverted rather than landed, since it is unreachable until (1) exists.
+BOTH parts were then implemented together and measured. The result is important for whoever picks this up:
+
+- (1) recognition via the callee signature (`compilerRoute?.abiFunction ?? callee ABI entry`, outputs length > 0)
+  compiles and changes nothing;
+- (2) the post-build probe still fires ZERO times with (1) in place - `nested-ret` never prints.
+
+So `physicalReturnIndexForGroup.get(groupIdx)` and/or `nestedMasterIndices[groupIdx]` are unset for those
+groups, or the block holding both (~10928-10990) is not the code path that assembles this transaction's groups
+at all. Before writing more code here, INSTRUMENT WHICH BLOCK ACTUALLY BUILDS THEM: put a counter at the top of
+the nested composition (~10300) and at the `nestedMasterIndices` fill (~10928) and confirm they run for
+`publishJobPost`. Every previous assumption about which composition path owns these groups has been wrong once,
+and each wrong assumption cost a full build/test cycle.
+
+Both parts were reverted rather than landed: they are correct-looking, verified inert, and would otherwise sit
+in the tree looking like working machinery.
 
 ### What remains, in dependency order
 

@@ -4401,9 +4401,20 @@ function compileResolvedAst(
         fn.blockLayout = messageBusRoute.blockLayout;
         if (fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
           fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
-            const candidates = messageBusRoute.entryAccesses!.filter((routeEntry) =>
+            const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
               routeEntry.collection === entry.collection
               && routeEntry.keyParams.length === entry.keyParams.length);
+            // A handler's mapping keys are rewritten to compiler-owned ENTRY KEYS named after the route input
+            // that supplies them (ENTRY_KEY_PREFIX + routeInput), so when one collection has several route
+            // entries the key NAME already identifies the physical slot. Narrow on it before giving up: shape
+            // alone cannot separate `jobEvents[k]` read from `jobEvents[k]` read-write.
+            const keyBase = (key: string): string => {
+              const bare = key.startsWith('id:') ? key.slice(3) : key;
+              return bare.startsWith('__message_bus_ek_') ? bare.slice('__message_bus_ek_'.length) : bare;
+            };
+            const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
+              .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
+            const candidates = byKeyName.length === 1 ? byKeyName : byShape;
             if (candidates.length !== 1) {
               throw new Error(
                 `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `

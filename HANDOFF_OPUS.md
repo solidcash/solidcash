@@ -919,6 +919,39 @@ that owns this 9-instruction span, or make the outliner preserve a require ident
 the leading candidate for WHICH require this is, but that is NOT yet established -- see the ruled-out repro
 below before assuming it.
 
+### Blocker A mechanism: the known-open deploy-fold + mapping-entries gap
+
+Narrowed by three experiments against the real project (each = wipe `.marketplace/cache/solidcash`, full compile,
+focused run):
+
+| `initialize` writes | result |
+| --- | --- |
+| 8 mapping entries (real source) | FAILS at input 3 |
+| 1 mapping entry | FAILS at input 3 -- so NOT a count/capacity threshold |
+| 0 mapping entries | SUCCEEDS; suite advances ~530 lines to line 703 |
+
+Plus two SDK repros that both PASS, which fence the mechanism in:
+- `InitFlagEntryWriteRepro.test.ts` -- entry writes + bool read-after-write, no proxy. PASSES.
+- `ProxyEntryWriteRepro.test.ts` -- entry write forwarded through a proxy delegate frame, AFTER deployment.
+  PASSES.
+
+So the failing ingredient is the entry write happening in the SAME TRANSACTION AS THE DEPLOY, which is exactly
+the documented open limitation in `packages/solidc/docs/deploy-then-call-fold.md` (P4):
+
+> folded deploy + factory mapping-entry writes unsupported (entry verify aborts before the child verify in the
+> extra pass)
+
+`upgrades.deployProxy(MarketplaceData, [...])` calls `initialize` in the deploy transaction, and `initialize`
+writes `meceTags` entries -- so it lands squarely on that gap. The fix belongs in the SDK's extra probe pass
+(`StatefulContract.deployFrom` / `_deriveCommitments`), where the entry verify currently aborts before the child
+verify. Confirm the abort point before changing it; the P4 note is 29 days old and describes the FACTORY
+deploy-fold shape, whereas this is the proxy-initializer shape -- related, but verify rather than assume.
+
+CORRECTION to an earlier note in this file: `_disableInitializers()` IS present, in
+`MarketplaceDataV1`'s constructor. My earlier "appears nowhere in the sources" was wrong because `grep -r` does
+not follow symlinks and `.marketplace/contracts/*.sol` are symlinks. The `ffffffffffffffff` on the stack IS
+OZ's disabled-initializer sentinel (`_initialized = type(uint64).max` on the IMPLEMENTATION).
+
 ### Ruled out by experiment (do not redo)
 
 `packages/solidcash/test/e2e/InitFlagEntryWriteRepro.test.ts` -- a bool state var written, read back in the same

@@ -116,10 +116,24 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
 /** Clone an existing token output, funding the extra bytes out of the trailing change output. */
 function appendClone(tx: Tx, sourceIndex: number): void {
   const source = tx.outputs[sourceIndex];
-  tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  // A 1-satoshi output is below a real node's dust threshold, so BCHN refuses the forgery with `dust (code 64)`
+  // before the covenant can object. On live regtest use a dust-viable value funded from the LARGEST output.
+  const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+  const appendedValue = liveRegtest ? 1200n : 1n;
+  if (liveRegtest) {
+    const donor = tx.outputs.reduce(
+      (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+    );
+    if (tx.outputs[donor].valueSatoshis <= appendedValue + 500n) {
+      throw new Error('appendClone: no output can fund the appended value; the forgery would be malformed.');
+    }
+    tx.outputs[donor].valueSatoshis -= appendedValue + 500n;
+  } else {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  }
   tx.outputs.push({
     ...source,
-    valueSatoshis: 1n,
+    valueSatoshis: appendedValue,
     lockingBytecode: source.lockingBytecode.slice(),
     token: { ...source.token!, nft: { ...source.token!.nft!, commitment: source.token!.nft!.commitment.slice() } },
   });

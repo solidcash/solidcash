@@ -84,13 +84,29 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
   return binToHex(encodeTransaction(tx));
 }
 
-/** Clone an existing token output, funding the extra bytes from the trailing change output. */
+/** Clone an existing token output, funding the extra bytes from an output that can afford them. */
 function appendEntryOutput(tx: Tx, sourceIndex: number, commitment?: Uint8Array): void {
   const source = tx.outputs[sourceIndex];
-  tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  // A 1-satoshi output is below the dust threshold on a real node, so BCHN refuses the forgery with
+  // `dust (code 64)` before the covenant can object, which proves nothing. On live regtest use a dust-viable
+  // value funded from the LARGEST output, since the trailing output is not reliably fat change.
+  const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+  const appendedValue = liveRegtest ? 1200n : 1n;
+  if (liveRegtest) {
+    const donor = tx.outputs.reduce(
+      (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+    );
+    const needed = appendedValue + 500n;
+    if (tx.outputs[donor].valueSatoshis <= needed) {
+      throw new Error(`appendEntryOutput: no output can fund ${needed} satoshis; the forgery would be malformed.`);
+    }
+    tx.outputs[donor].valueSatoshis -= needed;
+  } else {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  }
   tx.outputs.push({
     ...source,
-    valueSatoshis: 1n,
+    valueSatoshis: appendedValue,
     lockingBytecode: source.lockingBytecode.slice(),
     token: {
       ...source.token!,
@@ -99,9 +115,21 @@ function appendEntryOutput(tx: Tx, sourceIndex: number, commitment?: Uint8Array)
   });
 }
 
-/** Raise the fee out of the trailing change output so a mutation that grows the transaction still relays. */
+/** Raise the fee out of an output that can afford it, so a mutation that grows the transaction still relays. */
 function fundExtraBytes(tx: Tx, satoshis = 200n): void {
-  tx.outputs[tx.outputs.length - 1].valueSatoshis -= satoshis;
+  // The trailing output is not reliably fat change on a live node; draining it pushes it under the dust
+  // threshold and BCHN then refuses with `dust (code 64)` before the covenant can object.
+  if (process.env.TESTS_USE_REGTEST !== 'true') {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis -= satoshis;
+    return;
+  }
+  const donor = tx.outputs.reduce(
+    (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+  );
+  if (tx.outputs[donor].valueSatoshis <= satoshis + 500n) {
+    throw new Error(`fundExtraBytes: no output can fund ${satoshis} satoshis; the forgery would be malformed.`);
+  }
+  tx.outputs[donor].valueSatoshis -= satoshis;
 }
 
 function commitmentOf(tx: Tx, index: number): ReturnType<typeof decodeEntryCommitment> {

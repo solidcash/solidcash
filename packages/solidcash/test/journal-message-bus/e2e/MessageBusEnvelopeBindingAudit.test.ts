@@ -55,7 +55,7 @@ const buildComposition = async (): Promise<ReturnType<typeof messageBus.compose>
   const provider = createMessageBusCapstoneTestProvider();
   const calleeArtifact = compileString(`contract MessageEnvelopeAuditCallee() {
     function settle(int next) public pure returns (int) { return next + 1; }
-  }`, { forceStateful: true });
+  }`, { forceStateful: true, messageBus: true });
   const calleeBase = new Contract(calleeArtifact, [], { provider });
   const calleeSetup = await setupStatefulUtxos(
     provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -71,7 +71,7 @@ const buildComposition = async (): Promise<ReturnType<typeof messageBus.compose>
         require(result >= 0);
       }
     }
-  `, { forceStateful: true });
+  `, { forceStateful: true, messageBus: true });
   const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
   const callerSetup = await setupStatefulUtxos(
     provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },

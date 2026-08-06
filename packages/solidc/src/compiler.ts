@@ -137,7 +137,9 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
 };
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
-type MessageBusMode = 'disabled' | 'auto' | 'required';
+// `enabled` is the user-facing `messageBus: true`: skip graph-edge narrowing but keep the direct-only fallback.
+// `required` is the internal verifier-program route, where a composable artifact is mandatory and absence throws.
+type MessageBusMode = 'disabled' | 'auto' | 'enabled' | 'required';
 type InternalCompilerOptions = CompilerOptions & {
   __messageBusExplicitlyDisabled?: boolean;
   __messageBusMode?: MessageBusMode;
@@ -147,7 +149,7 @@ function normalizeCompilerOptions(options: CompilerOptions): InternalCompilerOpt
   const messageBusMode: MessageBusMode = options.__messageBusVerifierProgram
     ? 'required'
     : options.messageBus === false ? 'disabled'
-      : options.messageBus === true ? 'required' : 'auto';
+      : options.messageBus === true ? 'enabled' : 'auto';
   const normalized = {
     ...DEFAULT_COMPILER_OPTIONS,
     ...options,

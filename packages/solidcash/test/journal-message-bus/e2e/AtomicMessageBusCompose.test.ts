@@ -335,7 +335,7 @@ describe('messageBus.compose atomic transaction', () => {
         require(msg.sender == expectedSender && msg.sig == expectedSig
           && msg.data.length > 4 && tx.origin == expectedOrigin);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -352,7 +352,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -387,7 +387,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeRepeatedSink() {
       function ping(int value) public { require(value >= 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const sinkBase = new Contract(sinkArtifact, [], { provider });
     const sinkSetup = await setupStatefulUtxos(
       provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
@@ -403,7 +403,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [sinkInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -439,7 +439,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeFanoutSink() {
       function ping(int value) public { require(value >= 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const connectSink = async (): Promise<StatefulContract> => {
       const base = new Contract(sinkArtifact, [], { provider });
       const setup = await setupStatefulUtxos(
@@ -458,7 +458,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(
       callerArtifact, [first.inner.lockingBytecode, second.inner.lockingBytecode], { provider },
     );
@@ -487,7 +487,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeBranchSink() {
       function ping(int value) public { require(value >= 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const connectSink = async (): Promise<StatefulContract> => {
       const base = new Contract(sinkArtifact, [], { provider });
       const setup = await setupStatefulUtxos(
@@ -506,7 +506,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(
       callerArtifact, [always.inner.lockingBytecode, conditional.inner.lockingBytecode], { provider },
     );
@@ -544,7 +544,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const sinkArtifact = compileString(`contract ComposeLoopSink() {
       function ping(int value) public { require(value >= 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const sinkBase = new Contract(sinkArtifact, [], { provider });
     const sinkSetup = await setupStatefulUtxos(
       provider, sinkBase, sinkArtifact.stateLayout!, {}, { saltContract: true },
@@ -559,7 +559,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(value >= 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [sinkInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -604,7 +604,7 @@ describe('messageBus.compose atomic transaction', () => {
     };
     const readonlyArtifact = compileString(`contract ComposeStaticSink() {
       function peek() public pure { require(true); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const readonly = await connect(readonlyArtifact);
     const callerArtifact = compileString(`
       interface IComposeStaticSink { function peek(); }
@@ -614,7 +614,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [readonly.inner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -654,7 +654,7 @@ describe('messageBus.compose atomic transaction', () => {
         emit Changed(9);
         require(true);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const mutable = await connect(mutableArtifact);
     const mutatingCallerArtifact = compileString(`
       interface IComposeStaticMutation { function mutate(); }
@@ -664,7 +664,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const mutatingCallerBase = new Contract(
       mutatingCallerArtifact, [mutable.inner.lockingBytecode], { provider },
     );
@@ -686,7 +686,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const targetArtifact = compileString(`contract ComposeRawTarget() {
       function echo(int value) public pure returns (int) { return value; }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const targetBase = new Contract(targetArtifact, [], { provider });
     const targetSetup = await setupStatefulUtxos(
       provider, targetBase, targetArtifact.stateLayout!, {}, { saltContract: true },
@@ -704,7 +704,7 @@ describe('messageBus.compose atomic transaction', () => {
         (bool ok, bytes result) = target.call(payload);
         require(ok && result == hex"53");
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -746,10 +746,10 @@ describe('messageBus.compose atomic transaction', () => {
           require(height > 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const sinkArtifact = compileString(`contract ComposeBlockhashSink() {
       function accept(bytes32 value) public pure { require(value.length == 32); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, {
@@ -826,10 +826,10 @@ describe('messageBus.compose atomic transaction', () => {
           require(payload.length > 0);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const sinkArtifact = compileString(`contract ComposeKeccakSink() {
       function accept(bytes32 value) public pure { require(value.length == 32); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const payload = hexToBin('01'.repeat(32));
     const digest = keccak_256(payload);
     const sidecarCategory = 'ee'.repeat(32);
@@ -910,13 +910,13 @@ describe('messageBus.compose atomic transaction', () => {
           require(v == 27 || v == 28);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const sinkArtifact = compileString(`contract ComposeRecoverSink() {
       function recover(bytes32 h, int v, bytes32 r, bytes32 s) public {
         pubkey value = ecrecoverPubKey(h, v, r, s);
         require(value.length == 33);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -980,7 +980,7 @@ describe('messageBus.compose atomic transaction', () => {
 
   it('builds and broadcasts one transaction for two existing participants without setup execution', async () => {
     const provider = createMessageBusCapstoneTestProvider();
-    const calleeArtifact = compileString(CALLEE, { forceStateful: true });
+    const calleeArtifact = compileString(CALLEE, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, { counter: 0n }, { saltContract: true },
@@ -988,7 +988,7 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeInner = calleeBase.withCategory(hexToBin(calleeSetup.categoryId));
     const callee = StatefulContract.withCategory(calleeInner, calleeSetup.categoryId);
 
-    const callerArtifact = compileString(CALLER, { forceStateful: true });
+    const callerArtifact = compileString(CALLER, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [hexToBin(calleeInner.lockingBytecode)], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1111,7 +1111,7 @@ describe('messageBus.compose atomic transaction', () => {
     const provider = createMessageBusCapstoneTestProvider();
     const leafArtifact = compileString(`contract ComposeLeaf() {
       function leaf(int value) public pure returns (int) { return value * 2; }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const leafBase = new Contract(leafArtifact, [], { provider });
     const leafSetup = await setupStatefulUtxos(
       provider, leafBase, leafArtifact.stateLayout!, {}, { saltContract: true },
@@ -1127,7 +1127,7 @@ describe('messageBus.compose atomic transaction', () => {
           return doubled + 3;
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const middleBase = new Contract(middleArtifact, [leafInner.lockingBytecode], { provider });
     const middleSetup = await setupStatefulUtxos(
       provider, middleBase, middleArtifact.stateLayout!, {}, { saltContract: true },
@@ -1143,7 +1143,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(result == value * 2 + 3);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const rootBase = new Contract(rootArtifact, [middleInner.lockingBytecode], { provider });
     const rootSetup = await setupStatefulUtxos(
       provider, rootBase, rootArtifact.stateLayout!, {}, { saltContract: true },
@@ -1169,7 +1169,7 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeArtifact = compileString(`contract ComposeEventCallee() {
       event Settled(int value);
       function settle(int value) public { emit Settled(value); require(true); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -1184,7 +1184,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1222,7 +1222,7 @@ describe('messageBus.compose atomic transaction', () => {
         this.values[key] = value;
         require(value >= 0);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const key = 7n;
     const slot = keyToSlot(bigIntToVmNumber(key));
@@ -1250,7 +1250,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1291,7 +1291,7 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeArtifact = compileString(`contract ComposeDynamicCallee() {
       bytes note;
       function set(bytes value) public { this.note = value; require(value.length > 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, { note: new Uint8Array() }, { saltContract: true },
@@ -1306,7 +1306,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1368,7 +1368,7 @@ describe('messageBus.compose atomic transaction', () => {
     const calleeArtifact = compileString(`contract ComposeShrinkCallee() {
       bytes note;
       function set(bytes value) public { this.note = value; require(value.length > 0); }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const initial = Uint8Array.from({ length: 160 }, (_, index) => 255 - index);
     const calleeSetup = await setupStatefulUtxos(provider, calleeBase, calleeArtifact.stateLayout!, { note: initial }, {
@@ -1392,7 +1392,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1439,7 +1439,7 @@ describe('messageBus.compose atomic transaction', () => {
         emit Paid(amount);
         require(amount > 0);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -1457,7 +1457,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1502,7 +1502,7 @@ describe('messageBus.compose atomic transaction', () => {
         this.tokens[category].transfer(new LockingBytecodeP2PKH(recipient), amount);
         require(amount > 0);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -1519,7 +1519,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },
@@ -1571,7 +1571,7 @@ describe('messageBus.compose atomic transaction', () => {
         this.tokens[category].transferNft(new LockingBytecodeP2PKH(recipient), commitment, capability);
         require(capability >= 0);
       }
-    }`, { forceStateful: true });
+    }`, { forceStateful: true, messageBus: true });
     const calleeBase = new Contract(calleeArtifact, [], { provider });
     const calleeSetup = await setupStatefulUtxos(
       provider, calleeBase, calleeArtifact.stateLayout!, {}, { saltContract: true },
@@ -1595,7 +1595,7 @@ describe('messageBus.compose atomic transaction', () => {
           require(true);
         }
       }
-    `, { forceStateful: true });
+    `, { forceStateful: true, messageBus: true });
     const callerBase = new Contract(callerArtifact, [calleeInner.lockingBytecode], { provider });
     const callerSetup = await setupStatefulUtxos(
       provider, callerBase, callerArtifact.stateLayout!, {}, { saltContract: true },

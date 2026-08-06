@@ -63,9 +63,10 @@ export interface CompilerOptions {
   // option; setting it yields the delegate variant as the primary artifact.
   autoDelegate?: boolean;
   // Compiler-generated atomic composition route and write-back journal. Omitted selects automatically from
-  // source-level atomic call-graph edges; `true` requires a composable route (and fails instead of falling back),
-  // while `false` requests direct-only compilation and is rejected when semantic analysis finds a transaction
-  // shape that cannot be built without one shared message bus.
+  // source-level atomic call-graph edges; `true` opts out of that narrowing and requests a route for a
+  // graph-free contract, still falling back to direct-only when none can be built; `false` requests direct-only
+  // compilation and is rejected when semantic analysis finds a transaction shape that cannot be built without
+  // one shared message bus. The resolved value is what the artifact publishes.
   messageBus?: boolean;
 }
 

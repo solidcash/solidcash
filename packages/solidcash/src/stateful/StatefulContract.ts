@@ -3826,6 +3826,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         : '',
     );
     const eventCommits: string[] = Array.from({ length: emitCount }, () => '');
+    // A constructor can DECLARE a dynamic write (`dynamicWrites`) whose value is not a visible parameter - a
+    // base-constructor literal such as `ERC20("MistToken", "MIST")`. Those chunk outputs still exist on chain,
+    // so the probe has to reserve them and learn their commitments, exactly as it does for events.
+    const dynamicChunkCommits: Record<string, string> = {};
+    let reservedChunkNames: string[] = [];
     let transferOuts: Array<{
       lockingBytecode: Uint8Array; amount: bigint;
     }> = [];
@@ -4025,6 +4030,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Dynamic constructor writes trail the fixed block. Direct parameter assignments (the Solidity-compatible
       // pattern used by ERC20(name, symbol)) are known exactly, so use their real commitments in every probe.
+      reservedChunkNames = [];
       for (const variable of stateLayout.variables ?? []) {
         if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
         const normalized = variable.name.replace(/^_+/, '');
@@ -4033,7 +4039,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         );
         const raw = inputIndex >= 0 ? options.initArgs?.[inputIndex] : undefined;
         const value = typeof raw === 'string' ? utf8ToBin(raw) : raw instanceof Uint8Array ? raw : undefined;
-        if (value === undefined) continue;
+        if (value === undefined) {
+          // Reserve the position. Skipping it left the output absent, so the constructor's trailing-block read
+          // (blockSize + i) ran past the end of the probe transaction and derivation could never converge.
+          reservedChunkNames.push(variable.name);
+          probeBuilder.addOutput({
+            to: addressToLockScript(getDynamicChunkAddress(
+              contract, categoryId, variable.name, variable.type,
+            )),
+            amount: dataNftAmount,
+            token: {
+              category: categoryId,
+              amount: 0n,
+              nft: { capability: 'mutable' as const, commitment: dynamicChunkCommits[variable.name] ?? '' },
+            },
+          });
+          continue;
+        }
         const lockingBytecode = addressToLockScript(getDynamicChunkAddress(
           contract, categoryId, variable.name, variable.type,
         ));
@@ -4203,6 +4225,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
+      // Extract reserved dynamic-chunk commitments. They are appended after the fixed block, so the first one
+      // sits at the constructor's trailing base - the same index its trailing-block read targets.
+      if (reservedChunkNames.length > 0) {
+        const chunkBase = constructorAbi?.blockLayout?.blockSize
+          ?? (1 + stateLayout.dataNftCount + entryOutputCount + transferCount + emitCount);
+        const chunkRange = { min: chunkBase, max: chunkBase + reservedChunkNames.length };
+        for (const [outputIndex, commitment] of extractCommitmentMapFromTrace(fullTrace, chunkRange, true)) {
+          const name = reservedChunkNames[outputIndex - chunkBase];
+          if (name !== undefined) dynamicChunkCommits[name] = commitment;
+        }
+      }
+
       // Extract transfer outputs
       transferOuts = [];
       if (transferCount > 0) {
@@ -4237,7 +4271,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Oscillation detection: if we've seen this exact commitment set before,
       // the derivation is cycling without converging.
       const deployKey = stateCommitments.join('|') + '||' + entryCommits.join('|')
-        + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|');
+        + '||' + trailingEntryCommits.join('|') + '||' + eventCommits.join('|')
+        + '||' + reservedChunkNames.map((name) => dynamicChunkCommits[name] ?? '').join('|');
       if (seenDeployKeys.has(deployKey)) {
         throw new Error(
           'Deploy derivation oscillation detected: commitment state is cycling without converging. '

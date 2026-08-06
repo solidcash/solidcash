@@ -15,16 +15,21 @@ describe('message-bus compilation selection', () => {
     expect(artifact.compiler.options?.messageBus).toBe(false);
   });
 
-  it('treats explicit true as required and builds a graph-free leaf participant', () => {
+  it('treats explicit true as an opt-in that skips narrowing and builds a graph-free leaf participant', () => {
     const artifact = compileString(STATEFUL_LEAF, { messageBus: true });
     expect(artifact.messageBus).toBeDefined();
     expect(artifact.compiler.options?.messageBus).toBe(true);
   });
 
-  it('rejects explicit true when no atomic participant route can exist', () => {
-    expect(() => compileString(`contract Stateless {
+  // Explicit true is a request, not an assertion: it opts out of graph-edge narrowing but keeps the direct-only
+  // fallback, so a contract with no possible route still compiles. Only the internal verifier-program mode
+  // (`required`) treats a missing route as fatal.
+  it('falls back to direct-only when explicit true has no atomic participant route', () => {
+    const artifact = compileString(`contract Stateless {
       function check(int value) public pure { require(value >= 0); }
-    }`, { messageBus: true })).toThrow(/messageBus: required route generation/);
+    }`, { messageBus: true });
+    expect(artifact.contractName).toBe('Stateless');
+    expect(artifact.messageBus).toBeUndefined();
   });
 
   it('automatically selects message-bus planning for an external call graph', () => {

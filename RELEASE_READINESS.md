@@ -161,7 +161,15 @@ it must not silently compile to incorrect covenant behavior.
     also passes at 1,300, while capacity ten with a SINGLE store passes at the real 800, as does capacity two
     with a single store. Allocation size is therefore irrelevant and each function-pointer element store carries
     the weight.
-  - Two independent levers follow, either of which may be enough. Reduce the emitted cost of a single
+  - The expense is specific to FUNCTION-POINTER element stores, not to memory writes in general. The same shape
+    built on a plain `int[] memory` array with five stores passes at the real 800, while the function-pointer
+    version needs 1,300. The memory model is therefore not implicated; storing a function pointer into a memory
+    array element is.
+  - The cost is dense rather than large: the marginal emitted size of an extra store is only about 30 to 60
+    bytes, and since the budget scales at 800 per byte, those bytes grant far more budget than they consume in
+    size. The store must therefore emit a great many operations for very few bytes, which is exactly what
+    BCH-2026 density control penalises.
+  - Two independent levers follow, either of which may be enough. Reduce the emitted operation count of a single
     function-pointer element store; or exploit the fact that in this shape the array is call-invariant, so
     hoisting or constant-folding it removes all five stores from every call after the first.
   - An earlier revision of this entry blamed the indexed dispatch. That was wrong: the variant it rested on

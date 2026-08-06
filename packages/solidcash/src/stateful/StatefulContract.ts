@@ -8922,6 +8922,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // each callee's master input index from ONE witness list, so the fill below appends that list (at the
     // range's position) instead of per-group indices.
     const loopIdxRanges: { start: number; count: number; fnPtrCall: boolean }[] = [];
+    // Read lazily and once: only a function with expression-sourced external-call arguments needs it.
+    let callerStateSnapshot: Record<string, StateValue> | undefined;
     // Direct-group index -> co-spent logical-identity anchor input index, for callees whose Solidity-visible
     // address is a logical CREATE address rather than their physical covenant. Absent entries fall back to -1
     // (direct identity proof), which is every ordinary contract.
@@ -8984,7 +8986,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           canAutoResolve = false;
           break;
         }
-        const resolvedArgs = this._resolveExternalArgs(ec.argSources, args, this.inner.artifact);
+        // Expression arg sources are evaluated against the caller's OWN state (`jobs.length - 1` and friends).
+        // `_evaluateExternalExpression` already covers every shape these reach - state/array length/arithmetic,
+        // struct constructors, the Encoding helpers - but silently yields undefined without a state snapshot,
+        // which then surfaces as "cannot be auto-resolved". Read it once and thread it through.
+        callerStateSnapshot ??= (await this.getFullState()).state;
+        const resolvedArgs = this._resolveExternalArgs(
+          ec.argSources, args, this.inner.artifact, callerStateSnapshot,
+        );
         if (resolvedArgs === undefined && ec.argSources?.some((s) => s.kind === 'expression')) {
           throw new Error(
             `External call to ${ec.interfaceName}.${ec.functionName} has expression-based argSources `
@@ -9059,6 +9068,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const externalCategoryId = callInfo.externalContract.categoryId;
         const compilerRoute = this._buildRepeatedExternalBatch(
           ec, args, callInfo.externalContract as StatefulContract,
+          this.inner.artifact, callerStateSnapshot,
         );
         const bGraphBlockhashSelections = compilerRoute
           ? selectGraphBlockhashReads(callInfo.externalContract.inner.artifact, compilerRoute.blob)
@@ -12691,6 +12701,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     functionArgs: FunctionArgument[],
     externalContract: StatefulContract,
     callerArtifact: Artifact = this.inner.artifact,
+    callerState?: Record<string, StateValue>,
   ): {
       abiFunction: AbiFunction;
       selector: Uint8Array;
@@ -12741,7 +12752,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const args = row.inputs.length === 0
         ? []
-        : this._resolveExternalArgs(row.argSources, functionArgs, callerArtifact);
+        : this._resolveExternalArgs(row.argSources, functionArgs, callerArtifact, callerState);
       if (!args || args.length !== row.inputs.length) {
         throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);
       }

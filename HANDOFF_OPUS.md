@@ -415,11 +415,21 @@ So the missing piece is precise: a nested compiler-route group never has its ret
 return event therefore carries zeros, which the caller decodes as a false boolean and rejects with the
 source-level require.
 
+CONFIRMED by a second probe: phase 1 does not merely skip this group, it never runs AT ALL for this
+transaction. A counter placed at the loop entry (`phase1-entry`, before any per-group `continue`) prints
+nothing, so the entire direct-composition derivation block is bypassed - the marketplace's calls are assembled
+exclusively by the nested delegate path.
+
 Next step: give the nested composition the same return-event derivation the direct path has - probe the built
 transaction at the callee master, extract the return-event commitment for the group, and set it before the
 final build. `extractCommitmentsFromTrace(trace, 1, returnOutputRange, true)` at ~6021 is the pattern to
-mirror; `nestedMasterIndices[groupIdx]` gives the probe's input index and
-`physicalReturnIndexForGroup` already computes the return-event output index for nested groups.
+mirror; `nestedMasterIndices[groupIdx]` gives the probe's input index and `physicalReturnIndexForGroup` already
+computes the return-event output index for nested groups.
+
+Placement is the one real constraint: the nested composition (~10300-11100) runs BEFORE the builder exists,
+while a probe needs a built transaction. So the derivation belongs after `new StatefulTransactionBuilder(...)`
+(~11727), in the same window as the identity-anchor fill added by 61144af8 - which is precedent for exactly
+this shape of deferred, post-build fixup, including its `_refreshInputs()` step.
 
 ### What remains, in dependency order
 

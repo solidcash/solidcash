@@ -426,10 +426,31 @@ final build. `extractCommitmentsFromTrace(trace, 1, returnOutputRange, true)` at
 mirror; `nestedMasterIndices[groupIdx]` gives the probe's input index and `physicalReturnIndexForGroup` already
 computes the return-event output index for nested groups.
 
-Placement is the one real constraint: the nested composition (~10300-11100) runs BEFORE the builder exists,
-while a probe needs a built transaction. So the derivation belongs after `new StatefulTransactionBuilder(...)`
-(~11727), in the same window as the identity-anchor fill added by 61144af8 - which is precedent for exactly
-this shape of deferred, post-build fixup, including its `_refreshInputs()` step.
+Placement is one constraint: the nested composition (~10300-11100) runs BEFORE the builder exists, while a
+probe needs a built transaction. So the derivation belongs after `new StatefulTransactionBuilder(...)` (~11727),
+in the same window as the identity-anchor fill added by 61144af8 - precedent for exactly this deferred
+post-build shape, including its `_refreshInputs()` step.
+
+BUT that is not the whole story, and this was measured by building it. A collector was wired over
+`returningExternalGroups` (~10963) and the post-build probe implemented; it fires ZERO times:
+
+```text
+nested-ret-count 0        // for every build of the focused test
+```
+
+`returningExternalGroups` filters on `allGroupEcSlots[idx]?.hasReturnValues`, and `allGroupEcSlots` is populated
+from `groupMetas` by the DIRECT composition. For a nested assembly it never gets the batch group's slot, so the
+group is not even RECOGNISED as returning - which is upstream of the missing derivation and explains why no
+return-event index is reserved for it either.
+
+So the fix has two parts, in this order:
+
+1. make the nested composition record its returning groups the way the direct one does (an
+   `allGroupEcSlots`-equivalent, or read `hasReturnValues` off `group.compilerRoute?.abiFunction` /
+   the callee ABI at the point the nested group is created);
+2. then derive each one's return-event commitment post-build, as above.
+
+The implementation of (2) was written and reverted rather than landed, since it is unreachable until (1) exists.
 
 ### What remains, in dependency order
 

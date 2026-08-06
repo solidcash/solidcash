@@ -36,6 +36,9 @@ const BARRIER_OPS = new Set<number>([
 
 // Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
 const MINIMUM_WINDOW_ELEMENTS = 8;
+// Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
+// below this width sharing one cannot repay a definition however often it repeats.
+const MINIMUM_POOLED_CONSTANT_BYTES = 6;
 // Candidate groups examined per round, most-repeated first. Bounds the per-round extension work.
 const CANDIDATE_GROUPS_PER_ROUND = 512;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
@@ -236,7 +239,7 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
   });
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
-  const groups: Occurrence[][] = [];
+  const groups: { occurrences: Occurrence[]; seed: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
     const exact = new Map<string, Occurrence[]>();
@@ -247,14 +250,37 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       group.push(occurrence);
       exact.set(key, group);
     }
-    for (const group of exact.values()) if (group.length >= 2) groups.push(group);
+    for (const group of exact.values()) {
+      if (group.length >= 2) groups.push({ occurrences: group, seed: MINIMUM_WINDOW_ELEMENTS });
+    }
   }
-  groups.sort((left, right) => right.length - left.length);
+  groups.sort((left, right) => right.occurrences.length - left.occurrences.length);
+  groups.splice(CANDIDATE_GROUPS_PER_ROUND);
+
+  // A large repeated constant never reaches the window length, however many times it appears and however big
+  // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
+  // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
+  // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
+  const constants = new Map<string, Occurrence[]>();
+  bodies.forEach((body, bodyIndex) => {
+    for (let i = 0; i < body.script.length; i += 1) {
+      const element = body.script[i];
+      if (typeof element === 'number') continue;
+      if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
+      const next = body.script[i + 1];
+      if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
+      const key = elementKey(element);
+      const group = constants.get(key) ?? [];
+      group.push({ body: bodyIndex, start: i });
+      constants.set(key, group);
+    }
+  });
+  for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });
 
   const candidates: Candidate[] = [];
-  for (const group of groups.slice(0, CANDIDATE_GROUPS_PER_ROUND)) {
+  for (const { occurrences: group, seed } of groups) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    let length = MINIMUM_WINDOW_ELEMENTS;
+    let length = seed;
     for (;;) {
       const first = group[0];
       const at = length;

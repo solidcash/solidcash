@@ -843,6 +843,50 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
+   * Push a fixed-width byte constant, using `<minimal> <width> OP_NUM2BIN` when that is shorter.
+   *
+   * A 256-bit-parity constant is pushed at its full width even when its value is tiny: bytes32(0) costs 33
+   * bytes. OP_NUM2BIN rebuilds exactly those bytes from the minimal script number plus a width - it zero-pads
+   * the magnitude and re-sets the sign bit in the last byte, which is precisely how the constant is laid out -
+   * so the stack item is identical and only the encoding shrinks. bytes32(0) goes from 33 bytes to 4.
+   *
+   * Emitted here rather than rewritten later so every instruction pointer is recorded against the final
+   * instruction sequence, and so the optimiser cross-check sees one input rather than two.
+   */
+  private emitFixedWidthConstant(bytes: Uint8Array, locationData: SingleLocationData): void {
+    const minimal = GenerateTargetTraversalWithLocation.minimalScriptNumberOf(bytes);
+    const asNum2bin = minimal === undefined ? undefined : [minimal, encodeInt(BigInt(bytes.length))];
+    const width = (element: Uint8Array): number => encodeDataPush(element).length;
+    if (asNum2bin === undefined
+      || width(asNum2bin[0]) + width(asNum2bin[1]) + 1 >= width(bytes)) {
+      this.emit(bytes, locationData);
+      return;
+    }
+    this.emit(asNum2bin[0], locationData);
+    this.emit(asNum2bin[1], locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+  }
+
+  /**
+   * The minimal script number whose OP_NUM2BIN widening to `element.length` reproduces `element` byte for byte,
+   * or undefined when no such number exists (a negative zero, which OP_NUM2BIN never produces).
+   */
+  private static minimalScriptNumberOf(element: Uint8Array): Uint8Array | undefined {
+    if (element.length === 0) return undefined;
+    const sign = element[element.length - 1] & 0x80;
+    const magnitude = new Uint8Array(element);
+    magnitude[magnitude.length - 1] &= 0x7f;
+    let end = magnitude.length;
+    while (end > 0 && magnitude[end - 1] === 0) end -= 1;
+    if (end === 0) return sign === 0 ? new Uint8Array() : undefined;
+    // A magnitude already using bit 7 of its top byte needs one more byte to carry the sign.
+    const minimal = new Uint8Array(end + ((magnitude[end - 1] & 0x80) !== 0 ? 1 : 0));
+    minimal.set(magnitude.subarray(0, end), 0);
+    minimal[minimal.length - 1] |= sign;
+    return minimal;
+  }
+
+  /**
    * Every map that remembers "this structural helper is function id N". A helper's id is looked up here each
    * time it is emitted, so rewriting these before any real emission relocates the helper wholesale.
    */
@@ -6808,7 +6852,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[0] = this.visit(node.parameters[0]);
       this.popFromStack();
       this.emit(Op.OP_DROP, loc);
-      this.emit(new Uint8Array(32), loc);
+      this.emitFixedWidthConstant(new Uint8Array(32), loc);
       this.pushToStack('(value)');
       return node;
     }
@@ -9988,7 +10032,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitStringLiteral(node: StringLiteralNode): Node {
-    this.emit(node.solidityBytes ?? encodeString(node.value), {
+    // `solidityBytes` is the value right-padded to its declared width, so a short string in a wide slot is
+    // mostly zeros and encodes far smaller through OP_NUM2BIN.
+    this.emitFixedWidthConstant(node.solidityBytes ?? encodeString(node.value), {
       location: node.location,
       positionHint: PositionHint.START,
     });
@@ -10000,7 +10046,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a runtime length) that was
     // deferred from AstBuilder so non-primary contracts do not fail the file; error now that it is being compiled.
     if (node.codegenError) throw new Error(node.codegenError);
-    this.emit(node.value, { location: node.location, positionHint: PositionHint.START });
+    this.emitFixedWidthConstant(node.value, { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(value)');
     return node;
   }
@@ -16100,7 +16146,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
       }, field);
     };
-    const zero32 = (): void => this.emit(new Uint8Array(32), loc);
+    const zero32 = (): void => this.emitFixedWidthConstant(new Uint8Array(32), loc);
     const bin = (op: Op): void => this.emit(op, loc);
 
     for (const batch of node.sortedBatchInfo ?? []) {

@@ -279,10 +279,21 @@ at the 4-failure baseline.
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**
 
 - Admitting keyed mapping getters (deleting the `collection || ...` exclusion in `compiler.ts` ~1848 for
-  parameterised mapping getters) looks like a pure cost decision from its comment. It is not: route codegen then
-  fails with `Expected variable '__internal__state_write_jobs' does not exist on the stack`. GTT ~2055 documents
-  exactly this class - journaling applied to an ORDINARY entry point, where the table is read again by
-  `emitExternalCallVerification` in the EPILOGUE after the journal frame is settled. Tried and reverted.
+  parameterised mapping getters) looks like a pure cost decision from its comment. Route synthesis then fails
+  with `Expected variable '__internal__state_write_jobs' does not exist on the stack`.
+
+  IMPORTANT, and it changes the shape of this item: that failure is in **MarketplaceV1's** route synthesis, not
+  in MarketplaceDataV1's. Confirmed by tagging the rung diagnostic with the primary contract
+  (`primary: 'MarketplaceV1'`), and `jobs` is `JobPost[] public jobs` on MarketplaceV1 (MarketplaceDataV1 has no
+  `jobs`). So the getter admission does not break the getter's own contract - it widens admission enough that a
+  SEPARATE, pre-existing codegen fragility in MarketplaceV1 fires, and the ladder then falls back far enough to
+  drop MarketplaceDataV1's route too.
+
+  GTT ~2055 documents that exact class: journaling applied to an ORDINARY entry point, where the table is read
+  again by `emitExternalCallVerification` in the EPILOGUE after the journal frame has been settled off the
+  stack. X152 scopes the extra journaling to clones (`fn.graphEmissionHandler ? ... : []`); something else is
+  journaling `jobs` for a non-clone. Fix THAT first and the getter admission may simply work. Tried and
+  reverted.
 - Serving the read as a cross-contract STATE READ instead of a call would be the principled shape (a pure read
   should not consume the callee master's single spend - external reads co-spend DATA NFTs read-only). But
   `ExternalOutStateAbi` carries only `requiredDataNftIndices`: there is no cross-contract C2 mapping ENTRY read.

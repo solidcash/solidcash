@@ -3,7 +3,7 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../../src/index.js';
 import { alicePkh } from '../../fixture/vars.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 
 /**
  * X8 - a handler with TWO chunk-backed dynamic writes plus a collection write.
@@ -129,7 +129,7 @@ async function expectRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
+  expectScriptRejection(outcome, 0);
 }
 
 async function honestCapture(): Promise<{ provider: Provider; sc: StatefulContract<any>; hex: string }> {

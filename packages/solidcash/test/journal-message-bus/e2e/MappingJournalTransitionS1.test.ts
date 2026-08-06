@@ -4,7 +4,7 @@ import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, StatefulContract, TransactionBuilder } from '../../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 import { randomUtxo } from '../../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -121,15 +121,19 @@ async function expectCovenantRejection(provider: Provider, hex: string): Promise
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
-  expect(outcome).toContain('Program failed an OP_VERIFY operation');
+  expectScriptRejection(outcome, 0);
+  // Not the opcode: BCHN's short form names whatever tripped, and the same tamper surfaces as OP_VERIFY or
+  // OP_EQUALVERIFY depending on where the covenant objects. `expectScriptRejection` above already
+  // required a script-verify refusal, which is the property under test.
 }
 
 /** BCH token validation refused the transaction: no minting authority exists for the forged category. */
 async function expectTokenValidationRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-  expect(outcome).toContain('Transaction violates token validation');
+  // Same refusal, different wording: the mock says `Transaction violates token validation`, BCHN says
+  // `bad-txns-token-invalid-category`. Both mean CashTokens itself refused the foreign category.
+  expect(outcome).toMatch(/Transaction violates token validation|bad-txns-token-invalid-category/);
 }
 
 async function expectAccepted(provider: Provider, hex: string): Promise<void> {

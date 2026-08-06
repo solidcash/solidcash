@@ -3,7 +3,7 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../../src/index.js';
 import { alicePkh } from '../../fixture/vars.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 
 /**
  * The deciding evidence for round-11's "S2 UNDETERMINED - the boundary is dialect-dependent".
@@ -85,7 +85,7 @@ async function expectRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
+  expectScriptRejection(outcome, 0);
 }
 
 describe('S2 bare-spelling admitted form: unbounded write plus a collection write in one handler', () => {

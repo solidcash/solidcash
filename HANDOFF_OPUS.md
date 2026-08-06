@@ -66,83 +66,83 @@ dynamic reference type.
 Note the project cache key covers sources and options but NOT compiler code, so a stale
 `.marketplace/cache/solidcash` hides compiler regressions. Delete that directory when validating a compiler change.
 
-## Current blocker: proxy logical identity in external-call verification
-
-The unchanged focused test fails final preflight:
-
-```text
-messageBus: BCH-2026 preflight failed at input 3:
-Program failed an OP_VERIFY operation.
-```
-
-Inside an outlined equality helper invoked from the MarketplaceV1 delegate implementation near body IP ~1344:
-external-call identity verification.
-
-- Callee master input/output index: `6` (the MarketplaceData proxy, category `e5ef7ec4...`)
-- Physical callee master locking bytecode: `aa201b0ec407724317ed993e82d2216a7692db17...`
-- Expected address from the implementation stack: `a914323844f5b0ce613ced9a025cb1dca82aa501...87`
+## Solved: proxy logical identity in external-call verification
 
 `MarketplaceV1` stores `MarketplaceDataV1 public marketplaceData` and the test initializes it with
-`await marketplaceData.getAddress()`, i.e. the proxy's stable logical P2SH20 CREATE address. The co-spent state
-holder uses the physical BCH covenant, so `master bytecode == expected address` cannot hold. `upgrades.ts`
-rewrites direct function-argument targets to physical bytecode, but this target is read from Marketplace state
-on-chain and cannot be rewritten off-chain without changing what the contract stores.
+`await marketplaceData.getAddress()`, i.e. the proxy's stable logical P2SH20 CREATE address, while the co-spent
+state holder uses the physical BCH covenant. `master bytecode == expected address` could not hold, and
+`upgrades.ts` only rewrites direct function-ARGUMENT targets, so this state-read target could not be rewritten
+off-chain.
 
-### What has been implemented (d2cb1a73)
+Fixed by a second, authenticated identity proof selected per slot by an SDK-filled witness
+(`__internal__extcallAnchorIdx<slot>`):
 
-A second, authenticated identity proof, selected per slot by an SDK-filled witness:
+- `-1` keeps the existing direct equality.
+- Otherwise `emitLogicalIdentityOrDirectIdentity` proves the binding from the callee's co-spent immutable SCID
+  anchor: the anchor's locking bytecode IS the expected logical address; it is an immutable NFT (32-byte
+  category, no capability byte) of the callee master's own category; and its commitment's trailing root field is
+  exactly that master's locking bytecode. Only the genuine contract can mint the anchor, so an unrelated P2SH20
+  cannot be paired with an unrelated master.
 
-- `SymbolTableTraversal` synthesizes `__internal__extcallAnchorIdx<slot>` for fixed-slot calls whose target is a
-  value rather than a baked literal or tx-derived `msg.sender` (around the `__internal__extcallMasterIdx`
-  synthesis, ~line 2600).
-- `GenerateTargetTraversal.emitLogicalIdentityOrDirectIdentity` emits the existing direct equality when the
-  witness is `-1`, and otherwise proves the binding from the callee's co-spent immutable SCID anchor:
-  1. the anchor input's locking bytecode IS the expected logical address;
-  2. the anchor is an immutable NFT (32-byte category, no capability byte) of the callee master's own category;
-  3. its commitment's trailing root field is exactly the co-spent master's locking bytecode.
-  Only the genuine contract can mint the anchor, so an unrelated P2SH20 cannot be paired with an unrelated
-  master. `LOGICAL_IDENTITY_PREFIX` / `LOGICAL_IDENTITY_ROOT_OFFSET` must stay byte-identical to
-  `encodeLogicalIdentityCommitment` in `packages/solidcash/src/stateful/logical-identity.ts`.
-- The SDK fills the witness at all six sites: direct (`StatefulContract`, next to the `groupMasterIndices`
-  fill), delegate forward, nested delegate (the `encoded` map), batch route (`bFinalArgs` loop), and both
-  `loop-call.ts` sites. Each throws on an unrecognized `__internal__` name, so a missed site fails loudly.
+`LOGICAL_IDENTITY_PREFIX` / `LOGICAL_IDENTITY_ROOT_OFFSET` in `GenerateTargetTraversal` must stay byte-identical
+to `encodeLogicalIdentityCommitment` in `packages/solidcash/src/stateful/logical-identity.ts`.
 
-It is `-1` everywhere so far, which reproduces the previous behavior exactly. 78 external-call e2e tests and 51
-upgrade/proxy tests pass unchanged, and the focused marketplace test reaches the same BCH-2026 preflight
-OP_VERIFY at input 3 as before, so the covenant path and the ABI change are regression-free.
+SDK side (`StatefulTransactionBuilder` + `StatefulContract`):
 
-### Remaining work: resolve real anchors
+- `externalIdentityAnchorUtxos` is a band appended after every layout-driven band and recreated as outputs. The
+  anchor redeem script is `<seed> OP_DROP OP_1` (permissionless), so consuming one without recreating it would
+  destroy that contract's logical identity.
+- Callee anchors sit BEFORE the caller's own `logicalIdentityUtxo`. `emitLogicalMsgSenderAnchorResolution`
+  resolves the caller's identity from `OP_TXINPUTCOUNT OP_1SUB`, so the tail input must stay the caller's;
+  getting this wrong makes msg.sender resolution pick a callee anchor.
+- `getIdentityAnchorInputIndex` reads the materialized input list; `_refreshInputs` re-runs assembly after the
+  carrying unlocker is replaced.
+- The delegate forward path maps an anchored slot with `nestedGroups[slot]` - the SAME positional mapping the
+  `__internal__extcallMasterIdx` fill uses. A callsite-keyed lookup names the wrong contract, because several
+  logical callsites share one physical group.
+- The witness is filled AFTER funder assignment (`setFunderUtxos`), which is what fixes the input positions the
+  index refers to. Filling it at builder-construction time yields stale indices.
 
-The SDK must, for a slot whose expected address is logical:
+Three traps cost real time and are worth remembering: the tail-input assumption above, the stale index before
+funders, and the slot-to-group mapping.
 
-1. Detect it. The callee `StatefulContract` carries `_logicalAddress`; compare `addressToLockScript(_logicalAddress)`
-   with the group's physical master locking bytecode, and confirm the expected value the covenant will compare
-   against is the logical one (from `args` for an `addressParam`, or a caller state read for an `__extaddr_`
-   state-var target).
-2. Resolve the anchor with `resolveLogicalIdentity(provider, logicalAddress)` and co-spend
-   `{ ...anchor, unlocker }`.
-3. Recreate the anchor output. Its own redeem script is `<seed> OP_DROP OP_1` (permissionless), so a call that
-   consumed it without recreating it would destroy the proxy's identity.
-4. Pass its absolute input index into `externalCallAnchorIndices` (the map is already threaded into the direct
-   fill).
+## Current blocker: one callee, several unbatched calls
 
-Check (3) of the covenant proof is confirmed to line up: `ContractFactory` builds the anchor commitment with
-`new Contract(artifact, constructorArgs, ...).address`, i.e. the deployed contract's own master locking
-bytecode, and `upgrades.deployProxy` passes `logicalIdentity` to the PROXY deployment. So the commitment's root
-field is the proxy master the caller co-spends, not the implementation.
+The focused test now passes identity verification and fails later, at a selector check: the co-spent
+MarketplaceData input is composed for `publishJobEvent` (`a826ee9c`) while a slot expects `arbitratorRegistered`
+(`9bd3de95`).
 
-Placement matters. Anchors must NOT sit inside an accounted band: the compiler's output math counts external
-call outputs as `1 + requiredDataNftIndices.length` per slot, and whether a slot has an anchor is a RUNTIME
-decision the compile-time count cannot express. Put them at the end, where `logicalIdentityUtxo` already goes
-(`StatefulTransactionBuilder` appends it to `allInputs` in two places and emits its output before
-`appendDynamicChunks`). That keeps the delegate dynamic-chunk suffix anchor
-(`OP_TXOUTPUTCOUNT OP_1SUB - sum(chunks)`) valid.
+`publishJobPost` has six external-call slots:
 
-The consequence is that the anchor index is not known when `finalArgs` is assembled, since that happens before
-the builder exists. Follow the existing pattern for this: the nested path already re-creates callee unlockers
-after building, from `nestedMasterIndices` derived from the built probe's actual outpoints. The caller's own
-unlocker needs the same deferred re-creation, or the builder needs to expose a total-input count the fill can
-use.
+```text
+0 MarketplaceDataV1.arbitratorRegistered  argSources [forward]                batched=false
+1 MarketplaceDataV1.meceTags              argSources [arrayElement]           batched=false
+2 IERC20.balanceOf                        argSources [msgSender]              batched=TRUE
+3 MarketplaceDataV1.userRegistered        argSources [msgSender]              batched=false
+4 MarketplaceDataV1.publishJobEvent       argSources [expression, expression] batched=false
+5 MarketplaceDataV1.publishJobEvent       argSources [expression, expression] batched=false
+```
+
+Five distinct calls target one contract, and a master NFT can be spent only once per transaction, so they must
+share ONE physical input. The composition currently produces five logical groups all pointing at master input 6
+(`__forward`), and each slot then bakes its own compile-time selector check against that single input, which at
+most one can satisfy. The sound answer is the batch envelope the compiler already builds for slot 2: batched
+slots skip the ordinary selector check and are authenticated by `emitExternalBatchBlobVerification` instead.
+
+The gate is in `SymbolTableTraversal` (the `eligible` predicate that feeds `batchInvocations`, around line
+2290):
+
+```text
+&& (decodedRaw || !(slot.argSources ?? []).some((source) => source.kind === 'expression'))
+```
+
+`publishJobEvent` passes an inline-built struct, so its arg sources are `expression` and it is refused. Slots 0,
+1 and 3 have resolvable sources and should already group; confirm whether `directCalls` admits them, since the
+grouping key is `${identity}|${requiredDataNftIndices}`.
+
+The direction that fits the existing design is to let the envelope carry expression-sourced arguments - the
+compiler already builds the aggregate request encoding on-chain for a batch - rather than making the SDK resolve
+them (it deliberately refuses: "expression-based argSources that cannot be auto-resolved").
 
 ## Build/recompile commands
 

@@ -193,6 +193,11 @@ Getting there required instrumenting the throw itself: the call-site probes neve
 `expectParameters` is reached from the "single overload resolved" path (`TypeCheckTraversal` ~1741), and
 `forwardInternalReturnOutputIdx` returned early at its arity guard before any of the interesting logic ran.
 
+A follow-up correction landed as 68aa65a5: the first version of that forwarding counted positionally and
+double-forwarded when a route writes a synthetic AND omits a visible argument (it regressed a transient-slot
+layout test). The rule now forwards exactly the trailing synthetics needed to reach the callee's arity and
+refuses when one of them is already an argument, so the ordinary arity error surfaces instead of being masked.
+
 ### Bug 3, the next one in the queue
 
 ```text
@@ -201,10 +206,23 @@ where parameters (string,string,string,string,bytes32) were expected
 ```
 
 Same argument COUNT, wrong types: the route passes three visible strings and then two `bytes32`, while the clone
-expects a FOURTH string. That fourth string is the entry key (`meceTags` is keyed by string), so this is the
-`entryKeyArguments(fn)` path failing to emit a string-typed key for this handler - a different defect from bug 2,
-in route source generation (`compiler.ts` ~2857, where `callArgs` is assembled from
-`sourceCallArgs + physicalEntryArgs + callerContextArgs`).
+expects a FOURTH string. With the corrected forwarding the call is `(string,string,string,bytes32)` against an expected
+`(string,string,string,string,bytes32)` - one VISIBLE argument short, not a synthetic problem.
+
+Measured at the bind site, the clone for `updateMeceTag(string shortForm, string longForm)` is:
+
+```text
+bind time:  [string shortForm, string longForm, string __message_bus_ek___message_bus_key_meceTags_0]
+            ordered = [meceTags/__message_bus_key_meceTags_0]        (ONE key)
+route args: sourceCallArgs = 2 decoded strings, physicalEntryArgs = [__message_bus_key_meceTags_0]
+final:      the clone ends up with FOUR visible params - a SECOND string entry key added after bind
+```
+
+So a second entry key is appended to the clone later while `handlerEntryKeys` still records only the first, and
+`entryKeyArguments(fn)` therefore emits one key where two are needed. `meceTags` is `mapping(string => string)`,
+a chunkable value type, and `updateMeceTag` touches it under two key spellings (the `alternatives` logic in
+`bindEntryKeyParameters`). Next step: find what appends that second key after `handlerEntryKeys.set(source,
+ordered)` and record it there too, so the route emits both.
 
 The useful conclusion is that this is a QUEUE OF ORDINARY BUGS in a path that has never been exercised for this
 contract, not a protocol wall. Route synthesis for a 46-handler upgradeable contract simply has not been run

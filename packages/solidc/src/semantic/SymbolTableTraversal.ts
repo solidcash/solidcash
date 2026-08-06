@@ -2314,7 +2314,11 @@ export default class SymbolTableTraversal extends AstTraversal {
               && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
               && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot) ?? rawSelector)
-              && (decodedRaw || !(slot.argSources ?? []).some((source) => source.kind === 'expression'));
+              // Expression arg sources are admissible now that the SDK evaluates them: the covenant encodes
+              // each argument from its AST against live values, and `_evaluateExternalExpression` reproduces
+              // the same shapes off-chain from a caller state snapshot. A shape the SDK cannot evaluate still
+              // refuses the batch at build time rather than mis-encoding it.
+              && true;
             if (!eligible) continue;
             const key = `${identity}|${slot.requiredDataNftIndices.join(',')}`;
             const group = byTarget.get(key) ?? [];

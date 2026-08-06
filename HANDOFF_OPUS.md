@@ -952,6 +952,29 @@ which is stack-relative) still needs to be established before changing anything.
 Next step: determine WHICH require/span is being shared and whether the two sites are truly equivalent, then
 either widen the anchor set to cover selector-less bodies or refuse to share spans containing requires.
 
+NOTE the outliner is already careful in the ways you would first suspect, so do not "fix" these: it keeps
+control flow self-contained (`OPEN_OPS`/`CLOSE_OPS`, plus a dedicated OP_ELSE rule for a span that would leave
+a dangling OP_ELSE), and it already refuses to relocate a span that is anchored at ANY occurrence. The bug is
+therefore something the existing rules do not model, not a missing balance check.
+
+Also note `debugInfo.requires` covers SOURCE-LEVEL requires only. The compiler's own covenant OP_VERIFYs are
+not in that list, so they are unanchored and relocatable today -- worth checking whether the failing verify is
+one of those rather than a source require.
+
+### Turning outlining off is NOT a usable workaround
+
+With `SOLIDC_DISABLE_SHARED_OUTLINE=1` the fixture reaches line 175 and is refused by ONE byte rule:
+
+```
+[policy] relay-transaction-size at transaction: 178257 serialized bytes is 78257 over the
+100000-byte standard relay ceiling
+```
+
+The project config already relaxes what it can (`maximumInputBytes` 10M, `maximumTransactionBytes` 100M,
+`enforceDust: false`), but this is a POLICY/standardness rule and `NetworkPolicy` exposes only `enforceDust` --
+there is no relay-size knob. Adding one is a gating decision for the repo owner, not something to slip in, and
+it would only mask the outliner bug behind 178 KB transactions that no node would relay. Fix the outliner.
+
 ### Superseded: the deploy-fold + mapping-entries attribution was WRONG
 
 Narrowed by three experiments against the real project (each = wipe `.marketplace/cache/solidcash`, full compile,

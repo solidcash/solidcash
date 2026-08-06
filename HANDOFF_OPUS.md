@@ -859,6 +859,50 @@ env NODE_OPTIONS=--max-old-space-size=2048 SOLIDC_DEBUG_ROUTE_CONCISE=1 \
   call from a delegated implementation). The neighbouring `materializes a returning external call to another
   deployed proxy` is skipped and is the small-scale form of the proxy composition this branch needs.
 
+## CORRECTION: the failure was never in `publishJobPost` (2026-08-06)
+
+Everything above that treats `BCH-2026 preflight failed at input 3` as a `publishJobPost` problem is WRONG,
+including several of my own earlier entries. Measured, not reasoned:
+
+- Every failing log this session -- ALL of them, from the first run onward -- fails at
+  `marketplace.test.ts:169`, which is `upgrades.deployProxy(MarketplaceData, [...])` in
+  `deployContractsFixture`. Fixture SETUP. The test never reached `publishJobPost` even once.
+- A probe naming each input (`builder.inputs[i].unlocker.contract.name`) gives:
+  `0:SolidCashProxy.__forward | 1,2:DataNft_a33cb3b6 | 3*FAIL:MarketplaceDataV1.initialize |
+   4,5:DataNft_e4e87dc1 | 6:EntryNft_a33cb3b6 | 7..17:p2pkh`.
+  So input 3 is `MarketplaceDataV1.initialize`, and the `initialize:delegatecall` composition line I had
+  dismissed as "the OK one" was in fact the FAILING transaction. The `publishJobPost` composition I spent
+  rounds chasing belongs to a call that never executes.
+
+I mistook the fixture for the subject because the test is named "post job 1". Read the stack frame, not the
+test name.
+
+## Blocker A (fixture, line 169): mapping writes inside a proxy `initializer` -- CONFIRMED BY EXPERIMENT
+
+`MarketplaceV1.initialize` (scalars only) deploys fine at line 154. `MarketplaceDataV1.initialize` writes one
+scalar plus EIGHT mapping entries (`meceTags[...] = ...`) and fails. The transaction shape matches exactly:
+outputs 6-13 are eight `EntryNft` outputs, one per meceTags write.
+
+EXPERIMENT (source edit reverted afterwards; upstream never touched -- `.marketplace/contracts/*.sol` are
+SYMLINKS into `/Code/effectiveacceleration.ai/contract/contracts/`, so swap the symlink for a real copy rather
+than editing through it): removing ONLY the eight mapping writes makes fixture setup SUCCEED and the test run
+~530 lines further, through `publishJobPost`, to a new failure at line 703.
+
+So Blocker A is real and must be fixed in the COMPILER/SDK -- the marketplace source stays unchanged.
+
+Decoded failing check (redeem-script frame, `OP_0 OP_ROLL OP_NOT OP_IF OP_0 OP_VERIFY`): the script splits a
+4-byte field, takes its FIRST BYTE, and requires it to equal `0x51`, but reads `0x00`. Note inputs 1/4 carry
+commitments beginning `00...` while inputs 2/5 begin `5121...`, i.e. the pair-member distinction. That points
+at the entry/state member selection for the initializer's slot, but the exact mechanism is NOT yet established
+-- treat the `0x51` reading as a lead, not a conclusion. `_disableInitializers` appears nowhere in the sources,
+so do not assume the `ffffffffffffffff` on the stack is OZ's disabled-initializer sentinel.
+
+## Blocker B (line 703): `MarketplaceDataV1 does not advertise a compatible message-bus route`
+
+Revealed only once Blocker A is bypassed. This IS the route/eligibility subsystem the batching work targets,
+so that work is on the right path -- it was simply blocked behind an earlier, unrelated failure. Note the
+route shape will differ once the eight meceTags entry slots are present again.
+
 ## Temporary diagnostics to remove before completion
 
 - `packages/solidcash/src/stateful/StatefulTransactionBuilder.ts`: VM trace ring widened from 16 to 520; restore it.

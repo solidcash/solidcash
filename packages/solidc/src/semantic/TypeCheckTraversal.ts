@@ -2244,13 +2244,19 @@ export default class TypeCheckTraversal extends AstTraversal {
     // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
     // written at the call site).
     // The call site normally writes only the user-visible args, but a compiler-generated route writes some
-    // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the remaining suffix
-    // rather than bailing, so a clone that later gained a witness param is still reachable.
-    const visibleCount = fn.parameters.length - synthetic.length;
-    const alreadySupplied = node.parameters.length - visibleCount;
-    if (alreadySupplied < 0 || alreadySupplied > synthetic.length) return;
-    const pending = synthetic.slice(alreadySupplied);
-    if (pending.length === 0) return;
+    // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the ones it did NOT
+    // write, identified BY NAME: counting positionally would double-forward when the route also omits a visible
+    // argument, appending a synthetic the call already carries instead of surfacing the real defect.
+    const missing = fn.parameters.length - node.parameters.length;
+    if (missing <= 0 || missing > synthetic.length) return;
+    // Forward exactly the trailing synthetics needed to reach the callee's arity. When the call site wrote none
+    // of them this is the original all-synthetics case; when a generated route wrote a leading one itself, only
+    // the rest are appended. If a name in that tail is ALREADY an argument the call is malformed for another
+    // reason - surface the arity error rather than masking it with a duplicate.
+    const pending = synthetic.slice(synthetic.length - missing);
+    const suppliedNames = new Set(node.parameters
+      .filter((p): p is IdentifierNode => p instanceof IdentifierNode).map((p) => p.name));
+    if (pending.some((p) => suppliedNames.has(p.name))) return;
     // Forward only synthetic params that propagate unchanged across an internal call: returnOutputIdx (the
     // subroutine emits no return event -> -1), and the tx-level msg.sender category / blockhash input index
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's

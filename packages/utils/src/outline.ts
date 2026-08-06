@@ -357,9 +357,17 @@ export function outlineSharedSpans(
   const functions: OutlinedFunction[] = [];
   let savedBytes = 0;
 
-  // Exact spans reach their fixed point first. Parameterized spans then operate only on that compressed grammar,
-  // so they can add savings without displacing a stronger exact candidate from an earlier round.
-  for (const parameterize of [false, true]) {
+  // Exact spans only. PARAMETERIZED outlining is disabled because it is unsound as written: it parks the
+  // per-site operands on the ALTSTACK (`OP_TOALTSTACK` prologue, `OP_FROMALTSTACK` at each parameter offset),
+  // and outlined bodies re-enter the corpus on later rounds. The guard below rejects a span that itself touches
+  // the altstack, but not a span EXTRACTED FROM a body that already has operands parked there, so a nested
+  // parameterized helper can retrieve the wrong altstack value. When that value is an `OP_INVOKE` operand the
+  // script invokes an identifier nothing defined, which the VM rejects at spend time.
+  //
+  // Observed on `packages/solidcash/test/e2e/ChainedPush.test.ts`: 2 of 6 entry points fail with "OP_INVOKE an
+  // undefined function identifier: 0x8c80" (-140), and the whole contract passes with exact-only outlining.
+  // Re-enabling this needs the nesting proof, not just the current span-local check.
+  for (const parameterize of [false]) {
     for (let round = 0; round < maximumRounds; round += 1) {
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
       const corpus = [

@@ -1085,12 +1085,28 @@ Builds clean, behaviour unchanged, because the lookup MISSES:
 PROBE-B { addr: '...hfljkn5ftvxz', found: false, hasRouteArtifact: false }
 ```
 
-`findDeploymentByAddress` returns undefined for the very address the external call is targeting, even though
-`upgrades.ts` registered `handle.address` for it. So the next step is NOT more plumbing on top -- it is finding
-why that lookup misses. Two candidates, both cheap to check: the address STRING FORM differs between
-registration and lookup (prefix/casing), or the PROVIDER identity differs (the registry is a
-`WeakMap<NetworkProvider, ...>`, so a second provider instance registers into a different bucket).
-`findDeploymentByLockingBytecode` is already imported at that call site and may be the more robust key.
+`findDeploymentByAddress` returns undefined for the address the external call is targeting. A second probe --
+logging every `registerDeployment` and every lookup -- explains why, and it is NOT a string-form or
+provider-identity problem. Registration is healthy; the bucket holds nine entries and BOTH MarketplaceDataV1
+addresses are present:
+
+```
+PROBE-reg MarketplaceDataV1 "bchtest:p0vs5wsktvw368qr4kcdqe5xtaajtsmlvea6vjk6jnadftnjhawrjzd6lchgg"  (impl, p2sh32)
+PROBE-reg MarketplaceDataV1 "bchtest:pqers384kr8xz08dngp9evwu4q422qdwru2jxwu3tj"                      (proxy, p2sh20)
+PROBE-reg SolidCashProxy    "bchtest:pqers384kr8xz08dngp9evwu4q422qdwru2jxwu3tj"                      (same addr)
+bucket = Unicrow,UnicrowDispute,UnicrowArbitrator,UnicrowClaim,MarketplaceV1,MarketplaceV1,
+         MarketplaceDataV1,MarketplaceDataV1,FakeToken
+```
+
+but `externalContract.address` at the failing call site ends `hfljkn5ftvxz`, which matches NONE of those nine.
+
+So the callee object the external-call path resolves is NOT the registered proxy instance. That is the real
+question to answer first: what contract is `externalContract` bound to, and why is its address absent from the
+registry? Answer that before adding any capability fallback -- keying on locking bytecode instead of address
+would NOT have helped either, since the instance itself is the wrong one.
+
+(Note `registerDeployment` drops any prior entry sharing an address, so the proxy address resolves to the
+MarketplaceDataV1 entry rather than the SolidCashProxy one -- registration order is already correct.)
 
 Note the good news: the whole batch builder derives from `capability` (handlers, route, blockLayout,
 maximumRows, maximumBlobBytes) plus `structs`, so once the callee artifact resolves correctly the rest of the

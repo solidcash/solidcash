@@ -602,10 +602,11 @@ function attachDelegateVariant(
     // Proxy implementation bytecode is selected by the SDK for delegate execution, not dispatched through the
     // atomic message-bus route. Keeping route synthesis enabled here can clone the soon-to-be-delegate handlers
     // before AutoMarkDelegateFunctions rewrites their covenant shape, producing an invalid hybrid artifact.
-    const variantOptions = {
-      ...mergedCompilerOptions, autoDelegate: true,
-      messageBus: process.env.SOLIDC_EXPERIMENT_DELEGATE_BUS === '1' ? mergedCompilerOptions.messageBus : false,
-    };
+    // The variant keeps the caller's message-bus setting. Route synthesis here runs AFTER
+    // autoMarkDelegateFunctions has rewritten the covenant shape (the ordering the old `messageBus: false`
+    // guarded against applies to the pre-lowering path), and every handler in this variant executes in the
+    // proxy's state context, so the route it produces is a delegate route rather than a hybrid.
+    const variantOptions = { ...mergedCompilerOptions, autoDelegate: true };
     const out = { delegateFunctionsMarked: 0 };
     let variantFailure: string | undefined;
     let built: Artifact | undefined;

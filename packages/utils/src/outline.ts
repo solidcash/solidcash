@@ -269,6 +269,8 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
       const next = body.script[i + 1];
       if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
+      // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
+      if (body.script[i + 2] === Op.OP_DEFINE) continue;
       const key = elementKey(element);
       const group = constants.get(key) ?? [];
       group.push({ body: bodyIndex, start: i });

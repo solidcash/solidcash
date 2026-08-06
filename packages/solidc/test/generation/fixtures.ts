@@ -169,11 +169,11 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_2 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_3 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_2OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
+      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_3 OP_PICK OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_2OVER OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
       'source': 'contract IfStatement(int x, int y) {\n    function hello(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x - 2) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            require(d == a);\n        }\n        d = d + a;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697553797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697570937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169765479947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16976537a52949c63765579937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547978937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b757c6e9f6975677654799d6876547a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169537a9c777777',
-        'sourceMap': '2:19:2:24;;;;;;;;;;;:26::31;;;;;;;;;;;3:16:3:21;::::1;;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895279518a6976528a69755379518a6976528a69757093518a6976528a6976547994518a6976528a6976537a52949c6376557993518a6976528a6954797893518a6976528a697b757c6e9f6975677654799d6876547a93518a6976528a69537a9c777777',
+        'sourceMap': '1::15:1;;;;;;2:19:2:24;;;;;;;;;;:26::31;;;;;;;;;;3:16:3:21;::::1;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
         'logs': [],
         'requires': [
           {
@@ -185,7 +185,7 @@ export const fixtures: Fixture[] = [
             'line': 10,
           },
           {
-            'ip': 105,
+            'ip': 104,
             'line': 13,
           },
         ],
@@ -607,11 +607,11 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_6 OP_PICK OP_SIZE OP_8 OP_EQUALVERIFY OP_DROP OP_6 OP_PICK OP_4 OP_SPLIT OP_SWAP OP_BIN2NUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_SWAP OP_BIN2NUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_OVER OP_5 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_DROP OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKDATASIGVERIFY OP_CHECKSIG',
+      'bytecode': '517a817621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_6 OP_PICK OP_SIZE OP_8 OP_EQUALVERIFY OP_DROP OP_6 OP_PICK OP_4 OP_SPLIT OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_OVER OP_5 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_DROP OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKDATASIGVERIFY OP_CHECKSIG',
       'source': '// This contract forces HODLing until a certain price target has been reached\n// A minimum block is provided to ensure that oracle price entries from before this block are disregarded\n// i.e. when the BCH price was $1000 in the past, an oracle entry with the old block number and price can not be used.\n// Instead, a message with a block number and price from after the minBlock needs to be passed.\n// This contract serves as a simple example for checkDataSig-based contracts.\ncontract HodlVault(\n    pubkey ownerPk,\n    pubkey oraclePk,\n    int minBlock,\n    int priceTarget\n) {\n    function spend(\n        sig ownerSig,\n        datasig oracleSig,\n        bytes8 oracleMessage\n    ) {\n        // message: { blockHeight, price }\n        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);\n        int blockHeight = int(blockHeightBin);\n        int price = int(priceBin);\n\n        // Check that blockHeight is after minBlock and not in the future\n        require(blockHeight >= minBlock);\n        require(tx.time >= blockHeight);\n\n        // Check that current price is at least priceTarget\n        require(price >= priceTarget);\n\n        // Handle necessary signature checks\n        require(checkDataSig(\n            oracleSig,\n            oracleMessage,\n            oraclePk,\n        ));\n        require(checkSig(ownerSig, ownerPk));\n    }\n}\n',
       'debug': {
-        'bytecode': '5679825888755679547f7c817621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697c817621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16978557aa2697cb175537aa269537a547a537abbac',
-        'sourceMap': '15:8:15:28;;;;;;18:49:18:62;;:69::70;:49::71:1;19:30:19:44:0;:26::45:1;;;;;;;;;20:24:20:32:0;:20::33:1;;;;;;;;;23:16:23:27:0;:31::39;;:16:::1;:8::41;24:27:24:38:0;:8::40:1;;27:25:27:36:0;;:16:::1;:8::38;31:12:31:21:0;;32::32:25;;33::33:20;;30:8:34:11:1;35::35:45',
+        'bytecode': '27517a817621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895679825888755679547f518a6976528a69518a6976528a6978557aa2697cb175537aa269537a547a537abbac',
+        'sourceMap': '6::37:1;;;;;;15:8:15:28;;;;;;18:49:18:62;;:69::70;:49::71:1;19:30:19:44:0;;:26::45:1;;;;;20:24:20:32:0;;:20::33:1;;;;;23:16:23:27:0;:31::39;;:16:::1;:8::41;24:27:24:38:0;:8::40:1;;27:25:27:36:0;;:16:::1;:8::38;31:12:31:21:0;;32::32:25;;33::33:20;;30:8:34:11:1;35::35:45',
         'logs': [],
         'requires': [
           {
@@ -659,15 +659,15 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': 'OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_4 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_ROT OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_GREATERTHAN',
+      'bytecode': '7a937621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_2ROT OP_5 OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_4 OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_3 OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_2 OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_GREATERTHAN',
       'source': 'contract DeepReplace() {\n    function hello() {\n        int a = 1;\n        int b = 2;\n        int c = 3;\n        int d = 4;\n        int e = 5;\n        int f = 6;\n\n        if (a < 3) {\n            a = 3;\n        }\n\n        require(a > b + c + d + e + f);\n    }\n}\n',
       'debug': {
-        'bytecode': '5152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c6871557a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169547a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169537a937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697b937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169a0',
-        'sourceMap': '3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;;;;:28::29:0;;:20:::1;;;;;;;;;:32::33:0;;:20:::1;;;;;;;;;:36::37:0;:20:::1;;;;;;;;;:8::39',
+        'bytecode': '267a937621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c687155518a6976528a6954518a6976528a6953518a6976528a6952518a6976528a69a0',
+        'sourceMap': '1::16:1;;;;;;3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;;:20:::1;;;;;:28::29:0;;;:20:::1;;;;;:32::33:0;;;:20:::1;;;;;:36::37:0;;;:20:::1;;;;;:8::39',
         'logs': [],
         'requires': [
           {
-            'ip': 74,
+            'ip': 69,
             'line': 14,
           },
         ],
@@ -1118,15 +1118,15 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_10 OP_NUMEQUAL',
+      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_DUP OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_10 OP_NUMEQUAL',
       'source': 'contract Num2Bin() {\n    function spend(int size) {\n        bytes byte_ = toPaddedBytes(10, size);\n        require(int(byte_) == 10);\n    }\n}\n',
       'debug': {
-        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169755a7c80817621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695a9c',
-        'sourceMap': '2:19:2:27;;;;;;;;;;3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;;;:30::32:0;:8::34:1',
+        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1528976518a6976528a69755a7c8081518a6976528a695a9c',
+        'sourceMap': '1::6:1;;;;;;2:19:2:27;;;;;;;;;3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;;:30::32:0;:8::34:1',
         'logs': [],
         'requires': [
           {
-            'ip': 24,
+            'ip': 28,
             'line': 4,
           },
         ],
@@ -1226,27 +1226,27 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '0010a5d4e800 0010a5d4e800 0010a5d4e800 0010a5d4e800 0010a5d4e800 OP_4 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_ROT OP_OVER OP_NUMEQUALVERIFY OP_NUMEQUAL',
+      'bytecode': '060010a5d4e800 OP_1 OP_DEFINE OP_1 OP_INVOKE OP_1 OP_INVOKE OP_1 OP_INVOKE OP_1 OP_INVOKE OP_1 OP_INVOKE OP_4 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_3 OP_ROLL OP_OVER OP_NUMEQUALVERIFY OP_ROT OP_OVER OP_NUMEQUALVERIFY OP_NUMEQUAL',
       'source': 'contract IntegerFormatting() {\n    function test() {\n        int scientific1 = 1e12;\n        int scientific2 = 1E12;\n        int underscores = 1_000_000_000_000;\n        int combined = 1_0e1_1;\n\n        int regular = 1000000000000;\n\n        require(scientific1 == regular);\n        require(scientific2 == regular);\n        require(underscores == regular);\n        require(combined == regular);\n    }\n}\n',
       'debug': {
-        'bytecode': '060010a5d4e800060010a5d4e800060010a5d4e800060010a5d4e800060010a5d4e800547a789d537a789d7b789d9c',
-        'sourceMap': '3:26:3:30;4::4;5::5:43;6:23:6:30;8:22:8:35;10:16:10:27;;:31::38;:8::40:1;11:16:11:27:0;;:31::38;:8::40:1;12:16:12:27:0;:31::38;:8::40:1;13::13:37',
+        'bytecode': '07060010a5d4e8005189518a518a518a518a518a547a789d537a789d7b789d9c',
+        'sourceMap': '1::15:1;;;3:26:3:30;;4::4;;5::5:43;;6:23:6:30;;8:22:8:35;;10:16:10:27;;:31::38;:8::40:1;11:16:11:27:0;;:31::38;:8::40:1;12:16:12:27:0;:31::38;:8::40:1;13::13:37',
         'logs': [],
         'requires': [
           {
-            'ip': 8,
+            'ip': 16,
             'line': 10,
           },
           {
-            'ip': 12,
+            'ip': 20,
             'line': 11,
           },
           {
-            'ip': 15,
+            'ip': 23,
             'line': 12,
           },
           {
-            'ip': 17,
+            'ip': 25,
             'line': 13,
           },
         ],
@@ -1614,19 +1614,19 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_2 OP_RSHIFTNUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_1 OP_LSHIFTNUM OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_16 OP_NUMEQUAL',
+      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_16 OP_NUMEQUAL',
       'source': 'contract Bitshift() {\n    function spend() {\n        bytes8 x = 0x1122334455667788;\n        bytes8 y = x << 4 >> 4;\n\n        require(y == 0x0000000055667788);\n\n        int a = 8;\n        int b = a >> 2 << 1;\n\n        require (b == 16);\n    }\n}\n',
       'debug': {
-        'bytecode': '081122334455667788549854990800000000556677888858528e7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169518d7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169609c',
-        'sourceMap': '3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;9:21:9:22;:16:::1;;;;;;;;;:26::27:0;:16:::1;;;;;;;;;11:22:11:24:0;:8::26:1',
+        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa15289081122334455667788549854990800000000556677888858528e518a6976528a69518d518a6976528a69609c',
+        'sourceMap': '1::13:1;;;;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;9:21:9:22;:16:::1;;;;;;;;:26::27:0;:16:::1;;;;;;;;11:22:11:24:0;:8::26:1',
         'logs': [],
         'requires': [
           {
-            'ip': 6,
+            'ip': 12,
             'line': 6,
           },
           {
-            'ip': 30,
+            'ip': 34,
             'line': 11,
           },
         ],

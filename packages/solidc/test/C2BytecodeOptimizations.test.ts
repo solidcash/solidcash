@@ -34,7 +34,12 @@ describe('general C2 bytecode sharing', () => {
       DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(compactHelperDefinitions(asm)).toHaveLength(1);
+    // Sharing means one definition reached from both the read and the write, so assert an id that is invoked
+    // more than once rather than a total helper count: outlining the contract-level script adds its own
+    // definitions, and counting all of them stopped saying anything about this collection's entry address.
+    const shared = compactHelperDefinitions(asm)
+      .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
+    expect(shared.length).toBeGreaterThanOrEqual(1);
     // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes).
     expect(artifact.bytecode.length / 2).toBeLessThan(1920);
   });

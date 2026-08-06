@@ -77,9 +77,15 @@ ${Array.from({ length: n }, (_, i) => `    acc = acc + ${i + 1} * 3 - ${i};`).jo
   }
 }`;
 
-/** The discriminating pair: 883 statements is the first that cannot be spent, 882 the last that can. */
-const OVER = compileString(source(883));
-const UNDER = compileString(source(882));
+/**
+ * The discriminating pair: 918 statements is the first that cannot be spent, 917 the last that can.
+ *
+ * The counts move whenever codegen gets denser - they were 883/882 before the contract-level script was
+ * outlined - but the boundary they bracket does not: both sides still compile to exactly 9,878 and 9,866
+ * script bytes, so every byte figure asserted below is unchanged.
+ */
+const OVER = compileString(source(918));
+const UNDER = compileString(source(917));
 
 interface Spend {
   builder: TransactionBuilder;
@@ -144,8 +150,9 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
     expect(OVER.diagnostics).toBeUndefined();
     expect(UNDER.diagnostics).toBeUndefined();
     // The unit trap that produced five wrong measurements: `artifact.bytecode` is an ASM LISTING, so its
-    // character count halved is not a byte count. It reads ~2.2x high here.
-    expect(OVER.bytecode.length / 2).toBeGreaterThan(20_000);
+    // character count halved is not a byte count. Pinned against the true length rather than a round number,
+    // because the ratio is what makes the trap - it reads ~2x high here.
+    expect(OVER.bytecode.length / 2).toBeGreaterThan(asmToBytecode(OVER.bytecode).length * 1.5);
   });
 
   it('1. REFUSES the spend at the contract input, naming the contract and the overage', async () => {
@@ -191,10 +198,10 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
   }, 300_000);
 
   it('4. a contract over the limit ON ITS OWN reports that instead, with its own arithmetic', async () => {
-    // The plain case the compiler DOES see: 894 statements is 10,004 script bytes, so `contract-size-limit`
+    // The plain case the compiler DOES see: 930 statements is 10,004 script bytes, so `contract-size-limit`
     // fires at compile time. The spend refusal then reports the redeem script as already over, rather than
     // claiming the arguments pushed it over.
-    const huge = compileString(source(894));
+    const huge = compileString(source(930));
     expect(huge.diagnostics?.[0].code).toBe('contract-size-limit');
     const { builder } = await bulkSpend(huge);
     const message = await sendError(builder);

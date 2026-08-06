@@ -777,6 +777,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   /**
+   * Instructions whose failure the SDK reports against a source position. Relocating one changes the
+   * instruction space the VM reports its pointer in, and the failure gets blamed on whatever line the shared
+   * body inherited from its first site.
+   */
+  private static readonly ATTRIBUTED_FAILURE_OPS = new Set<number>([
+    Op.OP_VERIFY, Op.OP_EQUALVERIFY, Op.OP_NUMEQUALVERIFY, Op.OP_CHECKSIGVERIFY,
+    Op.OP_CHECKMULTISIGVERIFY, Op.OP_CHECKDATASIGVERIFY,
+    Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_CHECKSEQUENCEVERIFY, Op.OP_SPLIT,
+  ]);
+
+  /**
    * This traversal is the dry run `subroutineUseProbe` uses to count subroutine sites. Its emitted bytes are
    * discarded, so work that only produces or validates them can be skipped - but NOT work that allocates
    * compact helper ids, which the probe draws from the same pool the real pass continues from.
@@ -1557,9 +1568,72 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Minimally encode output by going Script -> ASM -> Script
     this.output = normaliseScript(this.output);
 
+    this.poolTopLevelConstants(node);
+
     this.sourceMap = generateSourceMap(this.locationData);
 
     return node;
+  }
+
+  /**
+   * Share repeated material in the contract-level script itself.
+   *
+   * `outlineSharedFunctionBodies` only ever sees the OP_DEFINE'd bodies, and a single-entry-point contract does
+   * not have one - its body is emitted straight into this script - so a wide constant repeated a dozen times
+   * there was never a candidate for anything. Running the same pass over the finished top-level script reaches
+   * it, with the definitions prepended so every one is registered before the first OP_INVOKE can run.
+   *
+   * Every recorded require/log pointer is passed as an anchor, so no shared span may contain one, and the
+   * survivors are remapped through the pass's own index map rather than by arithmetic on shift amounts.
+   */
+  private poolTopLevelConstants(node: SourceFileNode): void {
+    const pointers = this.instructionPointerFields();
+    // A pointer is an output index offset by the constructor-argument pushes the unlocking script supplies.
+    const toIndex = (ip: number): number => ip - this.constructorParameterCount;
+    // Anchor every instruction whose failure the SDK reports against a source position, not just the recorded
+    // require/log pointers. Inside an OP_DEFINE'd body every require is recorded and therefore anchored, but the
+    // contract-level script also carries verifies that were never registered as requires - a library's own
+    // `require`, for one - and those are attributed purely through the source map. Moved into a shared body, the
+    // VM reports a pointer in that body's instruction space and the failure is blamed on the wrong line.
+    const anchors = [
+      ...pointers.map((pointer) => toIndex(pointer.ip)).filter((index) => index >= 0),
+      ...this.output.flatMap((element, index) => (
+        typeof element === 'number' && GenerateTargetTraversalWithLocation.ATTRIBUTED_FAILURE_OPS.has(element)
+          ? [index] : [])),
+    ];
+    const result = outlineSharedSpans(
+      [{ script: this.output, locationData: this.locationData, anchors }],
+      () => encodeInt(this.allocateCompactHelperId()),
+      () => this.peekCompactHelperIdPushBytes(),
+    );
+    if (result.functions.length === 0) return;
+
+    const body = result.bodies[0];
+    const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const definitions: Script = [];
+    const definitionLocations: FullLocationData = [];
+    for (const outlined of result.functions) {
+      definitions.push(scriptToBytecode(outlined.script), outlined.id, Op.OP_DEFINE);
+      definitionLocations.push(locationData, locationData, locationData);
+    }
+
+    this.output = [...definitions, ...body.script];
+    this.locationData = [...definitionLocations, ...body.locationData];
+    // Remap through the rewrite, then shift by the prologue the definitions added in front of everything.
+    for (const pointer of pointers) {
+      const index = toIndex(pointer.ip);
+      if (index < 0) continue;
+      pointer.ip = (body.indexMap[index] ?? index) + definitions.length + this.constructorParameterCount;
+    }
+  }
+
+  /** Every recorded instruction pointer, as writable references, so a rewrite can remap them all in one place. */
+  private instructionPointerFields(): { ip: number }[] {
+    return [
+      ...this.requires,
+      ...this.consoleLogs,
+      ...this.consoleLogs.flatMap((entry) => entry.data.filter((item): item is StackItem => typeof item !== 'string')),
+    ];
   }
 
   visitContract(node: ContractNode): Node {

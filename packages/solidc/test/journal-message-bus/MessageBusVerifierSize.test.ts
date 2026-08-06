@@ -19,9 +19,9 @@ describe('atomic verifier bytecode specialization', () => {
     expect(verifierProgram).toBeDefined();
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 219,
+      direct: 176,
       composed: 1174,
-      frameworkTax: 955,
+      frameworkTax: 998,
     });
     expect(composed).toBeLessThanOrEqual(1200);
     expect(composed - direct).toBeLessThanOrEqual(1000);

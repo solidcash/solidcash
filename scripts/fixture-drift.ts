@@ -18,6 +18,7 @@ const FIXTURES = path.resolve(here, '../packages/solidc/test/generation/fixtures
 
 const apply = process.argv.includes('--apply');
 const replacements: [string, string][] = [];
+const requirePatches: { fn: string; ips: number[] }[] = [];
 
 for (const fixture of fixtures) {
   const artifact = compileFile(path.join(CORPUS, fixture.fn), {
@@ -48,6 +49,9 @@ for (const fixture of fixtures) {
   if (real.length === 0) continue;
   console.log(`\n### ${fixture.fn}`);
   for (const key of real) console.log(`  ${key}`);
+  if (real.includes('debug.requires')) {
+    requirePatches.push({ fn: fixture.fn, ips: actual.debug.requires.map((r: { ip: number }) => r.ip) });
+  }
 }
 
 if (!apply) process.exit(0);
@@ -58,5 +62,33 @@ for (const [was, now] of replacements) {
   source = source.replace(was, now);
   applied += 1;
 }
+
+/**
+ * Rewrite one fixture's `debug.requires` instruction pointers in declaration order. The block is the first
+ * `requires` array after the fixture's `fn`, and the rewrite refuses unless its entry count matches, so a
+ * layout change fails loudly rather than scrambling pointers.
+ */
+let patched = 0;
+for (const { fn, ips } of requirePatches) {
+  const lines = source.split('\n');
+  const at = lines.findIndex((line) => line.includes(`fn: '${fn}'`));
+  if (at < 0) throw new Error(`fixture ${fn} not found`);
+  const open = lines.findIndex((line, index) => index > at && /^\s*'requires': \[$/.test(line));
+  if (open < 0) throw new Error(`no requires block for ${fn}`);
+  const indent = lines[open].match(/^(\s*)/)![1];
+  const close = lines.findIndex((line, index) => index > open && line === `${indent}],`);
+  if (close < 0) throw new Error(`unterminated requires block for ${fn}`);
+  const ipLines = [];
+  for (let i = open; i < close; i += 1) if (/^\s*'ip': \d+,$/.test(lines[i])) ipLines.push(i);
+  if (ipLines.length !== ips.length) {
+    throw new Error(`${fn}: block holds ${ipLines.length} pointers, compiler reports ${ips.length}`);
+  }
+  ipLines.forEach((line, index) => {
+    lines[line] = lines[line].replace(/'ip': \d+,/, `'ip': ${ips[index]},`);
+  });
+  source = lines.join('\n');
+  patched += 1;
+}
 fs.writeFileSync(FIXTURES, source);
-console.log(`\napplied ${applied}/${replacements.length} string replacements`);
+console.log(`\napplied ${applied}/${replacements.length} string replacements, `
+  + `${patched}/${requirePatches.length} requires blocks`);

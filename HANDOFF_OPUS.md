@@ -466,6 +466,27 @@ and each wrong assumption cost a full build/test cycle.
 Both parts were reverted rather than landed: they are correct-looking, verified inert, and would otherwise sit
 in the tree looking like working machinery.
 
+### THEN the instrumentation above was run, and it invalidates this whole target
+
+A counter at the top of the `nestedMasterIndices` fill prints:
+
+```text
+nested-block { groups: 0, ecSlots: 0, shapes: [] }      // every build
+```
+
+`externalCallUtxoGroups` is EMPTY. The five batched MarketplaceData calls are not external-call groups at all,
+nested or direct - which is why every collector over that array fires zero times, and why phase 1 never runs.
+The premise behind the last two rounds ("a nested returning group is missing its derivation") is WRONG.
+
+Where to look instead: the caller is itself dispatched through its message-bus route, so the batch is assembled
+by the SDK's message-bus path, not the external-call composition - `encodeMessageBatch(...)` /`_batchRaw`
+(`StatefulContract.ts` ~1657) and the route-capability flow around it. The failing `require` reads a result that
+path is responsible for producing.
+
+Start there with the same instrument-first discipline: confirm which function assembles the invocation whose
+input 3 fails, BEFORE editing anything. Three separate rounds have now been spent fixing the wrong subsystem
+because the owning code path was assumed rather than measured.
+
 ### What remains, in dependency order
 
 **1. `meceTags` - the last of the five calls. Both routes are FEATURES, measured:**

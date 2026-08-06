@@ -2243,7 +2243,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (synthetic.length === 0) return;
     // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
     // written at the call site).
-    if (node.parameters.length !== fn.parameters.length - synthetic.length) return;
+    // The call site normally writes only the user-visible args, but a compiler-generated route writes some
+    // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the remaining suffix
+    // rather than bailing, so a clone that later gained a witness param is still reachable.
+    const visibleCount = fn.parameters.length - synthetic.length;
+    const alreadySupplied = node.parameters.length - visibleCount;
+    if (alreadySupplied < 0 || alreadySupplied > synthetic.length) return;
+    const pending = synthetic.slice(alreadySupplied);
+    if (pending.length === 0) return;
     // Forward only synthetic params that propagate unchanged across an internal call: returnOutputIdx (the
     // subroutine emits no return event -> -1), and the tx-level msg.sender category / blockhash input index
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
@@ -2256,8 +2263,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       return !!callerParam && callerParam.type.toString() === p.type.toString()
         && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_'));
     };
-    if (!synthetic.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
-    for (const p of synthetic) {
+    if (!pending.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
+    for (const p of pending) {
       if (p.name === '__internal__returnOutputIdx') {
         const minusOne = new IntLiteralNode(-1n);
         minusOne.location = node.location;

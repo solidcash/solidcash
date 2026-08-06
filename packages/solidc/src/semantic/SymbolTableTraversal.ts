@@ -1390,6 +1390,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitParameter(node: ParameterNode): Node {
     const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
+      // Declared on a message-bus route so the chunkable-value witness its entry clones need can be forwarded.
+      || node.name.startsWith('__internal__valueWitness_')
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -2151,6 +2153,20 @@ export default class SymbolTableTraversal extends AstTraversal {
           const wsym = this.symbolTables[0].get(wname);
           if (wsym) wsym.references.push({ name: wname } as IdentifierNode);
           this.pushToStack(wparam);
+          // A message-bus entry clone is invoked from the generated route, and TypeCheck forwards a synthetic
+          // parameter only when the CALLER declares the same name and type. The route never touches this
+          // collection itself, so declare the witness on it; otherwise its call to the clone is one argument
+          // short and the compile dies on an arity mismatch no source edit can name. The SDK already fills
+          // `__internal__valueWitness_N` by name.
+          if (node.name.startsWith('__message_bus_')) {
+            const routeFn = this.currentContract?.functions.find((candidate) => candidate.messageBusRoute);
+            if (routeFn && routeFn !== node
+              && !routeFn.parameters.some((parameter) => parameter.name === wname)) {
+              const rparam = new ParameterNode(wtype, wname);
+              rparam.location = routeFn.location;
+              routeFn.parameters.push(rparam);
+            }
+          }
         }
 
         // Propagate slot indices to individual mapping nodes (looks up the shared info by key)

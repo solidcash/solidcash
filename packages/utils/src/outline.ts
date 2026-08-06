@@ -78,8 +78,19 @@ export interface OutlineResult {
   savedBytes: number;
 }
 
-const elementKey = (element: Script[number]): string =>
-  (typeof element === 'number' ? `o${element}` : `d${binToHex(element)}`);
+// Outlining rescans every body once per round, so the same data element is hex-encoded up to MAXIMUM_ROUNDS
+// times. Keyed on identity, so two distinct arrays holding equal bytes still compute (and agree on) one key.
+const dataKeys = new WeakMap<Uint8Array, string>();
+
+const elementKey = (element: Script[number]): string => {
+  if (typeof element === 'number') return `o${element}`;
+  let key = dataKeys.get(element);
+  if (key === undefined) {
+    key = `d${binToHex(element)}`;
+    dataKeys.set(element, key);
+  }
+  return key;
+};
 
 /** Encoded size of one Script element, mirroring libauth's minimal `encodeDataPush`. */
 const elementByteSize = (element: Script[number]): number => {

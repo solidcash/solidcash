@@ -1102,7 +1102,25 @@ but `externalContract.address` at the failing call site ends `hfljkn5ftvxz`, whi
 
 So the callee object the external-call path resolves is NOT the registered proxy instance. That is the real
 question to answer first: what contract is `externalContract` bound to, and why is its address absent from the
-registry? Answer that before adding any capability fallback -- keying on locking bytecode instead of address
+registry?
+
+PAIR THESE TWO MEASUREMENTS -- together they are the actual lead, and they are the concrete starting point:
+
+- the earlier probe reported `externalContract.inner.artifact.contractName === 'SolidCashProxy'`
+- this probe reports `externalContract.address` ending `hfljkn5ftvxz`
+
+The two registered SolidCashProxy addresses are `...vdhdywldu` (MarketplaceV1's proxy, p2sh20) and
+`...2jxwu3tj` (MarketplaceData's proxy, p2sh20). The callee is a SolidCashProxy at a THIRD address, and the
+tail length suggests a p2sh32 rather than either p2sh20 proxy -- note it is also NOT the implementation's
+p2sh32 (`...hawrjzd6lchgg`). So a SolidCashProxy instance is being constructed at an address nobody registered,
+rather than the deployed proxy being reused.
+
+Likely place to look: how the caller resolves a callee address held in ITS OWN STATE. MarketplaceV1 stores the
+MarketplaceData address via `setMarketplaceDataAddress`, and the external-call path derives a Contract from
+that stored value. If that derivation rebuilds a proxy contract from the interface + a recomputed address
+(rather than looking the deployment up), it would produce exactly this: right artifact kind, wrong instance,
+unregistered address. Confirm by logging the stored state value alongside the derived address before changing
+anything. Answer that before adding any capability fallback -- keying on locking bytecode instead of address
 would NOT have helped either, since the instance itself is the wrong one.
 
 (Note `registerDeployment` drops any prior entry sharing an address, so the proxy address resolves to the

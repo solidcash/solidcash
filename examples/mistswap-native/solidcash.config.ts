@@ -17,8 +17,18 @@ export default defineConfig({
   networks: {
     mock: {
       type: 'mock',
-      // Exercise the real BCH deployment ceilings while retaining the deterministic in-memory provider.
-      consensus: { maximumInputBytes: 10_000, maximumNftCommitmentBytes: 128 },
+      // Relaxed ceilings so the suite exercises CONTRACT behaviour rather than the size frontier; the real
+      // 10,000-byte input limit is a separate optimization track (KashiPair `cook` is 10,677, the Uniswap
+      // factory `createPair` closure 26,702).
+      //
+      // CAVEAT: `maximumInputBytes > 10_000` also selects the SDK's sparse/observer state-derivation path
+      // instead of the faithful full-trace path every real network takes, so green here is weaker evidence
+      // than green at 10,000. Keep the NFT commitment at the real 128 bytes.
+      consensus: {
+        maximumInputBytes: 100_000,
+        maximumTransactionBytes: 10_000_000,
+        maximumNftCommitmentBytes: 128,
+      },
     },
   },
   defaultNetwork: 'mock',

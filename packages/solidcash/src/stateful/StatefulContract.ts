@@ -1993,6 +1993,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let trailingEntryCommitments: string[] = [];
     let eventCommitments: string[] = [];
     let transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }> = [];
+    let derivedChunkCommitments: Record<string, string> = {};
 
     // Check if constructor has sig params - probe won't work for those
     const hasSigParams = constructorAbi?.inputs.some((inp) => inp.type === 'sig') ?? false;
@@ -2012,6 +2013,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryCommitments = derived.entryCommitments;
       trailingEntryCommitments = derived.trailingEntryCommitments;
       eventCommitments = derived.eventCommitments;
+      derivedChunkCommitments = derived.dynamicChunkCommitments ?? {};
       transferOutputs = derived.transferOutputs;
     } else if (constructorAbi && hasSigParams) {
       // Sig params: probe can't create valid signatures. Require explicit initialState.
@@ -2139,6 +2141,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             capability: 'mutable',
             commitment: trailingEntryCommitments[trailingEntryIndex++] ?? '',
           },
+        },
+      });
+    }
+
+    // A declared dynamic write whose value is a base-constructor LITERAL (ERC20("MistToken","MIST")) has no
+    // visible parameter, so `dynamicInitialChunks` cannot materialize it. Derivation reserved its output and
+    // learned the commitment from the trace - emit it here too, or the genesis omits a chunk UTXO the
+    // constructor's covenant requires ("no chunk UTXOs were found at its chunk address").
+    const derivedChunks = derivedChunkCommitments;
+    for (const variable of stateLayout.variables ?? []) {
+      if (!variable.dynamic || !constructorAbi?.dynamicWrites?.includes(variable.name)) continue;
+      if (dynamicInitialChunks.some((chunk) => chunk.name === variable.name)) continue;
+      const commitment = derivedChunks[variable.name];
+      if (typeof commitment !== 'string' || commitment.length === 0) continue;
+      builder.addOutput({
+        to: getDynamicChunkAddress(contract, categoryId, variable.name, variable.type),
+        amount: dataNftAmount,
+        token: {
+          category: categoryId, amount: 0n,
+          nft: { capability: 'mutable' as const, commitment },
         },
       });
     }
@@ -3683,6 +3705,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryCommitments: string[];
       trailingEntryCommitments: string[];
       eventCommitments: string[];
+      dynamicChunkCommitments: Record<string, string>;
       transferOutputs: Array<{ lockingBytecode: Uint8Array; amount: bigint }>;
     }> {
     const constructorAbi = artifact.abi.find((f) => f.name === '__construct');
@@ -4320,6 +4343,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       entryCommitments: entryCommits,
       trailingEntryCommitments: trailingEntryCommits,
       eventCommitments: eventCommits,
+      dynamicChunkCommitments: { ...dynamicChunkCommits },
       transferOutputs: transferOuts,
     };
   }

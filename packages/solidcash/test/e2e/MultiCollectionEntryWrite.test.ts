@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../direct-compile.js';
+import { compileString as _csRawSolidc } from 'solidc';
+const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 

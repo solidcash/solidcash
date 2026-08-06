@@ -3062,9 +3062,16 @@ export class StatefulTransactionBuilder {
     // diagnostics before submission. A relaxed mock provider may intentionally admit scripts hundreds of
     // kilobytes long; retaining every VM step for those scripts can take minutes and gigabytes of memory.
     const relaxedConsensus = (provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    // Retained so a later covenant refusal can say WHY. This probe is best-effort, but the rebuild below depends
+    // on what it discovers, so when it fails the transaction can be assembled from an unresolved shape and the
+    // preflight then refuses it with a bare OP_VERIFY that names no cause.
+    let discoveryProbeFailure: string | undefined;
     if (!relaxedConsensus) {
       try { covenantBuilder.debug(); } catch (_e) {
-        if (typeof _e === 'object' && _e) console.debug('STB debug() best-effort error:', (_e as Error).message);
+        if (typeof _e === 'object' && _e) {
+          discoveryProbeFailure = (_e as Error).message;
+          console.debug('STB debug() best-effort error:', discoveryProbeFailure);
+        }
       }
     }
 
@@ -3206,7 +3213,20 @@ export class StatefulTransactionBuilder {
     // evaluation. This gate is deliberately non-absorbing: unlike debug(), it never catches an objection, and
     // `stateSuccess` includes completed scripts with a falsy top item as well as raised VM errors.
     if (!this.strictVmPreflight) {
-      assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+      try {
+        assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
+      } catch (error) {
+        // Attribution only: the refusal still stands and is still raised. A swallowed discovery probe is a known
+        // cause of an otherwise unexplained refusal here, so name it rather than leaving a bare OP_VERIFY.
+        if (discoveryProbeFailure === undefined) throw error;
+        throw new Error(
+          `${(error as Error).message}\n\n`
+          + 'A covenant discovery probe failed earlier in this send, so any commitments or output counts it '
+          + 'would have discovered were unavailable when the transaction was assembled. That is a known cause '
+          + 'of this refusal for shapes needing dynamic chunk or entry discovery. The probe reported: '
+          + discoveryProbeFailure,
+        );
+      }
     }
 
     const rawTx = finalBuilder.build();

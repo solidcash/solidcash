@@ -224,6 +224,28 @@ deliberate decision, and it is the reason 30 of 46 handlers are refused.
 
 Paths 2 and 3 are both required together if path 1 is not viable, since a master NFT is spendable once.
 
+**Path 1 was prototyped and does NOT work as stated - measured, then reverted.** Inferring
+`ExternalCallMode.STATICCALL` for a call whose resolved callee is read-only (checking `sourceReadOnly` plus
+`view`/`pure`, since the OZ rewrite strips `view`) is sound on its face: `emitStaticCallCommitmentPreservation`
+pins the callee's master commitment AND every required data-NFT commitment across the spend, the selector check
+is skipped for STATICCALL by design, and the return-event covenant encodes `_Return_<fn>` so the method identity
+stays bound. But it moves the conflict rather than removing it:
+
+```text
+before: 2 IERC20 balanceOf  batch=true rows=3
+after:  2 IERC20 balanceOf  batch=false          <- now three separate IERC20 co-spends
+```
+
+`balanceOf` is itself `view`, so it becomes a staticcall and drops out of its own working batch, recreating the
+one-spend-per-master problem for the token. Any version of path 1 has to keep read-only calls batchable rather
+than diverting them out of the batch path - most likely by making staticcall slots to the SAME callee share one
+physical group, which is the same grouping problem as gap 1 in a different place.
+
+Because `publishJobEvent` also WRITES MarketplaceData in the same transaction, note that a staticcall slot and a
+writing slot on one shared physical input are mutually contradictory anyway: staticcall demands the callee's
+commitments be identical input-to-output, and the write changes them. So the read calls cannot simply be
+staticcalls on the shared input; they need to be rows of the same envelope as the write, which is gap 3.
+
 To reproduce the admission picture (about 5 minutes):
 
 ```bash

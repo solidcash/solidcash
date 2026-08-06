@@ -285,6 +285,9 @@ it must not silently compile to incorrect covenant behavior.
     have accumulated there. The test therefore passes in isolation and fails inside a long serial run - an
     order-dependent test defect, not a product defect. The durable fix is a per-test signer, or funding selection
     that prefers the UTXO the test just seeded.
+  - CONFIRMED by the decisive test: `DeployThenCallFold.e2e.test.ts` passes 13/13 alone on a freshly wiped chain,
+    and fails once any other test has spent from the shared address. Note that running it alone on a USED chain
+    still fails, so "alone in a vitest process" is not isolation here - only a wiped chain is.
   - **Prerequisite 1 - the evidence run needs a WIPED chain.** "From zero" means file zero and is not
     sufficient. Tests build signers from a fixed key and share one address; the signer auto-selects a
     genesis-valid vout-0 UTXO from it, so on a chain with history it picks a leftover. Proven in
@@ -309,6 +312,17 @@ it must not silently compile to incorrect covenant behavior.
   - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
     pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
     failures are artifacts of a 29,424-UTXO wallet.
+- [ ] Investigate two further live-only failures, each reproduced alone on a freshly wiped chain.
+  - `Erc20LikeApplication.test.ts`, "decodes Transfer event arguments for mint and transfer": the decoded event
+    list omits the mint, whose `from` is the zero address, and leads with the transfer instead. Compare against
+    the known "identical data NFTs unorderable on a non-deterministic provider" issue.
+  - `MsgSenderCrossContractC2.test.ts`, "rejects an LBC-swapped caller": `expect(masterA).toBeDefined()` fails at
+    line 109, so a `getUtxos()` lookup for the caller's master NFT returns nothing straight after setup.
+  - Both were provisionally grouped with the shared-signer order dependence below. That grouping was WRONG: each
+    still fails alone on a pristine chain, so neither is a contamination artifact. Only `DeployThenCallFold`
+    belongs in that group, and it passes 13/13 alone on a pristine chain.
+  - Neither reproduces on mocknet at any consensus limits, so both join the CREATE-anchor item as findings that
+    require a live node to observe.
 - [ ] Fix the logical CREATE identity anchor, which is missing on a live network.
   - `ContractFactory.test.ts` fails on a freshly wiped chain with `Logical contract identity at bchreg:pzarnm7r...
     is missing or invalid (expected exactly one authenticated immutable anchor, found 0)`, thrown by

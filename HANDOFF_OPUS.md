@@ -142,7 +142,36 @@ grouping key is `${identity}|${requiredDataNftIndices}`.
 
 The direction that fits the existing design is to let the envelope carry expression-sourced arguments - the
 compiler already builds the aggregate request encoding on-chain for a batch - rather than making the SDK resolve
-them (it deliberately refuses: "expression-based argSources that cannot be auto-resolved").
+them (it deliberately refuses: "expression-based argSources that cannot be auto-resolved"). Note the caller's
+covenant COMPUTES the expected blob on-chain (`emitCompleteExternalBatchBlob` feeds
+`emitExternalBatchBlobVerification`), so expression arguments are not a problem for verification; the gap is
+purely that the SDK must build the same bytes off-chain to compose the callee's unlocking bytecode. Deriving the
+blob from a VM probe, as the SDK already does for commitments and route entries, is the natural mechanism.
+
+### Why this is the whole blocker, not just a partial one
+
+`MarketplaceDataV1` carries NO `messageBus` capability at all:
+
+```bash
+python3 -c "import json;print(bool(json.load(open('.marketplace/artifacts/solidcash/MarketplaceDataV1.json')).get('messageBus')))"
+# False   (MarketplaceV1 too; only FakeToken has one)
+```
+
+The compile log confirms only FakeToken had a route generated ("the message-bus route generated for 'FakeToken'").
+Route generation for a callee is driven by a caller declaring a batch against it, so the chain is circular:
+
+```text
+publishJobEvent has expression argSources
+  -> the five MarketplaceData slots are not batch-eligible
+  -> no batch representative is synthesized
+  -> MarketplaceDataV1 never gets a message-bus route
+  -> the SDK composes five logical groups on ONE physical input (master 6, __forward)
+  -> each slot's baked compile-time selector check runs against that single input; at most one can pass
+```
+
+Partial batching does not help: slots 0, 1 and 3 have resolvable arg sources, but batching only those still
+leaves slots 4 and 5 wanting separate spends of the same master. All five must land in one envelope, so the
+expression-argument gate is the thing to move.
 
 ## Build/recompile commands
 

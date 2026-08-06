@@ -3216,16 +3216,17 @@ export class StatefulTransactionBuilder {
       try {
         assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
       } catch (error) {
-        // Attribution only: the refusal still stands and is still raised. A swallowed discovery probe is a known
-        // cause of an otherwise unexplained refusal here, so name it rather than leaving a bare OP_VERIFY.
-        if (discoveryProbeFailure === undefined) throw error;
-        throw new Error(
-          `${(error as Error).message}\n\n`
-          + 'A covenant discovery probe failed earlier in this send, so any commitments or output counts it '
-          + 'would have discovered were unavailable when the transaction was assembled. That is a known cause '
-          + 'of this refusal for shapes needing dynamic chunk or entry discovery. The probe reported: '
-          + discoveryProbeFailure,
-        );
+        // Attribution only. The refusal stands and is re-raised UNCHANGED: callers match this message exactly,
+        // including anchored patterns, so the explanation rides on `cause` rather than being appended to it.
+        if (discoveryProbeFailure !== undefined && error instanceof Error && error.cause === undefined) {
+          error.cause = new Error(
+            'A covenant discovery probe failed earlier in this send, so any commitments or output counts it '
+            + 'would have discovered were unavailable when the transaction was assembled. That is a known cause '
+            + 'of this refusal for shapes needing dynamic chunk or entry discovery. The probe reported: '
+            + discoveryProbeFailure,
+          );
+        }
+        throw error;
       }
     }
 

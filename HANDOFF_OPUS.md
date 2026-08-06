@@ -129,6 +129,33 @@ share ONE physical input. The composition currently produces five logical groups
 most one can satisfy. The sound answer is the batch envelope the compiler already builds for slot 2: batched
 slots skip the ordinary selector check and are authenticated by `emitExternalBatchBlobVerification` instead.
 
+### Why batching is required for CORRECTNESS, not just to satisfy a check
+
+Worth stating plainly, because it rules out the tempting shortcut. The SDK already collapses the five logical
+calls onto ONE physical input (`sharedGroupIndex`; groups 0/1/3/4 all resolve to master input 6). That input
+executes exactly ONE function. So if the per-slot selector check were relaxed - by using the
+`__internal__externalCallSelector` witness instead of the baked constant, which the SDK already pins to the
+composed selector - the transaction would be accepted while FOUR of the five calls silently never happened.
+
+That is strictly worse than the current failure. The covenant refusing is correct: the composition really is
+wrong. The batch envelope is the only construction in which all five calls actually execute, so handler
+admission is not a formality standing between us and a green test - it is the mechanism that makes the
+transaction mean what the source says.
+
+The same reasoning kills relaxing `DELEGATE` in `disallowedModifiers`: it would publish a route whose rows
+execute in a frame the callManifest does not verify, which the compiler states "would authorize the wrong
+owner/output context".
+
+### Is the delegate marking itself wrong? No.
+
+`compiler.ts` ~3930 marks the whole external surface `delegate` for any `solidityImportCompat` contract carrying
+an `initializer`. That is not an accident of timing: an OZ upgradeable contract is only usable behind a proxy,
+so its main artifact legitimately IS the implementation. `MarketplaceDataV1` is therefore a delegate
+implementation by construction, and the question is not "why is it marked" but "can a delegate implementation
+host a message-bus route". Today it cannot: the variant compile that owns delegate marking explicitly disables
+the message bus (`variantOptions = { ...opts, autoDelegate: true, messageBus: false }`) because route synthesis
+would otherwise clone handlers before their covenant shape is rewritten, "producing an invalid hybrid artifact".
+
 ### Measured: what actually blocks batching
 
 Everything below is measured, not inferred. Experiments were reverted; only the one real fix was kept.

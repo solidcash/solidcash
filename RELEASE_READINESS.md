@@ -152,16 +152,21 @@ it must not silently compile to incorrect covenant behavior.
     budget sweep and only later confirmed on BCHN when the matrix reached that file in batch 25. `ChunkedArrays`
     likewise reproduces the live failure without a chain. The two shapes still unconfirmed on chain,
     `NestedStructArrayWrite`, sit past the current checkpoint and should fail when the matrix reaches them.
-  - The cost is localised to the indexed dispatch itself, measured by finding the passing budget for progressively
-    simpler variants of the same contract: five indexed dispatches pass only at 1,300; a single indexed dispatch
-    passes at the real 800; five ordinary direct calls pass at 800; and building the function-pointer memory array
-    without dispatching through it passes at 800. So neither array construction nor calling in general is
-    expensive, and the per-dispatch cost accumulates linearly.
+  - The cost is the memory-array CONSTRUCTION, not the indexed dispatch. Measured by finding the passing budget
+    for variants that separate the two: the baseline of five `build + dispatch` calls passes only at 1,300; five
+    builds with NO dispatch at all also pass only at 1,300; and building the array ONCE then performing five
+    indexed dispatches through it passes at the real 800. Five ordinary direct calls also pass at 800.
+  - So allocating a ten-element function-pointer memory array and storing five elements is the expensive unit,
+    and it is repeated on every call because the array is a local. Dispatch through an already-built array is
+    cheap. The optimisation target is therefore the emitted cost of memory-array construction, and in this shape
+    specifically the array is call-invariant - identical on every invocation - so hoisting or constant-folding it
+    would remove the repetition outright.
+  - An earlier revision of this entry blamed the indexed dispatch. That was wrong: the variant it rested on
+    ("array built but never dispatched") still dispatched, because the `arr[i](x)` sat inside the helper it
+    called, so it isolated nothing. Corrected by the construction-versus-dispatch measurement above.
   - Note that the budget scales with script size, `operationCostBudgetPerByte * (densityControlBaseLength + input
-    bytes)`. The five-dispatch variant is the largest of the four and therefore has the largest budget, yet it is
-    the only one that fails. Each dispatch contributes many operations for few added bytes, which is precisely the
-    density the BCH-2026 budget is designed to penalise. The optimisation target is the emitted operation count of
-    a runtime-indexed internal function-pointer call, not the surrounding machinery.
+    bytes)`. The failing variants are the largest and therefore have the largest budget, yet they are the ones
+    that fail, which is precisely the density the BCH-2026 budget is designed to penalise.
   - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
     a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
     failing on chain.

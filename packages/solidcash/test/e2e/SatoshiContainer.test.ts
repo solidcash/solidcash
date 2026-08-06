@@ -1,7 +1,11 @@
 import { compileString } from '../direct-compile.js';
-const providerInputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
-  + '\\(Unable to verify transaction: error in evaluating input index 0: '
-  + 'Program failed an OP_VERIFY operation\\.\\)$');
+// The mock reports the verbose form, which names the failing input. BCHN may report the short form
+// `(Script failed an OP_<X>VERIFY operation) (code 16)`, which names none, and reaches the container guard
+// through OP_NUMEQUALVERIFY rather than OP_VERIFY. Accept either, still requiring a verify-class refusal.
+const providerInputZeroVerifyFailure = new RegExp('mandatory-script-verify-flag-failed '
+  + '(?:\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)'
+  + '|\\(Script failed an OP_[A-Z]*VERIFY operation\\))');
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';

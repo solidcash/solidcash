@@ -9,7 +9,7 @@ import {
   getDataNftAddress, getEntryNftAddress, keyToSlot, slotValueToBytes,
 } from '../../src/index.js';
 import { alicePkh, bobPkh } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, expectScriptRejection } from '../test-util.js';
 
 const SOURCE = `pragma solidcash >=0.8.0;
 contract X102() {
@@ -95,6 +95,6 @@ describe('X102 collection-iteration depth at the C2 insert arm', () => {
     tx.outputs[chunk].token!.nft!.commitment = hexToBin('004c7800');
     const outcome = await provider.sendRawTransaction(binToHex(encodeTransaction(tx)))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 180_000);
 });

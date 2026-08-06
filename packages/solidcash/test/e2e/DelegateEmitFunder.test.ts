@@ -6,7 +6,7 @@ import {
   Contract, Signer, SplitContractBundle, StatefulContract, readEventsFromChain,
 } from '../../src/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, expectScriptRejection, getTxOutputs, setupStatefulUtxos } from '../test-util.js';
 
 /**
  * X12 - the `emit`-funder delegate class.
@@ -111,7 +111,7 @@ describe('X12: emit funder inside a delegated call', () => {
     eventOut.token.nft.commitment = binToHex(new Uint8Array([0x03, 0x3f, 0x42, 0x0f]));
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 2');
+    expectScriptRejection(outcome, 2);
   }, 300_000);
 
   /**
@@ -159,6 +159,6 @@ describe('X12: emit funder inside a delegated call', () => {
     eventOut.token.nft.commitment = binToHex(new Uint8Array([0x03, 0x3f, 0x42, 0x0f]));
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 300_000);
 });

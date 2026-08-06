@@ -149,7 +149,11 @@ describe('C2 atomic batch adversarial soundness', () => {
 
     expect(refusals).toHaveLength(10);
     for (const refusal of refusals) {
-      expect(refusal).toMatch(/mandatory-script-verify-flag-failed|duplicate|bad-txns|Program failed/);
+      // Every tamper must be REFUSED; which layer objects is backend-specific. The orphan-output variant steals
+      // its value from the change output, and on BCHN that lands below the dust threshold, so relay policy
+      // refuses it before the script ever runs. The mock enforces no dust policy and so reaches the covenant.
+      // The attack fails closed either way, which is what this test asserts.
+      expect(refusal).toMatch(/mandatory-script-verify-flag-failed|duplicate|bad-txns|Program failed|dust/);
     }
 
     // The untouched transaction is accepted against the same still-unspent UTXOs.

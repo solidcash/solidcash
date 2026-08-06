@@ -23,9 +23,13 @@ const verifyFailure = preflightFailure('Program failed an OP_VERIFY operation.')
 const nullFail = preflightFailure(
   'Program failed a signature verification with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.',
 );
+// The mock VM names the failing opcode. BCHN evaluates CLTV under NON-mandatory (policy) script flags during
+// mempool acceptance and reports the unsatisfied locktime instead. Both forms prove the CLTV gate, and nothing
+// weaker is accepted: a plain OP_VERIFY rejection would not match either branch.
 const finalCltvFailure = new RegExp(
   'mandatory-script-verify-flag-failed .*error in evaluating input index 0: '
-  + 'Program called an OP_CHECKLOCKTIMEVERIFY operation',
+  + 'Program called an OP_CHECKLOCKTIMEVERIFY operation'
+  + '|non-mandatory-script-verify-flag \\(Locktime requirement not satisfied\\)',
 );
 
 // A fixed category used only where the oracle address is expected to be EMPTY (no NFT seeded), so its value is

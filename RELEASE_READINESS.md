@@ -115,6 +115,84 @@ it must not silently compile to incorrect covenant behavior.
     as named diagnostics. All negative fixtures are now checked, but 323 over-accepted cases remain a strictness
     review queue. Per release prioritization, the full bench and over-accepted-correctness work are postponed and
     are not release blockers.
+- [ ] Decide the release posture for constructs that exceed the BCH-2026 operation-cost budget, and stop the
+  mock provider from hiding them.
+  - `MOCK_CONSENSUS_LIMITS` is far looser than `ConsensusBch2026`: `operationCostBudgetPerByte` is 10,000,000
+    against a real 800 (12,500x), input and stack items are 1,000,000 against 10,000, and the NFT commitment
+    limit is 1,000,000 against 128. Every mocknet test therefore runs with effectively no density control, so a
+    green mocknet suite is not evidence that a contract is valid on chain.
+  - First construct caught, during BCHN matrix batch 11: the `function_memory_array` pin in
+    `packages/solidcash/test/e2e/BehaviorParityPins.test.ts`, a runtime-indexed internal fn-ptr memory array
+    (`arr[i](x)`). It passes on mocknet and reverts on BCHN v29.
+  - The full set is now enumerated without any chain, by running `test/e2e` on mocknet with
+    `MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte` set to the real 800 and every other limit left relaxed, so
+    the budget is the single variable. That sweep takes 19 minutes and is deterministic. Exactly four tests in
+    three files exceed the budget, all one family: `NestedStructArrayWrite` (two tests, which report the density
+    limit explicitly), `FunctionPointerArrayCall` (`a[i]()`), and `BehaviorParityPins` (`arr[i](x)`). Runtime
+    indexed function-pointer array dispatch and nested struct-array element writes are the shapes at issue.
+  - Whole-array assign (`X171`), whole-array copy (`X167`), nested fixed-inner arrays and chunk-packed arrays do
+    NOT exceed the budget; they pass when the budget alone is real. They do fail when the other limits are also
+    tightened, which is a separate question tracked in the item below.
+  - The divergence reproduces with no regtest dependency by overriding the mock limits, which also isolates the
+    binding constraint: wide-open defaults resolve; full real BCH-2026 limits reject with the identical live-BCHN
+    error; `operationCostBudgetPerByte: 800` alone rejects; `maximumInputBytes: 10_000` alone resolves. The
+    operation-cost budget binds, not the 10,000-byte script limit.
+  - The overshoot is small and therefore probably optimizable rather than fundamental. Sweeping
+    `operationCostBudgetPerByte` puts the passing threshold between 1,200 and 1,300 against the real 800, so the
+    shape needs roughly 1.6x the available budget, not an order of magnitude.
+  - The chain-free method is predictive, confirmed twice against the live node. `BehaviorParityPins` was found on
+    BCHN first and then reproduced on mocknet; `FunctionPointerArrayCall` went the other way, predicted by the
+    budget sweep and only later confirmed on BCHN when the matrix reached that file in batch 25. `ChunkedArrays`
+    likewise reproduces the live failure without a chain. The two shapes still unconfirmed on chain,
+    `NestedStructArrayWrite`, sit past the current checkpoint and should fail when the matrix reaches them.
+  - The cost is localised to the indexed dispatch itself, measured by finding the passing budget for progressively
+    simpler variants of the same contract: five indexed dispatches pass only at 1,300; a single indexed dispatch
+    passes at the real 800; five ordinary direct calls pass at 800; and building the function-pointer memory array
+    without dispatching through it passes at 800. So neither array construction nor calling in general is
+    expensive, and the per-dispatch cost accumulates linearly.
+  - Note that the budget scales with script size, `operationCostBudgetPerByte * (densityControlBaseLength + input
+    bytes)`. The five-dispatch variant is the largest of the four and therefore has the largest budget, yet it is
+    the only one that fails. Each dispatch contributes many operations for few added bytes, which is precisely the
+    density the BCH-2026 budget is designed to penalise. The optimisation target is the emitted operation count of
+    a runtime-indexed internal function-pointer call, not the surrounding machinery.
+  - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
+    a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
+    failing on chain.
+- [ ] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
+  network uses.
+  - `relaxedConsensus` and `useSparseProbe` are both selected by
+    `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, at six call sites across
+    `StatefulTransactionBuilder.ts`, `StatefulContract.ts`, `upgrades.ts`, and `SplitContractBundle.ts`.
+    Electrum, regtest, FullStack and Bitcoin RPC publish no `consensusLimits`, so the default 10,000 makes that
+    predicate false and they always take the faithful full-trace path. `MockNetworkProvider` publishes
+    1,000,000, so mocknet always takes the sparse/observer path. The two are different algorithms, not merely
+    different limits.
+  - Ten e2e tests pass only on the sparse path and fail on the faithful one: `ChunkedArrays` (1),
+    `X171ArrayAssignReplaces` (4), `X167ArrayCopyReplaces` (2), `NestedArrayFixedInner` (2),
+    `SplitLayoutAgreementX162` (1). Nine report `preflight failed at input 0: Program failed an OP_VERIFY
+    operation`; the tenth cannot auto-derive its state commitments at all.
+  - Isolation is exact. Setting `maximumInputBytes` to 10,000 produces those ten failures; setting it to 10,001,
+    one byte higher and therefore back above the gate, makes the same five files pass 50/50. A one-byte change
+    in a size limit cannot decide whether those scripts fit, so the gate is the cause and script size is not.
+  - This is corroborated independently on chain, and now on a PRISTINE one. `ChunkedArrays` fails identically on
+    a freshly wiped regtest chain, so it is neither a chain-contamination artifact nor a harness side effect; it
+    is a real defect on the branch every live network takes. The chain-free mocknet reproduction predicted it.
+  - Root cause, with direct evidence. `StatefulTransactionBuilder.ts:3068` runs `covenantBuilder.debug()` only
+    when NOT relaxed, and its own comment says that probe is what "can discover commitments and output counts for
+    dynamic C2 inserts/chunks". Its failure is swallowed by a best-effort `try/catch`. For these array shapes the
+    probe throws, so the discovery never happens and the transaction is then built and funded from an unconverged
+    shape, which fails the covenant with `OP_VERIFY`. The relaxed mock skips the probe entirely and never
+    exercises any of this. Counted over the sweep: the production run emitted 14 swallowed
+    `STB debug() best-effort error` messages across seven files, four of which are the failing array files
+    (`ChunkedArrays`, `NestedArrayFixedInner`, `X167ArrayCopyReplaces`, `X171ArrayAssignReplaces`), while the
+    relaxed run emitted zero. Three files tolerate the swallowed error and still pass, so the swallowed probe is
+    necessary but not sufficient; the shapes that actually depend on the discovery are the ones that break.
+  - The remedy direction is therefore that a probe failure must not be silently swallowed when the build depends
+    on what the probe was meant to discover. The signature is not final at probe time, which is why
+    `require(checkSig(s, pk))` fails inside it.
+  - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
+    documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
+    shapes on the faithful path.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,
@@ -164,10 +242,58 @@ it must not silently compile to incorrect covenant behavior.
     commit `2e1014f0`, batches 1 through 7 passed 56/449 files. Batch 8 initially reached 221/222 passing tests and
     exposed one mock-vs-live rejection-message mismatch in `UserLibrary.test.ts`; after correction, batches 8 and
     9 passed in full on commit `ea410fd1`, advancing the cumulative diagnostic checkpoint to 72/449 files. Batch
-    10 was intentionally interrupted shortly after starting and is not counted. The full BCHN matrix remains
-    incomplete. Resume diagnostic coverage at batch 10 with `REGTEST_START_AT=72 yarn test:regtest`; the final
-    release evidence must still run plain
-    `yarn test:regtest` from zero on the exact candidate revision.
+    10 was intentionally interrupted shortly after starting and is not counted. Diagnostic coverage then advanced
+    to 152/449 files before being deliberately postponed until the non-BCHN work is exhausted.
+  - Three harness defects were found and fixed during that coverage, none of them product bugs: CashTokens
+    genesis starved of vout-0 coins because regtest halves the subsidy every 150 blocks (measured 0.0 from
+    ~height 2,500) while `createVout0Utxo` never worked, since `sendtoaddress` chose its own change position;
+    BCHN reports a CLTV failure as non-mandatory rather than naming the opcode; and the provider served a fixed
+    100,000-satoshi fee funder while the SDK requested 5,000 or 3,000, so a co-spend that cannot emit change
+    burned the excess as fee.
+  - **A wipe is necessary but NOT sufficient: the suite also contaminates itself within one run.**
+    `DeployThenCallFold.e2e.test.ts` still fails on a freshly wiped chain, and both categories involved were
+    created by that same run: the expected one had 117 confirmations and the one the signer actually chose had
+    561, roughly 444 blocks earlier in the same pass. Every such test builds its signer from the fixed
+    `alicePriv`, so they share one address, and the signer auto-selects among whatever genesis-valid vout-0 UTXOs
+    have accumulated there. The test therefore passes in isolation and fails inside a long serial run - an
+    order-dependent test defect, not a product defect. The durable fix is a per-test signer, or funding selection
+    that prefers the UTXO the test just seeded.
+  - **Prerequisite 1 - the evidence run needs a WIPED chain.** "From zero" means file zero and is not
+    sufficient. Tests build signers from a fixed key and share one address; the signer auto-selects a
+    genesis-valid vout-0 UTXO from it, so on a chain with history it picks a leftover. Proven in
+    `DeployThenCallFold.e2e.test.ts`: the expected category had 94 confirmations (created by that run) while the
+    received one had 5,395 (left by an earlier run). Run
+    `docker compose -f docker-compose.regtest.yml down -v` first. Residual risk remains within a single run,
+    because a 449-file serial pass contaminates that same address as it goes; the durable fix is per-test
+    signers or funding selection that prefers the just-seeded UTXO.
+  - **Prerequisite 2 - the runner is O(wallet).** `pickLiveFundingInput` runs `listunspent` plus a `gettxout`
+    per candidate at five hot-path call sites. Measured at 23,076 wallet UTXOs: 1,181 ms per call, with the
+    wallet growing about 5,000 UTXOs per hour, so the sweep slows itself down. Mean batch was 457 s and BCHN sat
+    pegged at 99.9% of one core. A wipe resets this; the durable fix is for the provider to roll its own change
+    forward instead of asking the node.
+  - The rejection-message class is now fixed at the source rather than per file. BCHN names the failing input
+    only for some refusals: `Program failed an OP_VERIFY operation` carries `error in evaluating input index N`,
+    while `Script failed an OP_EQUALVERIFY operation (code 16)` does not; the mock always names it. That is why
+    three files needed a portability guard earlier while roughly thirty others asserting the same string did not.
+    `test-util.ts` now exports `expectScriptRejection(outcome, inputIndex)`, which requires the refusal always and
+    the input index only where the node reports one, so no evidence is discarded. Applied to
+    `CollectionIterationDynamicInsertX102`, `DelegateCollectionOutputPin`, and `DelegateEmitFunder`; those three
+    files pass 10/10 on mocknet and remove five known-false failures from the next BCHN pass.
+  - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
+    pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
+    failures are artifacts of a 29,424-UTXO wallet.
+- [ ] Fix the logical CREATE identity anchor, which is missing on a live network.
+  - `ContractFactory.test.ts` fails on a freshly wiped chain with `Logical contract identity at bchreg:pzarnm7r...
+    is missing or invalid (expected exactly one authenticated immutable anchor, found 0)`, thrown by
+    `resolveLogicalIdentity` (`src/stateful/logical-identity.ts:193`) immediately after a successful
+    `deploy(42n)`. Two tests in the file fail this way.
+  - This was first seen on the contaminated chain and provisionally attributed to leftover UTXOs. The wiped-chain
+    run disproves that attribution: it is a real defect.
+  - It is a THIRD distinct cause, separate from the two items above. It does not reproduce on mocknet even with
+    real consensus limits, so it is not the operation-cost budget and not the sparse/faithful derivation split.
+    Something about resolving anchors against a live provider differs from the mock. Investigate whether the
+    anchor output is never created on this path, is created but not indexed, or is created but fails the
+    authentication predicate in `resolveLogicalIdentity`.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
 
@@ -451,8 +577,9 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. The matrix runs in resumable eight-file processes. Commit `2e1014f0` passed batches 1–7; after the batch-8 assertion correction, commit `ea410fd1` passed batches 8–9, producing a cumulative checkpoint of 72/449 files. Batch 10 was interrupted and is not counted. Resume diagnostics at file 72; a from-zero exact-candidate pass is still required | `REGTEST_START_AT=72 yarn test:regtest`; final `yarn test:regtest` | 2026-08-05 |
+| BCHN regtest | **COMPLETE, NOT GREEN** — the full matrix ran **449/449 files from zero on a freshly wiped chain**, with 24 of 57 batches failing across 39 distinct files. v29 BIP68 height/MTP proofs pass, and the atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. Failures resolve into five classes, none unexplained: three genuine product defects (operation-cost budget, derivation-path split, logical CREATE anchor), backend policy/reporting-layer differences, rejection-message forms, one regression from a harness fix of ours, and order-dependent tests. Four harness defects were found and fixed along the way (vout-0 genesis starvation, CLTV rejection form, fee-funder size substitution, and a 1-satoshi forgery that BCHN refused as dust before the covenant could object). The run is **not release evidence**: it predates the merge to `86df89a4`, the three product defects are unfixed, and the suite still contaminates its own shared signer address within a run | `REGTEST_CONTINUE_ON_FAILURE=true yarn test:regtest` after `docker compose -f docker-compose.regtest.yml down -v` | 2026-08-06 |
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
+| `@solidcash/testing` package | **PASS after fix** — 7 files, 19/19. `SplitArtifactHre` failed on the candidate revision because `packages/testing/vitest.config.ts` set no `testTimeout`, so it inherited the 5s vitest default while the test compiles a split contract in about 8s. Its sibling packages already set 30s (`solidc`) and 120s (`solidcash`) for exactly that reason; the package now sets 30s. This failure is machine-speed dependent, so it would pass on a fast machine and fail on a slow one | `yarn workspace @solidcash/testing vitest run` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |

@@ -1,3 +1,4 @@
+import { expect } from 'vitest';
 import {
   lockingBytecodeToCashAddress,
   hexToBin,
@@ -427,4 +428,19 @@ export async function setupStatefulUtxos(
     ),
     extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length + verifierCount),
   };
+}
+
+/**
+ * Assert that a node refused a transaction at a given input.
+ *
+ * BCHN only names the failing input for some rejections: `Program failed an OP_VERIFY operation` carries
+ * `error in evaluating input index N`, while `Script failed an OP_EQUALVERIFY operation (code 16)` does not.
+ * The mock always names it. Assert the strong form wherever the node reports it, and the refusal itself
+ * otherwise, so one assertion holds on both without discarding the evidence.
+ */
+export function expectScriptRejection(outcome: string, inputIndex: number): void {
+  expect(outcome).toContain('mandatory-script-verify-flag-failed');
+  if (outcome.includes('error in evaluating input index')) {
+    expect(outcome).toContain(`error in evaluating input index ${inputIndex}`);
+  }
 }

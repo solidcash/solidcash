@@ -4,7 +4,6 @@ import {
   type GetBlockCount,
   type GetBlockHash,
   type GetNewAddress,
-  type SendToAddress,
   type FundRawTransaction,
   type SignRawTransactionWithWallet,
   type SendRawTransaction,
@@ -55,6 +54,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   private retainAddress: string = '';
   private retainLockingBytecode: Uint8Array = new Uint8Array();
   private static readonly RETAINED_MINT_SATOSHIS = 2_000n;
+  // Comfortably above the `minimumAmount: 1` BCH filter in `pickLiveFundingInput`.
+  private static readonly VOUT0_FUNDING_SATOSHIS = 200_000_000n;
 
   constructor(options: RegtestProviderOptions = {}) {
     const {
@@ -147,8 +148,11 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   // Test helper: addUtxo
   // ---------------------------------------------------------------------------
 
-  private feeFunderPool: Utxo[] = [];
-  private feeFunderRefill: Promise<void> | undefined;
+  // Keyed by requested value: the caller's fee funder size is part of what it asked for, so a pool serving one
+  // fixed size would silently over-fund it. See `addUtxo`.
+  private feeFunderPool = new Map<bigint, Utxo[]>();
+  private feeFunderRefill = new Map<bigint, Promise<void>>();
+  private feeFunderSizeRequests = new Map<bigint, number>();
   private static readonly DUMMY_FUNDER_LBC = 'aa20953ccfa596a6c6d39e5980194539124fdcff116a571455a212baed811f585ee087';
 
   async addUtxo(address: string, utxo: Utxo): Promise<Utxo> {
@@ -156,16 +160,21 @@ export default class RegtestNetworkProvider implements NetworkProvider {
 
     // Fast path: serve pre-created fee funders for the STB dummy pattern
     if (address === RegtestNetworkProvider.DUMMY_FUNDER_LBC && !utxo.token) {
-      if (this.feeFunderPool.length === 0) {
-        if (!this.feeFunderRefill) {
-          this.feeFunderRefill = this.refillFeeFunderPool().finally(() => {
-            this.feeFunderRefill = undefined;
-          });
+      // Serve the size the CALLER asked for. Serving one fixed size instead handed a 100,000-satoshi coin to a
+      // builder that requested 5,000; where the covenant cannot emit a change output the excess becomes fee, and
+      // a co-spend then failed with "fee of 99000 satoshis exceeds the maximum fee cap of 50000".
+      const wanted = utxo.satoshis < 546n ? 546n : utxo.satoshis;
+      if ((this.feeFunderPool.get(wanted)?.length ?? 0) === 0) {
+        if (!this.feeFunderRefill.has(wanted)) {
+          this.feeFunderRefill.set(wanted, this.refillFeeFunderPool(wanted).finally(() => {
+            this.feeFunderRefill.delete(wanted);
+          }));
         }
-        await this.feeFunderRefill;
+        await this.feeFunderRefill.get(wanted);
       }
-      if (this.feeFunderPool.length > 0) {
-        const pooled = this.feeFunderPool.pop()!;
+      const pool = this.feeFunderPool.get(wanted);
+      if (pool !== undefined && pool.length > 0) {
+        const pooled = pool.pop()!;
         utxo.txid = pooled.txid;
         utxo.vout = pooled.vout;
         utxo.satoshis = pooled.satoshis;
@@ -522,18 +531,35 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     return { categoryId, utxos };
   }
 
+  // CashTokens genesis must spend an outpoint at index 0, so the wallet needs coins at vout 0 worth at least
+  // the `minimumAmount: 1` that `pickLiveFundingInput` filters on. Mining cannot supply them: regtest halves the
+  // subsidy every 150 blocks, so past roughly height 2,500 every coinbase is worth zero. `sendtoaddress` cannot
+  // either - it picks the change position itself, and on this fragmented wallet it puts small change at vout 0
+  // and the payment at vout 1, satisfying neither filter. Build the transaction explicitly instead: the
+  // requested output takes vout 0 and `fundSignSend` appends change after it.
   private async createVout0Utxo(): Promise<void> {
     const addr = await this.rpc.request<GetNewAddress>('getnewaddress', 'vout0');
-    await this.rpc.request<SendToAddress>('sendtoaddress', addr, 1.0);
+    await this.importAddressIfNeeded(addr);
+    const fundingInput = await this.pickLiveFundingInput(false);
+    const unsignedHex = this.buildLibauthTx(fundingInput, [{
+      lockingBytecode: this.toLockingBytecode(addr),
+      valueSatoshis: RegtestNetworkProvider.VOUT0_FUNDING_SATOSHIS,
+    }]);
+    await this.fundSignSend(unsignedHex);
     await this.mine(1);
   }
 
-  private async refillFeeFunderPool(): Promise<void> {
-    const POOL_SIZE = 20;
-    if (this.feeFunderPool.length >= POOL_SIZE) return;
-    const needed = POOL_SIZE - this.feeFunderPool.length;
+  // One builder path asks for `neededFee + DUST + deficit`, which differs almost every call, so batching 20 coins
+  // for every distinct value would mint 20 to spend 1 and bloat the wallet - and `pickLiveFundingInput` is
+  // already O(wallet). Batch only values that have been asked for before; mint exactly one the first time.
+  private async refillFeeFunderPool(satoshis: bigint): Promise<void> {
+    const seen = (this.feeFunderSizeRequests.get(satoshis) ?? 0) + 1;
+    this.feeFunderSizeRequests.set(satoshis, seen);
+    const POOL_SIZE = seen > 1 ? 20 : 1;
+    const pool = this.feeFunderPool.get(satoshis) ?? [];
+    if (pool.length >= POOL_SIZE) return;
+    const needed = POOL_SIZE - pool.length;
     const lbc = hexToBin(RegtestNetworkProvider.DUMMY_FUNDER_LBC);
-    const satoshis = 100000n;
 
     // Seed with one validated-live coin so fundrawtransaction never reaches for stale
     // small coins. Funders land at vouts 0..needed-1; fundSignSend appends change after them.
@@ -544,7 +570,8 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     );
     const txid = await this.fundSignSend(unsignedHex);
     await this.mine(1);
-    for (let i = 0; i < needed; i++) this.feeFunderPool.push({ txid, vout: i, satoshis });
+    for (let i = 0; i < needed; i++) pool.push({ txid, vout: i, satoshis });
+    this.feeFunderPool.set(satoshis, pool);
   }
 
   private async ensureReady(): Promise<void> {

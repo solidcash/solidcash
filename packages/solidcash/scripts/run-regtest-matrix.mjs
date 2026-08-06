@@ -45,6 +45,11 @@ if (process.env.REGTEST_LIST_ONLY === 'true') {
   process.exit(0);
 }
 
+// Diagnostic sweeps want every remaining batch attempted in one pass, not a halt on the first failure. Release
+// evidence still uses the default: stop at the first failing batch.
+const continueOnFailure = process.env.REGTEST_CONTINUE_ON_FAILURE === 'true';
+const failedBatches = [];
+
 let completed = 0;
 const requestedStart = process.env.REGTEST_START_AT;
 if (requestedStart !== undefined) {
@@ -73,10 +78,24 @@ for (let start = completed; start < files.length; start += batchSize) {
     },
   );
   if (result.error) throw result.error;
-  if (result.status !== 0) process.exit(result.status ?? 1);
+  if (result.status !== 0) {
+    if (!continueOnFailure) process.exit(result.status ?? 1);
+    failedBatches.push({ number, files: batch });
+    process.stdout.write(`\nBCHN regtest batch ${number} FAILED; continuing (${failedBatches.length} failed so far)\n`);
+  }
 
   completed = start + batch.length;
-  writeFileSync(progressPath, `${JSON.stringify({ fingerprint, batchSize, completed, total: files.length }, null, 2)}\n`);
+  writeFileSync(progressPath, `${JSON.stringify({
+    fingerprint, batchSize, completed, total: files.length, failedBatches,
+  }, null, 2)}\n`);
+}
+
+if (failedBatches.length > 0) {
+  const failedFiles = failedBatches.flatMap((entry) => entry.files);
+  process.stdout.write(`\nBCHN regtest matrix incomplete: ${failedBatches.length} batch(es) failed.\n`);
+  for (const entry of failedBatches) process.stdout.write(`  batch ${entry.number}: ${entry.files.join(' ')}\n`);
+  process.stdout.write(`Re-run the failing files with: yarn vitest run --no-file-parallelism ${failedFiles.join(' ')}\n`);
+  process.exit(1);
 }
 
 process.stdout.write(`\nBCHN regtest matrix complete: ${files.length}/${files.length} files passed.\n`);

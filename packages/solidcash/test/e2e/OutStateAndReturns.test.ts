@@ -679,7 +679,9 @@ contract Reader(bytes32 counterCategory) {
         nft: { ...chunk!.token!.nft!, commitment: `${commitment.slice(0, -2)}5b` },
       };
       await expect(hostile.send()).rejects.toThrow(
-        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+        // BCHN may report the short form `(Script failed an OP_VERIFY operation) (code 16)`, which
+        // names no input; the mock always names it. Require the OP_VERIFY refusal either way.
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation|Script failed an OP_VERIFY operation/,
       );
     });
   });
@@ -747,7 +749,9 @@ contract Reader(bytes32 counterCategory) {
       };
 
       await expect(builder.send()).rejects.toThrow(
-        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+        // BCHN may report the short form `(Script failed an OP_VERIFY operation) (code 16)`, which
+        // names no input; the mock always names it. Require the OP_VERIFY refusal either way.
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation|Script failed an OP_VERIFY operation/,
       );
     });
 
@@ -812,7 +816,9 @@ contract Reader(bytes32 counterCategory) {
       };
 
       await expect(builder.send()).rejects.toThrow(
-        /error in evaluating input index 1: Program failed an OP_VERIFY operation/,
+        // BCHN may report the short form `(Script failed an OP_VERIFY operation) (code 16)`, which
+        // names no input; the mock always names it. Require the OP_VERIFY refusal either way.
+        /error in evaluating input index 1: Program failed an OP_VERIFY operation|Script failed an OP_VERIFY operation/,
       );
     });
   });

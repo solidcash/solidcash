@@ -88,10 +88,24 @@ function entryOutputIndices(tx: Tx): number[] {
 
 function appendEntryOutput(tx: Tx, sourceIndex: number, commitment: Uint8Array): void {
   const source = tx.outputs[sourceIndex];
-  const change = tx.outputs[tx.outputs.length - 1];
   const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
   const appendedValue = liveRegtest ? 1200n : 1n;
-  change.valueSatoshis = liveRegtest ? change.valueSatoshis - appendedValue - 500n : 1n;
+  if (liveRegtest) {
+    // Fund the appended output from the LARGEST output, not the last one. The last output is not reliably fat
+    // change: the provider now serves fee funders at the size the builder actually requested (3,000-10,000)
+    // rather than a fixed 100,000, so subtracting from it underflowed and BCHN refused the forgery with
+    // `bad-txns-vout-negative` before the covenant could object - which is not what these tests are proving.
+    const donor = tx.outputs.reduce(
+      (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+    );
+    const needed = appendedValue + 500n;
+    if (tx.outputs[donor].valueSatoshis <= needed) {
+      throw new Error(`appendEntryOutput: no output can fund ${needed} satoshis; the forgery would be malformed.`);
+    }
+    tx.outputs[donor].valueSatoshis -= needed;
+  } else {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  }
   tx.outputs.push({
     ...source,
     valueSatoshis: appendedValue,

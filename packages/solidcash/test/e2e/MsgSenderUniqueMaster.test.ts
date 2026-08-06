@@ -7,8 +7,14 @@ import { alicePkh, alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
-const input2Verify = 'mandatory-script-verify-flag-failed (Unable to verify transaction: '
-  + 'error in evaluating input index 2: Program failed an OP_VERIFY operation.)';
+// The mock always reports the verbose form, which names the failing input. BCHN may instead report the short
+// form `mandatory-script-verify-flag-failed (Script failed an OP_VERIFY operation) (code 16)`, which names no
+// input. Require the OP_VERIFY refusal either way, and input 2 specifically wherever the backend reports one.
+const input2Verify = new RegExp(
+  'mandatory-script-verify-flag-failed \\(Unable to verify transaction: '
+  + 'error in evaluating input index 2: Program failed an OP_VERIFY operation\\.\\)'
+  + '|mandatory-script-verify-flag-failed \\(Script failed an OP_VERIFY operation\\)',
+);
 
 // msg.sender minting-path hardening: emitMsgSenderMintingVerification now enforces EXACTLY ONE co-spent
 // minting NFT of the SDK-declared caller category. Contract A calls Bank.deposit(); inside Bank,

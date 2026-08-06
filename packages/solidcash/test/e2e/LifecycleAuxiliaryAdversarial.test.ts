@@ -96,7 +96,9 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
     };
-    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index/;
+    // BCHN omits the input index when the refusal is an OP_EQUALVERIFY; the mock always names it.
+    const covenantFailure =
+      /mandatory-script-verify-flag-failed(?:[\s\S]*evaluating input index|[\s\S]*OP_EQUALVERIFY)/;
 
     // Output 0 is the preserved master; outputs 1 and 2 are the newly minted masters; output 3 is change.
     await expect(rejectMutation((tx) => { tx.outputs.splice(2, 1); })).rejects.toThrow(covenantFailure);
@@ -258,7 +260,9 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
     };
-    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0/;
+    // BCHN omits the input index when the refusal is an OP_EQUALVERIFY; the mock always names it.
+    const covenantFailure =
+      /mandatory-script-verify-flag-failed(?:[\s\S]*evaluating input index 0|[\s\S]*OP_EQUALVERIFY)/;
 
     // Outputs 0/1 preserve the factory; outputs 2/3 are the child's master and data NFT; change follows.
     await expect(rejectMutation((tx) => { tx.outputs.splice(3, 1); })).rejects.toThrow(covenantFailure);
@@ -388,7 +392,9 @@ describe('lifecycle auxiliary-input adversarial soundness', () => {
       mutate(tx);
       await send(binToHex(encodeTransaction(tx)));
     };
-    const covenantFailure = /mandatory-script-verify-flag-failed[\s\S]*evaluating input index/;
+    // BCHN omits the input index when the refusal is an OP_EQUALVERIFY; the mock always names it.
+    const covenantFailure =
+      /mandatory-script-verify-flag-failed(?:[\s\S]*evaluating input index|[\s\S]*OP_EQUALVERIFY)/;
 
     // Outputs 0/1 are the upgraded master and data NFT; ordinary change follows.
     await expect(rejectMutation((tx) => { tx.outputs.splice(1, 1); }))

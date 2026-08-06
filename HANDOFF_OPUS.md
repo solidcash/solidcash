@@ -289,11 +289,25 @@ at the 4-failure baseline.
   SEPARATE, pre-existing codegen fragility in MarketplaceV1 fires, and the ladder then falls back far enough to
   drop MarketplaceDataV1's route too.
 
-  GTT ~2055 documents that exact class: journaling applied to an ORDINARY entry point, where the table is read
-  again by `emitExternalCallVerification` in the EPILOGUE after the journal frame has been settled off the
-  stack. X152 scopes the extra journaling to clones (`fn.graphEmissionHandler ? ... : []`); something else is
-  journaling `jobs` for a non-clone. Fix THAT first and the getter admission may simply work. Tried and
-  reverted.
+  Mechanism, traced (`GenerateTargetTraversal` ~3196):
+
+```text
+candidateJournalSlots = journalSlotsByFunctionId[fn.functionId]
+invokesJournalHandler = any invoked id has journal slots
+activeJournalSlots    = isDefineSubTraversal || invokesJournalHandler ? candidateJournalSlots : []
+journalSettlementActive = !isDefineSubTraversal && activeJournalSlots.length > 0
+```
+
+An ORDINARY entry point that merely INVOKES a journal handler therefore takes journal context and settles it at
+the end. `emitExternalCallVerification` runs in the EPILOGUE - after that settlement has popped
+`__internal__state_write_<table>` - and `emitReadStateArrayBlob` then asks for a slot that is gone. Widening
+admission gives MarketplaceV1 more journal handlers to invoke, so an entry point that both journals `jobs` and
+carries a loop-array external call over it crosses that boundary.
+
+The fix is an ORDERING question in GTT (verify external calls before journal settlement, or keep a table the
+epilogue re-reads out of the settled frame), not a predicate tweak. Do not patch it blind: getting this wrong
+produces a covenant that reads the wrong stack slot rather than a compile error. Tried the admission and
+reverted it.
 - Serving the read as a cross-contract STATE READ instead of a call would be the principled shape (a pure read
   should not consume the callee master's single spend - external reads co-spend DATA NFTs read-only). But
   `ExternalOutStateAbi` carries only `requiredDataNftIndices`: there is no cross-contract C2 mapping ENTRY read.

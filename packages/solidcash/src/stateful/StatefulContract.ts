@@ -1553,7 +1553,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (abiNames.has(prop)) return (target.call as any)[prop];
           if (stateNames.has(prop)) return (target.state as any)[prop];
         }
-        return Reflect.get(target, prop, receiver);
+        const existing = Reflect.get(target, prop, receiver);
+        // A framework member that is NOT callable loses to a same-named ABI function. ERC20 declares `name()`
+        // and `symbol()`, and the class exposes `get name()` returning a string, so `token.name()` threw
+        // "is not a function" - ethers resolves those to the contract routine. Callable members (connect,
+        // getFunction, ...) still win, and `getFunction(name)` remains the explicit escape hatch either way.
+        if (typeof prop === 'string' && typeof existing !== 'function' && abiNames.has(prop)) {
+          const routine = (target.call as any)[prop];
+          if (typeof routine === 'function') return routine;
+        }
+        return existing;
       },
       has(target, prop) {
         if (typeof prop === 'string' && (abiNames.has(prop) || stateNames.has(prop))) return true;

@@ -287,6 +287,14 @@ function findCandidates(
       startsKept.push(occurrence);
     }
     if (startsKept.length < 2) continue;
+    // Never place a span boundary between an OP_INVOKE and the operand push that feeds it. Splitting the pair
+    // leaves a bare OP_INVOKE taking its identifier off the stack, and the surrounding rewrites can then reach
+    // it with a different value than the one that was pushed - the script invokes an identifier nothing defined.
+    if (startsKept.some((occurrence) => {
+      const script = bodies[occurrence.body].script;
+      return script[occurrence.start] === Op.OP_INVOKE
+        || script[occurrence.start + spanLength] === Op.OP_INVOKE;
+    })) continue;
 
     const parameterOffsets: number[] = [];
     for (let offset = 0; parameterize && offset < spanLength; offset += 1) {

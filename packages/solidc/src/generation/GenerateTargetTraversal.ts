@@ -12,6 +12,7 @@ import {
   TupleType,
   Script,
   scriptsEqual,
+  needsOptimiserCrossCheck,
   normaliseScript,
   scriptToBytecode,
   buildDataNftCovenantScript,
@@ -2946,7 +2947,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // discarded, and running it there is worse than useless: `subroutineUseProbe` catches whatever the probe
     // throws and falls back to defining every subroutine, so a mismatch would silently degrade codegen instead
     // of reporting itself. The real pass re-runs this on the body that is actually emitted.
-    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(normalizedOutput)) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
       if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
         throw new Error('Function body optimisation mismatch - please report this issue');

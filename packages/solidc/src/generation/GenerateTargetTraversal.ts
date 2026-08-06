@@ -754,6 +754,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     used: new Set<bigint>(),
   };
 
+  /**
+   * This traversal is the dry run `subroutineUseProbe` uses to count subroutine sites. Its emitted bytes are
+   * discarded, so work that only produces or validates them can be skipped - but NOT work that allocates
+   * compact helper ids, which the probe draws from the same pool the real pass continues from.
+   */
+  private isSubroutineUseProbe = false;
+
   // Function IDs are allocated monotonically from zero, so reserve compact negative script numbers for
   // compiler helpers. This saves one byte at nearly every fixed-helper definition and invocation.
   private static readonly INT_DECODE_SUBROUTINE_ID = -1n;
@@ -2500,6 +2507,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const savedDeployTargets = allFns.map((f) => f.deployTargets);
     try {
       const probe = new GenerateTargetTraversalWithLocation(this.compilerOptions);
+      probe.isSubroutineUseProbe = true;
       probe.stack = [...this.stack];
       probe.stateVariables = this.stateVariables;
       probe.collectionCount = this.collectionCount;
@@ -3029,7 +3037,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       0, // no constructor param pushes in function body bytecode
     );
 
-    if (normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    // The cross-check guards bytecode that SHIPS. A usage probe emits a throwaway body whose bytes are
+    // discarded, and running it there is worse than useless: `subroutineUseProbe` catches whatever the probe
+    // throws and falls back to defining every subroutine, so a mismatch would silently degrade codegen instead
+    // of reporting itself. The real pass re-runs this on the body that is actually emitted.
+    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
       if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
         throw new Error('Function body optimisation mismatch - please report this issue');

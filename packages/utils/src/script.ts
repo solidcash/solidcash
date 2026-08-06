@@ -372,6 +372,15 @@ function replaceOps(
   let newRequires = [...requires];
 
   optimisations.forEach(([pattern, replacement]) => {
+    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
+    // (no partial matches)
+    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
+    let matchIndex = asm.search(regex);
+    // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
+    // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
+    // round, per function body, on both codegen passes.
+    if (matchIndex === -1) return;
+
     // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
     // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of
     // copying a growing string on every append (which made large generated bodies pathologically slow to optimise).
@@ -386,11 +395,6 @@ function replaceOps(
     let processedTokens = 0;
     let asmToSearch = asm;
 
-    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
-    // (no partial matches)
-    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
-
-    let matchIndex = asmToSearch.search(regex);
     while (matchIndex !== -1) {
       // We add the part before the match to the processed asm
       const beforeMatch = asmToSearch.slice(0, matchIndex);

@@ -379,11 +379,29 @@ A batched call returns its value through `__message_bus_results`, so the thing t
 result decoding lines up with the row order now that five rows share the envelope - a shifted or mis-decoded
 result would read `false` for a registered user.
 
-Useful next probes:
-- dump `__message_bus_results` decoding for the row that feeds this require;
-- confirm the row ORDER the SDK encodes matches `logicalIndex` order the covenant expects;
-- check whether `msg.sender` inside the batched row resolves to the signer or to the caller contract, since the
-  stack at the failure is carrying the signer's P2PKH.
+Reading further into the trace pins it down. Just before the require:
+
+```text
+ip=37 OP_1   ip=38 OP_SPLIT   ip=39 OP_SWAP   ip=40 <push 0x51>   ip=41 OP_EQUAL   -> FALSE
+     the value being split is 00000000, so the decoded byte is 00 against an expected 0x51
+```
+
+So a batched row's BOOLEAN RESULT decodes to zero. The require is not rejecting a legitimately false value - the
+result slot is unset. A neighbouring `ffffffffffffffff00` on the stack reads like a -1/unset sentinel.
+
+`__message_bus_results` is produced by the CALLEE route, which concatenates `abi.encode(...)` per row
+(`compiler.ts` ~2777-2793); the caller decodes it by offset. There is no `resultConsumers` handling anywhere in
+`packages/solidcash/src` - the consumption is entirely covenant-side, so the value has to arrive through the
+callee's return event.
+
+That points at derivation: the SDK precomputes a return commitment only for a NON-writing callee
+(`nested.hasReturnValues && !childWritesState` -> `_deriveReturnValue`). A five-row envelope that includes
+`publishJobEvent` writes state, so `childWritesState` is true and no precomputed return is produced - leaving
+the return event carrying zeros, which is exactly what the decode sees.
+
+Next step: derive the batch RESULTS BLOB for a state-writing envelope from a VM probe (the same trace pattern
+used for commitments) instead of skipping the return-value derivation whenever the callee writes. Check
+`StatefulContract.ts` around the `precomputedReturnCommitment` computation.
 
 ### What remains, in dependency order
 

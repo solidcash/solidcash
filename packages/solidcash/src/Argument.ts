@@ -104,6 +104,12 @@ export function encodeFunctionArgument(
     if (typeof argument === 'number' && Number.isSafeInteger(argument)) {
       argument = BigInt(argument);
     }
+    // ethers-parity: a decimal or 0x-prefixed NUMERIC STRING is a valid integer argument (`mint(addr, "100")`
+    // is idiomatic in Hardhat suites, where BigNumber accepted strings). Strict patterns only - any other
+    // string still fails the type check below rather than silently becoming a number.
+    if (typeof argument === 'string' && /^(?:-?\d+|0x[0-9a-fA-F]+)$/.test(argument)) {
+      argument = BigInt(argument);
+    }
     if (typeof argument !== 'bigint') {
       throw new TypeError(typeof argument, type);
     }

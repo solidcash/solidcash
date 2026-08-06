@@ -221,6 +221,10 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   /** Immutable SCID anchor co-spent outside every fixed participant block so callees can authenticate the
    * Solidity-visible logical caller address. */
   logicalIdentityUtxo?: UnlockableUtxo;
+  /** Immutable SCID anchors of CALLEES whose Solidity-visible address is logical, co-spent so an external-call
+   * identity check can prove the logical-to-physical binding. Appended after `logicalIdentityUtxo`, outside every
+   * accounted band, and recreated at the matching output position. */
+  externalIdentityAnchorUtxos?: UnlockableUtxo[];
 }
 
 /**
@@ -295,6 +299,7 @@ export class StatefulTransactionBuilder {
   private keccakLoopRecreates: Output[];
   private blockLayout?: FunctionBlockLayout;
   private logicalIdentityUtxo?: UnlockableUtxo;
+  private externalIdentityAnchorUtxos: UnlockableUtxo[] = [];
   funderUtxos: UnlockableUtxo[];
   private funderChangeAddress?: Uint8Array;
 
@@ -382,6 +387,7 @@ export class StatefulTransactionBuilder {
     this.blockLayout = options.blockLayout;
     this.funderUtxos = options.funderUtxos ?? [];
     this.logicalIdentityUtxo = options.logicalIdentityUtxo;
+    this.externalIdentityAnchorUtxos = options.externalIdentityAnchorUtxos ?? [];
 
     // Default to all NFT indices if not specified
     this.requiredNftIndices = options.requiredNftIndices
@@ -438,6 +444,9 @@ export class StatefulTransactionBuilder {
       externalOutStateInputs, externalCallInputs,
       lowLevelCallInputs,
     );
+    // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
+    // identity from the LAST input, so that tail position must stay the caller's.
+    this.allInputs.push(...this.externalIdentityAnchorUtxos);
     if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
   }
 
@@ -706,6 +715,15 @@ export class StatefulTransactionBuilder {
     this.funderChangeAddress = address;
   }
 
+  /**
+   * @internal Re-run input assembly after a co-spent group's unlocker was replaced post-construction. The
+   * identity-anchor witness can only be filled once the built input positions exist, so the delegate master that
+   * carries it is re-created after this builder assembled its inputs.
+   */
+  _refreshInputs(): void {
+    this.setFunderUtxos(this.funderUtxos);
+  }
+
   setFunderUtxos(funders: UnlockableUtxo[]): void {
     this.funderUtxos = funders;
     // Rebuild allInputs with new funders
@@ -739,6 +757,9 @@ export class StatefulTransactionBuilder {
       entryInputs, tokenContainerInputs, satoshiContainerInputs,
       externalOutStateInputs, externalCallInputs, lowLevelCallInputs,
     );
+    // Callee anchors precede the caller's own: emitLogicalMsgSenderAnchorResolution resolves the caller's
+    // identity from the LAST input, so that tail position must stay the caller's.
+    this.allInputs.push(...this.externalIdentityAnchorUtxos);
     if (this.logicalIdentityUtxo) this.allInputs.push(this.logicalIdentityUtxo);
   }
 
@@ -1298,6 +1319,17 @@ export class StatefulTransactionBuilder {
   /**
    * Get the master input index for an external call group.
    */
+  /**
+   * Absolute input index of a co-spent callee identity anchor, by its position in the anchor band. Resolved from
+   * the materialized input list rather than reconstructed from band widths: the anchors are appended last, after
+   * every layout-driven band, so only the built ordering is authoritative.
+   */
+  getIdentityAnchorInputIndex(anchorIdx: number): number {
+    const anchor = this.externalIdentityAnchorUtxos[anchorIdx];
+    if (!anchor) return -1;
+    return this.allInputs.findIndex((input) => input.txid === anchor.txid && input.vout === anchor.vout);
+  }
+
   getExternalCallMasterInputIndex(groupIdx: number): number {
     // Resolve an already-positioned master directly. This is authoritative for
     // delegate graphs, where implementation bands are interleaved with nested
@@ -2589,6 +2621,15 @@ export class StatefulTransactionBuilder {
     // Append any extra outputs buffered via addOutput()
     for (const output of this.pendingOutputs) {
       builder.addOutput(output);
+    }
+    // A callee's identity anchor is permissionless to spend, so consuming it without recreating it would destroy
+    // that contract's logical identity. Recreate each one verbatim, mirroring the input ordering.
+    for (const anchor of this.externalIdentityAnchorUtxos) {
+      builder.addOutput({
+        to: anchor.unlocker.generateLockingBytecode(),
+        amount: anchor.satoshis,
+        token: anchor.token,
+      });
     }
     if (this.logicalIdentityUtxo) {
       builder.addOutput({

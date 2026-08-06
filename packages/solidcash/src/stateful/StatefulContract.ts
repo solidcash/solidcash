@@ -8926,6 +8926,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // address is a logical CREATE address rather than their physical covenant. Absent entries fall back to -1
     // (direct identity proof), which is every ordinary contract.
     const externalCallAnchorIndices = new Map<number, bigint>();
+    // Callee identity anchors co-spent by this call, in band order, plus the deferred witness fills that name
+    // them. The band is stable; the absolute input index is not known until the builder assembles its inputs.
+    const identityAnchors: UnlockableUtxo[] = [];
+    const identityAnchorBandByAddress = new Map<string, number>();
+    const pendingAnchorFills: {
+      group: { masterUtxo?: unknown; externalContract: { inner: { unlock: Record<string, ((...a: never[]) => unknown) | undefined> } } };
+      functionName: string;
+      encodedArgs: any[];
+      positions: { argIndex: number; band: number }[];
+    }[] = [];
     if (externalCalls?.some((ec) => ec.loopArrayVar)) {
       const expanded: ExternalCallAbi[] = [];
       presetResolved = [];
@@ -11148,7 +11158,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let batchWitnessIndex = 0;
           let delegateReturnWitnessIndex = 0;
           const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
-          const encodedArgs: any[] = bFunc.inputs.map((inp) => {
+          // Pre-resolve identity anchors for nested callees whose Solidity-visible address is logical. The
+          // covenant compares that stored logical address against a physical master, so it needs the anchor
+          // binding the two. Resolution is async and the argument map below is not, so it happens here; the
+          // anchor's INPUT INDEX is only known once the builder assembles its inputs, so the map records a
+          // placeholder and the real value is patched in after construction.
+          const anchorBandBySlot = new Map<number, number>();
+          for (const inp of bFunc.inputs) {
+            const witness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
+            if (!witness) continue;
+            const slot = Number(witness[1]);
+            // Resolve the group the COVENANT will read for this slot. That is exactly the positional mapping the
+            // `__internal__extcallMasterIdx<slot>` fill above uses; several logical callsites can share one
+            // physical group, so a callsite-keyed lookup would name the wrong contract.
+            const nestedGroupIndex = nestedGroups[slot];
+            const nestedGroup = nestedGroupIndex === undefined
+              ? undefined : externalCallUtxoGroups[nestedGroupIndex];
+            const callee = nestedGroup?.externalContract as StatefulContract | undefined;
+            const logicalAddress = callee?._logicalAddress;
+            if (!logicalAddress) continue;
+            const logicalLbc = binToHex(addressToLockScript(logicalAddress));
+            // An ordinary contract's visible address IS its physical covenant; only a proxy needs the proof.
+            if (logicalLbc === callee!.inner.lockingBytecode) continue;
+            const existing = identityAnchorBandByAddress.get(logicalAddress);
+            if (existing !== undefined) { anchorBandBySlot.set(slot, existing); continue; }
+            const resolved = await resolveLogicalIdentity(this.inner.provider, logicalAddress);
+            const band = identityAnchors.length;
+            identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+            identityAnchorBandByAddress.set(logicalAddress, band);
+            anchorBandBySlot.set(slot, band);
+          }
+          const anchorFillPositions: { argIndex: number; band: number }[] = [];
+          const encodedArgs: any[] = bFunc.inputs.map((inp, inpIndex) => {
             if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
             if (inp.name === '__internal__returnOutputIdx') {
               const proxyExternalGroup = nestedDelegateProxyGroupByLowLevel.get(groupLocalIdx);
@@ -11237,9 +11278,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
             const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
             if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
-            // Logical-identity anchor index for a call the delegated implementation makes. -1 selects the direct
-            // identity proof; resolving real anchors for proxied callees is the remaining piece of that feature.
-            if (inp.name.startsWith('__internal__extcallAnchorIdx')) return -1n;
+            const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
+            if (anchorWitness) {
+              const band = anchorBandBySlot.get(Number(anchorWitness[1]));
+              if (band === undefined) return -1n; // ordinary callee: direct identity proof
+              anchorFillPositions.push({ argIndex: inpIndex, band });
+              return -1n; // patched once the builder materializes input positions
+            }
             throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
           });
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -11260,6 +11305,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ...(group.masterUtxo as UnlockableUtxo),
             unlocker: group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
           };
+          if (anchorFillPositions.length > 0) {
+            pendingAnchorFills.push({ group, functionName: group.functionName, encodedArgs, positions: anchorFillPositions });
+          }
         }
 
         if (proxyExternalGroup === undefined) currentBase += 1 + group.dataNftUtxos.length;
@@ -11711,6 +11759,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(logicalIdentity && {
         logicalIdentityUtxo: { ...logicalIdentity.anchor, unlocker: logicalIdentity.unlocker },
       }),
+      ...(identityAnchors.length > 0 && { externalIdentityAnchorUtxos: identityAnchors }),
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
       ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
@@ -11733,6 +11782,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       console.error('stateful-builder-created', { functionName });
     }
     if (overrides?.omitLocalFeeTail) builder._setMessageBusProbeMasterVout(masterUtxo.vout);
+
 
     for (const [slotIndex, commitment] of batchTargetPlaceholders) {
       builder.setEntryRawCommitment(slotIndex, commitment);
@@ -11948,6 +11998,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') console.error('stateful-builder-funded', { functionName });
+
+    // Fill the deferred logical-identity anchor witnesses. The anchors are appended after every layout-driven
+    // band, so their absolute input indices exist only once the builder has assembled its inputs; re-create the
+    // carrying master unlocker with the real indices and re-run assembly so the input list carries it.
+    if (pendingAnchorFills.length > 0) {
+      for (const fill of pendingAnchorFills) {
+        for (const position of fill.positions) {
+          fill.encodedArgs[position.argIndex] = BigInt(builder.getIdentityAnchorInputIndex(position.band));
+        }
+        fill.group.masterUtxo = {
+          ...(fill.group.masterUtxo as UnlockableUtxo),
+          unlocker: fill.group.externalContract.inner.unlock[fill.functionName]!(...fill.encodedArgs as never[]),
+        };
+      }
+      builder._refreshInputs();
+    }
 
     // Build token container transfer ops from ABI for auto-derivation.
     // Uses transferCount/transferNftCount when available (fan-out support),

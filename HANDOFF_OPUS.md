@@ -1385,3 +1385,45 @@ path than shrinking `buildMessageBusVerifierCovenantScript` by 22%.
 To reproduce: re-apply either DelegateInferred fix (the view state-predicate or the overloaded-view
 guard), run the focused marketplace test, and read the stack under `MessageBusVerifierCapacityError` -
 it names the call site directly.
+
+
+---
+
+## CORRECTION: both "marketplace regressions" were STALE ARTIFACTS, not the fixes
+
+Re-tested both DelegateInferred candidates with a clean recompile
+(`rm -rf .marketplace/cache/solidcash` + a compile that actually COMPLETED). Neither produces
+`MessageBusVerifierCapacityError`; both leave the marketplace at its usual BCH preflight failure.
+
+The earlier capacity errors came from artifacts left by an INTERRUPTED compile (one run hit a 10-minute
+command timeout mid-compile). Everything this file said about "the route sits at the verifier ceiling and
+any reduction in delegate-marked views pushes it over" is therefore WRONG and is retracted. The verifier
+ceiling is not blocking anything.
+
+LESSON, and it cost several rounds: after any compiler change, confirm the marketplace compile REPORTED
+`Compiled 9/9 file(s)` before trusting the test result. A timed-out compile leaves a half-written artifact
+set that fails in ways that look like consequences of the change.
+
+### Landed: 7d8082a0 - do not delegate-mark an overloaded view
+
+Verified with clean artifacts: DelegateInferred 6 -> 4, solidc project unchanged (15 failures, same 6
+files), marketplace unchanged. This is a genuine defect fix - a view's post-injection signature can
+collide with a non-view overload's, and the post-injection shape is not knowable at marking time.
+
+### NOT landed, deliberately: the view state-predicate
+
+Requiring `touchesProxyState` (write-only) of views takes DelegateInferred 4 -> 1 and the SDK subset
+11 -> 8, with the marketplace unchanged and the compiler baseline unchanged. It is measured and safe.
+
+It is NOT landed because it does not fix a defect - it RESTORES THE OLD RULE (a view can never be
+delegate), which is exactly the behaviour this branch deliberately changed, and whose sibling compiler
+test was deliberately updated to the new behaviour. Landing it would silently revert a design decision to
+make an un-updated e2e test pass.
+
+The remaining 3 DelegateInferred failures are that decision, stated as a choice:
+- keep the new rule (views that read proxy state are delegate) -> update
+  `packages/solidcash/test/e2e/DelegateInferred.test.ts`'s expectations, as
+  `packages/solidc/test/DelegateInference.test.ts` already was; or
+- drop the new rule -> apply the one-line write-predicate above and the e2e test passes as written.
+
+Either resolves them; both are one small change. It needs the owner of that design decision, not a guess.

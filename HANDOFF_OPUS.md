@@ -1867,3 +1867,17 @@ the wrong origin, in the same way the output base was.
 Next: find which index frame produces 122 for this pick (the emitter computes it as master + offset; compare
 against where the block loop actually placed the entry input at 123) and correct that one base. The output side
 of this pair is already right, which is why entries and events resolve while this pick does not.
+
+### Stopping point: do NOT blind-patch the off-by-one
+
+The covenant's picked index (122) derives from the master index the SDK supplies via
+`nestedMasterIndices[groupIdx] = nestedInputBase` (StatefulContract.ts ~11266). In route mode that base is
+`lowLevelCallInputBase + allLowLevelInputCount`, computed on a completely different footing from the OUTPUT
+base right below it (`1 + requiredNftIndices + externalReadUtxos + outState groups + iterationEntryInputs`).
+
+A bare `+1` there is exactly the kind of guess that has already failed several times this session, and this
+base feeds every route test, so a wrong nudge would trade one red test for many. Before changing it, confirm
+which of the two is wrong by measuring where the callee's master input ACTUALLY lands versus
+`nestedMasterIndices[groupIdx]`: if the master is right and only the entry pick is off, the defect is in the
+entry OFFSET inside the block, not in the base, and patching the base would be wrong even though it would move
+this particular test.

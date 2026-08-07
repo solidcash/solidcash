@@ -434,8 +434,15 @@ function graftDefaultProxy(impl: Artifact): Artifact {
   // The shipped proxy remains strictly conserving. Current compiler-produced delegates additionally pin the
   // exact proxy master/data output population, so their per-storage covenants can safely authorize mapping and
   // dynamic-storage cardinality changes. Use a derived forwarder only for that explicitly certified artifact.
-  const strictTail = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
-  const relaxedTail = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+  // The graft is a pure COMPARISON swap: strict equality of the proxy's output count becomes
+  // less-than-or-equal so a delegate may grow mapping / dynamic-storage cardinality. Pin the comparison
+  // suffix, not the operand that precedes it - the operand used to be a literal `OP_0` and is now
+  // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
+  // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
+  // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
+  // one yields a well-formed script whose ONLY difference is the comparison.
+  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
+  const relaxedTail = 'OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
   const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
   if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
     throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');

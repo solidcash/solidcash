@@ -1427,3 +1427,50 @@ The remaining 3 DelegateInferred failures are that decision, stated as a choice:
 - drop the new rule -> apply the one-line write-predicate above and the e2e test passes as written.
 
 Either resolves them; both are one small change. It needs the owner of that design decision, not a guess.
+
+### The marketplace blocker, stated exactly (all attribution now measured)
+
+Every ambiguity from earlier rounds is resolved:
+
+1. **Which artifact runs at input 105?** The DELEGATE VARIANT. `SOLIDC_DEBUG_IMPL_ARTIFACT=1` at the
+   nested low-level group creation prints
+   `impl-artifact { contract: 'MarketplaceDataV1', isDelegateVariant: true }`. (Discriminator: only the
+   variant carries `messageBus`; neither artifact lists the route in `abi`, so `candidates: []` from
+   `delegate-function-selection` proves nothing - an earlier note claiming it did is retracted.)
+2. **Is the variant's route delegate-marked at codegen?** YES. `SOLIDC_DEBUG_ROUTE_DELEGATE=1` prints
+   `contract: 'MarketplaceDataV1', isDelegateRoute: true, autoDelegate: true, eligible: 33,
+   eligibleDelegateMarked: 33`.
+3. **So why is the base still `OP_INPUTINDEX`?** Because the failing entry read is NOT emitted in the
+   route function - it is emitted in a HANDLER BODY (`publishJobEvent` and friends), which the route emits
+   as its own OP_DEFINE'd function. Those nodes are `internal`, so `currentFunctionIsDelegate` is false
+   there and `emitMasterInputIndex` falls through to `OP_INPUTINDEX`.
+
+The failing site is stable across every run: caller frame `... OP_INPUTINDEX OP_6 OP_ADD <-257> OP_INVOKE`
+= entry slot 3 (`jobEvents`, block offset 6) read at input 111 where the block puts it at 112.
+
+### What blocks the fix: EMISSION ORDER
+
+`emitMasterInputIndex` can address the witness from a helper body - OP_INVOKE shares the stack, so the
+route's ABI frame is at the bottom in absolute terms. What is missing is the frame-bottom ordinal in a
+body whose own tracked model lacks it. Capturing that ordinal was attempted three ways:
+
+```text
+contract-level probe on the route's parameter list   -> never matches; the witness parameter is not on the
+                                                        node at visitContract time
+self-capture on any emission that CAN see it         -> byte-identical; the untracked sites are emitted first
+capture at route FUNCTION ENTRY                      -> bytes changed slightly (c05693 10->9, picks 855->854)
+                                                        but NOT at the jobEvents site
+```
+
+All reverted. The last result is the informative one: **the handler bodies are emitted BEFORE the route
+function is visited**, so nothing captured at route entry can reach them.
+
+So the fix has to make the ordinal available without depending on emission order. Options, in the order I
+would try them:
+1. Compute it from the route's ABI shape rather than the live stack - the witness is the route's FINAL
+   parameter and unlocking arguments are reversed, so it sits at the frame's physical bottom, i.e. ordinal
+   1 (the same `OP_DEPTH OP_1SUB OP_PICK` the route prologue already uses). The contract-level probe tried
+   exactly this but tested `fn.parameters.at(-1)` too early - test it at a point where SymbolTableTraversal
+   has already injected the parameter, or key on `fn.messageBusRoute && contract has a delegate variant`.
+2. Visit the route function before its handler bodies.
+3. Pass the witness into each handler body as an explicit parameter.

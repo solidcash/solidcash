@@ -517,3 +517,14 @@ Also note: `yarn workspace solidcash build` cannot be used to check out a single
 `StatefulContract.ts` for a baseline - HEAD's copy does not typecheck against the uncommitted
 `StatefulTransactionBuilder.ts` (which now requires `compilerRoute.logicalSelectors`). Neutralise in
 place instead.
+
+### Falsified this session (do not re-derive)
+
+Making an UNBOUND per-row key witness take its declared `runtimeAliasPriorSlots` value instead of the
+zero address. Implemented and measured: every unbound `users_0_r*` / `arbitrators_0_r*` witness became
+the sender key `a9147a4e...87` (verified in `repeated-route-witnesses`), and NOTHING changed -
+`progressive-route-entries` still reveals nothing for both groups and the focused test fails at the
+identical OP_SPLIT. Reverted. So the covenant's rejection of the placeholder at that entry slot is not
+a key-equality mismatch, and the "slot 5 needs a UTXO slot 14 already holds" story is at best
+incomplete. Find the actual failing check by mapping the aborting 18-instruction outlined helper back
+to its emitter before trying another witness-side fix.

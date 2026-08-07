@@ -10747,9 +10747,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const keys = keySources.map((source, keyIndex) => {
                         if (source.kind === 'msgSender'
                           || ('expressionLabel' in source && source.expressionLabel?.includes('msg.sender'))) {
-                          return hexToBin(
-                            this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode,
-                          );
+                          // The callee sees the caller's Solidity-visible address, which for a proxied caller is
+                          // its LOGICAL CREATE address, not the physical covenant. `target` is that address and
+                          // is what the route's msg.sender key witness carries, so both must read it: resolving
+                          // the co-spent entry from the physical lbc brackets a different key than the covenant
+                          // recomputes from the witness.
+                          return addressToLockScript(this.target);
                         }
                         const encodedName = source.paramName
                           ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
@@ -13015,9 +13018,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const routeWitnessInputs = capability.route.inputs
       .filter((input) => input.name !== 'batchBlob' && !input.name.startsWith('__internal__'));
+    // A msg.sender-keyed entry slot has no per-handler binding to carry its key, but the covenant still
+    // recomputes that slot from the witness, and the SDK already co-spends the entry bracketing the CALLER's
+    // address. Defaulting it to the zero address made the two disagree: the covenant then demanded the entry
+    // bracketing the zero key while the block carried the one bracketing the caller.
+    const senderKeyedWitnesses = new Set(
+      ((capability.route.entryAccesses ?? []) as readonly EntryAccessAbi[])
+        .filter((access) => (access.keySources ?? []).some((source) => source.kind === 'msgSender'
+          || (source.expressionLabel?.includes('msg.sender') ?? false)))
+        .map((access) => access.keyParams?.[0])
+        .filter((name): name is string => name !== undefined),
+    );
     const routeWitnesses = routeWitnessInputs.map((input) => {
       const witness = keyWitnessValues.get(input.name);
       if (witness) return witness.value;
+      if (senderKeyedWitnesses.has(input.name)) return addressToLockScript(this.target);
       // Resource routes have a fixed per-row parameter band. A selector that does not touch one collection
       // leaves that row's corresponding key unobserved by the covenant; provide the canonical zero address so
       // the fixed ABI remains encodable without inventing a binding for an inactive handler.

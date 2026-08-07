@@ -1,0 +1,64 @@
+{
+  "corpusRoot": "/Code/solidity",
+  "corpusRevision": "816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762",
+  "node": "v22.22.0",
+  "platform": "linux-arm64",
+  "fixtureCount": 7343,
+  "fixtureTimeoutMs": 30000,
+  "workers": 8,
+  "checkedNegativeFixtures": true,
+  "primaryResult": {
+    "compiled": 2622,
+    "namedFailures": 72,
+    "timeouts": 111
+  },
+  "retryTimeoutMs": 120000,
+  "retryWorkers": 4,
+  "retriedTimeoutFixtures": 111,
+  "retryErrorNames": [],
+  "retryPasses": [
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 111,
+      "includeTimeouts": true,
+      "errorNames": [],
+      "isolatedWorkers": true
+    },
+    {
+      "timeoutMs": 120000,
+      "workers": 4,
+      "selectedFixtures": 83,
+      "includeTimeouts": true,
+      "errorNames": [],
+      "isolatedWorkers": true
+    }
+  ],
+  "resumedTimeoutsFromResults": false,
+  "negativeAuditPasses": [
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 2158,
+      "accepted": 326,
+      "timeouts": 104
+    },
+    {
+      "timeoutMs": 120000,
+      "workers": 4,
+      "selectedFixtures": 104,
+      "accepted": 328,
+      "timeouts": 0
+    },
+    {
+      "timeoutMs": 30000,
+      "workers": 4,
+      "selectedFixtures": 328,
+      "accepted": 323,
+      "timeouts": 0,
+      "recheckedAccepted": true
+    }
+  ],
+  "checkedNegativesFromResults": false,
+  "recheckedAcceptedNegatives": true
+}

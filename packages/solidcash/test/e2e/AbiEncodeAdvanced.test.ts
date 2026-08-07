@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { dirname, resolve } from 'path';
 import { fileURLToPath } from 'url';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
@@ -34,6 +34,7 @@ describe('ABI Encode Advanced', () => {
   });
 
   describe('abi.encodeWithSignature', () => {
+    // test/libsolidity/semanticTests/specialFunctions/abi_encode_with_signature_from_string.sol
     const source = loadCash('abi_encode_with_signature.scash');
 
     it('should compile and run with a string signature', async () => {

@@ -21,7 +21,9 @@ import {
   Artifact,
   StructDefinitionInfo,
 } from '@solidcash/utils';
-import { EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments } from '../Argument.js';
+import {
+  EncodedConstructorArgument, EncodedFunctionArgument, encodeFunctionArguments, isSignatureTemplateArray,
+} from '../Argument.js';
 import { Contract } from '../Contract.js';
 import { DebugResults, debugTemplate } from '../debugging.js';
 import {
@@ -76,7 +78,7 @@ const resolveArgsForOpInvoke = (
   const numArgs = abiFunction.inputs.length;
 
   return encodedArgs.map((arg, i) => {
-    if (!(arg instanceof SignatureTemplate)) return arg;
+    if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
     const instrIndex = numArgs - i;
     return instructions[instrIndex].data;
   });
@@ -143,7 +145,15 @@ export const debugLibauthTemplate = (template: WalletTemplate, transaction: Tran
     .filter((contract): contract is Contract => Boolean(contract))
     .map(contract => contract.artifact);
 
-  return debugTemplate(template, allArtifacts);
+  // A relaxed mock provider performs full validation with its configured mem-cash verifier. Libauth's template
+  // VM always applies production standardness (including dust), so running its transaction-wide verification
+  // here would reject transactions the selected mock policy intentionally accepts. Script scenarios above are
+  // still debugged; only the duplicate production-policy check is skipped.
+  const verifyTransaction = transaction.provider.policy?.enforceDust !== false;
+  // X130: the debug VM DECIDES `.build()` for a recursive state invocation, so it must evaluate under the same
+  // consensus limits the provider publishes to its decider. Supplied here rather than defaulted in
+  // `debugTemplate`, because an optional parameter nobody passes reads as provider-aware while behaving bare.
+  return debugTemplate(template, allArtifacts, verifyTransaction, transaction.provider);
 };
 
 export const getBitauthUri = (template: WalletTemplate): string => {
@@ -643,7 +653,7 @@ const generateUnlockingScriptParams = (
     ) as AuthenticationInstructionPush[];
     const numArgs = abiFunction.inputs.length;
     encodedFunctionArgs = encodedFunctionArgs.map((arg, i) => {
-      if (!(arg instanceof SignatureTemplate)) return arg;
+      if (!(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg)) return arg;
       // Selector first: [selector, argN-1, argN-2, ..., arg1, arg0, redeemScript]
       // instrIndex = numArgs - i
       const instrIndex = numArgs - i;
@@ -676,7 +686,7 @@ const generateTemplateScenarioParametersValues = (
 
   const entries = typesAndArguments
     // SignatureTemplates are handled by the 'keys' object in the scenario
-    .filter(([, arg]) => !(arg instanceof SignatureTemplate))
+    .filter(([, arg]) => !(arg instanceof SignatureTemplate) && !isSignatureTemplateArray(arg))
     .map(([input, arg]) => {
       const encodedArgumentHex = binToHex(arg as Uint8Array);
       const prefixedEncodedArgument = addHexPrefixExceptEmpty(encodedArgumentHex);

@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin } from '@bitauth/libauth';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePkh } from '../fixture/vars.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Solidity-compat narrowing casts: bytes20(address) / uint160(address) extract the embedded 20-byte hash
 // (the P2PKH pubkey-hash) from a variable-length BCH address. See docs/ecrecover.md and the cast warning.
@@ -40,7 +42,7 @@ describe('bytes20(address) / uint160(address) narrowing casts (runtime)', () => 
   it('bytes20(address) does not match a different hash', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkBytes20(addr, new Uint8Array(20))).rejects.toThrow();
+    await expect(sc.checkBytes20(addr, new Uint8Array(20))).rejects.toThrow(verifyFailure);
   });
 
   it('uint160(address) is the unsigned little-endian value of that hash', async () => {

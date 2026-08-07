@@ -1,13 +1,18 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { SignatureTemplate, getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 import { alicePriv, alicePub, bobPriv } from '../fixture/vars.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
+const nullFail = 'messageBus: BCH-2026 preflight failed at input 0: Program failed a signature verification '
+  + 'with a non-null signature (violating the "NULLFAIL" rule). Algorithm used: Schnorr.';
 
 // Each test compiles its inline source with { forceStateful: true } and deploys directly, so the spend is
 // the short `await sc.<fn>(args)` self-poke covenant (no dummy state, no manual UTXO gathering). Every
 // contract here takes a single `pubkey owner` constructor arg (alicePub). A failing require/assert/revert
-// surfaces as a raw OP_VERIFY Error on this path, so failure tests assert bare `.rejects.toThrow()` rather
-// than a mapped SDK error class.
+// surfaces at the BCH-2026 preflight boundary on this path, so failure tests name OP_VERIFY or signature
+// NULLFAIL rather than relying on an SDK error class.
 
 describe('Error, Assert, and Revert - SDK e2e', () => {
   // =======================================================================
@@ -104,7 +109,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.check(new SignatureTemplate(alicePriv), false);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('assert with expression: assert(x > 0) succeeds for positive', async () => {
@@ -136,7 +141,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.check(new SignatureTemplate(alicePriv), 0n);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
   });
 
@@ -158,7 +163,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.fail(new SignatureTemplate(alicePriv));
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('revert("message") always fails', async () => {
@@ -174,7 +179,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.fail(new SignatureTemplate(alicePriv));
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('revert CustomError(args) always fails', async () => {
@@ -195,7 +200,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.withdraw(new SignatureTemplate(alicePriv), 100n, 50n);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('revert CustomError: succeeds when revert is not reached', async () => {
@@ -237,7 +242,7 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factoryDenied = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const scDenied = await factoryDenied.deploy(alicePub);
       const txPromise = scDenied.restricted(new SignatureTemplate(alicePriv), false);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
 
       // allowed = true passes
       const factoryAllowed = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
@@ -295,35 +300,35 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(alicePriv), 100n, 10n);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('checkBalance fails when amount <= 0 (assert)', async () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(alicePriv), 0n, 100n);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('checkBalance fails with wrong signature', async () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.checkBalance(new SignatureTemplate(bobPriv), 10n, 100n);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(nullFail);
     });
 
     it('failAlways always fails', async () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.failAlways(new SignatureTemplate(alicePriv));
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('failEmpty always fails', async () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.failEmpty(new SignatureTemplate(alicePriv));
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('simpleAssert(true) succeeds', async () => {
@@ -337,11 +342,12 @@ describe('Error, Assert, and Revert - SDK e2e', () => {
       const factory = getContractFactory(compileString(combinedCode, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy(alicePub);
       const txPromise = sc.simpleAssert(new SignatureTemplate(alicePriv), false);
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow(verifyFailure);
     });
 
     it('artifact has all error declarations', () => {
       const artifact = compileString(combinedCode);
+      assertApplicationScriptSize('customErrorBehavior', artifact);
 
       expect(artifact.errors).toBeDefined();
       expect(artifact.errors).toHaveLength(3);

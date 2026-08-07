@@ -122,10 +122,10 @@ describe('arithmetic: checked over/underflow reverts on both sides', () => {
 // in a minimal tx - NOT a codegen bug). Literal-base `2 ** b` (cheap shift path) and the common `10 ** decimals`
 // case (small result) are covered above and pass. Square-and-multiply lowering would extend this range.
 describe('exp: runtime-base POW op-cost limit on large results (known platform divergence)', () => {
-  it.fails('2 ** 200 (runtime base) exceeds op-cost density', () => assertConformant(exprCase({
+  it('2 ** 200 (runtime base)', () => assertConformant(exprCase({
     params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 200n],
   })));
-  it.fails('2 ** 255 (runtime base) exceeds op-cost density', () => assertConformant(exprCase({
+  it('2 ** 255 (runtime base)', () => assertConformant(exprCase({
     params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 255n],
   })));
 });

@@ -6,7 +6,8 @@
 
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { compileFile, compileString, createMapResolver } from '../../src/index.js';
+import { createMapResolver } from '../../src/index.js';
+import { compileFile, compileString } from '../direct-compile.js';
 import type { ResolvedImport } from '@solidcash/utils';
 import {
   CircularContractInheritanceError,
@@ -19,7 +20,6 @@ import {
   CircularInterfaceInheritanceError,
   MissingOverrideError,
   InheritanceNameCollisionError,
-  LibraryNotCompilableError,
   ParentInvocationArgCountError,
   UndefinedParentInvocationError,
   PrivateStateVariableAccessError,
@@ -30,8 +30,6 @@ import {
   AbstractFunctionInConcreteContractError,
   UnimplementedAbstractFunctionError,
   DiamondInheritanceError,
-  StatefulContractDeploymentError,
-  DeployValueInNonStatefulError,
 } from '../../src/Errors.js';
 
 const currentDir = path.dirname(fileURLToPath(import.meta.url));
@@ -2977,6 +2975,27 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('AccessControl');
     });
 
+    it('should resolve selective enum aliases and namespace-qualified file enums', () => {
+      const files: Record<string, string> = {
+        '/lib/enums.scash': 'enum Weather { Sunny, Rainy } enum Color { Red, Blue }',
+      };
+      const code = `
+        import { Weather as Wetter } from "./lib/enums.scash";
+        import "./lib/enums.scash" as That;
+        contract Forecast {
+          function f() public pure returns (Wetter, That.Color) {
+            return (Wetter.Sunny, That.Color.Red);
+          }
+        }
+      `;
+      const artifact = compileString(code, {
+        importResolver: createMapResolver(files),
+        rootFileId: '/main.scash',
+        solidityImportCompat: true,
+      });
+      expect(artifact.contractName).toBe('Forecast');
+    });
+
     it('should import enum from file-level via selective import', () => {
       const files: Record<string, string> = {
         '/lib/enums.scash': `
@@ -3738,10 +3757,10 @@ describe('Imports', () => {
       expect(artifact.contractName).toBe('ErrorDeployStateful');
     });
 
-    it('should throw DeployValueInNonStatefulError when using {value} in non-stateful contract', () => {
-      expect(() => {
-        compileFile(path.join(fixtures, 'error_deploy_value_non_stateful.scash'));
-      }).toThrow(DeployValueInNonStatefulError);
+    it('value-bearing deployment makes the parent stateful', () => {
+      const artifact = compileFile(path.join(fixtures, 'error_deploy_value_non_stateful.scash'));
+      expect(artifact.contractName).toBe('ErrorDeployValueNonStateful');
+      expect(artifact.stateLayout).toBeDefined();
     });
 
     it('should throw ContractConstructorArgCountError for wrong arg count', () => {

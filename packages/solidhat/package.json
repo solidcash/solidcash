@@ -1,0 +1,43 @@
+{
+  "name": "@solidcash/solidhat",
+  "version": "0.13.1",
+  "description": "Hardhat-style project tooling for SolidCash",
+  "keywords": ["solidcash", "bitcoin cash", "hardhat", "smart contracts"],
+  "homepage": "https://solidcash.org",
+  "license": "MIT",
+  "author": "mainnet-pat",
+  "type": "module",
+  "sideEffects": false,
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./init": { "types": "./dist/init.d.ts", "default": "./dist/init.js" },
+    "./cli-options": { "types": "./dist/cli-options.d.ts", "default": "./dist/cli-options.js" },
+    "./cli": { "types": "./dist/cli.d.ts", "default": "./dist/cli.js" },
+    "./hardhat2": { "types": "./dist/hardhat2.d.ts", "default": "./dist/hardhat2.js" },
+    "./hardhat3": { "types": "./dist/hardhat3.d.ts", "default": "./dist/hardhat3.js" },
+    "./ethers5": { "types": "./dist/ethers5.d.ts", "default": "./dist/ethers5.js" },
+    "./ethers6": { "types": "./dist/ethers6.d.ts", "default": "./dist/ethers6.js" },
+    "./config": { "types": "./dist/config.d.ts", "default": "./dist/config.js" },
+    "./vitest-preset": { "types": "./dist/vitest-preset.d.ts", "default": "./dist/vitest-preset.js" },
+    "./package.json": "./package.json"
+  },
+  "bin": { "solidhat": "dist/cli.js" },
+  "scripts": {
+    "build": "yarn clean && yarn compile",
+    "clean": "rm -rf ./dist",
+    "compile": "tsc -p tsconfig.build.json",
+    "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
+    "prepare": "yarn build",
+    "prepublishOnly": "yarn test && yarn lint",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": { "@solidcash/testing": "^0.13.1", "solidcash": "^0.13.1" },
+  "devDependencies": {
+    "@types/node": "^22.17.0",
+    "eslint": "^8.54.0",
+    "typescript": "^5.9.2",
+    "vitest": "^4.0.15"
+  }
+}

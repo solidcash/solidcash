@@ -1,12 +1,16 @@
 import { describe, it, expect } from 'vitest';
 import { bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub, alicePkh, bobAddress, carolAddress } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
+
+const WRONG_BALANCE_PREFLIGHT = new RegExp(
+  '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
+);
 
 // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (the multitransfer CREDIT half to EXISTING recipients). Each
 // iteration co-spends k[i]'s OWN entry at input[master+blockSize+i], verifies its slot == keyToSlot(k[i]), and mints
@@ -92,7 +96,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(5n)).toBe(55n);
 
     await fund(contract.address); await expect(call('chk', 7n, 220n)).resolves.toBeDefined();
-    await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(); // not the pre-credit value
+    await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // not the pre-credit value
   });
 
   it('the -= variant debits existing accounts', async () => {
@@ -181,7 +185,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(3n)).toBe(11n);
     expect(await valOf(7n)).toBe(22n);
     await fund(contract.address); await expect(call('chk', 3n, 11n)).resolves.toBeDefined();
-    await fund(contract.address); await expect(call('chk', 3n, 111n)).rejects.toThrow(); // NOT accumulated
+    await fund(contract.address); await expect(call('chk', 3n, 111n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // NOT accumulated
   });
 
   it('sets an existing key AND inserts a new key with absolute values, in one loop', async () => {
@@ -199,7 +203,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     await fund(contract.address);
     await call('setAll', [5n], [77n]);
     expect(await valOf(5n)).toBe(77n);
-    await fund(contract.address); await expect(call('chk', 5n, 50n)).rejects.toThrow(); // old value gone
+    await fund(contract.address); await expect(call('chk', 5n, 50n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // old value gone
   });
 
   // DELETE-in-loop `for(i) delete m[ks[i]]` (batch nullify): each existing key co-spent + minted to the default (0).
@@ -216,7 +220,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(5n)).toBe(0n);
     // a nullified key reads 0 via chk (require(m[k] == 0)); the nodes stay present-nullified (C2 delete == nullify).
     await fund(contract.address); await expect(call('chk', 7n, 0n)).resolves.toBeDefined();
-    await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(); // old value gone
+    await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // old value gone
   });
 
   it('fails closed on delete of a nonexistent key (nothing to nullify)', async () => {
@@ -238,7 +242,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(7n)).toBe(250n);
     expect(await valOf(9n)).toBe(50n);
     await fund(contract.address); await expect(call('chk', 3n, 150n)).resolves.toBeDefined();
-    await fund(contract.address); await expect(call('chk', 3n, 100n)).rejects.toThrow(); // fixed amount was added
+    await fund(contract.address); await expect(call('chk', 3n, 100n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // fixed amount was added
   });
 
   // Absolute set to a loop-invariant LITERAL `for(i) bal[ks[i]] = 42` (op=set, valueConst): update existing + insert new.

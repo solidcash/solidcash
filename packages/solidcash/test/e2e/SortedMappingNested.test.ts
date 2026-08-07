@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlotMulti, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
@@ -53,7 +53,7 @@ describe('sorted nested mapping (composite key)', () => {
     // read reflects it; a different pair (10,30) is absent (reads 0).
     await expect(call('check', 10n, 20n, 100n)).resolves.toBeDefined();
     await expect(call('check', 10n, 30n, 0n)).resolves.toBeDefined();
-    await expect(call('check', 10n, 20n, 99n)).rejects.toThrow();
+    await expect(call('check', 10n, 20n, 99n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
 
     // RMW allow[10][20] += 5 -> 105 (update the same composite entry).
     expect((await call('bump', 10n, 20n, 5n)).txid).toBeDefined();

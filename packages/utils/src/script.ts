@@ -1,4 +1,5 @@
 import {
+  binToHex,
   encodeDataPush,
   hexToBin,
   disassembleBytecodeBch,
@@ -35,18 +36,71 @@ export function bitAuthAsmToScript(asm: string): Script {
   return asmToScript(asm);
 }
 
+// Single-byte pushes that libauth's `encodeDataPush` folds into one opcode: 0x01..0x10 become OP_1..OP_16 and
+// 0x81 becomes OP_1NEGATE. Missing this is not a size bug but an ENCODING bug - the emitted opcode differs.
+const PUSH_NUMBER_OPCODE_OFFSET = 80;
+const NEGATIVE_ONE_BYTE = 129;
+
+const foldsToPushNumberOpcode = (element: Uint8Array): boolean =>
+  element.length === 1 && ((element[0] !== 0 && element[0] <= 16) || element[0] === NEGATIVE_ONE_BYTE);
+
+/** Encoded byte length of one Script element, mirroring libauth's minimal `encodeDataPush`. */
+function elementEncodedSize(element: Script[number]): number {
+  if (typeof element === 'number') return 1;
+  const { length } = element;
+  if (length === 0) return 1;
+  if (foldsToPushNumberOpcode(element)) return 1;
+  if (length <= 75) return length + 1;
+  if (length <= 255) return length + 2;
+  if (length <= 65535) return length + 3;
+  return length + 5;
+}
+
 export function scriptToBytecode(script: Script): Uint8Array {
-  // Convert the script elements to AuthenticationInstructions
-  const instructions = script.map((opOrData) => {
-    if (typeof opOrData === 'number') {
-      return { opcode: opOrData };
+  // The hottest function in the compiler: every optimiser round, every body serialisation and every script
+  // comparison calls it. Size the buffer first and write the push prefixes inline, so encoding a script costs
+  // one allocation rather than two per element (the per-element `encodeDataPush` result plus the flatten copy).
+  // Byte-for-byte identical to `flattenBinArray(script.map(encodeDataPush-or-opcode-byte))`.
+  let size = 0;
+  for (const element of script) size += elementEncodedSize(element);
+  const bytecode = new Uint8Array(size);
+  let at = 0;
+  for (const element of script) {
+    if (typeof element === 'number') {
+      bytecode[at] = element;
+      at += 1;
+      continue;
     }
-
-    return decodeAuthenticationInstructions(encodeDataPush(opOrData))[0];
-  });
-
-  // Convert the AuthenticationInstructions to bytecode
-  return encodeAuthenticationInstructions(instructions);
+    const { length } = element;
+    if (length === 1 && foldsToPushNumberOpcode(element)) {
+      bytecode[at] = element[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : element[0] + PUSH_NUMBER_OPCODE_OFFSET;
+      at += 1;
+      continue;
+    }
+    if (length <= 75) {
+      bytecode[at] = length;
+      at += 1;
+    } else if (length <= 255) {
+      bytecode[at] = Op.OP_PUSHDATA_1;
+      bytecode[at + 1] = length;
+      at += 2;
+    } else if (length <= 65535) {
+      bytecode[at] = Op.OP_PUSHDATA_2;
+      bytecode[at + 1] = length & 0xff;
+      bytecode[at + 2] = (length >>> 8) & 0xff;
+      at += 3;
+    } else {
+      bytecode[at] = Op.OP_PUSHDATA_4;
+      bytecode[at + 1] = length & 0xff;
+      bytecode[at + 2] = (length >>> 8) & 0xff;
+      bytecode[at + 3] = (length >>> 16) & 0xff;
+      bytecode[at + 4] = (length >>> 24) & 0xff;
+      at += 5;
+    }
+    bytecode.set(element, at);
+    at += length;
+  }
+  return bytecode;
 }
 
 export function bytecodeToScript(bytecode: Uint8Array): Script {
@@ -120,6 +174,62 @@ export function bytecodeToBitAuthAsm(bytecode: Uint8Array): string {
   return asm;
 }
 
+/**
+ * Canonicalise a script the way its serialised bytecode reads back: every data push in its minimal encoding,
+ * every opcode its own element. Equivalent to `asmToScript(scriptToAsm(script))` - the ASM string in the middle
+ * carries nothing the bytecode does not - without building and re-lexing that string.
+ *
+ * Done ELEMENT-WISE, not by round-tripping through bytecode. A round trip re-parses the byte stream, so it is
+ * only sound on a complete, self-delimiting script: a bare push opcode carried as a NUMBER element makes the
+ * decoder read the FOLLOWING opcode as that push's payload, and the malformed instruction it yields comes back
+ * as an empty data element that re-encodes to OP_0 - silently destroying bytes (`[0x4c, 0x87]` -> `00`). Function
+ * bodies and outlined helper spans are fragments, so they cannot carry that requirement.
+ */
+export function normaliseScript(script: Script): Script {
+  return script.map((element) => {
+    if (typeof element === 'number') return element;
+    if (foldsToPushNumberOpcode(element)) {
+      return element[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : element[0] + PUSH_NUMBER_OPCODE_OFFSET;
+    }
+    return element;
+  });
+}
+
+/**
+ * Scripts whose new-vs-old optimiser agreement has already been established in this process.
+ *
+ * Both optimisers rewrite ASM derived from the script alone - the location/log/require bookkeeping rides along
+ * but never steers a replacement - so the same script cannot reach a different verdict on a second check.
+ * Nearly half of all checks ARE a second check: the verifier-binder pass recompiles the same function bodies
+ * that the first pass already verified, and only the generated route differs between them.
+ *
+ * Bounded, because a long-lived process (a test run) would otherwise accumulate every body it ever compiled.
+ * Clearing only means checks run again, which is the safe direction.
+ */
+const OPTIMISER_CROSS_CHECK_MEMO_LIMIT = 4096;
+const crossCheckedScripts = new Set<string>();
+
+/**
+ * True when `script` still needs the `optimiseBytecodeOld` cross-check, recording it so an identical script
+ * skips. Callers keep their own failure message, since each site names a different artifact.
+ */
+export function needsOptimiserCrossCheck(script: Script): boolean {
+  const key = binToHex(scriptToBytecode(script));
+  if (crossCheckedScripts.has(key)) return false;
+  if (crossCheckedScripts.size >= OPTIMISER_CROSS_CHECK_MEMO_LIMIT) crossCheckedScripts.clear();
+  crossCheckedScripts.add(key);
+  return true;
+}
+
+/** True when two scripts serialise to the same bytecode, and therefore render to the same ASM. */
+export function scriptsEqual(left: Script, right: Script): boolean {
+  const a = scriptToBytecode(left);
+  const b = scriptToBytecode(right);
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 export function countOpcodes(script: Script): number {
   return script
     .filter((opOrData) => typeof opOrData === 'number')
@@ -176,56 +286,62 @@ export function optimiseBytecode(
   runs: number = 1000,
 ): OptimiseBytecodeResult {
   if (script.length > OPTIMISER_SKIP_MAX_OPS) return { script, locationData, logs, requires };
+  // A round is a pure ASM rewrite, so the Script it used to rebuild existed only for the next round to convert
+  // straight back. Convert once on the way in and once on the way out instead.
+  let asm = scriptToAsm(script);
+  let rewritten = false;
   for (let i = 0; i < runs; i += 1) {
-    const oldScript = script;
-    const {
-      script: newScript,
-      locationData: newLocationData,
-      logs: newLogs,
-      requires: newRequires,
-    } = replaceOps(script, locationData, logs, requires, constructorParamLength, optimisationReplacements);
+    const result = replaceOps(
+      asm, locationData, logs, requires, constructorParamLength, optimisationReplacements,
+    );
 
-    // Break on fixed point
-    if (scriptToAsm(oldScript) === scriptToAsm(newScript)) {
-      break;
-    }
+    // Break on fixed point: nothing matched, so every field is still the caller's own input.
+    if (result.unchanged) break;
 
-    script = newScript;
-    locationData = newLocationData;
-    logs = newLogs;
-    requires = newRequires;
+    asm = result.asm;
+    locationData = result.locationData;
+    logs = result.logs;
+    requires = result.requires;
+    rewritten = true;
   }
 
-  return { script, locationData, logs, requires };
+  return { script: rewritten ? asmToScript(asm) : script, locationData, logs, requires };
 }
+
+// The .equiv table is a constant, but parsing it per call meant re-splitting the whole file for every function
+// body the compiler cross-checks.
+const cashproofOptimisations = OptimisationsEquivFile
+  // Split by line and filter all line comments (#)
+  .split('\n')
+  .map((equiv) => equiv.trim())
+  .filter((equiv) => !equiv.startsWith('#'))
+  // Join back the lines, and split on semicolon
+  .join('')
+  .split(';')
+  // Parse all optimisations in .equiv file
+  .map((equiv) => equiv.trim())
+  .map((equiv) => equiv.split('<=>').map((part) => part.trim()))
+  .filter((equiv) => equiv.length === 2);
 
 export function optimiseBytecodeOld(script: Script, runs: number = 1000): Script {
-  const optimisations = OptimisationsEquivFile
-    // Split by line and filter all line comments (#)
-    .split('\n')
-    .map((equiv) => equiv.trim())
-    .filter((equiv) => !equiv.startsWith('#'))
-    // Join back the lines, and split on semicolon
-    .join('')
-    .split(';')
-    // Parse all optimisations in .equiv file
-    .map((equiv) => equiv.trim())
-    .map((equiv) => equiv.split('<=>').map((part) => part.trim()))
-    .filter((equiv) => equiv.length === 2);
-
+  // Same conversion hoist as optimiseBytecode: the rounds rewrite ASM, so the Script only has to be rebuilt once.
+  let asm = scriptToAsm(script);
+  let rewritten = false;
   for (let i = 0; i < runs; i += 1) {
-    const oldScript = script;
-    script = replaceOpsOld(script, optimisations);
+    const next = replaceOpsOld(asm, cashproofOptimisations);
 
-    // Break on fixed point
-    if (scriptToAsm(oldScript) === scriptToAsm(script)) break;
+    // Break on fixed point. replaceOpsOld already compared the ASM it rewrote against the ASM it started from.
+    if (next === undefined) break;
+    asm = next;
+    rewritten = true;
   }
 
-  return script;
+  return rewritten ? asmToScript(asm) : script;
 }
 
-function replaceOpsOld(script: Script, optimisations: string[][]): Script {
-  let asm = scriptToAsm(script);
+/** The rewritten ASM, or undefined when no optimisation matched. */
+function replaceOpsOld(originalAsm: string, optimisations: string[][]): string | undefined {
+  let asm = originalAsm;
 
   // Apply all optimisations in the cashproof file
   // Normalize spaces after each rule to prevent double-space artifacts from
@@ -257,30 +373,41 @@ function replaceOpsOld(script: Script, optimisations: string[][]): Script {
   // Remove any double spaces as a result of opcode removal
   asm = asm.replace(/\s+/g, ' ').trim();
 
-  return asmToScript(asm);
+  return asm === originalAsm ? undefined : asm;
 }
 
 interface ReplaceOpsResult {
-  script: Script;
+  asm: string;
   locationData: FullLocationData;
   logs: LogEntry[];
   requires: RequireStatement[];
+  /** No optimisation matched: every field is the caller's own input, unchanged. */
+  unchanged: boolean;
 }
 
 function replaceOps(
-  script: Script,
+  originalAsm: string,
   locationData: FullLocationData,
   logs: LogEntry[],
   requires: RequireStatement[],
   constructorParamLength: number,
   optimisations: string[][],
 ): ReplaceOpsResult {
-  let asm = scriptToAsm(script);
+  let asm = originalAsm;
   let newLocationData = [...locationData];
   let newLogs = [...logs];
   let newRequires = [...requires];
 
   optimisations.forEach(([pattern, replacement]) => {
+    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
+    // (no partial matches)
+    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
+    let matchIndex = asm.search(regex);
+    // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
+    // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
+    // round, per function body, on both codegen passes.
+    if (matchIndex === -1) return;
+
     // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
     // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of
     // copying a growing string on every append (which made large generated bodies pathologically slow to optimise).
@@ -295,11 +422,6 @@ function replaceOps(
     let processedTokens = 0;
     let asmToSearch = asm;
 
-    // We add a space or end of string to the end of the pattern to ensure that we match the whole pattern
-    // (no partial matches)
-    const regex = new RegExp(`${pattern}(\\s|$)`, 'g');
-
-    let matchIndex = asmToSearch.search(regex);
     while (matchIndex !== -1) {
       // We add the part before the match to the processed asm
       const beforeMatch = asmToSearch.slice(0, matchIndex);
@@ -416,11 +538,15 @@ function replaceOps(
     asm = processedParts.join(' ');
   });
 
+  // Nothing matched, so the caller is about to stop iterating with exactly the inputs it handed in.
+  if (asm === originalAsm) return { asm: originalAsm, locationData, logs, requires, unchanged: true };
+
   return {
-    script: asmToScript(asm),
+    asm,
     locationData: newLocationData,
     logs: newLogs,
     requires: newRequires,
+    unchanged: false,
   };
 }
 

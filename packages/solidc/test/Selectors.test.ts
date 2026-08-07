@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Function selectors (`.selector` -> bytes4).
 
@@ -52,6 +52,11 @@ describe('abi.encodeCall(this.method, (args)) targets a current-contract functio
   it('resolves this.method with an empty tuple', () => {
     expect(cc('contract C { function g() external {}'
       + ' function f() external pure returns (bytes memory) { return abi.encodeCall(this.g, ()); } }')).toBe('C');
+  });
+  it('accepts a scalar expression as a unitary argument tuple', () => {
+    expect(cc('contract C { function g(uint256 x) external {}'
+      + ' function f(bool b) external pure returns (bytes memory) {'
+      + ' return abi.encodeCall(this.g, b ? 1 : 2); } }')).toBe('C');
   });
   it('still resolves an interface target (Interface.method)', () => {
     expect(cc('interface IFoo { function bar(address a, uint256 b) external; }'

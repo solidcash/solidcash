@@ -1,34 +1,33 @@
-
-=== SOLC-CORPUS SCORECARD: 2349/4876 single-file in-scope compiled (2527 failed) | 1694 negative (correctly rejected) | 496 NEG-ACCEPTED (solc rejects, we compiled) | 277 multifile-skipped | 7343 total ===
+=== SOLC-CORPUS SCORECARD: 2698/2805 single-file in-scope compiled (107 failed) | 2158 negative-fixtures (solc rejects; 323 accepted, 0 unchecked, 0 timeouts, diagnostic) | 239 multifile-skipped | 289 cmdline-skipped | 3 benchmark-skipped | 52 compilation-project-skipped | 4 external-project-skipped | 1793 non-language-harness-skipped | 7343 total ===
 
 --- TOP FAILURE REASONS ---
-  672  ParseError: Unexpected token '..' at Line N, Column N
-  241  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
-  189  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', '..
-  160  MethodCallNotSupportedError: Method calls are only supported on interface or contract inst
-  132  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): Yul code generation is 
-   74  ParseError: Mismatched input '..' expecting {'..', '..'} at Line N, Column N
-   56  StateAssignTypeError: Type '..' can not be assigned to state variable of type '..' at Line
-   47  ParseError: Mismatched input '..' expecting {'..', '..', '..'} at Line N, Column N
-   39  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column 
-   38  UnequalTypeError: Tried to apply operator '..' to unequal types '..' and '..' at Line N, C
-   33  ParseError: Missing '..' at '..' at Line N, Column N
-   30  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function defi
-   30  ParseError: Mismatched input '..' expecting {'..', '..', '..', '..', '..', '..', '..', Ide
-   27  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
-   27  UnsupportedTypeError: Found type '..' where type '..' was expected at Line N, Column N
-   26  StatefulContractDeploymentError: Cannot use '..' for stateful contracts outside a '..' fun
-   25  UndefinedReferenceError: Undefined reference to symbol uint at Line N, Column N
-   23  UnsupportedStructFieldTypeError: Type '..' is not supported as a struct field type at Line
-   22  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expre
-   20  UndefinedReferenceError: Undefined reference to symbol ercN at Line N, Column N
-   20  TypeError: Cannot read properties of undefined (reading '..')
-   20  UnsupportedTypeError: Tried to apply operator '..' to unsupported type '..' at Line N, Col
-   19  Error: external call target address must be a constructor/function parameter
-   19  Error: Type definition '..' has unsupported underlying type '..'. User-defined value types
-   19  UndefinedReferenceError: Undefined reference to symbol L at Line N, Column N
-   18  UndefinedStateVariableError: Undefined state variable '..' at Line N, Column N
-   18  UnresolvedImportError: Cannot resolve import '..' from '..'
-   17  Error: Expected variable '..' does not exist on the stack
-   16  ParseError: Mismatched input '..' expecting Identifier at Line N, Column N
-   14  UndefinedEventError: Undefined event '..' at Line N, Column N
+   19  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): this Yul block is not yet lowerable to BCH script ...
+    7  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): '..' has no BCH equivalent (deploying runtime ...
+    7  ParseError: Mismatched input '..' expecting '..' at Line N, Column N
+    6  FnPtrArrayLoweringError: Function-pointer array '..': it is never written in contract code, so its element selectors ...
+    4  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend D ...
+    4  BlockLayoutUnavailableError: Block layout not available while compiling '..'
+    3  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend ...
+    3  UndefinedReferenceError: Undefined reference to symbol m at Line N, Column N
+    3  AssignTypeError: Type '..' can not be assigned to variable of type '..' at Line N, Column N
+    3  CompilerRecursionLimitError: Compilation exceeded the recursive traversal limit; simplify deeply nested or recursive ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend C ...
+    2  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend A ...
+    2  StackVariableUnavailableError: Expected variable '..' does not exist on the stack
+    2  CastTypeError: Type '..' is not castable to type '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol a at Line N, Column N
+    2  UndefinedCollectionError: Undefined mapping '..' at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol data__recursive__recursive at Line N, Column N
+    2  UndefinedReferenceError: Undefined reference to symbol A at Line N, Column N
+    2  NonCompileTimeExpressionError: Constant '..' must be initialized with a compile-time expression at Line N, Column N
+    1  UndefinedReferenceError: Undefined reference to symbol x at Line N, Column N
+    1  UnsupportedTypeError: Tried to call member '..' on unsupported type '..' at Line N, Column N
+    1  TransferFrameUnavailableError: Value transfer N in function '..' cannot preserve its covenant frame across this ...
+    1  UnsupportedMemoryAliasingError: Memory alias group '..' reaches an operation that cannot yet preserve Solidity aliasing ...
+    1  UnresolvedImportError: Cannot resolve import '..' from '..'
+    1  InvalidParameterTypeError: Found parameters (uintN,uintN,uintN) in call to function '..' where parameters ...
+    1  UnsupportedInlineAssemblyError: Unsupported inline assembly (Yul): local Yul function definitions are not yet supported ...
+    1  InvalidParameterTypeError: Found parameters () in call to function '..' where parameters (bytes) were expected at Line ...
+    1  InvalidParameterTypeError: Found parameters (bool,uintN,uintN) in call to function '..' where parameters ...
+    1  EmittingStateHelperEventError: Helper '..' emits an event and is invoked internally as a value-returning subroutine, ...
+    1  DeployThenCallError: Cannot call '..' on '..' in the transaction that deploys it with '..': the call would co-spend B ...

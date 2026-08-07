@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { ResolvedImport, parsePushdataCommitment } from '@solidcash/utils';
 import {
@@ -292,7 +292,10 @@ describe('Contract Deployment (new Contract(...))', () => {
         ))
         .addOutput({ to, amount })
         .addOutput({ to, amount: changeAmount })
-        .send()).rejects.toThrow();
+        .send()).rejects.toThrow(
+        'SaltedDeployer.scash:7 Require statement failed at input 0 in contract SaltedDeployer.scash at line 7.\n'
+        + 'Failing statement: require(computedLbc == expectedLbc);',
+      );
     });
   });
 

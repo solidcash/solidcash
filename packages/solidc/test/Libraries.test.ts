@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Libraries: using-for, sibling calls, UDVT, declaration order, errors/constants.
 

@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract, SignatureTemplate, StatefulContract,
 } from '../../src/index.js';
@@ -11,6 +11,7 @@ import {
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 import { Utxo } from '../../src/interfaces.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 // V1: simple counter with upgrade and unsafe functions
 const COUNTER_V1 = `
@@ -157,6 +158,9 @@ describe('StatefulContract.upgrade()', () => {
   const noUpgradeArtifact = compileString(NO_UPGRADE);
   const overflowV1Artifact = compileString(OVERFLOW_V1);
   const overflowV2Artifact = compileString(OVERFLOW_V2);
+  assertApplicationScriptSize(
+    'proxyUpgrade', v1Artifact, v2Artifact, v3Artifact, overflowV1Artifact, overflowV2Artifact,
+  );
 
   describe('upgrade modifier in artifact ABI', () => {
     it('should include upgrade in ABI modifiers', () => {

@@ -187,6 +187,7 @@ export class FunctionType {
     public parameterTypes: Type[],
     public returnTypes: Type[],
     public isExternal: boolean = false,
+    public stateMutability: 'pure' | 'view' | 'payable' | 'nonpayable' = 'nonpayable',
   ) {}
 
   toString(): string {
@@ -421,11 +422,15 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
     return false;
   }
 
-  // Function types: only an exact structural match casts (and never to/from anything else, so a raw
-  // int can't become a function pointer). Compared via toString, which encodes params + returns.
+  // Function types require the same parameter/return/external shape. Mutability conversion is directional:
+  // pure -> view/nonpayable, view -> nonpayable, and payable -> nonpayable lose capabilities and are safe;
+  // the inverse directions would promise behavior the referenced function does not provide.
   if (actual instanceof FunctionType || expected instanceof FunctionType) {
-    return actual instanceof FunctionType && expected instanceof FunctionType
-      && actual.toString() === expected.toString();
+    if (!(actual instanceof FunctionType) || !(expected instanceof FunctionType)
+      || actual.toString() !== expected.toString()) return false;
+    if (actual.stateMutability === expected.stateMutability) return true;
+    if (expected.stateMutability === 'nonpayable') return true;
+    return actual.stateMutability === 'pure' && expected.stateMutability === 'view';
   }
 
   // Token containers can't be implicitly cast
@@ -450,11 +455,11 @@ export function implicitlyCastable(actual?: Type, expected?: Type): boolean {
   // Mappings can't be implicitly cast
   if (actual instanceof MappingType || expected instanceof MappingType) return false;
 
-  // Enums are int-backed: implicitly compatible with int types and the same enum (not other enums).
+  // Enums have an integer representation, but Solidity keeps them nominally typed: crossing the enum/integer
+  // boundary requires an explicit cast. Only values of the same enum type are implicitly compatible.
   if (actual instanceof EnumType || expected instanceof EnumType) {
-    const intLike = (t: Type): boolean => t === PrimitiveType.BIGINT || t instanceof IntType;
     if (actual instanceof EnumType && expected instanceof EnumType) return actual.name === expected.name;
-    return actual instanceof EnumType ? intLike(expected) : intLike(actual);
+    return false;
   }
 
   // Structs can only be implicitly cast to the same struct type
@@ -613,7 +618,11 @@ export function parseType(str: string): Type {
     if (arrowIndex >= 0) {
       const keyStr = inner.slice(0, arrowIndex).trim();
       const valueStr = inner.slice(arrowIndex + 2).trim();
-      return new MappingType(parseType(keyStr), parseType(valueStr));
+      const key = parseTypeAndOptionalName(keyStr);
+      const value = parseTypeAndOptionalName(valueStr);
+      const mapping = new MappingType(key.type, value.type, key.name, value.name);
+      assertUniqueMappingNames(mapping);
+      return mapping;
     }
   }
 
@@ -666,6 +675,7 @@ export function isFixedWidthType(type: Type | string): boolean {
   if (t === PrimitiveType.BOOL || t === PrimitiveType.PUBKEY) return true;
   if (t instanceof BytesType) return t.bound !== undefined;
   if (t instanceof IntType || t instanceof FixedType) return true;
+  if (t instanceof ValueType) return isFixedWidthType(t.underlyingType);
   if (t instanceof StructType) return t.fields.every((f) => isFixedWidthType(f.type));
   // A bounded array of fixed-width elements is itself fixed-width (bound * elementWidth). This lets a fixed-inner
   // nested array (`uint256[N][]`) back a chunk-packed dynamic array whose element is the N-wide row.
@@ -687,6 +697,7 @@ export function isChunkPackableElementType(type: Type | string): boolean {
   if (t === PrimitiveType.BIGINT || t === PrimitiveType.STRING) return true;
   if (t instanceof BytesType) return true; // unbounded bytes (bounded bytesN already fixed-width above)
   if (t instanceof AddressType) return true; // variable-width locking bytecode -> framed layout (like bytes)
+  if (t instanceof ValueType) return isChunkPackableElementType(t.underlyingType);
   if (t instanceof StructType) return true; // variable-width struct -> framed layout (fixed-width handled above)
   // A nested array element (`uint256[][]`: a variable-length `uint256[]` row) uses the framed layout too, as
   // long as its own element type is chunk-packable. Fixed-inner rows (`uint256[N]`) are caught by isFixedWidthType.
@@ -701,6 +712,7 @@ export function fixedWidthBytes(type: Type | string): number {
   if (t === PrimitiveType.PUBKEY) return 33;
   if (t instanceof BytesType && t.bound !== undefined) return t.bound;
   if (t instanceof IntType || t instanceof FixedType) return t.byteWidth;
+  if (t instanceof ValueType) return fixedWidthBytes(t.underlyingType);
   if (t instanceof StructType) return t.fields.reduce((sum, f) => sum + fixedWidthBytes(f.type), 0);
   if (t instanceof ArrayType && t.bound !== undefined) return t.bound * fixedWidthBytes(t.elementType);
   throw new Error(`Type is not fixed-width: ${t}`);
@@ -715,10 +727,16 @@ function parseFunctionType(str: string): FunctionType {
   const [paramsInner, restRaw] = splitParenGroup(afterKeyword);
   let rest = restRaw;
   let isExternal = false;
+  let stateMutability: 'pure' | 'view' | 'payable' | 'nonpayable' = 'nonpayable';
   for (let stripped = true; stripped;) {
     stripped = false;
     for (const mod of FUNCTION_TYPE_MODIFIERS) {
-      if (rest.startsWith(mod)) { if (mod === 'external') isExternal = true; rest = rest.slice(mod.length); stripped = true; }
+      if (rest.startsWith(mod)) {
+        if (mod === 'external') isExternal = true;
+        if (mod === 'pure' || mod === 'view' || mod === 'payable') stateMutability = mod;
+        rest = rest.slice(mod.length);
+        stripped = true;
+      }
     }
   }
   let returnTypes: Type[] = [];
@@ -726,7 +744,9 @@ function parseFunctionType(str: string): FunctionType {
     const [retsInner] = splitParenGroup(rest.slice('returns'.length));
     returnTypes = splitTopLevelCommas(retsInner).map(parseFunctionTypeMember);
   }
-  return new FunctionType(splitTopLevelCommas(paramsInner).map(parseFunctionTypeMember), returnTypes, isExternal);
+  return new FunctionType(
+    splitTopLevelCommas(paramsInner).map(parseFunctionTypeMember), returnTypes, isExternal, stateMutability,
+  );
 }
 
 // Parse one param/return type of a function TYPE. The source string comes from grammar getText() with no
@@ -736,7 +756,41 @@ function parseFunctionType(str: string): FunctionType {
 // address handle so FunctionType.toString never maps over an undefined - the member types of a function
 // pointer are inert on BCH (the value is a functionId/address), so the placeholder is sound for compilation.
 function parseFunctionTypeMember(member: string): Type {
-  return parseType(member.replace(/(memory|calldata|storage)$/, '')) ?? new AddressType(false);
+  const withoutLocation = member.replace(/(memory|calldata|storage)$/, '');
+  return parseTypeWithOptionalName(withoutLocation) ?? new AddressType(false);
+}
+
+// Grammar getText() removes whitespace, joining deprecated function-parameter names and named mapping
+// components to their types. Recover the longest valid type prefix (`uinttransient` -> `uint`,
+// `mapping(uint=>uint)entries` -> the mapping) and discard the inert name.
+function parseTypeWithOptionalName(member: string): Type {
+  return parseTypeAndOptionalName(member).type;
+}
+
+function parseTypeAndOptionalName(member: string): { type: Type; name?: string } {
+  const direct = parseType(member);
+  if (direct) return { type: direct };
+  for (let i = member.length - 1; i > 0; i--) {
+    const prefix = member.slice(0, i);
+    const suffix = member.slice(i);
+    if (!/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(suffix)) continue;
+    const parsed = parseType(prefix.replace(/(memory|calldata|storage)$/, ''));
+    if (parsed) return { type: parsed, name: suffix };
+  }
+  return { type: new AddressType(false) };
+}
+
+function assertUniqueMappingNames(mapping: MappingType): void {
+  const seen = new Set<string>();
+  const walk = (m: MappingType): void => {
+    for (const name of [m.keyName, m.valueName]) {
+      if (!name) continue;
+      if (seen.has(name)) throw new Error(`Conflicting parameter name '${name}' in mapping`);
+      seen.add(name);
+    }
+    if (m.valueType instanceof MappingType) walk(m.valueType);
+  };
+  walk(mapping);
 }
 
 // Given a string starting with '(', return [inside, remainder-after-matching-paren].

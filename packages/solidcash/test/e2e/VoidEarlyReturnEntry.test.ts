@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // A bare `return;` (void early exit) in an ENTRY-POINT function: EarlyReturnTransformation nests the rest into
 // an else branch and codegen emits the tail `return;` as a no-op (previously entry-point void returns were
@@ -23,6 +25,6 @@ describe('void early return in an entry-point function', () => {
     await sc.put(1n, 5n).send();
     await expect(sc.readIf(1n, 99n, false).send()).resolves.toBeDefined(); // guard hit: check skipped, spends
     await expect(sc.readIf(1n, 5n, true)).resolves.toBeDefined();          // taken: m[1] == 5 holds
-    await expect(sc.readIf(1n, 99n, true).send()).rejects.toThrow();       // taken: m[1] == 99 fails
+    await expect(sc.readIf(1n, 99n, true).send()).rejects.toThrow(verifyFailure);
   });
 });

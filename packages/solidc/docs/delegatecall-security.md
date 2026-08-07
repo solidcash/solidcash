@@ -99,6 +99,194 @@ Structural note: the dispatcher runs exactly one function per master spend, so t
 (self-authorizing) function are mutually exclusive on the same proxy master; the only way to "compose" them is
 inlining a delegatecall into a regular function, which rule B forbids.
 
+**C. `impl` must be a covenant the CALLER cannot choose.** Rule 3 says `impl` must be a covenant address rather
+than a P2PKH placeholder, but that is only half of it: the pin compares the co-spent input's locking bytecode
+against *whatever address the spender supplied*. If `impl` is an unguarded function parameter the pin is
+trivially satisfiable — the attacker co-spends an implementation **they wrote**, whose `delegate` function
+writes whatever they like:
+
+```solidity
+function up(bytes input, address impl) external {   // pinsDelegateCoSpend == true, and the pin proves NOTHING
+    impl.delegatecall(input);                       // MEASURED: an unrelated spender settles 5 -> 999
+    require(input.length > 0);
+}
+```
+
+The address must be bound to something the caller does not control. Any one of these is sufficient:
+
+- a **constructor argument** — the proxy's own p2sh32 commits to it (the `bytecode-pinned` class);
+- a **signature guard whose KEY the caller cannot choose** - a constructor argument or a state variable, so only
+  an authorized signer may pick `impl` (the `caller-authorized` class);
+- a **`require()` against stored state** — `require(impl == this.implementation);`, the ordinary upgradeable
+  proxy.
+
+A parameter with none of the three emits a `SECURITY-AUDIT C1` warning naming the parameter. It warns rather
+than rejecting **because the third shape is legitimate and common**, and a hard rejection would have to model
+every way a `require()` can constrain an address.
+
+**A signature guard is only as good as its key (finding SEC-12).** `checkSig(s, pk)` proves that whoever
+supplied `pk` also supplied a matching `s` - nothing more. If the *same caller* supplies both, the check
+authorizes nobody and the proxy is wide open:
+
+```solidity
+contract SelfAuthProxy() {                                        // no constructor arguments: no stored key
+    bigint counter;
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(checkSig(s, pk));                                 // pk is the CALLER's, so this proves nothing
+        impl.delegatecall(input);                                 // MEASURED: a stranger settles 5 -> 999
+        require(input.length > 0);
+    }
+}
+```
+
+Until round 15 the compiler credited *any* `checkSig`/`checkMultiSig`/`checkDataSig` in the body as a guard
+without asking which key it checked, so this shape compiled with no C1 diagnostic at all - and so did a P2PKH
+`impl` once such a check was added beside it. The compiler now reads the key operand (arg 1 of `checkSig` /
+`checkMultiSig`, arg 2 of `checkDataSig`), resolves it through casts and local aliases, and credits a guard only
+when it lands on a **constructor input, a state variable, or a literal**. A parameter of the same entry point is
+not a guard, and neither is a computed key any of whose operands reaches one (`pubkey(k)`, `hash160(pk)`).
+
+Three resolution details, each because the obvious version had a hole:
+
+- An alias is read through **every** binding it has, not just its declaration. `pubkey k = owner; k = pk;`
+  declares the constructor key and then rebinds the caller's - reading the declaration alone credited a guard
+  the `checkSig` never had.
+- An array index only *selects* among a container's elements, so the CONTAINER decides the bytes:
+  `checkSig(s, this.owners[i])` stays a guard even though the caller picks `i`. Without this the multi-owner
+  proxy would start warning.
+- A key parameter the caller **cannot vary** is not caller-chosen (finding SEC-17). See below.
+
+**A committed key is not a chosen key (finding SEC-17).** Reading the key's provenance and stopping there
+misses that a parameter can be pinned by a sibling `require()`. The standard BCH admin-upgrade idiom passes the
+key in and commits it in the same breath, so the caller may supply only the key whose hash is already stored:
+
+```solidity
+contract AdminProxy() {
+    bigint counter;
+    bytes20 pkh;                                                  // the committed admin key hash
+    function up(bytes input, address impl, pubkey pk, sig s) external {
+        require(hash160(pk) == this.pkh);                         // pk is now the ONLY key that passes
+        require(checkSig(s, pk));                                 // ... so this really does authorize
+        impl.delegatecall(input);
+        require(input.length > 0);
+    }
+}
+```
+
+Measured on the post-SEC-12 tree: seven spellings of this idiom warned here, and the same seven at the
+`selfdestruct` diagnostic - 14 false positives. That matters more than its severity suggests, because a warning
+that fires on the commonest authorization shape in BCH trains authors to ignore it, and the genuine holes above
+are what then get missed.
+
+A key parameter is therefore credited when an **unconditional** `require()` in the same function pins
+`hash160(key)` to something the caller cannot choose, resolved by the same provenance rules (constructor input,
+state variable, literal). Both operand orders count, casts on either side are transparent, and the equality may
+be one conjunct of an `&&`. The boundaries, each of which still warns:
+
+- **the committed side must not be caller-chosen** - `require(hash160(pk) == otherParam)` pins nothing;
+- **the commitment must run on every path** - inside an `if` arm or behind an `||`, the other path leaves the
+  key free, which is the SEC-12 hole again;
+- **it must be the same key** - committing `pk` does not authorize a `checkSig` against something else;
+- `!=` is not a commitment, and neither is a self-referential one such as `hash160(pk) == hash160(pk)`.
+
+This reads the key's binding, not the writer of what it is bound to: if the same function assigns `this.pkh`
+from a caller parameter before comparing against it, the commitment is credited anyway. Authorize the state
+write with the same care as the upgrade itself.
+
+> The `PINNED_PROXY` fixture in `packages/solidcash/test/e2e/Delegatecall.test.ts` is written in exactly the
+> unsafe shape above. It is **not** an example of a safe key - it exists to exercise the identity and
+> forwarded-selector pins of rule 3, which are independent of who is authorized, and it now emits the C1 warning.
+
+**D. The delegatecall must be reached at most once per path.** The state-covenant skip is a *per-function*
+property (`!functionHasDelegatecall`), while the co-spend pin is emitted at the *callsite*. Those two disagree
+whenever the callsite is not straight-line:
+
+- **Inside a branch.** `if (flag) { impl.delegatecall(input); }` skips the proxy's own state covenant for the
+  whole function but pins the co-spend only on the taken arm. Spending with `flag = false` and **no
+  implementation in the transaction** reproduced finding C1 exactly (measured: 5 -> 999 accepted). The compiler
+  now allocates a runtime "delegate edge reached" flag and requires every proxy data NFT's
+  `category ++ commitment` to be preserved input -> output on any path that did not reach the edge. So the
+  not-taken path is *frozen*, not unauthorized: a no-op spend still settles, a state change on that path does
+  not. Straight-line proxies allocate no flag and are byte-identical.
+- **Inside a loop.** `for (...) { impl.delegatecall(input); }` reuses the *same* pinned input and the *same*
+  block slot on every iteration, so two source delegations settled as one (measured: 5 -> 6 where the source
+  says 5 -> 7), with no diagnostic. There is no honest covenant to emit for it, so it is a hard compile error.
+  Delegate to an implementation function that performs the iteration itself.
+
+Scope: both rules apply to any callsite that owns ONE reserved delegate slot — a hand-written
+`impl.delegatecall(input)` and the synthesized forms of rule E alike. A compiler-synthesized message-bus batch route / graph
+handler dispatches rows through a loop by design and derives a delegate index per ROW, so it is excluded from
+both.
+
+*Why that exclusion does not disarm anything (measured, not proven).* "Excluded" reads like "unprotected", so
+the three things that actually hold there, each measured at compile time on the same source:
+
+- The **source entry point is not excluded**. Compiling a conditional-delegate proxy with the message-bus
+  options still classifies its callsite `conditional` and still emits the not-taken-path covenant into that
+  function's body. Only the `__message_bus_graph_*` clone (`graphEmissionHandler`) and the `__message_bus1` route are excluded.
+- The **route never skips its own state covenant.** `__message_bus1` issues no delegatecall itself (it `OP_INVOKE`s
+  handlers), so `functionHasDelegatecall` is false for it and it runs the ordinary data-NFT covenant. Rule D's
+  hazard is precisely "the per-function skip is wider than the per-callsite pin"; with no skip there is no gap.
+- A **state-writing batch contract with a delegate row does not compile at all**: the route inlines the row
+  bodies, so it has both a delegatecall and a state write and rule B rejects it. (Identical on 05412a58 — this
+  is pre-existing, not a consequence of rule E.)
+
+**Measurement traps, recorded because each produced a false negative on first inspection.** Two artifact shapes
+hide emitted covenants from an ASM grep of `artifact.bytecode`:
+
+- A **message-bus** artifact publishes the dispatcher in `bytecode` and each function body as HEX in
+  `functionBodies`; decode the body for the function's selector.
+- A **split root** outlines forwarder bodies into `OP_DEFINE`d spans that are *pushed as data*, so opcode names
+  never appear; search the assembled BYTES (`93 c7 88` = `OP_ADD OP_UTXOBYTECODE OP_EQUALVERIFY`).
+
+Both are pinned in `SecurityAudit.test.ts` ("X16", "pins the facet co-spend in a split root forwarder").
+
+Still open: no VM-level forgery was attempted against a live graph-controller transaction with a conditional
+delegate row. The above is compile-level evidence for the mechanism, not a settled negative result.
+
+**E. A delegatecall the COMPILER writes is still a delegatecall.** Two source forms lower to a delegatecall the
+user never typed, and both were excluded from rules 3, B and D because those rules keyed off "did the user write
+`delegatecall`":
+
+- **`L.f()` library-call sugar.** `contract C { bigint count; function bump() { Counter.increment(); } }`
+  desugars to `__libAddr_Counter.delegatecall(<increment selector>)`.
+- **Split-facet forwarders.** A contract over the script-size limit is split, and each moved entry point becomes
+  a root forwarder that delegatecalls its facet.
+
+The exclusion made `pinsDelegateCoSpend` **false** for these, so the callsite emitted no covenant at all — while
+the per-function `!functionHasDelegatecall` gate still skipped the consumer's **entire** state covenant. That is
+rule 3's hazard with nothing left to catch it and, unlike rule C, no caller-supplied address to blame. Measured
+on the BCH-2026 VM with a one-line delegate library (consumer state 0):
+
+| co-spent at the delegate slot | settled | baseline | fixed |
+|---|---|---|---|
+| the real, linked library | 1 | ACCEPTED | ACCEPTED |
+| a HOSTILE library, same layout + same `increment()` selector | 999 | ACCEPTED | REJECTED at input 0 |
+| **nothing at all** | 999 | ACCEPTED | REJECTED at input 0 |
+
+The synthesized forms are now pinned exactly like a hand-written delegatecall, with one difference: the delegate
+input index is **derived** from the function's own reserved `lowLevelCall` block slot rather than read from the
+`__internal__delegateInputIndex` witness. They carry no witness parameter (the consumer ABI is unchanged), and a
+derived index is the stronger source — nothing caller-supplied selects the input. The target is a synthesized
+constructor argument (`__libAddr_L`, or the facet link), so rule C is satisfied structurally: the contract's own
+p2sh32 commits to it.
+
+Only a stateful **entry point** reserves a delegate input slot, so a library call from an internal helper has
+nothing to pin to; it is refused by name rather than left silently unpinned. (On 05412a58 that shape compiled
+with `lowLevelCalls` undefined on the entry point — no slot, no pin, no diagnostic.)
+
+The forwarded-selector half is emitted only when the library has **>= 2 public functions**. A
+one-public-function library compiles to a single-entry-point contract whose unlocking script carries no leading
+selector — and with one function there is nothing for a caller to choose, so the identity pin alone is the whole
+property there. Un-excluding these forms also brings rules B and D to bear on them: `L.f()` next to a
+`this.x = ...` is now `DelegatecallSelfMutationError`, and `L.f()` inside a loop is refused by name (one reserved
+slot serves every iteration).
+
+*Residual:* the library's `delegate` function still does not authenticate its caller (by design — a delegate
+serves many proxies; see the `_proxyMasterIndex` note above). What the consumer now guarantees is that the script
+at the delegate slot IS the linked library and, when the library is selector-dispatched, that the named function
+ran. A `brandLibrary: true` library adds the converse pin (the library refuses a foreign consumer's master).
+
 ## Implementation status
 
 - **B (no self-mutation in a delegatecall function)** — enforced (hard compile error,
@@ -122,13 +310,40 @@ inlining a delegatecall into a regular function, which rule B forbids.
   (`>= 2` functions), so its unlocking script leads with the selector. A single-function delegate has no selector
   (its leading push is `_proxyMasterIndex`), so the pinned path rejects it (fail-closed) — proxy to a multi-function
   implementation, which is the only case where a "wrong function" is possible anyway.
+- **C (`impl` not caller-chosen)** — *warned*, not rejected. A delegatecall whose target resolves (through local
+  aliases) to a parameter of the same entry point, with no signature guard and no `require()` naming it, emits a
+  `SECURITY-AUDIT C1` warning identifying the parameter. Rejecting would break `require(impl == storedImpl)`.
+  **SEC-12:** "signature guard" means a check whose *key* is a constructor input, a state variable or a literal.
+  A `checkSig` against a key the same caller supplies suppresses nothing - measured: the self-authorizing proxy
+  above compiled silently on `690c868c`, and so did a P2PKH `impl` with such a check beside it. Both now warn.
+  This is a diagnostic only: no bytecode changed (0 differences over 2,070 compiled repo sources), so the
+  measured `5 -> 999` takeover still settles - the warning is what tells you it can.
+- **D (reached at most once per path)** — enforced. A delegatecall inside a **loop** is a hard compile error; a
+  delegatecall inside a **branch/switch/try arm** compiles and carries an extra epilogue covenant freezing the
+  proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
+  `MessageBusDelegateClassesE3`: the not-taken forgery is refused at input 0, the honest taken spend still settles,
+  and a not-taken no-op still settles.
+- **E (synthesized delegatecalls are pinned too)** — enforced. `L.f()` library sugar and split-facet forwarders
+  set `pinsDelegateCoSpend` with `delegateIndexFromBlockSlot`, so the identity pin reads the reserved block slot
+  instead of a witness; the selector half is added when the library is selector-dispatched. Rules B and D now
+  apply to them as well. VM-proven in `LibraryDelegate.test.ts` (`SEC-4`): honest spend settles, a hostile
+  implementation and a bare no-delegate rewrite are both refused at input 0, and a substituted library function
+  is refused on a two-function library.
 
 ## Writing a safe proxy
 
 - Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH), so the
   co-spend + selector pins are emitted (a P2PKH `impl` disables them and keeps the C1 warning).
+- Do **not** take `impl` as an unguarded parameter. Use a constructor argument, a `require()` against stored
+  state, or a signature guard **whose key is a constructor argument or state variable** (rule C). A `checkSig`
+  against a `pubkey` parameter is not a guard: the caller supplies the key and the signature both (SEC-12).
+- Keep the delegatecall on a straight line, or accept that a branch's not-taken path can only preserve state.
+  Never put it in a loop (rule D).
 - Keep the delegatecall function pure-forwarding: **no `this.x = ...`** in it (the delegate owns all writes).
 - Ensure the delegate authorizes/preserves the whole proxy state, not just the fields one call touches.
 - Delegate to a **selector-dispatched** (multi-function) implementation so the forwarded-selector pin applies.
+- The same rules apply to a `L.f()` delegate-library call, which is a delegatecall the compiler writes for you
+  (rule E): no `this.x = ...` beside it, never in a loop, and prefer a multi-function library so the
+  which-function pin applies too.
 - `upgrades.deployProxy` (SDK) wires all of this: it deploys the implementation + a pinned proxy, seeds the state,
   and forwards `proxy.fn(...)` through the pinned delegatecall. See `docs/upgrades.md`.

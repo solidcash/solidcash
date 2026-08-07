@@ -9,6 +9,12 @@ import { Network } from './interfaces.js';
 import { publicKeyToP2PKHLockingBytecode, getNetworkPrefix } from './utils.js';
 import SignatureTemplate from './SignatureTemplate.js';
 
+export interface TransactionNonceReservation {
+  readonly nonce: bigint;
+  commit(): void;
+  release(): void;
+}
+
 /**
  * A signer encapsulates a private key and provides:
  * - P2PKH address derivation (for UTXO lookup)
@@ -31,6 +37,8 @@ export default class Signer {
 
   private _sigTemplate: SignatureTemplate;
   private _addresses: Map<string, string> = new Map();
+  private _transactionNonce = 0n;
+  private _reservedTransactionNonce = false;
 
   constructor(privateKey: Uint8Array | string, provider: NetworkProvider) {
     if (typeof privateKey === 'string') {
@@ -86,7 +94,46 @@ export default class Signer {
 
   /** Return a new Signer for the same key bound to a different provider (ethers.js `Signer.connect`). */
   connect(provider: NetworkProvider): Signer {
-    return new Signer(this.privateKey, provider);
+    const connected = new Signer(this.privateKey, provider);
+    connected._transactionNonce = this._transactionNonce;
+    return connected;
+  }
+
+  /** EVM-compatibility nonce for user-visible transactions initiated by this signer. */
+  async getNonce(): Promise<number> { return Number(this._transactionNonce); }
+
+  /** Reserve one logical transaction nonce across any subordinate BCH transactions. */
+  reserveTransactionNonce(): TransactionNonceReservation {
+    if (this._reservedTransactionNonce) {
+      throw new Error(`Signer transaction nonce ${this._transactionNonce} is already reserved.`);
+    }
+    this._reservedTransactionNonce = true;
+    const nonce = this._transactionNonce;
+    let active = true;
+    return {
+      nonce,
+      commit: (): void => {
+        if (!active) return;
+        active = false;
+        this._reservedTransactionNonce = false;
+        this._transactionNonce = nonce + 1n;
+      },
+      release: (): void => {
+        if (!active) return;
+        active = false;
+        this._reservedTransactionNonce = false;
+      },
+    };
+  }
+
+  /** Snapshot hook used by mock-network fixtures. */
+  _getTransactionNonceState(): bigint { return this._transactionNonce; }
+
+  /** Restore hook used by mock-network fixtures and explicit compatibility setup. */
+  _setTransactionNonceState(nonce: bigint): void {
+    if (nonce < 0n) throw new Error('Transaction nonce cannot be negative.');
+    this._transactionNonce = nonce;
+    this._reservedTransactionNonce = false;
   }
 
   /** The "Bitcoin Signed Message" double-SHA256 digest for a message (magic-prefixed, length-delimited). */
@@ -119,8 +166,6 @@ export default class Signer {
       + 'TransactionBuilder / StatefulContract and SignatureTemplate instead.',
     );
   }
-
-  getNonce(): Promise<number> { return Signer._na('getNonce'); }
 
   estimateGas(): Promise<bigint> { return Signer._na('estimateGas'); }
 

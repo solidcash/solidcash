@@ -1,6 +1,7 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { vmNumberToBigInt } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, Signer, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
@@ -68,7 +69,7 @@ describe('FULL multiTransfer: NEW recipient whose predecessor is msg.sender (mer
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
     await expect(chk(bobAddress, 980n)).resolves.toBeDefined();
     await provider.addUtxo(contract.address, { txid: uid(), vout: 0, satoshis: 200000n });
-    await expect(chk(bobAddress, 1000n)).rejects.toThrow(); // bob was debited, not the old value
+    await expect(chk(bobAddress, 1000n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.'); // bob was debited, not the old value
   });
 
   it('merges into a gap with a REAL successor (bob -> carol -> alice), leaving the successor untouched', async () => {

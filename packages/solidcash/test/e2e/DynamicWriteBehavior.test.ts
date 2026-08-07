@@ -1,7 +1,7 @@
 // Dynamic-storage (chunked) write behavior pins: conditional writes, value-returning functions, early
 // returns, control-flow combos, returning-call coexistence.
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
-import { getContractFactory } from '../src/index.js';
+import { compileString } from './direct-compile.js';
+import { getContractFactory, MockNetworkProvider } from '../src/index.js';
 import { fundedSigner } from './test-util.js';
 
 // Tuple assignment where a target is a STATE variable (mixed with transient-lowered locals). The tuple
@@ -58,18 +58,34 @@ contract ImmutableTupleInit {
 describe('tuple assignment onto state variables (VM-verified)', () => {
   it('swaps through mixed transient/state targets clobber-safely', async () => {
     const sc = await getContractFactory(compileString(MIXED_SOURCE), await fundedSigner()).deploy();
-    await expect(sc.f()).resolves.toBeDefined();
+    expect(await sc.f()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
   });
 
   it('persists the state-var writes across calls', async () => {
     const sc = await getContractFactory(compileString(MIXED_SOURCE), await fundedSigner()).deploy();
-    await expect(sc.g()).rejects.toThrow(); // pre-f state: y == 0
+    await expect(sc.g()).rejects.toThrow(
+      /BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation/,
+    ); // pre-f state: y == 0
     await sc.f();
     await expect(sc.g()).resolves.toBeDefined(); // y == 3, z == 4 persisted
   });
 
   it('initializes immutables from a tuple of a multi-return call in the constructor', async () => {
     const sc = await getContractFactory(compileString(CTOR_SOURCE), await fundedSigner()).deploy();
+    expect(await sc.check()).toMatchObject({
+      txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/),
+    });
+  });
+
+  it('derives immutable tuple initialization from a full VM trace', async () => {
+    const provider = new MockNetworkProvider({ consensusLimits: { maximumInputBytes: 10_000 } });
+    const signer = provider.getCachedSigner();
+    await provider.addUtxo(signer.getAddress(), {
+      txid: '11'.repeat(32), vout: 0, satoshis: 1_000_000n,
+    });
+    const sc = await getContractFactory(compileString(CTOR_SOURCE), signer).deploy();
     await expect(sc.check()).resolves.toBeDefined();
   });
 });

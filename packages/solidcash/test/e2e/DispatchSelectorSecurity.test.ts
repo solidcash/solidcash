@@ -7,7 +7,7 @@ import {
   binToHex,
   type AuthenticationInstruction,
 } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   Contract,
   TransactionBuilder,

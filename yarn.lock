@@ -1718,10 +1718,10 @@
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 
-"@mem-cash/validation@^0.0.7":
-  version "0.0.7"
-  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.7.tgz#cdde455c7b3f2df6fbe8a4040dde3b2b49c3d8c7"
-  integrity sha512-H7VKNW12iCBKkxUiFvrTn3jzv6zq27F+F0U9U0EkxyMPdxPj6P6omDxexlPoUDk0FC7ZTa1YPF5J9dhcQNY1cw==
+"@mem-cash/validation@^0.0.8":
+  version "0.0.8"
+  resolved "https://registry.npmjs.org/@mem-cash/validation/-/validation-0.0.8.tgz#bad108eafc58a2d4b693a7d5bef62b77daa640f0"
+  integrity sha512-ZFcnGChD6H4/6rXXlkGHrecEajinAII348GjYJ2EsvwFlN7hqsTMqSTfFSQGx5GtJWgLZp48mpZ3f3IU25CoiQ==
   dependencies:
     "@bitauth/libauth" "^3.1.0-next.8"
 

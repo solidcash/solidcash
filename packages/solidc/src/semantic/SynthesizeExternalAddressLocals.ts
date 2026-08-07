@@ -21,12 +21,15 @@ import {
   WhileNode,
   DoWhileNode,
   CollectionIterationNode,
+  ContractReferenceNode,
+  FunctionModifier,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
 } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import { Modifier } from '../ast/Globals.js';
 
 /**
  * Rewrites an external method call whose target address is read from THIS contract's own (self-pinned) state
@@ -82,20 +85,29 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // every use - safe to trace through (the Marketplace `IERC20 token = IERC20(job.token)` intermediary). A
   // reassignable local is excluded (it could be rebound to a caller value between decl and the call = forgery).
   private singleAssignLocals: Set<string> = new Set();
+  // Storage-reference locals keep pointing at their initializer even when assignments through them update the
+  // referenced struct. They are safe provenance aliases despite looking "reassigned" to a generic AST scan.
+  private storagePointerLocals: Set<string> = new Set();
+  private localStructTypes: Map<string, StructType> = new Map();
   // interface / contract name -> the method names it declares (own + inherited). A target-receiver method that is
   // NOT one of these is a `using L for IFace` library method (`token.safeTransfer(..)`), NOT an external call - it
   // must be left for the using-for resolver, not hoisted into an __extaddr_ address local (which drops the interface
   // type and breaks the using-for dispatch). Only genuine interface method calls are self-pinned external calls.
   private ifaceMethods: Map<string, Set<string>> = new Map();
+  private pureInterfaceReturns: Map<string, string> = new Map();
   // Transitive-target decls to insert right BEFORE the current statement (a computed target with a mid-body-only
   // single-assign-local leaf cannot hoist to the body top). Flushed per-statement by visitBlock. A fresh counter
   // names each so repeated uses do not collide.
   private pendingMidbodyDecls: VariableDefinitionNode[] = [];
   private transitiveCounter = 0;
+  // Constructor state is initialized in body order, so a state-backed receiver must be captured at its call site
+  // rather than in the normal function body-top prologue (which would read it before an earlier assignment).
+  private visitingConstructor = false;
 
   visitSourceFile(node: SourceFileNode): Node {
     this.typeNames = new Set();
     this.ifaceMethods = new Map();
+    this.pureInterfaceReturns = new Map();
     const ifaces = node.interfaceDefinitions as InterfaceNode[];
     const ifaceByName = new Map(ifaces.map((i) => [i.name, i]));
     const methodsOf = (name: string, seen = new Set<string>()): Set<string> => {
@@ -114,6 +126,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       this.ifaceMethods.set(c.name, new Set((c.functions ?? []).map((f) => f.name)));
     }
     if (node.contract) this.typeNames.add(node.contract.name);
+    for (const fn of node.freeFunctions ?? []) {
+      const ret = fn.returnTypes?.length === 1 ? fn.returnTypes[0] : undefined;
+      if (fn.modifiers.includes(FunctionModifier.PURE)
+        && ret instanceof AddressType && ret.interfaceName && this.typeNames.has(ret.interfaceName)) {
+        this.pureInterfaceReturns.set(fn.name, ret.interfaceName);
+      }
+    }
     if (node.contract) node.contract = this.visit(node.contract) as ContractNode;
     return node;
   }
@@ -146,6 +165,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const hasComputedTarget = this.hasComputedCastTarget(node);
     if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot || hasComputedTarget) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+      if (node.constructorDef) {
+        this.visitingConstructor = true;
+        node.constructorDef = this.visitFunctionDefinition(node.constructorDef) as FunctionDefinitionNode;
+        this.visitingConstructor = false;
+      }
       // fallback/receive are external entry points like any function (e.g. a re-entrancy fallback that calls
       // back into another contract); visit them too. The state var is already set by the time they run.
       if (node.fallbackDef) node.fallbackDef = this.visitFunctionDefinition(node.fallbackDef) as FunctionDefinitionNode;
@@ -160,6 +184,11 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     let found = false;
     const walk = (n: unknown): void => {
       if (found || !n || typeof n !== 'object') return;
+      if (n instanceof MethodCallNode && n.inlinedOperatorReceiver && n.object instanceof FunctionCallNode
+        && this.pureInterfaceReturns.has(n.object.identifier.name)) {
+        found = true;
+        return;
+      }
       if (n instanceof MethodCallNode && n.object instanceof FunctionCallNode
         && n.object.parameters.length === 1 && this.typeNames.has(n.object.identifier.name)) {
         // Unwrap cast wrappers to match castComputedTarget: `IFoo(address(uint(keccak256(..))))` wraps the
@@ -184,6 +213,8 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     this.usedInFn = new Map();
     this.pendingMidbodyDecls = [];
     this.localInits = new Map();
+    this.storagePointerLocals = new Set();
+    this.localStructTypes = new Map();
     // Pre-populate from the WHOLE body (not just bindings visited so far): a computed target is recognised mid-visit
     // (castComputedTarget) and must resolve an inliner alias (`__rh<N>_factory`) whose binding a deeply-nested inline
     // may place in a traversal position not yet reached. Sound: only single-assignment aliases (SYNTH_ALIAS /
@@ -231,11 +262,27 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (dot > 0) {
       const varName = name.slice(0, dot);
       const method = name.slice(dot + 1);
-      if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
-        && this.isInterfaceMethod(this.stateVarIface.get(varName), method)) {
-        this.markUsed(varName, this.stateVarIface.get(varName)!, false, undefined);
+      if (LOW_LEVEL_CALLS.has(method) && this.plainAddrStateVars.has(varName)) {
+        const localName = `${PREFIX}ll_${varName}`;
+        if (!this.usedInFn.has(localName)) {
+          this.usedInFn.set(localName, { iface: undefined, init: new IdentifierNode(varName) });
+        }
         const loc = node.identifier.location;
-        node.identifier = new IdentifierNode(`${PREFIX}${varName}.${method}`);
+        node.identifier = new IdentifierNode(`${localName}.${method}`);
+        node.identifier.location = loc;
+      } else if (this.stateVarIface.has(varName) && !ADDRESS_METHODS.has(method)
+        // Sibling-contract member indexes can be pruned before this pass in a constructor. The state variable's
+        // declared contract type still proves this is a contract receiver; capture it at the call site and let
+        // semantic member resolution validate the method. Ordinary functions keep the using-for-safe method gate.
+        && (this.visitingConstructor || this.isInterfaceMethod(this.stateVarIface.get(varName), method))) {
+        const iface = this.stateVarIface.get(varName)!;
+        const init = new IdentifierNode(varName);
+        init.location = node.identifier.location;
+        const localName = this.visitingConstructor
+          ? this.captureAtCallSite(iface, init, node)
+          : this.markUsed(varName, iface, false, undefined);
+        const loc = node.identifier.location;
+        node.identifier = new IdentifierNode(`${localName}.${method}`);
         node.identifier.location = loc;
       } else if (!ADDRESS_METHODS.has(varName) && !ADDRESS_METHODS.has(method)
         && this.singleAssignLocals.has(varName) && this.localInits.has(varName)) {
@@ -258,16 +305,44 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // `token.method{value:}(..)` (interface-typed state var) or `IFoo(a).method(..)` (plain-`address` state var
   // behind an interface cast): rewrite the object to the synthesized __extaddr_ local.
   visitMethodCall(node: MethodCallNode): Node {
-    const target = this.externalTargetStateVar(node.object);
-    const chain = target ? undefined : this.chainTarget(node.object);
-    const castChain = target || chain ? undefined : this.castChainTarget(node.object);
-    const paramField = target || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
-    const computed = target || chain || castChain || paramField
+    const directStateTarget = node.object instanceof IdentifierNode && this.stateVarIface.has(node.object.name)
+      ? {
+        name: node.object.name,
+        iface: this.stateVarIface.get(node.object.name)!,
+        isPlain: false,
+      } : undefined;
+    const target = this.externalTargetStateVar(node.object) ?? directStateTarget;
+    const cachedField = target ? undefined : this.localStructFieldTarget(node.object);
+    const chain = target || cachedField ? undefined : this.chainTarget(node.object);
+    const castChain = target || cachedField || chain ? undefined : this.castChainTarget(node.object);
+    const paramField = target || cachedField || chain || castChain ? undefined : this.castParamFieldTarget(node.object);
+    const localCastField = target || cachedField || chain || castChain || paramField
+      ? undefined : this.castLocalStructFieldTarget(node.object);
+    const computed = target || cachedField || chain || castChain || paramField || localCastField
       ? undefined : this.castComputedTarget(node.object);
-    const transitive = target || chain || castChain || paramField || computed
+    const transitive = target || cachedField || chain || castChain || paramField || localCastField || computed
       ? undefined : this.castTransitiveTarget(node.object);
+    const pureCallIface = node.inlinedOperatorReceiver && node.object instanceof FunctionCallNode
+      ? this.pureInterfaceReturns.get(node.object.identifier.name) : undefined;
     if (target && !ADDRESS_METHODS.has(node.methodName) && this.isInterfaceMethod(target.iface, node.methodName)) {
-      const localName = this.markUsed(target.name, target.iface, target.isPlain, node.object);
+      const localName = this.visitingConstructor
+        ? this.captureAtCallSite(target.iface, node.object, node)
+        : this.markUsed(target.name, target.iface, target.isPlain, node.object);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
+    } else if (cachedField && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(cachedField.iface, node.methodName)) {
+      // C2's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
+      // its current interface field immediately before the call rather than tracing back to the initial state
+      // read. The external-call covenant then pins the co-spent target to exactly that runtime field value.
+      const localName = `${PREFIX}cache${this.transitiveCounter}_${cachedField.iface}`;
+      this.transitiveCounter += 1;
+      const def = new VariableDefinitionNode(
+        new AddressType(false, cachedField.iface), [], localName, cloneNode(node.object) as ExpressionNode,
+      );
+      def.location = node.object.location ?? node.location;
+      this.pendingMidbodyDecls.push(def);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
@@ -277,11 +352,14 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       // the whole field read into a local so the audited __extaddr_ dispatch pins the co-spend to it - a caller
       // cannot substitute a self-pinned value (extcall-target-pinning.md). Indices are params/literals, so the
       // hoisted decl is valid at the function-body top.
-      if (!this.usedInFn.has(chain.localName)) {
-        this.usedInFn.set(chain.localName, { iface: chain.iface, init: cloneNode(node.object) as ExpressionNode });
+      const localName = this.visitingConstructor
+        ? this.captureAtCallSite(chain.iface, chain.init, node)
+        : chain.localName;
+      if (!this.visitingConstructor && !this.usedInFn.has(localName)) {
+        this.usedInFn.set(localName, { iface: chain.iface, init: chain.init });
       }
       const loc = node.object.location;
-      node.object = new IdentifierNode(chain.localName);
+      node.object = new IdentifierNode(localName);
       node.object.location = loc;
     } else if (castChain && !ADDRESS_METHODS.has(node.methodName)
       && this.isInterfaceMethod(castChain.iface, node.methodName)) {
@@ -309,6 +387,21 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const loc = node.object.location;
       node.object = new IdentifierNode(paramField.localName);
       node.object.location = loc;
+    } else if (localCastField && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(localCastField.iface, node.methodName)) {
+      // `IFoo(local.addr).m()` where `local` is a single-assignment struct value (including an inliner-created
+      // binding of a struct parameter). Capture at the call site: the local is live here and its actual value is
+      // deterministically pinned by the script, while a body-top hoist could precede its declaration.
+      const localName = `${PREFIX}lf${this.transitiveCounter}_${localCastField.iface}`;
+      this.transitiveCounter += 1;
+      const def = new VariableDefinitionNode(
+        new AddressType(false, localCastField.iface), [], localName, localCastField.init,
+      );
+      def.location = node.object.location ?? node.location;
+      this.pendingMidbodyDecls.push(def);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
     } else if (computed && !ADDRESS_METHODS.has(node.methodName)
       && this.isInterfaceMethod(computed.iface, node.methodName)) {
       // `IFoo(pairFor(factory, a, b)).m()`: an author-written COMPUTED target rooted in params/self-pinned state.
@@ -330,6 +423,25 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       const def = new VariableDefinitionNode(new AddressType(false, transitive.iface), [], localName, transitive.init);
       def.location = node.object.location ?? node.location;
       this.pendingMidbodyDecls.push(def);
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
+    } else if (LOW_LEVEL_CALLS.has(node.methodName) && node.object instanceof IdentifierNode
+      && this.plainAddrStateVars.has(node.object.name)) {
+      // A bare plain-address STATE receiver (`target.call(data)`) is not a caller/function parameter. Hoist it
+      // just like an interface-typed state receiver so the external-call epilogue pins the co-spent callee to
+      // the authenticated state value. `resolveLlReceiver` intentionally leaves bare identifiers alone because
+      // bare PARAM receivers already work; this state-rooted form must not be confused with that caller witness.
+      const localName = `${PREFIX}${node.object.name}`;
+      if (!this.usedInFn.has(localName)) {
+        this.usedInFn.set(localName, { iface: undefined, init: cloneNode(node.object) as ExpressionNode });
+      }
+      const loc = node.object.location;
+      node.object = new IdentifierNode(localName);
+      node.object.location = loc;
+    } else if (pureCallIface && !ADDRESS_METHODS.has(node.methodName)
+      && this.isInterfaceMethod(pureCallIface, node.methodName)) {
+      const localName = this.captureAtCallSite(pureCallIface, node.object, node);
       const loc = node.object.location;
       node.object = new IdentifierNode(localName);
       node.object.location = loc;
@@ -359,6 +471,17 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
     return node;
+  }
+
+  private captureAtCallSite(iface: string, init: ExpressionNode, call: Node): string {
+    const localName = `${PREFIX}ctor${this.transitiveCounter}_${iface}`;
+    this.transitiveCounter += 1;
+    const def = new VariableDefinitionNode(
+      new AddressType(false, iface), [], localName, cloneNode(init) as ExpressionNode,
+    );
+    def.location = init.location ?? call.location;
+    this.pendingMidbodyDecls.push(def);
+    return localName;
   }
 
   // Record a synthesized local for (stateVar, interface); returns its name. Interface-typed state vars keep the
@@ -397,15 +520,32 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // array element, or mapping value, possibly nested (`s.field`, `ss[i].field`, `ms[k].field`, `s.a.b`). Returns
   // the interface + a stable local name (from the chain shape, so identical chains dedup). Returns undefined
   // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
-  private chainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
+  private chainTarget(obj: ExpressionNode):
+  { iface: string; localName: string; init: ExpressionNode } | undefined {
     if (!(obj instanceof FieldAccessNode)) return undefined;
-    const base = this.resolveChainType(obj.expression);
+    // A single-assignment storage pointer is the same self-pinned chain (`S storage s = m[k]; s.target`).
+    // Normalize its base before checking provenance and use the normalized chain as the body-top initializer.
+    const normalized = this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode);
+    if (!(normalized instanceof FieldAccessNode)) return undefined;
+    const base = this.resolveChainType(normalized.expression);
     if (!(base instanceof StructType)) return undefined;
-    const fieldType = base.fields.find((f) => f.name === obj.name)?.type;
+    const fieldType = base.fields.find((f) => f.name === normalized.name)?.type;
     if (!(fieldType instanceof AddressType) || !fieldType.interfaceName) return undefined;
-    const key = this.chainKey(obj);
+    const key = this.chainKey(normalized);
     if (!key) return undefined;
-    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}` };
+    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
+  }
+
+  private localStructFieldTarget(obj: ExpressionNode): { iface: string } | undefined {
+    if (!(obj instanceof FieldAccessNode) || !(obj.expression instanceof IdentifierNode)) return undefined;
+    const localName = obj.expression.name;
+    if (!localName.startsWith('__c2cache_') && !this.singleAssignLocals.has(localName)) return undefined;
+    const init = this.localInits.get(localName);
+    const structType = this.localStructTypes.get(localName)
+      ?? (init ? this.resolveChainType(init) : undefined);
+    if (!(structType instanceof StructType)) return undefined;
+    const fieldType = structType.fields.find((field) => field.name === obj.name)?.type;
+    return fieldType instanceof AddressType && fieldType.interfaceName ? { iface: fieldType.interfaceName } : undefined;
   }
 
   // `IFoo(<chain>)` where <chain> is an `address`-typed value reached through self-pinned STATE (a struct field,
@@ -414,10 +554,13 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // the interface + a stable per-(chain, iface) local name; undefined unless the whole chain is state-rooted with
   // param/literal indices (so the hoisted `IFoo(chain)` decl is sound + valid at the body top).
   private castChainTarget(obj: ExpressionNode): { iface: string; localName: string } | undefined {
-    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
-    const iface = obj.identifier.name;
+    const iface = obj instanceof FunctionCallNode ? obj.identifier.name
+      : obj instanceof ContractReferenceNode ? obj.contractName : undefined;
+    const args = obj instanceof FunctionCallNode ? obj.parameters
+      : obj instanceof ContractReferenceNode ? obj.constructorArgs : undefined;
+    if (!iface || !args || args.length !== 1) return undefined;
     if (!this.typeNames.has(iface)) return undefined;
-    const arg = obj.parameters[0];
+    const arg = args[0];
     if (arg instanceof IdentifierNode) return undefined; // bare state var / param - externalTargetStateVar's job
     if (!(this.resolveChainType(arg) instanceof AddressType)) return undefined;
     const key = this.chainKey(arg);
@@ -439,6 +582,24 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const key = this.chainKey(arg);
     if (!key) return undefined;
     return { iface, localName: `${PREFIX}${key}_${iface}` };
+  }
+
+  private castLocalStructFieldTarget(obj: ExpressionNode):
+  { iface: string; init: ExpressionNode } | undefined {
+    if (!(obj instanceof FunctionCallNode) || obj.parameters.length !== 1) return undefined;
+    const iface = obj.identifier.name;
+    if (!this.typeNames.has(iface)) return undefined;
+    const arg = obj.parameters[0];
+    if (!(arg instanceof FieldAccessNode) || !(arg.expression instanceof IdentifierNode)) return undefined;
+    const localName = arg.expression.name;
+    if (!SYNTH_ALIAS.test(localName) && !this.singleAssignLocals.has(localName)) return undefined;
+    const init = this.localInits.get(localName);
+    const structType = this.localStructTypes.get(localName)
+      ?? (init ? this.resolveChainType(init) : undefined);
+    if (!(structType instanceof StructType)) return undefined;
+    const fieldType = structType.fields.find((field) => field.name === arg.name)?.type;
+    if (!(fieldType instanceof AddressType)) return undefined;
+    return { iface, init: cloneNode(obj) as ExpressionNode };
   }
 
   // After alias substitution, every leaf of a candidate body-top init must be a param or self-pinned state root -
@@ -648,7 +809,17 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     const scan = (node: unknown): void => {
       if (!node || typeof node !== 'object' || seen.has(node)) return;
       seen.add(node);
-      if (node instanceof VariableDefinitionNode && node.expression) this.localInits.set(node.name, node.expression);
+      if (node instanceof VariableDefinitionNode && node.expression) {
+        this.localInits.set(node.name, node.expression);
+        if (node.type instanceof StructType) this.localStructTypes.set(node.name, node.type);
+        if (node.modifier.includes(Modifier.STORAGE)
+          // Earlier storage desugaring can erase the source modifier while retaining the self-pinned initializer.
+          // A struct local initialized directly from a state mapping/array element is necessarily that reference
+          // shape; ordinary memory copies do not read a state container as their initializer.
+          || (node.type instanceof StructType && this.resolveChainType(node.expression) instanceof StructType)) {
+          this.storagePointerLocals.add(node.name);
+        }
+      }
       // A tuple-destructured declaration `(address input, address output) = (path[i], path[i+1])` (swap loops) or
       // `(address t0, address t1) = sortTokens(a, b)` (pairFor): map each NEW element to its per-slot RHS (a tuple
       // literal element) or the i-th value of the tuple-returning call, so it resolves like any single-assign local.
@@ -713,10 +884,12 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
 
   // A low-level-call receiver worth hoisting into a plain-`address` local, resolved to its provenance root: a
   // self-pinned state chain (`t.dest` == `txs[id].dest`, or `address(__rh0_token)` traced back to `jobs[id].token`)
-  // OR a param-rooted access. A bare-identifier receiver that is not a synthetic alias already sources in codegen.
+  // OR a param-rooted access. A bare PARAM receiver already sources in codegen; a bare STATE receiver must still
+  // be hoisted because the external-call epilogue runs after the body and can only name a surviving local.
   // Returns a stable per-root local name + the ROOT to hoist as its init (valid at the body top), else undefined.
   private resolveLlReceiver(obj: ExpressionNode): { localName: string; init: ExpressionNode } | undefined {
-    if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj) return undefined; // bare receiver works
+    if (obj instanceof IdentifierNode && this.llReceiverRoot(obj) === obj
+      && !this.stateRoots.has(obj.name)) return undefined; // bare parameter/local receiver works
     // Resolve the receiver to its provenance root, then inline any single-assignment storage-pointer local at the
     // base of the resulting chain (`JobPost storage job = jobs[id]; job.token` -> `jobs[id].token`) - the AstBuilder
     // usually inlines the storage alias, but not always (EACC Marketplace takeJob), so do it here for the target.
@@ -732,11 +905,16 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // (the caller passes a clone); indices in the reached chain are params/literals (resolveChainType re-validates).
   private inlineStoragePtrBases(expr: ExpressionNode, depth = 0): ExpressionNode {
     if (depth > 24) return expr;
-    if (expr instanceof IdentifierNode && this.singleAssignLocals.has(expr.name) && this.localInits.has(expr.name)) {
+    if (expr instanceof IdentifierNode
+      && (this.singleAssignLocals.has(expr.name) || this.storagePointerLocals.has(expr.name))
+      && this.localInits.has(expr.name)) {
       return this.inlineStoragePtrBases(cloneNode(this.localInits.get(expr.name)!) as ExpressionNode, depth + 1);
     }
-    if (expr instanceof FieldAccessNode) { expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1); }
-    else if (expr instanceof ArrayAccessNode) { expr.array = this.inlineStoragePtrBases(expr.array, depth + 1); }
+    if (expr instanceof FieldAccessNode) {
+      expr.expression = this.inlineStoragePtrBases(expr.expression, depth + 1);
+    } else if (expr instanceof ArrayAccessNode) {
+      expr.array = this.inlineStoragePtrBases(expr.array, depth + 1);
+    }
     return expr;
   }
 
@@ -811,12 +989,20 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return { name: obj.name, iface: this.stateVarIface.get(obj.name)!, isPlain: false };
     }
     if (obj instanceof FunctionCallNode && obj.parameters.length === 1) {
-      const arg = obj.parameters[0];
+      let arg = obj.parameters[0] as ExpressionNode;
+      // `I(address(child)).m()` is the same identity cast as `I(child).m()`. Contract-typed state variables are
+      // represented by AddressType(interfaceName=Contract), so preserve the outer interface cast in the hoisted
+      // initializer while tracing through any address/contract identity wrappers to the self-pinned state root.
+      while (arg instanceof CastNode && arg.type instanceof AddressType) arg = arg.expression;
       const castName = obj.identifier.name;
       if (arg instanceof IdentifierNode) {
         // redundant same-interface cast on an interface-typed state var
         if (this.stateVarIface.get(arg.name) === castName) {
           return { name: arg.name, iface: castName, isPlain: false };
+        }
+        // contract/interface-typed state var exposed through a different interface ABI
+        if (this.stateVarIface.has(arg.name) && this.typeNames.has(castName)) {
+          return { name: arg.name, iface: castName, isPlain: true };
         }
         // interface/contract cast on a plain-`address` state var
         if (this.plainAddrStateVars.has(arg.name) && this.typeNames.has(castName)) {

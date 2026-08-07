@@ -111,7 +111,7 @@ describe('P2PKH-no-tokens', () => {
         .send();
 
       // then
-      await expect(txPromise).rejects.toThrow();
+      await expect(txPromise).rejects.toThrow('Transaction outputs (19994001) exceed inputs (10000000). This transaction is invalid.');
     });
 
     it('should succeed when providing UTXOs to .addInputs', async () => {

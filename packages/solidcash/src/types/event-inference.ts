@@ -13,7 +13,11 @@ type EventParamTypeMap = {
 
 // Resolve a single event parameter's TypeScript type from its AbiInput.
 type ResolveParamType<Param> = Param extends { type: infer T }
-  ? T extends keyof EventParamTypeMap ? EventParamTypeMap[T] : any
+  ? T extends `int${number}` | `uint${number}` | `fixed${string}` | `ufixed${string}`
+    ? bigint
+    : T extends 'uint' | 'bigint' | 'fixed' | 'ufixed'
+      ? bigint
+      : T extends keyof EventParamTypeMap ? EventParamTypeMap[T] : any
   : any;
 
 // -- Event name extraction --------------------------------------------------

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // State variables and constants: init/zero-init, transient, override, compound assign, bare access.
 
@@ -271,6 +271,17 @@ describe('public constant is baked, not stored as state', () => {
   });
 });
 
+describe('OpenZeppelin storage gaps', () => {
+  it('omits __gap EVM slot reservations from Solidity-compat BCH state', () => {
+    const artifact = compileString(
+      'contract C { uint16 value; uint256[50] private __gap; function set(uint16 x) public { value = x; } }',
+      { solidityImportCompat: true, commitmentLimit: 16 },
+    );
+    expect(artifact.stateLayout?.variables.map((variable) => variable.name)).toEqual(['value']);
+    expect(artifact.stateLayout?.dataNftCount).toBe(1);
+  });
+});
+
 // `delete x` on a BARE state variable (Solidity-import idiom) must route to a state delete, like a bare state
 // write. It used to build a local delete: silently defining a wrong local at top level, and crashing once nested
 // in a branch ("variable 'x' does not exist on the stack"). Now byte-identical to `delete this.x`.
@@ -281,8 +292,10 @@ describe('bare `delete x` on a state variable routes to a state delete', () => {
   });
   it('is byte-identical to `delete this.y` (sound - actually deletes the state var)', () => {
     const explicit = 'contract C{uint16 y;uint8 x;function f()external returns(uint){this.y=2;if(x!=1)return 2;delete this.y;return 1;}}';
-    expect(compileString(bareSrc, { solidityImportCompat: true }).bytecode)
-      .toBe(compileString(explicit, { solidityImportCompat: true }).bytecode);
+    expect(compileString(bareSrc, { solidityImportCompat: true, messageBus: false }).bytecode)
+      .toBe(compileString(explicit, {
+        solidityImportCompat: true, messageBus: false,
+      }).bytecode);
   });
   it('leaves a genuine local delete alone', () => {
     expect(compileString('contract C{function f(uint x)external returns(uint){uint y=5;if(x!=1)return 2;delete y;return y;}}',

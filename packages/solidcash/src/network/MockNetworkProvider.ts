@@ -1,9 +1,10 @@
-import { binToHex, hexToBin, isHex } from '@bitauth/libauth';
+import { binToHex, encodeTransaction, hexToBin, isHex } from '@bitauth/libauth';
+import { ConsensusCommon } from '@bitauth/libauth/build/lib/vm/instruction-sets/common/consensus.js';
 import { sha256 } from '@solidcash/utils';
 import { createIndexer, type Indexer } from '@mem-cash/electrum';
 import { createTxVerifier } from '@mem-cash/validation';
 import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
-import NetworkProvider from './NetworkProvider.js';
+import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
 import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
@@ -17,10 +18,194 @@ export interface TokenGenesisOutput {
 export interface MockNetworkProviderOptions {
   updateUtxoSet: boolean;
   vmTarget?: VmTarget;
+  /** Relaxed by default for test harnesses; override individual limits to test production boundaries. */
+  consensusLimits: ConsensusLimits;
+  policy: NetworkPolicy;
 }
+
+export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptions, 'consensusLimits' | 'policy'>> & {
+  consensusLimits?: Partial<ConsensusLimits>;
+  policy?: Partial<NetworkPolicy>;
+};
+
+export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
+  maximumInputBytes: 1_000_000,
+  maximumStackItemBytes: 1_000_000,
+  maximumTransactionBytes: 10_000_000,
+  maximumNftCommitmentBytes: 1_000_000,
+  operationCostBudgetPerByte: 10_000_000,
+  hashDigestIterationsPerByte: 10_000_000,
+};
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
 export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;
+
+/* ------------------------------------------------------------------------------------------------------ */
+/* The consensus-override probe                                                                             */
+/* ------------------------------------------------------------------------------------------------------ */
+
+/**
+ * WHY THIS EXISTS. This provider publishes `consensusLimits` and then depends on the installed
+ * `@mem-cash/validation` applying them. `_strictRecursiveVmPreflight` reads the SAME limits, so the build-time
+ * gate and the broadcast-time decider agree only while that override channel works.
+ *
+ * `@mem-cash/validation` 0.0.8 declares `TxVerifierConfig.consensus` and threads it into every VM it builds.
+ * 0.0.7 has neither the field nor any read of it: `createVmFacade(version, standard)` takes no third argument
+ * and the whole object is dropped. On 0.0.7 the decider therefore runs libauth's stock limits while the
+ * preflight reads the published ones, and the gate is FAIL-OPEN in the direction that matters - `decrement(24)`
+ * builds against a published 10,000,000 and is then refused at broadcast by a stock 800.
+ *
+ * `packages/solidcash/package.json` declares `^0.0.8`, which for a `0.0.x` range means exactly 0.0.8, and
+ * `yarn.lock` resolves it. A stale `node_modules` is the only way to reach 0.0.7 - and a failing test is not a
+ * runtime guard. This measures the behaviour once and refuses to construct a provider that cannot decide.
+ *
+ * BEHAVIOURAL, NOT A VERSION STRING. A version string can be right while the build on disk is not (a patched
+ * tarball, a linked working copy, a renamed channel), and a future 0.0.9 would fail a `=== '0.0.8'` check while
+ * honouring overrides perfectly. This measures the only thing that matters: hand the real `createTxVerifier` a
+ * limit and see whether its verdict moves.
+ *
+ * CONTROLLED AND MULTI-FIELD, both deliberate.
+ *  - A single strict point cannot distinguish "the override was applied" from "the probe transaction is
+ *    broken", so a RELAXED control that must ACCEPT runs first. If the control fails, the message says the
+ *    probe is inconclusive rather than blaming the install.
+ *  - The strict points cover the channels this provider actually depends on, including
+ *    `operationCostBudgetPerByte`, which 0.0.8 does not even declare in `ConsensusOverrides` and which is the
+ *    field the recursive-preflight decision turns on.
+ *
+ * SCOPE. It establishes that the installed build applies published consensus overrides, demonstrated on two or
+ * three fields depending on the VM version. It is not a claim that every field in `MOCK_CONSENSUS_LIMITS` is
+ * honoured individually.
+ */
+
+/** The probe's source output: `OP_DROP OP_1`, so the input's pushed item is consumed and one truthy item remains. */
+export const CONSENSUS_PROBE_SOURCE_OUTPUT = {
+  lockingBytecode: Uint8Array.from([0x75, 0x51]), valueSatoshis: 100_000n,
+};
+
+/**
+ * A 69-byte 1-in 1-out transaction, deliberately the smallest shape that clears every pre-VM rule: a non-null
+ * prevout, 69 bytes against the 65-byte minimum, a 100,000-satoshi fee against the default caps, and an
+ * OP_RETURN output so no dust rule applies in either regime. Its only script work is one 2-byte push.
+ */
+export const consensusProbeTransactionHex = (): string => binToHex(encodeTransaction({
+  inputs: [{
+    outpointIndex: 0,
+    outpointTransactionHash: new Uint8Array(32).fill(0x11),
+    sequenceNumber: 0xffffffff,
+    unlockingBytecode: Uint8Array.from([0x02, 0xaa, 0xbb]),
+  }],
+  locktime: 0,
+  outputs: [{ lockingBytecode: Uint8Array.from([0x6a, 0x04, 0, 0, 0, 0]), valueSatoshis: 0n }],
+  version: 2,
+}));
+
+/**
+ * The strict points, each paired with the arithmetic that makes its refusal attributable, and each restricted
+ * to the VM versions where it was MEASURED to be a rule.
+ *
+ * `versions: undefined` means every version. `operationCostBudgetPerByte` is the exception and the restriction
+ * is not cosmetic: BCH_2023 and BCH_SPEC IGNORE it - their instruction sets have no operation-cost-density
+ * rule - while `ConsensusBch2023.operationCostBudgetPerByte` and `ConsensusBchSpec.operationCostBudgetPerByte`
+ * are both published as 800. Keying applicability off the presence of the constant would therefore have made
+ * the probe refuse two good installs. Measured, not inferred.
+ *
+ * Every version keeps at least two independent channels, so no version rests on a single field.
+ */
+const CONSENSUS_PROBE_POINTS: readonly {
+  field: string; strict: number; expect: RegExp; versions?: readonly string[];
+}[] = [
+  {
+    // 41 + 3 unlocking bytes = 44 density control length, so `1` yields a 44-unit ceiling that one 2-byte
+    // push (cost 102) cannot clear. THE field the recursive-preflight decision turns on.
+    field: 'operationCostBudgetPerByte',
+    strict: 1,
+    expect: /operation cost density limit\. Maximum operation cost: 44 \(density control length: 44\)/,
+    versions: [VmTarget.BCH_2025_05, VmTarget.BCH_2026_05],
+  },
+  {
+    field: 'maximumStackItemLength',
+    strict: 1,
+    expect: /maximum stack item length\. Maximum stack item length: 1 bytes\. Item length: 2 bytes/,
+  },
+  {
+    field: 'maximumBytecodeLength',
+    strict: 1,
+    expect: /maximum bytecode length\. Maximum bytecode length: 1 bytes\. Unlocking bytecode length: 3 bytes/,
+  },
+];
+
+/** Relaxed enough that no rule below can bind, so an ACCEPT here means the probe transaction itself is sound. */
+const CONSENSUS_PROBE_RELAXED = {
+  operationCostBudgetPerByte: 800, maximumStackItemLength: 520, maximumBytecodeLength: 10_000,
+};
+
+/** Cached verdict per VM version: `undefined` = honoured, a string = the refusal to re-throw. */
+const consensusProbeVerdicts = new Map<string, string | undefined>();
+
+/** The one dependency the probe has on the outside world, injectable so a test can drive a real 0.0.7 build. */
+export type TxVerifierFactory = typeof createTxVerifier;
+
+/**
+ * Run the probe and return the refusal message, or `undefined` when the installed build honours overrides.
+ * Pure and uncached: `assertConsensusOverridesHonoured` is the caching wrapper the constructor uses.
+ */
+export const probeConsensusOverrides = (
+  vmVersion: string, factory: TxVerifierFactory = createTxVerifier,
+): string | undefined => {
+  const rawHex = consensusProbeTransactionHex();
+  const chainState = { height: 1, medianTimePast: 0 };
+  const decide = (consensus: Record<string, number>): { ok: boolean; reason: string } => {
+    try {
+      const verifier = factory({
+        vmVersion, standard: false, consensus,
+      } as Parameters<typeof createTxVerifier>[0] & { consensus: Record<string, number> });
+      const result = verifier.verify(rawHex, [CONSENSUS_PROBE_SOURCE_OUTPUT], chainState);
+      return result.success
+        ? { ok: true, reason: 'ACCEPT' }
+        : { ok: false, reason: `${result.error}${result.debugMessage ? `: ${result.debugMessage}` : ''}` };
+    } catch (error) {
+      return { ok: false, reason: `threw ${(error as Error).message}` };
+    }
+  };
+
+  const control = decide(CONSENSUS_PROBE_RELAXED);
+  if (!control.ok) {
+    return 'MockNetworkProvider: the @mem-cash/validation consensus-override probe is INCONCLUSIVE - its own '
+      + `control transaction was refused on ${vmVersion} with relaxed limits (${control.reason}). This is a `
+      + 'defect in the probe or a libauth change, NOT evidence about the installed validation package.';
+  }
+  for (const point of CONSENSUS_PROBE_POINTS) {
+    if (point.versions !== undefined && !point.versions.includes(vmVersion)) continue;
+    const strict = decide({ ...CONSENSUS_PROBE_RELAXED, [point.field]: point.strict });
+    if (strict.ok || !point.expect.test(strict.reason)) {
+      return 'MockNetworkProvider: the installed @mem-cash/validation does NOT honour published consensus '
+        + `limits. Probed on ${vmVersion}: the identical transaction is accepted at the relaxed limits and `
+        + `must be refused at \`${point.field}: ${point.strict}\`, but the decider answered `
+        + `"${strict.reason}". Run \`yarn install\` - packages/solidcash/package.json requires exactly 0.0.8 `
+        + '(`^0.0.8` on a 0.0.x range) and 0.0.7 silently ignores published consensus limits, which makes '
+        + '`consensusLimits` on this provider decorative: the build-time preflight would read them while the '
+        + 'broadcast-time decider ran libauth stock values, so shapes would pass `.build()` and fail `.send()`.';
+    }
+  }
+  return undefined;
+};
+
+/**
+ * Probe ONCE per VM version and cache the verdict, including a failing one - so a bad install refuses every
+ * construction, not just the first, without paying for the measurement again.
+ */
+export const assertConsensusOverridesHonoured = (
+  vmVersion: string, factory?: TxVerifierFactory,
+): void => {
+  if (!consensusProbeVerdicts.has(vmVersion)) {
+    consensusProbeVerdicts.set(vmVersion, probeConsensusOverrides(vmVersion, factory));
+  }
+  const verdict = consensusProbeVerdicts.get(vmVersion);
+  if (verdict !== undefined) throw new Error(verdict);
+};
+
+/** Testing seam: drop the cached verdicts so a probe can be re-measured. Not part of the provider contract. */
+export const resetConsensusProbeCacheForTests = (): void => consensusProbeVerdicts.clear();
 
 /** An opaque snapshot handle mirroring hardhat's SnapshotRestorer. */
 export interface SnapshotRestorer {
@@ -36,6 +221,8 @@ export default class MockNetworkProvider implements NetworkProvider {
   public blockHeight: number = 133700;
   public options: MockNetworkProviderOptions;
   public vmTarget: VmTarget;
+  public consensusLimits: ConsensusLimits;
+  public policy: NetworkPolicy;
 
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
@@ -43,14 +230,51 @@ export default class MockNetworkProvider implements NetworkProvider {
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
+  private signerCache = new Map<string, HDSigner>();
+  private fundedSignerKeys = new Set<string>();
 
-  constructor(options?: Partial<MockNetworkProviderOptions>) {
-    this.options = { updateUtxoSet: true, ...options };
+  constructor(options?: MockNetworkProviderOverrides) {
+    this.options = {
+      updateUtxoSet: true,
+      ...options,
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, ...options?.consensusLimits },
+      policy: { enforceDust: false, ...options?.policy },
+    };
     this.vmTarget = this.options.vmTarget ?? DEFAULT_VM_TARGET;
+    this.consensusLimits = this.options.consensusLimits;
+    this.policy = this.options.policy;
 
+    // Fail closed: every limit published below is only real if the installed decider reads it. Cached per VM
+    // version, so this costs one measurement per process rather than one per provider.
+    assertConsensusOverridesHonoured(this.vmTarget);
+
+    const overrides = {
+      maximumBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStackItemLength: this.consensusLimits.maximumStackItemBytes,
+      maximumStandardUnlockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumStandardLockingBytecodeLength: this.consensusLimits.maximumInputBytes,
+      maximumTransactionLengthBytes: this.consensusLimits.maximumTransactionBytes,
+      maximumStandardTransactionSize: this.consensusLimits.maximumTransactionBytes,
+      maximumTokenCommitmentLength: this.consensusLimits.maximumNftCommitmentBytes,
+      operationCostBudgetPerByte: this.consensusLimits.operationCostBudgetPerByte,
+      // Both regimes, mirroring createVirtualMachine.ts: each falls back to the shared value when unset.
+      // mem-cash builds its primary VM with `standard = policy.enforceDust` (and a second consensus VM
+      // alongside it), so writing only the nonstandard field left a dust-enforcing mock on libauth's real
+      // 0.5/byte standard allowance regardless of its profile. mem-cash rejects non-integer overrides, so the
+      // real fractional allowances (0.5 and 3.5) cannot be expressed here - it throws rather than round.
+      hashDigestIterationsPerByteStandard:
+        this.consensusLimits.hashDigestIterationsPerByteStandard ?? this.consensusLimits.hashDigestIterationsPerByte,
+      hashDigestIterationsPerByteNonstandard:
+        this.consensusLimits.hashDigestIterationsPerByteNonstandard ?? this.consensusLimits.hashDigestIterationsPerByte,
+    };
     const verifier = createTxVerifier({
-      vmVersion: this.vmTarget, standard: true, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
-    });
+      // Libauth's standard VM applies its own fixed dust policy after mem-cash's configurable check. Use the
+      // consensus VM when dust is disabled; mem-cash still applies fee/value/finality validation and every
+      // configured consensus override. Opting back into dust also restores the full production policy VM.
+      vmVersion: this.vmTarget, standard: this.policy.enforceDust, minRelayFeePerKb: 1000n, maxFee: 10_000_000n,
+      dustRelayFeePerKb: this.policy.enforceDust ? undefined : 0n,
+      consensus: overrides,
+    } as Parameters<typeof createTxVerifier>[0] & { consensus: typeof overrides });
     this.indexer = createIndexer({ verifier });
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
@@ -127,10 +351,16 @@ export default class MockNetworkProvider implements NetworkProvider {
   async takeSnapshot(): Promise<SnapshotRestorer> {
     const snap = this.indexer.snapshot(); // captures headers => tip height + timestamp
     const height = this.blockHeight;
+    const fundingNonce = this.fundingNonce;
+    const signerNonces = new Map(
+      [...this.signerCache].map(([key, signer]) => [key, signer._getTransactionNonceState()]),
+    );
     const snapshotId = `0x${(this.snapshotNonce++).toString(16)}`;
     const restore = async (): Promise<void> => {
       this.indexer.restore(snap);
       this.blockHeight = height;
+      this.fundingNonce = fundingNonce;
+      for (const [key, nonce] of signerNonces) this.signerCache.get(key)?._setTransactionNonceState(nonce);
     };
     return { snapshotId, restore };
   }
@@ -199,7 +429,18 @@ export default class MockNetworkProvider implements NetworkProvider {
       return txid;
     }
 
-    const result = this.indexer.submitTransaction(txHex);
+    // libauth's CashToken introspection operations in current releases call the common checked-push helper rather
+    // than the selected BCH instruction set's stack-item limit. mem-cash overrides those operations natively in
+    // its next release; keep 0.0.8 compatible by scoping the legacy common value to this synchronous mock check.
+    const commonConsensus = ConsensusCommon as unknown as { maximumStackItemLength: number };
+    const previousStackItemLength = commonConsensus.maximumStackItemLength;
+    commonConsensus.maximumStackItemLength = this.consensusLimits.maximumStackItemBytes;
+    let result;
+    try {
+      result = this.indexer.submitTransaction(txHex);
+    } finally {
+      commonConsensus.maximumStackItemLength = previousStackItemLength;
+    }
     if (!result.success) {
       throw new Error(result.debugMessage ? `${result.error}: ${result.debugMessage}` : result.error);
     }
@@ -271,11 +512,30 @@ export default class MockNetworkProvider implements NetworkProvider {
 
   reset(): void {
     this.indexer.reset();
+    this.signerCache.clear();
+    this.fundedSignerKeys.clear();
+    this.fundingNonce = 0x1000;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
   private nextFundingTxid(): string {
     return (this.fundingNonce++).toString(16).padStart(64, '0');
+  }
+
+  private signerKey(mnemonic: string, path: string | undefined, index: number): string {
+    return `${mnemonic}\u0000${path ?? ''}\u0000${index}`;
+  }
+
+  /** Return the stable signer object for an account, creating but not funding it if necessary. */
+  getCachedSigner(index = 0, opts: { mnemonic?: string; path?: string } = {}): HDSigner {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const key = this.signerKey(mnemonic, opts.path, index);
+    let signer = this.signerCache.get(key);
+    if (!signer) {
+      [signer] = signersFromMnemonic(mnemonic, this, { initialIndex: index, count: 1, path: opts.path });
+      this.signerCache.set(key, signer);
+    }
+    return signer;
   }
 
   /**
@@ -290,26 +550,27 @@ export default class MockNetworkProvider implements NetworkProvider {
   ): Promise<HDSigner[]> {
     const satoshis = opts.satoshis ?? 1_000_000n;
     const fundingUtxos = opts.fundingUtxos ?? 1;
-    const signers = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { count, path: opts.path },
-    );
-    for (const signer of signers) {
+    const mnemonic = opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC;
+    const signers = Array.from({ length: count }, (_, index) => this.getCachedSigner(index, { mnemonic, path: opts.path }));
+    for (let index = 0; index < signers.length; index++) {
+      const signer = signers[index];
+      const key = this.signerKey(mnemonic, opts.path, index);
+      if (this.fundedSignerKeys.has(key)) continue;
+      // Model prefunding as a fan-out transaction. Only vout 0 is a CashTokens genesis candidate; sibling
+      // outputs are category-neutral and can safely fill C2/output-only block slots.
+      const fundingTxid = this.nextFundingTxid();
       for (let i = 0; i < fundingUtxos; i++) {
-        await this.addUtxo(signer.getAddress(), { txid: this.nextFundingTxid(), vout: 0, satoshis });
+        await this.addUtxo(signer.getAddress(), { txid: fundingTxid, vout: i, satoshis });
       }
+      this.fundedSignerKeys.add(key);
     }
     return signers;
   }
 
   /** A single pre-funded HD signer at `index` (hardhat `ethers.getSigner`). */
   async getSigner(index = 0, opts: { satoshis?: bigint; mnemonic?: string; path?: string } = {}): Promise<HDSigner> {
-    const [signer] = signersFromMnemonic(
-      opts.mnemonic ?? MockNetworkProvider.DEFAULT_MNEMONIC, this, { initialIndex: index, count: 1, path: opts.path },
-    );
-    await this.addUtxo(signer.getAddress(), {
-      txid: this.nextFundingTxid(), vout: 0, satoshis: opts.satoshis ?? 1_000_000n,
-    });
-    return signer;
+    await this.getSigners(index + 1, opts);
+    return this.getCachedSigner(index, opts);
   }
 }
 

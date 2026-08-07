@@ -80,12 +80,24 @@ export default class InlineExternalCallHelpers extends AstTraversal {
 
     this.voidExternalCallHelpers = new Set();
     for (const fn of all) {
-      if (fn.body && fn.returnTypes.length === 0 && this.makesExternalCall(fn)) {
+      // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
+      // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
+      // context and turns its external calls into inert ordinary-call nodes.
+      if (!fn.graphEmissionHandler && fn.body && fn.returnTypes.length === 0
+        && this.makesExternalCall(fn)) {
         this.voidExternalCallHelpers.add(fn.name);
       }
     }
     if (this.voidExternalCallHelpers.size === 0) return node;
 
+    // Normalize the retained library/free-function definitions too. A transitive wrapper such as
+    // `L.g(i) { L.f(i); }`, where L.f performs the external call, is inlined at contract call sites below, but
+    // L.g's own retained definition must not keep calling L.f after semantic analysis injects L.f's compiler-only
+    // covenant parameters. Inlining the same helper body here leaves L.g with the direct external call and its own
+    // correctly discovered witness parameters.
+    for (const fn of this.freeFns) {
+      if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
+    }
     for (const fn of node.functions) {
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }

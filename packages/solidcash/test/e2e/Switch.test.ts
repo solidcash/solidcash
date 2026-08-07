@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // forceStateful compiles each contract as a self-poke covenant, so each test can deploy + call
 // directly (`const sc = await getContractFactory(...).deploy(); await sc.check(args)`).
@@ -56,7 +58,7 @@ describe('Switch Statement - SDK e2e', () => {
     it('default fails require for wrong value', async () => {
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.check(50n)).rejects.toThrow();
+      await expect(sc.check(50n)).rejects.toThrow(verifyFailure);
     });
   });
 
@@ -225,7 +227,7 @@ describe('Switch Statement - SDK e2e', () => {
 
       const factory = getContractFactory(compileString(code, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.check(2n, 99n)).rejects.toThrow();
+      await expect(sc.check(2n, 99n)).rejects.toThrow(verifyFailure);
     });
   });
 

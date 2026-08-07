@@ -95,7 +95,7 @@ export function validateInput(utxo: Utxo): void {
   }
 }
 
-export function validateOutput(output: Output): void {
+export function validateOutput(output: Output, enforceDust = true): void {
   // Universal validations (apply to both string addresses and bytecode outputs)
   if (output.amount < 0n) {
     throw new OutputSatoshisTooSmallError(output.amount, 0n);
@@ -107,7 +107,7 @@ export function validateOutput(output: Output): void {
 
   // Dust check for all non-OP_RETURN outputs (both string addresses and raw bytecode)
   const isOpReturn = output.to instanceof Uint8Array && output.to.length > 0 && output.to[0] === 0x6a;
-  if (!isOpReturn) {
+  if (enforceDust && !isOpReturn) {
     const minimumAmount = calculateDust(output);
     if (output.amount < minimumAmount) {
       throw new OutputSatoshisTooSmallError(output.amount, BigInt(minimumAmount));
@@ -363,9 +363,23 @@ export function getNetworkPrefix(network: string): 'bitcoincash' | 'bchtest' | '
 
 const randomInt = (): bigint => BigInt(Math.floor(Math.random() * 10000));
 
+// Outpoint uniqueness is a correctness property of a fixture, not a statistical one. A purely random txid
+// seeded from Math.random() * 10000 with 10 vouts spans only 100,000 outpoints, so fixtures that co-spend many
+// inputs collided by birthday and surfaced as "Duplicate input detected" - indistinguishable from a real
+// regression during integration. Mixing a monotonic counter into the seed makes every outpoint unique within a
+// process while keeping the value unpredictable across runs.
+let outpointCounter = 0n;
+const uniqueTxid = (): string => {
+  outpointCounter += 1n;
+  const seed = new Uint8Array(16);
+  seed.set(bigIntToVmNumber(outpointCounter), 0);
+  seed.set(bigIntToVmNumber(randomInt()), 8);
+  return binToHex(sha256(seed));
+};
+
 export const randomUtxo = (defaults?: Partial<Utxo>): Utxo => ({
   ...{
-    txid: binToHex(sha256(bigIntToVmNumber(randomInt()))),
+    txid: uniqueTxid(),
     vout: Math.floor(Math.random() * 10),
     satoshis: 100_000n + randomInt(),
   },

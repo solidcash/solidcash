@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Block and transaction properties (the block-oracle area): block.chainid, and other block.* reads.
 

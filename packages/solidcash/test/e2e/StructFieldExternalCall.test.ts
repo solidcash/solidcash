@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
@@ -84,6 +84,6 @@ describe('struct-field external-call target pinning', () => {
     // config.counter holds addrA, but we co-spend counterB: identity OP_EQUALVERIFY must fail closed.
     await expect(
       readerSc.bump(alicePub, sig()).withExternalCall(counterBSc, 'increment', [alicePub, sig()]).send(),
-    ).rejects.toThrow();
+    ).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

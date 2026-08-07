@@ -1,6 +1,6 @@
 {
   "name": "@solidcash/testing",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "SolidCash testing framework - Hardhat-style development environment for Bitcoin Cash contracts",
   "keywords": [
     "bitcoin cash",
@@ -28,6 +28,9 @@
     "./network-helpers": { "types": "./dist/network-helpers.d.ts", "default": "./dist/network-helpers.js" },
     "./ethers": { "types": "./dist/ethers-utils.d.ts", "default": "./dist/ethers-utils.js" },
     "./ethers-shim": { "types": "./dist/ethers-shim.d.ts", "default": "./dist/ethers-shim.js" },
+    "./config": { "types": "./dist/config.d.ts", "default": "./dist/config.js" },
+    "./hre": { "types": "./dist/hre.d.ts", "default": "./dist/hre.js" },
+    "./tasks": { "types": "./dist/tasks.d.ts", "default": "./dist/tasks.js" },
     "./vitest-preset": { "types": "./dist/vitest-preset.d.ts", "default": "./dist/vitest-preset.js" },
     "./vitest-setup": { "types": "./dist/vitest-setup.d.ts", "default": "./dist/vitest-setup.js" },
     "./package.json": "./package.json",
@@ -52,10 +55,10 @@
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",
-    "@solidcash/utils": "^0.13.0",
+    "@solidcash/utils": "^0.13.1",
     "ethers": "^6.17.0",
-    "solidc": "^0.13.0",
-    "solidcash": "^0.13.0"
+    "solidc": "^0.13.1",
+    "solidcash": "^0.13.1"
   },
   "devDependencies": {
     "eslint": "^8.54.0",

@@ -1,8 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import type { EventLog } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 // ethers-v6 events facade over SolidCash NFT-commitment events: queryFilter / filters / getEvent / on / once.
 const SRC = `pragma solidcash >=0.8.0;
@@ -17,6 +18,7 @@ contract EventEmitter() {
 
 describe('StatefulContract events facade (ethers queryFilter / filters / getEvent)', () => {
   const art = compileString(SRC);
+  assertApplicationScriptSize('eventFacade', art);
 
   async function deploy(): Promise<{ sc: StatefulContract; }> {
     const provider = createTestProvider();

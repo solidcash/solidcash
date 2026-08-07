@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, StatefulTransactionBuilder,
@@ -26,7 +26,7 @@ import { alicePriv, aliceAddress } from '../fixture/vars.js';
 function returnEventOutput(
   categoryId: string, returnValue: bigint,
 ): { to: Uint8Array; amount: bigint; token: { amount: bigint; category: string; nft: { capability: 'none'; commitment: string } } } {
-  const commitment = binToHex(encodePushdataValue(returnValue, 'int'));
+  const commitment = binToHex(encodePushdataValue(returnValue, 'int256'));
   return {
     to: new Uint8Array([0x51]), // OP_TRUE (any locking bytecode - covenant only checks commitment+category)
     amount: 800n,

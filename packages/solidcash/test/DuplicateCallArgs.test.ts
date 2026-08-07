@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from './direct-compile.js';
 import { Contract, TransactionBuilder } from '../src/index.js';
 import { randomUtxo } from '../src/utils.js';
 import { createTestProvider, verifyTransaction } from './test-util.js';
@@ -50,7 +50,7 @@ const run = async (source: string, unlock: (c: Contract) => any): Promise<void> 
   const tx = new TransactionBuilder({ provider })
     .addInput(utxo, unlock(contract))
     .addOutput({ to: contract.address, amount: 10000n });
-  expect(() => verifyTransaction(tx)).not.toThrow();
+  verifyTransaction(tx);
 };
 
 describe('duplicate variable across one call argument list (VM-verified)', () => {
@@ -64,6 +64,8 @@ describe('duplicate variable across one call argument list (VM-verified)', () =>
   });
 
   it('rejects a wrong expected result (guard against vacuous pass)', async () => {
-    await expect(run(UDVT_SOURCE, (c) => c.unlock.applyInterest(50n, 2n, 61n))).rejects.toThrow();
+    await expect(run(UDVT_SOURCE, (c) => c.unlock.applyInterest(50n, 2n, 61n))).rejects.toThrow(
+      /Transaction verification failed/,
+    );
   });
 });

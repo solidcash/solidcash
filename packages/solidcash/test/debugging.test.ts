@@ -702,8 +702,9 @@ describe('Debugging tests', () => {
       expect(Object.keys(result).length).toBeGreaterThan(0);
     });
 
-    // We currently don't have a way to properly handle non-matching UTXOs and unlockers
-    // Note: that also goes for Contract UTXOs where a user uses an unlocker of a different contract
+    // A bare UTXO does not carry its source locking bytecode, so a builder cannot prove that the caller paired it
+    // with the correct P2PKH unlocker. The network still rejects the real mismatched spend; see the release test
+    // deferral register for the API boundary required to make this mock/debug assertion meaningful.
     it.skip('should fail when spending from P2PKH inputs with an unlocker for a different public key', async () => {
       const provider = createTestProvider();
       await provider.addUtxo(aliceAddress, randomUtxo());
@@ -728,81 +729,89 @@ describe('Debugging tests', () => {
 
     // --- toBeReverted / not.toBeReverted ---
 
-    it('toBeReverted should pass when transaction fails a require', () => {
+    it('toBeReverted should pass when transaction fails a require', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).toBeReverted();
+      await expect(transaction).toBeReverted();
     });
 
-    it('not.toBeReverted should pass when transaction succeeds', () => {
+    it('toBeReverted accepts async call builders', async () => {
+      const transaction = new TransactionBuilder({ provider })
+        .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
+        .addOutput({ to: contractTestRequires.address, amount: 1000n });
+      const call = { build: async () => transaction };
+      await expect(call as any).toBeRevertedWith('1 should equal 2');
+    });
+
+    it('not.toBeReverted should pass when transaction succeeds', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_require_no_failure())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).not.toBeReverted();
+      await expect(transaction).not.toBeReverted();
     });
 
     // --- toBeRevertedWith ---
 
-    it('toBeRevertedWith should pass when require fails with matching message', () => {
+    it('toBeRevertedWith should pass when require fails with matching message', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).toBeRevertedWith('1 should equal 2');
-      expect(transaction).toBeRevertedWith(/1 should equal 2/);
+      await expect(transaction).toBeRevertedWith('1 should equal 2');
+      await expect(transaction).toBeRevertedWith(/1 should equal 2/);
     });
 
-    it('not.toBeRevertedWith should pass when message does not match', () => {
+    it('not.toBeRevertedWith should pass when message does not match', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).not.toBeRevertedWith(/1 should equal 1/);
+      await expect(transaction).not.toBeRevertedWith(/1 should equal 1/);
     });
 
     // --- toRevert / not.toRevert ---
 
-    it('toRevert should pass when transaction fails a require', () => {
+    it('toRevert should pass when transaction fails a require', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).toRevert();
+      await expect(transaction).toRevert();
     });
 
-    it('not.toRevert should pass when transaction succeeds', () => {
+    it('not.toRevert should pass when transaction succeeds', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_require_no_failure())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).not.toRevert();
+      await expect(transaction).not.toRevert();
     });
 
     // --- toRevertWith ---
 
-    it('toRevertWith should pass when require fails with matching message', () => {
+    it('toRevertWith should pass when require fails with matching message', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).toRevertWith('1 should equal 2');
-      expect(transaction).toRevertWith(/1 should equal 2/);
+      await expect(transaction).toRevertWith('1 should equal 2');
+      await expect(transaction).toRevertWith(/1 should equal 2/);
     });
 
-    it('not.toRevertWith should pass when message does not match', () => {
+    it('not.toRevertWith should pass when message does not match', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
 
-      expect(transaction).not.toRevertWith(/1 should equal 1/);
+      await expect(transaction).not.toRevertWith(/1 should equal 1/);
     });
 
     // --- Equivalence: aliases produce same results as originals ---
 
-    it('toBeReverted and toFailRequire should behave identically', () => {
+    it('toBeReverted and toFailRequire should behave identically', async () => {
       const failTx = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
@@ -813,16 +822,16 @@ describe('Debugging tests', () => {
 
       // Both should pass on failing tx
       expect(failTx).toFailRequire();
-      expect(failTx).toBeReverted();
-      expect(failTx).toRevert();
+      await expect(failTx).toBeReverted();
+      await expect(failTx).toRevert();
 
       // Both should pass (negated) on passing tx
       expect(passTx).not.toFailRequire();
-      expect(passTx).not.toBeReverted();
-      expect(passTx).not.toRevert();
+      await expect(passTx).not.toBeReverted();
+      await expect(passTx).not.toRevert();
     });
 
-    it('toBeRevertedWith and toFailRequireWith should behave identically', () => {
+    it('toBeRevertedWith and toFailRequireWith should behave identically', async () => {
       const transaction = new TransactionBuilder({ provider })
         .addInput(contractTestRequiresUtxo, contractTestRequires.unlock.test_multiple_require_statements_final_fails())
         .addOutput({ to: contractTestRequires.address, amount: 1000n });
@@ -831,12 +840,12 @@ describe('Debugging tests', () => {
       const nonPattern = /1 should equal 1/;
 
       expect(transaction).toFailRequireWith(pattern);
-      expect(transaction).toBeRevertedWith(pattern);
-      expect(transaction).toRevertWith(pattern);
+      await expect(transaction).toBeRevertedWith(pattern);
+      await expect(transaction).toRevertWith(pattern);
 
       expect(transaction).not.toFailRequireWith(nonPattern);
-      expect(transaction).not.toBeRevertedWith(nonPattern);
-      expect(transaction).not.toRevertWith(nonPattern);
+      await expect(transaction).not.toBeRevertedWith(nonPattern);
+      await expect(transaction).not.toRevertWith(nonPattern);
     });
   });
 

@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { compileString as _csRawSolidc } from 'solidc';
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
@@ -45,29 +46,29 @@ describe('whole-struct <-> mapping-entry copies (runtime)', () => {
   it('writes a struct-constructor value (named args) into a mapping entry', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
-    await expect(sc.checkEntry().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('writes a struct-constructor value (positional args) into a mapping entry', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorPositional().send();
-    await expect(sc.checkEntry().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('reads a whole mapping entry into a struct state variable', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.readIntoStateVar().send();
-    await expect(sc.checkStateVar().send()).resolves.toBeDefined();
+    expect(await sc.checkStateVar().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
   it('a wrong post-read expectation reverts (the read really wrote the entry values)', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.readIntoStateVar().send();
-    await expect(sc.checkStateVarWrong().send()).rejects.toThrow();
+    await expect(sc.checkStateVarWrong().send()).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
   it('copies a whole entry into another mapping entry', async () => {
     const sc = await mk(SRC);
     await sc.writeCtorNamed().send();
     await sc.copyEntryToEntry().send();
-    await expect(sc.checkEntry2().send()).resolves.toBeDefined();
+    expect(await sc.checkEntry2().send()).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/), hex: expect.stringMatching(/.+/) });
   });
 });

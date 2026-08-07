@@ -7,12 +7,23 @@
 import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, writeFileSync } from 'fs';
 import { dirname, join, resolve } from 'path';
+import type { TypegenTarget } from './typegen.js';
 
 export interface NetworkConfig {
   /** Which provider backs this network. */
   type?: 'mock' | 'regtest' | 'electrum' | 'bitcoin-rpc';
   electrum?: { host: string; port?: number };
   rpc?: { url: string; user?: string; password?: string };
+  /** Mock-only consensus overrides. Defaults to 1MB inputs/stack items and 10MB transactions. */
+  consensus?: Partial<{
+    maximumInputBytes: number;
+    maximumStackItemBytes: number;
+    maximumTransactionBytes: number;
+    maximumNftCommitmentBytes: number;
+    operationCostBudgetPerByte: number;
+    hashDigestIterationsPerByte: number;
+  }>;
+  policy?: Partial<{ enforceDust: boolean }>;
 }
 
 export interface AccountsConfig {
@@ -22,6 +33,10 @@ export interface AccountsConfig {
   initialIndex?: number;
   /** Per-account funding on mock/regtest, in satoshis. */
   satoshis?: bigint;
+}
+
+export interface TypegenConfig {
+  targets: readonly { target: TypegenTarget; layout?: 'typechain'; outDir?: string; sourceDir?: string }[];
 }
 
 export interface SolidcashConfig {
@@ -40,6 +55,8 @@ export interface SolidcashConfig {
   solc?: Record<string, unknown>;
   /** Compiler options passed through to solidc. Preferred over the legacy `solc` name. */
   compiler?: Record<string, unknown>;
+  /** Optional generated TypeChain-compatible bindings. */
+  typegen?: TypegenConfig;
 }
 
 /** Fully-resolved config (defaults applied). */
@@ -51,12 +68,34 @@ export interface ResolvedConfig extends Required<Pick<SolidcashConfig, 'paths' |
   accounts?: AccountsConfig;
   solc?: Record<string, unknown>;
   compiler?: Record<string, unknown>;
+  typegen: { targets: { target: TypegenTarget; layout: 'typechain'; outDir: string; sourceDir?: string }[] };
 }
 
 /** Typed identity helper for `solidcash.config.ts` (mirrors hardhat `defineConfig`). */
 export function defineConfig(config: SolidcashConfig): SolidcashConfig {
   return config;
 }
+
+/** JSON Schema for editor integrations and generated configuration UIs. */
+export const solidcashConfigSchema = {
+  $schema: 'https://json-schema.org/draft/2020-12/schema',
+  title: 'SolidCash configuration', type: 'object', additionalProperties: false,
+  properties: {
+    paths: { type: 'object', additionalProperties: false, properties: {
+      contracts: { type: 'string' }, artifacts: { type: 'string' }, tests: { type: 'string' }, cache: { type: 'string' },
+    } },
+    defaultNetwork: { type: 'string' }, mnemonic: { type: 'string' },
+    compiler: { type: 'object' }, solc: { type: 'object', deprecated: true },
+    networks: { type: 'object', additionalProperties: { type: 'object' } },
+    accounts: { type: 'object' },
+    typegen: { type: 'object', properties: { targets: { type: 'array', items: {
+      type: 'object', required: ['target'], properties: {
+        target: { enum: ['ethers5', 'ethers6'] }, layout: { const: 'typechain' },
+        outDir: { type: 'string' }, sourceDir: { type: 'string' },
+      },
+    } } } },
+  },
+} as const;
 
 const CONFIG_BASENAMES = ['solidcash.config.ts', 'solidcash.config.mjs', 'solidcash.config.js'];
 
@@ -67,6 +106,8 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     return baseDir ? resolve(baseDir, value) : value;
   };
   const compiler = config.compiler ?? config.solc;
+  const configuredTargets = config.typegen?.targets ?? [];
+  const multipleTargets = configuredTargets.length > 1;
   return {
     paths: {
       contracts: resolvePath(config.paths?.contracts, 'contracts'),
@@ -82,6 +123,16 @@ export function resolveConfig(config: SolidcashConfig = {}, baseDir?: string): R
     accounts: config.accounts,
     solc: compiler,
     compiler,
+    typegen: {
+      targets: configuredTargets.map((target) => ({
+        target: target.target,
+        layout: target.layout ?? 'typechain',
+        sourceDir: target.sourceDir ? resolvePath(target.sourceDir, target.sourceDir) : undefined,
+        outDir: resolvePath(
+          target.outDir, multipleTargets ? `typechain-types-${target.target}` : 'typechain-types',
+        ),
+      })),
+    },
   };
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
@@ -164,6 +164,11 @@ describe('bytesN packed slot round-trips HIGH-BIT values (two-complement trick)'
     const sc = await deploy(PACKED_BYTES2_HI);
     await (sc as any).setViaSlot(0xccccbbbbn, alicePub, sig()).send();
     await (sc as any).readSlot(0xccccbbbbn).send();
+  });
+  it('preserves byte order while dropping the sign pad from asymmetric packed fields', async () => {
+    const sc = await deploy(PACKED_BYTES2_HI);
+    await (sc as any).setViaSlot(0x89ab1234n, alicePub, sig()).send();
+    await (sc as any).readSlot(0x89ab1234n).send();
   });
   it('mixed UDVT-int + UDVT-bytes + bytes2 round-trip 0xccccbbbbaaaa (all high bit set)', async () => {
     const sc = await deploy(PACKED_MIXED_HI);

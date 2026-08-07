@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
-  Signer, ContractFactory, getContractFactory, deployContract,
+  Signer, ContractFactory, StatefulContract, getContractFactory, deployContract,
+  deriveLogicalCreateAddress, resolveLogicalIdentity, buildLogicalIdentityCommitment,
 } from '../../src/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider } from '../test-util.js';
@@ -22,6 +23,8 @@ async function fundedSigner(txidByte: string): Promise<{ signer: Signer; funding
 }
 
 describe('ContractFactory (ethers/hardhat-style deploy)', () => {
+  const REQUIRE_REFUSAL =
+    /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   it('new ContractFactory(artifact, signer).deploy() returns a ready contract', async () => {
     const { signer } = await fundedSigner('a1');
     const art = compileString(CHECK, { forceStateful: true });
@@ -46,7 +49,42 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
 
     const sc = await new ContractFactory(art, signer).deploy(42n);
     await sc.check(42n); // magic baked as 42
-    await expect(sc.check(43n)).rejects.toThrow();
+    await expect(sc.check(43n)).rejects.toThrow(REQUIRE_REFUSAL);
+  });
+
+  it('binds the predicted CREATE address to the deployed category and resolves it across handles', async () => {
+    const { signer } = await fundedSigner('d1');
+    const art = compileString(OWNED, { forceStateful: true });
+    const predicted = deriveLogicalCreateAddress(signer.getAddress(), await signer.getNonce());
+
+    const deployed = await new ContractFactory(art, signer).deploy(42n);
+    expect(await deployed.getAddress()).toBe(predicted);
+    const identity = await resolveLogicalIdentity(signer.provider, predicted);
+    expect(identity.categoryId).toBe(deployed.categoryId);
+
+    const reconnected = await StatefulContract.at(predicted, art, signer, { constructorArgs: [42n] });
+    expect(reconnected.categoryId).toBe(deployed.categoryId);
+    await reconnected.check(42n);
+  });
+
+  it('fails closed when a logical CREATE address contains two valid identity anchors', async () => {
+    const { signer } = await fundedSigner('d2');
+    const art = compileString(OWNED, { forceStateful: true });
+    const predicted = deriveLogicalCreateAddress(signer.getAddress(), 0n);
+    const deployed = await new ContractFactory(art, signer).deploy(42n);
+    const identity = await resolveLogicalIdentity(signer.provider, predicted);
+    await (signer.provider as any).addUtxo(predicted, {
+      txid: 'd3'.repeat(32), vout: 1, satoshis: 1200n,
+      token: {
+        category: 'd4'.repeat(32), amount: 0n,
+        nft: {
+          capability: 'none',
+          commitment: buildLogicalIdentityCommitment(signer.getAddress(), 0n, deployed.inner.address),
+        },
+      },
+    });
+    expect(identity.categoryId).toBe(deployed.categoryId);
+    await expect(resolveLogicalIdentity(signer.provider, predicted)).rejects.toThrow(/ambiguous/);
   });
 
   it('an external entry point reads a constructor arg (was a codegen crash; VM-enforced)', async () => {
@@ -57,7 +95,7 @@ describe('ContractFactory (ethers/hardhat-style deploy)', () => {
 
     const sc = await new ContractFactory(art, signer).deploy(42n);
     await sc.check(42n);
-    await expect(sc.check(43n)).rejects.toThrow();
+    await expect(sc.check(43n)).rejects.toThrow(REQUIRE_REFUSAL);
   });
 
   it('getContractFactory + deployContract shortcuts', async () => {

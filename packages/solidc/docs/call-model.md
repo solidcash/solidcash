@@ -151,9 +151,9 @@ The compiler emits a delegate variant for eligible ordinary functions on an impl
 variant runs against a proxy's state: the proxy holds the state and a minting NFT, while the delegate holds the
 logic. There is no source-level `delegate` modifier.
 
-- The proxy's master input index is passed as `_proxyMasterIndex`, saved to the altstack at function entry.
-  `emitMasterInputIndex` (GenerateTargetTraversal ~10261) reads it back with `FROMALTSTACK DUP TOALTSTACK`
-  in delegate mode (so all ~20 state-access ops target the proxy's index), versus `OP_INPUTINDEX` otherwise.
+- The proxy's master input index is passed as `_proxyMasterIndex`. The delegate covenant validates it against
+  the relocatable physical relation `delegateInputIndex - (1 + dataNftCount)`; state access derives the same
+  index directly, avoiding a fragile long-lived deep-stack or altstack value.
   The delegate's own self-preservation uses the real `OP_INPUTINDEX`.
 - `emitDelegateSelfPreservation` verifies the delegate's own locking bytecode, value, category, capability,
   commitment, and FT amount are preserved (the delegate is co-spent but must survive unchanged).
@@ -185,6 +185,14 @@ the SDK; responsibility for *enforcement* cannot - there is no third place for i
 - **Integrity binding:** any value a covenant acts on provably came from the actually-co-spent target
   (identity `OP_EQUALVERIFY` + category-bound return event). This is non-negotiable; without it a "call"
   degenerates into a parameter.
+- **`msg.sender` resolution (contract caller):** a callee reading `msg.sender` resolves it to the
+  `OP_UTXOBYTECODE` of a co-spent minting NFT (`0x02`) of the SDK-declared caller category. The covenant
+  enforces EXACTLY ONE such co-spent input, fail-closed on 0 or >1 (`emitMsgSenderMintingVerification`), so
+  `msg.sender` is always the genuine, unambiguous caller master - never a builder-chosen one of several
+  co-spent minting masters. It proves IDENTITY (this master was co-spent), not per-call AUTHORIZATION:
+  co-presence of a peer's master is not proof that peer initiated this call. For peer-mode caller-intent
+  authorization (the caller pre-commits to a specific callee), use the transcript's M4 binding - see
+  the website message-bus guide. Direct EOA calls take the `tx.origin` path (first native P2PKH input) instead.
 - **Script is sole arbiter:** unchecked == unconstrained.
 - **Co-spend liveness:** targets are real inputs, recreated for reads; the tx grows with N.
 

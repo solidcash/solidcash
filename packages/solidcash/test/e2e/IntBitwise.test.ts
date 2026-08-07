@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
 
@@ -43,6 +43,6 @@ describe('integer bitwise', () => {
   it('rejects a wrong expected result', async () => {
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.checkUnsigned(204n, 170n, 0n, 238n, 102n, 51n)).rejects.toThrow();
+    await expect(sc.checkUnsigned(204n, 170n, 0n, 238n, 102n, 51n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

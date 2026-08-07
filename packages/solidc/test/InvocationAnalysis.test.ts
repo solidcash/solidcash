@@ -1,0 +1,233 @@
+import { describe, expect, it } from 'vitest';
+import type { ExternalCallAbi } from '@solidcash/utils';
+import { compileString } from './direct-compile.js';
+
+const SOURCE = `pragma solidcash >=0.8.0;
+contract Analysis() {
+  int x;
+  mapping(int => int) balances;
+  function leaf(int k) internal { this.x = this.x + k; }
+  function left(int k) internal { leaf(k); right(k); }
+  function right(int k) internal { if (k > 0) left(k - 1); }
+  function run(int k) { left(k); require(k >= 0); }
+  function readBalance(int k) view { require(balances[k] >= 0); }
+  function flat() { this.x = 1; require(this.x == 1); }
+}`;
+
+describe('Release 0 shared invocation analysis', () => {
+  it('emits deterministic closures, SCCs, and state footprints without changing bytecode', () => {
+    const first = compileString(SOURCE, { forceStateful: true });
+    const second = compileString(SOURCE, { forceStateful: true });
+    expect(first.bytecode).toBe(second.bytecode);
+    expect(first.invocationAnalysis).toEqual(second.invocationAnalysis);
+
+    const analysis = first.invocationAnalysis!;
+    expect(analysis.version).toBe(1);
+    expect(analysis.protocolVersions).toEqual([1]);
+    const run = analysis.functions.find((fn) => fn.name === 'run')!;
+    const flat = analysis.functions.find((fn) => fn.name === 'flat')!;
+    expect(run.recursive).toBe(true);
+    expect(run.closure.length).toBeGreaterThan(2);
+    expect(run.reads).toContain('state:x');
+    expect(run.writes).toContain('state:x');
+    expect(analysis.functions.find((fn) => fn.name === 'readBalance')?.reads)
+      .toContain('collection:balances:*');
+    expect(flat.recursive).toBe(false);
+    expect(analysis.components.some((component) => component.recursive
+      && component.functions.length === 2)).toBe(true);
+  });
+
+  it('emits the complete compiler-resolved graph footprint per callsite', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget {
+        public bigint counter;
+        function step(bigint n) returns (bigint, bool);
+      }
+      contract GraphSummary(address target) {
+        string note;
+        event Seen(bigint value);
+        function run(bigint n, bytes recipient) public returns (bigint, bool) {
+          bigint value, bool ok = ITarget(target).step(n);
+          bigint settled = ITarget(target).outState.counter;
+          this.note = "done";
+          this.transfer(recipient, n);
+          emit Seen(settled);
+          require(ok);
+          return (value, ok);
+        }
+      }`, { forceStateful: true });
+    const abi = artifact.abi.find((fn) => fn.name === 'run')!;
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!;
+    expect(summary.externalCalls).toEqual(abi.externalCalls);
+    expect(summary.outputs).toEqual([{ type: 'bigint' }, { type: 'bool' }]);
+    expect(summary.resultDependencies).toEqual([{
+      callsiteId: 0,
+      returnTypes: ['bigint', 'bool'],
+      opaque: false,
+    }]);
+    expect(summary.bounded).toBe(true);
+    expect(summary.maximumDirectInvocations).toBe(1);
+    expect(summary.externalOutStateReads).toEqual(abi.externalOutStateReads);
+    expect(summary.emits).toEqual(abi.emits);
+    expect(summary.transferCount).toBe(abi.transferCount);
+    expect(summary.transfers).toEqual([{
+      transferIndex: 0,
+      recipient: { kind: 'forward', paramIndex: 1 },
+      amount: { kind: 'forward', paramIndex: 0 },
+    }]);
+    expect(summary.transfers).toEqual(abi.transfers);
+    expect(summary.dynamicWrites).toEqual(abi.dynamicWrites);
+    expect(summary.blockLayout).toEqual(abi.blockLayout);
+    expect(summary.externalCalls?.[0]).toMatchObject({
+      callsiteId: 0,
+      occurrence: 'once',
+      interfaceName: 'ITarget',
+      functionName: 'step',
+      hasReturnValues: true,
+      returnTypes: ['bigint', 'bool'],
+      argSources: [{ kind: 'forward', paramIndex: 0 }],
+    });
+  });
+
+  it('classifies callsite occurrence without treating control-dependent rows as unconditional', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract Occurrences() {
+        function once(address target, bigint n) public {
+          ITarget(target).step(n);
+          require(true);
+        }
+        function maybe(address target, bigint n, bool take) public {
+          if (take) { ITarget(target).step(n); }
+          require(true);
+        }
+        function repeated(address target, bigint n, bigint count) public {
+          for (bigint i = 0; i < count; i = i + 1) { ITarget(target).step(n); }
+          require(count >= 0);
+        }
+      }`, { forceStateful: true });
+    const occurrence = (name: string): string => artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === name)!.externalCalls![0].occurrence;
+    expect(occurrence('once')).toBe('once');
+    expect(occurrence('maybe')).toBe('conditional');
+    expect(occurrence('repeated')).toBe('loop');
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'once'))
+      .toMatchObject({ bounded: true, maximumDirectInvocations: 1 });
+    // A conditional callsite is reached at most once by construction: the classifier only assigns
+    // `conditional` on a branch that no loop encloses. That ceiling is now published per callsite rather than
+    // left implicit, so a branch-only function is bounded. The reached count is still 0 or 1, and the ceiling
+    // is what the summary aggregates - `bounded: false` here was conservative, not a different measurement.
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe'))
+      .toMatchObject({ bounded: true, maximumDirectInvocations: 1 });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe')!
+      .externalCalls![0]).toMatchObject({ occurrence: 'conditional', maximumOccurrences: 1 });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'maybe')!
+      .externalCalls![0].minimumOccurrences).toBeUndefined();
+    // A runtime trip count with no dominating literal ceiling still proves nothing, in either direction.
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated'))
+      .toMatchObject({ bounded: false });
+  });
+
+  it('publishes an exact floor only where the reached count cannot vary', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract ExactFloors() {
+        function exact(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) { ITarget(target).step(n); }
+          require(n >= 0);
+        }
+        function nested(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) {
+            for (bigint j = 0; j < 2; j = j + 1) { ITarget(target).step(n); }
+          }
+          require(n >= 0);
+        }
+        function guardedBody(address target, bigint n, bool take) public {
+          for (bigint i = 0; i < 3; i = i + 1) { if (take) { ITarget(target).step(n); } }
+          require(n >= 0);
+        }
+        function underBranch(address target, bigint n, bool take) public {
+          if (take) { for (bigint i = 0; i < 3; i = i + 1) { ITarget(target).step(n); } }
+          require(n >= 0);
+        }
+        function earlyReturn(address target, bigint n, bool take) public {
+          for (bigint i = 0; i < 3; i = i + 1) { if (take) { return; } ITarget(target).step(n); }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const row = (name: string): ExternalCallAbi => artifact.invocationAnalysis!.functions
+      .find((fn) => fn.name === name)!.externalCalls![0];
+    // A canonical literal trip count with nothing conditional on the path reaches exactly three rows.
+    expect(row('exact')).toMatchObject({
+      occurrence: 'loop', minimumOccurrences: 3, maximumOccurrences: 3, occurrenceBoundSource: 'literal',
+    });
+    // Nesting MULTIPLIES: an inner literal loop under an outer one reaches outer*inner rows. Publishing the
+    // inner count alone understated the ceiling by a factor of the outer trip count.
+    expect(row('nested')).toMatchObject({
+      occurrence: 'loop', minimumOccurrences: 6, maximumOccurrences: 6,
+    });
+    // Each of these keeps the ceiling and loses the floor, because each can reach the callsite zero times.
+    for (const name of ['guardedBody', 'underBranch', 'earlyReturn']) {
+      expect(row(name)).toMatchObject({ occurrence: 'loop', maximumOccurrences: 3 });
+      expect(row(name).minimumOccurrences).toBeUndefined();
+    }
+  });
+
+  it('emits a conservative direct-call ceiling for a canonical literal loop', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface ITarget { function step(bigint n); }
+      contract LiteralLoop() {
+        function repeated(address target, bigint n) public {
+          for (bigint i = 0; i < 3; i = i + 1) {
+            ITarget(target).step(n);
+          }
+          require(n >= 0);
+        }
+      }`, { forceStateful: true });
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'repeated')!;
+    expect(summary.externalCalls?.[0]).toMatchObject({
+      occurrence: 'loop',
+      maximumOccurrences: 3,
+    });
+    expect(summary).toMatchObject({ bounded: true, maximumDirectInvocations: 3 });
+  });
+
+  it('links a produced call result to a later external-call argument consumer', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint); }
+      interface IConsumer { function settle(bigint quoted); }
+      contract ResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted);
+          require(quoted >= 0);
+        }
+      }`, { forceStateful: true });
+    const summary = artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!;
+    expect(summary.resultConsumers).toEqual([{
+      consumerCallsiteId: 1,
+      argument: 0,
+      producerCallsiteId: 0,
+    }]);
+    expect(artifact.abi.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual(summary.resultConsumers);
+  });
+
+  it('links each used tuple result through its synthetic local definition', () => {
+    const artifact = compileString(`pragma solidcash >=0.8.0;
+      interface IProducer { function quote(bigint n) returns (bigint, bool); }
+      interface IConsumer { function settle(bigint quoted, bool accepted); }
+      contract TupleResultFlow() {
+        function run(address producer, address consumer, bigint n) public {
+          bigint quoted, bool accepted = IProducer(producer).quote(n);
+          IConsumer(consumer).settle(quoted, accepted);
+          require(accepted);
+        }
+      }`, { forceStateful: true });
+    expect(artifact.invocationAnalysis!.functions.find((fn) => fn.name === 'run')!.resultConsumers)
+      .toEqual([
+        { consumerCallsiteId: 1, argument: 0, producerCallsiteId: 0 },
+        { consumerCallsiteId: 1, argument: 1, producerCallsiteId: 0 },
+      ]);
+  });
+});

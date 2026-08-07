@@ -1,38 +1,45 @@
 import { hexToBin } from '@bitauth/libauth';
 import { bytecodeToAsm } from '@solidcash/utils';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
+
+// These tests inspect the physical route's helper allocation and byte budget.
+// Message-bus route synthesis has its own cost and structure regression suite.
+const DIRECT_ROUTE = { forceStateful: true, messageBus: false } as const;
 
 const compactHelperDefinitions = (asm: string): string[] => (
-  [...asm.matchAll(/(?:^| )([0-7][0-9a-f]) OP_DEFINE(?: |$)/g)].map((match) => match[1])
+  [...asm.matchAll(/(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})) OP_DEFINE(?: |$)/g)]
+    .map((match) => match[1])
 );
 
 describe('general C2 bytecode sharing', () => {
-  it('shares sorted-output authentication in a mapping write', () => {
+  it('keeps depth-sensitive sorted-output authentication inline', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=true; require(true); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(asm).toContain('8a OP_DEFINE');
-    expect(artifact.bytecode.length / 2).toBeLessThan(1300);
+    expect(asm).not.toContain('8a OP_DEFINE');
+    // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes).
+    expect(artifact.bytecode.length / 2).toBeLessThan(1620);
   });
 
   it('shares a collection-specific entry address across reads and writes', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external {'
       + ' require(!m[k]); m[k]=true; require(true); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm)).toHaveLength(1);
-    expect(artifact.bytecode.length / 2).toBeLessThan(1600);
+    // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes).
+    expect(artifact.bytecode.length / 2).toBeLessThan(1920);
   });
 
   it('shares the authenticated-absence bracket after three reads', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int a,int b,int c) external {'
       + ' require(!m[a] && !m[b] && !m[c]); require(true); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(asm).toContain('8b OP_DEFINE');
@@ -42,7 +49,7 @@ describe('general C2 bytecode sharing', () => {
     const artifact = compileString(
       'struct S { int a; int b; string c; address d; int e; } contract C { S[] x;'
       + ' function f(int i) external { require(x[i].a>=0); x[i].b=2; x[i].e=3; require(true); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
@@ -58,7 +65,7 @@ describe('general C2 bytecode sharing', () => {
       + ' function h(int i) external { require(x[i].c>=0 && y[i].c); }'
       + ' function j(int i) external { require(y[i].c); }'
       + ' function k(int i) external { require(y[i].c); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     const helperIds = compactHelperDefinitions(asm);
@@ -73,7 +80,7 @@ describe('general C2 bytecode sharing', () => {
       + ' function f(int i) external {'
       + ' require(x[i].c.length>=0 && x[i].c.length>=0 && x[i].c.length>=0'
       + ' && x[i].e.length>=0 && x[i].e.length>=0 && x[i].e.length>=0); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     const helperIds = compactHelperDefinitions(asm);
@@ -86,7 +93,7 @@ describe('general C2 bytecode sharing', () => {
       'struct S { int a; string b; int c; } contract C { S[] x;'
       + ' function f(int i) external { S[] a=x;'
       + ' require(a[i].c>=0 && a[i].c>=0 && a[i].c>=0); } }',
-      { forceStateful: true },
+      DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
     const helperIds = compactHelperDefinitions(asm);

@@ -1,7 +1,7 @@
 import { AbiFunction, AbiInput, Artifact, bytecodeToScript, formatBitAuthScript } from '@solidcash/utils';
 import { HashType, LibauthTokenDetails, SignatureAlgorithm, TokenDetails, VmTarget } from '../interfaces.js';
 import { hexToBin, binToHex, isHex, decodeCashAddress, Input, assertSuccess, decodeAuthenticationInstructions, AuthenticationInstructionPush } from '@bitauth/libauth';
-import { EncodedFunctionArgument } from '../Argument.js';
+import { EncodedFunctionArgument, isSignatureTemplateArray } from '../Argument.js';
 import { zip } from '../utils.js';
 import SignatureTemplate from '../SignatureTemplate.js';
 import { Contract } from '../Contract.js';
@@ -66,6 +66,7 @@ export const formatParametersForDebugging = (
       const hashtypeName = getHashTypeName(arg.getHashType(false));
       return `<${varName}.${signatureAlgorithmName}.${hashtypeName}> // ${input.type}`;
     }
+    if (isSignatureTemplateArray(arg)) return `<${varName}> // ${input.type} (finalized signatures)`;
 
     const typeStr = input.type === 'bytes' ? `bytes${arg.length}` : input.type;
 

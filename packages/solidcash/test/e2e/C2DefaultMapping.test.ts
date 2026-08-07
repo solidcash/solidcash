@@ -1,11 +1,14 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { getEntryNftAddress, SortedList, bytesToSlotValue } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Locks the FLIP: a plain mapping compiled with NO storage options is C2 by DEFAULT (exclusion-proof reads =
 // Solidity storage parity). Exercises the full lifecycle under the default: deploy (HEAD auto-minted) -> write ->
@@ -49,7 +52,7 @@ describe('C2 is the default for a plain mapping (no options)', () => {
     await fund(contract.address);
     expect((await contract.check(3n, 0n, alicePub, sig).send()).txid).toBeDefined(); // absent -> proven default 0
     await fund(contract.address);
-    await expect(contract.check(3n, 1n, alicePub, sig).send()).rejects.toThrow(); // absent claimed nonzero -> revert
+    await expect(contract.check(3n, 1n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
 
     await fund(contract.address);
     expect((await contract.del(5n, alicePub, sig).send()).txid).toBeDefined(); // delete -> nullify

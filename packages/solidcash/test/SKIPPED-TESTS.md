@@ -8,7 +8,6 @@ path:
 - `TransactionBuilder.test.ts`: invalid P2PKH-only and mixed-input rejection.
 - `e2e/EvmStorageFoundation.test.ts`: address-slot representation parity.
 - `e2e/CircularCalls.test.ts`: atomic circular and self-referential calls.
-- `e2e/MsgSenderCrossContractC2.test.ts`: cross-contract `msg.sender` C2 keys.
 - `e2e/CrossContractCallInfra.test.ts`: unbounded-bytes return events.
 
 Environment-gated network/library tests are intentionally excluded from this

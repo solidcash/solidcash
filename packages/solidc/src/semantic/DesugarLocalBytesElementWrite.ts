@@ -1,5 +1,5 @@
 import {
-  Node, SourceFileNode, ContractNode, FunctionDefinitionNode, BlockNode, StatementNode, ExpressionNode,
+  Node, SourceFileNode, ContractNode, FunctionDefinitionNode, ExpressionNode,
   VariableDefinitionNode, ArrayAssignNode, AssignNode, IdentifierNode, SliceNode, BinaryOpNode, UnaryOpNode,
   IntLiteralNode,
 } from '../ast/AST.js';

@@ -1,7 +1,7 @@
 // The store_function corpus saga: deploy a child, store its method as a fn-ptr, call it later - split,
 // one-tx folds, interprocedural, literal/verbatim/returning forms, return-event x deploy.
 import { describe, it, expect } from 'vitest';
-import { compileStringMulti } from 'solidc';
+import { compileStringMulti } from '../direct-compile.js';
 import { Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';

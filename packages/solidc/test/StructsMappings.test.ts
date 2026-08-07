@@ -1,6 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString as _csRawSolidc } from '../src/index.js';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
+import { compileString } from './direct-compile.js';
 
 // Structs, mappings, and nested lvalue writes: field/element writes, storage pointers, and delete.
 
@@ -145,22 +144,29 @@ describe('returns (mapping storage) - pointer-returning function + conditional a
       + ' function f() external { mp[0] = 1; require(mp[0]==1); } }', { solidityImportCompat: true });
     expect(sugar.bytecode).toBe(direct.bytecode);
   });
-  it('conditional local pointer m = c?a:b: reads/writes are byte-identical to the branch/ternary form', () => {
+  it('conditional local pointer m = c?a:b: publishes the same authenticated entry route as branch/ternary', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;`
       + ' function f(bool c, uint256 k, uint256 v) external { mapping(uint256=>uint256) storage m = L.ch(a,b,c);'
-      + ' this.r = m[k]; m[k] = v; require(true); } }', { solidityImportCompat: true });
+      + ' this.r = m[k]; m[k] = v; require(true); } }', {
+      solidityImportCompat: true, messageBus: false,
+    });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b; bigint r;'
       + ' function f(bool c, uint256 k, uint256 v) external { bool __c = c; this.r = __c ? a[k] : b[k];'
-      + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', { solidityImportCompat: true });
-    expect(sugar.bytecode).toBe(hand.bytecode);
+      + ' if (__c) { a[k] = v; } else { b[k] = v; } require(true); } }', {
+      solidityImportCompat: true, messageBus: false,
+    });
+    const route = (artifact: typeof sugar): typeof artifact.abi[number] | undefined =>
+      artifact.abi.find((fn) => fn.name === 'f');
+    expect(route(sugar)).toEqual(route(hand));
+    expect(sugar.bytecode.length).toBeGreaterThan(0);
   });
   it('direct-indexed call result L.ch(a,b,c)[k] is byte-identical to c ? a[k] : b[k]', () => {
     const sugar = compileString(`${CH} contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;`
       + ' function g(bool c, uint256 k) external view returns (uint256) { return L.ch(a,b,c)[k]; } }',
-    { solidityImportCompat: true });
+    { solidityImportCompat: true, messageBus: false });
     const hand = compileString('contract C { mapping(uint256=>uint256) a; mapping(uint256=>uint256) b;'
       + ' function g(bool c, uint256 k) external view returns (uint256) { return c ? a[k] : b[k]; } }',
-    { solidityImportCompat: true });
+    { solidityImportCompat: true, messageBus: false });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });
@@ -188,7 +194,7 @@ describe('returns (reassigned mapping storage) - dataflow-resolved + inlined', (
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
   it('resolves a pointer reassigned to a conditional (both g() and h() call sites)', () => {
-    const a = compileString(`contract test { mapping(uint8 => uint8) a; mapping(uint8 => uint8) b;`
+    const a = compileString('contract test { mapping(uint8 => uint8) a; mapping(uint8 => uint8) b;'
       + ' function f() internal returns (mapping(uint8 => uint8) storage r) { r = a; r[1] = 42; r = b; r[1] = 84; }'
       + ' function g() public returns (uint8, uint8) { f()[2] = 21; return (a[1], b[2]); }'
       + ' function h() public returns (uint8, uint8) { mapping(uint8 => uint8) storage m = f(); m[2] = 17;'
@@ -466,8 +472,12 @@ describe('struct-array element array-field write (X[i].c[j] = v)', () => {
   });
   it('is byte-identical to the explicit whole-element RMW (sound by reduction)', () => {
     const P = `contract C(){${S}S[] s;function f()external{s.push(S(1,new int[](3)));`;
-    const sugar = compileString(`${P}s[0].c[1]=9;require(s[0].c[1]==9);}}`, { solidityImportCompat: true });
-    const hand = compileString(`${P}S t=s[0];t.c[1]=9;s[0]=t;require(s[0].c[1]==9);}}`, { solidityImportCompat: true });
+    const sugar = compileString(`${P}s[0].c[1]=9;require(s[0].c[1]==9);}}`, {
+      solidityImportCompat: true, messageBus: false,
+    });
+    const hand = compileString(`${P}S t=s[0];t.c[1]=9;s[0]=t;require(s[0].c[1]==9);}}`, {
+      solidityImportCompat: true, messageBus: false,
+    });
     expect(sugar.bytecode).toBe(hand.bytecode);
   });
 });

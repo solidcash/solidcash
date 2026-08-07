@@ -50,11 +50,19 @@ export type { TaskDefinition, TaskArguments, ActionFn } from './tasks.js';
 
 // Config
 export {
-  defineConfig, resolveConfig, loadConfig, findConfigFile, findHardhatConfigFile, migrateHardhatConfig,
+  defineConfig, solidcashConfigSchema, resolveConfig, loadConfig, findConfigFile, findHardhatConfigFile,
+  migrateHardhatConfig,
 } from './config.js';
 export type {
-  SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig,
+  SolidcashConfig, ResolvedConfig, NetworkConfig, AccountsConfig, TypegenConfig,
 } from './config.js';
+
+export { generateTypechainTargets, watchTypechainTargets } from './typegen.js';
+export type {
+  TypegenTarget, TypegenTargetConfig, GenerateTypechainOptions, TypegenResult, TypegenWatcher,
+} from './typegen.js';
+export { diagnoseProject } from './doctor.js';
+export type { DoctorFinding } from './doctor.js';
 
 // Network helpers (also available at solidcash/network-helpers)
 export {

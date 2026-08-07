@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { binToHex, hexToBin, hash160 } from '@bitauth/libauth';
 import { ethers } from 'ethers';
-import { secp256k1 } from '@noble/curves/secp256k1';
 import { SHARED_LIBRARY_SALT, ecrecoverComputeLockingBytecode, keccakComputeLockingBytecode } from '@solidcash/utils';
 import { Contract, StatefulContract, TransactionBuilder, MockNetworkProvider } from '../../src/index.js';
 import { randomUtxo } from '../../src/utils.js';
@@ -12,6 +11,12 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // A recovery side-car's OWN NFT category (distinct from the consuming contract's; each of the A/B pair carries one).
 const SIDECAR_CAT = 'ee'.repeat(32);
+const INPUT_0_PREFIX = '^mandatory-script-verify-flag-failed '
+  + '\\(Unable to verify transaction: error in evaluating input index 0: ';
+const NON_TRUTHY_INPUT_0 = new RegExp(INPUT_0_PREFIX
+  + 'Unsuccessful evaluation: completed with a non-truthy value on top of the stack\\. '
+  + 'Top stack item: ""\\.\\)$');
+const OP_VERIFY_INPUT_0 = new RegExp(INPUT_0_PREFIX + 'Program failed an OP_VERIFY operation\\.\\)$');
 
 // Authenticate a signer via on-chain secp256k1 recovery: the recovered pubkey must equal the baked owner.
 const SOURCE = `
@@ -48,18 +53,42 @@ async function deployKeccak(provider: MockNetworkProvider, salt: Uint8Array, n: 
   }
 }
 
-interface Recovery { h: Uint8Array; v: bigint; r: Uint8Array; s: Uint8Array; owner: Uint8Array; wallet: ethers.HDNodeWallet; }
+interface Recovery {
+  h: Uint8Array;
+  v: bigint;
+  r: Uint8Array;
+  s: Uint8Array;
+  owner: Uint8Array;
+  wallet: ethers.HDNodeWallet;
+}
 
 // build a signature + the (LE) args + the recovered pubkey the contract authenticates against. `owner` is the
 // STANDARD compressed pubkey (0x02/03 || Qx big-endian) - exactly what ethers returns and what ecrecoverPubKey emits.
 async function recovery(message: string, wallet?: ethers.HDNodeWallet): Promise<Recovery> {
-  const w = wallet ?? ethers.Wallet.createRandom();
-  const sig = await w.signMessage(message);
-  const digest = ethers.hashMessage(message);
-  const { r, s, v } = ethers.Signature.from(sig);
-  const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
-  const ownerHex = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
-  return { h, v: BigInt(v), r: rLe, s: sLe, owner: hexToBin(ownerHex.slice(2)), wallet: w };
+  // A small fraction of valid signatures have a GLV ladder that cannot fit the current two-sidecar op budget.
+  // Keep exact messages when the wallet is unconstrained (conformance tests re-sign them), varying the random wallet;
+  // when a caller fixes the wallet, vary only the otherwise-unobserved message suffix.
+  for (let attempt = 0; ; attempt++) {
+    const w = wallet ?? ethers.Wallet.createRandom();
+    const signedMessage = wallet && attempt > 0 ? `${message}-${attempt}` : message;
+    const sig = await w.signMessage(signedMessage);
+    const digest = ethers.hashMessage(signedMessage);
+    const { r, s, v } = ethers.Signature.from(sig);
+    const h = leBytes(digest), rLe = leBytes(r), sLe = leBytes(s);
+    const ownerHex = ethers.SigningKey.computePublicKey(ethers.SigningKey.recoverPublicKey(digest, sig), true);
+    const result = { h, v: BigInt(v), r: rLe, s: sLe, owner: hexToBin(ownerHex.slice(2)), wallet: w };
+    try {
+      probeEcrecoverSplit(
+        computeEcrecoverWitness(result.h, Number(result.v), result.r, result.s),
+        SHARED_LIBRARY_SALT,
+        dummySc(0),
+        dummySc(1),
+      );
+      return result;
+    } catch {
+      // Retry with another wallet/message; production correctly fails closed for this width.
+    }
+  }
 }
 
 // the SDK's 34-byte on-chain commitment (parity || Qx-LE) back to a standard big-endian compressed pubkey
@@ -69,15 +98,42 @@ const toStdCompressed = (q: Uint8Array): string =>
 // A dummy side-car pair for probing whether a signature has a valid 2-covenant split.
 const dummySc = (v: number): { txid: string; vout: number; satoshis: bigint; token: { category: string; amount: bigint; nft: { capability: 'mutable'; commitment: string } } } =>
   ({ txid: (v ? 'bb' : 'aa').repeat(32), vout: v, satoshis: 100000n, token: { category: 'ee'.repeat(32), amount: 0n, nft: { capability: 'mutable', commitment: '' } } });
-// ~2.3% of random signatures are "width-0": their GLV ladder is too long for the 2-covenant (A+B) split, so recovery
-// fails closed (re-sign to get a different decomposition). Skip those here so multi-signer loop tests stay deterministic.
+// A small fraction of signatures are "width-0": their GLV ladder is too long for the 2-covenant (A+B) split, so
+// recovery fails closed with "no ladder split fits both side-cars' op-budget for this signature ... Re-sign to obtain
+// a different signature, which will decompose differently". Measured on this tree at 4/300 = 1.33% of random signers
+// over a fixed message. EVERY positive-path test below draws a fresh random signature: ten of them were unguarded,
+// so a full run of this file flaked at about 1 - 0.9867^10 = 12.6%, and the STATEFUL test alone at 1.33% - which is
+// the rate at which it was reported failing.
+//
+// This applies the remedy the error text itself prescribes: re-sign with a fresh message until the split probe
+// accepts. The probe builds both side-car covenants and evaluates them on the VM in an isolated two-input
+// transaction, and it settles on the split with the widest budget margin rather than the first that fits. Per its
+// own documentation the verdict is salt-independent, so a signature it accepts under SHARED_LIBRARY_SALT also
+// splits for the BRANDED pair a stateful contract co-spends - that part is cited, not measured here.
+//
+// BOUNDED, so the fixture still fails loudly rather than spinning. At 1.33% the chance of 24 consecutive width-0
+// draws is about 1e-45, so exhausting the budget means the split search is broken for ALL signatures - a real
+// regression - and that is reported with the last probe failure rather than hanging the run.
+const MAX_RESIGN = 24;
 async function goodRecovery(prefix: string, wallet: ethers.HDNodeWallet): Promise<Recovery> {
-  for (let t = 0; ; t++) {
+  let lastFailure = '(none)';
+  for (let t = 0; t < MAX_RESIGN; t++) {
     const g = await recovery(`${prefix}-${t}`, wallet);
-    try { probeEcrecoverSplit(computeEcrecoverWitness(g.h, Number(g.v), g.r, g.s), SHARED_LIBRARY_SALT, dummySc(0), dummySc(1)); return g; }
-    catch { /* width-0 signature, try the next message */ }
+    try {
+      probeEcrecoverSplit(
+        computeEcrecoverWitness(g.h, Number(g.v), g.r, g.s), SHARED_LIBRARY_SALT, dummySc(0), dummySc(1),
+      );
+      return g;
+    } catch (error) {
+      lastFailure = (error as Error).message; // width-0 signature, try the next message
+    }
   }
+  throw new Error(`no signature with a valid 2-covenant ladder split in ${MAX_RESIGN} re-signings of "${prefix}". `
+    + `At the measured 1.33% width-0 rate this is a broken split search, not an unlucky scalar. Last: ${lastFailure}`);
 }
+// A fresh random signer whose signature is known to decompose. Negative-path tests use this too: otherwise a
+// width-0 split-search refusal can satisfy a test that intends to reach a wrong-owner covenant refusal.
+const goodSigner = (prefix: string): Promise<Recovery> => goodRecovery(prefix, ethers.Wallet.createRandom());
 
 describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('records the recovery-side-car dependency in the artifact', () => {
@@ -90,7 +146,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('spends a contract that authenticates a signer via ecrecoverPubKey (auto-co-spends the A+B recovery pair)', async () => {
     const artifact = compileString(SOURCE);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s, owner } = await recovery('auth-e2e');
+    const { h, v, r, s, owner } = await goodSigner('auth-e2e');
     const contract = new Contract(artifact, [owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 1);
@@ -104,7 +160,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('rejects when the baked owner is a different signer', async () => {
     const artifact = compileString(SOURCE);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s } = await recovery('auth-neg');
+    const { h, v, r, s } = await goodSigner('auth-neg');
     const wrongOwner = new Uint8Array(33); wrongOwner[0] = 0x02; // valid-shape compressed pubkey, wrong key
     const contract = new Contract(artifact, [wrongOwner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
@@ -112,7 +168,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 
   // CONFORMANCE: the same message signed by ethers recovers to the SAME public key / address in ethers AND in the
@@ -158,7 +214,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(TWO);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.ecrecoverArgParams).toHaveLength(2);
     const provider = new MockNetworkProvider();
-    const g1 = await recovery('two-a'), g2 = await recovery('two-b');
+    const g1 = await goodSigner('two-a'), g2 = await goodSigner('two-b');
     const contract = new Contract(artifact, [g1.owner, g2.owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 2);
@@ -186,7 +242,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(BRANCH);
     expect(artifact.abi.find((fn) => fn.name === 'f')?.ecrecoverCompute).toBe(true);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s, owner } = await recovery('branch');
+    const { h, v, r, s, owner } = await goodSigner('branch');
     const contract = new Contract(artifact, [owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 1);
@@ -207,7 +263,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('ecrecoverP2pkh: recovers the signer 0x76a914||hash160(pubkey)||0x88ac locking bytecode', async () => {
     const artifact = compileString(P2PKH);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s, owner } = await recovery('p2pkh');
+    const { h, v, r, s, owner } = await goodSigner('p2pkh');
     const expected = hexToBin('76a914' + binToHex(hash160(owner)) + '88ac');  // hash160 of the standard pubkey
     const contract = new Contract(artifact, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
@@ -227,11 +283,14 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
           require(ecrecoverEvm(h, v, r, s) == owner);
       }
   }`;
+  // Runtime-equivalent address recovery for both upstream ABI variants:
+  // test/libsolidity/semanticTests/ecrecover/ecrecover.sol
+  // test/libsolidity/semanticTests/ecrecover/ecrecover_abiV2.sol
   it('ecrecoverEvm: recovers the signer EVM address (keccak256(uncompressed)[12:], == ethers/Solidity)', async () => {
     const artifact = compileString(EVM);
     expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverEvmFlags).toEqual([true]);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s, wallet } = await recovery('evm');
+    const { h, v, r, s, wallet } = await goodSigner('evm');
     const owner = hexToBin(wallet.address.slice(2));  // the signer's 20-byte EVM address (what Solidity ecrecover gives)
     const contract = new Contract(artifact, [owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
@@ -247,7 +306,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
   it('ecrecoverEvm: rejects a wrong EVM address', async () => {
     const artifact = compileString(EVM);
     const provider = new MockNetworkProvider();
-    const { h, v, r, s } = await recovery('evm-neg');
+    const { h, v, r, s } = await goodSigner('evm-neg');
     const contract = new Contract(artifact, [new Uint8Array(20)], { provider });  // zero address, not the signer
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 1);
@@ -255,7 +314,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.verify(h, v, r, s))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(NON_TRUTHY_INPUT_0);
   });
 
   // LOOP: a fixed-bound loop over array-indexed sigs unrolls to N syntactic recovery calls (each its own pair), and
@@ -347,7 +406,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(STATEFUL);
     expect(artifact.abi.find((fn) => fn.name === 'bump')?.ecrecoverCompute).toBe(true);
     const provider = createTestProvider();
-    const { h, v, r, s, owner } = await recovery('stateful');
+    const { h, v, r, s, owner } = await goodSigner('stateful');
     const contract = new Contract(artifact, [owner], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { count: 0n }, { saltContract: true },
@@ -379,7 +438,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     expect(artifact.abi.find((fn) => fn.name === 'verify')?.ecrecoverLoopReads).toBe(true);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom();
-    const g = await Promise.all([0, 1, 2].map((k) => recovery('evmloop-' + k, w)));  // same signer, 3 messages
+    const g = await Promise.all([0, 1, 2].map((k) => goodRecovery('evmloop-' + k, w)));  // same signer, 3 messages
     const owner = hexToBin(w.address.slice(2));
     const contract = new Contract(artifact, [owner], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
@@ -397,7 +456,11 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
     const artifact = compileString(LOOP_EVM);
     const provider = new MockNetworkProvider();
     const w = ethers.Wallet.createRandom(), imposter = ethers.Wallet.createRandom();
-    const g = [await recovery('el-0', w), await recovery('el-1', imposter), await recovery('el-2', w)];
+    const g = [
+      await goodRecovery('el-0', w),
+      await goodRecovery('el-1', imposter),
+      await goodRecovery('el-2', w),
+    ];
     const contract = new Contract(artifact, [hexToBin(w.address.slice(2))], { provider });  // owner = w; g[1] imposter
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 2_000_000n }));
     await deployPair(provider, SHARED_LIBRARY_SALT, 3);
@@ -406,7 +469,7 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify(g.map((x) => x.h), g.map((x) => x.v), g.map((x) => x.r), g.map((x) => x.s), 3n))
       .addOutput({ to: contract.address, amount: 1_500_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(OP_VERIFY_INPUT_0);
   });
 
   it('LOOP (fixed-bound): rejects when one iteration signature is wrong', async () => {
@@ -421,6 +484,6 @@ describe('ecrecoverPubKey recovery side-car (compiler + SDK + VM e2e)', () => {
       .addInputs(await contract.getUtxos(),
         contract.unlock.verify([g0.h, g1.h], [g0.v, g1.v], [g0.r, g1.r], [g0.s, g1.s]))
       .addOutput({ to: contract.address, amount: 800_000n })
-      .send()).rejects.toThrow();
+      .send()).rejects.toThrow(OP_VERIFY_INPUT_0);
   });
 });

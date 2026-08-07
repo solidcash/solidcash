@@ -1,6 +1,6 @@
 import "./deploy_target.scash";
 
-// Error: using {value} in a non-stateful contract
+// A value-bearing deployment implies a stateful parent.
 contract ErrorDeployValueNonStateful() {
     function test(pubkey pk, sig s) {
         require(checkSig(s, pk));

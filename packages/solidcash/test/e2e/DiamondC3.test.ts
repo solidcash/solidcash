@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // C3 linearization. In a diamond (D is B, C ; B is A ; C is A) the MRO is [D, B, C, A], so `super`
 // in B must reach the *sibling* C before the shared ancestor A - cooperative super. The accumulated
@@ -72,7 +74,7 @@ describe('C3 linearization', () => {
       forceStateful: true,
     }), await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.run(0n, 1011n)).rejects.toThrow();
+    await expect(sc.run(0n, 1011n)).rejects.toThrow(inputZeroVerifyFailure);
   });
 
   it('rejects an inheritance hierarchy with no valid C3 linearization', () => {

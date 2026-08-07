@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // A direct-setter call on a freshly-deployed local is FOLDED into the deploy genesis: the child is deployed
 // already-configured, in one transaction, with no co-spend of the child. See docs/deploy-then-call-fold.md.

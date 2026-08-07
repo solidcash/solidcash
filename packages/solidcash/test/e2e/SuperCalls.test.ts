@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { ResolvedImport } from '@solidcash/utils';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
@@ -76,6 +76,6 @@ describe('super.f() / Base.f() parent calls', () => {
       importResolver: resolverFor(LIB), rootFileId: '/main.scash', forceStateful: true,
     }), await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.viaSuper(2n, 30n)).rejects.toThrow();
+    await expect(sc.viaSuper(2n, 30n)).rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
   });
 });

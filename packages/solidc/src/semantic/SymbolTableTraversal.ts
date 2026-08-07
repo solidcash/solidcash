@@ -53,6 +53,7 @@ import {
   TernaryOpNode,
   SliceNode,
   TupleIndexOpNode,
+  SequenceExpressionNode,
   ArrayNode,
   ArrayAccessNode,
   ArrayPushNode,
@@ -72,6 +73,7 @@ import {
   ExternalFunctionCallNode,
   ExternalCallSlot,
   ExternalCallArgSource,
+  ExternalCallExpression,
   ExternalCallMode,
   ExternalOutputStateNode,
   ExternalOutputStateAccessNode,
@@ -113,12 +115,14 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  UncheckedNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { SymbolTable, Symbol, SymbolType } from '../ast/SymbolTable.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
 import { createDefaultValueExpression } from '../ast/defaults.js';
 import { cloneNode } from '../ast/clone.js';
+import { generatedOriginOf, sourceFileOf } from '../ast/Location.js';
 import { computeBranchOps, countBranchOps } from './branchOps.js';
 import {
   FunctionRedefinitionError,
@@ -140,6 +144,10 @@ import {
   EventRedefinitionError,
   UndefinedEventError,
   ErrorRedefinitionError,
+  ReservedErrorSelectorError,
+  ErrorSelectorCollisionError,
+  AnonymousEventSelectorError,
+  InvalidErrorUsageError,
   UndefinedErrorError,
   TokenContainerKeyMustBeParameterError,
   TokenContainerTransferInConstructorError,
@@ -147,6 +155,7 @@ import {
   InvalidModifierCombinationError,
   DelegatecallSelfMutationError,
   InternalCallToExternalError,
+  LibrarySelfExternalCallError,
   NamedArgumentError,
   NonCompileTimeExpressionError,
   TypeDefinitionRedefinitionError,
@@ -155,11 +164,13 @@ import {
   ContractNoArgsRequiredError,
   InterfaceRedefinitionError,
   UndefinedInterfaceError,
+  InterfaceContractBaseError,
   InterfaceComplianceError,
   CircularInterfaceInheritanceError,
   PrivateStateVariableAccessError,
   PrivateCollectionAccessError,
   UndefinedExternalStateVariableError,
+  UnsupportedExternalOutStateCollectionError,
   ExternalReadArgCountError,
   UndefinedInterfaceFunctionError,
   MethodCallNotSupportedError,
@@ -167,6 +178,10 @@ import {
   DeployThenCallError,
   UsingForUndefinedLibraryError,
   UsingForUndefinedFunctionError,
+  UsingForInvalidFunctionReferenceError,
+  UsingForIncompatibleTargetError,
+  UsingForPrivateFunctionError,
+  GlobalUsingForNonUDVTError,
   OperatorOverloadNonUDVTError,
   OperatorOverloadSignatureError,
   FunctionSelectorCollisionError,
@@ -179,11 +194,15 @@ import {
   AbstractContractNotCompilableError,
   StatefulContractDeploymentError,
   DeployValueInNonStatefulError,
+  InvalidDeploymentValueError,
   InvalidTypeIntrospectionPropertyError,
   InvalidTypeForIntrospectionError,
   AbiEncodeCallUndefinedInterfaceError,
   AbiEncodeCallUndefinedFunctionError,
   AbiEncodeCallArgCountError,
+  GraphEmissionEffectError,
+  GraphHandlerShapeError,
+  SolidcDiagnosticError,
 } from '../Errors.js';
 import {
   CompilerOptions, PrimitiveType, BytesType, Type, StructType, EnumType, AddressType, ValueType,
@@ -191,9 +210,25 @@ import {
   computeFunctionSignature, computeFunctionSelector, computeEvmFunctionSelector, TupleType, ArrayType,
   IntType, FixedType, MappingType, FunctionType,
   FunctionBlockLayout, BlockLayoutSlot, resolveLibraries, ExternalLibrary, parseTypeStrict,
-  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType,
+  INLINE_MAX_BLOB_LENGTH, isDynamicStorageType, isChunkableValueType, encodeInt, implicitlyCastable, LocationI,
 } from '@solidcash/utils';
 import { binToHex } from '@bitauth/libauth';
+import { walkInvocationAst } from '../analysis/InvocationAnalysis.js';
+
+// Correctness-first bound for runtime-variable resources inside a relocatable balanced block.
+//
+// X28 measured whether this can be split into a compile-time-sized LOOP leg and a conservative CHUNK leg, and
+// it cannot: there is no loop leg. `needsTrailingRegion` below is gated on `__message_bus1`, and every reservation
+// measured - 18 of 2,283 layout computations in the compiler suite, 111 of 6,881 in the SDK suite - fired
+// through the chunk term. No loop term fired on any function that reached the reservation. See the note there.
+//
+// Nor can the chunk leg be narrowed to "only when a dispatched handler touches a dynamic variable": the scan
+// that would decide it sees `StateAccessNode`/`StateAssignNode` only, and the bare `note = t` spelling is still
+// an `AssignNode` over an `IdentifierNode` here (X19's gap). 4 of those 18 reservations report NO function
+// touching a dynamic variable while the contract writes one, so that narrowing would drop the region for
+// exactly those contracts - and the failure is silent, since the SDK enforces `trailingCapacity` only when the
+// layout declares one and otherwise appends the chunk run past the block, misaligning every later participant.
+const BALANCED_TRAILING_CAPACITY = 64;
 
 // Counts identifier occurrences in an expression subtree (structural children only, no definition backrefs).
 class IdentifierNameCounter extends AstTraversal {
@@ -274,6 +309,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   private canonSeen: Set<string> = new Set(); // cycle guard for transitive local-key canonicalization
   private currentContract: ContractNode;
   private expectedSymbolType: SymbolType = SymbolType.VARIABLE;
+  // Context for resolving a bare overloaded function name assigned to an internal function-pointer variable.
+  // The destination signature disambiguates overloads before TypeCheck sees the assignment.
+  private expectedFunctionPointerType?: FunctionType;
   private insideConsoleStatement: boolean = false;
 
   // Depth of conditionally-evaluated expression branches (ternary arms, short-circuit && / ||
@@ -283,10 +321,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private conditionalRefNames: Set<string> = new Set();
   private insideConstructor: boolean = false;
+  private insideFunctionPointerStateAssignment: boolean = false;
   private tupleStateTempCounter: number = 0;
   private knownLibraryNames: Set<string> = new Set();
   private libraryFunctionSignatures: Map<string, string[]> = new Map();
   private libraryEventSignatures: Map<string, string[]> = new Map();
+  private libraryAnonymousEvents: Set<string> = new Set();
+  private libraryErrorSignatures: Map<string, string[]> = new Map();
   private stateVariableMap: Map<string, StateVariableNode> = new Map();
   private collectionMap: Map<string, CollectionNode> = new Map();
   private structMap: Map<string, StructType> = new Map();
@@ -302,11 +343,18 @@ export default class SymbolTableTraversal extends AstTraversal {
   private loopDeclaredLocals = new Set<string>();
   private typeDefMap: Map<string, ValueType> = new Map();
   private enumMap: Map<string, EnumType> = new Map();
+  private fileEnumNames: Set<string> = new Set();
+  private fileStructNames: Set<string> = new Set();
+  private fileTypeDefNames: Set<string> = new Set();
   private eventMap: Map<string, EventDefinitionNode> = new Map();
   // Events declared in a sibling/imported contract (not the target contract nor a library): a qualified
   // `emit C.E(...)` of one is recorded on the emitting contract so the artifact lists it (Solidity ABI parity).
   private siblingContractEvents: WeakSet<EventDefinitionNode> = new WeakSet();
+  // Calls visited from MethodCallStatement discard their ABI result. This lets deploy-folding safely erase an
+  // intentionally mismatched interface return layout without extending that relaxation to value contexts.
+  private discardedMethodCalls: WeakSet<MethodCallNode> = new WeakSet();
   private errorMap: Map<string, ErrorDefinitionNode> = new Map();
+  private errorSelectorMap: Map<string, ErrorDefinitionNode> = new Map();
   private insideBranch: boolean = false;
   private isStatefulContract: boolean = false;
   private compilerOptions: CompilerOptions;
@@ -320,8 +368,96 @@ export default class SymbolTableTraversal extends AstTraversal {
   // operator overloads: typeStr -> operatorKey -> fullFunctionName
   // operatorKey examples: '+', '-', '==', 'unary_-', 'unary_~'
   private operatorOverloads: Map<string, Map<string, string>> = new Map();
+  // Operator aliases are legal only in a file-level `using ... global` directive. The same visitor handles
+  // source-unit and contract directives, so retain the declaration scope while registering each group.
+  private processingFileUsingDirective = false;
 
   private resolvedLibraries: Record<string, ExternalLibrary>;
+
+  // The source file under compilation, kept so a diagnostic can name the imported file a position belongs to.
+  private sourceFile?: SourceFileNode;
+  // Location instance -> the import path of the file that declares it. A `Location` has no file identity, so a
+  // diagnostic printing a bare `at line N` cites a line that is real in an IMPORTED file and impossible in the
+  // file the user named (`ERC20Mock.sol` is 15 lines and reports `line 170`, which is SafeMath.sol's). Keyed on
+  // the Location INSTANCE, not the node: lowering passes clone nodes but carry the same Location by reference,
+  // so a clone still resolves. Built deepest-import-first and first-write-wins, so the file that actually holds
+  // the line claims it rather than a shallower importer that only re-exports it.
+  private importedLocations?: Map<object, string>;
+
+  private buildImportedLocations(): Map<object, string> {
+    const map = new Map<object, string>();
+    const root = this.sourceFile;
+    if (!root) return map;
+    const seen = new Set<object>();
+    const claim = (n: unknown, path: string): void => {
+      if (!n || typeof n !== 'object' || seen.has(n as object)) return;
+      seen.add(n as object);
+      if (n instanceof Node && n.location && !map.has(n.location)) map.set(n.location, path);
+      for (const value of Object.values(n as Record<string, unknown>)) {
+        if (Array.isArray(value)) { for (const element of value) claim(element, path); } else claim(value, path);
+      }
+    };
+    // Resolve a relative import path against the importing file's directory so the label is usable from the
+    // root file (ERC20.sol's `../../math/SafeMath.sol` prints as `@openzeppelin/contracts/math/SafeMath.sol`).
+    const resolvePath = (parent: string, child: string): string => {
+      if (!child.startsWith('.')) return child;
+      const cut = parent.lastIndexOf('/');
+      const out = (cut > 0 ? parent.slice(0, cut) : '').split('/').filter((s) => s !== '');
+      for (const seg of child.split('/')) {
+        if (seg === '.' || seg === '') continue;
+        if (seg === '..') out.pop();
+        else out.push(seg);
+      }
+      // Reconstructs the resolver's canonical id, which the AST does not carry.
+      return (parent.startsWith('/') ? '/' : '') + out.join('/');
+    };
+    const done = new Set<SourceFileNode>();
+    const walkImports = (file: SourceFileNode, filePath: string, depth: number): void => {
+      if (done.has(file) || depth > 24) return;
+      done.add(file);
+      for (const imported of file.imports ?? []) {
+        if (!imported.resolvedAst) continue;
+        const path = resolvePath(filePath, imported.path);
+        walkImports(imported.resolvedAst, path, depth + 1);
+        // Only the file's own declaration roots: the merged arrays also hold its imports' nodes, which the
+        // recursion above has already claimed under their own paths.
+        const ast = imported.resolvedAst as unknown as Record<string, unknown>;
+        for (const key of ['contract', 'libraryContract', 'constantDefinitions', 'enumDefinitions',
+          'structDefinitions', 'typeDefinitions', 'errorDefinitions', 'eventDefinitions',
+          'interfaceDefinitions', 'freeFunctions', 'usingForDirectives']) {
+          claim(ast[key], path);
+        }
+      }
+    };
+    walkImports(root, this.compilerOptions.rootFileId ?? '', 0);
+    return map;
+  }
+
+  /**
+   * ` at line N` for a diagnostic, naming the imported file when line N is not in the file being compiled.
+   * Built lazily: a compilation whose diagnostics all point into the user's own file pays nothing.
+   *
+   * X92. A position can be both generated and imported-looking, and GENERATED WINS. The imported label asserts
+   * "line N is real in file F on disk"; a generated position is in a string that exists only inside the
+   * compiler, so no file holds it and the imported label would be a SPECIFIC FALSE label naming a real file -
+   * the failure X93 already refused. The mark is also the stronger evidence: it is stamped on the Location
+   * instance by the parse that built it, whereas the imported map is inferred from reachability, which a
+   * lowering pass can perturb by re-parenting a generated node under an imported declaration root.
+   */
+  private diagLine(location?: LocationI): string {
+    const line = location?.start?.line;
+    if (line === undefined) return '';
+    const generated = generatedOriginOf(location);
+    if (generated) return ` at line ${line} of ${generated}, not of your file`;
+    // X107: the parse that built this Location stamped the file it was reading, so prefer that over the
+    // reachability map. It cannot name a re-exporting intermediate and needs no import list to be present.
+    const stamped = sourceFileOf(location);
+    if (stamped) return ` at line ${line} of imported "${stamped}"`;
+    if (!this.sourceFile?.imports?.length) return ` at line ${line}`;
+    this.importedLocations ??= this.buildImportedLocations();
+    const file = this.importedLocations.get(location as unknown as object);
+    return file ? ` at line ${line} of imported "${file}"` : ` at line ${line}`;
+  }
 
   constructor(compilerOptions: CompilerOptions = {}) {
     super();
@@ -339,11 +475,22 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitSourceFile(node: SourceFileNode): Node {
+    this.sourceFile = node;
     // Register imported contracts for cross-contract references
     for (const imported of node.importedContracts) {
       this.contractMap.set(imported.name, imported);
+      // Contract-scoped structs are distinct types and must remain qualified outside their declaring contract.
+      // Register `C.S` as a constructor symbol so both positional and named-field cross-contract constructors
+      // resolve without exposing an ambiguous bare `S`.
+      for (const sd of imported.structDefinitions) {
+        const qualified = `${imported.name}.${sd.name}`;
+        if (!this.structMap.has(qualified)) {
+          const structType = new StructType(sd.name, sd.fields);
+          this.structMap.set(qualified, structType);
+          this.symbolTables[0].set(Symbol.function(qualified, structType, sd.fields.map((f) => f.type)));
+        }
+      }
     }
-
     // Register built-in NftCapability enum (none=0, mutable=1, minting=2)
     const nftCapType = new EnumType('NftCapability', [
       { name: 'none', value: 0n },
@@ -358,8 +505,34 @@ export default class SymbolTableTraversal extends AstTraversal {
     // enum is already in enumMap.
     for (const ed of node.enumDefinitions) {
       this.registerEnum(ed);
+      this.fileEnumNames.add(ed.name);
     }
 
+    // File-level event/error selectors may initialize file constants, so these declarations must be available
+    // before the constants pass (source order does not constrain declaration lookup in Solidity).
+    const fileErrorNames = new Set<string>();
+    for (const err of node.errorDefinitions) {
+      if (!node.libraryErrorDefinitions.has(err)) {
+        if (this.compilerOptions.solidityImportCompat && fileErrorNames.has(err.name)) {
+          throw new ErrorRedefinitionError(err);
+        }
+        fileErrorNames.add(err.name);
+      }
+      const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
+      if (this.errorMap.has(sig) && node.libraryErrorDefinitions.has(err)) continue;
+      this.registerError(err);
+    }
+    for (const ev of node.eventDefinitions) {
+      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
+      ev.signature = sig;
+      if (!this.eventMap.has(sig)) {
+        this.eventMap.set(sig, ev);
+      }
+    }
+
+    // Solidity constant lookup is declaration-order independent. Predeclare the whole scope so validation and
+    // identifier resolution can follow forward references; recursive validation below still rejects cycles.
+    this.predeclareConstants(node.constantDefinitions);
     // Register file-level constants before visiting contract
     for (const cd of node.constantDefinitions) {
       this.visitConstantDefinition(cd);
@@ -372,6 +545,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       const structType = new StructType(sd.name, sd.fields);
       this.structMap.set(sd.name, structType);
+      this.fileStructNames.add(sd.name);
       this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
     }
 
@@ -381,20 +555,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         throw new TypeDefinitionRedefinitionError(td);
       }
       this.typeDefMap.set(td.name, td.valueType);
-    }
-
-    // Register file-level errors
-    for (const err of node.errorDefinitions) {
-      this.registerError(err);
-    }
-
-    // Register file-level events (from library imports)
-    for (const ev of node.eventDefinitions) {
-      const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
-      ev.signature = sig;
-      if (!this.eventMap.has(sig)) {
-        this.eventMap.set(sig, ev);
-      }
+      this.fileTypeDefNames.add(td.name);
     }
 
     // Register events declared in sibling/imported contracts, so a qualified `emit C.E(...)` resolves (the event's
@@ -411,12 +572,40 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Sibling/imported contract enums are namespace members just like interface enums:
+    // `Other.Status.Ready`. Keep the qualified symbol unconditionally and expose the bare spelling only when it
+    // is still unambiguous. This must happen before the selected contract's function signatures/bodies resolve.
+    for (const imported of node.importedContracts) {
+      for (const ed of imported.enumDefinitions) {
+        const enumType = new EnumType(ed.name, ed.members);
+        const qualified = `${imported.name}.${ed.name}`;
+        if (!this.enumMap.has(qualified)) {
+          this.enumMap.set(qualified, enumType);
+          this.symbolTables[0].set(Symbol.enumType(qualified, enumType));
+        }
+        if (!node.contract.enumDefinitions.some((own) => own.name === ed.name)
+          && !this.enumMap.has(ed.name)) {
+          this.enumMap.set(ed.name, enumType);
+          this.symbolTables[0].set(Symbol.enumType(ed.name, enumType));
+        }
+      }
+    }
+
     // Register file-level interfaces (and their struct/enum/type/event definitions)
     for (const iface of node.interfaceDefinitions) {
-      // Register interface-level enums
+      // Register interface-level enums under their qualified name, and under the bare name when unambiguous.
+      // `I.Direction.Right` is parsed as nested field accesses, so retaining `I.Direction` lets the outer member
+      // access resolve without attempting to read `I` as a runtime variable.
       for (const ed of iface.enumDefinitions) {
+        const enumType = new EnumType(ed.name, ed.members);
+        const qualified = `${iface.name}.${ed.name}`;
+        if (!this.enumMap.has(qualified)) {
+          this.enumMap.set(qualified, enumType);
+          this.symbolTables[0].set(Symbol.enumType(qualified, enumType));
+        }
         if (!this.enumMap.has(ed.name)) {
-          this.registerEnum(ed);
+          this.enumMap.set(ed.name, enumType);
+          this.symbolTables[0].set(Symbol.enumType(ed.name, enumType));
         }
       }
       // Register interface-level structs. A struct name shared with a contract-level struct is a DISTINCT
@@ -490,7 +679,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (contractDerivedIface.has(iface.name)) continue; // a synthesized contract stub, not a user interface
       for (const parentName of iface.parents) {
         // An interface may only inherit interfaces - a contract-derived stub is not a valid parent (solc TypeError).
-        if (!this.interfaceMap.has(parentName) || contractDerivedIface.has(parentName)) {
+        if (contractDerivedIface.has(parentName)) {
+          throw new InterfaceContractBaseError(iface, parentName);
+        }
+        if (!this.interfaceMap.has(parentName)) {
           throw new UndefinedInterfaceError(iface, parentName);
         }
       }
@@ -501,10 +693,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.knownLibraryNames = new Set(node.declaredLibraryNames);
     this.libraryFunctionSignatures = node.libraryFunctionSignatures;
     this.libraryEventSignatures = node.libraryEventSignatures;
+    this.libraryAnonymousEvents = node.libraryAnonymousEvents;
+    this.libraryErrorSignatures = node.libraryErrorSignatures;
 
     // Pre-register free functions in global scope (so they can call each other and be called from contract)
     for (const func of node.freeFunctions) {
       const paramTypes = func.parameters.map((p) => p.type);
+      if (this.compilerOptions.solidityImportCompat && !func.isLibraryFunction && fileErrorNames.has(func.name)) {
+        throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
+      }
       const sig = computeFunctionSignature(func.name, paramTypes.map((t) => t.toString()));
       if (this.freeFunctionSignatures.has(sig)) {
         throw new FunctionRedefinitionError(func, paramTypes.map((t) => t.toString()).join(', '));
@@ -532,8 +729,20 @@ export default class SymbolTableTraversal extends AstTraversal {
     // BODIES are visited, so a library function's `address(x).method(d)` member call resolves against a
     // library-scoped `using L for address` lifted to file level - e.g. OZ SafeERC20).
     for (const ufd of node.usingForDirectives) {
-      this.visitUsingForDirective(ufd);
+      this.processingFileUsingDirective = true;
+      try {
+        this.visitUsingForDirective(ufd);
+      } finally {
+        this.processingFileUsingDirective = false;
+      }
     }
+
+    // LowerInlineAssembly can synthesize the raw EVM-slot register on the contract for an sload/sstore inside a
+    // file-level helper. Free function bodies are checked before visitContract registers contract collections, so
+    // expose only this compiler-generated collection early. Source-level free functions still cannot access
+    // ordinary contract storage by name.
+    const evmStorage = node.contract.collections.find((c) => c.name === '__evm_storage');
+    if (evmStorage) this.collectionMap.set(evmStorage.name, evmStorage);
 
     // Visit free function bodies
     for (const func of node.freeFunctions) {
@@ -552,22 +761,58 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.contractMap.set(node.name, node);
     this.currentContract = node;
 
+    // Types declared by an inherited interface are members of the contract scope. A file-level/library enum with
+    // the same short name must not win merely because it was registered earlier (`contract C is I`, where both
+    // `I.Direction` and `L.Direction` exist in the source unit).
+    const inheritedInterfaceEnums = new Map<string, EnumType>();
+    const collectInterfaceEnums = (interfaceName: string, seen = new Set<string>()): void => {
+      if (seen.has(interfaceName)) return;
+      seen.add(interfaceName);
+      const iface = this.interfaceMap.get(interfaceName);
+      if (!iface) return;
+      for (const definition of iface.enumDefinitions) {
+        inheritedInterfaceEnums.set(definition.name, new EnumType(definition.name, definition.members));
+      }
+      for (const parent of iface.parents) collectInterfaceEnums(parent, seen);
+    };
+    for (const parent of node.implements) collectInterfaceEnums(parent);
+    for (const [name, enumType] of inheritedInterfaceEnums) {
+      if (node.enumDefinitions.some((definition) => definition.name === name)) continue;
+      this.enumMap.set(name, enumType);
+      this.symbolTables[0].set(Symbol.enumType(name, enumType));
+    }
+
     this.isStatefulContract = node.stateVariables.length > 0
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
+      || node.functions.some((func) => func.impliedSelfdestruct
+        || (this.compilerOptions.solidityImportCompat
+          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
       || (this.compilerOptions.forceStateful ?? false)
       || node.usesBlockhash
       // Deploying a stateful child (`new T()` where T has state) IS a deploy, and the deploy covenant rides the
       // parent's block layout - so a parent that instantiates a stateful contract is itself made stateful (the
       // `deploy` modifier is implied). Recorded on the node so artifact generation also sees it as stateful.
       || (node.deploysStatefulChild = this.detectStatefulChildDeploy(node))
+      // Value-bearing deployment also needs the parent's value-transfer covenant and therefore a master NFT.
+      || (node.deploysWithValue = this.detectValueBearingDeploy(node))
       // Emitting any event (including a foreign/library event) needs a state NFT for the commitment -> stateful.
       || (node.emitsEvent = this.detectEmitsEvent(node));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level enums
+    const localEnumNames = new Set<string>();
     for (const ed of node.enumDefinitions) {
+      if (localEnumNames.has(ed.name)
+        || (this.enumMap.has(ed.name) && !this.fileEnumNames.has(ed.name))) {
+        throw new EnumRedefinitionError(ed);
+      }
+      localEnumNames.add(ed.name);
+      // Solidity permits a contract declaration to shadow a file-level declaration (warning only).
+      if (this.fileEnumNames.has(ed.name)) {
+        this.enumMap.delete(ed.name);
+      }
       this.registerEnum(ed);
     }
 
@@ -575,20 +820,37 @@ export default class SymbolTableTraversal extends AstTraversal {
     // struct of the same name is a distinct contract-scoped type that wins the bare slot (the interface's stays
     // reachable via its qualified IFace.Struct name). A name taken by another CONTRACT/file struct is a genuine
     // redefinition and still errors.
+    const localStructNames = new Set<string>();
     for (const sd of node.structDefinitions) {
-      if (this.structMap.has(sd.name) && !this.interfaceStructNames.has(sd.name)) {
+      if (localStructNames.has(sd.name)
+        || (this.structMap.has(sd.name)
+          && !this.interfaceStructNames.has(sd.name)
+          && !this.fileStructNames.has(sd.name))) {
         throw new StructRedefinitionError(sd);
       }
+      localStructNames.add(sd.name);
       const structType = new StructType(sd.name, sd.fields);
       this.structMap.set(sd.name, structType);
       // Register as a function symbol so Identifier(Score) in FunctionCallExpression resolves
       this.symbolTables[0].set(Symbol.function(sd.name, structType, sd.fields.map((f) => f.type)));
     }
 
-    // Register user-defined value type definitions
+    // Register user-defined value type definitions. A contract-scoped type may shadow a file-level
+    // type/struct/enum (Solidity warning only), but duplicate declarations in the same contract still fail.
+    const localTypeDefNames = new Set<string>();
     for (const td of node.typeDefinitions) {
-      if (this.typeDefMap.has(td.name) || this.structMap.has(td.name) || this.enumMap.has(td.name)) {
+      const shadowsFile = this.fileTypeDefNames.has(td.name)
+        || this.fileStructNames.has(td.name) || this.fileEnumNames.has(td.name);
+      if (localTypeDefNames.has(td.name)
+        || ((this.typeDefMap.has(td.name) || this.structMap.has(td.name) || this.enumMap.has(td.name))
+          && !shadowsFile)) {
         throw new TypeDefinitionRedefinitionError(td);
+      }
+      localTypeDefNames.add(td.name);
+      if (shadowsFile) {
+        this.typeDefMap.delete(td.name);
+        this.structMap.delete(td.name);
+        this.enumMap.delete(td.name);
       }
       this.typeDefMap.set(td.name, td.valueType);
     }
@@ -596,10 +858,30 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Register event definitions (keyed by full signature to allow overloading). The redefinition check is
     // within-contract only: a same-sig event registered by a sibling/library scope is not a redefinition.
     const localEventSigs = new Set<string>();
+    if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
+      throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
+    }
+    const interfaceEventSigs = new Set<string>();
+    if (this.compilerOptions.solidityImportCompat) {
+      const visitedInterfaces = new Set<string>();
+      const collectInterfaceEvents = (name: string): void => {
+        if (visitedInterfaces.has(name)) return;
+        visitedInterfaces.add(name);
+        const iface = this.interfaceMap.get(name);
+        if (!iface) return;
+        for (const event of iface.eventDefinitions) {
+          interfaceEventSigs.add(computeEventSignature(
+            event.name, event.parameters.map((parameter) => parameter.type?.toString() ?? 'address'),
+          ));
+        }
+        for (const parent of iface.parents) collectInterfaceEvents(parent);
+      };
+      for (const name of node.implements) collectInterfaceEvents(name);
+    }
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (localEventSigs.has(sig)) {
+      if (localEventSigs.has(sig) || interfaceEventSigs.has(sig)) {
         throw new EventRedefinitionError(ev);
       }
       localEventSigs.add(sig);
@@ -608,12 +890,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Register error definitions (keyed by full signature to allow overloading)
+    // Solidity custom errors do not overload: the NAME, not only the full signature, must be unique in the
+    // effective contract scope (including inherited declarations).
+    const localErrorNames = new Set<string>();
     for (const err of node.errorDefinitions) {
-      this.registerError(err);
+      const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
+      if (this.compilerOptions.solidityImportCompat && localErrorNames.has(err.name)) {
+        throw new ErrorRedefinitionError(err);
+      }
+      localErrorNames.add(err.name);
+      if (!this.errorMap.has(sig)) this.registerError(err);
     }
 
     // Register contract-level constants
+    this.predeclareConstants(node.constantDefinitions);
     for (const cd of node.constantDefinitions) {
       this.visitConstantDefinition(cd);
     }
@@ -668,7 +958,18 @@ export default class SymbolTableTraversal extends AstTraversal {
         maxSize = getMaxPushdataEncodedSizeForType(new IntType(false, 32)); // A$len: uint32 -> 6 bytes
       }
 
-      if (sv.visibility === StateVariableVisibility.EXTERNAL) {
+      if (sv.isolatedNft) {
+        if (currentNftUsed > 0) {
+          nftIndex++;
+          fieldIndex = 0;
+          currentNftUsed = 0;
+        }
+        sv.nftIndex = nftIndex;
+        sv.fieldIndex = 0;
+        nftIndex++;
+        fieldIndex = 0;
+        currentNftUsed = 0;
+      } else if (sv.visibility === StateVariableVisibility.EXTERNAL) {
         // External variables always get their own dedicated NFT
         if (currentNftUsed > 0) {
           nftIndex++;
@@ -751,9 +1052,46 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.collectionMap.set(coll.name, coll);
     }
 
+    const userParams = (fn: FunctionDefinitionNode): ParameterNode[] =>
+      fn.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'));
+    const sameTypes = (left: Type[], right: Type[]): boolean =>
+      left.length === right.length && left.every((type, index) =>
+        type.toString().replace(/address payable/g, 'address')
+          === right[index].toString().replace(/address payable/g, 'address'));
+    const mutabilityCompatible = (candidate: FunctionDefinitionNode, base: FunctionDefinitionNode): boolean => {
+      const kind = (fn: FunctionDefinitionNode): 'pure' | 'view' | 'payable' | 'nonpayable' => {
+        if (fn.modifiers.includes(FunctionModifier.PURE)) return 'pure';
+        if (fn.modifiers.includes(FunctionModifier.VIEW)) return 'view';
+        if (fn.modifiers.includes(FunctionModifier.PAYABLE)) return 'payable';
+        return 'nonpayable';
+      };
+      const candidateKind = kind(candidate);
+      const baseKind = kind(base);
+      if (baseKind === 'payable') return candidateKind === 'payable';
+      if (candidateKind === 'payable') return false;
+      const rank = { pure: 0, view: 1, nonpayable: 2 } as const;
+      return rank[candidateKind] <= rank[baseKind];
+    };
+    const hasConcreteImplementation = (abstractFn: FunctionDefinitionNode): boolean =>
+      node.functions.some((candidate) =>
+        candidate !== abstractFn && !candidate.isAbstract && candidate.name === abstractFn.name
+        && sameTypes(userParams(candidate).map((parameter) => parameter.type),
+          userParams(abstractFn).map((parameter) => parameter.type))
+        && sameTypes(candidate.returnTypes, abstractFn.returnTypes)
+        && mutabilityCompatible(candidate, abstractFn));
+
+    // Once fulfilled, the retained abstract declaration must not reach selector dispatch/codegen: it shares the
+    // concrete implementation's ABI selector but has no executable body or compiler-injected return parameters.
+    node.functions = node.functions.filter((func) => !func.isAbstract || !hasConcreteImplementation(func));
+
     // Pre-register all user-defined functions (before visiting bodies)
     for (const func of node.functions) {
       this.validateModifiers(func, node);
+      if (this.compilerOptions.solidityImportCompat && localErrorNames.has(func.name)) {
+        throw new FunctionRedefinitionError(
+          func, func.parameters.map((parameter) => parameter.type.toString()).join(', '),
+        );
+      }
 
       // An entry point may take/return an EXTERNAL function pointer (an (address, selector) value). A self-call
       // (`this.f(this.g, ..)`) routes to the internal OP_INVOKE path, so the pointer stays on the stack and the
@@ -761,11 +1099,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       // cross-contract representation, so it stays rejected on an entry point - solc rejects it too.
       if (func.isEntryPoint) {
         for (const p of func.parameters) {
-          if (p.type instanceof FunctionType && !p.type.isExternal) {
+          if (typeContainsInternalAbiType(p.type)) {
             throw new FunctionTypeNotEncodableError(p, 'parameters of an external/public function');
           }
         }
-        if (func.returnTypes.some((t) => t instanceof FunctionType && !(t as FunctionType).isExternal)) {
+        if (func.returnTypes.some((t) => typeContainsInternalAbiType(t))) {
           throw new FunctionTypeNotEncodableError(func, 'return values of an external/public function');
         }
       }
@@ -837,6 +1175,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node.isAbstract) {
       for (const func of node.functions) {
         if (func.isAbstract) {
+          // Inheritance flattening deliberately retains the abstract declaration for provenance. A synthesized
+          // public-variable/constant getter (or another concrete declaration) with the same ABI fulfills it;
+          // do not reject solely because the retained abstract node is still present.
+          if (hasConcreteImplementation(func)) continue;
           if (func.inheritedFrom) {
             throw new UnimplementedAbstractFunctionError(node, func.name, func.inheritedFrom);
           } else {
@@ -853,7 +1195,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Solidity ABI selectors erase address payability (including inside arrays), matching artifact ABI types.
       const paramTypes = func.parameters.map((p) => p.type.toString().replace(/address payable/g, 'address'));
       const sig = computeFunctionSignature(func.name, paramTypes);
-      const selector = computeFunctionSelector(sig);
+      const selector = func.messageBusRoute
+        ? Uint8Array.from([0x53, 0x43, 0x42, 0x31])
+        : computeFunctionSelector(sig);
       const selectorHex = binToHex(selector);
 
       const collision = selectorMap.get(selectorHex);
@@ -903,6 +1247,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!iface) {
         throw new UndefinedInterfaceError(node, ifaceName);
       }
+      // Solidity abstract contracts may defer any interface obligation to their concrete descendants.
+      if (node.isAbstract) continue;
       // Collect all functions including inherited ones
       const allFunctions = this.getAllInterfaceFunctions(iface);
       for (const ifaceFunc of allFunctions) {
@@ -929,6 +1275,13 @@ export default class SymbolTableTraversal extends AstTraversal {
             `Contract '${node.name}' does not implement function '${ifaceFunc.name}(${paramSig})' required by interface '${ifaceName}'`,
           );
         }
+      }
+
+      if (this.interfaceRequiresFallback(iface) && !node.fallbackDef) {
+        throw new InterfaceComplianceError(
+          node,
+          `Contract '${node.name}' does not implement fallback required by interface '${ifaceName}'`,
+        );
       }
 
       // Check state variable compliance
@@ -996,6 +1349,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
 
+    // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
+    // their callManifest binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
+    // subroutine has no block layout of its own. Reserve those owner-local slots in the ROUTE's block instead,
+    // one frame per dispatch site; refuse the effects no frame can express. Both run after every function is
+    // visited, because both need per-handler metadata assigned during that function's own visit.
+    this.refuseUnframedGraphEffects(node);
+    this.planGraphEffectFrames(node);
+
     if (node.fallbackDef) {
       const loc = node.fallbackDef.location ? ` at line ${node.fallbackDef.location.start.line}` : '';
       console.log(`Warning: fallback() is a Solidity compatibility feature${loc}. Its usage on BCH is discouraged as BCH does not use the same contract call model.`);
@@ -1011,8 +1372,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
+      // Message-bus routes are compiler-owned source. Their deliberately generic parser/context
+      // locals vary by admitted handler shape, so reporting them as user warnings makes default-on
+      // compilation noisy without identifying anything the user can fix.
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -1021,7 +1387,23 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    if (node.name.startsWith('__internal__') && !node.name.startsWith('__internal__c2CounterPerm_')) {
+    const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
+      || [
+        '__internal__msgData',
+        '__internal__msgSig',
+        '__internal__graphCallManifest',
+        '__internal__graphParticipantOffset',
+        '__internal__graphFixedSize', '__internal__graphBlockSize',
+        '__internal__graphEmissions',
+        '__internal__graphCallers',
+        '__internal__graphSettlementBoundary',
+        '__internal__graphCompletionPositions',
+        '__internal__graphSettlementTable',
+        '__internal__activeVerifierIndex',
+        '__internal__blockhashInputIndex',
+        '__internal__blockhashRowOffset',
+      ].includes(node.name);
+    if (node.name.startsWith('__internal__') && !compilerOwnedParameter) {
       throw new Error(`Identifier '${node.name}' uses reserved prefix '__internal__'`);
     }
     const existing = this.symbolTables[0].get(node.name);
@@ -1041,26 +1423,135 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitConstantDefinition(node: ConstantDefinitionNode): Node {
-    if (this.symbolTables[0].get(node.name)) {
+    const own = this.symbolTables[0].symbols.get(node.name);
+    const visible = this.symbolTables[0].get(node.name);
+    // Solidity permits a contract constant to shadow a file-level/global declaration (warning only), including
+    // builtin functions such as `min`/`max`. The contract scope's own table remains authoritative for genuine
+    // same-scope duplicates.
+    const shadowsOuter = this.compilerOptions.solidityImportCompat && !own && visible !== undefined;
+    const alreadyPredeclared = own?.definition === node;
+    if ((own && !alreadyPredeclared) || (visible && !alreadyPredeclared && !shadowsOuter)) {
       throw new VariableRedefinitionError(node);
     }
 
+    // Declaration selectors are constants in Solidity, but constants are visited before contract functions are
+    // registered in functionDefinitions. Fold directly from the declaration AST here so `this.f.selector`,
+    // `super.f.selector`, `I.f.selector`, and event/error selectors pass the compile-time-expression gate.
+    node.expression = this.foldConstantDeclarationSelector(node.expression);
+
     // Validate that the expression is a compile-time constant
     const contractTypeNames = new Set([...this.interfaceMap.keys(), ...this.contractMap.keys()]);
-    if (!isCompileTimeExpression(node.expression, this.constantMap, this.enumMap, contractTypeNames)) {
+    if (!isCompileTimeExpression(
+      node.expression, this.constantMap, this.enumMap, contractTypeNames, new Set([node]),
+    )) {
       throw new NonCompileTimeExpressionError(node);
     }
 
     // Resolve identifiers within the constant expression (e.g., references to other constants)
     node.expression = this.resolveConstantExpressionIdentifiers(node.expression);
 
-    const symbol = Symbol.constant(node);
-    // Mark as referenced so constants are exempt from unused-variable checking
-    symbol.references.push({ name: node.name } as IdentifierNode);
-    this.symbolTables[0].set(symbol);
-    this.constantMap.set(node.name, node);
+    if (!alreadyPredeclared) {
+      const symbol = Symbol.constant(node);
+      // Mark as referenced so constants are exempt from unused-variable checking
+      symbol.references.push({ name: node.name } as IdentifierNode);
+      this.symbolTables[0].set(symbol);
+      this.constantMap.set(node.name, node);
+    }
 
     return node;
+  }
+
+  private predeclareConstants(nodes: ConstantDefinitionNode[]): void {
+    for (const node of nodes) {
+      const own = this.symbolTables[0].symbols.get(node.name);
+      const visible = this.symbolTables[0].get(node.name);
+      const shadowsOuter = this.compilerOptions.solidityImportCompat && !own && visible !== undefined;
+      if (own || (visible && !shadowsOuter)) throw new VariableRedefinitionError(node);
+      const symbol = Symbol.constant(node);
+      symbol.references.push({ name: node.name } as IdentifierNode);
+      this.symbolTables[0].set(symbol);
+      this.constantMap.set(node.name, node);
+    }
+  }
+
+  private foldConstantDeclarationSelector(expr: ExpressionNode): ExpressionNode {
+    if (!(expr instanceof FieldAccessNode) || expr.name !== 'selector') return expr;
+
+    const literal = (value: Uint8Array, width?: number): HexLiteralNode => {
+      const result = new HexLiteralNode(value);
+      result.location = expr.location;
+      if (width !== undefined) result.type = new BytesType(width);
+      return result;
+    };
+    const selectorForFunction = (
+      fn: { name: string; parameters: ParameterNode[] } | undefined,
+    ): ExpressionNode | undefined => {
+      if (!fn) return undefined;
+      const signature = computeFunctionSignature(
+        fn.name,
+        fn.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+      );
+      return literal(computeFunctionSelector(signature), 4);
+    };
+
+    // `this.f.selector` and bare `f.selector`.
+    if (expr.expression instanceof StateAccessNode) {
+      const functionName = expr.expression.name;
+      const own = this.currentContract?.functions.find((fn) => fn.name === functionName);
+      const folded = selectorForFunction(own);
+      if (folded) return folded;
+    }
+    if (expr.expression instanceof IdentifierNode) {
+      const name = expr.expression.name;
+      const own = this.currentContract?.functions.find((fn) => fn.name === name);
+      const folded = selectorForFunction(own);
+      if (folded) return folded;
+
+      const event = this.currentContract?.eventDefinitions.find((definition) => definition.name === name)
+        ?? [...this.eventMap.values()].find((definition) => definition.name === name);
+      if (event) {
+        if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, event.name);
+        const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
+        return literal(computeEventSelector(signature), 32);
+      }
+
+      const error = this.currentContract?.errorDefinitions.find((definition) => definition.name === name)
+        ?? [...this.errorMap.values()].find((definition) => definition.name === name);
+      if (error) {
+        const signature = computeErrorSignature(error.name, error.parameters.map((p) => p.type.toString()));
+        return literal(computeFunctionSelector(signature), 4);
+      }
+    }
+
+    // Qualified declarations: `I.f.selector`, `Base.f.selector`, `super.f.selector`, and qualified events/errors.
+    if (expr.expression instanceof FieldAccessNode
+      && expr.expression.expression instanceof IdentifierNode) {
+      const qualifier = expr.expression.expression.name;
+      const name = expr.expression.name;
+      const holder = qualifier === 'super' || qualifier === this.currentContract?.name
+        ? this.currentContract
+        : this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier);
+      const folded = selectorForFunction(holder?.functions.find((fn) => fn.name === name));
+      if (folded) return folded;
+
+      const libraryErrorTypes = this.libraryErrorSignatures.get(`${qualifier}.${name}`);
+      if (libraryErrorTypes) {
+        return literal(computeFunctionSelector(computeErrorSignature(name, libraryErrorTypes)), 4);
+      }
+      const event = holder?.eventDefinitions.find((definition) => definition.name === name);
+      if (event) {
+        if (event.isAnonymous) throw new AnonymousEventSelectorError(expr, `${qualifier}.${event.name}`);
+        const signature = computeEventSignature(event.name, event.parameters.map((p) => p.type.toString()));
+        return literal(computeEventSelector(signature), 32);
+      }
+      const error = holder?.errorDefinitions.find((definition) => definition.name === name);
+      if (error) {
+        const signature = computeErrorSignature(error.name, error.parameters.map((p) => p.type.toString()));
+        return literal(computeFunctionSelector(signature), 4);
+      }
+    }
+
+    return expr;
   }
 
   private resolveConstantExpressionIdentifiers(expr: ExpressionNode): ExpressionNode {
@@ -1081,6 +1572,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       expr.elements = expr.elements.map((e) => this.resolveConstantExpressionIdentifiers(e));
     } else if (expr instanceof BytesConcatNode || expr instanceof StringConcatNode) {
       expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e));
+    } else if (expr instanceof TypeIntrospectionNode) {
+      // Constant initializers bypass ordinary expression traversal. Numeric min/max need their concrete
+      // IntType/FixedType for type checking. Contract/interface declarations may appear later in the file, so
+      // resolve them only when their declaration is already registered.
+      if (expr.property === 'min' || expr.property === 'max') {
+        return this.visitTypeIntrospection(expr) as ExpressionNode;
+      }
+      if (this.contractMap.has(expr.typeArgText) || this.interfaceMap.has(expr.typeArgText)) {
+        return this.visitTypeIntrospection(expr) as ExpressionNode;
+      }
+      return expr;
     } else if (expr instanceof FieldAccessNode) {
       // A library/namespaced constant `L.X` -> rewrite to the compound identifier `L.X` so type-checking sees the
       // constant, not a struct-field access on L (which errors "struct has no field X").
@@ -1104,7 +1606,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Builtin-in-const: resolve the args' constant refs and stamp the builtin's return type (undefined
       // otherwise, which fails the const's assign type-check). Inlined at each use, so runtime codegen runs.
       // addmod/mulmod -> BIGINT (uint256); keccak256/sha256 -> bytes32.
-      expr.parameters = expr.parameters.map((e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode)) as ExpressionNode[];
+      expr.parameters = expr.parameters.map(
+        (e) => this.resolveConstantExpressionIdentifiers(e as ExpressionNode),
+      ) as ExpressionNode[];
       expr.type = expr.identifier.name === 'addmod' || expr.identifier.name === 'mulmod'
         ? PrimitiveType.BIGINT : new BytesType(32);
     } else if (expr instanceof FunctionCallNode && expr.parameters.length === 1
@@ -1142,7 +1646,29 @@ export default class SymbolTableTraversal extends AstTraversal {
         else if (Array.isArray(val)) for (const x of val) if (x instanceof Node) walk(x);
       }
     };
-    for (const fn of node.functions) if (fn.body) walk(fn.body);
+    const allFunctions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
+    for (const fn of allFunctions) if (fn?.body) walk(fn.body);
+    return found;
+  }
+
+  private detectValueBearingDeploy(node: ContractNode): boolean {
+    const seen = new Set<Node>();
+    let found = false;
+    const walk = (current: Node): void => {
+      if (found || seen.has(current)) return;
+      seen.add(current);
+      if (current instanceof InstantiationNode && current.callOptions?.value) {
+        found = true;
+        return;
+      }
+      for (const value of Object.values(current as unknown as Record<string, unknown>)) {
+        if (found) return;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) walk(child);
+      }
+    };
+    const allFunctions = [node.constructorDef, node.fallbackDef, node.receiveDef, ...node.functions];
+    for (const func of allFunctions) if (func?.body) walk(func.body);
     return found;
   }
 
@@ -1328,7 +1854,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     const subs = new Map<string, ExpressionNode>();
     const declared = ctor.parameters
       .filter((p) => !p.name.startsWith('__internal__') && !p.name.startsWith('__ctorread_'));
-    declared.forEach((p, i) => { if (i < deployNode.parameters.length) subs.set(p.name, deployNode.parameters[i] as ExpressionNode); });
+    declared.forEach((p, i) => {
+      if (i < deployNode.parameters.length) {
+        subs.set(p.name, deployNode.parameters[i] as ExpressionNode);
+      }
+    });
     const fieldExprs = new Map<string, ExpressionNode>();
     const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
     if (!res) {
@@ -1350,8 +1880,19 @@ export default class SymbolTableTraversal extends AstTraversal {
   private tryFoldDeployCall(
     deployNode: InstantiationNode, foo: FunctionDefinitionNode, parentArgs: ExpressionNode[],
   ): false | { returnValue?: ExpressionNode } {
-    const statements = (foo.body as BlockNode | undefined)?.statements ?? [];
-    if (statements.length === 0) return false;
+    const body = foo.body as BlockNode | undefined;
+    if (!body) return false;
+    const statements = body.statements ?? [];
+    // An implemented empty function has no effects and returns the ABI default for an unnamed single return.
+    // Treat it as a real fold, not as an abstract/unavailable body. ABI return-size probes rely on precisely
+    // this distinction when they deploy a concrete empty callee and discard its deliberately misdecoded result.
+    if (statements.length === 0) {
+      if (foo.returnTypes.length === 0) return {};
+      if (foo.returnTypes.length === 1) {
+        return { returnValue: createDefaultValueExpression(foo.returnTypes[0], foo.location!) };
+      }
+      return false;
+    }
     // An unfolded ctor means the genesis of fields it may have written is unknown: a read miss must fail
     // the fold (returning the type default would bake a wrong value into the covenant).
     const fieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
@@ -1404,13 +1945,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const usesMsgSender = this.collectMsgSenderUsage(node.body);
       if (usesMsgSender) {
         node.usesMsgSender = true;
-        const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
-        categoryParam.location = node.location;
-        node.parameters.push(categoryParam);
-        this.symbolTables[0].set(Symbol.variable(categoryParam));
-        const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
-        if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
-        this.pushToStack(categoryParam);
+        // Graph handlers receive logical msg.sender from the caller vector
+        // authenticated by the participant mutual verifier. Neither the cloned
+        // handler nor its compiler-owned message-bus batch wrapper may acquire the
+        // unrelated direct-route category witness.
+        if (!node.graphEmissionHandler && !node.messageBusRoute) {
+          const categoryParam = new ParameterNode(new BytesType(32), '__internal__msgSenderCategory');
+          categoryParam.location = node.location;
+          node.parameters.push(categoryParam);
+          this.symbolTables[0].set(Symbol.variable(categoryParam));
+          const sym = this.symbolTables[0].get('__internal__msgSenderCategory');
+          if (sym) sym.references.push({ name: '__internal__msgSenderCategory' } as IdentifierNode);
+          this.pushToStack(categoryParam);
+        }
       }
     }
 
@@ -1425,6 +1972,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const sym = this.symbolTables[0].get('__internal__blockhashInputIndex');
       if (sym) sym.references.push({ name: '__internal__blockhashInputIndex' } as IdentifierNode);
       this.pushToStack(idxParam);
+    }
+
+    // An upgrade intentionally changes the master locking bytecode, so ordinary self-preservation cannot bind
+    // it. Carry the SDK-selected replacement bytecode as an authenticated covenant argument instead. This must
+    // be compiler-owned: a wallet signature may legally use SIGHASH_NONE and cannot be the security boundary.
+    if (node.modifiers.includes(FunctionModifier.UPGRADE)) {
+      const targetParam = new ParameterNode(new BytesType(), '__internal__upgradeBytecode');
+      targetParam.location = node.location;
+      node.parameters.push(targetParam);
+      this.symbolTables[0].set(Symbol.variable(targetParam));
+      const sym = this.symbolTables[0].get('__internal__upgradeBytecode');
+      if (sym) sym.references.push({ name: '__internal__upgradeBytecode' } as IdentifierNode);
+      this.pushToStack(targetParam);
     }
 
     // External-library pre-scan: record which libraries the function calls and how many times, so codegen
@@ -1537,12 +2097,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
         // and final successor slot for each logical target. The SDK derives them from the canonical batch plan.
         for (const batch of node.sortedBatchInfo) {
-          for (const slotIndex of batch.slotIndices) {
+          for (const batchSlotIndex of batch.slotIndices) {
             for (const param of [
-              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${slotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${slotIndex}`),
-              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${slotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${slotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${batchSlotIndex}`),
             ]) {
               param.location = node.location;
               node.parameters.push(param);
@@ -1661,8 +2221,110 @@ export default class SymbolTableTraversal extends AstTraversal {
       this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
       this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
       this.collectExternalCalls(node.body, externalCallSlots);
+      // A graph message-bus batch route invokes compiler-owned clones whose foreign calls are authenticated against the
+      // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
+      // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
+      if (node.messageBusRoute) {
+        externalCallSlots.length = 0;
+      }
 
       if (externalCallSlots.length > 0) {
+        const logicalCallSlots = [...externalCallSlots];
+        // A synthesized message-bus batch route already assigns physical owner blocks and logical rows. Applying the
+        // owner-local Release-5 collapse while that route is analysed would collapse the source handler's rows
+        // a second time and make its slot/effect layout disagree with the generated covenant. Release-5 grouping
+        // therefore runs on source entry points only; their synthesized local or graph route consumes the
+        // compiler-authored grouping instead of rediscovering it.
+        const messageBusExplicitlyDisabled =
+          (this.compilerOptions as CompilerOptions & { __messageBusExplicitlyDisabled?: boolean })
+            .__messageBusExplicitlyDisabled === true;
+        if (!node.messageBusRoute) {
+          const directCalls = new Set<ExternalFunctionCallNode>();
+          for (const statement of node.body.statements ?? []) {
+            if (statement instanceof FunctionCallStatementNode
+              && statement.call instanceof ExternalFunctionCallNode) directCalls.add(statement.call);
+            if (statement instanceof MethodCallStatementNode
+              && statement.expression instanceof ExternalFunctionCallNode) directCalls.add(statement.expression);
+          }
+          const byTarget = new Map<string, ExternalCallSlot[]>();
+          const allByTarget = new Map<string, ExternalCallSlot[]>();
+          const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
+          for (const slot of logicalCallSlots) {
+            // Single-method interfaces normally omit selector verification, so
+            // their slots have no baked selector yet. message-bus batch rows always carry
+            // the original direct selector. Infer it without mutating the slot:
+            // discovery must leave every ordinary/unselected call byte-identical.
+            if (!slot.compileTimeSelector) {
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
+                .find((fn) => fn.name === slot.functionName);
+              if (ifaceFunc) {
+                const signature = computeFunctionSignature(
+                  slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
+                );
+                inferredSelectors.set(slot, computeFunctionSelector(signature));
+              }
+            }
+            const identity = slot.addressParam ? `param:${slot.addressParam}`
+              : slot.addressStateVar ? `state:${slot.addressStateVar}`
+                : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+            if (identity !== '') {
+              const ownerKey = `${identity}|${slot.interfaceName}`;
+              const allGroup = allByTarget.get(ownerKey) ?? [];
+              allGroup.push(slot);
+              allByTarget.set(ownerKey, allGroup);
+            }
+            const eligible = identity !== '' && directCalls.has(slot.sourceCallNode!)
+              && !slot.hasReturnValues && !slot.loopArrayVar && !slot.fnPtrCall
+              && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
+              && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot))
+              && !(slot.argSources ?? []).some((source) => source.kind === 'expression');
+            if (!eligible) continue;
+            const key = `${identity}|${slot.interfaceName}|${slot.requiredDataNftIndices.join(',')}`;
+            const group = byTarget.get(key) ?? [];
+            group.push(slot);
+            byTarget.set(key, group);
+          }
+          const repeated = [...byTarget.values()].filter((group) => group.length > 1);
+          const knownRepeated = [...allByTarget.values()].filter((group) => group.length > 1);
+          if (knownRepeated.length > 0 && messageBusExplicitlyDisabled) {
+            const chains = knownRepeated.map((group) => group.map((slot) =>
+              `${slot.interfaceName}.${slot.functionName}`).join(' -> '));
+            throw new SolidcDiagnosticError(
+              'MESSAGE_BUS_REQUIRED',
+              `Function '${node.name}' repeats calls to the same state owner (${chains.join('; ')}). `
+              + 'A UTXO master can be spent only once, so this transaction cannot be built with '
+              + '`messageBus: false`; omit the option to infer message-bus support or set it to true.',
+              { functionName: node.name, callChains: chains, option: 'messageBus' },
+            );
+          }
+          // V1 permits exactly one repeated callee group in a root invocation.
+          if (repeated.length === 1) {
+            const group = repeated[0];
+            const representative = group[0];
+            representative.batchInvocations = group.map((slot, logicalIndex) => {
+              slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
+              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)!;
+              slot.compileTimeSelector = selector;
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
+                .find((fn) => fn.name === slot.functionName);
+              return {
+                selector,
+                parameters: slot.sourceCallNode!.parameters,
+                parameterTypes: ifaceFunc?.parameters.map((parameter) => parameter.type)
+                  ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
+                logicalIndex,
+                argSources: slot.argSources,
+              };
+            });
+            representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
+            representative.needsSelectorVerification = true;
+            const grouped = new Set(group.slice(1));
+            externalCallSlots.splice(0, externalCallSlots.length,
+              ...logicalCallSlots.filter((slot) => !grouped.has(slot)));
+          }
+        }
         // Assign slotIndex, computedOffset, and returnSlotIndex per slot
         let slotIndex = 0;
         let runningOffset = 0;
@@ -1676,6 +2338,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Next slot starts after this slot's master (1) + its data NFTs
           runningOffset += 1 + slot.requiredDataNftIndices.length;
         }
+        // Logical calls removed from the physical layout point at their
+        // representative's one physical slot.
+        for (const slot of logicalCallSlots) {
+          if (externalCallSlots.includes(slot)) continue;
+          const representative = externalCallSlots.find((candidate) =>
+            candidate.batchInvocations?.some((row) => row.parameters === slot.sourceCallNode?.parameters));
+          if (representative) slot.slotIndex = representative.slotIndex;
+        }
         node.externalCalls = externalCallSlots;
 
         // External-call address locals must survive to the epilogue: emitExternalCallVerification reads
@@ -1685,118 +2355,209 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (slot.addressParam && !slot.addressIsMsgSender) {
             node.opRolls.delete(slot.addressParam);
           }
+          // Graph emission may read a forwarded argument more than once
+          // (raw calldata is split once for its selector and once for its ABI
+          // tail). Keep every compiler-declared forwarded source PICK-only;
+          // the ordinary function epilogue removes the retained parameter.
+          for (const source of slot.argSources ?? []) {
+            if (source.kind !== 'forward' || source.paramIndex === undefined) continue;
+            const parameter = node.parameters[source.paramIndex];
+            if (parameter) node.opRolls.delete(parameter.name);
+          }
+          for (const row of slot.batchInvocations ?? []) {
+            for (const parameter of row.parameters) {
+              if (parameter instanceof IdentifierNode) node.opRolls.delete(parameter.name);
+            }
+          }
         }
 
         // Propagate slot indices to individual external call nodes
-        this.assignExternalCallSlotIndices(node.body, externalCallSlots, { idx: 0 });
+        this.assignExternalCallSlotIndices(node.body, logicalCallSlots, { idx: 0 });
 
+        if (node.graphEmissionHandler) {
+          // X119. All six refusals below carry the handler's definition node, so each gains a Line/Column plus
+          // the imported-file and generated-source caveats. The message text is unchanged: a `__message_bus_graph_*`
+          // clone keeps the location of the function it was cloned from, so the position names the user's own
+          // function even though the name is synthesized.
+          if (logicalCallSlots.length < 1
+            || logicalCallSlots.some((slot) =>
+              (slot.loopArrayVar && !node.graphRuntimeEmissionHandler)
+              || (slot.fnPtrCall && !slot.runtimeSelector)
+              || ![ExternalCallMode.REGULAR, ExternalCallMode.STATICCALL]
+                .includes(slot.callMode ?? ExternalCallMode.REGULAR))
+          ) {
+            throw new GraphHandlerShapeError(
+              node,
+              `Graph handler '${node.name}' requires a homogeneous void or returning call set; mixed `
+              + 'returning/void continuation lowering is pending',
+            );
+          }
+          if (node.graphRuntimeEmissionHandler
+            && logicalCallSlots.some((slot) => (!slot.sourceCallNode
+                && !slot.fnPtrCall
+                && !slot.selectorArrayVar
+                && !node.parameters.some((parameter) => parameter.name === slot.addressParam)))) {
+            throw new GraphHandlerShapeError(
+              node,
+              `Runtime graph handler '${node.name}' requires parameter- or state-pinned targets`,
+            );
+          }
+          for (const slot of logicalCallSlots) {
+            if (!slot.addressParam && !node.graphRuntimeEmissionHandler) {
+              throw new GraphHandlerShapeError(
+                node, `Graph handler '${node.name}' requires a pinned parameter target`,
+              );
+            }
+            if (!node.graphRuntimeEmissionHandler
+              && !(slot.argSources ?? []).every((source) =>
+                source.kind === 'forward'
+                && source.paramIndex !== undefined
+                && source.paramIndex >= 0
+                && source.paramIndex < node.parameters.length)) {
+              throw new GraphHandlerShapeError(
+                node,
+                `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
+              );
+            }
+            // A received function pointer is lowered to an authenticated address plus a bytes4 selector
+            // companion. Both are read from the caller's covenant-bound state by the graph row generator;
+            // there is intentionally no compile-time method selector for this shape.
+            if (slot.fnPtrCall) continue;
+            // A raw call carries selector||canonical-args in its one bytes
+            // payload. Graph codegen splits and authenticates those bytes
+            // directly; there is intentionally no interface method to resolve.
+            if (slot.interfaceName === '__raw__' && slot.functionName === '__raw__') {
+              if (slot.argSources?.length !== 1
+                || slot.argSources[0].kind !== 'forward'
+                || slot.argSources[0].paramIndex === undefined) {
+                throw new GraphHandlerShapeError(
+                  node, `Graph handler '${node.name}' requires one forwarded raw calldata argument`,
+                );
+              }
+              continue;
+            }
+            const iface = this.interfaceMap.get(slot.interfaceName);
+            const ifaceFuncs = iface && this.getAllInterfaceFunctions(iface)
+              .filter((candidate) => candidate.name === slot.functionName);
+            const ifaceFunc = ifaceFuncs?.length === 1 ? ifaceFuncs[0] : undefined;
+            if (!ifaceFunc) {
+              throw new GraphHandlerShapeError(
+                node, `Graph handler '${node.name}' has an unresolved target method`,
+              );
+            }
+            slot.compileTimeSelector = computeFunctionSelector(computeFunctionSignature(
+              slot.functionName, ifaceFunc.parameters.map((parameter) => parameter.type.toString()),
+            ));
+          }
+        } else {
         // _externalCallInputBase: kept as runtime param because in mutual calling (A<->B),
         // B's external call target may be at a position BEFORE B's master.
-        const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
-        inputBaseParam.location = node.location;
-        node.parameters.push(inputBaseParam);
-        this.symbolTables[0].set(Symbol.variable(inputBaseParam));
-        const inputBaseSymbol = this.symbolTables[0].get('__internal__externalCallInputBase');
-        if (inputBaseSymbol) {
-          inputBaseSymbol.references.push({ name: '__internal__externalCallInputBase' } as IdentifierNode);
-        }
-        this.pushToStack(inputBaseParam);
+          const inputBaseParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__externalCallInputBase');
+          inputBaseParam.location = node.location;
+          node.parameters.push(inputBaseParam);
+          this.symbolTables[0].set(Symbol.variable(inputBaseParam));
+          const inputBaseSymbol = this.symbolTables[0].get('__internal__externalCallInputBase');
+          if (inputBaseSymbol) {
+            inputBaseSymbol.references.push({ name: '__internal__externalCallInputBase' } as IdentifierNode);
+          }
+          this.pushToStack(inputBaseParam);
 
-        // Per-iteration COMPUTED external-call target loops (Router02 IFoo(pairFor(.., path[i], ..)).swap()) had
-        // their target rewritten to `__internal__loopTargets<n>[i]`; synthesize the matching address[] witness param
-        // so the typed inline-loop dispatch reads it and the SDK fills it from the loop array via the computed expr.
-        for (const slot of externalCallSlots) {
-          if (slot.loopArrayVar?.startsWith('__internal__loopTargets')
+          // Per-iteration COMPUTED external-call target loops (Router02 IFoo(pairFor(.., path[i], ..)).swap()) had
+          // their target rewritten to `__internal__loopTargets<n>[i]`; synthesize the matching address[] witness param
+          // so the typed inline-loop dispatch reads it and the SDK fills it from the loop array via the computed expr.
+          for (const slot of externalCallSlots) {
+            if (slot.loopArrayVar?.startsWith('__internal__loopTargets')
             && !node.parameters.some((p) => p.name === slot.loopArrayVar)) {
-            const witnessParam = new ParameterNode(new ArrayType(new AddressType(false)), slot.loopArrayVar);
-            witnessParam.location = node.location;
-            node.parameters.push(witnessParam);
-            this.symbolTables[0].set(Symbol.variable(witnessParam));
-            const wSym = this.symbolTables[0].get(slot.loopArrayVar);
-            if (wSym) {
-              wSym.references.push({ name: slot.loopArrayVar } as IdentifierNode);
-              // Back-link each rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
-              // symbol so TypeCheck (reads .definition.type) and codegen (locates the stack slot) resolve it.
-              for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
-            }
-            this.pushToStack(witnessParam);
-          }
-        }
-
-        // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
-        // array dispatch table (selectorArrayVar) verifies each element against its ON-CHAIN selector array, so
-        // it needs no witness param and no baked compile-time selector - exclude it here.
-        const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification && !s.selectorArrayVar);
-        const slotCount = node.externalCalls.length;
-        for (let i = 0; i < slotCount; i++) {
-          if (!externalCallSlots[i].needsSelectorVerification || externalCallSlots[i].selectorArrayVar) continue;
-          const slot = externalCallSlots[i];
-          // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
-          // so bake its selector as a constant the covenant checks against - a spender must not be able to point
-          // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
-          // selector (bound to `cond`).
-          if (!slot.runtimeSelector) {
-            const iface = this.interfaceMap.get(slot.interfaceName);
-            const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
-            if (ifaceFunc) {
-              const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
-              slot.compileTimeSelector = computeFunctionSelector(sig);
+              const witnessParam = new ParameterNode(new ArrayType(new AddressType(false)), slot.loopArrayVar);
+              witnessParam.location = node.location;
+              node.parameters.push(witnessParam);
+              this.symbolTables[0].set(Symbol.variable(witnessParam));
+              const wSym = this.symbolTables[0].get(slot.loopArrayVar);
+              if (wSym) {
+                wSym.references.push({ name: slot.loopArrayVar } as IdentifierNode);
+                // Back-link each rewritten `__internal__loopTargets<n>[i]` array identifier to the freshly created
+                // symbol so TypeCheck (reads .definition.type) and codegen (locates the stack slot) resolve it.
+                for (const arrayId of slot.loopWitnessArrayIds ?? []) arrayId.definition = wSym;
+              }
+              this.pushToStack(witnessParam);
             }
           }
-          // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
-          const selectorName = slotsNeedingSelector.length === 1
-            ? '__internal__externalCallSelector'
-            : `__internal__externalCallSelector${i}`;
-          const selectorParam = new ParameterNode(new BytesType(4), selectorName);
-          selectorParam.location = node.location;
-          node.parameters.push(selectorParam);
-          this.symbolTables[0].set(Symbol.variable(selectorParam));
-          const selectorSymbol = this.symbolTables[0].get(selectorName);
-          if (selectorSymbol) {
-            selectorSymbol.references.push({ name: selectorName } as IdentifierNode);
-          }
-          this.pushToStack(selectorParam);
-        }
 
-        // Per-call absolute master-input-index param the SDK fills from the real callee layout it co-spends.
-        // Needed for: (a) foreign fn-ptr calls (callee data-NFT count unknown at compile time); (b) EVERY slot
-        // in a MULTI-call function - a prior call's callee data-NFT count (from a possibly under-declared
-        // interface) can shift this slot's fixed block offset, so the runtime index makes the covenant read the
-        // right co-spent callee regardless. Single-call functions keep the fixed offset (0, always correct).
-        // Loop slots (array-element dispatch) compute a per-iteration index and are excluded. A function that
-        // contains ANY loop slot keeps the fixed offset for its non-loop slots too (the SDK expands a loop slot
-        // into N co-spend groups, so a runtime per-slot fill cannot be aligned 1:1); the multi-call runtime
-        // index applies only to loop-free functions, counting non-loop slots.
-        const hasLoopSlot = externalCallSlots.some((s) => s.loopArrayVar || s.inlineLoopDispatch);
-        const nonLoopSlotCount = externalCallSlots
-          .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
-        for (let i = 0; i < slotCount; i++) {
-          const slot = externalCallSlots[i];
-          if (slot.loopArrayVar || slot.inlineLoopDispatch) {
+          // Inject per-slot selector parameters (only for slots that need selector verification). A varying-method
+          // array dispatch table (selectorArrayVar) verifies each element against its ON-CHAIN selector array, so
+          // it needs no witness param and no baked compile-time selector - exclude it here.
+          const slotsNeedingSelector = externalCallSlots.filter((s) => s.needsSelectorVerification && !s.selectorArrayVar);
+          const slotCount = node.externalCalls.length;
+          for (let i = 0; i < slotCount; i++) {
+            if (!externalCallSlots[i].needsSelectorVerification || externalCallSlots[i].selectorArrayVar) continue;
+            const slot = externalCallSlots[i];
+            // MD1: for a regular call (not a varying-method pointer) the target function is fixed at compile time,
+            // so bake its selector as a constant the covenant checks against - a spender must not be able to point
+            // the co-spend at a different method via the selector witness. Varying-method pointers keep the runtime
+            // selector (bound to `cond`).
+            if (!slot.runtimeSelector && !slot.batchInvocations) {
+              const iface = this.interfaceMap.get(slot.interfaceName);
+              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface).find((f) => f.name === slot.functionName);
+              if (ifaceFunc) {
+                const sig = computeFunctionSignature(slot.functionName, ifaceFunc.parameters.map((p) => p.type.toString()));
+                slot.compileTimeSelector = computeFunctionSelector(sig);
+              }
+            }
+            // Backward compat: single slot uses '__internal__externalCallSelector', multiple use indexed names
+            const selectorName = slotsNeedingSelector.length === 1
+              ? '__internal__externalCallSelector'
+              : `__internal__externalCallSelector${i}`;
+            const selectorParam = new ParameterNode(new BytesType(4), selectorName);
+            selectorParam.location = node.location;
+            node.parameters.push(selectorParam);
+            this.symbolTables[0].set(Symbol.variable(selectorParam));
+            const selectorSymbol = this.symbolTables[0].get(selectorName);
+            if (selectorSymbol) {
+              selectorSymbol.references.push({ name: selectorName } as IdentifierNode);
+            }
+            this.pushToStack(selectorParam);
+          }
+
+          // Per-call absolute master-input-index param the SDK fills from the real callee layout it co-spends.
+          // Needed for: (a) foreign fn-ptr calls (callee data-NFT count unknown at compile time); (b) EVERY slot
+          // in a MULTI-call function - a prior call's callee data-NFT count (from a possibly under-declared
+          // interface) can shift this slot's fixed block offset, so the runtime index makes the covenant read the
+          // right co-spent callee regardless. Single-call functions keep the fixed offset (0, always correct).
+          // Loop slots (array-element dispatch) compute a per-iteration index and are excluded. A function that
+          // contains ANY loop slot keeps the fixed offset for its non-loop slots too (the SDK expands a loop slot
+          // into N co-spend groups, so a runtime per-slot fill cannot be aligned 1:1); the multi-call runtime
+          // index applies only to loop-free functions, counting non-loop slots.
+          const hasLoopSlot = externalCallSlots.some((s) => s.loopArrayVar || s.inlineLoopDispatch);
+          const nonLoopSlotCount = externalCallSlots
+            .filter((s) => !s.loopArrayVar && !s.inlineLoopDispatch).length;
+          for (let i = 0; i < slotCount; i++) {
+            const slot = externalCallSlots[i];
+            if (slot.loopArrayVar || slot.inlineLoopDispatch) {
             // A received-value fn-ptr ARRAY loop (fnPtrCall): the callee layouts are unknown at compile time,
             // so the loop reads each element's callee master input index from ONE SDK-filled witness list
             // (framed ints), each identity-verified against arr[i] - the list analogue of extcallMasterIdx.
-            if (slot.loopArrayVar && slot.fnPtrCall) {
-              const listName = `__internal__extcallIdxList${slot.slotIndex}`;
-              const listParam = new ParameterNode(new BytesType(), listName);
-              listParam.location = node.location;
-              node.parameters.push(listParam);
-              this.symbolTables[0].set(Symbol.variable(listParam));
-              const listSymbol = this.symbolTables[0].get(listName);
-              if (listSymbol) listSymbol.references.push({ name: listName } as IdentifierNode);
-              this.pushToStack(listParam);
+              if (slot.loopArrayVar && slot.fnPtrCall) {
+                const listName = `__internal__extcallIdxList${slot.slotIndex}`;
+                const listParam = new ParameterNode(new BytesType(), listName);
+                listParam.location = node.location;
+                node.parameters.push(listParam);
+                this.symbolTables[0].set(Symbol.variable(listParam));
+                const listSymbol = this.symbolTables[0].get(listName);
+                if (listSymbol) listSymbol.references.push({ name: listName } as IdentifierNode);
+                this.pushToStack(listParam);
+              }
+              continue;
             }
-            continue;
+            if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
+            const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
+            const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
+            idxParam.location = node.location;
+            node.parameters.push(idxParam);
+            this.symbolTables[0].set(Symbol.variable(idxParam));
+            const idxSymbol = this.symbolTables[0].get(idxName);
+            if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
+            this.pushToStack(idxParam);
           }
-          if (!slot.fnPtrCall && (hasLoopSlot || nonLoopSlotCount <= 1)) continue;
-          const idxName = `__internal__extcallMasterIdx${slot.slotIndex}`;
-          const idxParam = new ParameterNode(PrimitiveType.BIGINT, idxName);
-          idxParam.location = node.location;
-          node.parameters.push(idxParam);
-          this.symbolTables[0].set(Symbol.variable(idxParam));
-          const idxSymbol = this.symbolTables[0].get(idxName);
-          if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
-          this.pushToStack(idxParam);
         }
       }
     }
@@ -1852,7 +2613,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // B-side: inject _returnOutputIdx for functions with return types that are entry points
-    if (node.returnTypes.length > 0 && node.isEntryPoint) {
+    if (node.returnTypes.length > 0 && node.isEntryPoint && !node.graphEmissionHandler) {
       const returnOutputIdxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__returnOutputIdx');
       returnOutputIdxParam.location = node.location;
       node.parameters.push(returnOutputIdxParam);
@@ -1865,7 +2626,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     // A-side: inject per-slot _externalReturnOutputIdx for functions that make external calls with return values
-    if (node.externalCalls) {
+    if (node.externalCalls && !node.graphEmissionHandler) {
       const returningSlots = node.externalCalls.filter((ec) => ec.hasReturnValues);
       for (const slot of returningSlots) {
         // Backward compat: single returning slot uses '__internal__externalReturnOutputIdx', multiple use indexed names
@@ -1987,36 +2748,127 @@ export default class SymbolTableTraversal extends AstTraversal {
     // index; codegen verifies OP_UTXOBYTECODE[idx] == impl so the delegate is required, not optional. Emitted
     // only when impl is NOT the classic P2PKH-placeholder literal (a real delegate is a P2SH covenant); a P2PKH
     // impl keeps the C1 warning path (a P2PKH UTXO authorizes nothing, so pinning it would be unsound anyway).
+    if (this.hasExplicitDelegatecall(node.body) && !node.isEntryPoint) {
+      throw new SolidcDiagnosticError(
+        'MESSAGE_BUS_DELEGATE_CONTEXT_UNPRESERVABLE',
+        `internal function '${node.name}' contains delegatecall, whose proxy input witness cannot be preserved `
+          + 'across an internal invocation',
+        {
+          functionName: node.name,
+          sourceLocation: { line: node.location.start.line, column: node.location.start.column },
+        },
+      );
+    }
     if (this.hasExplicitDelegatecall(node.body) && !this.delegatecallTargetsP2pkhLiteral(node.body)) {
       node.pinsDelegateCoSpend = true;
-      const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
-      idxParam.location = node.location;
-      node.parameters.push(idxParam);
-      this.symbolTables[0].set(Symbol.variable(idxParam));
-      const s = this.symbolTables[0].get('__internal__delegateInputIndex');
-      if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
-      this.pushToStack(idxParam);
+      if (!node.graphEmissionHandler && !node.messageBusRoute) {
+        const idxParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__delegateInputIndex');
+        idxParam.location = node.location;
+        node.parameters.push(idxParam);
+        this.symbolTables[0].set(Symbol.variable(idxParam));
+        const s = this.symbolTables[0].get('__internal__delegateInputIndex');
+        if (s) s.references.push({ name: '__internal__delegateInputIndex' } as IdentifierNode);
+        this.pushToStack(idxParam);
+      }
+    }
+
+    // C1/piece-7: the COMPILER-SYNTHESIZED delegatecall forms - `L.f()` library-call sugar and split-facet
+    // forwarders - were excluded from every rule in this block by hasExplicitDelegatecall, so pinsDelegateCoSpend
+    // stayed FALSE and the callsite emitted NO covenant at all, while the per-function !functionHasDelegatecall
+    // gate still skipped the consumer's ENTIRE state covenant. Measured on the BCH-2026 VM: a consumer of a
+    // one-line delegate library settled 0 -> 999 with a HOSTILE library co-spent, and also with NO delegate
+    // co-spent at all. Pin them exactly like an explicit delegatecall, but DERIVE the delegate input index from
+    // this function's own block layout: the synthesized forms carry no witness parameter, and the target is a
+    // ctor-arg address the contract's own p2sh32 commits to, so nothing here is caller-chosen.
+    // The derived index needs the block layout that reserves the slot, which exists only for a stateful entry
+    // point. A synthesized delegatecall anywhere else has no reserved slot to pin to and is refused rather than
+    // left silently unpinned.
+    if (!node.pinsDelegateCoSpend && !node.graphEmissionHandler && !node.messageBusRoute
+      && this.hasSynthesizedDelegatecall(node.body)) {
+      if (!this.isStatefulContract || !node.isEntryPoint) {
+        throw new InvalidModifierCombinationError(
+          node,
+          `function '${node.name}' delegates to a library from a context with no reserved delegate input slot `
+          + '(only a stateful entry point has one), so the co-spend cannot be pinned to the library and ANY '
+          + 'co-spent script would run against this contract\'s state. Call the library directly from a public '
+          + 'entry point. See packages/solidc/docs/delegatecall-security.md.',
+        );
+      }
+      node.pinsDelegateCoSpend = true;
+      node.delegateIndexFromBlockSlot = true;
     }
 
     // C1/B: a delegatecall function skips its own state covenant (emitAutoCovenantVerification is gated
     // !functionHasDelegatecall) and defers ALL state writes to the co-spent delegate, so any self state-write in
-    // it is unauthorized. Reject it - the delegate must own every proxy write. (Library-call sugar is excluded;
-    // its writes ARE the delegate mechanism.)
-    if (this.hasExplicitDelegatecall(node.body) && this.hasStateWrite(node.body)) {
+    // it is unauthorized. Reject it - the delegate must own every proxy write. Applies to the synthesized forms
+    // too: `function f() { L.g(); this.x = 5; }` compiled clean and the write was never verified.
+    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+      && this.hasStateWrite(node.body)) {
       throw new DelegatecallSelfMutationError(node, node.name);
+    }
+
+    // C1/piece-5: the state-covenant skip is a per-FUNCTION property (!functionHasDelegatecall) while the
+    // co-spend pin is emitted at the CALLSITE. A callsite that is not reached exactly once therefore leaves the
+    // proxy's own state unauthorized. Classify the callsite's reachability so codegen can compensate:
+    //  - 'loop': refused outright. The loop reuses one pinned input and one block slot per iteration, so N source
+    //    delegations settle as ONE - a silent miscompile with no honest covenant to emit.
+    //  - 'conditional': admitted, but codegen must preserve the proxy's own state on the not-taken path.
+    // Scope: the single-callsite pin only. A compiler-synthesized message-bus route or graph handler dispatches
+    // its rows through a loop and derives each delegate index from its own per-row block slot rather than one
+    // shared slot, so neither the collapse nor the not-taken-path hole applies there. Same exclusion as the
+    // witness injection above. `L.f()` sugar and split forwarders are NOT excluded: they use one reserved slot
+    // per callsite exactly like a hand-written delegatecall, so both hazards apply verbatim (C1/piece-7).
+    if ((this.hasExplicitDelegatecall(node.body) || this.hasSynthesizedDelegatecall(node.body))
+      && !node.graphEmissionHandler && !node.messageBusRoute) {
+      const reach = this.delegatecallReachability(node.body);
+      if (reach === 'loop') {
+        throw new InvalidModifierCombinationError(
+          node,
+          `function '${node.name}' issues delegatecall inside a loop. Each iteration reuses the SAME pinned `
+          + 'delegate input and the SAME block slot, so N source delegations settle as one - the compiler cannot '
+          + 'emit an honest covenant for it. Move the delegatecall out of the loop, or delegate to an '
+          + 'implementation function that performs the iteration itself. '
+          + 'See packages/solidc/docs/delegatecall-security.md.',
+        );
+      }
+      node.delegatecallIsConditional = reach === 'conditional';
+    }
+
+    // C1/piece-6: the co-spend covenant pins the delegate input to the address the CALLER supplied, which proves
+    // nothing about identity when that address is an unguarded function parameter - an unrelated spender then
+    // co-spends an implementation they wrote and rewrites this contract's state. Warn precisely: fire only when
+    // the target resolves to a parameter of this entry point AND nothing in the body constrains it (no signature
+    // guard against a key the caller does not choose - SEC-12 - and no require() mentioning it). A parameter
+    // pinned by `require(impl == this.implementation)` is the legitimate upgradeable-proxy shape and must keep
+    // compiling, which is why this warns rather than rejects.
+    const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
+    if (callerSuppliedImpl) {
+      const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
+      console.log(
+        `Warning: function '${node.name}'${line} issues delegatecall against '${callerSuppliedImpl}', an `
+        + 'unguarded caller-supplied parameter. The co-spend covenant pins the delegate to the address the CALLER '
+        + 'chose, so it proves nothing about identity: ANY spender can co-spend an implementation they wrote and '
+        + 'rewrite this contract\'s state (SECURITY-AUDIT C1). Take the implementation as a constructor argument, '
+        + `or constrain '${callerSuppliedImpl}' with a require() against stored state or a signature check whose `
+        + 'KEY is a constructor argument or state variable (a checkSig against a caller-supplied pubkey '
+        + 'authorizes nobody). See packages/solidc/docs/delegatecall-security.md.',
+      );
     }
 
     // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
     // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
     // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
-    // - see piece 3) or already signature-gated. Library-call sugar is excluded (its own layout/brand guards).
-    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend && !this.hasSignatureGuard(node.body)) {
+    // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
+    // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
+    if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
+      && !hasAuthorizingSignatureGuard(node)) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
         + 'delegate co-spend cannot be pinned and ANY spender can rewrite proxy state arbitrarily (SECURITY-AUDIT '
         + 'C1). Use the delegate contract\'s real (covenant) address so the co-spend is forced, or gate this '
-        + 'function with a signature check. See packages/solidc/docs/delegatecall-security.md.',
+        + 'function with a signature check whose KEY is a constructor argument or state variable. '
+        + 'See packages/solidc/docs/delegatecall-security.md.',
       );
     }
 
@@ -2096,8 +2948,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -2105,7 +2959,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     return node;
   }
 
-  private collectTransferStatements(node: Node, transferInfos: TransferInfo[]): void {
+  private collectTransferStatements(
+    node: Node, transferInfos: TransferInfo[], seen: WeakSet<Node> = new WeakSet<Node>(),
+  ): void {
+    if (seen.has(node)) return;
+    seen.add(node);
     if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode) {
       const transferIndex = transferInfos.length;
       node.transferIndex = transferIndex;
@@ -2129,35 +2987,56 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.call.valueTransferIndex = transferInfos.length;
       transferInfos.push({ transferIndex: node.call.valueTransferIndex });
     }
+    // Returning low-level expression: `(bool ok, bytes data) = target.call{value: amount}(payload)`.
+    if (node instanceof MethodCallNode && node.callOptions?.value) {
+      node.valueTransferIndex = transferInfos.length;
+      transferInfos.push({ transferIndex: node.valueTransferIndex });
+    }
+    if (node instanceof ExternalFunctionCallNode && node.callOptions?.value) {
+      node.valueTransferIndex = transferInfos.length;
+      transferInfos.push({ transferIndex: node.valueTransferIndex });
+    }
     // For branches: walk the longer branch to create entries, shorter to assign indices
     if (node instanceof BranchNode && node.branchOps && node.branchOps.transferCount > 0) {
       const startIndex = transferInfos.length;
       const ifIsLonger = node.branchOps.ifTransferCount >= node.branchOps.transferCount - node.branchOps.ifTransferCount;
       if (ifIsLonger || !node.elseBlock) {
-        this.collectTransferStatements(node.ifBlock, transferInfos);
+        this.collectTransferStatements(node.ifBlock, transferInfos, seen);
         if (node.elseBlock) {
           this.assignTransferIndices(node.elseBlock, startIndex);
         }
       } else {
-        this.collectTransferStatements(node.elseBlock!, transferInfos);
+        this.collectTransferStatements(node.elseBlock!, transferInfos, seen);
         this.assignTransferIndices(node.ifBlock, startIndex);
       }
       return;
     }
     if ('statements' in node && Array.isArray((node as any).statements)) {
       for (const stmt of (node as any).statements) {
-        this.collectTransferStatements(stmt, transferInfos);
+        this.collectTransferStatements(stmt, transferInfos, seen);
       }
     }
     if ('body' in node && (node as any).body) {
-      this.collectTransferStatements((node as any).body, transferInfos);
+      this.collectTransferStatements((node as any).body, transferInfos, seen);
     }
     if ('block' in node && (node as any).block) {
-      this.collectTransferStatements((node as any).block, transferInfos);
+      this.collectTransferStatements((node as any).block, transferInfos, seen);
     }
     // Scan expressions for AddressSendExpressionNode and InstantiationNode with value
     if (node instanceof VariableDefinitionNode) {
-      if (node.expression) this.collectTransferStatements(node.expression, transferInfos);
+      if (node.expression) this.collectTransferStatements(node.expression, transferInfos, seen);
+    }
+    if (node instanceof StateAssignNode || node instanceof AssignNode || node instanceof ExpressionStatementNode) {
+      this.collectTransferStatements(node.expression, transferInfos, seen);
+    }
+    if (node instanceof TupleAssignmentNode) {
+      if (node.tupleExpressions) {
+        for (const expression of node.tupleExpressions) {
+          this.collectTransferStatements(expression, transferInfos);
+        }
+      } else {
+        this.collectTransferStatements(node.tuple, transferInfos);
+      }
     }
     // Contract deployment with {value}: new Contract{value: x}(args)
     if (node instanceof InstantiationNode && node.callOptions?.value
@@ -2166,6 +3045,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.transferIndex = transferIndex;
       transferInfos.push({ transferIndex });
       return;
+    }
+    // Descend through expression wrappers such as casts and creation-option wrappers. Semantic back-references
+    // are deliberately excluded: only operations structurally present at this call site belong in its layout.
+    if (node instanceof ExpressionNode) {
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        if (value instanceof Node) this.collectTransferStatements(value, transferInfos, seen);
+        else if (Array.isArray(value)) {
+          for (const child of value) {
+            if (child instanceof Node) this.collectTransferStatements(child, transferInfos, seen);
+          }
+        }
+      }
     }
   }
 
@@ -2456,7 +3349,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // virtual is a no-op: all inherited functions are implicitly virtual in SolidCash
     if (mods.includes(FunctionModifier.VIRTUAL)) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: 'virtual' function modifier is a no-op in SolidCash${loc}. All inherited functions are implicitly virtual.`);
     }
 
@@ -2488,6 +3381,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     const isStatefulContract = contract.stateVariables.length > 0
       || contract.collections.length > 0
       || contract.eventDefinitions.length > 0
+      || contract.functions.some((func) => func.impliedSelfdestruct
+        || (this.compilerOptions.solidityImportCompat
+          && func.modifiers.includes(FunctionModifier.SELFDESTRUCT)))
+      || contract.deploysWithValue
       || contract.usesBlockhash
       || (this.compilerOptions.forceStateful ?? false);
     if (mods.includes(FunctionModifier.UNSAFE) && !isStatefulContract) {
@@ -2892,7 +3789,9 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
-  private countEcrecoverCalls(node: Node, evmOnly = false): number {
+  private countEcrecoverCalls(node: Node, evmOnly = false, seen = new WeakSet<Node>()): number {
+    if (seen.has(node)) return 0;
+    seen.add(node);
     let count = 0;
     if (node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
@@ -2902,9 +3801,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) count += this.countEcrecoverCalls(value, evmOnly);
+      if (value instanceof Node) count += this.countEcrecoverCalls(value, evmOnly, seen);
       else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, evmOnly);
+        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, evmOnly, seen);
       }
     }
     return count;
@@ -2913,29 +3812,37 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Detect a recovery call inside a loop (dynamic-loop model: one PAIR read per iteration from the forward region).
   private ecrecoverCallInLoop(node: Node, inLoop = false): boolean {
     const nowInLoop = inLoop
-      || node instanceof WhileNode || node instanceof DoWhileNode || node instanceof CollectionIterationNode;
+      || node instanceof WhileNode
+      || node instanceof DoWhileNode
+      || node instanceof CollectionIterationNode;
     if (nowInLoop && node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
       || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
       || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) { if (this.ecrecoverCallInLoop(value, nowInLoop)) return true; }
-      else if (Array.isArray(value)) {
+      if (value instanceof Node) {
+        if (this.ecrecoverCallInLoop(value, nowInLoop)) return true;
+      } else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node && this.ecrecoverCallInLoop(item, nowInLoop)) return true;
       }
     }
     return false;
   }
 
-  private keccakCallInLoop(node: Node, inLoop = false): boolean {
+  private keccakCallInLoop(node: Node, inLoop = false, seen = new WeakSet<Node>()): boolean {
+    if (seen.has(node)) return false;
+    seen.add(node);
     const nowInLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
     if (nowInLoop && node instanceof FunctionCallNode && node.identifier.name === GlobalFunction.KECCAK256) return true;
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue; // skip resolved back-edges - they cycle (SafeERC20 recursion)
-      if (value instanceof Node) { if (this.keccakCallInLoop(value, nowInLoop)) return true; }
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop)) return true;
+      if (value instanceof Node) {
+        if (this.keccakCallInLoop(value, nowInLoop, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node && this.keccakCallInLoop(item, nowInLoop, seen)) return true;
+        }
       }
     }
     return false;
@@ -3045,6 +3952,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     let changed = true;
     while (changed) {
       changed = false;
+      // The callback completes synchronously within each fixed-point iteration.
+      // eslint-disable-next-line @typescript-eslint/no-loop-func
       const scanDefs = (n: Node): void => {
         if (!n) return;
         if (n instanceof VariableDefinitionNode && !out.has(n.name) && n.expression
@@ -3270,6 +4179,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('ifBlock' in node) this.collectEntryAccesses((node as any).ifBlock, map);
     if ('elseBlock' in node && (node as any).elseBlock) this.collectEntryAccesses((node as any).elseBlock, map);
+    // Try/catch compiles only the try path on BCH, but that path still needs normal mapping-entry block slots.
+    if ('tryBlock' in node && (node as any).tryBlock instanceof Node) {
+      this.collectEntryAccesses((node as any).tryBlock, map);
+    }
     if ('block' in node && (node as any).block) this.collectEntryAccesses((node as any).block, map);
     if ('body' in node && (node as any).body) this.collectEntryAccesses((node as any).body, map);
     if ('cases' in node && Array.isArray((node as any).cases)) {
@@ -3401,6 +4314,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('ifBlock' in node) this.assignEntrySlotIndices((node as any).ifBlock, map);
     if ('elseBlock' in node && (node as any).elseBlock) this.assignEntrySlotIndices((node as any).elseBlock, map);
+    if ('tryBlock' in node && (node as any).tryBlock instanceof Node) {
+      this.assignEntrySlotIndices((node as any).tryBlock, map);
+    }
     if ('block' in node && (node as any).block) this.assignEntrySlotIndices((node as any).block, map);
     if ('body' in node && (node as any).body) this.assignEntrySlotIndices((node as any).body, map);
     if ('cases' in node && Array.isArray((node as any).cases)) {
@@ -3624,7 +4540,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       return;
     }
 
-    if (node instanceof ExternalMappingAccessNode && node.readInfo) {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo && !node.readInfo.outputState) {
       const key = `${node.readInfo.interfaceName}:entry:${node.readInfo.collectionSignature}`;
       if (!map.has(key)) {
         const addressParam = node.addressExpression instanceof IdentifierNode
@@ -3809,7 +4725,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   // witness-param synthesis). `witnessName` lets a caller build a SECOND access on the SAME witness (a loop-body
   // local receiver reuses one witness for both the call target and its neutralized initializer).
   private buildLoopWitnessAccess(loopIdx: IdentifierNode, witnessName: string, loc: Node['location']):
-    { access: ArrayAccessNode; arrayId: IdentifierNode } {
+  { access: ArrayAccessNode; arrayId: IdentifierNode } {
     const arrayId = new IdentifierNode(witnessName);
     arrayId.location = loc;
     const idxCopy = new IdentifierNode(loopIdx.name); // fresh ref to the loop counter (i)
@@ -3845,9 +4761,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen.add(node);
     if (node instanceof TupleAssignmentNode && node.tuple === call) return node;
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleAssignmentWithRhs(v, call, seen); if (r) return r; }
-      else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node) { const r = this.findTupleAssignmentWithRhs(e, call, seen); if (r) return r; }
+      if (v instanceof Node) {
+        const result = this.findTupleAssignmentWithRhs(v, call, seen);
+        if (result) return result;
+      } else if (Array.isArray(v)) {
+        for (const e of v) {
+          if (!(e instanceof Node)) continue;
+          const result = this.findTupleAssignmentWithRhs(e, call, seen);
+          if (result) return result;
+        }
       }
     }
     return undefined;
@@ -3919,7 +4841,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           const ta = this.findTupleAssignmentWithRhs(body, view)!;
           const accesses = rets.map((rt) => mkWitness(rt));
           ta.tupleExpressions = accesses;
-          ta.tuple = accesses[0]; // `.tuple` (the getReserves call) is walked by collect; replace it so it is not re-collected
+          // `.tuple` is walked by collect; replace it so the call is not re-collected.
+          ta.tuple = accesses[0];
         }
       }
     }
@@ -4000,8 +4923,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (idx >= 0 && node.tupleExpressions[idx]) return node.tupleExpressions[idx];
     }
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; }
-      else if (Array.isArray(v)) {
+      if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node) { const r = this.findTupleInit(e, name, seen); if (r) return r; }
       }
     }
@@ -4010,9 +4932,41 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private collectExternalCalls(node: Node, slots: ExternalCallSlot[]): void {
     if (node instanceof ExternalFunctionCallNode && node.callInfo && !node.foldedIntoDeploy) {
+      // A concrete contract cast exposes only real ABI-visible functions (including synthesized PUBLIC state
+      // getters). Do not let `C(addr).privateState()` become an arbitrary external-call selector merely because
+      // the call node was formed before the secondary contract's members were validated.
+      const callInfo = node.callInfo;
+      const concreteCallee = this.contractMap.get(callInfo.interfaceName);
+      const stateMember = concreteCallee?.stateVariables.find((sv) => sv.name === callInfo.functionName);
+      const stateMemberHidden = stateMember
+        && (!stateMember.visibilityExplicit
+          || (stateMember.visibility !== StateVariableVisibility.PUBLIC
+            && stateMember.visibility !== StateVariableVisibility.EXTERNAL));
+      if (concreteCallee && (stateMemberHidden
+        || !concreteCallee.functions.some((f) => f.name === callInfo.functionName))) {
+        const missing = new IdentifierNode(`${callInfo.interfaceName}.${callInfo.functionName}`);
+        missing.location = node.location;
+        throw new UndefinedReferenceError(missing);
+      }
       // Each call site gets its own slot (no de-duplication)
       let addressParam = node.addressExpression instanceof IdentifierNode
         ? node.addressExpression.name : undefined;
+      // An interface/address constant is not a runtime stack source. Peel only the compile-time cast wrappers
+      // produced by `IFoo(address(<literal>))`; arbitrary constant expressions remain unrecognized and therefore
+      // fail closed below rather than being mistaken for code-baked target identities.
+      const constantTarget = addressParam ? this.constantMap.get(addressParam)?.expression : undefined;
+      const unwrapConstantAddress = (expr: ExpressionNode | undefined): ExpressionNode | undefined => {
+        if (expr instanceof FunctionCallNode && expr.parameters.length === 1
+          && (this.interfaceMap.has(expr.identifier.name) || this.contractMap.has(expr.identifier.name))) {
+          return unwrapConstantAddress(expr.parameters[0]);
+        }
+        if (expr instanceof CastNode && expr.type instanceof AddressType) return unwrapConstantAddress(expr.expression);
+        return expr;
+      };
+      const constantAddress = unwrapConstantAddress(constantTarget);
+      if (constantAddress instanceof HexLiteralNode || constantAddress instanceof IntLiteralNode) {
+        addressParam = undefined;
+      }
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
       const addressStateVar = addressParam?.startsWith('__extaddr_')
@@ -4028,8 +4982,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         && node.addressExpression instanceof IdentifierNode) {
         const aliasInit = this.findLocalInit(this.currentFunction?.body, addressParam)
           ?? this.findTupleInit(this.currentFunction?.body, addressParam);
-        if (aliasInit instanceof ArrayAccessNode && aliasInit.array instanceof IdentifierNode
-          && aliasInit.index instanceof IdentifierNode) {
+        const localArrayElement = aliasInit instanceof ArrayAccessNode
+          && aliasInit.array instanceof IdentifierNode && aliasInit.index instanceof IdentifierNode;
+        const stateArrayElement = aliasInit instanceof MappingAccessNode && aliasInit.keys.length === 1
+          && aliasInit.keys[0] instanceof IdentifierNode;
+        if (localArrayElement || stateArrayElement) {
           node.addressExpression = cloneNode(aliasInit) as ExpressionNode;
           addressParam = undefined;
         }
@@ -4132,9 +5089,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       // identity check is un-satisfiable in production (fails closed); a genuine locking-bytecode literal is
       // callable. Only a real HexLiteralNode qualifies (a codegenError placeholder does not). Conservative:
       // any unrecognised address shape leaves all sources unset so emitExternalCallVerification still throws.
-      const addressLiteral = node.addressExpression instanceof HexLiteralNode
-        && !node.addressExpression.codegenError
-        ? binToHex(node.addressExpression.value) : undefined;
+      let literalTarget: ExpressionNode = node.addressExpression;
+      // An explicit contract/interface cast is retained as `Iface(addressExpr)` until semantic resolution.
+      // It is an identity wrapper for the callee address, so unwrap it only when its name exactly matches the
+      // external call's resolved interface.
+      if (literalTarget instanceof FunctionCallNode && literalTarget.parameters.length === 1
+        && literalTarget.identifier.name === node.callInfo.interfaceName) {
+        literalTarget = literalTarget.parameters[0];
+      }
+      while (literalTarget instanceof CastNode) literalTarget = literalTarget.expression;
+      const addressLiteral = literalTarget instanceof HexLiteralNode && !literalTarget.codegenError
+        ? binToHex(literalTarget.value)
+        : literalTarget instanceof IntLiteralNode
+          ? binToHex(encodeInt(literalTarget.value))
+          : constantAddress instanceof HexLiteralNode && !constantAddress.codegenError
+            ? binToHex(constantAddress.value)
+            : constantAddress instanceof IntLiteralNode
+              ? binToHex(encodeInt(constantAddress.value))
+              : undefined;
       // Determine if selector verification is needed: only when the callee interface
       // has >1 callable function AND mode is REGULAR (call/staticcall skip selectors)
       const callMode = node.callInfo.callMode;
@@ -4174,22 +5146,90 @@ export default class SymbolTableTraversal extends AstTraversal {
       const userVisibleParams = this.currentFunction?.parameters.filter(
         (p) => !p.name.startsWith('__internal__'),
       ) ?? [];
-      for (const param of node.parameters) {
-        if (param instanceof IdentifierNode && param.definition) {
-          const defNode = param.definition.definition;
+      const classifyArg = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallArgSource | undefined => {
+        if (seen.has(expression)) return undefined;
+        seen.add(expression);
+        if (expression instanceof CastNode) return classifyArg(expression.expression, seen);
+        if (expression instanceof IdentifierNode && expression.name === 'this') {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof UnaryOpNode
+          && expression.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+          && expression.expression instanceof NullaryOpNode
+          && expression.expression.operator === NullaryOperator.INPUT_INDEX) {
+          return { kind: 'selfAddress' };
+        }
+        if (expression instanceof TypeIntrospectionNode
+          && (expression.property === 'min' || expression.property === 'max')
+          && expression.resolvedType instanceof IntType) {
+          return {
+            kind: 'literal',
+            value: (expression.property === 'min'
+              ? expression.resolvedType.minValue
+              : expression.resolvedType.maxValue).toString(),
+            type: 'bigint',
+          };
+        }
+        if (expression instanceof IdentifierNode && expression.definition) {
+          const defNode = expression.definition.definition;
           if (defNode instanceof ParameterNode) {
             const funcIdx = userVisibleParams.indexOf(defNode);
-            if (funcIdx >= 0) {
-              argSources.push({ kind: 'forward', paramIndex: funcIdx });
-              continue;
-            }
+            if (funcIdx >= 0) return { kind: 'forward', paramIndex: funcIdx };
             const ctorIdx = this.currentContract?.parameters.indexOf(defNode);
             if (ctorIdx !== undefined && ctorIdx >= 0) {
-              argSources.push({ kind: 'constructorArg', paramName: defNode.name });
-              continue;
+              return { kind: 'constructorArg', paramName: defNode.name };
             }
           }
+          // Inlined helpers bind their original parameters to synthesized locals.
+          // Follow that initializer back to the entry-point parameter/expression.
+          if (defNode instanceof VariableDefinitionNode && defNode.expression) {
+            return classifyArg(defNode.expression, seen);
+          }
         }
+        // Synthesized external-address locals are inserted before symbol binding
+        // and can therefore reach this metadata pass without a definition link.
+        // Recover their initializer from the function body so param-rooted
+        // low-level targets (e.g. SafeERC20's address(token).call(...)) retain
+        // their caller-supplied address origin in the artifact.
+        if (expression instanceof IdentifierNode && this.currentFunction?.body) {
+          const initializer = this.findLocalInit(this.currentFunction.body, expression.name);
+          if (initializer) return classifyArg(initializer, seen);
+        }
+        if (expression instanceof NullaryOpNode
+          && (expression.operator === NullaryOperator.MSG_SENDER
+            || expression.operator === NullaryOperator.TX_ORIGIN)) {
+          return { kind: 'msgSender' };
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const arraySource = classifyArg(expression.array, seen);
+          if (arraySource?.kind === 'forward' && arraySource.paramIndex !== undefined) {
+            const indexSource = classifyArg(expression.index, seen);
+            if (indexSource?.kind === 'forward') {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexParamIndex: indexSource.paramIndex,
+              };
+            }
+            if (expression.index instanceof IntLiteralNode) {
+              return {
+                kind: 'arrayElement',
+                paramIndex: arraySource.paramIndex,
+                indexValue: Number(expression.index.value),
+              };
+            }
+            // A loop-local index cannot be supplied by the caller. The SDK expands
+            // these call sites in array order; index zero identifies the first group.
+            return { kind: 'arrayElement', paramIndex: arraySource.paramIndex, indexValue: 0 };
+          }
+        }
+        return undefined;
+      };
+      for (const param of node.parameters) {
+        const classified = classifyArg(param);
+        if (classified) { argSources.push(classified); continue; }
         if (param instanceof IntLiteralNode) {
           argSources.push({ kind: 'literal', value: param.value.toString(), type: 'bigint' });
           continue;
@@ -4212,6 +5252,214 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         argSources.push({ kind: 'expression' });
       }
+      let addressSource = classifyArg(node.addressExpression);
+      if (!addressSource && addressStateVar?.startsWith('ll_')) {
+        const sourceName = addressStateVar.slice('ll_'.length);
+        const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
+        if (sourceIndex >= 0) addressSource = { kind: 'forward', paramIndex: sourceIndex };
+      }
+      const resolveInitializer = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExpressionNode => {
+        if (seen.has(expression)) return expression;
+        seen.add(expression);
+        if (expression instanceof IdentifierNode) {
+          const definition = expression.definition?.definition;
+          const initializer = definition instanceof VariableDefinitionNode
+            ? definition.expression
+            : this.currentFunction?.body
+              ? this.findLocalInit(this.currentFunction.body, expression.name)
+              : undefined;
+          if (initializer) return resolveInitializer(initializer, seen);
+        }
+        return expression;
+      };
+      const serializeExpression = (
+        expression: ExpressionNode, seen = new Set<Node>(),
+      ): ExternalCallExpression | undefined => {
+        if (seen.has(expression)) {
+          return {
+            kind: 'reference',
+            name: expression instanceof IdentifierNode ? expression.name : expression.constructor.name,
+          };
+        }
+        seen.add(expression);
+        const source = classifyArg(expression);
+        if (source && source.kind !== 'expression') return { kind: 'source', source };
+        const resolved = resolveInitializer(expression);
+        if (resolved !== expression) return serializeExpression(resolved, seen);
+        if (expression instanceof IntLiteralNode) {
+          return { kind: 'literal', type: 'bigint', value: expression.value.toString() };
+        }
+        if (expression instanceof BoolLiteralNode) {
+          return { kind: 'literal', type: 'bool', value: expression.value };
+        }
+        if (expression instanceof StringLiteralNode) {
+          return { kind: 'literal', type: 'string', value: expression.value };
+        }
+        if (expression instanceof HexLiteralNode) {
+          return {
+            kind: 'literal',
+            type: `bytes${expression.value.byteLength}`,
+            value: [...expression.value].map((b) => b.toString(16).padStart(2, '0')).join(''),
+          };
+        }
+        if (expression instanceof StateAccessNode) {
+          return { kind: 'state', name: expression.name };
+        }
+        if (expression instanceof CastNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          return inner && { kind: 'cast', type: expression.type.toString(), expression: inner };
+        }
+        if (expression instanceof UnaryOpNode) {
+          const inner = serializeExpression(expression.expression, seen);
+          let stateLengthDelta = 0;
+          if (expression.operator === UnaryOperator.SIZE
+            && expression.expression instanceof StateAccessNode
+            && this.currentFunction?.body) {
+            const stateName = expression.expression.name;
+            const countPushes = (candidate: Node, visited = new Set<Node>()): number => {
+              if (visited.has(candidate)) return 0;
+              visited.add(candidate);
+              let count = candidate instanceof StateArrayPushNode
+                && candidate.name === stateName ? 1 : 0;
+              for (const value of Object.values(candidate)) {
+                if (value instanceof Node) count += countPushes(value, visited);
+                else if (Array.isArray(value)) {
+                  for (const item of value) if (item instanceof Node) count += countPushes(item, visited);
+                }
+              }
+              return count;
+            };
+            stateLengthDelta = countPushes(this.currentFunction.body);
+          }
+          return inner && {
+            kind: 'unary',
+            operator: expression.operator,
+            expression: inner,
+            ...(stateLengthDelta > 0 && { value: stateLengthDelta.toString() }),
+          };
+        }
+        if (expression instanceof BinaryOpNode) {
+          const left = serializeExpression(expression.left, seen);
+          const right = serializeExpression(expression.right, seen);
+          return left && right && {
+            kind: 'binary', operator: expression.operator, left, right,
+          };
+        }
+        if (expression instanceof TernaryOpNode) {
+          const condition = serializeExpression(expression.condition, seen);
+          const ifTrue = serializeExpression(expression.ifTrue, seen);
+          const ifFalse = serializeExpression(expression.ifFalse, seen);
+          return condition && ifTrue && ifFalse && {
+            kind: 'ternary', condition, ifTrue, ifFalse,
+          };
+        }
+        if (expression instanceof FieldAccessNode) {
+          const enumType = expression.enumType
+            ?? (expression.expression instanceof IdentifierNode
+              ? this.enumMap.get(expression.expression.name)
+              : undefined);
+          if (enumType) {
+            const member = enumType.members.find((candidate) => candidate.name === expression.name);
+            if (member) {
+              return { kind: 'literal', type: 'bigint', value: member.value.toString() };
+            }
+          }
+          const inner = serializeExpression(expression.expression, seen);
+          const fieldType = expression.type
+            ?? expression.structType?.fields.find((field) => field.name === expression.name)?.type
+            ?? (expression.expression.type instanceof StructType
+              ? expression.expression.type.fields.find((field) => field.name === expression.name)?.type
+              : undefined);
+          return inner && {
+            kind: 'field',
+            name: expression.name,
+            expression: inner,
+            ...(fieldType && { type: fieldType.toString() }),
+          };
+        }
+        if (expression instanceof MappingAccessNode) {
+          const keys = expression.keys.map((key) => serializeExpression(key, seen));
+          return keys.every((key): key is ExternalCallExpression => key !== undefined)
+            ? {
+              kind: 'stateAccess',
+              name: expression.name,
+              args: keys,
+              ...(expression.type && { type: expression.type.toString() }),
+            }
+            : undefined;
+        }
+        if (expression instanceof ArrayAccessNode) {
+          const array = serializeExpression(expression.array, seen);
+          const index = serializeExpression(expression.index, seen);
+          return array && index && { kind: 'arrayAccess', left: array, right: index };
+        }
+        if (expression instanceof ArrayNode) {
+          const elements = expression.elements.map((item) => serializeExpression(item, seen));
+          return elements.every((item): item is ExternalCallExpression => item !== undefined)
+            ? { kind: 'array', args: elements }
+            : undefined;
+        }
+        const serializeArgs = (parameters: ExpressionNode[]): ExternalCallExpression[] | undefined => {
+          const values = parameters.map((parameter) => serializeExpression(parameter, seen));
+          return values.every((value): value is ExternalCallExpression => value !== undefined)
+            ? values : undefined;
+        };
+        if (expression instanceof BytesConcatNode || expression instanceof StringConcatNode
+          || expression instanceof AbiEncodeNode || expression instanceof AbiEncodePackedNode) {
+          const values = serializeArgs(expression.parameters);
+          if (!values) return undefined;
+          return {
+            kind: expression instanceof BytesConcatNode ? 'bytesConcat'
+              : expression instanceof StringConcatNode ? 'stringConcat'
+                : expression instanceof AbiEncodePackedNode ? 'abiEncodePacked' : 'abiEncode',
+            args: values,
+            fields: expression.parameters.map((parameter) => parameter.type?.toString() ?? ''),
+          };
+        }
+        if (expression instanceof FunctionCallNode) {
+          const values = serializeArgs(expression.parameters);
+          return values && {
+            kind: 'call',
+            name: expression.identifier.name,
+            args: values,
+            ...(expression.fieldNames && { fields: expression.fieldNames }),
+            ...(expression.type && { type: expression.type.toString() }),
+          };
+        }
+        if (expression instanceof IdentifierNode) return { kind: 'identifier', name: expression.name };
+        return {
+          kind: 'unsupported',
+          name: expression.constructor.name,
+          ...(expression.type && { type: expression.type.toString() }),
+        };
+      };
+      for (let i = 0; i < argSources.length; i++) {
+        if (argSources[i].kind !== 'expression') continue;
+        const expression = serializeExpression(node.parameters[i]);
+        argSources[i] = {
+          kind: 'expression',
+          expression: expression ?? {
+            kind: 'missing',
+            name: node.parameters[i]?.constructor.name ?? 'undefined',
+          },
+        };
+      }
+      const rawPayload = node.opaqueReturn && node.parameters.length === 1
+        ? resolveInitializer(node.parameters[0])
+        : undefined;
+      const rawFunctionName = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.functionName
+        : undefined;
+      const rawArgSources = rawPayload instanceof AbiEncodeCallNode
+        ? rawPayload.parameters.map((parameter) => {
+          const classified = classifyArg(parameter);
+          if (classified) return classified;
+          const expression = serializeExpression(parameter);
+          return expression ? { kind: 'expression' as const, expression } : { kind: 'expression' as const };
+        })
+        : undefined;
 
       slots.push({
         interfaceName: node.callInfo.interfaceName,
@@ -4222,8 +5470,11 @@ export default class SymbolTableTraversal extends AstTraversal {
         ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
-        ...(addressLiteral && { addressLiteral }),
+        ...(addressLiteral !== undefined && { addressLiteral }),
         ...(addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(addressSource && { addressSource }),
+        ...(rawFunctionName && { rawFunctionName }),
+        ...(rawArgSources && { rawArgSources }),
         slotIndex: -1,
         requiredDataNftIndices: dataNftIndices,
         computedOffset: 0,
@@ -4240,6 +5491,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           returnEventSignature: node.callInfo.returnEventSignature,
         }),
         ...(argSources.length > 0 && { argSources }),
+        sourceCallNode: node,
       });
       return;
     }
@@ -4252,6 +5504,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.collectExternalCalls((node as any).expression, slots);
+    }
+    // NewArrayNode stores its runtime bound in `size`, not `expression`. A returning external call used as
+    // `new T[](callee.length())` needs the same slot collection and return-output witness as every other
+    // expression position.
+    if ('size' in node && (node as any).size instanceof Node) {
+      this.collectExternalCalls((node as any).size, slots);
     }
     // FunctionCallStatementNode holds its internal call in `call`; its args may contain external calls
     // (e.g. `_update(token0.balanceOf(this), ...)`). Must mirror assignExternalCallSlotIndices exactly.
@@ -4343,6 +5601,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if ('expression' in node && (node as any).expression instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).expression, slots, counter);
     }
+    if ('size' in node && (node as any).size instanceof Node) {
+      this.assignExternalCallSlotIndices((node as any).size, slots, counter);
+    }
     // FunctionCallStatementNode holds its internal call in `call` (mirror collectExternalCalls exactly).
     if ('call' in node && (node as any).call instanceof Node) {
       this.assignExternalCallSlotIndices((node as any).call, slots, counter);
@@ -4417,6 +5678,20 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private collectExternalOutStateReads(node: Node, map: Map<string, ExternalOutStateSlot>): void {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
+      const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
+      if (!map.has(key)) {
+        const addressParam = node.addressExpression instanceof IdentifierNode
+          ? node.addressExpression.name : undefined;
+        map.set(key, {
+          interfaceName: node.readInfo.interfaceName,
+          addressParam,
+          slotIndex: -1,
+          requiredDataNftIndices: [],
+        });
+      }
+      return;
+    }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
       const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
       const existing = map.get(key);
@@ -4486,6 +5761,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private assignExternalOutStateSlotIndices(node: Node, map: Map<string, ExternalOutStateSlot>): void {
+    if (node instanceof ExternalMappingAccessNode && node.readInfo?.outputState) {
+      const key = `${node.readInfo.interfaceName}:outState:collection:${node.readInfo.collectionSignature}`;
+      const slot = map.get(key);
+      if (slot) node.readInfo.externalOutStateSlotIndex = slot.slotIndex;
+      return;
+    }
     if (node instanceof ExternalOutputStateAccessNode && node.accessInfo) {
       const key = `${node.accessInfo.interfaceName}:outState:${node.accessInfo.nftIndex}`;
       const slot = map.get(key);
@@ -4654,17 +5935,148 @@ export default class SymbolTableTraversal extends AstTraversal {
     return false;
   }
 
-  private hasSignatureGuard(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
+  /**
+   * C1/piece-7: a COMPILER-SYNTHESIZED delegatecall - `L.f()` library-call sugar (SynthesizeLibraryDelegateCalls)
+   * or a split-facet forwarder (compiler.ts). The user wrote no delegatecall keyword, so hasExplicitDelegatecall
+   * skips it; the covenant consequences are identical and must not be skipped with it.
+   */
+  private hasSynthesizedDelegatecall(node: Node | undefined, seen: Set<Node> = new Set()): boolean {
     if (!node || seen.has(node)) return false;
     seen.add(node);
-    if (node instanceof FunctionCallNode
-      && (node.identifier.name === 'checkSig' || node.identifier.name === 'checkMultiSig'
-        || node.identifier.name === 'checkDataSig')) {
+    if (node instanceof LowLevelCallStatementNode && node.callMode === 'delegatecall'
+      && node.synthesizedFromLibraryCall) {
       return true;
     }
     for (const v of Object.values(node)) {
-      if (v instanceof Node) { if (this.hasSignatureGuard(v, seen)) return true; } else if (Array.isArray(v)) {
-        for (const e of v) if (e instanceof Node && this.hasSignatureGuard(e, seen)) return true;
+      if (v instanceof Node) { if (this.hasSynthesizedDelegatecall(v, seen)) return true; } else if (Array.isArray(v)) {
+        for (const e of v) if (e instanceof Node && this.hasSynthesizedDelegatecall(e, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * C1/piece-5: how is the user-written delegatecall reached? 'unconditional' = on every path through the body;
+   * 'conditional' = only inside an if/else arm, switch case or try/catch block; 'loop' = inside a loop body,
+   * where one pinned input and one block slot serve every iteration. Runs BEFORE EnsureFinalRequire /
+   * InjectLocktimeGuard / EarlyReturnTransformation, so no synthetic branch can misclassify a straight-line
+   * callsite. Worst class across all callsites wins (loop > conditional > unconditional).
+   */
+  private delegatecallReachability(body: Node | undefined): 'none' | 'unconditional' | 'conditional' | 'loop' {
+    let worst: 'none' | 'unconditional' | 'conditional' | 'loop' = 'none';
+    const rank = { none: 0, unconditional: 1, conditional: 2, loop: 3 };
+    const record = (kind: 'unconditional' | 'conditional' | 'loop'): void => {
+      if (rank[kind] > rank[worst]) worst = kind;
+    };
+    // Keyed by node AND context: a node re-reached under a stricter context must still be classified, otherwise a
+    // shared sub-tree visited first on a straight-line path would mask a conditional/loop occurrence.
+    const seen = new Map<Node, Set<string>>();
+    const walk = (node: Node | undefined, cond: boolean, loop: boolean): void => {
+      if (!node) return;
+      const context = `${cond ? 'c' : '-'}${loop ? 'l' : '-'}`;
+      const contexts = seen.get(node) ?? new Set<string>();
+      if (contexts.has(context)) return;
+      contexts.add(context);
+      seen.set(node, contexts);
+      // Synthesized callsites (`L.f()` sugar, split forwarders) count too - one reserved block slot per
+      // callsite, so a loop collapses N delegations into one there as well (C1/piece-7).
+      if ((node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+        && node.callMode === 'delegatecall') {
+        record(loop ? 'loop' : (cond ? 'conditional' : 'unconditional'));
+        // Keep walking: a nested target/data expression cannot contain a second callsite, but a sibling can.
+      }
+      // A loop's own condition runs once per iteration; its body likewise. A branch/switch/try condition or
+      // subject expression runs unconditionally - only the arms are conditional.
+      if (node instanceof WhileNode || node instanceof DoWhileNode) {
+        walk(node.condition, cond, true);
+        walk(node.block, cond, true);
+        return;
+      }
+      if (node instanceof CollectionIterationNode) {
+        walk(node.body, cond, true);
+        return;
+      }
+      if (node instanceof BranchNode) {
+        walk(node.condition, cond, loop);
+        walk(node.ifBlock, true, loop);
+        walk(node.elseBlock, true, loop);
+        return;
+      }
+      if (node instanceof SwitchNode) {
+        walk(node.expression, cond, loop);
+        for (const switchCase of node.cases) walk(switchCase, true, loop);
+        walk(node.defaultCase, true, loop);
+        return;
+      }
+      if (node instanceof TryCatchNode) {
+        walk(node.expression, cond, loop);
+        walk(node.tryBlock, true, loop);
+        for (const clause of node.catchClauses) walk(clause, true, loop);
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value, cond, loop);
+        else if (Array.isArray(value)) for (const e of value) if (e instanceof Node) walk(e, cond, loop);
+      }
+    };
+    walk(body, false, false);
+    return worst;
+  }
+
+  /**
+   * C1/piece-6: does this entry point's delegatecall target resolve to one of ITS OWN parameters with nothing in
+   * the body constraining it? Returns the parameter name, or undefined. A constructor argument is excluded (the
+   * contract's p2sh32 commits to it), as is any parameter reached by a signature guard or named in a require().
+   */
+  private delegatecallTargetsUnguardedParameter(node: FunctionDefinitionNode): string | undefined {
+    if (!this.hasExplicitDelegatecall(node.body)) return undefined;
+    const call = this.findDelegatecallNode(node.body);
+    if (!call) return undefined;
+    // Resolve through `address m = impl;` aliases to the underlying identifier.
+    let target: ExpressionNode | undefined = call.targetExpression;
+    const seenNames = new Set<string>();
+    while (target instanceof CastNode) target = target.expression;
+    while (target instanceof IdentifierNode && !seenNames.has(target.name)) {
+      seenNames.add(target.name);
+      const init = this.findLocalInit(node.body, target.name);
+      if (!init) break;
+      let next: ExpressionNode = init;
+      while (next instanceof CastNode) next = next.expression;
+      if (!(next instanceof IdentifierNode)) return undefined; // a computed/literal target, not a bare parameter
+      target = next;
+    }
+    if (!(target instanceof IdentifierNode)) return undefined;
+    const name = target.name;
+    if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
+    if (hasAuthorizingSignatureGuard(node)) return undefined;
+    if (this.requireMentionsIdentifier(node.body, name)) return undefined;
+    return name;
+  }
+
+  /** Is `name` referenced by any require() in this body? That is the constraint that authorizes a parameter. */
+  private requireMentionsIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof RequireNode && this.referencesIdentifier(node.expression, name)) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        if (this.requireMentionsIdentifier(value, name, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const e of value) if (e instanceof Node && this.requireMentionsIdentifier(e, name, seen)) return true;
+      }
+    }
+    return false;
+  }
+
+  private referencesIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
+    if (!node || seen.has(node)) return false;
+    seen.add(node);
+    if (node instanceof IdentifierNode && node.name === name) return true;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        if (this.referencesIdentifier(value, name, seen)) return true;
+      } else if (Array.isArray(value)) {
+        for (const e of value) if (e instanceof Node && this.referencesIdentifier(e, name, seen)) return true;
       }
     }
     return false;
@@ -4802,8 +6214,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   // A compile-time-constant uint mapping key (the OZ StorageSlot idiom `uint256(SLOT)` with a bytes32 constant
   // SLOT, or any `uint(<const>)`) folds to a fixed value the SDK matches the entry by - without it, a non-arg key
-  // can't be located on a read. `uint(bytesN)` reinterprets the bytes as a little-endian script number; a numeric
-  // constant folds directly. Returns the value, or undefined if not a resolvable constant uint key.
+  // can't be located on a read. In Solidity-compatible mode `uint(bytesN)` interprets the fixed bytes as a
+  // big-endian integer; these storage-pointer constants only exist on that compatibility path. A numeric constant
+  // folds directly. Returns the value, or undefined if not a resolvable constant uint key.
   private tryEvalConstantUintKey(key: ExpressionNode): bigint | undefined {
     if (!(key instanceof CastNode) || !(key.type instanceof IntType) || key.type.signed) return undefined;
     return this.evalConstantOperand(key.expression);
@@ -4813,7 +6226,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof IntLiteralNode) return expr.value;
     if (expr instanceof HexLiteralNode) {
       let v = 0n;
-      for (let i = expr.value.length - 1; i >= 0; i--) v = (v << 8n) | BigInt(expr.value[i]); // little-endian
+      for (const byte of expr.value) v = (v << 8n) | BigInt(byte);
       return v;
     }
     if (expr instanceof IdentifierNode) {
@@ -4877,10 +6290,30 @@ export default class SymbolTableTraversal extends AstTraversal {
   // insert-loop SDK derivation) - a loop var is NOT a single-assignment computed value.
   private collectLocalKeyDefs(node: Node | undefined): void {
     this.localKeyDefs = new Map();
+    const assignmentCounts = new Map<string, number>();
+    const adjacentInitializers = new Map<string, ExpressionNode>();
     const walk = (n: Node | undefined): void => {
       if (!n) return;
       if (n instanceof VariableDefinitionNode && n.expression && !n.isLoopVariable && !this.localKeyDefs.has(n.name)) {
         this.localKeyDefs.set(n.name, n.expression);
+      }
+      if (n instanceof AssignNode) {
+        assignmentCounts.set(n.identifier.name, (assignmentCounts.get(n.identifier.name) ?? 0) + 1);
+      }
+      // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
+      // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
+      // assignment, and the whole-body count below rules out subsequent reassignment. This gives C2 key metadata
+      // the same canonical source as `T key = expr` without changing runtime evaluation of the local itself.
+      if (n instanceof BlockNode) {
+        const statements = n.statements ?? [];
+        for (let i = 0; i + 1 < statements.length; i += 1) {
+          const definition = statements[i];
+          const assignment = statements[i + 1];
+          if (definition instanceof VariableDefinitionNode && !definition.expression && !definition.isLoopVariable
+            && assignment instanceof AssignNode && assignment.identifier.name === definition.name) {
+            adjacentInitializers.set(definition.name, assignment.expression);
+          }
+        }
       }
       for (const k of Object.keys(n)) {
         if (k === 'type' || k === 'symbolTable' || k === 'location' || k === 'resolvedFunction') continue;
@@ -4890,6 +6323,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     };
     walk(node);
+    for (const [name, expression] of adjacentInitializers) {
+      if (!this.localKeyDefs.has(name) && assignmentCounts.get(name) === 1) {
+        this.localKeyDefs.set(name, expression);
+      }
+    }
   }
 
   // Returns the state array name A if `expr` is exactly `A[A.length - 1]` (a state array's last element), else
@@ -4975,8 +6413,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -5063,22 +6503,26 @@ export default class SymbolTableTraversal extends AstTraversal {
     // copies stay whole (a normal assign); int widening is already implicitly castable.
     if (node.expression instanceof IdentifierNode) {
       const tgt = this.stateVariableMap.get(node.identifier.name)?.type;
-      const src = this.stateVariableMap.get(node.expression.name)?.type;
-      const sameElem = tgt instanceof ArrayType && src instanceof ArrayType
-        && tgt.elementType.toString() === src.elementType.toString();
-      const bytesWiden = tgt instanceof ArrayType && src instanceof ArrayType
-        && tgt.elementType instanceof BytesType && src.elementType instanceof BytesType;
+      // The source may be another state array or a memory/calldata/local fixed array. At this point the active
+      // symbol table already knows local declarations, so use its type before falling back to the state map.
+      const src = this.symbolTables[0].get(node.expression.name)?.type
+        ?? this.stateVariableMap.get(node.expression.name)?.type;
       if (tgt instanceof ArrayType && src instanceof ArrayType && tgt.bound !== undefined && src.bound !== undefined
-        && (tgt.bound !== src.bound || !sameElem) && (sameElem || bytesWiden)) {
+        && (tgt.bound !== src.bound || tgt.elementType.toString() !== src.elementType.toString())
+        && this.fixedArrayCopyConvertible(tgt.elementType, src.elementType)) {
         const srcName = node.expression.name;
         const stmts: StatementNode[] = [];
-        const lit = (i: number): IntLiteralNode => { const n = new IntLiteralNode(BigInt(i)); n.location = node.location; return n; };
+        const lit = (i: number): IntLiteralNode => {
+          const n = new IntLiteralNode(BigInt(i));
+          n.location = node.location;
+          return n;
+        };
         const copyN = Math.min(tgt.bound, src.bound);
         for (let i = 0; i < copyN; i++) {
           const srcId = new IdentifierNode(srcName); srcId.location = node.location;
           const read = new ArrayAccessNode(srcId, lit(i)); read.location = node.location;
-          const rhs = sameElem ? read : new CastNode(tgt.elementType, read, false);
-          rhs.location = node.location;
+          const rhs = this.convertFixedArrayCopyValue(tgt.elementType, src.elementType, read, node);
+          if (!rhs) return node;
           const assign = new ArrayAssignNode(node.identifier.name, lit(i), rhs); assign.location = node.location;
           stmts.push(assign);
         }
@@ -5099,6 +6543,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const stateNode = new StateAssignNode(node.identifier.name, node.expression);
       stateNode.location = node.location;
       stateNode.fromModifier = node.fromModifier; // preserve inlined-modifier origin for the private-var check
+      stateNode.qualifiedBaseAccess = node.qualifiedBaseAccess;
       return this.visit(stateNode);
     }
 
@@ -5133,15 +6578,67 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (sym) {
       // Reference element/field writes are lowered to AssignNode but explicitly marked by AstBuilder.
       this.checkReadOnlyModification(sym, !node.isReferenceDataWrite);
+    } else if (this.compilerOptions.solidityImportCompat) {
+      throw new UndefinedReferenceError(node.identifier);
     }
 
-    super.visitAssign(node);
+    const savedExpectedFunctionPointerType = this.expectedFunctionPointerType;
+    if (sym?.type instanceof FunctionType && !sym.type.isExternal) {
+      this.expectedFunctionPointerType = sym.type;
+    }
+    try {
+      super.visitAssign(node);
+    } finally {
+      this.expectedFunctionPointerType = savedExpectedFunctionPointerType;
+    }
     // Reassignment of a deploy-result local (`d = new D();` again): later folded calls must bind to the
     // NEW deploy node - earlier folds correctly stay on the old one.
     if (node.expression instanceof InstantiationNode && node.expression.referencedContract) {
       this.deployResultLocals.set(node.identifier.name, node.expression);
     }
     return node;
+  }
+
+  private fixedArrayCopyConvertible(target: Type, source: Type): boolean {
+    if (target.toString() === source.toString()) return true;
+    if (target instanceof ArrayType && source instanceof ArrayType
+      && target.bound !== undefined && source.bound !== undefined) {
+      return this.fixedArrayCopyConvertible(target.elementType, source.elementType);
+    }
+    if (target instanceof BytesType && source instanceof BytesType) {
+      return source.bound !== undefined && target.bound !== undefined && source.bound <= target.bound;
+    }
+    return implicitlyCastable(source, target);
+  }
+
+  private convertFixedArrayCopyValue(
+    target: Type, source: Type, value: ExpressionNode, from: Node,
+  ): ExpressionNode | undefined {
+    if (target.toString() === source.toString()) return value;
+    if (target instanceof ArrayType && source instanceof ArrayType
+      && target.bound !== undefined && source.bound !== undefined) {
+      const elements: ExpressionNode[] = [];
+      for (let i = 0; i < target.bound; i += 1) {
+        if (i >= source.bound) {
+          elements.push(createDefaultValueExpression(target.elementType, from.location!));
+          continue;
+        }
+        const index = new IntLiteralNode(BigInt(i)); index.location = from.location;
+        const read = new ArrayAccessNode(cloneNode(value) as ExpressionNode, index); read.location = from.location;
+        const converted = this.convertFixedArrayCopyValue(target.elementType, source.elementType, read, from);
+        if (!converted) return undefined;
+        elements.push(converted);
+      }
+      const array = new ArrayNode(elements); array.location = from.location; array.blobEncoded = true;
+      return array;
+    }
+    const bytesWiden = target instanceof BytesType && source instanceof BytesType
+      && source.bound !== undefined && target.bound !== undefined && source.bound <= target.bound;
+    if (bytesWiden || implicitlyCastable(source, target)) {
+      const cast = new CastNode(target, value, false); cast.location = from.location;
+      return cast;
+    }
+    return undefined;
   }
 
   // True when `name` is a state mapping/collection or a dense-indexable state array (packed or chunk-packed):
@@ -5152,13 +6649,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     return !!(sv && (sv.isPacked || sv.isDynamic) && sv.type instanceof ArrayType);
   }
 
-  // Flatten a bare index chain `a[k1][k2]...` into its base expression and keys (base-first order).
+  // Flatten a bare index chain `a[k1][k2]...` into its base expression and keys (base-first order). Numeric
+  // literal indices parse as TupleIndexOpNode, even when the base is a collection rather than a tuple, so mixed
+  // chains such as `fixedArrayOfMappings[0][key]` must consume both node kinds in one pass.
   private flattenArrayAccess(node: ArrayAccessNode): { base: ExpressionNode; keys: ExpressionNode[] } {
     const keys: ExpressionNode[] = [];
     let cur: ExpressionNode = node;
-    while (cur instanceof ArrayAccessNode) {
-      keys.unshift(cur.index);
-      cur = cur.array;
+    while (cur instanceof ArrayAccessNode || cur instanceof TupleIndexOpNode) {
+      if (cur instanceof ArrayAccessNode) {
+        keys.unshift(cur.index);
+        cur = cur.array;
+      } else {
+        const index = new IntLiteralNode(BigInt(cur.index));
+        index.location = cur.location;
+        keys.unshift(index);
+        cur = cur.tuple;
+      }
     }
     return { base: cur, keys };
   }
@@ -5169,6 +6675,45 @@ export default class SymbolTableTraversal extends AstTraversal {
     // `stateVar[numLit]` AND a nested `m[k][numLit]` whose outer index is a number literal (SushiToken COMP
     // checkpoints `checkpoints[account][0].fromBlock`, a `mapping(K1 => mapping(K2 => Struct))`): route the whole
     // chain through the array/mapping access path so ALL keys resolve together to the innermost value type.
+    const numericKeys: ExpressionNode[] = [];
+    let numericBase: ExpressionNode = node;
+    while (numericBase instanceof TupleIndexOpNode) {
+      const idx = new IntLiteralNode(BigInt(numericBase.index));
+      idx.location = numericBase.location;
+      numericKeys.unshift(idx);
+      numericBase = numericBase.tuple;
+    }
+    if (numericBase instanceof IdentifierNode && this.isStateCollectionName(numericBase.name)
+      && !this.isShadowedByLocal(numericBase.name)) {
+      const rootCollection = this.collectionMap.get(numericBase.name);
+      // A fixed array whose terminal element is a mapping is represented by one collection keyed by the full
+      // `(arrayIndex..., mappingKey...)` path. When every index is numeric the grammar builds only
+      // TupleIndexOpNodes, so route the complete path directly rather than attempting tuple extraction from the
+      // first scalar leaf. Require the full key count: a partial path denotes a storage pointer, not a value.
+      if (rootCollection?.type instanceof ArrayType
+        && numericKeys.length === rootCollection.allKeyTypes.length) {
+        const access = new MappingAccessNode(numericBase.name, numericKeys);
+        access.location = node.location;
+        access.fromModifier = numericBase.fromModifier;
+        return this.visit(access);
+      }
+      let collectionType: Type | undefined = this.collectionMap.get(numericBase.name)?.type;
+      let mappingDepth = 0;
+      while (collectionType instanceof MappingType) {
+        mappingDepth += 1;
+        collectionType = collectionType.valueType;
+      }
+      // Preserve the one supported array-value index separately: mapping(K=>T[]) m; m[k][i].
+      // More trailing dimensions retain the old path and its explicit multi-dimensional diagnostic.
+      if (mappingDepth > 0
+        && numericKeys.length <= mappingDepth + (collectionType instanceof ArrayType ? 1 : 0)) {
+        const access = new MappingAccessNode(numericBase.name, numericKeys.slice(0, mappingDepth));
+        if (numericKeys.length > mappingDepth) access.arrayIndex = numericKeys[mappingDepth];
+        access.location = node.location;
+        access.fromModifier = numericBase.fromModifier;
+        return this.visit(access);
+      }
+    }
     let base: ExpressionNode | undefined;
     if (node.tuple instanceof IdentifierNode) base = node.tuple;
     else if (node.tuple instanceof ArrayAccessNode) base = this.flattenArrayAccess(node.tuple).base;
@@ -5217,6 +6762,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitArrayPush(node: ArrayPushNode): Node {
+    // The parser only knows state variables declared in the contract currently being built, so a bare inherited
+    // dynamic-array mutation initially looks like a local-array mutation. Inheritance has been expanded here.
+    if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
+      const sv = this.stateVariableMap.get(node.name);
+      if ((sv?.isPacked || sv?.isDynamic) && sv.type instanceof ArrayType) {
+        const stateNode = new StateArrayPushNode(node.name, node.value);
+        stateNode.noArg = node.noArg;
+        stateNode.location = node.location;
+        return this.visit(stateNode);
+      }
+    }
     const sym = this.symbolTables[0].get(node.name);
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
@@ -5238,6 +6794,15 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitArrayPop(node: ArrayPopNode): Node {
+    // See visitArrayPush: inherited state arrays cannot be classified by the parser-local state name set.
+    if (this.isStateCollectionName(node.name) && !this.isShadowedByLocal(node.name)) {
+      const sv = this.stateVariableMap.get(node.name);
+      if ((sv?.isPacked || sv?.isDynamic) && sv.type instanceof ArrayType) {
+        const stateNode = new StateArrayPopNode(node.name);
+        stateNode.location = node.location;
+        return this.visit(stateNode);
+      }
+    }
     const sym = this.symbolTables[0].get(node.name);
     if (!sym) {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
@@ -5275,9 +6840,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.arrayType = sym.type;
     }
     sym.references.push({ name: node.name } as IdentifierNode);
-    this.currentFunction.opRolls.set(node.name, { name: node.name, location: node.location } as IdentifierNode);
     node.index = this.visit(node.index);
     node.value = this.visit(node.value);
+    // The write replaces the array slot but does not consume it. Record it after visiting the index/value:
+    // either expression may read the same array and would otherwise become its apparent final use, causing
+    // codegen to OP_ROLL the slot before visitArrayAssign can replace it.
+    this.currentFunction.opRolls.set(node.name, { name: node.name, location: node.location } as IdentifierNode);
     return node;
   }
 
@@ -5312,6 +6880,147 @@ export default class SymbolTableTraversal extends AstTraversal {
   // a Solidity no-op: the enum type name resolves as a valueless CONSTANT symbol that codegen cannot
   // materialize. Drop the statement.
   visitExpressionStatement(node: ExpressionStatementNode): Node {
+    // A contract metatype with a fixed array suffix (`C[0];`) is a discarded type expression, not runtime
+    // indexing. Solidity accepts it with a no-effect warning. Restrict this to a literal bound and a declared
+    // contract/interface namespace so ordinary `unknown[0]` and runtime array reads keep their diagnostics.
+    const arrayTypeBase = node.expression instanceof ArrayAccessNode
+      && node.expression.index instanceof IntLiteralNode
+      ? node.expression.array
+      : node.expression instanceof TupleIndexOpNode ? node.expression.tuple : undefined;
+    const contractArrayTypeName = arrayTypeBase instanceof IdentifierNode ? arrayTypeBase.name : undefined;
+    const qualifiedStructArrayType = arrayTypeBase instanceof FieldAccessNode
+      && arrayTypeBase.expression instanceof IdentifierNode
+      && !this.symbolTables[0].get(arrayTypeBase.expression.name)
+      ? `${arrayTypeBase.expression.name}.${arrayTypeBase.name}`
+      : undefined;
+    const bareStructArraySymbol = arrayTypeBase instanceof IdentifierNode
+      ? this.symbolTables[0].get(arrayTypeBase.name) : undefined;
+    const bareStructArrayType = arrayTypeBase instanceof IdentifierNode
+      && this.structMap.has(arrayTypeBase.name)
+      && (!bareStructArraySymbol || bareStructArraySymbol.symbolType === SymbolType.FUNCTION);
+    if (contractArrayTypeName
+      && ((this.contractMap.has(contractArrayTypeName)
+        && !this.contractMap.get(contractArrayTypeName)!.isLibraryContract)
+        || this.interfaceMap.has(contractArrayTypeName))
+      || bareStructArrayType
+      || (qualifiedStructArrayType && this.structMap.has(qualifiedStructArrayType))) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
+    // A bare payable-address method reference (`payable(x).transfer;` / `.send;`) is a discarded function value.
+    // Keep evaluation of the receiver (it may contain a call or cast with effects), but do not resolve the member
+    // as a struct field or execute a transfer: Solidity only invokes it when followed by `(amount)`.
+    if (node.expression instanceof FieldAccessNode
+      && (node.expression.name === 'transfer' || node.expression.name === 'send')) {
+      const receiverType = this.resolveLowLevelReceiverType(node.expression.expression);
+      if (receiverType instanceof AddressType && receiverType.payable) {
+        node.expression = this.visit(node.expression.expression) as ExpressionNode;
+        return node;
+      }
+    }
+    // A bare compiler-special global function name or inheritance dispatch base is a discarded reference
+    // (`selfdestruct;`, `erc7201;`, `blobhash;`, `super;`) and has no runtime effect. This does not affect an
+    // invocation (`blobhash(i)`), which remains a normally typed global call.
+    if (node.expression instanceof IdentifierNode) {
+      if (node.expression.name === 'erc7201' || node.expression.name === 'selfdestruct'
+        || node.expression.name === 'blobhash'
+        || (node.expression.name === 'super' && !this.currentFunction?.isFreeFunction
+          && !this.currentContract?.isLibraryContract)
+        || this.knownLibraryNames.has(node.expression.name)
+        || (!this.symbolTables[0].get(node.expression.name)
+          && (this.contractMap.has(node.expression.name) || this.interfaceMap.has(node.expression.name)))) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // A struct type name is likewise legal as a valueless expression statement (`S;`, `Lib.S;`). It is not a
+    // variable read and must not reach identifier resolution/codegen. Qualified library structs are registered
+    // under both their compound and (when unambiguous) bare names.
+    if ((node.expression instanceof IdentifierNode && this.structMap.has(node.expression.name))
+      || (node.expression instanceof FieldAccessNode
+        && node.expression.expression instanceof IdentifierNode
+        && (this.structMap.has(`${node.expression.expression.name}.${node.expression.name}`)
+          || this.structMap.has(node.expression.name)))) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
+    // A qualified interface function reference used only as an expression statement (`IERC20.transfer;`) is a
+    // valid Solidity function value whose value is discarded. Require both the declared interface and exact
+    // member so misspellings and non-function members continue through normal diagnostics.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const libraryMember = `${node.expression.expression.name}.${node.expression.name}`;
+      if (this.knownLibraryNames.has(node.expression.expression.name)
+        && this.libraryFunctionSignatures.get(libraryMember)?.length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+      const iface = this.interfaceMap.get(node.expression.expression.name);
+      const memberName = node.expression.name;
+      if (iface?.functions.filter((fn) => fn.name === memberName).length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // A discarded attached-library member (`a.double;` under `using D for uint`) is a valid function value with
+    // no runtime effect. Restrict this no-op to a plain identifier receiver and a uniquely resolvable binding:
+    // computed receivers may have side effects, while an overloaded/unknown member must retain its diagnostic.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const field = node.expression;
+      const receiverType = this.resolveLowLevelReceiverType(field.expression);
+      const ifaceKey = receiverType instanceof AddressType ? receiverType.interfaceName : undefined;
+      const intKey = receiverType instanceof IntType
+        ? (receiverType.signed ? 'int256' : 'uint256') : undefined;
+      const bindings = receiverType
+        ? [...(this.usingForBindings.get(receiverType.toString()) ?? []),
+          ...(intKey && intKey !== receiverType.toString() ? this.usingForBindings.get(intKey) ?? [] : []),
+          ...(ifaceKey ? this.usingForBindings.get(ifaceKey) ?? [] : []),
+          ...(this.usingForBindings.get('*') ?? [])]
+        : [];
+      const matches = bindings.filter((binding) => binding.methodName === field.name);
+      const overloads = matches.flatMap((binding) => this.functionDefinitions.get(binding.fullFunctionName) ?? []);
+      if (matches.length === 1 && overloads.length === 1) {
+        const empty = new BlockNode([]);
+        empty.location = node.location;
+        return empty;
+      }
+    }
+    // `T.wrap;` / `T.unwrap;` denotes a UDVT conversion function value. When discarded, it has no runtime
+    // effect; resolving the base as a variable would incorrectly reject the type name.
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode
+      && this.typeDefMap.has(node.expression.expression.name)
+      && (node.expression.name === 'wrap' || node.expression.name === 'unwrap')) {
+      const empty = new BlockNode([]);
+      empty.location = node.location;
+      return empty;
+    }
+    // A discarded current-contract-qualified function reference (`C.f;`) has no effect. External functions
+    // cannot otherwise be materialized as an unbound functionId, so use their declaration selector as the
+    // discarded value (the surrounding expression statement drops it).
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode
+      && node.expression.expression.name === this.currentContract?.name) {
+      const functionName = node.expression.name;
+      const fn = this.currentContract.functions.find((candidate) => candidate.name === functionName);
+      if (fn) {
+        const signature = computeFunctionSignature(
+          fn.name,
+          fn.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        );
+        const literal = new HexLiteralNode(computeFunctionSelector(signature));
+        literal.location = node.expression.location;
+        literal.type = new BytesType(4);
+        node.expression = literal;
+        return node;
+      }
+    }
     node.expression = this.visit(node.expression) as ExpressionNode;
     if (node.expression instanceof IdentifierNode) {
       const def = node.expression.definition;
@@ -5343,7 +7052,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!syms.some((s) => s?.symbolType === SymbolType.STATE_VARIABLE)) return undefined;
     const plainScalar = (t: Type): boolean => !(t instanceof StructType)
       && !(t instanceof ArrayType) && !(t instanceof MappingType) && !(t instanceof TupleType);
-    if (!node.elements.every((e, i) => e.skip || plainScalar(syms[i]!.type!))) return undefined;
+    // A concrete struct STATE variable is a value blob and StateAssign already rebuilds its state slot. Admit it
+    // here so `(x, y) = (y, x)` gets the same RHS-before-write temp semantics as scalar state swaps. Keep local
+    // storage-pointer structs excluded: assigning those rebinds/copies storage and has different aliasing semantics.
+    const safeTarget = (s: Symbol): boolean => plainScalar(s.type!)
+      || (s.symbolType === SymbolType.STATE_VARIABLE && s.type instanceof StructType);
+    if (!node.elements.every((e, i) => e.skip || safeTarget(syms[i]!))) return undefined;
 
     const stmts: StatementNode[] = [];
     const tmpNames = node.elements.map(() => `__tuple_state_${this.tupleStateTempCounter++}`);
@@ -5404,7 +7118,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       const definition = new VariableDefinitionNode(variable.type!, [], variable.name!, initializer);
       definition.location = node.location;
 
-      if (this.symbolTables[0].get(variable.name!)) {
+      const existing = this.symbolTables[0].get(variable.name!);
+      // Tuple-declared locals follow the same Solidity shadowing rule as an ordinary declaration: an inner
+      // local may shadow a contract state variable/function. A live local in this scope still cannot be
+      // shadowed because stack slots are name-keyed.
+      const shadowsOuter = this.compilerOptions.solidityImportCompat
+        && (existing?.symbolType === SymbolType.FUNCTION || existing?.symbolType === SymbolType.STATE_VARIABLE);
+      if (existing && !shadowsOuter) {
         throw new VariableRedefinitionError(definition);
       }
       this.symbolTables[0].set(Symbol.variable(definition));
@@ -5517,13 +7237,126 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private validateExternalCallMutability(callee: InterfaceFunctionNode | FunctionDefinitionNode): void {
+    if (!this.compilerOptions.solidityImportCompat) return;
+    const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
+    const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
+    const calleeMutability = callee instanceof InterfaceFunctionNode ? callee.stateMutability
+      : callee.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+        : callee.modifiers.includes(FunctionModifier.VIEW) ? 'view'
+          : callee.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable';
+    if ((callerPure && calleeMutability !== 'pure')
+      || (callerView && (calleeMutability === 'nonpayable' || calleeMutability === 'payable'))) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction,
+        `'${callerPure ? 'pure' : 'view'}' function cannot call '${calleeMutability}' external function '${callee.name}'`,
+      );
+    }
+  }
+
+  private validateLibrarySelfExternalUsingCall(
+    fullFunctionName: string,
+    overloads: FunctionDefinitionNode[],
+    node: FunctionCallNode | MethodCallNode,
+  ): void {
+    if (!this.compilerOptions.solidityImportCompat || !this.currentFunction?.isLibraryFunction) return;
+    const declaringLibrary = this.currentFunction.name.includes('.')
+      ? this.currentFunction.name.slice(0, this.currentFunction.name.indexOf('.')) : undefined;
+    const targetLibrary = fullFunctionName.includes('.')
+      ? fullFunctionName.slice(0, fullFunctionName.indexOf('.')) : undefined;
+    if (declaringLibrary === targetLibrary && overloads.some((candidate) =>
+      candidate.modifiers.includes(FunctionModifier.PUBLIC)
+      || candidate.modifiers.includes(FunctionModifier.EXTERNAL))) {
+      throw new LibrarySelfExternalCallError(node, fullFunctionName);
+    }
+  }
+
+  private isDeclaredErrorCall(callName: string): boolean {
+    const [qualifier, errorName] = callName.includes('.') ? callName.split('.', 2) : [undefined, callName];
+    return !!(qualifier
+      ? this.libraryErrorSignatures.has(`${qualifier}.${errorName}`)
+        || (this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier))
+          ?.errorDefinitions.some((definition) => definition.name === errorName)
+      : this.currentContract?.errorDefinitions.some((definition) => definition.name === errorName)
+        || [...this.errorMap.values()].some((definition) => definition.name === errorName));
+  }
+
   visitFunctionCall(node: FunctionCallNode): Node {
+    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.identifier.name)) {
+      throw new InvalidErrorUsageError(node, node.identifier.name);
+    }
     this.qualifyLibrarySiblingCall(node.identifier);
     // Check if this is an address method call: dest.send(amount), dest.connect(category),
     // dest.call(data), dest.staticcall(data)
     const callName = node.identifier.name;
     if (callName.includes('.')) {
       const [varName, methodName] = callName.split('.');
+      // `C.f(args)` inside C is Solidity's explicitly-qualified direct call (not an external message call).
+      // Route it through the ordinary bare-function path so overload selection and the external-only rejection
+      // remain centralized there. Explicit ancestor calls have already been rewritten to __base_* earlier.
+      if (varName === this.currentContract?.name
+        && this.currentContract.functions.some((fn) => fn.name === methodName)) {
+        node.identifier.name = methodName;
+        return this.visitFunctionCall(node);
+      }
+      // `C.x(args)` where x is a function-pointer state variable: C is only the current-contract qualifier,
+      // not a namespace or collection receiver. Route to the ordinary indirect state-pointer call.
+      if (!this.structMap.has(node.identifier.name)
+        && (varName === this.currentContract?.name || this.contractMap.has(varName))
+        && (this.stateVariableMap.has(methodName)
+          || this.symbolTables[0].get(methodName)?.symbolType === SymbolType.STATE_VARIABLE
+          || this.currentContract.stateVariables.some(
+            (variable) => variable.name === methodName && variable.type instanceof FunctionType,
+          )
+          // Some pre-semantic pointer lowerings erase the declaration from the scalar state list. A contract-
+          // qualified name that is not a declared method still resolves through the ordinary state/local symbol
+          // path; an actually unknown name remains an UndefinedReference there.
+          || !(this.contractMap.get(varName) ?? this.currentContract).functions.some(
+            (fn) => fn.name === methodName,
+          ))) {
+        node.identifier.name = methodName;
+        return this.visitFunctionCall(node);
+      }
+      // A declared function used as a receiver (`identity.selector(x)`) is a function VALUE, not selector
+      // metadata when `selector` is an actual using-for library method. Function symbols expose their return
+      // type in the ordinary symbol table, so reconstruct the full FunctionType from the declaration for binding.
+      const receiverFunctions = this.functionDefinitions.get(varName) ?? [];
+      if (receiverFunctions.length === 1 && this.usingForBindings.size > 0) {
+        const receiverFunction = receiverFunctions[0];
+        const receiverType = new FunctionType(
+          receiverFunction.parameters.map((parameter) => parameter.type),
+          receiverFunction.returnTypes,
+          receiverFunction.visibility === 'external',
+        );
+        const candidates = [
+          ...(this.usingForBindings.get(receiverType.toString()) ?? []),
+          ...(this.usingForBindings.get('*') ?? []),
+        ];
+        const binding = candidates.find((candidate) => candidate.methodName === methodName);
+        const overloads = binding ? this.functionDefinitions.get(binding.fullFunctionName) : undefined;
+        if (binding && overloads?.length) {
+          const receiver = new IdentifierNode(varName);
+          receiver.location = node.identifier.location;
+          const visitedReceiver = this.visit(receiver) as ExpressionNode;
+          const identifier = new IdentifierNode(binding.fullFunctionName);
+          identifier.location = node.identifier.location;
+          const call = new FunctionCallNode(identifier, [visitedReceiver, ...node.parameters]);
+          call.location = node.location;
+          if (overloads.length === 1) call.resolvedFunction = overloads[0];
+          else {
+            const matchingArity = overloads.filter((fn) => fn.parameters.length === call.parameters.length);
+            if (matchingArity.length === 1) call.resolvedFunction = matchingArity[0];
+          }
+          this.expectedSymbolType = SymbolType.FUNCTION;
+          call.identifier = this.visit(call.identifier) as IdentifierNode;
+          this.expectedSymbolType = SymbolType.VARIABLE;
+          call.parameters = call.parameters.map(
+            (parameter, index) => (index === 0 ? parameter : this.visit(parameter) as ExpressionNode),
+          );
+          this.protectDuplicateCallArgVars(call.parameters);
+          return call;
+        }
+      }
       // A `recv.method(..)` on a PRIVATE inherited state var receiver (OZ ERC20 `_totalSupply.add(..)` inlined
       // into a derived contract) parses as a namespaced FunctionCall whose identifier carries the inlined-modifier
       // origin (tagModifierStateAccess stamps it). Every branch below synthesizes a fresh receiver identifier and
@@ -5546,7 +7379,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and returns its REAL integrity-bound return (identity + return-event), where `payload` is built with
         // abi.encodeWithSignature/Selector. The statement form `addr.call(payload);` stays fire-and-forget
         // (LowLevelCallStatementNode, built in AstBuilder); the co-spend is supplied via .withExternalCall().
-        if (methodName === 'call' && node.parameters.length === 1) {
+        if ((methodName === 'call' || methodName === 'staticcall') && node.parameters.length === 1) {
           const addrId = new IdentifierNode(varName);
           addrId.location = node.identifier.location;
           addrId.fromModifier = recvFromMod;
@@ -5566,7 +7399,8 @@ export default class SymbolTableTraversal extends AstTraversal {
               hasReturnValues: true,
               returnTypes: [new BytesType()],
               returnEventSignature: '_Return___raw__(bytes)',
-              callMode: ExternalCallMode.REGULAR,
+              callMode: methodName === 'staticcall'
+                ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
             };
             callNode.location = node.location;
             return callNode;
@@ -5603,6 +7437,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (calleeName && calleeFns) {
             const ifaceFunc = calleeFns.find((f) => f.name === methodName);
             if (ifaceFunc) {
+              this.validateExternalCallMutability(ifaceFunc);
               if (node.fieldNames) {
                 node.parameters = this.reorderNamedArgsByParams(
                   node.fieldNames, ifaceFunc.parameters, node.parameters, node, `'${calleeName}.${ifaceFunc.name}'`,
@@ -5678,6 +7513,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (match) {
               const funcOverloads = this.functionDefinitions.get(match.fullFunctionName);
               if (funcOverloads && funcOverloads.length > 0) {
+                this.validateLibrarySelfExternalUsingCall(match.fullFunctionName, funcOverloads, node);
                 const funcIdentifier = new IdentifierNode(match.fullFunctionName);
                 funcIdentifier.location = node.identifier.location;
                 const funcCall = new FunctionCallNode(funcIdentifier, [visitedVar, ...node.parameters]);
@@ -5713,9 +7549,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Library-qualified struct constructor (`Pairing.G1Point(x, y)`): struct types register bare; when the
     // post-dot name is a known struct and the prefix is not a value symbol, resolve the bare constructor.
     if (node.identifier.name.includes('.')) {
+      const qualified = node.identifier.name;
       const bare = node.identifier.name.slice(node.identifier.name.lastIndexOf('.') + 1);
       const prefix = node.identifier.name.split('.')[0];
-      if (this.structMap.has(bare) && !this.symbolTables[0].get(prefix)
+      if (!this.structMap.has(qualified) && this.structMap.has(bare) && !this.symbolTables[0].get(prefix)
         && !this.functionDefinitions.has(node.identifier.name)) {
         node.identifier.name = bare;
       }
@@ -5796,35 +7633,87 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // A lexical function-pointer binding shadows a same-named contract function (`function f(function() g) {
+    // g(); }`). Classify it before consulting the contract-wide overload map.
+    const calleeSym = this.symbolTables[0].get(node.identifier.name);
+    const hasFunctionOverloads = this.functionDefinitions.has(node.identifier.name);
+    const lexicalPointerShadow = (calleeSym?.symbolType === SymbolType.VARIABLE
+      || calleeSym?.symbolType === SymbolType.STATE_VARIABLE)
+      && calleeSym.type instanceof FunctionType && hasFunctionOverloads;
+    const isIndirect = !node.fromThisCall && calleeSym?.type instanceof FunctionType
+      && (!hasFunctionOverloads || lexicalPointerShadow);
+    if (isIndirect && lexicalPointerShadow) node.lexicalIndirectCall = true;
+    // A public state variable's generated getter is external-only in Solidity: `this.m(k)` is callable, while
+    // bare `m(k)` still denotes the storage variable and is not a function. Getter synthesis intentionally keeps
+    // SolidCash's storage lowering machinery intact, so reject the invalid bare spelling before its synthetic
+    // overload can make the state variable appear callable.
+    if (this.compilerOptions.solidityImportCompat && !node.fromThisCall && !isIndirect
+      && (this.stateVariableMap.has(node.identifier.name) || this.collectionMap.has(node.identifier.name))) {
+      throw new UndefinedReferenceError(node.identifier);
+    }
+    if (this.compilerOptions.solidityImportCompat && isIndirect && calleeSym?.type instanceof FunctionType) {
+      const callerPure = this.currentFunction?.modifiers.includes(FunctionModifier.PURE);
+      const callerView = this.currentFunction?.modifiers.includes(FunctionModifier.VIEW);
+      const calleeMutability = calleeSym.type.stateMutability;
+      if ((callerPure && calleeMutability !== 'pure')
+        || (callerView && (calleeMutability === 'nonpayable' || calleeMutability === 'payable'))) {
+        throw new InvalidModifierCombinationError(
+          this.currentFunction,
+          `'${callerPure ? 'pure' : 'view'}' function cannot call a '${calleeMutability}' function pointer`,
+        );
+      }
+    }
+
     // Check if this is a user-defined function call
     const overloads = this.functionDefinitions.get(node.identifier.name);
-    if (overloads && overloads.length > 0) {
+    if (!isIndirect && overloads && overloads.length > 0) {
       if (node.fieldNames) {
-        // Named call arguments f({a:1,b:2}): reorder to the function's parameter order. Overload
-        // resolution depends on positional types, so named args require a single (non-overloaded) target.
-        if (overloads.length > 1) {
-          throw new NamedArgumentError(node, `Named arguments are not supported for overloaded function '${node.identifier.name}'`);
+        // Named arguments contribute to overload resolution: first retain candidates with exactly the named
+        // user-parameter set, reorder against that shared signature, then let TypeCheck use positional types when
+        // multiple candidates have the same parameter names (e.g. f(uint,string,bool) vs f(uint,uint,uint)).
+        const seenNames = new Set<string>();
+        for (const name of node.fieldNames) {
+          if (seenNames.has(name)) throw new NamedArgumentError(node, `Duplicate named argument '${name}'`);
+          seenNames.add(name);
         }
-        node.parameters = this.reorderNamedCallArgs(overloads[0], node);
-        node.fieldNames = undefined;
+        const namedMatches = overloads.filter((f) => {
+          const userParams = f.parameters.filter((p) => !p.name.startsWith('__internal__'));
+          return userParams.length === node.fieldNames!.length
+            && userParams.every((p) => node.fieldNames!.includes(p.name));
+        });
+        if (namedMatches.length === 0) {
+          throw new NamedArgumentError(
+            node, `No overload of '${node.identifier.name}' matches named arguments {${node.fieldNames.join(', ')}}`,
+          );
+        }
+        if (namedMatches.length === 1) {
+          node.parameters = this.reorderNamedCallArgs(namedMatches[0], node);
+          node.fieldNames = undefined;
+          node.resolvedFunction = namedMatches[0];
+        } else {
+          // Parameter types are assigned in TypeCheckTraversal. Keep the source argument order and names so
+          // every candidate can be tested using its own declaration order there.
+          node.namedOverloadCandidates = namedMatches;
+        }
       }
-      if (overloads.length === 1) {
+      if (overloads.length === 1 && !node.resolvedFunction) {
         node.resolvedFunction = overloads[0];
-        if (overloads[0].visibility === 'external' && !overloads[0].isFreeFunction && !node.fromThisCall) {
-          throw new InternalCallToExternalError(node);
-        }
       }
+      if (node.resolvedFunction?.visibility === 'external'
+        && !node.resolvedFunction.isFreeFunction && !node.fromThisCall) {
+        throw new InternalCallToExternalError(node);
+      }
+      if (node.resolvedFunction) this.validateExternalCallMutability(node.resolvedFunction);
       // Multiple overloads: defer resolution to TypeCheckTraversal
     }
 
-    // Indirect call through a function-typed variable: resolve the callee as a variable, not a function.
-    const calleeSym = this.symbolTables[0].get(node.identifier.name);
-    const isIndirect = !this.functionDefinitions.has(node.identifier.name) && calleeSym?.type instanceof FunctionType;
-
     this.expectedSymbolType = isIndirect ? SymbolType.VARIABLE : SymbolType.FUNCTION;
-    // A `this.f()` self-call to an external function is resolved via functionDefinitions above (resolvedFunction
-    // is set); external functions are not identifier symbols, so skip the identifier resolution that would fail.
-    if (!(node.fromThisCall && node.resolvedFunction?.visibility === 'external')) {
+    // A `this.f()` self-call to an external function is resolved via functionDefinitions above. With overloads,
+    // the exact declaration remains deferred to TypeCheck, but external entry points are still not identifier
+    // symbols; skip ordinary identifier resolution whenever the candidate set contains an external overload.
+    if (!(node.fromThisCall
+      && (node.resolvedFunction?.isEntryPoint
+        || overloads?.some((candidate) => candidate.isEntryPoint)))) {
       node.identifier = this.visit(node.identifier) as IdentifierNode;
     }
     this.expectedSymbolType = SymbolType.VARIABLE;
@@ -5842,12 +7731,23 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!node.call.identifier) {
       throw new MethodCallNotSupportedError(node);
     }
+    if (this.compilerOptions.solidityImportCompat && this.isDeclaredErrorCall(node.call.identifier.name)) {
+      throw new InvalidErrorUsageError(node.call, node.call.identifier.name);
+    }
     // A library sibling called in statement position (void call, return unused) needs qualifying too - the
     // qualifier is otherwise only wired into the expression-form visitor, so `_throwError(x);` inside `L.f`
     // stayed unresolved (only `x = sibling(..)` / `return sibling(..)` resolved).
     this.qualifyLibrarySiblingCall(node.call.identifier);
     // Check if this is an address method call: dest.transfer(amount)
-    const callName = node.call.identifier.name;
+    let callName = node.call.identifier.name;
+    if (callName.includes('.')) {
+      const [qualifier, methodName] = callName.split('.');
+      if (qualifier === this.currentContract?.name
+        && this.currentContract.functions.some((fn) => fn.name === methodName)) {
+        node.call.identifier.name = methodName;
+        callName = methodName;
+      }
+    }
     if (callName.includes('.')) {
       const [varName, methodName] = callName.split('.');
       if (methodName === 'transfer' && node.call.parameters.length === 1) {
@@ -5867,7 +7767,11 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Indirect call statement through a function-typed variable: defer to the function-call visitor.
     const calleeSym = this.symbolTables[0].get(callName);
-    if (!this.functionDefinitions.has(callName) && calleeSym?.type instanceof FunctionType) {
+    const hasFunctionOverloads = this.functionDefinitions.has(callName);
+    const lexicalPointerShadow = calleeSym?.symbolType === SymbolType.VARIABLE
+      && calleeSym.type instanceof FunctionType && hasFunctionOverloads;
+    if (calleeSym?.type instanceof FunctionType && (!hasFunctionOverloads || lexicalPointerShadow)) {
+      if (lexicalPointerShadow) node.call.lexicalIndirectCall = true;
       node.call = this.visit(node.call) as FunctionCallNode;
       return node;
     }
@@ -5900,6 +7804,28 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // Statement-form using-for calls reach this visitor as `receiver.method(args)`. Expression-form calls already
+    // pass through visitFunctionCall (which performs the binding rewrite), but a void/discarded call previously
+    // jumped straight to the named-function lookup below and failed as `receiver.method`—most visibly for an
+    // external library member, which AstBuilder intentionally leaves for semantic resolution. Route unresolved
+    // dotted calls through the same using-for resolver and return the fully visited rewritten call.
+    if (callName.includes('.') && !this.functionDefinitions.has(callName) && this.usingForBindings.size > 0) {
+      const resolved = this.visit(node.call);
+      if (resolved instanceof FunctionCallNode && resolved.identifier.name !== callName) {
+        node.call = resolved;
+        return node;
+      }
+    }
+
+    // A value-returning global builtin may be called as a statement when its result is intentionally discarded
+    // (`addmod(a,b,n);`, `sha256(data);`). Expression-form calls already resolve through visitFunctionCall; use
+    // that same path here and let statement codegen drop the declared return value.
+    const globalCallee = this.symbolTables[0].get(callName);
+    if (!this.functionDefinitions.has(callName) && globalCallee?.symbolType === SymbolType.FUNCTION) {
+      node.call = this.visit(node.call) as FunctionCallNode;
+      return node;
+    }
+
     // Function call statements are only valid for user-defined functions
     const overloads = this.functionDefinitions.get(callName);
     if (!overloads || overloads.length === 0) {
@@ -5922,8 +7848,35 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitNullaryOp(node: NullaryOpNode): Node {
+    const environmentReads = new Set([
+      NullaryOperator.MSG_SENDER, NullaryOperator.MSG_VALUE, NullaryOperator.TX_ORIGIN,
+      NullaryOperator.TX_GASPRICE, NullaryOperator.CHAIN_ID, NullaryOperator.BLOCK_NUMBER,
+      NullaryOperator.BLOCK_TIMESTAMP, NullaryOperator.BLOCK_DIFFICULTY, NullaryOperator.BLOCK_SIZE,
+      NullaryOperator.BLOCK_TOTAL_FEES, NullaryOperator.BLOCK_BASEFEE, NullaryOperator.BLOCK_BLOBBASEFEE,
+      NullaryOperator.BLOCK_GASLIMIT, NullaryOperator.BLOCK_PREVRANDAO, NullaryOperator.BLOCK_COINBASE,
+    ]);
+    if (this.compilerOptions.solidityImportCompat
+      && this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      && environmentReads.has(node.operator)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, `'pure' functions cannot read '${node.operator}'`,
+      );
+    }
+    const msgValueForbidden = this.currentFunction?.name === '__construct'
+      ? !node.fromStateInitializer
+      : this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)
+        && !this.currentFunction.isLibraryFunction
+        && (this.currentFunction.visibility === 'public' || this.currentFunction.visibility === 'external');
+    if (this.compilerOptions.solidityImportCompat && node.operator === NullaryOperator.MSG_VALUE
+      && this.currentFunction && !this.currentFunction.modifiers.includes(FunctionModifier.PAYABLE)
+      && msgValueForbidden) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction,
+        '\'msg.value\' can only be read by payable constructors or payable public/external functions',
+      );
+    }
     if (node.operator === NullaryOperator.MSG_SENDER || node.operator === NullaryOperator.TX_ORIGIN) {
-      const loc = node.location ? ` at line ${node.location.start.line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(
         `Warning: '${node.operator}' used${loc}. On BCH, prefer checking signatures (checkSig/checkMultiSig)`
         + ' for authentication and authorization, as sender identification is less reliable than on account-based chains.',
@@ -5937,6 +7890,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = this.contractMap.get(contractName);
 
     if (contract) {
+      if (this.compilerOptions.solidityImportCompat
+        && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+          || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+        throw new InvalidModifierCombinationError(
+          this.currentFunction, 'pure or view functions cannot create contracts',
+        );
+      }
       // Contract deployment mode
       node.referencedContract = contract;
 
@@ -5962,8 +7922,22 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
       }
 
-      if (node.callOptions?.value && !this.isStatefulContract) {
-        throw new DeployValueInNonStatefulError(node, contract.name);
+      if (node.callOptions?.value) {
+        if (!this.isStatefulContract) {
+          throw new DeployValueInNonStatefulError(node, contract.name);
+        }
+        if (this.compilerOptions.solidityImportCompat
+          && !contract.constructorDef?.modifiers.includes(FunctionModifier.PAYABLE)) {
+          throw new InvalidDeploymentValueError(
+            node, `cannot set deployment value because constructor of '${contract.name}' is not payable`,
+          );
+        }
+        if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+          || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW)) {
+          throw new InvalidDeploymentValueError(
+            node, 'value-bearing deployment is not valid in a pure or view function',
+          );
+        }
       }
 
       // Solidity `constructor(args)` puts the deploy params on constructorDef, not the (solidcash) contract-
@@ -6029,6 +8003,11 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMappingAccess(node: MappingAccessNode): Node {
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure' functions cannot read contract state",
+      );
+    }
     // Token containers still cannot be read at genesis (no input container exists yet).
     if (this.insideConstructor && node.name === 'tokens' && this.isStatefulContract) {
       throw new TokenContainerAccessInConstructorError(node);
@@ -6045,15 +8024,19 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (packedSv && (packedSv.isPacked || packedSv.isDynamic) && packedSv.type instanceof ArrayType) {
       node.isPackedStateArrayAccess = true;
       node.packedStateVariable = packedSv;
+      node.packedElementType = packedSv.type.elementType;
       node.keys = this.visitList(node.keys);
       // The first key indexes the packed/dynamic array; extra keys drill into a fixed-inner array element
       // (`uint256[N][]`: a[i] is the row uint256[N], a[i][j] the scalar).
-      let resultType: Type = (packedSv.type as ArrayType).elementType;
+      let resultType: Type = node.packedElementType;
       for (let k = 1; k < node.keys.length; k++) {
-        if (!(resultType instanceof ArrayType)) {
+        if (resultType instanceof ArrayType) {
+          resultType = resultType.elementType;
+        } else if (resultType instanceof BytesType && resultType.bound === undefined) {
+          resultType = new BytesType(1);
+        } else {
           throw new Error(`Too many index expressions for '${node.name}' at line ${node.location?.start.line}`);
         }
-        resultType = resultType.elementType;
       }
       node.type = resultType;
       return node;
@@ -6126,6 +8109,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.arrayIndex) {
       node.arrayIndex = this.visit(node.arrayIndex);
     }
+    // Build a no-arg push's default before visiting the value so struct defaults go through the same
+    // constructor resolution as an explicit `map[k].push(S(...))`. Creating `S(...)` during type checking is
+    // too late: it remains an unresolved function call and codegen attempts to compile `S` as a global helper.
+    if (node.noArg && node.arrayPush && coll.innermostValueType instanceof ArrayType) {
+      node.expression = createDefaultValueExpression(coll.innermostValueType.elementType, node.location!);
+    }
     node.expression = this.visit(node.expression);
 
     return node;
@@ -6197,23 +8186,50 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitEmitStatement(node: EmitStatementNode): Node {
-    // Find all events matching by name
-    const candidates = [...this.eventMap.values()].filter((ev) => ev.name === node.eventName);
+    // Solidity lexical lookup: any event with this name in the effective contract namespace shadows file-level
+    // and library events of the same name. Only fall back to the global event map when the contract has no such
+    // declaration; otherwise `event E(uint)` incorrectly remained overloaded with file-level `event E()`.
+    const qualifiedHolder = node.eventQualifier
+      ? this.contractMap.get(node.eventQualifier) ?? this.interfaceMap.get(node.eventQualifier)
+      : undefined;
+    const qualifiedLibrarySignature = node.eventQualifier
+      ? this.libraryEventSignatures.get(`${node.eventQualifier}.${node.eventName}`)
+      : undefined;
+    const qualifiedLibraryEvent = qualifiedLibrarySignature
+      ? this.eventMap.get(computeEventSignature(node.eventName, qualifiedLibrarySignature))
+      : undefined;
+    const lexicalContract = !node.eventQualifier && this.currentFunction?.inheritedFrom
+      ? this.contractMap.get(this.currentFunction.inheritedFrom)
+      : this.currentContract;
+    const contractCandidates = lexicalContract?.eventDefinitions
+      .filter((event) => event.name === node.eventName) ?? [];
+    const candidates = node.eventQualifier
+      ? qualifiedHolder?.eventDefinitions.filter((event) => event.name === node.eventName)
+        ?? (qualifiedLibraryEvent ? [qualifiedLibraryEvent] : [])
+      : contractCandidates.length > 0
+        ? contractCandidates
+        : [...this.eventMap.values()].filter((event) => event.name === node.eventName);
     if (candidates.length === 0) {
       throw new UndefinedEventError(node);
     }
     if (node.fieldNames) {
-      // Named-arg emit `emit E({b: y, a: x})`: pick the event whose params match the names and reorder.
-      const match = candidates.find((ev) => ev.parameters.length === node.fieldNames!.length
+      // Named-arg emit `emit E({b: y, a: x})`: retain every overload whose parameter-name set matches.
+      // TypeCheckTraversal reorders against each candidate and resolves types; selecting the first declaration
+      // here incorrectly accepted two overloads with the same names in a different order.
+      const matches = candidates.filter((ev) => ev.parameters.length === node.fieldNames!.length
         && ev.parameters.every((p) => node.fieldNames!.includes(p.name)));
-      if (!match) {
+      if (matches.length === 0) {
         throw new NamedArgumentError(
           node, `No event '${node.eventName}' matches named arguments {${node.fieldNames.join(', ')}}`,
         );
       }
-      node.args = match.parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
-      node.eventDefinition = match;
-      node.fieldNames = undefined;
+      if (matches.length === 1) {
+        node.args = matches[0].parameters.map((p) => node.args[node.fieldNames!.indexOf(p.name)]);
+        node.eventDefinition = matches[0];
+        node.fieldNames = undefined;
+      } else {
+        node.eventCandidates = matches;
+      }
     } else if (candidates.length === 1) {
       node.eventDefinition = candidates[0];
     } else {
@@ -6230,6 +8246,50 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.currentContract.emittedForeignEvents.push(ev);
         }
       }
+    }
+
+    // Solidity external-function event values are the composite `(address, selector)`. Materialize that pair as
+    // `selector ++ address` before ordinary member traversal can mistake `C(addr).f` for external state. Cast it
+    // back to the nominal FunctionType so event overload/type checking still sees the declared Solidity type.
+    const eventDef = node.eventDefinition;
+    if (eventDef) {
+      node.args = node.args.map((arg, index) => {
+        const expected = eventDef.parameters[index]?.type;
+        if (!(expected instanceof FunctionType) || !expected.isExternal) return arg;
+        let selector: ExpressionNode | undefined;
+        let address: ExpressionNode | undefined;
+        if (arg instanceof StateAccessNode) {
+          const fn = this.functionDefinitions.get(arg.name)?.[0];
+          if (fn?.functionSelector) {
+            selector = new HexLiteralNode(fn.functionSelector);
+            const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+            const lockingBytecode = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+            address = new CastNode(new AddressType(false), lockingBytecode, false);
+          }
+        } else if (arg instanceof FieldAccessNode && arg.expression instanceof FunctionCallNode) {
+          const cast = arg.expression;
+          const holder = this.interfaceMap.get(cast.identifier.name) ?? this.contractMap.get(cast.identifier.name);
+          const method = holder?.functions.find((fn) => fn.name === arg.name);
+          if (method && cast.parameters.length === 1) {
+            const signature = computeFunctionSignature(
+              method.name,
+              method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+            );
+            selector = new HexLiteralNode(computeFunctionSelector(signature));
+            address = cast.parameters[0];
+          }
+        }
+        if (!selector || !address) return arg;
+        selector.location = arg.location;
+        address.location = address.location ?? arg.location;
+        const addressBytes = new CastNode(new BytesType(), address, false);
+        addressBytes.location = address.location;
+        const blob = new BytesConcatNode([selector, addressBytes]);
+        blob.location = arg.location;
+        const nominal = new CastNode(expected, blob, true);
+        nominal.location = arg.location;
+        return nominal;
+      });
     }
 
     node.args = this.visitList(node.args);
@@ -6361,8 +8421,10 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     const unusedSymbols = node.tryBlock.symbolTable.unusedSymbols();
     for (const unused of unusedSymbols) {
+      if ((this.compilerOptions as CompilerOptions & { __suppressGeneratedRouteWarnings?: boolean })
+        .__suppressGeneratedRouteWarnings && generatedOriginOf(unused.definition?.location)) continue;
       // Solidity only warns on unused vars/params and never fails the compile; match that.
-      const uloc = unused.definition?.location ? ` at line ${unused.definition.location.start.line}` : '';
+      const uloc = this.diagLine(unused.definition?.location);
       console.log(`Warning: unused variable '${unused.name}'${uloc}.`);
     }
 
@@ -6403,6 +8465,15 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (node.name === 'balance' && !this.stateVariableMap.has('balance')) {
       return node;
     }
+    const stateDeclaration = this.stateVariableMap.get(node.name);
+    const assemblyStoragePointerReturn = this.currentFunction?.hadInlineAssembly
+      && this.currentFunction.returnModifiers.some((modifiers) => modifiers.includes('storage'));
+    if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      && !stateDeclaration?.immutable && !node.storagePointerOnly && !assemblyStoragePointerReturn) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure' functions cannot read contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv) {
       // `this.f` where f is one of the contract's functions (not a state var): a self-targeted external
@@ -6428,6 +8499,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateAssign(node: StateAssignNode): Node {
+    const storagePointerRebind = node.expression instanceof CastNode && node.expression.type instanceof ArrayType;
+    const storageAliasRebind = (node.expression instanceof StateAccessNode
+      || node.expression instanceof IdentifierNode) && node.expression.name === node.name;
+    if (!node.fromModifier && !storagePointerRebind && !storageAliasRebind
+      && (this.compilerOptions.solidityImportCompat || node.qualifiedBaseAccess)
+      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+      || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv) {
       throw new UndefinedStateVariableError(node);
@@ -6441,7 +8523,10 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new ImmutableStateVariableAssignmentError(node, sv.name);
     }
     node.stateVariable = sv;
+    const previousFunctionPointerStateAssignment = this.insideFunctionPointerStateAssignment;
+    this.insideFunctionPointerStateAssignment = sv.type instanceof FunctionType;
     node.expression = this.visit(node.expression);
+    this.insideFunctionPointerStateAssignment = previousFunctionPointerStateAssignment;
     return node;
   }
 
@@ -6454,6 +8539,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       const stateNode = new DeleteStateNode(node.identifier.name);
       stateNode.location = node.location;
       return this.visit(stateNode);
+    }
+    // A declared function may be referenced as a function-pointer value, but the declaration itself is not an
+    // lvalue (`delete f;` is rejected by Solidity). Only function-pointer variables can be reset with delete.
+    if (sym?.symbolType === SymbolType.FUNCTION) {
+      throw new InvalidSymbolTypeError(node.identifier, SymbolType.VARIABLE);
     }
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     return node;
@@ -6477,6 +8567,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayPush(node: StateArrayPushNode): Node {
+    if (this.compilerOptions.solidityImportCompat
+      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
@@ -6497,6 +8594,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitStateArrayPop(node: StateArrayPopNode): Node {
+    if (this.compilerOptions.solidityImportCompat
+      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot modify contract state",
+      );
+    }
     const sv = this.stateVariableMap.get(node.name);
     if (!sv || !(sv.isPacked || sv.isDynamic) || !(sv.type instanceof ArrayType)) {
       throw new UndefinedStateVariableError(node);
@@ -6564,6 +8668,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         fn.name,
         fn.parameters.map((p) => new ParameterNode(p.type, p.name)),
         fn.returnTypes,
+        fn.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+          : fn.modifiers.includes(FunctionModifier.VIEW) ? 'view'
+            : fn.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable' : 'nonpayable',
       ));
 
     const iface = new InterfaceNode(contract.name, stateVars, collections, functions);
@@ -6594,12 +8701,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!fn) {
         throw new AbiEncodeCallUndefinedFunctionError(node, 'this', node.functionName);
       }
-      if (node.parameters.length !== fn.parameters.length) {
-        throw new AbiEncodeCallArgCountError(node, fn.parameters.length, node.parameters.length);
+      // State/covenant synthesis appends reserved parameters to the implementation, but encodeCall describes the
+      // source-level external ABI. Hidden witness/oracle/context parameters never participate in its selector or
+      // argument tuple.
+      const abiParams = fn.parameters.filter((p) => !p.name.startsWith('__internal__'));
+      if (node.parameters.length !== abiParams.length) {
+        throw new AbiEncodeCallArgCountError(node, abiParams.length, node.parameters.length);
       }
-      const selfParamTypes = fn.parameters.map((p) => p.type.toString());
+      const selfParamTypes = abiParams.map((p) => p.type.toString());
       node.computedSelector = this.computeAbiSelector(computeFunctionSignature(node.functionName, selfParamTypes));
-      node.resolvedParamTypes = fn.parameters.map((p) => p.type);
+      node.resolvedParamTypes = abiParams.map((p) => p.type);
       node.parameters = this.visitList(node.parameters);
       return node;
     }
@@ -6667,6 +8778,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     return [...funcMap.values()];
+  }
+
+  private interfaceRequiresFallback(iface: InterfaceNode): boolean {
+    if (iface.hasFallback) return true;
+    return iface.parents.some((parentName) => {
+      const parent = this.interfaceMap.get(parentName);
+      return parent ? this.interfaceRequiresFallback(parent) : false;
+    });
   }
 
   // A `public`/`external` state var or mapping auto-generates a getter (Solidity), which satisfies an interface
@@ -6835,11 +8954,23 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   private registerError(err: ErrorDefinitionNode): void {
     const sig = computeErrorSignature(err.name, err.parameters.map((p) => p.type.toString()));
+    // Solidity reserves the all-zero/all-one EVM (keccak) selectors even though SolidCash dispatch itself uses
+    // the platform selector hash.
+    const selectorHex = binToHex(computeEvmFunctionSelector(sig));
+    if (selectorHex === '00000000' || selectorHex === 'ffffffff') {
+      throw new ReservedErrorSelectorError(err, selectorHex);
+    }
+    const selectorOwner = this.errorSelectorMap.get(selectorHex);
+    if (this.compilerOptions.solidityImportCompat && selectorOwner
+      && selectorOwner.signature !== sig) {
+      throw new ErrorSelectorCollisionError(err, selectorOwner, selectorHex);
+    }
     err.signature = sig;
     if (this.errorMap.has(sig)) {
       throw new ErrorRedefinitionError(err);
     }
     this.errorMap.set(sig, err);
+    this.errorSelectorMap.set(selectorHex, err);
   }
 
   visitRequire(node: RequireNode): Node {
@@ -6866,8 +8997,20 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   visitRevert(node: RevertNode): Node {
     if (node.errorName) {
-      // Look up error by name
-      const candidates = [...this.errorMap.values()].filter((e) => e.name === node.errorName);
+      // A qualified `revert D.E(..)` resolves only against D. An unqualified name sees the registered overload
+      // set as before.
+      const holder = node.errorQualifier
+        ? this.contractMap.get(node.errorQualifier) ?? this.interfaceMap.get(node.errorQualifier)
+        : undefined;
+      const libraryTypes = node.errorQualifier
+        ? this.libraryErrorSignatures.get(`${node.errorQualifier}.${node.errorName}`)
+        : undefined;
+      const candidates = (node.errorQualifier
+        ? (holder?.errorDefinitions ?? [...this.errorMap.values()].filter((error) =>
+          libraryTypes !== undefined
+          && error.name === node.errorName
+          && error.parameters.map((p) => p.type.toString()).join(',') === libraryTypes.join(',')))
+        : [...this.errorMap.values()]).filter((e) => e.name === node.errorName);
       if (candidates.length === 0) {
         throw new UndefinedErrorError(node);
       }
@@ -6888,8 +9031,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // Multiple overloads: defer to TypeCheckTraversal
 
-      const line = node.location?.start?.line;
-      const loc = line ? ` at line ${line}` : '';
+      const loc = this.diagLine(node.location);
       console.log(`Warning: revert with custom error is a no-op in SolidCash${loc}. Error arguments are type-checked but not evaluated; the script simply fails unconditionally.`);
     }
 
@@ -6903,6 +9045,12 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   private registerEnum(ed: EnumDefinitionNode): void {
+    if (ed.inheritedFrom) {
+      const qualified = `${ed.inheritedFrom}.${ed.name}`;
+      const qualifiedType = new EnumType(ed.name, ed.members);
+      this.enumMap.set(qualified, qualifiedType);
+      this.symbolTables[0].set(Symbol.enumType(qualified, qualifiedType));
+    }
     if (this.enumMap.has(ed.name)) {
       throw new EnumRedefinitionError(ed);
     }
@@ -6930,13 +9078,28 @@ export default class SymbolTableTraversal extends AstTraversal {
       const stateNode = new StateAccessNode(node.name);
       stateNode.location = node.location;
       stateNode.fromModifier = node.fromModifier; // preserve inlined-modifier origin for the private-var check
+      stateNode.storagePointerOnly = node.storagePointerOnly;
       return this.visit(stateNode);
     }
 
     // Function name used as a value (function pointer): resolve to its definition. Must be a single
     // (non-overloaded) function; codegen pushes its integer functionId. Inlined, so no opRolls slot.
     if (definition.symbolType === SymbolType.FUNCTION && this.expectedSymbolType === SymbolType.VARIABLE) {
-      const overloads = this.functionDefinitions.get(node.name) ?? [];
+      let overloads = this.functionDefinitions.get(node.name) ?? [];
+      if (this.expectedFunctionPointerType) {
+        const expected = this.expectedFunctionPointerType;
+        overloads = overloads.filter((candidate) => {
+          if (candidate.visibility === 'external') return false;
+          const actual = new FunctionType(
+            candidate.parameters
+              .filter((parameter) => !parameter.name.startsWith('__internal__'))
+              .map((parameter) => parameter.type),
+            candidate.returnTypes,
+            false,
+          );
+          return actual.toString() === expected.toString();
+        });
+      }
       if (overloads.length !== 1) {
         throw new InvalidSymbolTypeError(node, this.expectedSymbolType);
       }
@@ -6988,6 +9151,47 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitFieldAccess(node: FieldAccessNode): Node {
+    // A direct base contract may qualify an inherited state variable (`Base.a`). The parser can strip the
+    // current contract qualifier, but inherited fields are only known after inheritance expansion. Resolve the
+    // qualified member here, while still rejecting unrelated contract namespaces.
+    const qualifiedState = this.stateVariableMap.get(node.name);
+    if (node.expression instanceof IdentifierNode && qualifiedState
+      && qualifiedState.inheritedFrom === node.expression.name) {
+      if (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)) {
+        throw new InvalidModifierCombinationError(
+          this.currentFunction, "'pure' functions cannot read contract state",
+        );
+      }
+      const state = new StateAccessNode(node.name);
+      state.location = node.location;
+      return this.visit(state);
+    }
+    // Collapse a qualified enum type in `I.E.Member` / `L.E.Member` to its registered compound identifier before
+    // ordinary traversal visits the qualifier (`I`/`L` is a declaration namespace, not a runtime value).
+    if (node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof IdentifierNode) {
+      const compound = `${node.expression.expression.name}.${node.expression.name}`;
+      if (this.enumMap.has(compound)) {
+        const identifier = new IdentifierNode(compound);
+        identifier.location = node.expression.location;
+        node.expression = identifier;
+      }
+    }
+
+    // `I(addressExpr).method.address` is the address component of an external function value. The inner
+    // `I(addressExpr).method` otherwise falls through to external-state lookup (and reports `method` as a
+    // missing state variable), so reduce the member before visiting it. The address component is exactly the
+    // cast argument; visiting it here preserves its evaluation and normal address type checking.
+    if (node.name === 'address' && node.expression instanceof FieldAccessNode
+      && node.expression.expression instanceof FunctionCallNode) {
+      const member = node.expression;
+      const cast = member.expression as FunctionCallNode;
+      const holder = this.interfaceMap.get(cast.identifier.name) ?? this.contractMap.get(cast.identifier.name);
+      if (cast.parameters.length === 1 && holder?.functions.some((fn) => fn.name === member.name)) {
+        return this.visit(cast.parameters[0]);
+      }
+    }
+
     // `this.<fn>.selector` -> the function's 4-byte selector (bytes4). `this.<fn>` parses as a state access;
     // intercept before it resolves (it is a function, not a state var) and fold to the precomputed selector.
     if (node.expression instanceof StateAccessNode && node.name === 'selector') {
@@ -7037,6 +9241,123 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
+    // A local initialized from a statically assigned function-pointer array element retains the runtime pointer
+    // expression, but its method selector is still known exactly from the assignment (`a[1] = receiver.f`).
+    if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
+      const def = this.symbolTables[0].get(node.expression.name)?.definition;
+      const method = def instanceof VariableDefinitionNode ? def.functionPointerMethodAlias : undefined;
+      const fn = method ? this.functionDefinitions.get(method)?.[0] : undefined;
+      if (fn?.functionSelector && !this.localIsReassigned(node.expression.name)) {
+        const lit = new HexLiteralNode(fn.functionSelector);
+        lit.location = node.location;
+        return lit;
+      }
+    }
+
+    // An uninitialized local external function pointer has Solidity's all-zero `(address, selector)` default.
+    // Keep the local read as a runtime operation (it is not declaration metadata/pure), discard its pointer slot,
+    // and produce the zero selector.
+    if (node.name === 'selector' && node.expression instanceof IdentifierNode) {
+      const def = this.symbolTables[0].get(node.expression.name)?.definition;
+      if (def instanceof VariableDefinitionNode && def.type instanceof FunctionType
+        && def.type.isExternal && !def.expression) {
+        const pointerRead = this.visit(node.expression) as ExpressionNode;
+        const zeroSelector = new HexLiteralNode(new Uint8Array(4));
+        zeroSelector.location = node.location;
+        zeroSelector.type = new BytesType(4);
+        const sequence = new SequenceExpressionNode(pointerRead, zeroSelector);
+        sequence.location = node.location;
+        sequence.type = zeroSelector.type;
+        return sequence;
+      }
+    }
+
+    // `helper().selector` where helper is proven to return `this.method`: execute the helper once (preserving
+    // state changes), discard its pointer result, then return the declaration selector.
+    if (node.name === 'selector' && node.expression instanceof FunctionCallNode) {
+      const declaredHelper = this.functionDefinitions.get(node.expression.identifier.name)?.[0];
+      const helperCall = this.visit(node.expression) as ExpressionNode;
+      const helper = declaredHelper ?? (helperCall instanceof FunctionCallNode
+        ? helperCall.resolvedFunction
+          ?? this.functionDefinitions.get(helperCall.identifier.name)?.[0]
+        : undefined);
+      let targetName = helper?.returnedSelfFunctionName;
+      if (!targetName && helper?.body?.statements?.length) {
+        const finalStatement = helper.body.statements[helper.body.statements.length - 1];
+        const returnedName = finalStatement instanceof ReturnNode
+          && finalStatement.expressions.length === 1
+          && finalStatement.expressions[0] instanceof IdentifierNode
+          ? finalStatement.expressions[0].name
+          : undefined;
+        if (returnedName) {
+          for (let index = helper.body.statements.length - 2; index >= 0; index -= 1) {
+            const statement = helper.body.statements[index];
+            if (!(statement instanceof AssignNode) || statement.identifier.name !== returnedName) continue;
+            if (statement.expression instanceof StateAccessNode) targetName = statement.expression.name;
+            else if (statement.expression instanceof IdentifierNode
+              && statement.expression.functionReference) targetName = statement.expression.functionReference.name;
+            break;
+          }
+        }
+      }
+      const target = targetName ? this.functionDefinitions.get(targetName)?.[0] : undefined;
+      if (target) {
+        const signature = computeFunctionSignature(
+          target.name,
+          target.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        );
+        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        selector.location = node.location;
+        selector.type = new BytesType(4);
+        const sequence = new SequenceExpressionNode(helperCall, selector);
+        sequence.location = node.location;
+        sequence.type = selector.type;
+        return sequence;
+      }
+    }
+
+    // `(cond ? receiver().f : receiver().g).selector`: preserve evaluation of exactly the selected receiver,
+    // discard its address, and return the selected declaration selector. The receiver's resolved contract return
+    // type identifies the method signature; SequenceExpressionNode keeps any receiver side effects observable.
+    if (node.name === 'selector' && node.expression instanceof TernaryOpNode
+      && node.expression.ifTrue instanceof FieldAccessNode
+      && node.expression.ifFalse instanceof FieldAccessNode) {
+      const ternary = node.expression;
+      const trueBranch = ternary.ifTrue as FieldAccessNode;
+      const falseBranch = ternary.ifFalse as FieldAccessNode;
+      ternary.condition = this.visit(ternary.condition) as ExpressionNode;
+      const methodBranch = (branch: FieldAccessNode): SequenceExpressionNode | undefined => {
+        const receiver = this.visit(branch.expression) as ExpressionNode;
+        const receiverType = this.getExpressionType(receiver);
+        const contractName = receiverType instanceof AddressType ? receiverType.interfaceName : undefined;
+        if (!contractName) return undefined;
+        const holder = this.contractMap.get(contractName) ?? this.interfaceMap.get(contractName);
+        const method = holder?.functions.find((fn) => fn.name === branch.name);
+        if (!method) return undefined;
+        const signature = computeFunctionSignature(
+          branch.name,
+          method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        );
+        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        selector.location = branch.location;
+        selector.type = new BytesType(4);
+        const sequence = new SequenceExpressionNode(receiver, selector);
+        sequence.location = branch.location;
+        sequence.type = selector.type;
+        return sequence;
+      };
+      this.conditionalBranchDepth += 1;
+      const ifTrue = methodBranch(trueBranch);
+      const ifFalse = methodBranch(falseBranch);
+      this.conditionalBranchDepth -= 1;
+      if (ifTrue && ifFalse) {
+        const folded = new TernaryOpNode(ternary.condition, ifTrue, ifFalse);
+        folded.location = node.location;
+        folded.type = new BytesType(4);
+        return folded;
+      }
+    }
+
     // `(cond ? A : B).selector` where A and B are each a function reference (`this.f` state access or a bare own
     // function): fold to `cond ? A.selector : B.selector` - a runtime choice between two compile-time selectors.
     if (node.name === 'selector' && node.expression instanceof TernaryOpNode) {
@@ -7073,7 +9394,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       // A contract/interface-typed variable carries its type name in AddressType.interfaceName (toString is
       // just 'address'); look it up in the scope chain, then the state vars.
       let varType: Type | undefined;
-      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) varType = this.symbolTables[i]?.get(baseName)?.type;
+      for (let i = this.symbolTables.length - 1; i >= 0 && !varType; i -= 1) {
+        varType = this.symbolTables[i]?.get(baseName)?.type;
+      }
       varType = varType ?? this.stateVariableMap.get(baseName)?.type;
       const varContract = varType instanceof AddressType ? varType.interfaceName : undefined;
       const methodParams = params(baseName) ?? (varContract ? params(varContract) : undefined);
@@ -7109,11 +9432,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (node.expression instanceof FieldAccessNode && node.expression.expression instanceof IdentifierNode) {
         const q = node.expression.expression.name;
         const evName = node.expression.name;
+        if (this.libraryAnonymousEvents.has(`${q}.${evName}`)) {
+          throw new AnonymousEventSelectorError(node, `${q}.${evName}`);
+        }
         const fromLib = eventSelectorLit(evName, this.libraryEventSignatures.get(`${q}.${evName}`));
         if (fromLib) return fromLib;
         const holder = this.contractMap.get(q) ?? this.interfaceMap.get(q);
         const ev = holder?.eventDefinitions?.find((e) => e.name === evName);
         if (ev) {
+          if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, `${q}.${evName}`);
           const fromHolder = eventSelectorLit(evName, ev.parameters.map((p) => p.type.toString()));
           if (fromHolder) return fromHolder;
         }
@@ -7126,8 +9453,54 @@ export default class SymbolTableTraversal extends AstTraversal {
         const ev = this.currentContract?.eventDefinitions?.find((e) => e.name === bareName)
           ?? [...this.eventMap.values()].find((e) => e.name === bareName);
         if (ev) {
+          if (ev.isAnonymous) throw new AnonymousEventSelectorError(node, ev.name);
           const fromEvent = eventSelectorLit(ev.name, ev.parameters.map((p) => p.type.toString()));
           if (fromEvent) return fromEvent;
+        }
+      }
+    }
+
+    // Custom-error selectors use the same four-byte signature hash as function selectors. Like events, errors
+    // are declarations rather than runtime values, so both qualified (`L.E`, `I.E`, `Base.E`) and bare
+    // own/inherited references fold here.
+    if (node.name === 'selector') {
+      const errorSelectorLit = (errorName: string, paramTypes?: string[]): HexLiteralNode | undefined => {
+        if (!paramTypes) return undefined;
+        const lit = new HexLiteralNode(computeFunctionSelector(computeErrorSignature(errorName, paramTypes)));
+        lit.location = node.location;
+        lit.type = new BytesType(4);
+        return lit;
+      };
+      if (node.expression instanceof FieldAccessNode && node.expression.expression instanceof IdentifierNode) {
+        const qualifier = node.expression.expression.name;
+        const errorName = node.expression.name;
+        const fromLibrary = errorSelectorLit(
+          errorName,
+          this.libraryErrorSignatures.get(`${qualifier}.${errorName}`),
+        );
+        if (fromLibrary) return fromLibrary;
+        const holder = qualifier === 'super' || qualifier === this.currentContract?.name
+          ? this.currentContract
+          : this.contractMap.get(qualifier) ?? this.interfaceMap.get(qualifier);
+        const error = holder?.errorDefinitions.find((definition) => definition.name === errorName);
+        if (error) {
+          const fromHolder = errorSelectorLit(
+            errorName,
+            error.parameters.map((parameter) => parameter.type.toString()),
+          );
+          if (fromHolder) return fromHolder;
+        }
+      }
+      if (node.expression instanceof IdentifierNode || node.expression instanceof StateAccessNode) {
+        const errorName = node.expression.name;
+        const error = this.currentContract?.errorDefinitions.find((definition) => definition.name === errorName)
+          ?? [...this.errorMap.values()].find((definition) => definition.name === errorName);
+        if (error) {
+          const fromError = errorSelectorLit(
+            errorName,
+            error.parameters.map((parameter) => parameter.type.toString()),
+          );
+          if (fromError) return fromError;
         }
       }
     }
@@ -7242,6 +9615,43 @@ export default class SymbolTableTraversal extends AstTraversal {
       node.expression = this.visit(node.expression) as ExpressionNode;
     }
 
+    // `C(addressExpr).method` used as a VALUE is Solidity's external-function pair `(address, selector)`, not an
+    // external state read. Method invocations use MethodCallNode and never reach this branch. Materialize the
+    // same nominal function blob used by event arguments; require a unique declared overload so we never guess.
+    if (!this.insideFunctionPointerStateAssignment
+      && node.expression instanceof FunctionCallNode && node.expression.parameters.length === 1) {
+      const holder = this.interfaceMap.get(node.expression.identifier.name)
+        ?? this.contractMap.get(node.expression.identifier.name);
+      const methods = holder?.functions.filter((fn) => fn.name === node.name) ?? [];
+      if (methods.length === 1) {
+        const method = methods[0];
+        const signature = computeFunctionSignature(
+          method.name,
+          method.parameters.map((parameter) => parameter.type.toString().replace(/address payable/g, 'address')),
+        );
+        const selector = new HexLiteralNode(computeFunctionSelector(signature));
+        selector.location = node.location;
+        selector.type = new BytesType(4);
+        const address = this.visit(node.expression.parameters[0]) as ExpressionNode;
+        const addressBytes = new CastNode(new BytesType(), address, false);
+        addressBytes.location = address.location ?? node.location;
+        const blob = new BytesConcatNode([selector, addressBytes]);
+        blob.location = node.location;
+        const nominalType = new FunctionType(
+          method.parameters.map((parameter) => parameter.type),
+          method.returnTypes,
+          true,
+          method instanceof InterfaceFunctionNode ? method.stateMutability
+            : method.modifiers.includes(FunctionModifier.PAYABLE) ? 'payable'
+              : method.modifiers.includes(FunctionModifier.PURE) ? 'pure'
+                : method.modifiers.includes(FunctionModifier.VIEW) ? 'view' : 'nonpayable',
+        );
+        const nominal = new CastNode(nominalType, blob, true);
+        nominal.location = node.location;
+        return nominal;
+      }
+    }
+
     // Detect outState field access: ExternalOutputStateNode.counter -> ExternalOutputStateAccessNode
     if (node.expression instanceof ExternalOutputStateNode) {
       const iface = this.interfaceMap.get(node.expression.interfaceName);
@@ -7252,6 +9662,30 @@ export default class SymbolTableTraversal extends AstTraversal {
       const allVars = this.getAllInterfaceStateVariables(iface);
       const ifaceVar = allVars.find((v) => v.name === node.name);
       if (!ifaceVar) {
+        const ifaceColl = this.getAllInterfaceCollections(iface).find((c) => c.name === node.name);
+        if (ifaceColl) {
+          if (!(ifaceColl.type instanceof MappingType)) {
+            throw new UnsupportedExternalOutStateCollectionError(
+              node, iface.name, node.name, ifaceColl.type,
+            );
+          }
+          const extNode = new ExternalMappingAccessNode(
+            iface.name, node.expression.addressExpression, node.name, [],
+          );
+          extNode.readInfo = {
+            interfaceName: iface.name,
+            collectionName: node.name,
+            collectionSignature: computeCollectionSignature(ifaceColl.name, ifaceColl.type.toString()),
+            keyTypes: ifaceColl.allKeyTypes,
+            valueType: ifaceColl.innermostValueType,
+            externalReadSlotIndex: -1,
+            outputState: true,
+            externalOutStateSlotIndex: -1,
+          };
+          extNode.type = ifaceColl.type;
+          extNode.location = node.location;
+          return extNode;
+        }
         throw new UndefinedExternalStateVariableError(node, node.expression.interfaceName, node.name);
       }
 
@@ -7274,6 +9708,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         fieldsInNft,
         externalOutStateSlotIndex: -1, // assigned later by pre-scan
         calleeMultiNft,
+        dynamic: isDynamicStorageType(ifaceVar.type),
       };
       accessNode.location = node.location;
       return accessNode;
@@ -7375,8 +9810,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     const contract = this.contractMap.get(typeText);
     if (iface && (node.property === 'interfaceId' || !contract)) {
       node.interfaceNode = iface;
+      if (node.property === 'name') {
+        node.contractName = iface.name;
+        return node;
+      }
       if (node.property !== 'interfaceId') {
-        throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId']);
+        throw new InvalidTypeIntrospectionPropertyError(node, typeText, node.property, ['interfaceId', 'name']);
       }
       // Pre-compute interfaceId: XOR of all function selectors
       const allFunctions = this.getAllInterfaceFunctions(iface);
@@ -7470,6 +9909,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // type.toString()). e.g. `using ... for int` keys under 'int256' now that `int` resolves to int256.
     // Struct/enum/contract names aren't parseable here, so fall back to the raw name (which matches too).
     let typeKey = node.isWildcard ? '*' : (node.targetTypeName ?? '*');
+    let resolvedTargetType: Type | undefined;
     if (!node.isWildcard && node.targetTypeName) {
       // A library-qualified struct/enum target (`using Counters for Counters.Counter`) keys by the resolved
       // type's string (the struct is registered bare, `Counter`), so a `x.method()` member call on the
@@ -7477,9 +9917,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       const dot = node.targetTypeName.lastIndexOf('.');
       const bare = dot >= 0 ? node.targetTypeName.slice(dot + 1) : node.targetTypeName;
       const resolved = this.structMap.get(node.targetTypeName) ?? this.structMap.get(bare)
-        ?? this.enumMap.get(node.targetTypeName) ?? this.enumMap.get(bare);
-      if (resolved) typeKey = resolved.toString();
-      else { try { typeKey = parseTypeStrict(node.targetTypeName).toString(); } catch { /* keep raw name */ } }
+        ?? this.enumMap.get(node.targetTypeName) ?? this.enumMap.get(bare)
+        // A UDVT may differ from a primitive only by case (`type Int is int64`). parseTypeStrict's final
+        // PrimitiveType lookup is case-insensitive, so attempting it first would collapse `Int` to native `int`
+        // and incorrectly reject a valid operator binding as non-UDVT.
+        ?? this.typeDefMap.get(node.targetTypeName) ?? this.typeDefMap.get(bare);
+      if (resolved) {
+        resolvedTargetType = resolved;
+        typeKey = resolved.toString();
+      } else {
+        try {
+          resolvedTargetType = parseTypeStrict(node.targetTypeName);
+          typeKey = resolvedTargetType.toString();
+        } catch { /* keep raw name */ }
+      }
+    }
+
+    if (this.compilerOptions.solidityImportCompat && node.isGlobal && !this.typeDefMap.has(typeKey)) {
+      throw new GlobalUsingForNonUDVTError(node, node.targetTypeName ?? '*');
     }
 
     if (node.libraryName) {
@@ -7508,11 +9963,32 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!overloads || overloads.length === 0) {
           throw new UsingForUndefinedFunctionError(node, funcRef);
         }
+        if (this.compilerOptions.solidityImportCompat && overloads.length !== 1) {
+          throw new UsingForInvalidFunctionReferenceError(node, funcRef);
+        }
+        const attachedFunction = overloads[0];
+        const declaringLibrary = funcRef.includes('.') ? funcRef.slice(0, funcRef.lastIndexOf('.')) : undefined;
+        if (this.compilerOptions.solidityImportCompat
+          && attachedFunction.modifiers.includes(FunctionModifier.PRIVATE)
+          && node.declaringLibraryName !== declaringLibrary) {
+          throw new UsingForPrivateFunctionError(node, funcRef);
+        }
 
         if (binding.operator) {
           // Operator overload binding - validate and register
-          this.registerOperatorOverload(node, typeKey, binding, overloads[0]);
+          this.registerOperatorOverload(node, typeKey, binding, attachedFunction);
         } else {
+          const firstParameter = attachedFunction.parameters
+            .find((parameter) => !parameter.name.startsWith('__internal__'));
+          if (this.compilerOptions.solidityImportCompat && resolvedTargetType && firstParameter
+            && !implicitlyCastable(resolvedTargetType, firstParameter.type)) {
+            throw new UsingForIncompatibleTargetError(
+              node,
+              funcRef,
+              node.targetTypeName ?? typeKey,
+              firstParameter.type.toString(),
+            );
+          }
           // Regular method binding
           const methodName = funcRef.includes('.') ? funcRef.split('.').pop()! : funcRef;
           bindings.push({ methodName, fullFunctionName: funcRef });
@@ -7531,6 +10007,13 @@ export default class SymbolTableTraversal extends AstTraversal {
   ): void {
     const operator = binding.operator!;
     const funcName = binding.funcName;
+
+    if (this.compilerOptions.solidityImportCompat
+      && (!node.isGlobal || !this.processingFileUsingDirective)) {
+      throw new OperatorOverloadSignatureError(
+        node, funcName, "operators can only be defined in a file-level global 'using for' directive",
+      );
+    }
 
     // Operator overloading is only allowed on UDVTs
     const targetType = this.typeDefMap.get(typeKey);
@@ -7551,6 +10034,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!isUnary && !isBinary) {
       throw new OperatorOverloadSignatureError(node, funcName,
         `expected 1 (unary) or 2 (binary) parameters, got ${params.length}`);
+    }
+
+    if (!func.isFreeFunction) {
+      throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be free functions');
+    }
+    if (this.compilerOptions.solidityImportCompat && !func.modifiers.includes(FunctionModifier.PURE)) {
+      throw new OperatorOverloadSignatureError(node, funcName, 'operator implementations must be declared pure');
     }
 
     // All params must be the target UDVT type
@@ -7584,6 +10074,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (!overloads) {
       overloads = new Map();
       this.operatorOverloads.set(typeKey, overloads);
+    }
+    const existingDefinition = overloads.get(opKey);
+    if (existingDefinition && existingDefinition !== funcName) {
+      throw new OperatorOverloadSignatureError(
+        node, funcName, `operator '${operator}' already has a definition for '${typeKey}'`,
+      );
     }
     overloads.set(opKey, funcName);
   }
@@ -7620,7 +10116,29 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   override visitUnaryOp(node: UnaryOpNode): Node {
+    // A fixed array stored as an entry collection has no runtime length cell, but its Solidity `.length` is the
+    // declared bound. Fold it before visiting the bare collection identifier (collections intentionally are not
+    // runtime variable symbols). Dynamic sparse collections remain unsupported because they have no authority
+    // from which a length could be derived.
+    if (node.operator === UnaryOperator.SIZE && node.expression instanceof IdentifierNode) {
+      const collection = this.collectionMap.get(node.expression.name);
+      if (collection?.type instanceof ArrayType && collection.type.bound !== undefined) {
+        const length = new IntLiteralNode(BigInt(collection.type.bound));
+        length.location = node.location;
+        return length;
+      }
+    }
     node.expression = this.visit(node.expression) as ExpressionNode;
+
+    // `.reverse()` is a native SolidCash unary operator in the grammar, but Solidity using-for may bind a
+    // library method with the same spelling. Give an applicable explicit binding precedence over the native
+    // bytes/string operation, matching ordinary method-call resolution.
+    if (node.operator === UnaryOperator.REVERSE && this.usingForBindings.size > 0) {
+      const method = new MethodCallNode(node.expression, 'reverse', []);
+      method.location = node.location;
+      const resolved = this.tryResolveUsingFor(method);
+      if (resolved) return resolved;
+    }
 
     if (this.operatorOverloads.size === 0) return node;
 
@@ -7641,6 +10159,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private getExpressionType(expr: ExpressionNode): Type | undefined {
     if (expr.type) return expr.type;
     if (expr instanceof IdentifierNode) return expr.definition?.type;
+    if (expr instanceof StateAccessNode) return expr.stateVariable?.type;
     if (expr instanceof FunctionCallNode && expr.resolvedFunction) {
       return expr.resolvedFunction.returnTypes?.[0];
     }
@@ -7678,6 +10197,22 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Get the object's type
     let objectType = node.object.type
       ?? (node.object instanceof IdentifierNode ? node.object.definition?.type : undefined);
+    // A declared function used as the receiver (`this.identity.double(x)` is normalized to identifier
+    // `identity`) needs its full signature reconstructed: the ordinary function symbol stores only its return
+    // type, while using-for is keyed by the complete FunctionType.
+    if (!objectType && node.object instanceof IdentifierNode) {
+      const definitions = this.functionDefinitions.get(node.object.name) ?? [];
+      if (definitions.length === 1) {
+        const definition = definitions[0];
+        objectType = new FunctionType(
+          definition.parameters.filter((parameter) => !parameter.name.startsWith('__internal__'))
+            .map((parameter) => parameter.type),
+          definition.returnTypes,
+          definition.visibility === 'external',
+        );
+        node.object.type = objectType;
+      }
+    }
     // For chained calls (e.g. a.mul(b).div(c)), infer from resolved function's return type.
     if (!objectType && node.object instanceof FunctionCallNode && node.object.resolvedFunction) {
       objectType = node.object.resolvedFunction.returnTypes[0];
@@ -7754,6 +10289,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Look up the function
     const overloads = this.functionDefinitions.get(match.fullFunctionName);
     if (!overloads || overloads.length === 0) return undefined;
+    this.validateLibrarySelfExternalUsingCall(match.fullFunctionName, overloads, node);
 
     // Create FunctionCallNode: methodName(obj, ...params) -> FullName(obj, ...params)
     const identifier = new IdentifierNode(match.fullFunctionName);
@@ -7825,7 +10361,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof NullaryOpNode) {
       const op = expr.operator;
       if (op === NullaryOperator.MSG_SENDER || op === NullaryOperator.TX_ORIGIN
-        || op === NullaryOperator.BLOCK_COINBASE) return new AddressType();
+        || op === NullaryOperator.BLOCK_COINBASE) return new AddressType(op === NullaryOperator.BLOCK_COINBASE);
       if (op === NullaryOperator.BYTECODE || op === NullaryOperator.MSG_DATA) return new BytesType();
       if (op === NullaryOperator.CATEGORY_ID) return new BytesType(32);
       if (op === NullaryOperator.MSG_SIG) return new BytesType(4);
@@ -7836,7 +10372,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof MappingAccessNode) {
       // Step once PER KEY: `allo[x][y]` is a single MappingAccessNode with keys=[x,y] over
       // mapping(K=>mapping(K2=>V)) -> V (not the one-level mapping(K2=>V)). Single-key `m[k]` steps once as before.
-      let t: Type | undefined = nameType(expr.name);
+      // Prefer the collection declaration: a synthesized public getter has the same name in the symbol table
+      // and its tuple return type is not the indexed storage collection's type.
+      let t: Type | undefined = this.collectionMap.get(expr.name)?.type ?? nameType(expr.name);
       for (let i = 0; i < Math.max(expr.keys.length, 1) && t; i += 1) {
         t = t instanceof ArrayType ? t.elementType : t instanceof MappingType ? t.valueType : undefined;
       }
@@ -7855,7 +10393,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (expr instanceof UnaryOpNode && expr.operator === UnaryOperator.SIZE) return new IntType(false, 256);
     if (expr instanceof FieldAccessNode) {
       const base = this.resolveLowLevelReceiverType(expr.expression);
-      return base instanceof StructType ? base.fields.find((f) => f.name === expr.name)?.type : undefined;
+      if (!(base instanceof StructType)) return undefined;
+      // Inherited contract-local structs can reach a derived contract's collection map as a nominal
+      // StructType whose field list is not hydrated. Resolve its canonical declaration by name before
+      // looking up the member (a global struct already carries the same complete field list).
+      const canonical = this.structMap.get(base.name);
+      return base.fields.find((f) => f.name === expr.name)?.type
+        ?? canonical?.fields.find((f) => f.name === expr.name)?.type;
     }
     // A computed arithmetic/bitwise receiver `(a - b).add(c)` / `a.mul(b).add(c)` (SafeMath on an expression, e.g.
     // UniswapV2Library.quote): the operator PRESERVES the operand type, so resolve it from an operand for the
@@ -7889,6 +10433,35 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitMethodCall(node: MethodCallNode): Node {
+    // A named-field constructor for a contract/interface-scoped struct (`Lib.S({a: 1})`) parses as a method call,
+    // unlike its positional counterpart, which already arrives as FunctionCall("Lib.S"). Route the known type
+    // namespace through the ordinary qualified struct-constructor path before visiting `Lib` as a runtime value.
+    if (node.object instanceof IdentifierNode && this.structMap.has(`${node.object.name}.${node.methodName}`)
+      && (this.contractMap.has(node.object.name) || this.interfaceMap.has(node.object.name))) {
+      const identifier = new IdentifierNode(`${node.object.name}.${node.methodName}`);
+      identifier.location = node.location;
+      const call = new FunctionCallNode(identifier, node.parameters);
+      call.location = node.location;
+      call.fieldNames = node.fieldNames;
+      call.callOptions = node.callOptions;
+      return this.visitFunctionCall(call);
+    }
+    // Named-argument syntax makes `this.f({a: x})` arrive as a MethodCall whose receiver is the lowered
+    // active-input locking bytecode. Normalize it to the same fromThisCall FunctionCall used by positional
+    // `this.f(x)`, retaining names/options for ordinary overload and argument reordering.
+    if (node.object instanceof UnaryOpNode
+      && node.object.operator === UnaryOperator.INPUT_LOCKING_BYTECODE
+      && node.object.expression instanceof NullaryOpNode
+      && node.object.expression.operator === NullaryOperator.INPUT_INDEX) {
+      const identifier = new IdentifierNode(node.methodName);
+      identifier.location = node.location;
+      const call = new FunctionCallNode(identifier, node.parameters);
+      call.location = node.location;
+      call.fieldNames = node.fieldNames;
+      call.callOptions = node.callOptions;
+      call.fromThisCall = true;
+      return this.visitFunctionCall(call);
+    }
     // Detect low-level call: IFoo(cat).bar.call(args) or .staticcall(args)
     // Pattern: MethodCallNode(object=FieldAccessNode(expr=FunctionCallNode), methodName="call"|"staticcall")
     if (
@@ -8027,6 +10600,46 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Visit method parameters
         const parameters = this.visitList(node.parameters) as ExpressionNode[];
 
+        // `I(address(fresh)).m()` where `fresh = new Concrete()`: the casts are address identities around the
+        // same-tx deploy result. Fold against Concrete.m's real body exactly like the direct `fresh.m()` path.
+        // This is particularly used by ABI return-size probes which intentionally call through a differently
+        // shaped interface and discard the result.
+        let deployAlias: ExpressionNode = addressExpr;
+        while (deployAlias instanceof CastNode) deployAlias = deployAlias.expression;
+        const deployName = deployAlias instanceof IdentifierNode ? deployAlias.name : undefined;
+        const deployNode = deployAlias instanceof InstantiationNode
+          ? deployAlias
+          : deployName ? this.deployResultLocals.get(deployName) : undefined;
+        if (deployNode) {
+          const realFunction = deployNode.referencedContract?.functions.find((f) => f.name === node.methodName);
+          const fold = realFunction ? this.tryFoldDeployCall(deployNode, realFunction, parameters) : false;
+          if (!fold) {
+            throw new DeployThenCallError(
+              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name,
+              realFunction ? this.isDeployFoldable(realFunction) : false,
+            );
+          }
+          const sameReturns = realFunction!.returnTypes.length === ifaceFunc.returnTypes.length
+            && realFunction!.returnTypes.every((t, i) => t.toString() === ifaceFunc.returnTypes[i].toString());
+          if (sameReturns && fold.returnValue) {
+            fold.returnValue.location = node.location;
+            return fold.returnValue;
+          }
+          if (!sameReturns && !this.discardedMethodCalls.has(node)) {
+            throw new DeployThenCallError(
+              node, deployName ?? `new ${deployNode.identifier.name}()`, node.methodName, iface.name, true,
+            );
+          }
+          const inert = new ExternalFunctionCallNode(iface.name, addressExpr, node.methodName, parameters);
+          inert.callInfo = { interfaceName: iface.name, functionName: node.methodName, externalCallSlotIndex: -1 };
+          inert.foldedIntoDeploy = true;
+          inert.type = ifaceFunc.returnTypes.length === 1
+            ? ifaceFunc.returnTypes[0]
+            : ifaceFunc.returnTypes.length > 1 ? new TupleType(ifaceFunc.returnTypes) : PrimitiveType.VOID;
+          inert.location = node.location;
+          return inert;
+        }
+
         // Create ExternalFunctionCallNode
         const callNode = new ExternalFunctionCallNode(
           iface.name, addressExpr, node.methodName, parameters,
@@ -8091,10 +10704,20 @@ export default class SymbolTableTraversal extends AstTraversal {
         // and returns its REAL integrity-bound return (identity + return-event); staticcall is the read-only
         // variant (preserves the callee's commitments). The `{value:}`/`{gas:}` forms keep the existing weak
         // path for now (value-transfer handling), and delegatecall self-verifies via _proxyMasterIndex.
-        if ((node.methodName === 'call' || node.methodName === 'staticcall') && !node.callOptions) {
+        const graphRawValueCall = node.methodName === 'call'
+          && this.compilerOptions.messageBus
+          && node.callOptions?.value !== undefined
+          && node.callOptions.gas === undefined && node.callOptions.salt === undefined;
+        if ((node.methodName === 'call' || node.methodName === 'staticcall')
+          && (!node.callOptions || graphRawValueCall)) {
           const mode = node.methodName === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR;
           const callNode = new ExternalFunctionCallNode('__raw__', node.object as ExpressionNode, '__raw__', [data]);
           callNode.opaqueReturn = true;
+          if (graphRawValueCall) {
+            callNode.callOptions = node.callOptions;
+            callNode.valueTransferIndex = node.valueTransferIndex;
+            callNode.callOptions!.value = this.visit(callNode.callOptions!.value!) as ExpressionNode;
+          }
           callNode.type = new TupleType([PrimitiveType.BOOL, new BytesType()]);
           callNode.callInfo = {
             interfaceName: '__raw__',
@@ -8172,6 +10795,11 @@ export default class SymbolTableTraversal extends AstTraversal {
           callNode.callInfo.hasReturnValues = true;
           callNode.callInfo.returnTypes = ifaceFunc.returnTypes;
           callNode.callInfo.returnEventSignature = `_Return_${ifaceFunc.name}(${ifaceFunc.returnTypes.map((t) => t.toString()).join(',')})`;
+        } else {
+          // Parenthesized member calls are expression statements rather than FunctionCallStatementNodes. Mark
+          // a no-return external call explicitly void so expression codegen does not OP_DROP its live target
+          // parameter before emitExternalCallVerification reads that parameter at the function epilogue.
+          callNode.type = PrimitiveType.VOID;
         }
         callNode.location = node.location;
         return callNode;
@@ -8191,7 +10819,9 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.object instanceof TupleIndexOpNode || isStateElemFieldReceiver) {
       const recvType = this.resolveLowLevelReceiverType(node.object);
       const calleeName = recvType instanceof AddressType ? recvType.interfaceName : undefined;
-      const ifaceFunc = calleeName ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName) : undefined;
+      const ifaceFunc = calleeName
+        ? this.getCalleeFunctions(calleeName)?.find((f) => f.name === node.methodName)
+        : undefined;
       if (calleeName && ifaceFunc) {
         if (node.fieldNames) {
           node.parameters = this.reorderNamedArgsByParams(
@@ -8204,7 +10834,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const callNode = new ExternalFunctionCallNode(calleeName, addressExpr, node.methodName, parameters);
         callNode.callOptions = node.callOptions;
         callNode.valueTransferIndex = node.valueTransferIndex;
-        if (callNode.callOptions?.value) callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        if (callNode.callOptions?.value) {
+          callNode.callOptions.value = this.visit(callNode.callOptions.value) as ExpressionNode;
+        }
         if (callNode.callOptions?.gas) callNode.callOptions.gas = this.visit(callNode.callOptions.gas) as ExpressionNode;
         callNode.callInfo = { interfaceName: calleeName, functionName: node.methodName, externalCallSlotIndex: -1 };
         if (ifaceFunc.returnTypes.length > 0) {
@@ -8264,7 +10896,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   override visitMethodCallStatement(node: MethodCallStatementNode): Node {
     // Visit the method call - may resolve to FunctionCallNode via using-for
-    const result = this.visit(node.call);
+    this.discardedMethodCalls.add(node.call);
+    let result: Node;
+    try {
+      result = this.visit(node.call);
+    } finally {
+      this.discardedMethodCalls.delete(node.call);
+    }
     if (result instanceof FunctionCallNode) {
       // Transform MethodCallStatement -> FunctionCallStatement
       const stmt = new FunctionCallStatementNode(result);
@@ -8277,6 +10915,14 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitLowLevelCall(node: LowLevelCallNode): Node {
+    if (this.compilerOptions.solidityImportCompat
+      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))
+      && node.callMode !== 'staticcall') {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot perform state-modifying low-level calls",
+      );
+    }
     const loc = node.location ? ` at line ${node.location.start.line}` : '';
     console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
     // Visit targetExpression for symbol resolution unless it's an interface/contract FunctionCallNode
@@ -8292,6 +10938,14 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitLowLevelCallStatement(node: LowLevelCallStatementNode): Node {
+    if (this.compilerOptions.solidityImportCompat
+      && (this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
+        || this.currentFunction?.modifiers.includes(FunctionModifier.VIEW))
+      && node.callMode !== 'staticcall' && !node.synthesizedFromLibraryCall) {
+      throw new InvalidModifierCombinationError(
+        this.currentFunction, "'pure'/'view' functions cannot perform state-modifying low-level calls",
+      );
+    }
     const loc = node.location ? ` at line ${node.location.start.line}` : '';
     if (!node.synthesizedFromLibraryCall) {
       console.log(`Warning: Low-level .${node.callMode}() used${loc}. Low-level calls bypass type safety and contract verification. Consider using typed interface calls instead.`);
@@ -8305,7 +10959,58 @@ export default class SymbolTableTraversal extends AstTraversal {
     node.data = this.visit(node.data) as ExpressionNode;
     if (node.callOptions?.value) node.callOptions.value = this.visit(node.callOptions.value) as ExpressionNode;
     if (node.callOptions?.gas) node.callOptions.gas = this.visit(node.callOptions.gas) as ExpressionNode;
-    return node;
+    return this.lowerVoidRawCallToGraphEdge(node) ?? node;
+  }
+
+  /**
+   * X18: on the message-bus route, lower a VOID `addr.call(payload);` / `addr.staticcall(payload);` to the same
+   * opaque `__raw__` graph edge the RETURNING spelling already uses, with no result binding.
+   *
+   * The two spellings of one callsite were represented differently: the returning form became a `__raw__`
+   * external-call slot (a callManifest row), the void form stayed a `LowLevelCallStatementNode` whose co-spend is
+   * a `lowLevelCall` block slot. A graph emission handler shares the hidden route's PHYSICAL block layout, which
+   * reserves no such slot for it, so the void form reached code generation and leaked the internal
+   * `Block slot not found: lowLevelCall[0]`.
+   *
+   * The rewrite runs during the body visit, before every pre-scan, so the callsite is counted as an external
+   * call rather than a low-level call from the start. Gated on message-bus graph mode: the direct route keeps
+   * its fire-and-forget block-slot form, whose co-spend the SDK supplies via `.withExternalCall()`.
+   *
+   * Only the shape `LowLevelCallShapes` admits is lowered - option-free `call`/`staticcall` on an address
+   * receiver. A call option, a `delegatecall` (a delegate participant edge with its own authority argument), or
+   * a non-address receiver is left alone for its own diagnostic.
+   */
+  private lowerVoidRawCallToGraphEdge(node: LowLevelCallStatementNode): Node | undefined {
+    const messageBusGraphMode = !!this.compilerOptions.messageBus;
+    if (!messageBusGraphMode) return undefined;
+    if (node.callMode !== 'call' && node.callMode !== 'staticcall') return undefined;
+    if (node.callOptions) return undefined;
+    const receiver = node.targetExpression;
+    const receiverName = receiver instanceof IdentifierNode ? receiver.name : undefined;
+    const isAddressNullary = receiver instanceof NullaryOpNode
+      && (receiver.operator === NullaryOperator.MSG_SENDER || receiver.operator === NullaryOperator.TX_ORIGIN);
+    const receiverType = receiver.type
+      ?? (receiverName
+        ? this.symbolTables[0].get(receiverName)?.type ?? this.stateVariableMap.get(receiverName)?.type
+        : undefined)
+      ?? (isAddressNullary ? new AddressType() : undefined)
+      ?? this.resolveLowLevelReceiverType(receiver);
+    if (!(receiverType instanceof AddressType)) return undefined;
+
+    const callNode = new ExternalFunctionCallNode('__raw__', receiver, '__raw__', [node.data]);
+    callNode.callInfo = {
+      interfaceName: '__raw__',
+      functionName: '__raw__',
+      externalCallSlotIndex: -1,
+      callMode: node.callMode === 'staticcall' ? ExternalCallMode.STATICCALL : ExternalCallMode.REGULAR,
+    };
+    callNode.location = node.location;
+    const surface = new MethodCallNode(receiver, node.callMode, [node.data]);
+    surface.location = node.location;
+    const statement = new MethodCallStatementNode(surface);
+    statement.expression = callNode;
+    statement.location = node.location;
+    return statement;
   }
 
   private createDefaultExpression(type: Type, contextNode: Node): ExpressionNode {
@@ -8313,12 +11018,192 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   /**
+   * SEC-7. Refuse a routed graph emission handler whose effect the route has no frame for.
+   *
+   * `this.tokens[c].transfer(..)` never reaches InlineStoragePointerCalls' refusal, and not because it is the
+   * wrong node kind: for this shape route synthesis runs AFTER lowering, so that pass never sees the clone at
+   * all. The clone is therefore never flattened and its edges stay bound (2 recomputations, measured) - but the
+   * route reserves no tokenContainer input slot and no tcTransfer outputs, so the transfer the handler states
+   * simply does not happen. Measured on the same contract: the DIRECT entry point's block goes from [master] to
+   * [master, tokenContainer, tcTransfer] when the transfer is added, while the ROUTE's block stays
+   * [master, dataNft] either way. Same function, two entries, and the SPENDER picks which one - so this is not
+   * merely lossy, it is spender-selected effect omission, and a counterparty called in the same graph advances
+   * its state as though the payment happened.
+   *
+   * X29's per-site output frames cannot express it: a token container is a CO-SPENT INPUT bound to a category
+   * parameter's stack identity, one for the whole route rather than one per dispatch site, and route synthesis
+   * deliberately keeps token handlers off the clone path for that reason. So this fails closed here, where the
+   * clone and its accesses are both visible whichever order synthesis ran in.
+   */
+  private refuseUnframedGraphEffects(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.messageBusRoute);
+    if (!route?.blockLayout) return;
+    // The condition is the DROP itself, not a spelling: the route settles token-container transfers through
+    // tcTransfer slots, so a routed handler that performs one while the route reserves none is a handler whose
+    // effect cannot happen. Measured discriminator, and it is NOT the message bus: a handler that also READS
+    // its container (`this.tokens[c].tokenAmount`) does get [tokenContainer, 8 x tcTransfer] on the route and
+    // is settled end-to-end (MessageBusRelease4); one that only WRITES it gets [master, dataNft] and is not,
+    // on the plain message-bus route exactly as on the full multi-participant bus.
+    if (route.blockLayout.slots.some((slot) => slot.kind === 'tcTransfer')) return;
+    for (const fn of contract.functions) {
+      const transfers = (fn.tokenContainerAccesses ?? [])
+        .reduce((total, access) => total + access.transferCount + access.transferNftCount, 0);
+      if (transfers === 0) continue;
+      if (!fn.graphEmissionHandler && fn.messageBusEligible !== true) continue;
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''), 'a token-container operation',
+      );
+    }
+  }
+
+  /**
+   * X29. Is every entry in this handler's `transferInfos` one the per-site frames actually settle?
+   *
+   * `collectTransferStatements` also records a `{value:}` CALL OPTION as a transfer. E2 admits exactly the
+   * singular raw-call value option in graph mode: its authenticated external-call node publishes the recipient
+   * and amount, and the same per-site frame settles its transfer output. Typed options and every other option
+   * remain outside this count and therefore retain the fail-closed mixed-effect rule below.
+   */
+  private framesSettleEveryTransfer(fn: FunctionDefinitionNode): boolean {
+    const declared = fn.transferInfos?.length ?? 0;
+    if (declared === 0) return true;
+    let direct = 0;
+    walkInvocationAst(fn.body, (node) => {
+      if (node instanceof TransferStatementNode || node instanceof AddressTransferStatementNode
+        || node instanceof AddressSendExpressionNode) direct += 1;
+      if (node instanceof ExternalFunctionCallNode && node.interfaceName === '__raw__'
+        && node.callOptions?.value) direct += 1;
+    });
+    if (direct === declared) return true;
+    if (direct > 0 || (fn.emitInfos?.length ?? 0) > 0) {
+      throw new GraphEmissionEffectError(
+        fn, fn.name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
+        'a value call option alongside an emit or transfer',
+      );
+    }
+    return false;
+  }
+
+  /**
+   * X29. Plan the owner-local effect frames the message-bus batch route owes its effect-carrying graph emission handlers.
+   *
+   * SEC-5/SEC-6: a graph emission handler must stay behind OP_INVOKE, because only then does the route
+   * recompute its outgoing edges and compare them against the authenticated callManifest. Flattening it makes
+   * `__message_bus1` the current function at code generation and every edge generates unbound. But a handler carrying
+   * an `emit` or a `transfer` produces OUTPUTS, and outputs are addressed through a block layout that only an
+   * ENTRY POINT has - so the un-flattened handler had nowhere to put them and the effect was silently dropped.
+   *
+   * The route owns the block, so the route reserves the slots. The handler is ONE shared subroutine invoked
+   * once per dispatch site, so a compile-time output index cannot distinguish the sites: each site gets a
+   * consecutive frame `[base + site * width, ... + width)` and the site ordinal rides to the subroutine as
+   * hidden context (GenerateTargetTraversal). Sites that dispatch DIFFERENT handlers share a frame ordinal on
+   * purpose - one row reaches exactly one handler, so their frames are mutually exclusive.
+   */
+  private planGraphEffectFrames(contract: ContractNode): void {
+    const route = contract.functions.find((fn) => fn.messageBusRoute);
+    if (!route?.body || !route.blockLayout) return;
+    const handlers = contract.functions.filter((fn) => fn.graphEmissionHandler
+      && ((fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0)
+      && this.framesSettleEveryTransfer(fn));
+    if (handlers.length === 0) return;
+    const byName = new Map(handlers.map((fn) => [fn.name, fn]));
+    const siteCounts = new Map<string, number>();
+    walkInvocationAst(route.body, (candidate) => {
+      if (!(candidate instanceof FunctionCallNode)) return;
+      const target = byName.get(candidate.identifier.name);
+      if (!target) return;
+      const ordinal = siteCounts.get(target.name) ?? 0;
+      candidate.graphEffectSite = ordinal;
+      siteCounts.set(target.name, ordinal + 1);
+    });
+    const sites = Math.max(0, ...siteCounts.values());
+    if (sites === 0) return;
+    // Fail closed if the route could reach a handler more often than it has dispatch sites. That happens only
+    // under the LOOP parser (`for (row = 0; row < rowCount; ..)`), where one syntactic call site serves every
+    // row: two rows would then share one frame, two emits would verify against ONE output, and equal blobs
+    // would settle with an event missing - a partial silent drop rather than a rejection. Unreachable today
+    // (an emit or a transfer forces `eventMode`/`valueEffectMode`, which unroll the parser to one site per row)
+    // and asserted rather than assumed so a future parser change cannot reintroduce the drop quietly.
+    for (const [name, count] of siteCounts) {
+      if (count >= (route.messageBusMaximumRows ?? count)) continue;
+      throw new GraphEmissionEffectError(
+        contract.functions.find((fn) => fn.name === name) ?? route,
+        name.replace(/^__message_bus_(graph|resource|handler|array)_/, ''),
+        'an effect on a route with fewer dispatch sites than rows',
+      );
+    }
+    // SEC-9. `eventWidth` below is a group MAXIMUM, and a member narrower than it settles only part of its own
+    // site's slots: the rest are reserved outputs inside the route's block that NOTHING verifies, while the
+    // co-spent master is a minting NFT - so a spender mints a forged own-category event NFT there and the batch
+    // settles. Measured ACCEPTED on the reached site's second slot, which is what separates it from the
+    // unreached conditional slots of a short batch.
+    //
+    // The route's ELIGIBILITY gate does require uniform event counts, but it counts DIRECT `emit` statements
+    // BEFORE lowering while this reservation counts `emitInfos` AFTER it, so an emit reached through an
+    // internal call is invisible to it. Transfers already assert exactly this (framesSettleEveryTransfer
+    // compares direct against declared); events asserted nothing. Fail closed rather than reserve a slot no
+    // handler settles - the alternative repair, verifying each unused slot carries no own-category token, is
+    // new covenant surface for a shape no capstone has.
+    // Base 0, and the route's OWN effect slots are shared rather than added to. A route reaches exactly one
+    // handler per row, and the unrolled parser gives row `s` the emit/transfer indices [s*width, s*width+width)
+    // whether the reached handler was flattened into the route or invoked as a clone - they are arms of one
+    // dispatch, which is the same reason branchOps takes the max of two arms rather than their sum. Sharing is
+    // what makes the block byte-identical to the flattened form the SDK and the capstone fixtures expect.
+    const directEventCount = (fn: FunctionDefinitionNode): number => {
+      let count = 0;
+      walkInvocationAst(fn.body, (node) => {
+        if (node instanceof EmitStatementNode) count += 1;
+      });
+      return count;
+    };
+    const frame = {
+      sites,
+      eventBase: 0,
+      // Context-only graph clones can carry repeated uses of one event definition while semantic `emitInfos`
+      // retains only the definition-width view. The frame is per EMISSION SITE, so size it from the larger of
+      // the declared metadata and the executable direct emit count; otherwise the second emit in row 4 asks
+      // for event[8] while an eight-slot block only publishes event[0..7].
+      eventWidth: Math.max(0, ...handlers.map((fn) =>
+        Math.max(fn.emitInfos?.length ?? 0, directEventCount(fn)))),
+      transferBase: 0,
+      transferWidth: Math.max(0, ...handlers.map((fn) => fn.transferInfos?.length ?? 0)),
+    };
+    route.graphEffectFrame = frame;
+    for (const fn of handlers) {
+      fn.graphEffectFrame = frame;
+      // SEC-8. `frame` is SHARED, so its widths are group maxima. Whether the route's not-reached container
+      // preservation may be skipped at a dispatch site depends on whether the handler reached THERE settles the
+      // container, which it does exactly when its own subroutine has pending transfers. Group membership
+      // already establishes `direct === declared` (framesSettleEveryTransfer), so the declared count IS that
+      // fact for a member; a handler whose transfers are all `{value:}` call options never joins the group and
+      // never gets this flag.
+      fn.graphEffectSettlesTransfers = (fn.transferInfos?.length ?? 0) > 0;
+    }
+    // Recompute rather than patch: slot ORDER inside a block is canonical (the SDK builds outputs from it and
+    // countOutputOnlySlotsBefore reads it), so the frames must land in the same position a flattened handler's
+    // own effects would have.
+    route.blockLayout = this.computeBlockLayout(route);
+  }
+
+  /**
    * Compute the 1:1 block layout for a stateful function.
    * Slot ordering must match the SDK's StatefulTransactionBuilder.build() output ordering.
    */
   private computeBlockLayout(node: FunctionDefinitionNode): FunctionBlockLayout {
+    // Value-bearing contract creations are lowered into transfer operations before codegen, but their transfer
+    // metadata is otherwise collected after this layout is computed. Pre-scan here as well so the satoshi
+    // container and output-only transfer slots are present in the authoritative 1:1 block layout.
+    if (!node.transferInfos) {
+      const transferInfos: TransferInfo[] = [];
+      this.collectTransferStatements(node.body, transferInfos);
+      if (transferInfos.length > 0) node.transferInfos = transferInfos;
+    }
     const slots: BlockLayoutSlot[] = [];
     let offset = 0;
+    // X29: effect slots the route reserves on behalf of graph emission handlers it invokes behind OP_INVOKE.
+    const graphFrame = node.messageBusRoute ? node.graphEffectFrame : undefined;
+    const graphEvents = (graphFrame?.sites ?? 0) * (graphFrame?.eventWidth ?? 0);
+    const graphTransfers = (graphFrame?.sites ?? 0) * (graphFrame?.transferWidth ?? 0);
 
     // Master
     slots.push({ kind: 'master', offset: offset++ });
@@ -8334,6 +11219,20 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'dataNft', offset: offset++, nftIndex: nftIdx });
     }
 
+    // Delegate implementation input. The delegate covenant requires
+    // `_proxyMasterIndex == OP_INPUTINDEX - (1 + dataNftCount)`, so the implementation must sit immediately
+    // after the proxy's master/data-NFT region. A direct wrapper reserved no slot at all, which happened to
+    // work only while nothing else occupied that offset: adding any output-only funder slot - a `returns`
+    // function's returnEvent, an `emit`, a transfer or a token-container transfer - claimed the same position,
+    // the SDK materialized a funder there, and the implementation was pushed one input later until the
+    // covenant's subtraction disagreed with the witness. Reserve the position instead.
+    if (!node.graphEmissionHandler && !node.messageBusRoute) {
+      for (let i = 0; i < (node.lowLevelCalls ?? []).length; i++) {
+        if (node.lowLevelCalls![i].callMode !== 'delegatecall') continue;
+        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
+      }
+    }
+
     // External reads
     if (node.externalReads) {
       for (let i = 0; i < node.externalReads.length; i++) {
@@ -8344,7 +11243,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // blockhash(n): each distinct identifier-arg read rides its OWN consecutive (n->hash) oracle co-spend -
     // a read-only, self-preserving 1:1 input/output slot. The SDK fills __internal__blockhashInputIndex with
     // the FIRST slot's absolute index (master input index + offset); codegen reads input[base + read-ordinal].
-    if (node.usesBlockhash) {
+    if (node.usesBlockhash || (node.messageBusBlockhashReadWidth ?? 0) > 0) {
       const bhSlots = Math.max(1, node.blockhashSlotCount ?? 0);
       for (let i = 0; i < bhSlots; i++) slots.push({ kind: 'blockhashOracle', offset: offset++ });
     }
@@ -8395,8 +11294,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Satoshi container (if function has transfers)
-    if (node.transferInfos && node.transferInfos.length > 0) {
+    // Satoshi container (if function has transfers - its own, or a graph handler's frames)
+    if ((node.transferInfos && node.transferInfos.length > 0) || graphTransfers > 0) {
       slots.push({ kind: 'satoshiContainer', offset: offset++ });
     }
 
@@ -8416,6 +11315,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'transfer', offset: offset++, slotIndex: i });
       }
     }
+    for (let i = node.transferInfos?.length ?? 0; i < graphTransfers; i++) {
+      slots.push({ kind: 'transfer', offset: offset++, slotIndex: i, conditional: true });
+    }
 
     // TC transfers (output-only - one slot per transfer/transferNft operation)
     if (node.tokenContainerAccesses) {
@@ -8434,16 +11336,29 @@ export default class SymbolTableTraversal extends AstTraversal {
         slots.push({ kind: 'event', offset: offset++, slotIndex: i });
       }
     }
+    for (let i = node.emitInfos?.length ?? 0; i < graphEvents; i++) {
+      slots.push({ kind: 'event', offset: offset++, slotIndex: i, conditional: true });
+    }
 
     // Return event (output-only)
     if (node.returnTypes.length > 0) {
       slots.push({ kind: 'returnEvent', offset: offset++ });
     }
 
-    // Low-level call slots (one per non-delegatecall call)
+    // Low-level call slots. In a balanced message-bus batch block, a delegate is a real
+    // co-spent covenant paired with its preserved output just like other
+    // low-level callees; direct wrappers continue to use their positional
+    // delegate-input witness.
     if (node.lowLevelCalls) {
       for (let i = 0; i < node.lowLevelCalls.length; i++) {
-        if (node.lowLevelCalls[i].callMode === 'delegatecall') continue;
+        // Direct delegate implementations already own a reserved slot next to the data-NFT region above.
+        if (node.lowLevelCalls[i].callMode === 'delegatecall'
+          && !node.graphEmissionHandler && !node.messageBusRoute) continue;
+        slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
+      }
+    }
+    if (node.messageBusRoute && (node.graphDelegateSlotCount ?? 0) > 0) {
+      for (let i = 0; i < node.graphDelegateSlotCount!; i++) {
         slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
       }
     }
@@ -8457,7 +11372,92 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    return { blockSize: offset, slots };
+    const dynamicNames = new Set(stateVars.filter((state) =>
+      state.isDynamic || isDynamicStorageType(state.type)).map((state) => state.name));
+    let touchesDynamicState = false;
+    const scanDynamicState = (value: unknown, seen = new Set<object>()): void => {
+      if (!(value instanceof Node) || seen.has(value) || touchesDynamicState) return;
+      seen.add(value);
+      if ((value instanceof StateAccessNode || value instanceof StateAssignNode
+        || value instanceof DeleteStateNode) && dynamicNames.has(value.name)) {
+        touchesDynamicState = true;
+        return;
+      }
+      for (const [key, child] of Object.entries(value)) {
+        if (['resolvedFunction', 'definition', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        if (child instanceof Node) scanDynamicState(child, seen);
+        else if (Array.isArray(child)) child.forEach((item) => scanDynamicState(item, seen));
+      }
+    };
+    scanDynamicState(node.body);
+    // The hidden route invokes compiler-generated handlers through OP_INVOKE, so walking only the route
+    // body cannot see their dynamic state accesses. Reserve its balanced trailing region whenever the
+    // contract has dynamic storage: concrete chunks occupy the leading trailing slots and funding/change
+    // pairs fill the remainder, keeping the next participant's block relocatable and index-stable.
+    if (node.name === '__message_bus1' && dynamicNames.size > 0) touchesDynamicState = true;
+    if (node.name === '__message_bus1' && !touchesDynamicState) {
+      const dynamicHelpers = contract.functions.filter((fn) => fn.name.startsWith('__message_bus_dynamic_'));
+      if (dynamicHelpers.length > 0) touchesDynamicState = true;
+      for (const helper of dynamicHelpers) {
+        scanDynamicState(helper.body);
+        if (touchesDynamicState) break;
+      }
+    }
+    // X28: only the FIRST term can fire here. `computeBlockLayout` is called from `SymbolTableTraversal` alone,
+    // which compiler.ts runs strictly before `GenerateTargetTraversal` - and `dynamicReads`, `dynamicWrites`,
+    // `entryLoopWrites`, `sortedInsertLoops` and `keccakLoopReads` are assigned only inside that later pass, so
+    // they are `undefined` at every call site. `entryAccesses.some(inLoop)` is live but never reaches a route: a
+    // loop-keyed collection handler is refused from the batch earlier, by
+    // `collection-route-requires-one-parameter-keyed-entry-per-collection`. `touchesDynamicState` is itself
+    // subsumed - it can only be set for a name in `dynamicNames`, so the blanket two lines up already covers it.
+    // The terms are kept because they state the intent this predicate must regain if the layout ever moves after
+    // code generation; they are not, today, a second leg that could be sized independently.
+    //
+    // X69 asked whether the DIRECT route should declare and fund a region here, so the balanced assembly model
+    // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
+    // MEASURED at this commit and REFUSED. Three findings, in order of weight:
+    //
+    // 1. A C2 mapping insert - the whole 381 category - has NO term here that can fire. Measured on
+    //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
+    //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
+    //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
+    //    class keyed on `contract.collections.length`, which puts 64 slots on nearly every stateful contract.
+    // 2. Where the blanket term CAN fire, declaring the region BREAKS SETTLED SENDS. Ungating it for the direct
+    //    route turned 4 of 33 previously-settling sends in DynamicWriteBehavior/ChunkedArrays into
+    //    `Program failed an OP_VERIFY operation` at INPUT INDEX 0. All four are value-returning + dynamic-write.
+    //    That is a soundness regression, not a diagnostic change.
+    // 3. It buys no describability and is arithmetically self-limiting. `arr.push(9)` grew from 2 inputs /
+    //    3 outputs / 1,513 raw bytes to 67 / 66 / 4,938 (+226%) and the model still refused it, only under a
+    //    different category. The returnEvent variant reached `blockSize` 67 against 67 funded inputs, so the
+    //    block consumed the fee/change pair the model requires past every participant block - at capacity 64 the
+    //    funder budget the SDK requests (`capacity + 1`) exactly equals the slack one more fixed slot removes.
+    //
+    // Also: the row is filed as spanning `computeBlockLayout` and `StatefulTransactionBuilder`, and that span is
+    // short. `GenerateTargetTraversal` has two live `blockLayout.trailingBase === undefined` branches (the
+    // returnEvent `-1` adjustment and `emitTrailingBlockBase`) that flip the moment the direct route declares a
+    // region. Both sides moved the chunk consistently from output 2 to 3 in the measurement, so that pairing is
+    // NOT the cause of (2); which covenant check fails was NOT isolated.
+    const needsTrailingRegion = node.name === '__message_bus1' && (touchesDynamicState
+      || (node.dynamicReads?.length ?? 0) > 0
+      || (node.dynamicWrites?.length ?? 0) > 0
+      || (node.entryLoopWrites?.length ?? 0) > 0
+      || (node.entryAccesses?.some((entry) => entry.inLoop) ?? false)
+      || (node.sortedInsertLoops?.length ?? 0) > 0
+      || node.keccakInLoop === true
+      || node.keccakLoopReads === true
+      || node.ecrecoverLoopReads === true);
+    if (!needsTrailingRegion) return { blockSize: offset, slots };
+
+    const trailingBase = offset;
+    for (let i = 0; i < BALANCED_TRAILING_CAPACITY; i++) {
+      slots.push({ kind: 'trailing', offset: offset++, slotIndex: i, conditional: true });
+    }
+    return {
+      blockSize: offset,
+      slots,
+      trailingBase,
+      trailingCapacity: BALANCED_TRAILING_CAPACITY,
+    };
   }
 
   // Number of `new C(...)` sites in a function body (each needs its own genesis funding input/slot).
@@ -8497,7 +11497,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       const childInLoop = inLoop || n instanceof WhileNode || n instanceof DoWhileNode;
       for (const [key, value] of Object.entries(n)) {
-        if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
+        // Only walk the structural function body. Semantic back-references can lead into an unrelated callee or
+        // declaration that happens to contain a loop deploy, falsely classifying this function's straight-line
+        // deploy as dynamic and suppressing its fixed transfer block slot.
+        if (key === 'referencedContract' || key === 'resolvedFunction' || key === 'definition'
+          || key === 'symbolTable' || key === 'type' || key === 'location') continue;
         walk(value, childInLoop);
       }
     };
@@ -8516,8 +11520,10 @@ function isEmptyBytesLiteral(expr: ExpressionNode): boolean {
 function functionReadsGenesisInput(body: Node | undefined): boolean {
   if (!body) return false;
   let found = false;
+  const seen = new WeakSet<Node>();
   const walk = (n: Node): void => {
-    if (found) return;
+    if (found || seen.has(n)) return;
+    seen.add(n);
     if (n instanceof UnaryOpNode && n.operator === UnaryOperator.INPUT_OUTPOINT_HASH) { found = true; return; }
     for (const [key, v] of Object.entries(n as unknown as Record<string, unknown>)) {
       if (key === 'type' || key === 'symbolTable' || key === 'location' || key === 'resolvedFunction') continue;
@@ -8534,8 +11540,10 @@ function isCompileTimeExpression(
   constantMap: Map<string, ConstantDefinitionNode>,
   enumMap: Map<string, EnumType>,
   contractTypes?: Set<string>,
+  visiting: Set<ConstantDefinitionNode> = new Set(),
 ): boolean {
-  const rec = (e: ExpressionNode): boolean => isCompileTimeExpression(e, constantMap, enumMap, contractTypes);
+  const rec = (e: ExpressionNode): boolean =>
+    isCompileTimeExpression(e, constantMap, enumMap, contractTypes, visiting);
   if (expr instanceof LiteralNode) return true;
   if (expr instanceof BinaryOpNode) {
     return rec(expr.left) && rec(expr.right);
@@ -8554,14 +11562,25 @@ function isCompileTimeExpression(
     return expr.parameters.every(rec);
   }
   if (expr instanceof IdentifierNode) {
-    // Allow references to other already-registered constants
-    return constantMap.has(expr.name);
+    const constant = constantMap.get(expr.name);
+    if (!constant || visiting.has(constant) || visiting.size >= 256) return false;
+    visiting.add(constant);
+    const valid = rec(constant.expression);
+    visiting.delete(constant);
+    return valid;
   }
   if (expr instanceof FieldAccessNode && expr.expression instanceof IdentifierNode) {
     // Allow namespaced constant references (e.g. SafeMath.MAX_SAFE) and enum members (E.B): an enum member is a
     // compile-time integer ordinal.
     const compoundName = `${expr.expression.name}.${expr.name}`;
-    if (constantMap.has(compoundName)) return true;
+    const constant = constantMap.get(compoundName);
+    if (constant) {
+      if (visiting.has(constant) || visiting.size >= 256) return false;
+      visiting.add(constant);
+      const valid = rec(constant.expression);
+      visiting.delete(constant);
+      return valid;
+    }
     const en = enumMap.get(expr.expression.name);
     return !!en && en.members.some((mm) => mm.name === expr.name);
   }
@@ -8602,6 +11621,309 @@ function isCompileTimeExpression(
   return false;
 }
 
+/**
+ * SEC-12: which KEY does a signature check authorize? `checkSig(s, pk)` proves only that whoever supplied
+ * `pk` also supplied a matching `s`. When the same caller chooses `pk` the check is self-authorizing and
+ * authorizes nobody - measured: a proxy taking `(address impl, pubkey pk, sig s)` compiled with no C1
+ * diagnostic and a stranger settled 5 -> 999. So a signature check counts as an access guard only when its
+ * key is one the caller cannot choose. Key operand: arg 1 of checkSig / checkMultiSig, arg 2 of checkDataSig
+ * (a missing operand contributes no guard - fail closed).
+ *
+ * Module-scope and exported because EnsureFinalRequireTraversal's selfdestruct diagnostic asks the same
+ * question (SEC-16); a second copy would drift.
+ */
+const SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
+  checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
+};
+
+function collectSignatureGuardKeys(
+  node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
+): void {
+  if (!node || seen.has(node)) return;
+  seen.add(node);
+  if (node instanceof FunctionCallNode) {
+    const keyArg = SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
+    if (keyArg !== undefined) {
+      const key = node.parameters[keyArg];
+      if (key) out.push(key);
+    }
+  }
+  for (const v of Object.values(node)) {
+    if (v instanceof Node) { collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node) collectSignatureGuardKeys(e, out, seen);
+    }
+  }
+}
+
+/**
+ * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
+ * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
+ * check - the declaration says `owner` but the checkSig sees `pk`. A tuple rebinding contributes its whole
+ * right-hand side, which over-approximates rather than missing.
+ */
+function localBindings(
+  node: Node | undefined, name: string, out: ExpressionNode[] = [], seen: Set<Node> = new Set(),
+): ExpressionNode[] {
+  if (!node || seen.has(node)) return out;
+  seen.add(node);
+  if (node instanceof VariableDefinitionNode && node.name === name && node.expression) out.push(node.expression);
+  if (node instanceof AssignNode && node.identifier.name === name) out.push(node.expression);
+  if (node instanceof TupleAssignmentNode && node.elements.some((element) => element.name === name)) {
+    for (const e of node.tupleExpressions ?? [node.tuple]) out.push(e);
+  }
+  for (const v of Object.values(node)) {
+    if (v instanceof Node) { localBindings(v, name, out, seen); } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node) localBindings(e, name, out, seen);
+    }
+  }
+  return out;
+}
+
+/**
+ * Does this key resolve to a parameter of `fn` - i.e. does the CALLER choose it? Strip `CastNode`s and follow
+ * `pubkey k = owner` local aliases, as delegatecallTargetsUnguardedParameter resolves its target. A
+ * constructor input (the contract's own p2sh32 commits to it), a state variable, a literal and an
+ * unresolvable symbol (a contract `const`, an inherited name) are NOT caller-chosen. A computed key
+ * (`pubkey(k)`, `hash160(pk)`, a helper call) is caller-chosen when any operand feeding it reaches a
+ * parameter. An array index only SELECTS among a container's elements, so the CONTAINER decides the bytes -
+ * `this.owners[i]` is stored key material even though the caller picks `i`.
+ */
+export function keyIsCallerChosen(
+  expr: Node | undefined, fn: FunctionDefinitionNode, seen: Set<Node | string> = new Set(),
+): boolean {
+  let cur = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (cur instanceof ArrayAccessNode) return keyIsCallerChosen(cur.array, fn, seen);
+  if (!cur || seen.has(cur)) return false;
+  seen.add(cur);
+  if (cur instanceof StateAccessNode || cur instanceof MappingAccessNode) return false;
+  if (cur instanceof LiteralNode) return false;
+  if (cur instanceof IdentifierNode) {
+    const { name } = cur;
+    if (fn.parameters.some((parameter) => parameter.name === name)) return !parameterIsCommitted(name, fn, seen);
+    if (seen.has(`id:${name}`)) return false;
+    seen.add(`id:${name}`);
+    return localBindings(fn.body, name).some((binding) => keyIsCallerChosen(binding, fn, seen));
+  }
+  for (const v of Object.values(cur)) {
+    if (v instanceof Node) { if (keyIsCallerChosen(v, fn, seen)) return true; } else if (Array.isArray(v)) {
+      for (const e of v) if (e instanceof Node && keyIsCallerChosen(e, fn, seen)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * SEC-17: a key parameter the caller cannot actually vary. The standard BCH admin-upgrade idiom passes the key
+ * in and commits it in the same breath - `require(hash160(pk) == this.pkh); require(checkSig(s, pk))` - so the
+ * caller may supply only the one key whose hash is already stored. Reading the key's provenance alone calls that
+ * caller-chosen and warns on the most common authorization shape there is; a diagnostic that cries wolf on the
+ * common case trains people to ignore it, which loses the genuine SEC-2 instances it exists to catch.
+ *
+ * The commitment must be UNCONDITIONAL - a require in an if-arm leaves the other arm's `pk` free, which is the
+ * SEC-12 hole again. Only top-level statements of the body count (`unchecked` is transparent), and inside the
+ * condition only `&&` is descended: an `||` branch need not hold.
+ *
+ * The committed side is resolved by keyIsCallerChosen itself, so `hash160(pk) == otherCallerParam` commits
+ * nothing and still warns. Termination: an `inflight:` marker rides the seen set, so `hash160(pk) == pk`
+ * resolves the right-hand `pk` as caller-chosen (no commitment) rather than recurring.
+ *
+ * The decision is MEMOIZED per name. Without that, a key mentioning the same committed parameter twice
+ * (`checkMultiSig(ss, [pk, pk])`) got a commitment on the first visit and hit the in-flight marker on the
+ * second, so one key resolved two ways and the idiom warned anyway - measured before the memo was added.
+ *
+ * X46: a commitment is only as good as the last WRITER of what it is bound to. Scalar state is read after
+ * write (measured on the BCH-2026 VM: `this.pkh = a; require(this.pkh == a)` settles for any `a`, while the
+ * same require without the preceding write rejects), so `this.pkh = attackerPkh; require(hash160(pk) ==
+ * this.pkh)` pins the key to a value the caller supplied one line earlier. The statements are therefore walked
+ * IN ORDER and each require is judged against the state this body has already overwritten from a caller-chosen
+ * value. Writes AFTER the commitment cannot affect it, which is what keeps the key-ROTATION idiom
+ * (commit, authenticate, then store the new hash) credited.
+ */
+function parameterIsCommitted(
+  name: string, fn: FunctionDefinitionNode, seen: Set<Node | string>,
+): boolean {
+  if (seen.has(`committed:${name}`)) return true;
+  if (seen.has(`free:${name}`)) return false;
+  if (seen.has(`inflight:${name}`)) return false; // a self-referential commitment pins nothing; do not memoize
+  seen.add(`inflight:${name}`);
+  // A fresh Node set: reusing `seen`'s nodes would make an already-visited committed side look non-caller-chosen.
+  // The in-flight markers must ride along, or a self-referential commitment recurses forever.
+  const markers = [...seen].filter((s): s is string => typeof s === 'string' && s.startsWith('inflight:'));
+  const committed = commitmentSourceForParameter(name, fn, markers) !== undefined;
+  seen.delete(`inflight:${name}`);
+  seen.add(committed ? `committed:${name}` : `free:${name}`);
+  return committed;
+}
+
+/**
+ * The ordered statement walk both the SEC-17 decision and X51's published fact are read from - ONE rule, so the
+ * artifact can never credit a commitment the diagnostic does not, or the reverse. Returns the expression the
+ * first unconditional top-level require pins `name` to, or undefined when nothing pins it.
+ *
+ * `overwritten` accumulates X46's caller-written state as the walk advances, which is why the walk is a loop and
+ * not a filter: a require is judged against exactly the writes that precede IT.
+ */
+function commitmentSourceForParameter(
+  name: string, fn: FunctionDefinitionNode, markers: string[],
+): ExpressionNode | undefined {
+  const overwritten = new Set<string>();
+  for (const statement of unconditionalStatements(fn.body)) {
+    if (statement instanceof RequireNode) {
+      const source = commitmentCommitsKey(statement.expression, name, fn, markers, overwritten);
+      if (source !== undefined) return source;
+    }
+    collectCallerWrittenState(statement, fn, markers, overwritten);
+  }
+  return undefined;
+}
+
+/**
+ * X51. What an unconditional top-level `require(hash160(<name>) == <x>)` pins the parameter `<name>` to, for the
+ * artifact to publish - or undefined when nothing pins it.
+ *
+ * This is the SAME walk `parameterIsCommitted` decides on, entered the way a top-level call enters it: a fresh
+ * marker set holding only this name's in-flight marker, so `require(hash160(pk) == pk)` resolves its right-hand
+ * side as caller-chosen and pins nothing, exactly as the diagnostic sees it. The memo `parameterIsCommitted`
+ * keeps is deliberately not shared: it stores a decision, not a witness, and a memo hit would have no expression
+ * to return.
+ */
+export function parameterCommitmentSource(
+  name: string, fn: FunctionDefinitionNode,
+): ExpressionNode | undefined {
+  return commitmentSourceForParameter(name, fn, [`inflight:${name}`]);
+}
+
+/**
+ * X46: names of contract state this statement overwrites with a value the CALLER chose. Scalar vars, mapping
+ * entries and state-array elements all count, by name - a mapping written at one key and read at another is
+ * over-approximated rather than missed, since the alternative is a hole one line wide. Conditional arms are
+ * descended: an if-arm write may run, so it taints a later top-level commitment exactly as a straight-line one
+ * does. `delete` and a write from stored/constructor material taint nothing - only caller-chosen values do.
+ */
+function collectCallerWrittenState(
+  node: Node | undefined, fn: FunctionDefinitionNode, markers: string[],
+  out: Set<string>, seen: Set<Node> = new Set(),
+): void {
+  if (!node || seen.has(node)) return;
+  seen.add(node);
+  const written = node instanceof StateAssignNode || node instanceof MappingAssignNode
+    ? node.expression
+    : (node instanceof StateArrayAssignNode ? node.value : undefined);
+  if (written !== undefined && keyIsCallerChosen(written, fn, new Set<Node | string>(markers))) {
+    out.add((node as unknown as { name: string }).name);
+  }
+  for (const value of Object.values(node)) {
+    if (value instanceof Node) collectCallerWrittenState(value, fn, markers, out, seen);
+    else if (Array.isArray(value)) {
+      for (const e of value) if (e instanceof Node) collectCallerWrittenState(e, fn, markers, out, seen);
+    }
+  }
+}
+
+/**
+ * X46: does this committed side read state the body already overwrote from a caller-chosen value? Locals are
+ * followed the same way keyIsCallerChosen follows them, so `this.pkh = a; bytes20 z = this.pkh;
+ * require(hash160(pk) == z)` is caught as well as the direct spelling.
+ */
+function readsOverwrittenState(
+  expr: Node | undefined, fn: FunctionDefinitionNode, overwritten: ReadonlySet<string>,
+  seen: Set<Node | string> = new Set(),
+): boolean {
+  if (overwritten.size === 0) return false;
+  let cur = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!cur || seen.has(cur)) return false;
+  seen.add(cur);
+  if ((cur instanceof StateAccessNode || cur instanceof MappingAccessNode) && overwritten.has(cur.name)) {
+    return true;
+  }
+  if (cur instanceof IdentifierNode) {
+    if (seen.has(`id:${cur.name}`)) return false;
+    seen.add(`id:${cur.name}`);
+    return localBindings(fn.body, cur.name)
+      .some((binding) => readsOverwrittenState(binding, fn, overwritten, seen));
+  }
+  for (const value of Object.values(cur)) {
+    if (value instanceof Node) {
+      if (readsOverwrittenState(value, fn, overwritten, seen)) return true;
+    } else if (Array.isArray(value)) {
+      for (const e of value) if (e instanceof Node && readsOverwrittenState(e, fn, overwritten, seen)) return true;
+    }
+  }
+  return false;
+}
+
+/** Statements that run on every path through this body: the top level, with `unchecked` blocks inlined. */
+function unconditionalStatements(body: BlockNode | undefined): StatementNode[] {
+  const out: StatementNode[] = [];
+  for (const s of body?.statements ?? []) {
+    if (s instanceof UncheckedNode) out.push(...unconditionalStatements(s.block));
+    else out.push(s);
+  }
+  return out;
+}
+
+/**
+ * Which value does this require condition pin `name` to, or undefined when it pins nothing? Descends `&&`, not
+ * `||`. `overwritten` carries X46's already-written state names; a side that reads one of them was chosen by the
+ * caller a statement earlier, however unchooseable the declaration of that variable looks.
+ *
+ * The committed SIDE is returned rather than a boolean so X51 can publish where that value came from. Every
+ * decision below is unchanged: an undefined result is the old `false` and any expression is the old `true`.
+ */
+function commitmentCommitsKey(
+  expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode, markers: string[],
+  overwritten: ReadonlySet<string>,
+): ExpressionNode | undefined {
+  let cur: ExpressionNode | undefined = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!(cur instanceof BinaryOpNode)) return undefined;
+  if (cur.operator === BinaryOperator.AND) {
+    return commitmentCommitsKey(cur.left, name, fn, markers, overwritten)
+      ?? commitmentCommitsKey(cur.right, name, fn, markers, overwritten);
+  }
+  if (cur.operator !== BinaryOperator.EQ) return undefined;
+  for (const [hashSide, committedSide] of [[cur.left, cur.right], [cur.right, cur.left]] as const) {
+    if (!isHashOf(hashSide, name, fn)) continue;
+    if (readsOverwrittenState(committedSide, fn, overwritten)) continue;
+    if (!keyIsCallerChosen(committedSide, fn, new Set<Node | string>(markers))) return committedSide;
+  }
+  return undefined;
+}
+
+/** `hash160(name)` modulo casts on either the call or its argument, following `pubkey k = pk` aliases. */
+function isHashOf(expr: ExpressionNode | undefined, name: string, fn: FunctionDefinitionNode): boolean {
+  let cur: ExpressionNode | undefined = expr;
+  while (cur instanceof CastNode) cur = cur.expression;
+  if (!(cur instanceof FunctionCallNode) || cur.identifier.name !== 'hash160') return false;
+  let arg: ExpressionNode | undefined = cur.parameters[0];
+  while (arg instanceof CastNode) arg = arg.expression;
+  if (!(arg instanceof IdentifierNode)) return false;
+  if (arg.name === name) return true;
+  // An alias of the parameter hashes the same bytes: `pubkey k = pk; require(hash160(k) == this.pkh)`.
+  const walked = new Set<string>([arg.name]);
+  const queue = [arg.name];
+  while (queue.length > 0) {
+    for (const binding of localBindings(fn.body, queue.pop()!)) {
+      let b: ExpressionNode | undefined = binding;
+      while (b instanceof CastNode) b = b.expression;
+      if (!(b instanceof IdentifierNode) || walked.has(b.name)) continue;
+      if (b.name === name) return true;
+      walked.add(b.name);
+      queue.push(b.name);
+    }
+  }
+  return false;
+}
+
+/** Does this function carry a signature check against a key the caller does not choose? */
+export function hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
+  const keys: ExpressionNode[] = [];
+  collectSignatureGuardKeys(fn.body, keys);
+  return keys.some((key) => !keyIsCallerChosen(key, fn));
+}
+
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,
 // or struct field).
 function typeReferencesFunctionPointer(type: Type): boolean {
@@ -8609,5 +11931,21 @@ function typeReferencesFunctionPointer(type: Type): boolean {
   if (type instanceof MappingType) return typeReferencesFunctionPointer(type.valueType);
   if (type instanceof ArrayType) return typeReferencesFunctionPointer(type.elementType);
   if (type instanceof StructType) return type.fields.some((f) => typeReferencesFunctionPointer(f.type));
+  return false;
+}
+
+// Solidity ABI boundaries cannot carry internal function pointers, mappings, or recursively-defined aggregate
+// shapes. Apply this recursively: checking only the top-level parameter misses `S`, `S[]`, and nested arrays whose
+// fields contain one of those internal-only types.
+function typeContainsInternalAbiType(type: Type, activeStructs: Set<StructType> = new Set()): boolean {
+  if (type instanceof FunctionType) return !type.isExternal;
+  if (type instanceof MappingType) return true;
+  if (type instanceof ArrayType) return typeContainsInternalAbiType(type.elementType, activeStructs);
+  if (type instanceof StructType) {
+    if (activeStructs.has(type)) return true;
+    const nested = new Set(activeStructs);
+    nested.add(type);
+    return type.fields.some((field) => typeContainsInternalAbiType(field.type, nested));
+  }
   return false;
 }

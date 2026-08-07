@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   buildEventNftCovenantScript,
   buildAnonymousEventNftCovenantScript,

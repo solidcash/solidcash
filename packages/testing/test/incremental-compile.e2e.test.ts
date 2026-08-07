@@ -29,6 +29,15 @@ afterEach(() => {
 });
 
 describe('incremental compile task', () => {
+  it('supports the ethers v6 HDNodeWallet.fromMnemonic compatibility constructor', () => {
+    const root = tempProject();
+    const hre = createHardhatRuntimeEnvironment(resolveConfig({}, root));
+    const phrase = 'test test test test test test test test test test test junk';
+    const wallet = hre.ethers.HDNodeWallet.fromMnemonic({ phrase }, "m/44'/60'/0'/0/7");
+    expect(wallet.derivationPath).toBe("m/44'/60'/0'/0/7");
+    expect(wallet.connect(hre.ethers.provider).address).toBe(wallet.address);
+  });
+
   it('runs cold, warm, invalidated, factory-resolution, and clean paths end to end', async () => {
     const root = tempProject();
     const config = resolveConfig({
@@ -49,6 +58,7 @@ describe('incremental compile task', () => {
     expect(cold.cacheHits).toBe(0);
     expect(jobFiles(root)).toHaveLength(1);
     expect(loadArtifactByName(config.paths.artifacts, 'Root').contractName).toBe('Root');
+    expect(loadArtifactByName(config.paths.artifacts, 'contracts/Root.sol:Root').contractName).toBe('Root');
 
     const warm = await runTask('compile', { quiet: true }, hre) as {
       compilerJobs: number; cacheHits: number;

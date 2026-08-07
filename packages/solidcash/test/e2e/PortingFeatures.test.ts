@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // End-to-end (mocknet) validation that the solidity-by-example porting features execute correctly on the
 // VM, not just that they compile. Each contract's spend only succeeds if the emitted bytecode computes the
@@ -9,10 +11,17 @@ import { fundedSigner } from '../test-util.js';
 // (`await sc.<fn>(args)`). See examples/solidity-by-example/INTERVENTIONS.md.
 
 describe('Porting features (runtime)', () => {
-  it('SBE-2: bytesN -> bytesM cast truncates the leftmost bytes', async () => {
-    // bytes4 of a 6-byte value keeps the first 4 bytes (Solidity left-aligned).
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_greater_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_same_size.sol
+  // test/libsolidity/semanticTests/types/convert_fixed_bytes_to_fixed_bytes_smaller_size.sol
+  it('SBE-2: bytesN -> bytesM casts preserve, widen, and truncate left-aligned bytes', async () => {
     const artifact = compileString(`contract C() {
-      function f() { bytes6 a = 0x1234567890ab; bytes4 b = bytes4(a); require(b == 0x12345678); }
+      function f() {
+        bytes4 a = 0x61626364;
+        require(bytes2(a) == 0x6162);
+        require(bytes4(a) == 0x61626364);
+        require(bytes6(a) == 0x616263640000);
+      }
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
@@ -25,7 +34,7 @@ describe('Porting features (runtime)', () => {
     }`, { forceStateful: true });
     const factory = getContractFactory(artifact, await fundedSigner());
     const sc = await factory.deploy();
-    await expect(sc.f()).rejects.toThrow();
+    await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 
   it('SBE-9: hex literal compares as a big-endian integer (compat)', async () => {
@@ -38,7 +47,7 @@ describe('Porting features (runtime)', () => {
     const factory1 = getContractFactory(artifact, await fundedSigner());
     await expect((await factory1.deploy()).f(256n)).resolves.toBeDefined();
     const factory2 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory2.deploy()).f(255n)).rejects.toThrow();
+    await expect((await factory2.deploy()).f(255n)).rejects.toThrow(verifyFailure);
   });
 
   it('SBE-11: implicit named return yields the named value', async () => {

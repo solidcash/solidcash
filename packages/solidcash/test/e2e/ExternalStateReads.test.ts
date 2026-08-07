@@ -1,4 +1,4 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, binToHex } from '@bitauth/libauth';
 import {
   Contract, TransactionBuilder,
@@ -385,14 +385,14 @@ describe('Cross-Contract External State Reads', () => {
     it('should build a StatefulTransactionBuilder with external read-only UTXOs', () => {
       const readOnlyUnlocker = createReadOnlyDataNftUnlocker(counterContract, counterCategoryId);
 
-      const masterUnlocker = readerSaltedContract.unlock.sync(
+      const stateInputUnlocker = readerSaltedContract.unlock.sync(
         alicePub, new SignatureTemplate(alicePriv),
       );
       const dataNftUnlocker = createDataNftUnlocker(readerContract, 0, readerCategoryId);
 
       const stb = new StatefulTransactionBuilder({
         provider,
-        masterUtxo: { ...readerMasterUtxo, unlocker: masterUnlocker },
+        masterUtxo: { ...readerMasterUtxo, unlocker: stateInputUnlocker },
         dataNftUtxos: [{ ...readerDataNftUtxo, unlocker: dataNftUnlocker }],
         stateLayout: readerStateLayout,
         categoryId: readerCategoryId,

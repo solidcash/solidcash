@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';

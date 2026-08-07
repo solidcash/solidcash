@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from '../src/index.js';
+import { compileString } from './direct-compile.js';
 
 // Arrays: return types, state-array push/pop, tuple / fixed-array assignment.
 
@@ -14,9 +14,11 @@ describe('Array return types, unnamed params, array locals, bare delete', () => 
     expect(a.contractName).toBe('C');
   });
 
-  it('accepts an uninitialized array local (zero-init)', () => {
-    const a = compileString('contract C() { int n; function f() { int[] r; this.n = r.length; } }');
-    expect(a.contractName).toBe('C');
+  it('rejects access through an uninitialized storage array pointer in Solidity compatibility mode', () => {
+    expect(() => compileString(
+      'contract C() { int n; function f() { int[] storage r; this.n = r.length; } }',
+      { solidityImportCompat: true },
+    )).toThrow(/storage pointer 'r' may be accessed before it is initialized/);
   });
 
   it('accepts bare `delete m[k]` (routed to state)', () => {
@@ -70,8 +72,12 @@ describe('local array-element delete (int[] d; delete d[i])', () => {
   });
   it('is byte-identical to d[i] = default (sound by reduction)', () => {
     const pre = 'contract C(){function f()external{int[] d=new int[](3);d[0]=5;';
-    const del = compileString(`${pre}delete d[0];require(d[0]==0);}}`, { solidityImportCompat: true });
-    const assign = compileString(`${pre}d[0]=0;require(d[0]==0);}}`, { solidityImportCompat: true });
+    const del = compileString(`${pre}delete d[0];require(d[0]==0);}}`, {
+      solidityImportCompat: true, messageBus: false,
+    });
+    const assign = compileString(`${pre}d[0]=0;require(d[0]==0);}}`, {
+      solidityImportCompat: true, messageBus: false,
+    });
     expect(del.bytecode).toBe(assign.bytecode);
   });
 });
@@ -103,14 +109,28 @@ describe('whole fixed-array copy with a per-element bytes conversion (bytes2[N] 
   });
   it('is byte-identical to the explicit element-wise cast form', () => {
     const whole = compileString('contract C{bytes1[2] d1;bytes2[2] d2;function f()external{d2=d1;require(true);}}',
-      { solidityImportCompat: true });
+      { solidityImportCompat: true, messageBus: false });
     const explicit = compileString('contract C{bytes1[2] d1;bytes2[2] d2;'
-      + 'function f()external{d2[0]=bytes2(d1[0]);d2[1]=bytes2(d1[1]);require(true);}}', { solidityImportCompat: true });
+      + 'function f()external{d2[0]=bytes2(d1[0]);d2[1]=bytes2(d1[1]);require(true);}}', {
+      solidityImportCompat: true, messageBus: false,
+    });
     expect(whole.bytecode).toBe(explicit.bytecode);
   });
   it('leaves a same-type whole-array copy unchanged', () => {
     expect(compileString('contract C{uint256[3] d1;uint256[3] d2;function f()external{d2=d1;require(true);}}',
       { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
+describe('whole fixed state-array copy with address mutability widening', () => {
+  it('copies address payable[N] into address[N] element-wise', () => {
+    expect(compileString('contract C { address[2] a; address payable[2] b;'
+      + ' function f() public { a = b; require(a[0] == b[0]); } }',
+    { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('still rejects the reverse address[N] to address payable[N] conversion', () => {
+    expect(() => compileString('contract C { address payable[2] a; address[2] b;'
+      + ' function f() public { a = b; } }', { solidityImportCompat: true })).toThrow();
   });
 });
 
@@ -126,6 +146,14 @@ describe('whole dynamic-array copy with a per-element bytes conversion (bytes10[
   it('leaves a same-type dynamic copy unchanged (no loop)', () => {
     expect(compileString('contract C{bytes8[] d1;bytes8[] d2;function f()external{d1.push(bytes8(uint64(1)));'
       + 'd2=d1;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('re-packs a calldata array into a wider fixed-bytes state array', () => {
+    expect(compileString('contract C{bytes10[] d;function f(bytes8[] calldata src)external{d=src;require(true);}}',
+      { solidityImportCompat: true }).contractName).toBe('C');
+  });
+  it('re-packs a memory local array into a wider fixed-bytes state array', () => {
+    expect(compileString('contract C{bytes10[] d;function f()external{bytes4[] memory src=new bytes4[](1);'
+      + 'd=src;require(true);}}', { solidityImportCompat: true }).contractName).toBe('C');
   });
 });
 

@@ -1,5 +1,6 @@
+/* eslint-disable max-len -- contract source fixtures remain readable as complete declarations */
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, vmNumberToBigInt, bigIntToVmNumber } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate, keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
@@ -30,7 +31,7 @@ describe('cross-contract callee C2 LOOP write', () => {
     return e ? vmNumberToBigInt(e.value, { requireMinimalEncoding: false }) as bigint : undefined;
   };
 
-  const IBANK = `interface IBank { function credit(int[] ks, int[] vs); function airdrop(int[] ks, int amt); function setAll(int[] ks, int[] vs); function seed(int k, int v); }`;
+  const IBANK = 'interface IBank { function credit(int[] ks, int[] vs); function airdrop(int[] ks, int amt); function setAll(int[] ks, int[] vs); function seed(int k, int v); }';
   const BANK = `pragma solidcash >=0.8.0;
 ${IBANK}
 contract Bank() is IBank {
@@ -92,7 +93,7 @@ contract Caller(bytes bankAddr) {
   it('callee loop that ALSO writes other state (blockSize>1) fails closed cleanly', async () => {
     // Boundary: the cross-contract loop supports a callee whose loop function touches ONLY the looped mapping.
     // A callee that also updates a scalar (data NFT) needs interleaved data-NFT derivation - fail closed for now.
-    const IB = `interface IB { function creditN(int[] ks, int[] vs); function seed(int k, int v); }`;
+    const IB = 'interface IB { function creditN(int[] ks, int[] vs); function seed(int k, int v); }';
     const BANK2 = `pragma solidcash >=0.8.0;
 ${IB}
 contract Bank2() is IB {

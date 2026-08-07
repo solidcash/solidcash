@@ -106,7 +106,8 @@ clear message where a ported test may call it.
 
 ## WS2 - Task system, HRE and CLI  (Phase B, P1)
 
-Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task registry, HRE, or config loader.
+Current implementation: the `solidcash` CLI, task registry, config loader, and v2/v3-shaped HRE are integrated in
+`@solidcash/testing` and exercised by the generated-project smoke gate.
 
 - [x] CLI entry: `@solidcash/testing` bin `solidcash` -> `dist/cli.js`, `solidcash <task> [--network n] [args]`.
   Runs via `node packages/testing/dist/cli.js` (or `npx solidcash` after `yarn install` relinks the bin). DONE.
@@ -114,14 +115,17 @@ Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task 
   `clean`, `node` (info). DONE. `console` REPL TODO.
 - [x] Task registry API (hardhat v2): `task(name, desc?).addParam/.addOptionalParam/.addFlag/
   .addPositionalParam/.addVariadicPositionalParam(...).setAction(async (args, hre) => ...)` + `subtask`. DONE.
-- [ ] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
+- [x] HRE-equivalent object injected into task actions and scripts: `{ network, config, artifacts, ...harness }`
   where `harness` exposes `getSigners`, `getContractFactory`, `getContractAt`, `deployContract`, providers.
   D2 LOCKED: primary shape = v2 global `hre.ethers.*`; build it over a **connection/HRE seam** so a v3
   `hre.network.create() -> { ethers, networkHelpers }` mode can layer on. `hre.ethers` = a thin binding of the
-  WS8 ethers-shim + WS3/WS4 helpers to the active network.
+  WS8 ethers-shim + WS3/WS4 helpers to the active network. DONE: the HRE supplies config, network
+  connection/create, ethers, network helpers, task lookup, and `hre.run`; the CLI injects it into task actions and
+  exposes it to `solidcash run` scripts.
 - [x] `hre.run(name, args)` programmatic task invocation. DONE. (v3 `hre.tasks.getTask` accessor also present.)
-- [ ] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
-  graph + `deployments.createFixture`). P2 unless MS deploy scripts must run.
+- [-] `hardhat-deploy` analogue (MS uses `deployments.deploy` + `deploy/` scripts + `tags`/`dependencies`
+  graph + `deployments.createFixture`). Deferred from the first release: its maintained path uses factories,
+  `deployContract`, and `upgrades.deployProxy` directly.
 
 ## WS3 - Signers and accounts  (Phase A, P0)
 
@@ -136,7 +140,10 @@ Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task 
 - [x] **Network-agnostic `getSigners`.** `hre.ethers.getSigners()` prefers `provider.getSigners` (Mock) and
   falls back to `signersFromMnemonic(provider)` for others (funding is the caller's job on live nets). DONE.
   (Regtest auto-funding still TODO.)
-- [ ] `Wallet.createRandom()` analogue returning a funded ad-hoc signer (EA uses `Wallet.createRandom`). P1.
+- [x] `Wallet.createRandom()` analogue returning a funded ad-hoc signer (EA uses `Wallet.createRandom`). P1. DONE:
+  `ethers.Wallet.createRandom()` (hre.ts) returns a fresh HDSigner bound to the active provider and, on a mock
+  network, funded (1M sats) so a `.connect(provider).method()` unauthorized-call assertion can build + reach the
+  covenant owner-check. Live nets: funding stays the caller's job (no addUtxo).
 - [-] `getImpersonatedSigner` - N/A (see impedance list). Provide throwing shim.
 
 ## WS4 - Contract factory, deployment and attach  (Phase A, P0)
@@ -153,12 +160,17 @@ Today: only `tasks/compile.ts` run via `tsx`; `solidcash` has no `bin`; no task 
   no `getContractFactory`/`deploy`/`attach` for stateless. Provide a uniform factory that, for a stateless
   artifact, constructs `new Contract` + funds it and returns a handle with `getAddress`/`waitForDeployment`
   (no-op). P1 - MS contracts (tokens/pairs) are mostly stateless-style deploys.
-- [~] **`.deployed()` (ethers v5)** alias of `waitForDeployment`. MS: 38. Trivial alias for v5 drop-in. P1.
-- [ ] `getCreateAddress({from, nonce})` analogue for pre-computing a deploy address (EA: 9, wires circular
+- [x] **`.deployed()` (ethers v5)** alias of `waitForDeployment`. MS: 38. DONE (ContractFactory attaches it next to `waitForDeployment`). P1.
+- [x] `getCreateAddress({from, nonce})` analogue for pre-computing a deploy address (EA: 9, wires circular
   deps). BCH analogue = predict child p2sh32 (already possible via `new Contract({category})`); expose a
-  named helper. P1.
-- [ ] `new ethers.Contract(addr, abi, signer)` bare form (MS: 2) -> already `new StatefulContract(addr, art, runner)`.
-  Document the mapping. P2.
+  named helper. P1. DONE: `@solidcash/testing/ethers` exports the BCH `getCreateAddress`/`getCreate2Address`
+  (identity = category seed, not f(deployer,nonce)); the real-ethers versions (which reject a CashAddress) are
+  no longer re-exported. See ethers-shim.ts.
+- [x] `new ethers.Contract(addr, abi, signer)` bare form (MS: 2) -> already `new StatefulContract(addr, art, runner)`.
+  Document the mapping. P2. DONE: `ethers.Contract` is `StatefulContract`, whose lean constructor
+  `(addressOrCategory, artifact, runner)` accepts a 64-char category id (used directly) or a CashAddress (category
+  resolved lazily from the indexer). Pass the compiled SolidCash artifact where ported code passes an ethers ABI
+  array. Verified in harness.test.ts.
 
 ## WS5 - Fixtures and snapshots  (Phase A, P0)
 
@@ -205,8 +217,10 @@ Height advancement exists; **timestamp/time control does NOT** (mock block time 
 - [x] **block.* oracle bridge**: `mockBlockOracleRpc(provider)` sources height/time from the mock chain so a
   `BlockOracleUpdater` propagates harness time-travel into a contract's `__block_timestamp`/`__block_number`
   registers. Proven by `test/block-timestamp.test.ts` (TimeVault withdraw locks then unlocks). DONE.
-- [ ] **Raw RPC shim**: intercept `provider.send("evm_increaseTime"|"evm_mine"|"evm_setNextBlockTimestamp")` so
-  ported EA/MS time-travel calls (which call raw RPC) run verbatim. P1.
+- [x] **Raw RPC shim**: intercept `provider.send("evm_increaseTime"|"evm_mine"|"evm_setNextBlockTimestamp")` so
+  ported EA/MS time-travel calls (which call raw RPC) run verbatim. P1. DONE: MockNetworkProvider.send handles
+  evm_snapshot/revert/mine/increaseTime/setNextBlockTimestamp/setAutomine + eth_blockNumber/chainId; hex-quantity
+  params (`0x...`) accepted; `hardhat_mine([blocks?])` added. Proven in harness.test.ts.
 - [x] `mine` auto-confirm on `sendRawTransaction` (mock mines a block on send).
 
 ## WS7 - Assertion matchers (chai + vitest)  (Phase A, P0)
@@ -217,18 +231,18 @@ BCH sats, ERC-20 -> CashToken FT.
 Revert / require:
 - [x] `revertedWith(reason|regex)` (`toBeRevertedWith`/`toRevertWith`). EA: 123, MS: 50.
 - [x] `reverted` / `to.be.reverted` (`toBeReverted`/`toRevert`). EA: 32, MS: 4.
-- [~] **`revertedWithCustomError(target, name).withArgs(...)`** - best-effort in the chai shim (asserts a revert
-  whose message mentions the error name). Full custom-error selector decoding from failed-VM state + typed
-  `withArgs` still TODO. EA: 21.
+- [-] **`revertedWithCustomError(target, name).withArgs(...)`** - name matching remains best-effort in the chai
+  shim. BCH failed calls do not carry EVM-style revert payloads, so typed runtime argument recovery is deferred
+  from the first release; custom-error declarations remain artifact metadata. EA: 21.
 - [ ] `revertedWithoutReason()` P2. `revertedWithPanic(code?)` - map to VM error classes if meaningful, else
   descope. P2. (EA/MS: 0.)
 
 Events:
-- [~] **`emit(contract, event).withArgs(...)`** - present as `toEmit(contract, name, args)` (Vitest) with
-  literal OR predicate args, but NOT the chai `.to.emit(...).withArgs(...)` chaining shape, and it decodes from
-  a freshly built tx (not a post-`send()` receipt). Add: (1) chai-plugin chaining form; (2) **function-predicate
-  withArgs** (EA relies on this heavily, 51 uses - callback that throws on mismatch, returns true on match);
-  (3) post-send/mined-tx event assertion path; (4) `.not.to.emit`. EA: emit 59 / withArgs 51, MS: emit 71 / withArgs 55. P0.
+- [x] **`emit(contract, event).withArgs(...)`** - present as `toEmit(contract, name, args)` (Vitest) with
+  literal or predicate args, plus the chai `.to.emit(...).withArgs(...)` chaining shape. The maintained
+  `golden-path.test.ts` proves positional decoding from a stateful call. Post-send receipt assertions and the
+  broader imported-suite matrix remain outside this release gate. EA: emit 59 / withArgs 51, MS: emit 71 /
+  withArgs 55.
 
 Balance change (chai shim; `actual` is an action fn/promise, measured before/after):
 - [x] **`changeBchBalance(s)(account(s), delta(s))`** (ether-balance analogue, sats). DONE.
@@ -239,7 +253,7 @@ Numeric / value (BigInt-first; note the runner often covers these natively):
 - [x] `equal` on BigInt (Vitest `toEqual`/`toBe`, chai `.equal` via a BigInt plugin). EA: 575, MS: 116.
 - [x] `closeTo(expected, tolerance)` for BigInt (chai shim, manual bigint-abs). DONE. EA: 20.
 - [x] `greaterThan`/`gt`/`lessThan`/`lt`/`at.least`(gte)/`most`(lte)/`within` BigInt-aware (chai shim). DONE.
-- [~] `properAddress` (valid cashaddr) DONE; `properHex(len)`/`hexEqual` TODO. P2.
+- [x] `properAddress` (valid cashaddr) + `properHex(len)`/`hexEqual` (waffle) DONE. P2.
 
 Framework plumbing:
 - [ ] **Chai-style shim over Vitest (D1 LOCKED)**: `import { expect } from 'solidcash/chai'` exposing
@@ -268,12 +282,38 @@ ethers.js ... so that we do not reimplement everything"); only the v5-compat pie
 
 ## WS9 - Events, receipts and decoding  (Phase A, P1)
 
+- [~] **View-as-read `staticCall` returning the DECODED value** (ethers `contract.getX()` on a `view returns(T)`).
+  DONE for single-value returns (2026-07-20): `sc.fn(...).staticCall()` runs a read-only VM probe against current
+  state, extracts the return blob (reuses `_deriveReturnBlob`, same as `.emitReturn()`), decodes with the ABI
+  output type, and applies `attachDecodedAccessors` - so `(await sc.getPt().staticCall()).toObject()` works and the
+  read does not consume state. StatefulContract._deriveReturnValue + StatefulFunctionCall.staticCall; proven in
+  StaticCall.test.ts. VALIDATED: scalar/struct returns, call ARGS (getJob(id)/balanceOf(addr)), and a struct read
+  from a real-deployed C2 mapping (the exact EA getJob shape) - all with a working `.toObject()`, and reads do not
+  consume state. REMAINING: multi-value (tuple) returns fail closed with a clear message (their packed return-event
+  encoding needs the viewReturn convention); a plain `await sc.fn()` still SENDS - staticCall() is the explicit
+  read, mirroring ethers. THREE forms shipped: bare `await sc.getX(...)` (auto-read, ethers-verbatim), v6
+  `sc.fn(...).staticCall()`, and v5 `sc.callStatic.fn(...)`. AUTO-READ (a3d3d482): awaiting a StatefulFunctionCall
+  for a PURE read resolves to the decoded value instead of sending - gated by `_isPureRead()` (writesState:false,
+  single output, not deploy/external-call, no send-intent config); state-writers still SEND; `.send()` forces a
+  send. Full e2e regression clean (280 files/2370 tests, 0 failures) - no existing test awaited a pure single-output
+  view for a tx. TS still types the awaited result as TransactionDetails (thenable not per-function-typed) - use
+  .staticCall() for a typed read. So ported EA `await getJob(0)` works verbatim (once the 10KB deploy wall lifts).
 - [x] `tx.wait(confirmations?)` on send result (`attachWait`); instant on mock.
 - [x] `queryFilter(filters.X(indexed))` -> `EventLog[]` with `.args`. EA: 13, MS: reads via receipt instead.
-- [ ] **`(await tx.wait()).events[i].args`** receipt-event extraction (ethers v5, MS: 9 - extracts deployed
-  pair/clone addresses). Provide `receipt.events`/`receipt.logs` decoded against the artifact ABI. P0 for MS.
-- [ ] Typechain-style struct outputs: named field access + **`.toObject()`** on returned structs. EA: 16 uses of
-  `.toObject()`. Ensure `StatefulContract` getters/return-decoding surface named fields + `.toObject()`. P1.
+- [x] **`(await tx.wait()).events[i].args`** receipt-event extraction (ethers v5, MS: 9 - extracts deployed
+  pair/clone addresses). Provide `receipt.events`/`receipt.logs` decoded against the artifact ABI. P0 for MS. DONE:
+  a stateful `.send()` result carries `.events`/`.logs`; `StatefulTransactionBuilder.decodeEmittedEvents` scans this
+  tx's own event NFT outputs, matches event NFT addresses, and decodes commitments into `event.args` (named +
+  numeric indices + toObject()). Runtime-computed fields come from the real commitment. Proven in EventsFacade.test.
+- [x] Typechain-style struct outputs: named field access + **`.toObject()`** on returned structs. EA: 16 uses of
+  `.toObject()`. Ensure `StatefulContract` getters/return-decoding surface named fields + `.toObject()`. P1. DONE:
+  `attachDecodedAccessors(value)` (utils) deep-attaches a non-enumerable `.toObject()` to every struct record and
+  `.toArray()` to every array (EA also uses `job.tags.toArray()`), applied at USER-FACING boundaries only -
+  `getState()` values + event args (StateReader) + receipt.events. Kept OUT of the shared decoder so the internal
+  state-derivation path never sees the accessors (that broke derivation - see fix 9a3f5507). Non-enumerable so
+  Object.keys / spread / chai `deep.equal` / re-encode are unaffected. Tests: utils state.test.ts +
+  DecodedAccessors.test.ts. NOTE: view-function-return decode (EA getJob/getUsers) boundary is untested here
+  because the EA suite hit the 10KB deploy wall (a89cce1d); wire + verify when EA runs.
 - [ ] App-level event byte-decoders (EA `decodeJobCreatedEvent` etc. over the raw `data_` field) - project code,
   but the harness must expose the raw event commitment bytes so such decoders work. P2.
 - [x] `on`/`once` live subscription (polling). EA/MS tests: 0 (use queryFilter/receipt). Keep.
@@ -281,10 +321,10 @@ ethers.js ... so that we do not reimplement everything"); only the v5-compat pie
 ## WS10 - Test data and utilities  (Phase A, P1)
 
 - [x] `randomUtxo`/`randomToken`/`randomNFT`.
-- [ ] `getBigNumber(amount, decimals)` (WS8) + `ADDRESS_ZERO`/`AddressZero` constants (MS helper). P0 for MS.
+- [x] `getBigNumber(amount, decimals)` (WS8) + `ADDRESS_ZERO`/`AddressZero` constants (MS helper). DONE. P0 for MS.
 - [ ] Sushi/MistSwap-style `prepare(this, [names])` + `deploy(this, [[name, factory, args]])` helpers, or a
   documented idiomatic equivalent, so MS `test/utilities/index.ts` ports. P2 (project glue, not core).
-- [ ] `duration.{seconds..years}` (WS6) exported as a util. P1.
+- [x] `duration.{seconds..years}` (WS6) exported as a util (also `time.duration`). DONE. P1.
 - [ ] Coin-selection helpers already exist (`gatherBchUtxos`, `gatherFungibleTokenUtxos`). P2 doc.
 
 ## WS11 - Framework support, docs and a ported example  (P1)
@@ -312,7 +352,7 @@ Priority signal: an API used many times across the real ported suites is P0 even
 | `.connect(signer)`                  | 451                        | 99                        | `[x]`  |
 | `getSigners`                        | 14                         | 11                        | `[x]`/network-agnostic `[ ]` |
 | `getContractFactory` / `.deploy`    | 42 / 32                    | 65 / 74                   | `[x]`  |
-| `.deployed()` (v5)                  | 0                          | 38                        | `[ ]` alias |
+| `.deployed()` (v5)                  | 0                          | 38                        | `[x]` alias |
 | `.attach()`                         | tasks only                 | 12                        | `[x]`  |
 | `waitForDeployment`                 | 25                         | 0                         | `[x]`  |
 | `upgrades.deployProxy/upgradeProxy` | 10 / 2                     | 0                         | `[x]`  |
@@ -403,8 +443,10 @@ Foundational seams FIRST (D2/D3), then the helpers that bind to them, then polis
   - **WS8 ethers utils (forwarded to ethers v6 per user)**: re-export parseEther/formatEther/parseUnits/keccak256/
     id/AbiCoder/getBytes/hexlify/toUtf8Bytes/ZeroAddress/MaxUint256/SigningKey/Mnemonic/getCreateAddress/... + v5
     shims `BigNumber`, `getBigNumber`, `ethers.utils.*`, `ethers.constants.*`. DONE.
-  - **WS11**: demo tests `test/{harness,ported-style,block-timestamp}.test.ts` (14 pass); `solidcash.config.ts`;
-    vitest aliases (hardhat/chai/network-helpers). Migration-guide doc + expanded contracts still TODO.
+  - **WS11**: demo tests plus the maintained `test/golden-path.test.ts`; `solidcash.config.ts`; vitest aliases
+    (hardhat/chai/network-helpers); and the stateful `GoldenToken` example. The golden path covers compile,
+    signers, deployment, calls, positional event arguments, named refusal, state, fixture reset, and rerun.
+    The supported first-release mapping and permanent BCH differences are published in `MIGRATION.md`.
   - **Regression**: SDK unit 770/780 pass (1 pre-existing `debugging.test.ts` BCH_2023_05 debug-log failure,
     provider-independent - `debug()` is pure libauth). BlockOracle e2e 52/52. mem-cash 331/331. Full e2e running.
   - **Pre-existing (NOT us)**: `test/transfer_with_timeout.test.ts` fails on `tx.time` covenant (fork codegen

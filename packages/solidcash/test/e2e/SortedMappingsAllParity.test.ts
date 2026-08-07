@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin } from '@bitauth/libauth';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { getEntryNftAddress, SortedList, bytesToSlotValue } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // C2 default mode backs every mapping with the authenticated linked-list model, so
 // reads are unforgeable (exclusion-proven on absent) = Solidity storage parity, WITHOUT naming each mapping.
@@ -22,7 +24,9 @@ describe('C2 default mode (every mapping is C2)', () => {
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
   let nonce = 0xa00;
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
-  const fund = async (addr: string): Promise<void> => { await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n }); };
+  const fund = async (addr: string): Promise<void> => {
+    await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n });
+  };
 
   it('a plain mapping deploys + reads/writes with exclusion proofs', async () => {
     const art = compileString(SRC, { forceStateful: true });
@@ -45,7 +49,8 @@ describe('C2 default mode (every mapping is C2)', () => {
     await fund(contract.address);
     expect((await contract.check(3n, 0n, alicePub, sig).send()).txid).toBeDefined(); // absent -> proven default 0
     await fund(contract.address);
-    await expect(contract.check(3n, 7n, alicePub, sig).send()).rejects.toThrow(); // absent claimed nonzero -> revert
+    // Absent claimed nonzero -> revert.
+    await expect(contract.check(3n, 7n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
   it('a C2 mapping WRITE via an internal (subroutine-candidate) helper compiles + round-trips', async () => {
@@ -95,6 +100,7 @@ describe('C2 default mode (every mapping is C2)', () => {
     await fund(contract.address);
     expect((await contract.check(alicePkh, 9n, 100n, alicePub, sig).send()).txid).toBeDefined(); // read back at (H(pk), 9)
     await fund(contract.address);
-    await expect(contract.check(alicePkh, 9n, 7n, alicePub, sig).send()).rejects.toThrow(); // wrong value reverts
+    // Wrong value reverts.
+    await expect(contract.check(alicePkh, 9n, 7n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 });

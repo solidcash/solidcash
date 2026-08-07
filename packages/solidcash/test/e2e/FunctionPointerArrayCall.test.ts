@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling a function pointer from an array element (`a[i]()`) dispatches to the element's target at runtime.
 const SRC = `contract C {
   function add1(uint x) internal pure returns (uint) { return x + 1; }
@@ -27,6 +29,6 @@ describe('function pointer array-element call (runtime)', () => {
   });
   it('a wrong expectation reverts (dispatch is real, not constant-folded)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.wrong()).rejects.toThrow();
+    await expect(sc.wrong()).rejects.toThrow(verifyFailure);
   });
 });

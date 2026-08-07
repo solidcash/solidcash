@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+
+const inputZeroVerifyFailure = /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
 
 // A named-return function with a revert guard before an emit. EarlyReturnTransformation nests the
 // post-revert statements (the emit + state write + implicit return) into the else branch; codegen
@@ -43,6 +45,6 @@ describe('emit after a revert guard with a named return', () => {
 
   it('aborts when the revert guard is taken', async () => {
     const sc = await deploy();
-    await expect(sc.record(7n, 100n, 1n).send()).rejects.toThrow();
+    await expect(sc.record(7n, 100n, 1n).send()).rejects.toThrow(inputZeroVerifyFailure);
   });
 });

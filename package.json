@@ -2,6 +2,11 @@
   "name": "root",
   "private": true,
   "type": "module",
+  "packageManager": "yarn@1.22.22",
+  "engines": {
+    "node": ">=22 <23",
+    "yarn": ">=1.22.22 <2"
+  },
   "workspaces": [
     "packages/*",
     "examples",
@@ -17,21 +22,27 @@
     "eslint-config-airbnb-typescript": "^18.0.0",
     "eslint-plugin-import": "^2.31.0",
     "lerna": "^3.22.1",
+    "semver": "^7.7.2",
     "tsx": "^4.20.3",
     "typescript": "^5.9.2"
   },
   "scripts": {
-    "test": "lerna run test --ignore solidcash-examples --ignore testing-suite",
+    "test": "lerna run test --ignore solidcash-examples && yarn workspace testing-suite test",
     "test:fast": "lerna run test:fast --ignore solidcash-examples --ignore testing-suite",
     "test:e2e": "yarn workspace solidcash test:e2e",
     "test:regtest": "yarn workspace solidcash test:regtest",
-    "lint": "lerna run lint --ignore solidcash-examples --ignore testing-suite",
+    "test:package-smoke": "node scripts/release-package-smoke.mjs",
+    "test:application-conformance": "node scripts/release-application-conformance.mjs",
+    "test:application-regtest": "node scripts/release-application-regtest.mjs",
+    "test:generated-project-smoke": "node scripts/release-generated-project-smoke.mjs",
+    "test:security-conformance": "node scripts/release-security-conformance.mjs",
+    "lint": "lerna run lint --ignore solidcash-examples && yarn workspace testing-suite lint",
     "examples": "tsx examples/p2pkh.ts && tsx examples/transfer_with_timeout.ts && tsx examples/hodl_vault.ts",
     "postinstall": "lerna bootstrap && yarn build",
     "spellcheck": "cspell lint '**' --no-progress --must-find-files",
     "update-version": "tsx update-version.ts",
     "publish-all": "lerna publish from-package",
-    "build": "lerna run build --ignore solidcash-examples --ignore testing-suite"
+    "build": "lerna run build --ignore solidcash-examples && yarn workspace testing-suite compile"
   },
   "dependencies": {
     "@noble/ciphers": "^2.2.0",

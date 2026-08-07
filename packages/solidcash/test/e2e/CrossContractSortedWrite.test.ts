@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { hexToBin, vmNumberToBigInt, bigIntToVmNumber } from '@bitauth/libauth';
 import { Contract, StatefulContract, SignatureTemplate, keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 // Boundary #1: contract A calls Bank via withExternalCall, and Bank's function WRITES a C2 (sorted) mapping. The
 // cross-contract dispatch now co-spends Bank's sorted entry (SortedList: exact for UPDATE, predecessor for INSERT)
 // and mints Bank's entry output(s) with the commitment derived from Bank's VM trace.
-const IBANK = `interface IBank { function setBal(int k, int v); }`;
+const IBANK = 'interface IBank { function setBal(int k, int v); }';
 const BANK = `pragma solidcash >=0.8.0;
 ${IBANK}
 contract Bank() is IBank {
@@ -88,7 +88,7 @@ describe('cross-contract callee C2 sorted write (normal key)', () => {
   });
 
   it('A calls Bank.deposit; bal[msg.sender] resolves to A (the caller contract)', async () => {
-    const IBANK2 = `interface IBank2 { function deposit(int amt); }`;
+    const IBANK2 = 'interface IBank2 { function deposit(int amt); }';
     const BANK2 = `pragma solidcash >=0.8.0;
 ${IBANK2}
 contract Bank2() is IBank2 {

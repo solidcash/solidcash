@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
@@ -22,7 +22,8 @@ describe('porting parse features', () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
       const tx = await sc.f(7n).send();
       expect(tx.txid).toBeDefined();
-      await expect(sc.f(8n).send()).rejects.toThrow();
+      await expect(sc.f(8n).send())
+        .rejects.toThrow('messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.');
     });
   }
 

@@ -1,6 +1,8 @@
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
 import { fundedSigner } from '../test-util.js';
+
+const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // --- Contract sources (kept small to avoid exceeding bytecode limit) -----
 
@@ -429,7 +431,7 @@ describe('Multi-Dimensional Arrays', () => {
     it('wrong value - pairs[0][0] != 999', async () => {
       const factory = getContractFactory(compileString(FAILURE_VALUE_SOURCE, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.testWrongValue()).rejects.toThrow();
+      await expect(sc.testWrongValue()).rejects.toThrow(verifyFailure);
     });
 
     it('wrong length - pairs.length != 5', async () => {
@@ -437,13 +439,13 @@ describe('Multi-Dimensional Arrays', () => {
         compileString(FAILURE_LENGTH_SOURCE, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expect(sc.testWrongLength()).rejects.toThrow();
+      await expect(sc.testWrongLength()).rejects.toThrow(verifyFailure);
     });
 
     it('wrong after push - pushed value != 99', async () => {
       const factory = getContractFactory(compileString(FAILURE_PUSH_SOURCE, { forceStateful: true }), await fundedSigner());
       const sc = await factory.deploy();
-      await expect(sc.testWrongAfterPush()).rejects.toThrow();
+      await expect(sc.testWrongAfterPush()).rejects.toThrow(verifyFailure);
     });
   });
 });

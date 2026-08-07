@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import {
   deriveSeedFromBip39Mnemonic, deriveHdPrivateNodeFromSeed, deriveHdPath,
 } from '@bitauth/libauth';
@@ -199,6 +199,31 @@ contract Poke() {
       expect(s.provider).toBe(provider);
       expect((await s.getUtxos()).length).toBeGreaterThanOrEqual(1);
     }
+  });
+
+  it('returns the same signer objects without funding them twice', async () => {
+    const provider = new MockNetworkProvider();
+    const first = await provider.getSigners(3);
+    const counts = await Promise.all(first.map((signer) => signer.getUtxos().then((utxos) => utxos.length)));
+    const second = await provider.getSigners(3);
+    expect(second[0]).toBe(first[0]);
+    expect(second[1]).toBe(first[1]);
+    expect(await Promise.all(second.map((signer) => signer.getUtxos().then((utxos) => utxos.length)))).toEqual(counts);
+    expect(await provider.getSigner(2)).toBe(first[2]);
+  });
+
+  it('tracks one nonce per logical deploy/send and restores it with snapshots', async () => {
+    const artifact = compileString(SOURCE, { forceStateful: true });
+    const provider = new MockNetworkProvider();
+    const [owner] = await provider.getSigners(1);
+    expect(await owner.getNonce()).toBe(0);
+    const snapshot = await provider.takeSnapshot();
+    const sc = await getContractFactory(artifact, owner).deploy();
+    expect(await owner.getNonce()).toBe(1);
+    await sc.poke(1n);
+    expect(await owner.getNonce()).toBe(2);
+    await snapshot.restore();
+    expect(await owner.getNonce()).toBe(0);
   });
 
   it('uses the hardhat default mnemonic', async () => {

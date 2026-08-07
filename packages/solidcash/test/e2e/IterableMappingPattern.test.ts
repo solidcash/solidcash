@@ -1,10 +1,10 @@
 import { describe, it } from 'vitest';
-import { compileString as _csRawSolidc } from 'solidc';
-const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, o);
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { hexToBin } from '@bitauth/libauth';
+import { assertApplicationScriptSize } from '../application-size-budgets.js';
 
 // The IterableMapping (enumerable mapping) core: a value mapping plus a chunk-backed key-tracking array,
 // mutated together in one function. Exercises entry-write + chunk-array-op coexistence (shared trailing
@@ -31,6 +31,7 @@ contract C() {
   function valOf(address k, uint256 ev) { require(this.values[k] == ev); }
 }`;
     const artifact = compileString(src, { chunkedArrays: true });
+    assertApplicationScriptSize('mappingDynamicArray', artifact);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { keys: [] }, { saltContract: true },
@@ -63,6 +64,7 @@ contract C() {
   function valOf(address k, uint256 ev) { require(this.values[k] == ev); }
 }`;
     const artifact = compileString(src, { chunkedArrays: true });
+    assertApplicationScriptSize('mappingDynamicArray', artifact);
     const contract = new Contract(artifact, [], { provider });
     const { categoryId } = await setupStatefulUtxos(
       provider, contract, artifact.stateLayout!, { keys: [] }, { saltContract: true },

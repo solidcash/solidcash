@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { hexToBin, binToHex, bigIntToVmNumber, vmNumberToBigInt } from '@bitauth/libauth';
 import { hash160 } from '@solidcash/utils';
-import { compileString } from 'solidc';
+import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate } from '../../src/index.js';
 import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
-import { createTestProvider } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 // C2 read-modify-write with a COMPUTED / LOCAL key: `balances[pkh] = balances[pkh] + amt` where pkh is a local.
 // This is the common ERC pattern; it regressed under C2 because the value's read (RHS) is emitted before the write
@@ -116,5 +116,89 @@ describe('sorted mapping RMW with a computed/local key', () => {
     const e = SortedList.fromUtxos(await provider.getUtxos(ea)).find(slot);
     expect(e).toBeDefined();
     expect(vmNumberToBigInt(e!.value)).toBe(15n);
+  });
+
+  it('reads through a last-use local copy of a parameter with the correct C2 stack offset', async () => {
+    const source = `contract C() {
+      mapping(bytes20 => bigint) balances;
+      bigint result;
+      function read(bytes20 user) {
+        bytes20 localUser = user;
+        this.result = this.balances[localUser];
+        require(true);
+      }
+      function lookup(bytes20 user) internal view returns (bigint) {
+        bytes20 localUser = user;
+        return this.balances[localUser];
+      }
+      function readInlined(bytes20 user) {
+        this.result = lookup(user);
+        require(true);
+      }
+      function readAssigned(bytes20 user) {
+        bytes20 localUser;
+        localUser = user;
+        this.result = this.balances[localUser];
+        require(true);
+      }
+      function readComputed(pubkey pk) {
+        bytes20 localUser = hash160(pk);
+        this.result = this.balances[localUser];
+        require(true);
+      }
+      function readLive(bytes20 user) {
+        bytes20 localUser = user;
+        this.result = this.balances[localUser];
+        require(localUser == user);
+      }
+      function lookupComputed(pubkey pk) internal view returns (bigint) {
+        bytes20 localUser = hash160(pk);
+        return this.balances[localUser];
+      }
+      function readComputedInlined(pubkey pk) {
+        this.result = lookupComputed(pk);
+        require(true);
+      }
+    }`;
+    const art = compileString(source, {});
+    const contract = new Contract(art, [], { provider });
+    const key = hash160(alicePub);
+    const slot = keyToSlot(key);
+    const zero = slotValueToBytes(0n);
+    const result = await setupStatefulUtxos(provider, contract, art.stateLayout!, { result: 0n });
+    const pinned = contract.withCategory(hexToBin(result.categoryId));
+    const entryAddress = getEntryNftAddress(pinned, result.categoryId, 'balances');
+    const [sentinel] = await provider.getUtxos(entryAddress);
+    await provider.addUtxo(entryAddress, {
+      txid: sentinel.txid, vout: sentinel.vout, satoshis: sentinel.satoshis,
+      token: {
+        category: result.categoryId, amount: 0n,
+        nft: { capability: 'mutable', commitment: binToHex(encodeEntryCommitment(zero, slot)) },
+      },
+    });
+    await provider.addUtxo(entryAddress, {
+      txid: '22'.repeat(32), vout: 0, satoshis: 1500n,
+      token: {
+        category: result.categoryId, amount: 0n,
+        nft: {
+          capability: 'mutable',
+          commitment: binToHex(encodeEntryCommitment(slot, zero, bigIntToVmNumber(41n))),
+        },
+      },
+    });
+
+    const sc = StatefulContract.withCategory(contract, result.categoryId);
+    await expect(sc.read(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readInlined(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readAssigned(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readComputed(alicePub).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readLive(key).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
+    await expect(sc.readComputedInlined(alicePub).send()).resolves.toHaveProperty('txid');
+    await expect(sc.getState()).resolves.toMatchObject({ result: 41n });
   });
 });

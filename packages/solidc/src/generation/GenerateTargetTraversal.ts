@@ -1738,6 +1738,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Keyed on the WITNESS PARAMETER, not on the DELEGATE modifier: that modifier is not yet on the node when
     // code is generated (measured - the route reports `external` here while the artifact later shows
     // `external,delegate`), whereas the parameter is what actually puts the value on the frame.
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ROUTE_PARAMS === '1') {
+      for (const fn of node.functions.filter((candidate) => candidate.messageBusRoute)) {
+        // eslint-disable-next-line no-console
+        console.error('route-params', {
+          contract: node.name,
+          fn: fn.name,
+          delegate: fn.modifiers.includes(FunctionModifier.DELEGATE),
+          tail: fn.parameters.slice(-3).map((parameter) => parameter.name),
+          count: fn.parameters.length,
+        });
+      }
+    }
     this.routeProxyMasterBottomOrdinal = node.functions.some((fn) => fn.messageBusRoute
       && fn.parameters.at(-1)?.name === '__internal__proxyMasterIndex') ? 1 : undefined;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
@@ -3046,6 +3059,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
     // output-only offsets in that body disagree with the ones in the main script.
     subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+    // Same reason: a route's proxy-master frame ordinal is decided in visitContract, which an extracted body
+    // never runs. Without it every block-relative base in that body falls back to OP_INPUTINDEX - the
+    // implementation's own input - instead of the proxy master its block is rooted at, one slot short.
+    subTraversal.routeProxyMasterBottomOrdinal = this.routeProxyMasterBottomOrdinal;
     subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
     subTraversal.constructorParameterCount = 0; // sub-traversal has no constructor params
     subTraversal.userFunctionDefs = this.userFunctionDefs;
@@ -3329,6 +3346,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // X12. Contract-level, and an outlined body never runs visitContract - copy it or the delegate
       // output-only offsets in that body disagree with the ones in the main script.
       subTraversal.currentContractIsSplitFacet = this.currentContractIsSplitFacet;
+      subTraversal.routeProxyMasterBottomOrdinal = this.routeProxyMasterBottomOrdinal;
       subTraversal.sortedEntryAddressIds = new Map(this.sortedEntryAddressIds);
       subTraversal.constructorParameterCount = 0; // no data pushes in sub-traversal output
       subTraversal.userFunctionDefs = this.userFunctionDefs;

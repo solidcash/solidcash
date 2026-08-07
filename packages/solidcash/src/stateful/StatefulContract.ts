@@ -13099,6 +13099,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         if (!prior) keyWitnessValues.set(routeInput, { value, encoded: encodedValue });
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+        console.error('row-encoded-args', {
+          selector: row.selector,
+          parts: encoded.map((part, index) => ({
+            type: row.inputs[index].type,
+            length: (part as Uint8Array).length,
+            hex: binToHex(part as Uint8Array).slice(0, 120),
+          })),
+          rawValues: args.map((arg) => (Array.isArray(arg)
+            ? arg.map((element) => (element instanceof Uint8Array
+              ? `bytes(${element.length})` : String(element))) : String(arg))),
+        });
+      }
       const argsBlob = scriptToBytecode(encoded as Uint8Array[]);
       if (argsBlob.length > 0xffff) throw new Error(`External message-bus batch row ${rowIndex} exceeds 65535 bytes`);
       let logicalValue = 0n;

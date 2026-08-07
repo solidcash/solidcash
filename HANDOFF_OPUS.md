@@ -873,3 +873,28 @@ Next: dump the SDK-side `event_` value (the struct-constructor array from `_eval
 and each `bytes.concat` part's length just before `encodeFunctionArgument`, and compare the sum against
 the emitted `data_` prefix. The `timestamp_` field is the likely suspect - check whether it is being
 evaluated at all, since the payload has no room for it.
+
+
+### The SDK's encoding is CORRECT - the malformed item appears later
+
+`row-encoded-args` (new debug) dumps each batch row's encoded arguments. For `publishJobEvent`
+(`a826ee9c`):
+
+```text
+raw values : [ 0, bytes(25), bytes(177), 0 ]      = (type_, address_, data_, timestamp_)
+encoded    : 207 bytes  00 | 19+25 | 4cb1+177 | 00
+             1 + 26 + 179 + 1 = 207   <- adds up exactly, all FOUR fields present
+```
+
+So the struct the SDK builds is well-formed, and `pushdataEncode` of it is the 209-byte stack item
+(`4c cf` + 207) also seen in the trace - also correct.
+
+The item that does NOT add up is the OTHER one on that stack: 207 bytes of `4c cd` + 205, i.e. a
+205-byte payload carrying the first 205 bytes of the same struct with its prefix rewritten to match.
+That is a re-encoding, not the SDK's original. Two bytes short is suggestive: `publishJobEvent` assigns
+`event_.timestamp_ = uint32(block.timestamp)`, so the route rebuilds the struct with a real 4-byte
+timestamp in place of the `00` the SDK sent, and the rebuild is where the length goes wrong.
+
+So the next investigation is COVENANT-side, in the route's reconstruction of `event_` after it overwrites
+`timestamp_` - not in `_evaluateExternalExpression` or `encodeFunctionArgument`, both of which are now
+confirmed correct by measurement.

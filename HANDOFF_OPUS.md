@@ -1722,3 +1722,24 @@ because the caller's `entryValueWitnesses` describes the caller's own collection
 witness feeds input 102's split and whether it is populated for the route's callee.
 
 Do NOT keep instrumenting the chunk path - it is placing correctly. The next work is at input 102.
+
+### Regression question RESOLVED: the 53 failures are pre-existing
+
+Two-point comparison on a file the chunk change could plausibly touch (it exercises the same block-output loop):
+
+    AtomicMessageBusCompose at HEAD           -> 12 failed | 7 passed
+    same file at 1ef264cc~1 (pre-chunk work)  -> 12 failed | 7 passed
+
+Identical, so the chunk work is inert there. That matches the code: `derivedChunkOutputs` is empty unless a
+chunk pin was extracted, so `get()` returns undefined and the loop behaves exactly as before; the extended probe
+budget only grows when a chunk is actually placed; and `getValueChunkLockingBytecode`'s dropped parameter was
+unused with one internal call site.
+
+Of the 21 failing files, 4 are the known subset baseline (DelegateInferred, MsgSender, UpgradesDeployProxy,
+X50DefaultProxyRegenerated). The other 17 were never covered by the 64-file subset that produced the "11"
+number - they are this branch's pre-existing state, not new. The full-project figure to carry forward as the
+baseline is therefore **53 failures / 21 files**, and solidc **15 / 6**.
+
+(Method note for re-running this: `git checkout <ref> -- <path>` STAGES what it fetches, so restore with
+`git checkout HEAD -- <path>`, never a bare `git checkout -- <path>`, which would restore from the index and
+silently wipe the working changes.)

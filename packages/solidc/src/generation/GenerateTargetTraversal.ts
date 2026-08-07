@@ -14535,6 +14535,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // 3. input[slot] bytecode == entryAddr (a real entry of this collection; omission -> mismatch -> revert),
     // then read its commitment -> slot32, nextKey32.
     this.emitEntryInputIndex(slotIndex, loc, 2);      // [Hk32, entryAddr, idx]
+    // A collection holds ONE entry per key, so every ABSENT key brackets to the SAME predecessor. A route
+    // publishes a fixed slot per (collection, row), so two slots with different absent keys need one outpoint -
+    // and one outpoint can only be one input, leaving the later slot a balanced placeholder. The WRITE path
+    // already tolerates that (its runtime-alias gate skips a placeholder slot); the read path did not, so it
+    // hard-failed on a batch that merely reads two absent keys of one collection.
+    //
+    // Fall back to a prior slot that DOES hold an entry of this collection. Soundness is unchanged: the chosen
+    // input is still bytecode-verified as a genuine entry below, presence still requires its key to equal OUR
+    // H(k), and absence still requires OUR H(k) to fall strictly inside its bracket. Only WHICH co-spent entry
+    // supplies that proof is decided at runtime.
+    for (const prior of this.entrySlots[slotIndex]?.runtimeAliasPriorSlots ?? []) {
+      this.emit(Op.OP_DUP, loc);                      // [Hk32, entryAddr, idx, idx]
+      this.emit(Op.OP_UTXOBYTECODE, loc);             // [Hk32, entryAddr, idx, inbc]
+      this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [..., inbc, entryAddr]
+      this.emit(Op.OP_EQUAL, loc);                    // [Hk32, entryAddr, idx, holdsEntry]
+      this.emit(Op.OP_NOTIF, loc);
+      this.emit(Op.OP_DROP, loc);                     // [Hk32, entryAddr]
+      this.emitEntryInputIndex(prior, loc, 2);        // [Hk32, entryAddr, priorIdx]
+      this.emit(Op.OP_ENDIF, loc);
+    }
     this.emit(Op.OP_DUP, loc);                        // [Hk32, entryAddr, idx, idx]
     this.emit(Op.OP_UTXOBYTECODE, loc);               // [Hk32, entryAddr, idx, inbc]
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); // [Hk32, entryAddr, idx, inbc, entryAddr]

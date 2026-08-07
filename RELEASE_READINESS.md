@@ -236,6 +236,15 @@ it must not silently compile to incorrect covenant behavior.
     fee-less phase-1 build, so it carries a signature computed for that shape. Determining why that
     pre-computed signature does not verify during the probe's scenario evaluation is the next step, and it needs
     instrumentation rather than inference.
+  - Two hypotheses tested and REJECTED, recorded so they are not re-tried. First, that the reported
+    `require(checkSig(s, pk))` line was a source-map misattribution: the same shape without a signature check
+    completes with no probe error, so the line is real. Second, that `resolveArgsForOpInvoke` extracted the wrong
+    bytes because chunked shapes append covenant witness pushes and shift its `numArgs - i` index: instrumenting
+    the extraction shows the unlocking script holds exactly `numArgs + 2` instructions for every affected call
+    (`setA` 6/6, `setB` 7/7, `lenB` 3/3), so the layout assumption and the index arithmetic both hold.
+  - What remains untested is whether the scenario transaction libauth generates from the template is
+    byte-identical to the `buildLibauthTransaction()` output the signature was computed over. A difference there
+    would invalidate an otherwise correct signature. That comparison is the next concrete step.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

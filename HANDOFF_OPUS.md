@@ -1148,3 +1148,33 @@ the shape genuinely changed, so the derived variant has to be re-verified agains
 pin moves. That is a deliberate decision for whoever owns that certification, not a mechanical update.
 
 `ProxyEntryWriteRepro` (+5) and `DelegateMixedDynamicMappingWrite` (+1) are NOT yet diagnosed.
+
+### Merge regression recovered (a6b2c7f6), and what X50 still says
+
+`graftDefaultProxy`'s pin was the whole cause of the +13. It sliced the built-in proxy's strict
+output-count check off the end and appended the relaxed one, but pinned the WHOLE tail including the
+operand (`OP_0`) - so it failed closed when upstream's outlining moved that operand into a helper
+(`... OP_1 OP_CAT OP_1 OP_INVOKE OP_NUMEQUALVERIFY OP_2DROP OP_1`). The graft is a pure COMPARISON swap
+and the operand is common to both sides, so the pin now covers only the comparison suffix. Subset back to
+11 failures = this branch's pre-merge level; `ProxyEntryWriteRepro` and
+`DelegateMixedDynamicMappingWrite` fully green again.
+
+The 2 remaining X50 failures are NOT merge damage - they say something about this branch:
+
+```text
+asmByteLength(defaultProxyArtifact.bytecode)  expected 130, got 228
+"accepts the same append when only the conservation opcode is relaxed" -> the relaxed graft is REJECTED
+   by the VM at input 2 with OP_VERIFY
+```
+
+Upstream's proxy is 79 asm tokens; this branch's is 97. So THIS BRANCH's compiler work inflates the
+built-in proxy by ~75% in bytes, which trips the size pin and (probably relatedly) makes the relaxed
+variant fail verification.
+
+MEASURED AND FALSIFIED: the `OP_INVOKE` outlining barrier this branch adds to `utils/outline.ts` is NOT
+the cause - regenerating the proxy with the barrier removed gives the SAME 97 tokens. Do not re-test it.
+
+Next suspect is the WIP `compiler.ts` (the early `autoMarkDelegateFunctions` pass, committed in 54964087).
+An attempt to measure that was VOID - the `yarn workspace solidc build` in that run silently failed, so
+the regenerated artifact came from a stale dist. Re-run it and CHECK THE BUILD SUCCEEDED before trusting
+the number.

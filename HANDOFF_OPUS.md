@@ -992,3 +992,31 @@ time.
 
 An experiment preferring the witness frame-wide was run and produced byte-identical bytecode (the
 condition cannot fire in a sub-body), so it is a no-op for this path, not a fix.
+
+### Landed: d86e219d - the structural addressing gap is closed
+
+The gap described above is fixed. `emitMasterInputIndex` now reaches the proxy-master witness from inside
+a route-owned OP_DEFINE'd helper:
+
+- OP_INVOKE runs a body on the SAME stack, so the route's ABI frame is still at the bottom inside a
+  helper; only the per-body tracked model has lost sight of it.
+- Unlocking arguments are reversed, so the route's final ABI parameter (the witness) is pushed FIRST and
+  sits at the frame's PHYSICAL BOTTOM - exactly what the route prologue already reads with
+  `OP_DEPTH OP_1SUB OP_PICK`. Helpers now read it the same way.
+- Decided at CONTRACT level (a helper can be emitted before the route) and keyed on the WITNESS
+  PARAMETER, not the DELEGATE modifier: measured, the route reports `external` during code generation
+  while the artifact later shows `external,delegate`, so gating on the modifier never fires.
+
+`SOLIDC_DEBUG_MASTER_BASE=1` prints every `emitMasterInputIndex` fallback with its function, modifiers and
+`isDefineSubTraversal` - that is what identified the helper set (`__message_bus_entry_*`,
+`__message_bus_handler_*`, `__message_bus_resource_*`, all `internal`, all `defineSub=true`, and ZERO
+delegate-marked among them).
+
+Effect: ~2400 fallback sites removed in the marketplace route; `OP_INPUTINDEX OP_6 OP_ADD` for the
+`jobEvents` slot drops to 2 occurrences and 424 depth-1 picks appear. Regression-clean on both sides.
+
+It does NOT make the test pass. The group-0 probe still aborts with `OP_VERIFY` and still reveals no
+entry commitments, so the return blob stays underived and input 102 still reports the same
+`OP_SPLIT ... length 0, index 1`. The next step is to re-run the frame chain (`callerFrame`) against the
+NEW bytecode - the previous chain readings are stale now that 400+ bases moved - and identify which check
+fails with the corrected addressing.

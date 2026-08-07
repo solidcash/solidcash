@@ -957,3 +957,38 @@ the user-visible failure is unchanged.
 
 Use `nested-entry-pick` to see which slot resolves to what, and `abortingFrame`/`callerFrame` to confirm
 which collection's address is on the stack at the EQUALVERIFY - that names the slot directly.
+
+### THE STRUCTURAL FINDING: block addressing is unreachable from inside an OP_DEFINE'd sub-body
+
+The abort after the unframe fix is entry slot 3 (`jobEvents`, the one `publishJobEvent`'s WRITE needs).
+The caller chain names the emitter exactly:
+
+```text
+[count=509 ip=123]
+  112: OP_INPUTINDEX  113: OP_UTXOTOKENCATEGORY  114: <0x20>  115: OP_SPLIT  116: OP_DROP
+  117: push<-12>      118: OP_INVOKE                                  = emitSortedEntryAddress
+  119: OP_INPUTINDEX  120: OP_6  121: OP_ADD                          = the entry slot index
+  122: push<-242>     123: OP_INVOKE                                  = the 17-op C2 entry read
+```
+
+Both bases are a bare `OP_INPUTINDEX`, i.e. `emitMasterInputIndex` took its non-delegate arm. The route
+runs at input 105 while its block is rooted at 106, so slot 3 is read at 111 where the block puts it at
+112 - the SAME off-by-one 32eb5ea8 fixed for `emitEntryInputIndex`'s delegate branch, at a different
+emitter.
+
+**But it is not fixable the same way.** `emitMasterInputIndex` already prefers the proxy witness whenever
+the executing FRAME carries it (that condition is in HEAD). It did not fire here, and the reason is
+structural: this code is emitted inside an OP_DEFINE'd sub-body, where the tracked stack is the
+SUBROUTINE's frame, not the route's ABI frame - `getStackIndex('__internal__proxyMasterIndex')` returns
+-1, and `emitPickTrackedFromBottom`'s OP_DEPTH-relative addressing would be wrong there even if it did
+not.
+
+So a compiler-owned route CANNOT address its proxy-rooted block from inside any outlined / OP_DEFINE'd
+body. That is the real remaining defect, and it is a design-level one: the proxy master index has to
+reach those bodies - passed as a subroutine parameter, carried on the altstack across the invoke, or the
+affected reads kept out of shared bodies. Every entry/event/return/trailing addressing bug this session
+chased is an instance of it; fixing it at the source should close the class rather than one site at a
+time.
+
+An experiment preferring the witness frame-wide was run and produced byte-identical bytecode (the
+condition cannot fire in a sub-body), so it is a no-op for this path, not a fix.

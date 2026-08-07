@@ -2121,3 +2121,25 @@ remaining four share one cause; `key-sources` will classify them the same way it
 Regression risk: this changes key resolution for every expression-keyed access on the nested path, which
 previously produced NO pick at all. It can only add picks, never change an existing one, but the SDK suite
 should still be re-run before trusting it.
+
+### After the fix: THREE slots still unpicked, all expression-keyed
+
+    visited slotIndexes minus picked slotIndexes = {9, 10, 11}
+
+From the `key-sources` dump those are exactly:
+
+    slotIndex  9  userReviews  kinds: expression
+    slotIndex 10  jobEvents    kinds: expression
+    slotIndex 11  userReviews  kinds: expression
+
+So the fix is CORRECT but INCOMPLETE: `evalComputedKey` resolves the labels behind slots 4 and 17 and returns
+undefined for the labels behind 9, 10 and 11, which then fall through to the param lookup and fail as before.
+
+Next (this is the whole remaining task for `post job 1`): print `source.expressionLabel` for slots 9/10/11 -
+the `key-sources` probe already has it in hand, just add the label to what it logs - and compare against the
+labels for 4/17 that DO resolve. Then either extend `evalComputedKey` to that shape, or, if the label denotes
+something genuinely not derivable off-chain, resolve it the way the VM-trace derivation resolves computed keys
+elsewhere rather than forcing an off-chain evaluation.
+
+Everything else at this site is now instrumented and accounted for: 26 entry slots visited, 23 pick, and the
+3-slot gap is fully explained by unresolvable expression labels.

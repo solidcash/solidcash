@@ -877,11 +877,31 @@ function evalComputedKey(
     // for a UTF-8 `string` (both arrive as JS strings).
     const idMatch = label.match(/^id:(.+)$/);
     const declared = idMatch ? inputs.find((i) => i.name === idMatch[1])?.type ?? '' : '';
-    if (typeof value === 'bigint' || typeof value === 'number') return bigIntToVmNumber(BigInt(value));
+    // Integer operands reach here in several shapes: bigint, a decimal/hex STRING, or an ethers
+    // BigNumber-like wrapper. The DECLARED type is the authority on numeric-ness, so normalize by it.
+    if (/^u?int\d*$/.test(declared) || typeof value === 'bigint' || typeof value === 'number') {
+      const toBig = (raw: unknown): bigint | undefined => {
+        if (typeof raw === 'bigint') return raw;
+        if (typeof raw === 'number' && Number.isSafeInteger(raw)) return BigInt(raw);
+        if (typeof raw === 'string' && /^-?\d+$/.test(raw)) return BigInt(raw);
+        if (typeof raw === 'string' && /^-?0x[0-9a-f]+$/i.test(raw)) return BigInt(raw);
+        return undefined;
+      };
+      let numeric = toBig(value);
+      if (numeric === undefined && value && typeof value === 'object') {
+        const wrapper = value as { _value?: unknown; _hex?: unknown };
+        numeric = toBig(wrapper._value) ?? toBig(wrapper._hex);
+      }
+      return numeric === undefined ? undefined : bigIntToVmNumber(numeric);
+    }
     if (typeof value === 'string') {
       if (declared === 'string') return utf8ToBin(value);
       // An address hashes as its LOCKING BYTECODE, not as the cashaddr text (same rule as `encode` above).
       if (declared.startsWith('address') || value.includes(':')) return addressToLockScript(value);
+      // A `bytes`/`bytesN` operand may arrive as a hex string (ethers-style callers pass "0x..").
+      if (declared.startsWith('bytes') && /^(?:0x)?[0-9a-f]*$/i.test(value)) {
+        return hexToBin(value.replace(/^0x/, ''));
+      }
       return undefined;
     }
     if (value instanceof Uint8Array) return value;
@@ -5330,6 +5350,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       (p) => (p ? (args[visible.findIndex((x) => x.name === p)] instanceof Uint8Array
         ? args[visible.findIndex((x) => x.name === p)] : null) : null),
     );
+    // A keccak call whose argument is not a direct parameter (keccakPreimageParams[i] === null) normally needs
+    // the VM probe. When the digest is itself a C2 entry KEY the probe cannot work - it would have to co-spend
+    // an entry whose identity it exists to compute (Timelock's queuedTransactions[keccak256(abi.encode(...))])
+    // - but the artifact publishes that argument as an entry-key label, so compute it off-chain instead.
+    // Restricted to the unambiguous single-call/single-label case; anything else falls through to the probe.
+    if (preimages.length === 1 && preimages[0] === null) {
+      const inners = new Set(
+        (abiFunction.entryAccesses ?? [])
+          .flatMap((access) => (access.keyParams ?? []) as readonly string[])
+          .map((label) => /^call:keccak256\((.*)\)$/.exec(label)?.[1])
+          .filter((inner): inner is string => Boolean(inner)),
+      );
+      if (inners.size === 1) {
+        const computed = evalComputedKey([...inners][0], args as FunctionArgument[], visible);
+        if (computed) preimages[0] = computed;
+      }
+    }
     if (preimages.some((p) => p === null)) {
       await this._extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
     }

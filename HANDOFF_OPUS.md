@@ -495,3 +495,25 @@ Two candidate resolutions:
 
 Note slot 6 (`arbitrators_0_r0`, same filler key) has the SAME shape: its predecessor is the
 `arbitrators` head, which slot 1 already consumes. So a fix must handle both.
+
+### Verified pre-existing failures in this worktree (do not chase)
+
+Measured by neutralising the new frame IN PLACE (temporary `SC_LEGACY_NESTED_FRAME` switch, removed
+again) and re-running - identical failures both ways:
+
+```text
+test/e2e/DelegateInferred.test.ts          6
+test/e2e/MsgSender.test.ts                 3   (A->B, A->B->C, A->{B,C})
+test/e2e/UpgradesDeployProxy.test.ts       2
+test/e2e/X50DefaultProxyRegenerated.test.ts 2
+```
+
+They come from the worktree's UNCOMMITTED compiler + `utils/outline.ts` WIP (the outliner now treats
+`OP_INVOKE` as a barrier, so the shipped default-proxy artifact no longer equals a fresh compile), not
+from any SDK change. 71 other proxy / external-call / C2 / sorted / cross-contract e2e files pass, plus
+61 in the C2/Cross/Entry/Mapping/Sorted/Composability sweep.
+
+Also note: `yarn workspace solidcash build` cannot be used to check out a single earlier version of
+`StatefulContract.ts` for a baseline - HEAD's copy does not typecheck against the uncommitted
+`StatefulTransactionBuilder.ts` (which now requires `compilerRoute.logicalSelectors`). Neutralise in
+place instead.

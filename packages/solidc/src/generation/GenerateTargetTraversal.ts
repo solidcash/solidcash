@@ -3642,23 +3642,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_NUMNOTEQUAL, loc); // [idx, bool]
       this.emit(Op.OP_VERIFY, loc);      // [idx]
 
-      // The delegate slot immediately follows the proxy's master and data-NFT
-      // region. Bind the explicit ABI witness to that relocatable physical
-      // relation, avoiding a long-lived deep-stack PICK during the body.
-      this.emit(Op.OP_INPUTINDEX, loc);
-      this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
-      this.emit(Op.OP_SUB, loc);
-      this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      // Ordinary delegate blocks are adjacent to the proxy's master and fixed data-NFT region. A compiler-owned
+      // message-bus route is different: its authenticated proxy block includes a route-wide fixed/trailing frame,
+      // and the implementation is deliberately placed after that complete contiguous block. Its size is a runtime
+      // composition property rather than this implementation artifact's `dataNftCount`, so the ordinary adjacency
+      // equation would compare the proxy witness with a position inside its own route frame. The checks above still
+      // authenticate a preserved minting master at the explicit witness and require it to differ from this delegate.
+      // The function that ORIGINATES a compiler-owned batch is displaced by the very same block: the SDK lays
+      // out the caller's proxy block, then the route composition, then this implementation. Its offset is the
+      // composition's runtime size, not this artifact's `dataNftCount`, so the equation is as meaningless here
+      // as it is inside the route itself. Scoped to functions that actually build a repeated batch, so ordinary
+      // delegates keep the positional binding.
+      const originatesBatchComposition = (node.externalCalls ?? [])
+        .some((slot) => (slot.batchInvocations?.length ?? 0) > 1);
+      if (!(node.messageBusRoute || this.currentFunction.messageBusRoute || originatesBatchComposition)) {
+        this.emit(Op.OP_INPUTINDEX, loc);
+        this.emit(encodeInt(BigInt(1 + this.dataNftCount)), loc);
+        this.emit(Op.OP_SUB, loc);
+        this.emit(Op.OP_NUMEQUALVERIFY, loc);
+      } else {
+        // The adjacency equation normally consumes the duplicated witness left by the checks above. Keep the
+        // generated route's runtime frame aligned with the tracker when that equation is intentionally absent.
+        this.emit(Op.OP_DROP, loc);
+      }
     }
 
     // message-bus batch unlocking bytecode retains its positional batch copy and historical reserved slot below the ordinary
     // ABI argument stack. Remove both untracked bottom items before executing the route. Composition callManifests
     // now live exclusively in artifact-specialized verifier inputs.
-    if (node.messageBusRoute) {
+    if (node.messageBusRoute || this.currentFunction.messageBusRoute) {
       const loc = { location: node.location, positionHint: PositionHint.START };
+      // Delegate route unlocking keeps the proxy-master witness at the physical bottom of the frame and inserts
+      // the two positional message-bus items immediately above it. Preserve that witness by rolling the second
+      // item from the bottom in this layout. Ordinary routes still place both positional items at the bottom.
+      const preservesBottomProxyWitness = this.currentFunctionIsDelegate
+        && node.parameters.at(-1)?.name === '__internal__proxyMasterIndex';
       for (let positional = 0; positional < 2; positional += 1) {
         this.emit(Op.OP_DEPTH, loc);
-        this.emit(Op.OP_1SUB, loc);
+        if (preservesBottomProxyWitness) {
+          this.emit(Op.OP_2, loc);
+          this.emit(Op.OP_SUB, loc);
+        } else {
+          this.emit(Op.OP_1SUB, loc);
+        }
         this.emit(Op.OP_ROLL, loc);
         this.emit(Op.OP_DROP, loc);
       }
@@ -21669,8 +21695,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
     // Construct the exact minimal push encoding of the expected blob. Blobs
     // through 75 bytes use a one-byte direct-push opcode; the remainder of the
-    // The shared message-bus batch envelope above the direct-push range uses OP_PUSHDATA1
-    // followed by one length byte.
+    // The shared message-bus batch envelope uses the canonical direct, PUSHDATA1, or PUSHDATA2 form.
     // Comparing the complete encoded push avoids divergent locator/parser
     // rules and rejects non-minimal encodings without content scanning.
     if (immediateBatch) {
@@ -21707,8 +21732,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
     this.emit(Op.OP_ELSE, locationData);
-    // VM numbers >= 128 require a sign byte. Encode to two bytes and
-    // truncate to the unsigned one-byte PUSHDATA1 length.
+    this.emit(Op.OP_DUP, locationData);
+    this.emit(encodeInt(255n), locationData);
+    this.emit(Op.OP_LESSTHANOREQUAL, locationData);
+    this.emit(Op.OP_IF, locationData);
+    // VM numbers >= 128 require a sign byte. Encode to two bytes and truncate to the unsigned one-byte
+    // PUSHDATA1 length.
     this.emit(encodeInt(2n), locationData);
     this.emit(Op.OP_NUM2BIN, locationData);
     this.emit(encodeInt(1n), locationData);
@@ -21719,6 +21748,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_CAT, locationData);
     this.emit(Op.OP_SWAP, locationData);
     this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ELSE, locationData);
+    // The maximum batch is 520 bytes, so its unsigned little-endian length is exactly two bytes.
+    this.emit(encodeInt(2n), locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+    this.emit(hexToBin('4d'), locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData);
+    this.emit(Op.OP_SWAP, locationData);
+    this.emit(Op.OP_CAT, locationData); // [idx, remainder, encodedExpectedPush]
+    this.emit(Op.OP_ENDIF, locationData);
     this.emit(Op.OP_ENDIF, locationData);
 
     // Consume exactly the encoded second push and compare it byte-for-byte.
@@ -21862,12 +21901,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     blockSize: number, locationData: SingleLocationData, trailingBase?: number,
   ): void {
     const localBase = trailingBase ?? this.currentFunction.blockLayout?.trailingBase ?? blockSize;
-    if (this.currentFunctionIsDelegate || this.currentFunction.modifiers.includes(FunctionModifier.DELEGATE)) {
+    if ((this.currentFunctionIsDelegate || this.currentFunction.modifiers.includes(FunctionModifier.DELEGATE))
+      && !this.currentFunction.messageBusRoute) {
       // Delegate trailing storage follows the complete co-spent implementation block. Output-only slots such
       // as events are implementation-relative too, so using only master/data/entry slots overlaps their outputs.
       this.emit(Op.OP_INPUTINDEX, locationData);
       this.emit(encodeInt(BigInt(localBase)), locationData);
     } else {
+      // A delegate message-bus route is the compiler-selected implementation for a proxy-owned physical block:
+      // its fixed entries, events, return slot, and balanced trailing band all begin at the proxy master. The
+      // co-spent implementation input is only the executable covenant and has no parallel route-sized block.
       this.emitMasterInputIndex(locationData);
       this.emit(encodeInt(BigInt(localBase)), locationData);
     }

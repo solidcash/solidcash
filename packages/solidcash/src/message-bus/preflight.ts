@@ -848,7 +848,19 @@ const evaluateEveryInput = (
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
 
   transaction.inputs.forEach((_input, inputIndex) => {
-    const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+    const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+    const objection = vm.stateSuccess(evaluated);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_OUTLINE_COMPARE === '1' && inputIndex === 3) {
+      const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
+      console.error('outline-compare-nine', trace.flatMap((state, traceIndex) => (
+        state.instructions.length === 9 ? [{
+          traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
+          error: state.error,
+          stack: state.stack.slice(-8).map((item) => binToHex(item)),
+        }] : []
+      )));
+    }
     if (objection !== true) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
@@ -1043,6 +1055,17 @@ const evaluateEveryInput = (
             stack: state.stack.slice(-4).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
           })),
         });
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ROUTE_INPUTS === '1') {
+        // Names the contract/function behind every co-spent input, so a failing index can be attributed without
+        // decoding locking bytecode by hand. The composition places participants far from their proxies.
+        console.error('route-inputs', builder.inputs.map((u, i) => {
+          const un = (u as { unlocker?: { contract?: { name?: string };
+            abiFunction?: { name?: string } } }).unlocker;
+          if (!un?.contract?.name) return undefined;
+          return `${i}${i === inputIndex ? '*FAIL' : ''}:${un.contract.name}.${un.abiFunction?.name ?? '-'}`;
+        }).filter(Boolean).join(' | '));
       }
       throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection));
     }

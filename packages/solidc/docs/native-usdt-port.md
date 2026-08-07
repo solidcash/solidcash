@@ -1,6 +1,7 @@
 # Native USDT port: fidelity audit and implementation status
 
-Status: **contract written and compiling; partially executing.** Six `.scash` files under
+Status: **contract written and compiling; partially executing.** Two arrangements exist: the six hand-split
+`.scash` facets (s1), and an inheritance-composed rewrite partitioned by the built-in splitter (s5). Files under
 `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (23, all green).
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
@@ -77,13 +78,14 @@ work: the SDK derives C2 entry slots from the ABI of the function being called, 
 hides the facet's arguments, so every param-keyed mapping write fails slot derivation. Named forwarders keep
 those parameters in the master's own ABI - and preserve the named ABI a drop-in replacement wants anyway.
 
-### 1.3 The shipped auto-splitter does not handle this contract
+### 1.3 The shipped auto-splitter does not handle this contract - SUPERSEDED, see s5
 
-`compileFileSplit` / `compileStringSplit` landed upstream, and the compiler's over-limit error now names them.
-Run against `native_usdt.scash` it does **not** converge: its probe explored facet groupings of 10,115 to
-12,741 B - every one still over the cap - and was still going at a 240 s timeout. The hand-split remains
-necessary, and it beats the automatic planner on this input. (Contrast `UnicrowSplitCorpus.test.ts`, where the
-same API splits and deploys a real corpus contract successfully.)
+**This section was measured at `83c0a8da` and no longer holds.** It read: run against `native_usdt.scash`,
+`compileFileSplit` does not converge - its probe explored facet groupings of 10,115 to 12,741 B, every one
+still over the cap, and was still going at a 240 s timeout.
+
+After the size commits through `804b786b` it converges in ~60 s, on the monolith (root + 2 facets) and on the
+inheritance-composed rewrite alike. The groupings that used to overflow now fit. See s5.
 
 ## 2. Fidelity audit against the deployed source
 
@@ -231,3 +233,75 @@ must be inverted.
    wants one plain funder per covenant input. The mock provider also now requires `@mem-cash/validation` 0.0.8
    exactly - 0.0.7 silently ignores published consensus limits, which would let shapes pass `.build()` and fail
    `.send()`.
+
+## 5. The inheritance rebuild, and where the built-in splitter stops
+
+`nusdt_inherited.scash` is the same contract composed the way the deployed USDT composes itself - a hierarchy
+of contracts - and partitioned by `compileFileSplit` instead of by six hand-written facets. Tests in
+`packages/solidcash/test/e2e/NativeUsdtInherited.test.ts`.
+
+```
+Ownable
+Pausable      is Ownable                BasicToken  is Ownable          StandardToken is BasicToken
+BlackList     is BasicToken             Freezable   is Ownable          Backed        is Ownable
+Quarantined   is Backed
+NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, Quarantined
+```
+
+Ownable is reached along five paths, so this leans on C3 linearization. It holds: `owner`, `paused`,
+`totalSupply` and `balances` each get exactly one slot in the flattened layout (test-pinned).
+
+### 5.1 It is strictly better as source, and smaller as bytecode
+
+| | hand-split facets | inheritance + auto-split |
+| --- | --- | --- |
+| files to write | 6 `.scash` + 1 doc-only `.inc` | **1** |
+| state layout declared | 6 times, guarded by a parity test | **once** |
+| `pendingDeposits` | two parallel mappings (facets collided on `struct Pending`) | **the struct** |
+| forwarders | 19 named, parameter names must match the facet's | **none** |
+| scripts produced | 6, hand-partitioned | **3**, compiler-partitioned |
+| total bytecode | 25,139 B | **15,995 B** |
+
+Shards: root 1,403 B, `Facet0` 9,987 B, `Facet1` 4,605 B. Note `Facet0` is **13 B** under the cap - the
+splitter packs to the limit, so this bundle is one small edit away from needing a re-plan. That is the
+compiler's job now rather than a hand-drawn line, but it is not slack.
+
+Two earlier conclusions in this document are superseded:
+
+- **s1.3 said the auto-splitter does not handle this contract.** It does now. That measurement was taken at
+  `83c0a8da`, where every grouping the probe tried was still over the cap; after the size commits it converges
+  in ~60 s. Re-measured on the flat monolith too: root + 2 facets.
+- **The facet split's "hard-won rules" were about the mechanism, not the contract.** Identical state blocks,
+  matching forwarder parameter names, no `modifier` in a library, no struct sharing - every one of them is a
+  cost of hand-rolling delegate libraries, and every one disappears here.
+
+### 5.2 The blocker: `msg.sender` does not resolve inside an auto-split facet
+
+The bundle deploys and the constructor state lands correctly. No USDT entry point can then be called.
+
+Minimal repro in `packages/solidcash/test/e2e/SplitFacetMsgSender.test.ts`, on a three-function contract:
+
+| | result |
+| --- | --- |
+| unsplit `guarded()` - `require(msg.sender == this.owner)` | settles |
+| split `bump()` - scalar write, no sender check | settles |
+| split `guarded()` - same scalar write **plus** the sender check, same facet | **fails at the facet's input** |
+| split `vacuous()` - `require(msg.sender == msg.sender)` | **fails identically** |
+
+`msg.sender == msg.sender` is a tautology, so no value comparison can be responsible: what fails is resolving
+`msg.sender` at all inside a facet. `bump` and `guarded` differ only by that check, on the same facet, so the
+partition is not the cause either.
+
+`emitTxOrigin` scans for the first input that is neither `OP_INPUTINDEX` nor token-bearing. The structural
+difference in a split call is that it co-spends TWO covenant inputs, root and facet, and it is the scan running
+at the facet's own input that fails. Not root-caused further.
+
+This is blocking for the splitter generally, not just for this port: `onlyOwner` is the whole of Ownable, so
+every OZ-derived contract - and USDT itself - is unreachable through it.
+
+### 5.3 The delegated-INSERT boundary applies here too
+
+Measured on the deployed bundle: mapping-INSERT entry points (`issue`, `addBlackList`) fail at **input 0**, the
+root, exactly as they do through hand-rolled facets (s3). So the INSERT boundary is a property of the
+delegatecall proxy mechanism and not of how the facets were authored - hand-rolling them differently was never
+going to avoid it, and the two fixes in s3.1 remain the two fixes.

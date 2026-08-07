@@ -923,3 +923,37 @@ argument (the `AbiDecodeAtNode{data=id:rowArgs,...}` extraction of `event_` from
 candidate) and check its header-size arithmetic against the >=76-byte PUSHDATA1 case. A value under 76
 bytes uses a 1-byte header and would hide this bug entirely, which is consistent with every existing test
 passing.
+
+### Landed: 2f758516 - a composite ARGUMENT is pushdata-framed; `abi.decodeAt` now unframes it
+
+Root cause of the truncation signature above. `visitAbiDecodeAt` used the INLINE convention for a
+struct/array target (`emitPushdataDecodeLastField` hands a struct back as-is;
+`emitPushdataDecode` walks the struct's own fields to measure it). That is right for a STATE COMMITMENT,
+where a struct is stored unframed, and wrong for an argument list, where every element - composites
+included - carries its own pushdata frame. The still-framed blob was handed on as the struct, so the
+first field access decoded the frame's PUSHDATA1 header as field 0, consumed the whole payload, and the
+next field decoded an empty remainder.
+
+A composite under 76 bytes carries a 1-byte frame and hides this completely, which is why the whole
+existing suite passes. The marketplace's `JobEventData` is 207 bytes.
+
+Regression-clean: `yarn test:fast` matches the documented baseline exactly; a 68-file SDK sweep matches
+its 11 pre-existing failures.
+
+### Current frontier
+
+The group-0 probe's abort has moved off the struct walk. Its error is now `OP_VERIFY` (was `OP_SPLIT` on
+a zero-length item) and the aborting frame is the 17-instruction C2 entry read:
+
+```text
+OP_DUP OP_UTXOBYTECODE OP_2 OP_PICK OP_EQUALVERIFY   <- the slot's locking bytecode check
+OP_SWAP OP_DROP OP_UTXOTOKENCOMMITMENT <0x20> OP_SPLIT <0x20> OP_SPLIT OP_2 OP_PICK OP_4 OP_PICK OP_EQUAL
+```
+
+so an entry slot's input is again not the entry covenant the covenant expects - most likely the
+`jobEvents` slot that `publishJobEvent`'s WRITE needs, since the three getter rows are now getting
+through. `progressive-route-entries` still reveals nothing, so the return blob is still underived and
+the user-visible failure is unchanged.
+
+Use `nested-entry-pick` to see which slot resolves to what, and `abortingFrame`/`callerFrame` to confirm
+which collection's address is on the stack at the EQUALVERIFY - that names the slot directly.

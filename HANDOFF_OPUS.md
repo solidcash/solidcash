@@ -2067,3 +2067,34 @@ Next, and it should be quick: wrap/instrument the `keySources.map(...)` for slot
 source's `kind`. Whatever those two accesses use for their keys that the others do not IS the bug. Identify the
 collection behind `entryAccesses[4]` at the same time - it is not in the logged set (users/arbitrators/
 meceTags/jobEvents/userRatings/userReviews all resolve), so it is a distinct collection worth naming.
+
+## ROOT CAUSE FOUND: expression-keyed entry accesses do not resolve in a route's callee block
+
+    key-sources { slotIndex: 0, collection: 'users',       kinds: 'msgSender' }   -> picks
+    key-sources { slotIndex: 1, collection: 'arbitrators', kinds: 'msgSender' }   -> picks
+    key-sources { slotIndex: 2, collection: 'meceTags',    kinds: 'param' }       -> picks
+    key-sources { slotIndex: 3, collection: 'jobEvents',   kinds: 'param' }       -> picks
+    key-sources { slotIndex: 4, collection: 'jobEvents',   kinds: 'EXPRESSION' }  -> NEVER PICKS
+    key-sources { slotIndex: 5, collection: 'users',       kinds: 'param' }       -> picks
+
+slotIndex 4 - one of the exact two slots whose block position is funder-filled and read by the covenant - is
+the first access whose key source kind is `expression`. Every access that resolves uses `param` or
+`msgSender`. Others sharing the shape: slotIndex 9 (userReviews), 10 (jobEvents), 11 (userReviews), and 17.
+
+So the defect is: **an entry access whose key is an EXPRESSION produces no pick inside a route's callee block.**
+Key resolution handles `param` and `msgSender`; the expression case falls through, no entry is co-spent, the
+slot is backfilled with a funder, and the covenant's read of that slot returns an empty commitment - the
+OP_SPLIT abort at input 102.
+
+This is consistent with the SDK note that "expression keys auto-resolve": that machinery exists for the direct
+path but is evidently not reached on the route/nested path, which is the same class of gap as the other
+route-vs-direct divergences fixed earlier in this branch (msg.sender resolution, index frames, value witnesses).
+
+**Fix direction:** find where the direct path resolves an expression key (the artifact publishes the expression
+as an `evalComputedKey` label - see [[abi_encode_wire_format_2026_08_07]]) and make the nested/route pick site
+use the same resolution. Do NOT special-case `jobEvents`; the same shape affects at least five slots across
+three collections.
+
+Confidence: the correlation is exact (every non-picking slot is `expression`, every picking slot is not), but
+the fix has NOT been written or tested. Verify by resolving slotIndex 4's key first and confirming the funder
+at block position 7 becomes an entry NFT.

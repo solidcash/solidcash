@@ -10883,6 +10883,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     if (access && collection?.sorted) {
                       const keySources = access.keySources
                         ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));
+                      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                        ?.SOLIDC_DEBUG_INPUTS === '1') {
+                        console.error('key-sources', {
+                          slotIndex: slot.slotIndex,
+                          collection: access.collection,
+                          kinds: keySources.map((src) => src.kind).join(','),
+                        });
+                      }
                       const keys = keySources.map((source, keyIndex) => {
                         if (source.kind === 'msgSender'
                           || ('expressionLabel' in source && source.expressionLabel?.includes('msg.sender'))) {

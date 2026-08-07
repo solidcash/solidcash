@@ -5976,7 +5976,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     op: state.instructions[state.ip]?.opcode,
                     stack: state.stack.slice(-8).map((item) => {
                       const hex = binToHex(item);
-                      return `${item.length}:${hex.slice(0, 32)}`;
+                      return `${item.length}:${hex.slice(0, 260)}`;
                     }),
                   })),
                 });

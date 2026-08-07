@@ -810,3 +810,38 @@ decode runs off the end of, it is NOT this value. The blob on the stack at the a
 (`4cf1` = PUSHDATA1 241) beginning `00 19 76a914..` - i.e. something that CONTAINS the address but is
 much larger than the 106-byte `User`, so identify that blob before assuming anything about framing.
 Candidates: the route's `__message_bus_results` accumulator, or a row-args blob.
+
+### The blob identified: the `publishJobEvent` row's `event_` argument is mis-encoded
+
+Widening the trace stack dump identifies it. The item is a pushdata-encoded `JobEventData`:
+
+```text
+outer  4c f1  (PUSHDATA1 241)   -> stack item is 243 bytes, consistent
+inner  4c ef  (PUSHDATA1 239)   -> 239 bytes of struct payload
+payload:
+  00                                          type_    = 0  (JobEventType.Created)   1 byte
+  19 76a914c4841b..88ac                       address_ = abi.encodePacked(msg.sender) 26 bytes
+  4c d3 <211 bytes>                           data_                                   213 bytes
+  <timestamp_>                                uint32
+```
+
+1 + 26 + 213 = 240 with `timestamp_` still to come, but the payload is only 239 bytes - `data_` declares
+211 and only 210 follow. THAT is what makes `emitPushdataDecodeLastField` run off the end.
+
+Inside `data_` the pieces are visible:
+
+```text
+20 "Create a marketplace in solidity"                         encodeString(title_), 32 chars - correct
+30 78 61 30 62 31 ...  = ASCII "0xa0b16ada95e7d6bd78efb91c368a3bd6d3b0f6b77cd3f27664475522ee138ae5"
+```
+
+That second run is the contentHash rendered as its 66-character ASCII HEX STRING, not the 32 raw bytes -
+`0x30` there is the ASCII '0' of "0x...", not a length prefix. So the SDK's expression evaluation for
+`abi.encodePacked(contentHash_)` is treating an ethers `bytes32` hex string as UTF-8 text.
+
+Next step, concretely: in `_evaluateExternalExpression`, the `abiEncodePacked` / `bytesConcat` arms that
+build this `JobEventData` (the artifact records the whole expression tree under
+`publishJobPost`'s `externalCalls[0].batchInvocations[3].argSources[1]`) must hex-decode a `0x`-prefixed
+`bytes32` argument instead of UTF-8-encoding it, and the length prefix that comes out one short needs to
+be re-derived once that is fixed. Compare against how the DIRECT (non-batch) external-call path encodes
+the same struct - `publishJobEvent` also has a direct callsite.

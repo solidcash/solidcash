@@ -2098,3 +2098,26 @@ three collections.
 Confidence: the correlation is exact (every non-picking slot is `expression`, every picking slot is not), but
 the fix has NOT been written or tested. Verify by resolving slotIndex 4's key first and confirming the funder
 at block position 7 becomes an entry NFT.
+
+## FIX LANDED: expression keys now resolve on the nested/route path
+
+The nested pick site looked up a computed key's `expressionLabel` as if it were a PARAMETER NAME
+(`visibleInputs.findIndex(input => input.name === paramName)`), which can never match, so the access returned
+`undefined`, `keys.every(...)` failed, and the slot was silently funder-filled. The direct path never had this
+bug because it calls `evalComputedKey(expressionLabel, args, inputs)` first (see ~7730).
+
+Applied the same resolution at the nested site. Result:
+
+    before: slotIndex 4 and 17 absent from entry-pick-result   (29 picks)
+    after:  slotIndex 4  gotEntry: true  predecessor: found
+            slotIndex 17 gotEntry: true  predecessor: found    (31 picks)
+
+**`post job 1` still fails, with the same input-102 OP_SPLIT.** 35 entry-slot visits vs 31 picks means FOUR
+slots still produce no entry. Next: dump which four (the `entry-slot-visit` and `entry-pick-result` slotIndex
+sets differ by exactly those), and check whether the covenant's failing read is now one of THOSE rather than
+the two just fixed - the error is identical in text but may well be a different slot now. Do not assume the
+remaining four share one cause; `key-sources` will classify them the same way it classified these.
+
+Regression risk: this changes key resolution for every expression-keyed access on the nested path, which
+previously produced NO pick at all. It can only add picks, never change an existing one, but the SDK suite
+should still be re-run before trusting it.

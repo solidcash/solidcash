@@ -10901,6 +10901,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           // recomputes from the witness.
                           return addressToLockScript(this.target);
                         }
+                        // A computed key (hash160(pk), keccak256(x), ...) is not a parameter name, so the
+                        // param lookup below cannot find it and the whole access silently produces no pick -
+                        // leaving its entry slot funder-filled while the covenant still reads a commitment
+                        // there. Resolve it from its canonical label first, as the direct path does.
+                        if (source.kind === 'expression' && 'expressionLabel' in source) {
+                          const auto = evalComputedKey(
+                            source.expressionLabel,
+                            routePlanningArgs,
+                            selectedFn.inputs.filter((input) => !input.name.startsWith('__internal__')),
+                          );
+                          if (auto) return auto;
+                        }
                         const encodedName = source.paramName
                           ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
                           ?? access.keyParams[keyIndex];

@@ -1020,3 +1020,27 @@ entry commitments, so the return blob stays underived and input 102 still report
 `OP_SPLIT ... length 0, index 1`. The next step is to re-run the frame chain (`callerFrame`) against the
 NEW bytecode - the previous chain readings are stale now that 400+ bases moved - and identify which check
 fails with the corrected addressing.
+
+### Three follow-up attempts, all byte-identical - STOP AND MEASURE BEFORE THE NEXT ONE
+
+After d86e219d the `jobEvents` entry read still emits `OP_INPUTINDEX OP_6 OP_ADD`. Three further changes
+were made, compiled, and the emitted bytes compared - ALL THREE produced artifacts byte-identical to
+d86e219d (`c05693` stayed at 2 occurrences, depth-picks stayed at 424). All were reverted:
+
+1. Dropping the `__message_bus*` name gate in `emitMasterInputIndex`'s ordinal branch, on the theory that
+   a route also emits its SOURCE handlers (`publishJobEvent`) as helper bodies.
+2. Restructuring `emitMasterInputIndex` so the contract-level ordinal is consulted before the
+   `currentFunctionIsDelegate` pick (which needs the witness in the per-body tracked model).
+3. Widening `emitEntryInputIndex`'s delegate-branch admission from `currentFunction.messageBusRoute` to
+   also accept `routeProxyMasterBottomOrdinal !== undefined`.
+
+Byte-identical across all three means those two remaining sites are reached through NEITHER
+`emitMasterInputIndex` NOR `emitEntryInputIndex`, and/or `routeProxyMasterBottomOrdinal` is UNDEFINED in
+the compile that emits them - the contract-level probe
+(`fn.messageBusRoute && fn.parameters.at(-1)?.name === '__internal__proxyMasterIndex'`) may run before the
+witness parameter is injected.
+
+DO NOT guess at a fourth variant. Establish first, with `SOLIDC_DEBUG_MASTER_BASE=1` plus a similar probe
+on `emitEntryInputIndex`/`emitBlockSlotIndex`, (a) which emitter writes those two `OP_INPUTINDEX OP_6
+OP_ADD` sequences, and (b) whether `routeProxyMasterBottomOrdinal` is set in that compile at that moment.
+Both are one instrumented compile away; three uninstrumented attempts produced nothing.

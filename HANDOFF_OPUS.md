@@ -268,3 +268,27 @@ condition in place, not by stashing. The user's stash entry is intact.
 
 `SOLIDC_DEBUG_ROUTE_INPUTS=1` prints `route-inputs`: the contract and function behind every co-spent input,
 with the failing index starred. Essential here - the composition places participants far from their proxies.
+
+### Current failure, identified to the emitter
+
+The six-instruction body is NOT hand-written code: it is the `OP_PUSHDATA1` branch of the pushdata decode
+subroutine in `GenerateTargetTraversal.ts` (~2878):
+
+```text
+OP_DROP OP_1 OP_SPLIT OP_SWAP <0x00> OP_CAT     // exactly 6 elements
+```
+
+That span is byte-identical to the `OP_PUSHDATA2` branch's shape and gets OUTLINED into a shared helper
+(invoked here as id `b681`), which is why the failing body is six instructions rather than the whole decoder.
+
+Semantics: the decoder saw a leading `0x4c` (PUSHDATA1), dropped it, and tried to split off the 1-byte length -
+but nothing followed. So the value being decoded is an EMPTY or TRUNCATED pushdata blob.
+
+NOT caused by the zero-address fix: the identical failure (same input 102, same `instructionCount: 6`, same
+`ip: 3`) was present before that change, when `arbitrator_` was still 20 zero bytes.
+
+Next question to answer, by instrumentation: WHICH value reaches the pushdata decoder empty. The decoder is
+used for reading pushdata-encoded state/memory values, and the stack carries `0x20` (the memory word size)
+directly beneath, so a `__yulmem` read is the leading candidate - consistent with `checkParams` taking
+`string memory title_` from `publishJobPost`'s `string calldata title_`. Confirm which read it is before
+changing anything; the arguments themselves are verified correct.

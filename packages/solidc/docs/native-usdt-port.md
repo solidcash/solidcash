@@ -8,11 +8,19 @@ Audited against the **deployed verified source** (fetched via Blockscout), which
 `github.com/tethercoin/USDT` apart from the Etherscan submission header - so the GitHub copy is a safe
 reference.
 
-> **Re-measured 2026-08-07** after merging `solidcash_v0.13.1` (1,773 commits, 2026-07-25 -> 2026-08-06).
+> **Re-measured 2026-08-07** after merging `solidcash_v0.13.1` (1,781 commits, 2026-07-25 -> 2026-08-07).
 > Two of this document's load-bearing claims changed, and both changed in the port's favour:
 > the blocking gap is now half-fixed upstream and the remaining half names its own workaround (s3), and
-> upstream outlining cut every measurement in s1.1 - the monolith by 58% (s1.3). Everything in s2
-> (the fidelity audit) re-verified unchanged.
+> upstream outlining cut every measurement in s1.1 - the monolith by 59%. Everything in s2 (the fidelity
+> audit) re-verified unchanged.
+>
+> Measured in two passes, because upstream landed eight more size commits mid-session. The first pass
+> (through `83c0a8da`) showed the two C2-heavy facets GROWING while everything else shrank, and this
+> document concluded that outlining "does not help a body dominated by C2 access sequences". **That
+> conclusion was wrong** - it was an artifact of the subroutine probe being gated off for those contracts.
+> `290dfa43` ("run the subroutine probe when a contract uses aggregates") turned it on and both facets fell
+> ~35%. Recorded because the retracted claim is the more instructive half: a facet that resists outlining is
+> evidence about the probe's gating, not about C2 codegen.
 
 ## 1. What was built
 
@@ -24,31 +32,32 @@ the shipped `library` + `brandLibrary` delegate machinery and the standard token
 
 ### 1.1 Why it is six files, not one
 
-The monolith (`native_usdt.scash`, kept as the readable reference spec) compiles to **13,698 B**. BCH enforces
+The monolith (`native_usdt.scash`, kept as the readable reference spec) compiles to **13,360 B**. BCH enforces
 `MAX_INPUT_BYTESIZE = 10,000` bytes **per spending input** - the P2SH32 redeem script plus its unlocking data.
 An over-limit contract cannot be spent at all; its deploy probe cannot execute one instruction. No single
-function is over the limit (largest body 1,004 B) - the sum is. So this needs partitioning, per
+function is over the limit (largest body 964 B) - the sum is. So this needs partitioning, per
 `large-contract-splitting.md` strategy S2: a proxy master holding state plus facets deployed as branded
 delegate libraries, each riding its own co-spent input with its own 10 KB budget.
 
-Measured, after the split (all under the cap, verified by a test):
+Measured, after the split (all under the cap, verified by a test). The middle column is the intermediate
+measurement at `83c0a8da`, kept because of what it got wrong (see the note at the top):
 
-| script | 2026-07-25 | 2026-08-07 | delta | contents |
-| --- | --: | --: | --: | --- |
-| `nusdt.scash` (master) | 7,992 | **4,934** | -38.3% | state, 19 forwarders, and the three FT-moving functions |
-| `nusdt_transfer.scash` | 7,396 | **7,779** | +5.2% | `transfer` |
-| `nusdt_spend.scash` | 8,083 | **8,445** | +4.5% | `transferFrom` |
-| `nusdt_admin.scash` | 8,570 | **3,281** | -61.7% | Ownable, Pausable, blacklist, freeze, `approve`, `deprecate` |
-| `nusdt_supply.scash` | 6,054 | **3,001** | -50.4% | `issue`, `redeem`, `destroyBlackFunds`, `setParams` |
-| `nusdt_boundary.scash` | 5,936 | **3,673** | -38.1% | `tick`, `deposit`, `claimDeposit` |
-| `native_usdt.scash` (monolith) | 32,644 | **13,698** | -58.0% | the whole surface in one file |
+| script | 07-25 | 08-07 @`83c0a8da` | 08-07 @`804b786b` | vs 07-25 | contents |
+| --- | --: | --: | --: | --: | --- |
+| `nusdt.scash` (master) | 7,992 | 4,934 | **4,784** | -40.1% | state, 19 forwarders, and the three FT-moving functions |
+| `nusdt_transfer.scash` | 7,396 | 7,779 | **5,046** | -31.8% | `transfer` |
+| `nusdt_spend.scash` | 8,083 | 8,445 | **5,579** | -31.0% | `transferFrom` |
+| `nusdt_admin.scash` | 8,570 | 3,281 | **3,219** | -62.4% | Ownable, Pausable, blacklist, freeze, `approve`, `deprecate` |
+| `nusdt_supply.scash` | 6,054 | 3,001 | **2,925** | -51.7% | `issue`, `redeem`, `destroyBlackFunds`, `setParams` |
+| `nusdt_boundary.scash` | 5,936 | 3,673 | **3,586** | -39.6% | `tick`, `deposit`, `claimDeposit` |
+| `native_usdt.scash` (monolith) | 32,644 | 13,698 | **13,360** | -59.1% | the whole surface in one file |
 
-Note the shape of that table: everything shrank sharply **except the two facets that carry the sorted-mapping
-hot paths**, which grew. Outlining pays off across many medium bodies and does not help a body dominated by
-C2 access sequences.
+Everything shrank, including the two facets carrying the sorted-mapping hot paths - those were the last to,
+and only once the subroutine probe was gated on for aggregate-using contracts. Sum of the six shipping
+scripts: 44,031 B -> 25,139 B.
 
 Splitting still multiplies the available budget rather than compressing code, and that is still the reason
-the contract exists at all - but the margin is now 3,698 B over the cap, not 22,644 B.
+the contract exists at all - but the margin is now 3,360 B over the cap, not 22,644 B.
 
 Two rules the split must obey, both learned the hard way and both now pinned by tests:
 
@@ -163,26 +172,31 @@ proven or measured:
    `DelegateMappingProbe.test.ts` ("a direct zero-value register is enough..."). Costs one small master
    function per mapping that needs first-touch, and makes account-opening an explicit step - a deviation from
    ERC-20, where `transfer` to a never-seen address just works.
-2. **Move the credit path back into the master (no semantic deviation).** This was impossible when the port was
-   written - `transfer` cost 6,222 B inline against a 7,992 B master. After the merge it costs **2,778 B**, and
-   both credit functions fit:
+2. **Move the insert path back into the master (no semantic deviation).** This was impossible when the port was
+   written - `transfer` alone cost 6,222 B inline against a 7,992 B master. It now costs 2,794 B, and **six of
+   the eight insert-path functions fit**:
 
-   | master variant | bytes |
-   | --- | --: |
-   | both forwarded (today) | 4,934 |
-   | `transfer` inline | 7,712 |
-   | `transfer` + `transferFrom` inline | **9,030** |
+   | master variant | bytes | spare |
+   | --- | --: | --: |
+   | all forwarded (today) | 4,784 | 5,216 |
+   | `+ transfer` | 7,578 | 2,422 |
+   | `+ transferFrom` | 8,799 | 1,201 |
+   | `+ approve` | 9,189 | 811 |
+   | `+ issue` | 9,578 | 422 |
+   | `+ addBlackList + freeze` | **9,748** | **252** |
 
-   9,030 B is under the 10,000 B cap with 970 B to spare. That covers the ERC-20 movement surface. It does not
-   cover the rest of the insert set (`approve` -> `allowed`, `issue` -> `balances[owner]`,
-   `addBlackList`/`freeze` -> their flag mappings, `deposit` -> `pendingAmount`), so shape 2 is not sufficient
-   on its own - the remaining first-touches still need shape 1 or their own direct entry points, and 970 B does
-   not buy many.
+   That is `transfer`, `transferFrom`, `approve`, `issue`, `addBlackList` and `freeze` all direct, under the
+   cap. The functions that only ever UPDATE (`redeem`, `destroyBlackFunds`, `removeBlackList`, `unfreeze`) can
+   stay in facets, because updates settle through a delegate. What does **not** fit in the remaining 252 B is
+   the quarantine boundary: `deposit` first-touches `pendingAmount` / `pendingUnlockAt`, and `claimDeposit`
+   can first-touch `balances`. Those two still need shape 1, or their own budget - note `cancelDeposit` is
+   already a direct master function, so the boundary is partly there.
 
 The honest summary: the blocker went from "a designed-but-unimplemented upstream feature on the critical path"
-to "a budget allocation problem inside a 10,000 B master, with two working mechanisms and measured prices".
-Deciding between them is the next step and is a product decision (explicit account registration vs. spending
-the master's remaining headroom), not a compiler one.
+to "a budget allocation problem inside a 10,000 B master, with two working mechanisms and measured prices" -
+and after the second measurement pass the budget nearly covers it outright. Deciding between them is the next
+step and is a product decision (explicit account registration vs. spending the master's headroom), not a
+compiler one.
 
 ### What executes today
 

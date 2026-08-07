@@ -21,7 +21,7 @@ import {
 // spending input stays under MAX_INPUT_BYTESIZE (10,000 B).
 //
 // The monolith is still unspendable, but the margin has collapsed: 32,644 B when
-// this was written, 13,698 B now, against a 10,000 B cap. Splitting is still what
+// this was written, 13,360 B now, against a 10,000 B cap. Splitting is still what
 // makes the contract exist - it is no longer what makes it exist by a wide margin.
 // =============================================================================
 
@@ -223,9 +223,11 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
       expect(size, `${name} is ${size} B, over the ${MAX_INPUT_BYTESIZE} B per-input limit`)
         .toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     }
-    // And the point of the exercise: the sum is far past what one input could hold.
+    // And the point of the exercise: the sum does not fit one input. Asserting a fixed multiple of
+    // the cap re-rots every time the optimiser improves (this said 3x and the total has fallen from
+    // 44,031 B to 25,139 B), so assert the property that actually justifies the split.
     const total = rows.reduce((a, [, s]) => a + s, 0);
-    expect(total).toBeGreaterThan(MAX_INPUT_BYTESIZE * 3);
+    expect(total).toBeGreaterThan(MAX_INPUT_BYTESIZE);
   });
 
   // A delegate library writes the CALLER's state BY SLOT, so a divergent layout
@@ -236,9 +238,9 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
   // audit than six. It compiles, and it can never be SPENT - this pins the exact
   // reason the split exists rather than leaving it as a claim in a comment.
   //
-  // The overshoot is now 3,698 B, not 22,644 B: upstream outlining took the
-  // monolith from 32,644 B to 13,698 B and the largest single body from 6,555 B
-  // to 1,004 B. Asserting a fixed multiple of the cap would re-rot, so assert the
+  // The overshoot is now 3,360 B, not 22,644 B: upstream outlining took the
+  // monolith from 32,644 B to 13,360 B and the largest single body from 6,555 B
+  // to 964 B. Asserting a fixed multiple of the cap would re-rot, so assert the
   // shape that actually matters - over the cap, no single body responsible.
   it('the single-file monolith compiles but is unspendable, which is why we split', () => {
     const mono = compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact;

@@ -150,6 +150,15 @@ export function encodeFunctionArgument(
     argument = addressToLockScript(argument);
   }
 
+  // Solidity's `address(0)` compiles to EMPTY bytes: a BCH address is a variable-length locking bytecode and the
+  // zero address has no script (GenerateTargetTraversal: "Default is empty (address(0))"). ethers hands
+  // `ethers.ZeroAddress` through as the string of 20 zero bytes, which would hexToBin to 20 zero bytes, compare
+  // UNEQUAL to address(0), and then be decoded as a locking bytecode. Normalise it to the compiler's form. No
+  // real locking bytecode is all-zero, so this cannot swallow a valid address.
+  if (type instanceof AddressType && typeof argument === 'string' && /^(0x)?0*$/i.test(argument)) {
+    argument = new Uint8Array(0);
+  }
+
   // Convert hex string to Uint8Array
   if (typeof argument === 'string') {
     if (argument.startsWith('0x')) {

@@ -5933,12 +5933,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                 ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                const aborted = entryTrace.at(-1);
                 console.error('progressive-route-entries', {
                   groupIdx,
                   pass,
                   revealed: [...revealed.entries()],
                   learned: [...bEntryMap.entries()],
-                  error: entryTrace.at(-1)?.error,
+                  error: aborted?.error,
+                  // The aborting program is usually a small outlined helper; printing it whole is what maps the
+                  // failure back to its emitter (the artifact does not carry outlined bodies - the SDK assembles
+                  // the OP_DEFINEs at spend time, so they cannot be recovered offline).
+                  abortingFrame: (aborted?.instructions.length ?? 99) <= 48
+                    ? aborted?.instructions.map((instruction, index) => `${index}:`
+                      + `${(instruction as { opcode: number }).opcode.toString(16).padStart(2, '0')}`
+                      + `${'data' in instruction && instruction.data
+                        ? `<${binToHex(instruction.data as Uint8Array)}>` : ''}`).join(' ')
+                    : `too long (${aborted?.instructions.length})`,
                   tail: entryTrace.slice(-4).map((state) => ({
                     ip: state.ip,
                     count: state.instructions.length,

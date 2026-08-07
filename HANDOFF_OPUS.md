@@ -528,3 +528,44 @@ identical OP_SPLIT. Reverted. So the covenant's rejection of the placeholder at 
 a key-equality mismatch, and the "slot 5 needs a UTXO slot 14 already holds" story is at best
 incomplete. Find the actual failing check by mapping the aborting 18-instruction outlined helper back
 to its emitter before trying another witness-side fix.
+
+### The aborting frame, decoded (this supersedes the slot-5 guess)
+
+`progressive-route-entries` now prints `abortingFrame` - the complete instruction list of the aborting
+program, which is what the artifact cannot give you (outlined helper bodies are NOT in the artifact;
+`functionBodies` holds only selector-keyed bodies and the contract script contains ZERO `OP_DEFINE`s -
+the SDK assembles them at spend time, so offline decoding is a dead end).
+
+Group 0's aborting frame, 18 instructions, fails at index 5:
+
+```text
+0:OP_ADD  1:OP_DUP  2:OP_UTXOBYTECODE  3:OP_2  4:OP_PICK  5:OP_EQUALVERIFY  <-- HERE
+6:OP_SWAP 7:OP_DROP 8:OP_UTXOTOKENCOMMITMENT 9:<0x20> 10:OP_SPLIT 11:<0x20> 12:OP_SPLIT
+13:OP_2 14:OP_PICK 15:OP_4 16:OP_PICK 17:OP_EQUAL
+```
+
+That is a C2 entry read: compute the slot's input index (`OP_ADD`), require that input's locking
+bytecode to be the entry-NFT address, then split its commitment into the two 32-byte key/next fields.
+The expected lbc is `aa20a2d9fabc...87` = the ARBITRATORS entry address, so the slot is **6**
+(`arbitrators_0_r0`), not 5. Correct the earlier note accordingly.
+
+### Why it cannot be satisfied as composed
+
+Row 0 is `arbitratorRegistered(address(0))`. Slot 6's key is BOUND (the handler declares
+`__message_bus_key_arbitrators_0`, `perRow`), so it is the zero address - absent from `arbitrators`.
+The live `arbitrators` C2 list contains EXACTLY ONE entry, the head `0000..`, so slot 6's absence
+bracket is the head. Slot 1 (`arbitrators_sender_0`, key = the caller's address, also absent) brackets
+to the SAME head and already co-spends it. One outpoint cannot be two inputs.
+
+`runtimeAliasPriorSlots: [1]` on slot 6 is the intended escape, but the covenant still demanded the
+entry - so the alias condition is not satisfied by two DIFFERENT keys that happen to share a bracket.
+That is why the alias-key-witness experiment above changed nothing: it only rewrote UNBOUND keys, and
+this slot's key is bound.
+
+So the remaining work is one of:
+- Make the route's entry-slot alias condition accept "resolves to the same bracketing entry" rather
+  than "same key". Compiler-side, in whatever emits this 18-instruction check.
+- Or stop emitting a batch row for a call whose off-chain guard is false (`arbitrator_ != address(0)`
+  is false here). Blocked as written: `emitExternalBatchRowReturn` skips prior rows' return fields
+  STATICALLY by `logicalIndex`, so dropping a row misaligns every later row's decode. Dropping the row
+  therefore needs a matching conditional skip on the caller side.

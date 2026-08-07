@@ -457,3 +457,41 @@ So `users_0_r0` (75def5fc) is ABSENT and its predecessor is `3e16384e` - the SAM
 want one entry UTXO and it can only be co-spent once; `runtimeAliasPriorSlots` exists for exactly this,
 which is why some row slots legitimately stay placeholders. Whether the covenant agrees for a
 WRITE-capable slot is the open question.
+
+
+### THE CONFLICT, isolated (this is the concrete blocker)
+
+Physical entry inputs actually placed in the callee block (all at the `users`/`arbitrators`/... entry
+addresses, from the input dump):
+
+```text
+109  users        commitment 000000...   <- the HEAD sentinel   -> slot 0  (users_sender_0)
+110  arbitrators  commitment 000000...   <- the HEAD sentinel   -> slot 1  (arbitrators_sender_0)
+111  meceTags                                                   -> slot 2
+112  jobEvents                                                  -> slot 3
+113,114,115  aa20953ccf...  no token     <- balanced placeholders (slots 4,5,6)
+116  userRatings                                                -> slot 7
+117  userReviews                                                -> slot 8
+123  users        commitment 3e16384e... <- user1's entry       -> slot 14 (users_0_r2)
+```
+
+`users` has exactly two live entries: the head `0000..` and user1 `3e16384e..`. Slot 5
+(`users_0_r0`) has the absent filler key `75def5fc..`, whose bracketing predecessor is `3e16384e..` -
+THE SAME UTXO slot 14 already consumes as its exact entry. One outpoint cannot be two inputs, so the
+SDK left slot 5 a placeholder, and the covenant rejects the placeholder.
+
+`runtimeAliasPriorSlots` is the escape hatch for exactly this, but slot 5 lists only `[0]` - the slot
+holding the HEAD - not slot 14, which holds the UTXO it actually needs. The static prior-slot list is
+computed from key SHAPES; the collision here is between a resolved-at-runtime predecessor and an exact
+entry.
+
+Two candidate resolutions:
+- Make the alias admissible against whichever slot carries the needed entry (resolved UTXO), not a
+  statically enumerated prior-slot list.
+- Or have the SDK pick don't-care row-key witnesses so they collapse onto a slot already present. Slot
+  5 is don't-care for row 0: row 0 is `arbitratorRegistered`, which reads `arbitrators` (slot 6), not
+  `users`. Today the SDK fills every per-row key witness from the row's address argument, so a row that
+  never touches `users` still pins a `users` key.
+
+Note slot 6 (`arbitrators_0_r0`, same filler key) has the SAME shape: its predecessor is the
+`arbitrators` head, which slot 1 already consumes. So a fix must handle both.

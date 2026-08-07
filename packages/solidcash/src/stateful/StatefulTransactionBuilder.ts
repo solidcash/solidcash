@@ -134,6 +134,11 @@ export interface ExternalCallUtxoGroup {
   /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is
    * emitted at that offset instead of appended after the whole participant region. */
   returnEventInBlock?: boolean;
+  /** A route's chunkable C2 WRITE pins its value chunks as outputs in the callee's TRAILING band. The value is
+   * computed on-chain (`publishJobEvent` stamps `block.timestamp` before storing), so the SDK cannot build the
+   * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
+   * from the callee's derivation probe and placed here, keyed by block slot. */
+  derivedTrailingOutputs?: Map<number, { commitment: string; lockingBytecode: Uint8Array }>;
   /** B's event NFT outputs (from auto-derivation of B's VM trace) */
   eventOutputs?: Array<{
     eventSignature: string; commitment: string; lockingBytecode: Uint8Array;
@@ -2011,11 +2016,28 @@ export class StatefulTransactionBuilder {
             continue;
           }
 
-          if (slot?.kind === 'trailing'
-            && externalDynamicChunkIdx < externalDynamicChunks.length) {
-            const output = externalDynamicChunks[externalDynamicChunkIdx++];
-            builder.addOutput(output);
-            continue;
+          if (slot?.kind === 'trailing') {
+            // Derived route chunks claim specific slots, so they are placed before the positional dynamic-chunk
+            // queue draws from the band. The two do not currently co-occur; if they ever do, the queue keeps its
+            // relative order but shifts past whatever slots the derived outputs already took.
+            const derived = group.derivedTrailingOutputs?.get(si);
+            if (derived) {
+              builder.addOutput({
+                to: derived.lockingBytecode,
+                amount: 1000n,
+                token: {
+                  amount: 0n,
+                  category: group.categoryId,
+                  nft: { capability: 'mutable', commitment: derived.commitment },
+                },
+              });
+              continue;
+            }
+            if (externalDynamicChunkIdx < externalDynamicChunks.length) {
+              const output = externalDynamicChunks[externalDynamicChunkIdx++];
+              builder.addOutput(output);
+              continue;
+            }
           }
 
           // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now

@@ -101,7 +101,7 @@ import {
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
-  getDynamicChunkAddress, getValueChunkAddress,
+  getDynamicChunkAddress, getValueChunkAddress, getValueChunkLockingBytecode,
   getDataNftLockingBytecode, getEntryNftLockingBytecode,
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
@@ -597,6 +597,87 @@ const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
  * The contract verifies state via: <expected> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY
  * This scans the trace for those patterns and records the expected commitment bytes per output index.
  */
+/**
+ * A chunkable C2 write whose value is COMPUTED on-chain (`publishJobEvent` stamps `block.timestamp` before
+ * storing the row) carries no `valueParam`, so the caller cannot build its chunks off-chain the way a
+ * parameter-valued write does. The covenant still pins them, in the CALLEE's trailing band, and it verifies the
+ * chunk ADDRESS before the chunk commitment - so an absent output aborts the probe before the commitment it
+ * would need is ever revealed.
+ *
+ * The value itself breaks that circularity: it is still a live stack item when the probe aborts, and the entry
+ * head names it exactly (length, and sha256 == root). Recovering it by that root match is self-verifying, and
+ * every chunk then follows deterministically, so no placeholder round-trip is needed.
+ *
+ * Returns true when it placed something new, so the caller keeps probing.
+ */
+function deriveRouteValueChunks(
+  group: ExternalCallUtxoGroup, bEntryMap: Map<number, string>, bOutputBase: number,
+  trace: AuthenticationProgramStateCommon[],
+): boolean {
+  // Route-only: the block layout being indexed is the route's, so the matching accesses are the route's too.
+  const routeAbi = group.compilerRoute?.abiFunction;
+  const trailingBase = group.blockLayout?.trailingBase;
+  if (!group.blockLayout || !routeAbi || trailingBase === undefined) return false;
+
+  const pending: Array<{ collection: string; slot: Uint8Array; root: Uint8Array; length: number }> = [];
+  for (const [outputIndex, commitment] of [...bEntryMap.entries()].sort(([a], [b]) => a - b)) {
+    const layoutSlot = group.blockLayout.slots[outputIndex - bOutputBase];
+    if (layoutSlot?.kind !== 'entry') continue;
+    const access = routeAbi.entryAccesses?.[layoutSlot.slotIndex ?? -1];
+    // A parameter-valued write builds its own chunks; only computed values land here. A READ of a chunkable
+    // value also has no valueParam, and pins no outputs, so gate on the access actually writing.
+    if (!access || access.valueParam !== undefined) continue;
+    if (!access.operations.includes('write')) continue;
+    const parsed = decodeEntryCommitment(hexToBin(commitment));
+    if (parsed.slot.every((byte) => byte === 0)) continue; // structural HEAD, never a value
+    const raw = parsed.value;
+    if (raw.length !== 4 + 32 + VALUE_HEAD_SIZE) continue; // inline (or not chunkable): no chunks pinned
+    const length = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
+    if (length <= 60) continue;
+    pending.push({ collection: access.collection, slot: parsed.slot, root: raw.slice(4, 36), length });
+  }
+  if (pending.length === 0) return false;
+
+  // The INSERT's NEW node precedes the chunks in the trailing band (see emitTrailingBlockBase).
+  const insertSlots = (group.plannedEntryInserts ?? [])
+    .map((planned) => planned.outputBlockSlot).filter((slot) => slot >= trailingBase);
+  let cursor = insertSlots.length > 0 ? Math.max(...insertSlots) + 1 : trailingBase;
+
+  const derived = group.derivedTrailingOutputs ?? new Map();
+  let placed = false;
+  for (const entry of pending) {
+    const rootHex = binToHex(entry.root);
+    let value: Uint8Array | undefined;
+    // Length-pruned so this is a cheap scan: only an item of exactly the stored length can be the value.
+    outer: for (const state of trace) {
+      for (const item of state.stack) {
+        if (item.length === entry.length && binToHex(sha256Sync(item)) === rootHex) { value = item; break outer; }
+      }
+    }
+    const count = Math.ceil((entry.length - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      console.error('route-value-chunks', {
+        collection: entry.collection, length: entry.length, count, startSlot: cursor, recovered: value !== undefined,
+      });
+    }
+    if (!value) { cursor += count; continue; }
+    const lockingBytecode = getValueChunkLockingBytecode(
+      group.categoryId, entry.collection, entry.slot, entry.root,
+    );
+    for (let i = 0; i < count; i++) {
+      const blockSlot = cursor++;
+      const data = value.slice(VALUE_HEAD_SIZE + i * VALUE_CHUNK_SIZE, VALUE_HEAD_SIZE + (i + 1) * VALUE_CHUNK_SIZE);
+      const commitment = buildValueChunkCommitment(i, data);
+      if (derived.get(blockSlot)?.commitment === commitment) continue;
+      derived.set(blockSlot, { commitment, lockingBytecode });
+      placed = true;
+    }
+  }
+  if (placed) group.derivedTrailingOutputs = derived;
+  return placed;
+}
+
 function extractCommitmentMapFromTrace(
   fullTrace: AuthenticationProgramStateCommon[],
   outputIndexRange?: { min: number; max: number },
@@ -6001,6 +6082,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   progressed = true;
                 }
               }
+              if (deriveRouteValueChunks(group, bEntryMap, bOutputBase, entryTrace)) progressed = true;
               if (!progressed || pass === entrySlotCount) break;
               const nextProbe = stb.build();
               entryTrace = evaluateProbeTrace(this.inner.provider, {

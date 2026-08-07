@@ -1552,3 +1552,41 @@ VARIABLES, not chunkable C2 COLLECTION values. That loop is the natural place to
 So the shape of the remaining work is: give the callee group a computed-value-chunk registration, derive
 its commitments from the same progressive probe that already derives the callee's entry commitments, and
 emit them into the callee's trailing slots. That is a feature, not a patch - budget accordingly.
+
+## Round: route-owned computed value chunks (implemented)
+
+The chunk-pin abort in `publishJobEvent` is a MISSING FEATURE, now built, not a patch.
+
+**Why the caller-side paths did not cover it.** `jobEvents[jobId_].push(event_)` stores a value the handler
+computes (`event_.timestamp_ = uint32(block.timestamp)`), so the write's `EntryAccessAbi.valueParam` is absent
+and `valueChunkMints` cannot build the chunks off-chain. The read-side fix (5e1b7163) does not apply either: it
+rebuilds a witness from chunk UTXOs that already exist, and a write has no such source.
+
+**The circularity, and what breaks it.** The covenant verifies the chunk ADDRESS before the chunk COMMITMENT
+(GenerateTargetTraversal.ts, "(a) locking bytecode == chunk address" then "(b) commitment == expected"), so with
+no output present the probe aborts at (a) and never reveals the commitment that (a)'s output would need. The
+established idiom here would be placeholder outputs (cf. `plannedEntryInserts`), costing a probe round-trip.
+Not needed: the full new value is still a live stack item when the probe aborts, and the entry head names it
+exactly - stored length, and sha256 == root. Recovering it by that root match is SELF-VERIFYING (a false match
+would have to be a sha256 collision), and every chunk then follows deterministically.
+
+**Implementation.**
+- `deriveRouteValueChunks` (StatefulContract.ts, before `extractCommitmentMapFromTrace`), called from the
+  `progressive-route-entries` loop. Reads the chunked entry heads the probe already revealed, recovers each
+  value from the trace by root match (length-pruned, so the scan is cheap), and emits exact chunk commitments
+  via `buildValueChunkCommitment`.
+- Address via `getValueChunkLockingBytecode`, whose dead `contract` parameter was dropped: it needs no
+  network/addressType, and a route's chunks belong to the CALLEE, so no caller contract would be correct.
+- Placement into the callee's trailing band at `trailingBase`, advanced past any `plannedEntryInserts` slot
+  (`emitTrailingBlockBase` uses base = master + trailingBase + isInsert; the INSERT's NEW node precedes chunks).
+- New `ExternalCallUtxoGroup.derivedTrailingOutputs`, consumed in the builder's `kind === 'trailing'` branch
+  ahead of the positional `externalDynamicChunks` queue.
+
+**Scoped deliberately.** Route-only (`compilerRoute.abiFunction`, whose accesses match the block layout being
+indexed) and gated on `operations.includes('write')` - a READ of a chunkable value also lacks `valueParam` and
+pins no outputs, so without that gate it would place spurious outputs.
+
+Verification of this round was still in flight at the context boundary: `yarn build` clean, marketplace
+artifacts recompiling (a truncated compile leaves half-written artifacts - confirm `Compiled 9/9 file(s)`
+before trusting any result), then the focused `post job 1` run, then the documented regression baselines
+(solidc project: 15 failures / 6 files; SDK 64-file proxy+delegate subset: 11 failures).

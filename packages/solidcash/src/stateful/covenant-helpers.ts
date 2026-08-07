@@ -198,8 +198,10 @@ export function getValueChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+// No contract parameter: unlike getValueChunkAddress this needs no network/addressType, and a route's chunks
+// belong to the CALLEE, so there is no caller contract that would be correct to take.
 export function getValueChunkLockingBytecode(
-  contract: Contract<any, any>, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
+  categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
 ): Uint8Array {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));

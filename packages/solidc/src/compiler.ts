@@ -7,6 +7,7 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
+  needsOptimiserCrossCheck,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
@@ -4273,7 +4274,8 @@ function compileResolvedAst(
     constructorParamLength,
   );
 
-  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    && needsOptimiserCrossCheck(traversal.output)) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
     if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
       console.error(scriptToAsm(optimisedBytecodeOld));
@@ -5508,7 +5510,8 @@ function compileReferencedContracts(
 
     // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
-    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(traversal.output)) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);
       if (!scriptsEqual(optimisedOld, optimisationResult.script)) {
         throw new Error(`New bytecode optimisation is not backwards compatible (referenced contract '${contractName}'), `

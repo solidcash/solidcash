@@ -5949,6 +5949,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       + `${'data' in instruction && instruction.data
                         ? `<${binToHex(instruction.data as Uint8Array)}>` : ''}`).join(' ')
                     : `too long (${aborted?.instructions.length})`,
+                  // The outlined helper's span starts mid-expression, so the index it consumes was computed in
+                  // the CALLER frame. Print that frame's window around its invoke site - that is the only way to
+                  // see which emitter produced the index (and from which base).
+                  callerFrame: (() => {
+                    const abortLength = aborted?.instructions.length;
+                    const parent = [...entryTrace].reverse()
+                      .find((state) => state.instructions.length !== abortLength);
+                    if (!parent) return 'none';
+                    const from = Math.max(0, parent.ip - 34);
+                    return `count=${parent.instructions.length} ip=${parent.ip} `
+                      + parent.instructions.slice(from, parent.ip + 2).map((instruction, index) => `${from + index}:`
+                        + `${(instruction as { opcode: number }).opcode.toString(16).padStart(2, '0')}`
+                        + `${'data' in instruction && instruction.data
+                          ? `<${binToHex(instruction.data as Uint8Array)}>` : ''}`).join(' ');
+                  })(),
                   tail: entryTrace.slice(-4).map((state) => ({
                     ip: state.ip,
                     count: state.instructions.length,

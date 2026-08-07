@@ -16683,7 +16683,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     if (this.currentFunctionIsDelegate) {
-      this.emit(Op.OP_INPUTINDEX, locationData);
+      // An ordinary delegate's entry slots are IMPLEMENTATION-relative, so OP_INPUTINDEX is their base. A
+      // compiler-owned message-bus route is different: it is the selected implementation for a PROXY-owned
+      // physical block, and emitTrailingBlockBase already documents that its fixed entry/event/return/trailing
+      // slots all begin at the proxy master. Basing them on the route's own input addresses one slot short of
+      // every entry, so the covenant reads a balanced placeholder where the co-spent entry NFT actually is.
+      if (this.currentFunction.messageBusRoute) this.emitMasterInputIndex(locationData);
+      else this.emit(Op.OP_INPUTINDEX, locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData);
@@ -21863,7 +21869,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * normal functions use OP_INPUTINDEX.
    */
   private emitMasterInputIndex(locationData: SingleLocationData): void {
-    if (this.currentFunctionIsDelegate) {
+    // Prefer the proxy-master witness whenever the executing FRAME actually carries it, not merely when the
+    // current node is delegate-marked. A compiler-owned message-bus route is delegate-marked, but it inlines
+    // handler bodies whose own FunctionDefinitionNode is `internal`, and visitFunctionDefinition reassigns
+    // `currentFunctionIsDelegate` from that node - so the flag goes false partway through a body whose bytes
+    // still land in the route's frame. Every block-relative index emitted there was then based on the
+    // implementation's own input instead of the proxy master the block is rooted at, addressing one slot short.
+    // A function that never receives the witness has no entry in the frame, so this reads exactly as before.
+    if (this.currentFunctionIsDelegate
+      || this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
       this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
     } else {
       this.emit(Op.OP_INPUTINDEX, locationData);

@@ -20,8 +20,9 @@ import {
 // split across a proxy master + five branded delegate-library facets so every
 // spending input stays under MAX_INPUT_BYTESIZE (10,000 B).
 //
-// The monolithic version of this contract is 32.6 KB - unspendable. Facet
-// splitting is not an optimization here, it is what makes the contract exist.
+// The monolith is still unspendable, but the margin has collapsed: 32,644 B when
+// this was written, 13,698 B now, against a 10,000 B cap. Splitting is still what
+// makes the contract exist - it is no longer what makes it exist by a wide margin.
 // =============================================================================
 
 const MAX_INPUT_BYTESIZE = 10000;
@@ -40,12 +41,15 @@ type FacetName = keyof typeof FACETS;
 let masterArt: Artifact;
 const facetArt = {} as Record<FacetName, Artifact>;
 
+// `messageBus: false` mirrors test/direct-compile.ts: this suite exercises direct facet calls, and the
+// default `auto` mode spends its time building message-bus routes this contract never takes.
+// Six scripts at a few seconds each also overrun the suite's 10 s hookTimeout, hence the explicit budget.
 beforeAll(() => {
-  masterArt = compileFile(fx('nusdt.scash')) as Artifact;
+  masterArt = compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact;
   for (const [name, file] of Object.entries(FACETS)) {
-    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true }) as Artifact;
+    facetArt[name as FacetName] = compileFile(fx(file), { brandLibrary: true, messageBus: false }) as Artifact;
   }
-});
+}, 180000);
 
 const DECIMALS = 6n;
 const UNIT = 10n ** DECIMALS;
@@ -169,11 +173,15 @@ async function deployAll(opts?: { premint?: bigint; quarantineBlocks?: bigint })
     carol: new Signer(carolPriv, provider),
   };
   let fundNonce = 0xbe00;
+  // Two plain UTXOs per top-up: a facet call is a co-spend (master input + facet input) and the builder
+  // now provisions one plain funder per covenant input, so one coin no longer covers a delegated call.
   const fund = async (sg: Signer): Promise<void> => {
-    fundNonce += 1;
-    await provider.addUtxo(sg.getAddress(), {
-      txid: `${fundNonce.toString(16)}${tag}`.padStart(64, '7'), vout: 0, satoshis: 300000n,
-    });
+    for (let i = 0; i < 2; i += 1) {
+      fundNonce += 1;
+      await provider.addUtxo(sg.getAddress(), {
+        txid: `${fundNonce.toString(16)}${tag}`.padStart(64, '7'), vout: 0, satoshis: 300000n,
+      });
+    }
   };
   for (const sg of Object.values(signers)) await fund(sg);
 
@@ -227,10 +235,14 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
   // the whole USDT surface plus the extensions, which is far easier to read and
   // audit than six. It compiles, and it can never be SPENT - this pins the exact
   // reason the split exists rather than leaving it as a claim in a comment.
+  //
+  // The overshoot is now 3,698 B, not 22,644 B: upstream outlining took the
+  // monolith from 32,644 B to 13,698 B and the largest single body from 6,555 B
+  // to 1,004 B. Asserting a fixed multiple of the cap would re-rot, so assert the
+  // shape that actually matters - over the cap, no single body responsible.
   it('the single-file monolith compiles but is unspendable, which is why we split', () => {
-    const mono = compileFile(fx('native_usdt.scash')) as Artifact;
-    const size = scriptSize(mono);
-    expect(size).toBeGreaterThan(MAX_INPUT_BYTESIZE * 3);
+    const mono = compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact;
+    expect(scriptSize(mono)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
     // No individual function is the problem - the sum is.
     const bodies = Object.values(mono.functionBodies ?? {}) as string[];
     const largest = Math.max(...bodies.map((b) => (typeof b === 'string' ? b.length / 2 : 0)));
@@ -392,26 +404,33 @@ describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-
 });
 
 // =============================================================================
-// KNOWN LIMITATION - pinned deliberately so the suite stays green and honest.
+// STILL BLOCKED, but for a different reason than when this was written, and the
+// reason now names its own fix.
 //
-// A sorted-mapping (C2) write executed through a delegate FACET does not work
-// today. Minimal repro: DelegateMappingProbe.test.ts - a scalar write on a facet
-// succeeds; the same facet's mapping write fails on-chain.
+// It used to be that NO mapping write through a facet settled: the `L.f()`
+// forwarder publishes entryAccesses = null, so the SDK provisioned no entry UTXOs
+// at all. X11 (837c8b8d) fixed that by routing the implementation's accesses, and
+// DelegateMappingProbe.test.ts now shows the split that remains:
 //
-// Root cause: the consumer's `L.f()` forwarder ABI carries entryAccesses=null
-// while the library's own function reports the entry write, so the SDK never
-// co-spends the mapping entry UTXOs the delegate then writes, and the covenant
-// fails. docs/large-contract-splitting-implementation-plan.md already specifies
-// the fix - facet routes must "lay out root state/effect outputs" - but it is
-// designed, not implemented.
+//   UPDATE through a facet - settles, value lands.
+//   INSERT through a facet - refused at the proxy's own input, because a
+//                            delegatecall master conserves the count of its
+//                            own-category mutable NFTs and an insert mints one.
 //
-// Blast radius: every function touching balances / allowed / isBlackListed /
-// frozen / pendingAmount, i.e. transfer, transferFrom, approve, issue, redeem,
-// destroyBlackFunds, addBlackList, removeBlackList, freeze, unfreeze, deposit,
-// claimDeposit. These tests assert the CURRENT behaviour; when the feature lands
-// they will fail and must be inverted into positive assertions.
+// Every function below is still refused, but only because on a fresh deployment
+// every one of these keys is NEW - they are all inserts. Nothing in this master
+// creates a key: its only non-delegated mapping writes are `withdraw`'s
+// `balances[sender] -= amount` (gated on `balances[sender] >= amount`, so the key
+// must already exist) and `cancelDeposit`'s zeroing of the pending mappings
+// (whose keys the delegated `deposit` would have had to create). So the contract
+// can never get its first key, and the whole mapping surface stays unreachable.
+//
+// The fix is a contract change, not an upstream one: key creation has to happen
+// in a direct (non-delegated) master function. A zero-value `register(k)` is
+// enough and is cheap - proven in DelegateMappingProbe. See docs/native-usdt-port.md
+// for the two candidate shapes and their measured budgets.
 // =============================================================================
-describe('NativeUsdt / mapping-write facet routes (blocked upstream)', () => {
+describe('NativeUsdt / mapping-write facet routes (blocked: delegated INSERT)', () => {
   const mappingWriters: Array<[string, (d: Deployed) => Promise<unknown>]> = [
     ['issue', (d) => d.as(d.signers.owner).call.issue(1000n * UNIT).send()],
     ['transfer', (d) => d.as(d.signers.owner).call.transfer(ADDR.bob(), 1n * UNIT).send()],
@@ -421,7 +440,7 @@ describe('NativeUsdt / mapping-write facet routes (blocked upstream)', () => {
   ];
 
   for (const [name, run] of mappingWriters) {
-    it(`${name} is blocked by the facet mapping-write gap`, async () => {
+    it(`${name} is refused: on a fresh deploy its mapping write is an INSERT`, async () => {
       const d = await deployAll();
       await expect(run(d)).rejects.toThrow();
     });

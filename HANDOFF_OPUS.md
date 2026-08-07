@@ -1974,3 +1974,27 @@ access-specific, not a modulo/cycle artifact.
 
 `nested-entry-pick` already prints collection/blockSlot/routeSlot/keySlot/exists; add the ACCESS (keySources
 and operations) at the same site and the two skipped ones will identify themselves immediately.
+
+### Narrowed further: the unpicked slots take a THIRD code path
+
+Instrumented the two obvious exits at the entry-slot branch (`for (const slot of selectedLayout.slots)`,
+StatefulContract.ts ~10851):
+
+- `entry-pick-SKIP` (the `access && collection?.sorted` guard failing): **0 occurrences**
+- `nested-entry-pick-threw`: **0 occurrences**
+
+So block positions 7 and 20 are `entry` slots that neither pick, nor fail the guard, nor throw. They are
+leaving that branch by some other route entirely, which is why they end up funder-backfilled.
+
+That also means `slot.slotIndex` is NOT simply position-3 for those two: every slot that DOES pick reports
+`blockSlot = routeSlot + 3`, so if positions 7 and 20 carried slotIndex 4 and 17 they would have looked up an
+access and logged something. They logged nothing.
+
+Next: log EVERY entry slot as the loop visits it (position, `slot.slotIndex`, `conditional`, `softDelete`)
+before any guard, not just the ones that pick. Two candidates worth checking first, both of which would let a
+slot pass through this branch silently: a `conditional` entry slot (inactive branch) and a `softDelete` slot.
+The layout type carries both flags, and either would plausibly be filled with a funder by design while the
+covenant still reads a commitment there - which would make this a COVENANT/SDK disagreement about whether a
+conditional entry slot is live, not a picking bug.
+
+That is the last unexplored branch; everything else at this site is now instrumented and excluded.

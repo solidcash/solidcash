@@ -10861,6 +10861,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         || candidate.signature === access?.collection,
                     );
                     let entry: Utxo | undefined;
+                    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                      ?.SOLIDC_DEBUG_INPUTS === '1' && !(access && collection?.sorted)) {
+                      console.error('entry-pick-SKIP', {
+                        slotIndex: slot.slotIndex,
+                        hasAccess: !!access,
+                        collection: access?.collection,
+                        sorted: collection?.sorted,
+                        ops: access?.operations,
+                      });
+                    }
                     if (access && collection?.sorted) {
                       const keySources = access.keySources
                         ?? access.keyParams.map((paramName) => ({ kind: 'param' as const, paramName }));

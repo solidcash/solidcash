@@ -574,6 +574,8 @@ rcount
 readback
 READERR
 reassignable
+rebadgeable
+rebadged
 rebindable
 rechunked
 recid
@@ -595,6 +597,7 @@ refetches
 refundee
 refundees
 regen
+rehome
 reinit
 reinitializer
 reinitializers

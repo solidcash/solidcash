@@ -1789,3 +1789,15 @@ currently prints only the failing frame).
 
 This also explains why the several empty arguments on input 102 were a red herring: most are legitimately
 empty, and the one that matters is whichever reaches THIS helper.
+
+### Caller capture: added to the WRONG dump path
+
+Extended the preflight trace dump (StatefulTransactionBuilder.ts ~3234) with `callers:` / `callerOps:` frame
+walking. It produced nothing, because the path that actually fires for this failure is the OTHER one (~3203),
+which formats from a `ring` BUFFER of `{ip, opcode, depth, top}` steps and does NOT retain each step's
+`instructions` array - so the enclosing frame cannot be recovered from it as written.
+
+The added code is correct for the path it is on and is kept, but to identify the caller of the failing decode
+helper the RING path needs the instruction array (or at least a body identity) captured per step. That is a
+small change to what `ring` records, at its push site. Do that first; everything downstream of "which call site
+passes the empty operand" is still blocked on it.

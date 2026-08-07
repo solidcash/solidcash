@@ -3243,6 +3243,28 @@ export class StatefulTransactionBuilder {
         lines.push(`  ip=${s.ip} op=0x${opcode.toString(16).padStart(2, '0')} `
           + `depth=${(s.stack ?? []).length} top=[${top}]${marker}`);
       }
+      // The failing body is often a tiny outlined helper, so the defect is at its CALL SITE, not in it. Walk
+      // back to the enclosing frames (distinct instruction arrays) and show where each was executing.
+      const seen: Array<{ ip: number; count: number }> = [];
+      let prev = states[errAt].instructions;
+      for (let i = errAt; i >= 0 && seen.length < 4; i -= 1) {
+        if (states[i].instructions === prev) continue;
+        prev = states[i].instructions;
+        seen.push({ ip: states[i].ip, count: states[i].instructions?.length ?? 0 });
+      }
+      if (seen.length > 0) {
+        lines.push(`  callers: ${seen.map((f) => `[count=${f.count} ip=${f.ip}]`).join(' <- ')}`);
+        const caller = states.slice(0, errAt + 1).reverse()
+          .find((st) => st.instructions !== states[errAt].instructions);
+        if (caller) {
+          const from = Math.max(0, caller.ip - 10);
+          lines.push(`  callerOps: ${(caller.instructions ?? []).slice(from, caller.ip + 2)
+            .map((instruction, offset) => `${from + offset}:`
+              + `${(instruction as { opcode: number }).opcode.toString(16).padStart(2, '0')}`
+              + `${'data' in instruction && instruction.data
+                ? `<${binToHex(instruction.data as Uint8Array)}>` : ''}`).join(' ')}`);
+        }
+      }
       // eslint-disable-next-line no-console
       console.error(lines.join('\n'));
       return;

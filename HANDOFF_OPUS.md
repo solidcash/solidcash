@@ -765,3 +765,39 @@ whether `joinValueChunks`' head slice (`tail.slice(36, 64)`) is the right head f
 
 The user-visible failure has moved with this: `post job 1` now reports
 `OP_SPLIT ... stack item length: 0; requested split index: 1` (was `length: 23; index: -41`).
+
+### The struct-framing discrepancy, pinned
+
+`callerFrame` now walks UP the invoke chain (an outlined helper's caller is usually another helper, so one
+level was not enough). For the group-0 abort the chain is:
+
+```text
+[count=69  ip=2]  the pushdata int-decode, failing OP_SPLIT on an EMPTY blob
+[count=5   ip=3]  push<-22> INVOKE ; OP_1NEGATE INVOKE ; OP_DROP      = decode-last-field
+[count=7   ip=1]  OP_1NEGATE INVOKE ; OP_SWAP                          = decode-field
+[count=509 ip=31] ... OP_2 OP_PICK push<-302> INVOKE OP_DROP ; OP_2 OP_PICK OP_TOALTSTACK ;
+                  OP_7 OP_PICK OP_9 OP_PICK OP_1NEGATE INVOKE OP_DROP OP_EQUAL OP_VERIFY ;
+                  OP_1 OP_PICK push<-20> INVOKE ; push<-3> INVOKE ; OP_2 OP_PICK push<-21> INVOKE
+[count=50  ip=47] ... push<-2> INVOKE
+```
+
+The 509-instruction body is a struct field walk: pick, decode field, compare, decode next.
+
+The value it walks is the one my witness fix now supplies, and the trace shows it as
+`4cef00 1976a914c4841b..` - a PUSHDATA1 of 239 bytes whose content begins
+
+```text
+00                                            <- field 0 decodes as EMPTY
+19 76a914c4841b8f5e6f10a38dc5e672e1..88ac     <- field 1 is user1's 25-byte address
+```
+
+`User` is `(address_, publicKey, name, bio, avatar, reputationUp, reputationDown)`, so field 0 should BE
+the address. The stored value carries one extra leading empty field, i.e. the value and the schema are
+shifted by one - which is exactly why a later `emitPushdataDecodeLastField` runs off the end.
+
+`sha256(witness) == root` PASSES, so the reconstruction is the authenticated value; the shift is in the
+stored bytes, not in the rebuild. That points at the WRITE that produced it: `registerUser` ran earlier in
+the test through the DIRECT (non-route) path, so compare how that path frames a chunkable struct value
+against what the route's read expects. A one-field disagreement between the direct write and the route
+read is the next thing to prove or refute - dump the entry's `tail` (len ++ root ++ head) for
+`users[user1]` right after `registerUser` and decode it against the `User` schema.

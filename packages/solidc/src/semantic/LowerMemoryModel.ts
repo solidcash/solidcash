@@ -49,6 +49,7 @@ import {
   YULMEM,
   memReservedInit as buildReservedInit,
   memWordStore,
+  memWordStoreRun,
   memWordLoad,
   memByteStore,
   memZeroBytes,
@@ -995,7 +996,12 @@ export default class LowerMemoryModel extends AstTraversal {
 
   visitBlock(node: BlockNode): Node {
     const out: StatementNode[] = [];
-    for (const stmt of node.statements ?? []) {
+    const blockStmts = node.statements ?? [];
+    for (let si = 0; si < blockStmts.length; si += 1) {
+      const stmt = blockStmts[si];
+      // A run of constant-indexed element writes to one memory array folds to a SINGLE buffer rebuild.
+      const run = this.tryFuseElementWriteRun(blockStmts, si);
+      if (run) { out.push(run.statement); si = run.next - 1; continue; }
       const expanded = stmt instanceof VariableDefinitionNode ? this.tryLowerDecl(stmt) : undefined;
       if (expanded) { out.push(...expanded); continue; }
       // Reallocation of a pointer-backed memory bytes/string local (`b = new bytes(n)`). Build the same
@@ -1353,7 +1359,7 @@ export default class LowerMemoryModel extends AstTraversal {
   // matches value-copy's read-old-then-write semantics regardless of arg/field ordering.
   private storeStructArgs(ptr: IdentifierNode, ctor: FunctionCallNode, structT: StructType, src: Node): StatementNode[] {
     const temps: StatementNode[] = [];
-    const stores: StatementNode[] = [];
+    const slots: Array<{ fi: number; tmp: string; fieldT: Type }> = [];
     ctor.parameters.forEach((arg, i) => {
       // Named-field construction `S({b: x, a: y})` reorders args: parameter i is the value for field
       // ctor.fieldNames[i], NOT positional field i. Map to the actual field slot.
@@ -1363,8 +1369,31 @@ export default class LowerMemoryModel extends AstTraversal {
       // A reference-typed field holds a pointer (uint); a value field holds its own type.
       const tempT = this.isRefType(fieldT) ? this.uint() : fieldT;
       temps.push(this.at(new VariableDefinitionNode(tempT, [], tmp, this.visit(arg) as ExpressionNode), src));
-      stores.push(this.at(this.mstore(this.fieldAddr(this.clone(ptr), fi), new IdentifierNode(tmp), fieldT), src));
+      slots.push({ fi, tmp, fieldT });
     });
+    // Every field value is already hoisted into a temp above, so the stores read only locals and may be reordered
+    // and fused. Consecutive slots collapse to ONE buffer rebuild instead of one per field: `mstore` splices the
+    // whole buffer, so an n-field construction otherwise copies it n times for almost no emitted size, which is
+    // the density BCH-2026 charges for. Named-field construction can leave the slots out of order, hence the sort.
+    const ordered = [...slots].sort((l, r) => l.fi - r.fi);
+    const stores: StatementNode[] = [];
+    for (let i = 0; i < ordered.length;) {
+      let end = i;
+      while (end + 1 < ordered.length && ordered[end + 1].fi === ordered[end].fi + 1) end += 1;
+      const run = ordered.slice(i, end + 1);
+      if (run.length < 2) {
+        stores.push(this.at(
+          this.mstore(this.fieldAddr(this.clone(ptr), run[0].fi), new IdentifierNode(run[0].tmp), run[0].fieldT), src,
+        ));
+      } else {
+        const addr = this.fieldAddr(this.clone(ptr), run[0].fi);
+        const words = run.map(({ tmp, fieldT }) => (fieldT instanceof ValueType
+          ? new CastNode(fieldT.underlyingType, new IdentifierNode(tmp), false)
+          : new IdentifierNode(tmp) as ExpressionNode));
+        stores.push(this.at(memWordStoreRun(() => this.clone(addr), words), src));
+      }
+      i = end + 1;
+    }
     return [...temps, ...stores];
   }
 
@@ -1379,6 +1408,61 @@ export default class LowerMemoryModel extends AstTraversal {
     if (!arrT) return super.visitArrayAssign(node);
     const addr = this.arrayElemAddr(arrT, new IdentifierNode(node.name), this.visit(node.index) as ExpressionNode);
     return this.at(this.mstore(addr, this.visit(node.value) as ExpressionNode, arrT.elementType), node);
+  }
+
+  // `a[0]=x; a[1]=y; a[2]=z;` on ONE memory value-array at ascending consecutive constant indices -> a single
+  // buffer rebuild. Each `mstore` splices the WHOLE buffer, so an N-write run copies it N times; the emitted bytes
+  // are few (the spans outline to a shared subroutine and each site is only an OP_INVOKE), which makes the run
+  // maximally dense and is what the BCH-2026 operation-cost budget charges for. Folding keeps the copies at one.
+  //
+  // Only fused when every value, AFTER lowering, reads no `__yulmem` and makes no call: the fused form evaluates
+  // all values before any write lands, so a value that observed memory or had a side effect could see a different
+  // buffer than it would have in the unfused sequence. A run of one is left alone (nothing to save).
+  private tryFuseElementWriteRun(
+    stmts: StatementNode[], start: number,
+  ): { statement: StatementNode; next: number } | undefined {
+    const head = stmts[start];
+    if (!(head instanceof ArrayAssignNode) || !(head.index instanceof IntLiteralNode)) return undefined;
+    const arrT = this.memArrays.get(head.name);
+    if (!arrT || this.isRefType(arrT.elementType)) return undefined;
+
+    const values: ExpressionNode[] = [];
+    let end = start;
+    for (let i = start; i < stmts.length; i += 1) {
+      const stmt = stmts[i];
+      if (!(stmt instanceof ArrayAssignNode) || stmt.name !== head.name) break;
+      if (!(stmt.index instanceof IntLiteralNode)) break;
+      if (stmt.index.value !== head.index.value + BigInt(i - start)) break; // ascending and consecutive
+      const lowered = this.visit(stmt.value) as ExpressionNode;
+      if (!this.isFusableWord(lowered)) break;
+      values.push(lowered);
+      end = i;
+    }
+    if (values.length < 2) return undefined;
+
+    const addr = this.arrayElemAddr(arrT, new IdentifierNode(head.name), this.intLit(head.index.value));
+    const raws = values.map((value, i) => {
+      const elemT = arrT.elementType;
+      const raw = elemT instanceof ValueType ? new CastNode(elemT.underlyingType, value, false) : value;
+      raw.location = values[i].location;
+      return raw;
+    });
+    return {
+      statement: this.at(memWordStoreRun(() => this.clone(addr), raws), head),
+      next: end + 1,
+    };
+  }
+
+  // A word expression safe to hoist ahead of the run's writes: no `__yulmem` read (its value cannot depend on a
+  // write the run reorders) and no call (no side effect to reorder). Checked on the LOWERED expression, since
+  // lowering is what turns a converted local into a buffer load.
+  private isFusableWord(expr: ExpressionNode): boolean {
+    let safe = true;
+    this.eachDescendant(expr, (n) => {
+      if (n instanceof IdentifierNode && n.name === YULMEM) safe = false;
+      if (n instanceof FunctionCallNode) safe = false;
+    });
+    return safe;
   }
 
   visitDeleteLocal(node: DeleteLocalNode): Node {

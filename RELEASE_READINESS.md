@@ -163,6 +163,52 @@ it must not silently compile to incorrect covenant behavior.
     209,600 operation units, far above the overshoots. It made things WORSE - 14 failing tests against 10, with
     `X158OverLimitContractSpend` newly breaking - so less outlining does not buy density headroom here and the
     outlining window is not the knob. Reverted.
+  - Tested and REJECTED as the lever: a SIZE FLOOR on outlining (`OUTLINE_SIZE_FLOOR_BYTES = 6_000`, returning
+    bodies un-outlined below it). It looked strong on the density side, taking the budget sweep from 7 failures to
+    2 - only `BehaviorParityPins` (16 units over) and `NestedArrayDelete` survived. It is still wrong, and on its
+    own axis. It costs 15 compiler tests: 10 golden-artifact mismatches in `generation.test.ts` plus 5 real ones,
+    and `ScalarJournal` decides it - that contract is 873 bytes un-outlined against a 600-byte budget, so the
+    floor's premise that "a small contract has nothing to buy" is backwards. A 600-byte contract has roughly
+    500,000 units of budget and executes almost nothing, which makes tiny contracts the LEAST density-constrained,
+    not the most. Size is not the axis; executed operation count is. Reverted.
+  - The cost mechanism is now identified exactly, at the emitted-script level. `memWordStore` in
+    `packages/solidc/src/semantic/YulMemPrimitives.ts` lowers EVERY memory element store to a whole-buffer splice,
+    `__yulmem = __yulmem[0:off] ++ word ++ __yulmem[off+32:len]`. So an N-write run copies the entire buffer N
+    times. The emitted bytes are tiny because outlining shares the splice span and each site becomes an OP_INVOKE
+    (`005c8a7c515d8a5101908a`, about 11 bytes per store), which is why these shapes are maximally dense: near-zero
+    size, full buffer copy per store. This also explains the outlining interaction above without appealing to the
+    window size.
+  - Acted on: `LowerMemoryModel.tryFuseElementWriteRun` now folds a run of consecutive constant-indexed element
+    writes to one memory array into a SINGLE buffer rebuild (`memWordStoreRun`), fusing only when every lowered
+    value reads no `__yulmem` and makes no call, since the fused form evaluates all values before any write lands.
+    On a five-store `uint[] memory` run this is 403 -> 322 emitted ops, about -20%, and it cuts runtime buffer
+    copies from five to one - it buys size AND operation cost together, so it does not pay the usual trade.
+  - Also acted on: `storeStructArgs` fuses the same way. It already hoists every field value into a temp and then
+    emits one `mstore` per field at consecutive `ptr + 32*fi`, so an n-field memory-struct construction copied the
+    buffer n times; the run now collapses to one rebuild (sorted by field index first, since named-field
+    construction can arrive out of order).
+  - NEITHER fusion closes this item, and the measurement is unambiguous rather than merely inconclusive: with both
+    in place the budget sweep still fails exactly 7 tests, and the four VM arithmetic reports are IDENTICAL to the
+    baseline, byte for byte - budgets 541,600 / 572,800 / 663,200 / 804,800 at density control lengths 677 / 716 /
+    829 / 1,006, overshooting by 16 / 103 / 80 / 39. Identical script lengths mean neither fusion fires on any
+    failing shape at all, so this is not "helped but not enough".
+  - Where the failing shapes actually live, so the next attempt does not re-derive it. A function-pointer memory
+    array is not in `memArrays` (instrumented directly: `memArrays.get('arr')` is undefined for the
+    `BehaviorParityPins` shape); it is lowered by the fn-ptr pass family - `LowerBlobFunctionPointers`,
+    `EliminateInternalFnPtrAlias`, `LowerReceivedFnPtrArray`, `ExpandBoundedPointerTableLoop` - into function ids
+    plus an indexed `OP_INVOKE`, which is a different store path entirely. The struct fusion likewise does not
+    reach the nested shapes, which write through `memStructArrays`/`MappingFieldAssignNode` rather than through a
+    constructor. Closing the item means finding the per-store sequence on THOSE paths; the two fusions landed here
+    are worth keeping on their own merits but should not be counted against this blocker.
+  - On how much the two fusions are worth, and on a measurement trap worth not repeating.
+    `scripts/density-headroom.ts` over the 300-contract `valid-contract-files` corpus moves 2 contracts by 41
+    bytes total (`delete_keyword.scash` -22, `struct_local_var.scash` -19), which reads as negligible. It is the
+    wrong yardstick: ZERO of those 300 files use `T[] memory` syntax at all, because that corpus is SolidCash-
+    native rather than Solidity-ported, and the fusions target exactly the Solidity memory model this fork exists
+    to support. The synthetic five-store case is -20%. So the corpus number bounds the benefit for native code,
+    not for ported code, and the honest scope for these two changes is the memory/array/struct/Yul e2e set rather
+    than a corpus byte total. Note also that a byte delta systematically UNDERSTATES them: the win is removing
+    n-1 whole-buffer copies at runtime, which the size metric cannot see at all.
   - **The bytecode-size campaign makes this WORSE, and the effect is already measurable.** The budget is
     `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`, so a smaller script buys a smaller
     budget: size headroom and density headroom trade against each other. Re-running the budget-only sweep after

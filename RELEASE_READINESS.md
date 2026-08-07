@@ -309,10 +309,15 @@ it must not silently compile to incorrect covenant behavior.
   - Note this inverts the assumption recorded in `createVirtualMachine.ts`, which treats the observer as the
     lossy instrument that can yield a phantom commitment and the full trace as the faithful one. Measured here,
     the observer path derives commitments the covenant accepts while the full-trace path derives none.
-  - The remedy is a judgement call rather than a mechanical fix, which is why it is left open: making the
-    full-trace path tolerant of intervening opcodes would restore discovery but weakens the very check the
-    strictness exists for. A narrower rule - tolerating only the specific opcodes these shapes interpose, such as
-    subroutine dispatch - is likely the right shape, and it needs the maintainer who wrote the strictness.
+  - FIXED in `2b05b292`, and it did not require relaxing anything. The framing of "tolerate intervening opcodes
+    or not" was the wrong question: the adjacency rule is correct for the trace it was written against, and the
+    defect was handing it a different one. `evaluateProbeTrace` now reduces the full debug trace through the
+    same opcode filter and pairing rule the observer already applies, so both branches present the extractor the
+    same shape. The check is untouched; production simply behaves like the path the mocknet suite exercises
+    rather than a third behaviour nothing validated.
+  - Verified on BCHN v29: `ChunkedArrays`, `NestedArrayFixedInner` and `X167ArrayCopyReplaces` pass 30/30 on a
+    live node, having failed there in the full matrix. Chain-free, the five affected files pass 50/50 with
+    `maximumInputBytes` at the real 10,000, and mocknet is unchanged at 333 files / 2,745 tests.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

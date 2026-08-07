@@ -1273,3 +1273,42 @@ views changes route admission and inflates the verifier program past 10 KB.
 So this is a genuine trade-off, not a bug to squash: the fix for 5 SDK tests needs to land TOGETHER with a
 verifier-size mitigation for the marketplace route. Both halves are now precisely characterised; do not
 land either alone.
+
+### DelegateInferred is 5 STALE EXPECTATIONS + 1 REAL BUG, not 6 bugs
+
+The e2e test's fixture contract contains
+
+```solidity
+function get() public view returns (bigint) { return counter; }   // a VIEW that READS state
+```
+
+and its first assertion is literally named **"marks exactly the state-WRITING externally-callable
+functions"**, expecting `get` NOT to be delegate. This branch deliberately changed that rule so a view
+that reads proxy-owned state IS delegate-marked. So those assertions encode the OLD rule.
+
+Confirming it was deliberate and the e2e test was simply missed: `packages/solidc/test/
+DelegateInference.test.ts` (the sibling COMPILER test) WAS updated by this branch (+27 lines) and its new
+case asserts exactly the new behaviour - `memberCount()` and `registered(address)`, both `public view`,
+are expected to be ELIGIBLE route handlers. `packages/solidcash/test/e2e/DelegateInferred.test.ts` is
+byte-identical to upstream (0 diff).
+
+Two predicates were tried for the view test and both measured:
+
+```text
+require the WRITE test of views    -> DelegateInferred 6->1, but marketplace regresses to a HARD
+                                      verifier-size wall (12983 > 10000). `touchesProxyState` is
+                                      write-only (`isStatefulOp` = assigns/deletes/pushes/emits/
+                                      transfers), so this makes EVERY view ineligible.
+require a READ test of views       -> DelegateInferred unchanged at 6. `get` reads state, so it stays
+   (StateAccessNode/MappingAccessNode)  eligible - which is the intended behaviour.
+```
+
+Both reverted. So there is nothing to fix in the rule for 5 of the 6: the e2e test needs its expectations
+brought in line with the change, the same way the compiler test already was. That is a product decision
+about intent - do not do it silently.
+
+THE ONE REAL BUG: `Ambiguous call to overloaded function 'set'. Use explicit signature:
+set(bigint,bigint,bigint), set(bigint,bigint,bigint)`. Stripping `VIEW` (autoMarkDelegateFunctions ~171)
+makes a `view` overload's signature IDENTICAL to its non-view twin. That is a genuine defect of the new
+rule and must be fixed regardless of the test question - either keep the overloads distinguishable, or
+refuse to mark a view whose stripped signature would collide with an existing one.

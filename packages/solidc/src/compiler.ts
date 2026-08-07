@@ -1684,8 +1684,19 @@ function synthesizeMessageBusRoute(
     // unsafe route had already been constructed). Graph-route mode keeps
     // the established hard refusal because its published graph promises that
     // every admitted edge is represented.
-    let writesDynamicState = footprint.writes.some((resource) =>
-      resource.startsWith('state:') && dynamicState.has(resource.slice('state:'.length)));
+    const dynamicResourceName = (resource: string): string | undefined => {
+      if (resource.startsWith('state:')) return resource.slice('state:'.length);
+      if (resource.startsWith('collection:')) return resource.slice('collection:'.length).split(':', 1)[0];
+      return undefined;
+    };
+    let reachesDynamicState = [...footprint.reads, ...footprint.writes].some((resource) => {
+      const name = dynamicResourceName(resource);
+      return name !== undefined && dynamicState.has(name);
+    });
+    let writesDynamicState = footprint.writes.some((resource) => {
+      const name = dynamicResourceName(resource);
+      return name !== undefined && dynamicState.has(name);
+    });
     const reachesCollection = [...footprint.reads, ...footprint.writes]
       .some((resource) => resource.startsWith('collection:'));
     const reachesNestedDynamicArray = [...footprint.reads, ...footprint.writes].some((resource) =>
@@ -1704,6 +1715,13 @@ function synthesizeMessageBusRoute(
         // walkInvocationAst is synchronous; these accumulators do not escape this iteration.
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
+          // Solidity compatibility lowering recognizes a bare dynamic-array read (for example
+          // `members.length`) only after the early collection/message-bus boundary. The footprint above cannot
+          // report that state read yet, but cloning the handler into a delegate route lets the later lowering
+          // add route-wide dynamic settlement to every selector. Recover direct bare references here while the
+          // source binding is still visible; locally bound names remain ordinary memory arrays.
+          if (node instanceof IdentifierNode && dynamicState.has(node.name)
+            && !candidateLocals.has(node.name)) reachesDynamicState = true;
           if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
           if (node instanceof StateArrayAssignNode) {
             const state = contract.stateVariables.find((candidateState) => candidateState.name === node.name);
@@ -1743,6 +1761,12 @@ function synthesizeMessageBusRoute(
       // expensive generated-route attempts. Refuse it before cloning: no message-bus handler survives today,
       // while the ordinary entry point compiles and remains unchanged.
       reason = 'nested-dynamic-array-route-not-enabled';
+    } else if (!reason && compilerOptions.autoDelegate && reachesDynamicState) {
+      // A delegate route shares the proxy's trailing storage region. Dynamic read/write settlement is emitted
+      // once at the route epilogue, while dispatch eligibility is selector-conditional; admitting even one
+      // dynamic handler therefore makes unrelated rows consume or mint that handler's chunks. Until the route
+      // carries a per-row dynamic frame, keep those handlers on their ordinary delegate entry points.
+      reason = 'delegate-dynamic-state-route-not-enabled';
     } else if (!reason && writesDynamicState && reachesCollection) {
       reason = 'dynamic-and-collection-route-not-enabled';
     }
@@ -2973,11 +2997,29 @@ function synthesizeMessageBusRoute(
     ? ['bytes32 __internal__msgSenderCategory'] : [];
   const verifierBinderRouteParameters = compilerOptions.__messageBusVerifierProgram
     ? ['bigint __internal__activeVerifierIndex'] : [];
+  const isDelegateRoute = eligible.some((fn) => fn.modifiers.includes(FunctionModifier.DELEGATE));
   const routeParameters = [
     'bytes batchBlob', ...verifierBinderRouteParameters, ...graphRouteParameters,
     ...localCallerRouteParameters,
     ...routeSignatureParameters, ...routeKeyParameters,
   ].join(', ');
+  const delegateRouteUnlockOffset = isDelegateRoute
+    ? `bigint __message_bus_proxy_opcode = int(bytes.concat(
+          __message_bus_unlock.slice(5, 6), hex"00"
+        ));
+        bigint __message_bus_push_at;
+        // Delegate routes keep the proxy-master witness immediately after the selector so the delegate prologue
+        // can address it at the physical bottom of its ABI frame. Skip that minimally encoded Script-number push
+        // before authenticating the positional batch push. Input indices fit the direct-push family: zero and
+        // 1..16 use one opcode; larger values use a one-byte length followed by the VM-number bytes.
+        if (__message_bus_proxy_opcode == 0
+          || (__message_bus_proxy_opcode >= 81 && __message_bus_proxy_opcode <= 96)) {
+          __message_bus_push_at = 6;
+        } else {
+          require(__message_bus_proxy_opcode >= 1 && __message_bus_proxy_opcode <= 75);
+          __message_bus_push_at = 6 + __message_bus_proxy_opcode;
+        }`
+    : 'bigint __message_bus_push_at = 5;';
   const graphOutStateMode = graphExecutionContext
     && eligible.some((fn) => (fn.externalOutStateReads?.length ?? 0) > 0);
   const parseGraphCaller = !graphExecutionContext ? '' : `
@@ -3746,16 +3788,41 @@ function synthesizeMessageBusRoute(
         bytes __message_bus_unlock = tx.inputs[this.activeInputIndex].unlockingBytecode;
         require(__message_bus_unlock.length >= 7);
         require(__message_bus_unlock.slice(0, 5) == hex"0453434231");
-        bigint __message_bus_pushOpcode = int(bytes.concat(__message_bus_unlock.slice(5, 6), hex"00"));
+        ${delegateRouteUnlockOffset}
+        bigint __message_bus_pushOpcode = int(bytes.concat(
+          __message_bus_unlock.slice(__message_bus_push_at, __message_bus_push_at + 1), hex"00"
+        ));
         if (batchBlob.length <= 75) {
           require(__message_bus_pushOpcode == batchBlob.length);
-          require(__message_bus_unlock.slice(6, 6 + batchBlob.length) == batchBlob);
-        } else {
+          require(__message_bus_unlock.slice(
+            __message_bus_push_at + 1, __message_bus_push_at + 1 + batchBlob.length
+          ) == batchBlob);
+        } else if (batchBlob.length <= 255) {
           require(__message_bus_pushOpcode == 76);
           // The VM's push parser already defines batchBlob's byte count from this PUSHDATA1 length byte, and
           // minimal-data rules require this opcode for the 76..255-byte range. Do not reinterpret bytes >= 0x80
           // through Script-number casts: their sign-bit encoding is not the unsigned push length.
-          require(__message_bus_unlock.slice(7, 7 + batchBlob.length) == batchBlob);
+          require(__message_bus_unlock.slice(
+            __message_bus_push_at + 2, __message_bus_push_at + 2 + batchBlob.length
+          ) == batchBlob);
+        } else if (batchBlob.length <= 65535) {
+          require(__message_bus_pushOpcode == 77);
+          bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
+            __message_bus_push_at + 1, __message_bus_push_at + 3
+          ), hex"00"));
+          require(__message_bus_pushLength == batchBlob.length);
+          require(__message_bus_unlock.slice(
+            __message_bus_push_at + 3, __message_bus_push_at + 3 + batchBlob.length
+          ) == batchBlob);
+        } else {
+          require(__message_bus_pushOpcode == 78);
+          bigint __message_bus_pushLength = int(bytes.concat(__message_bus_unlock.slice(
+            __message_bus_push_at + 1, __message_bus_push_at + 5
+          ), hex"00"));
+          require(__message_bus_pushLength == batchBlob.length);
+          require(__message_bus_unlock.slice(
+            __message_bus_push_at + 5, __message_bus_push_at + 5 + batchBlob.length
+          ) == batchBlob);
         }
         require(batchBlob.slice(0, 4) == hex"53434231");
         bigint __message_bus_version = int(bytes.concat(batchBlob.slice(4, 5), hex"00"));
@@ -3813,6 +3880,12 @@ function synthesizeMessageBusRoute(
     );
   }
   route.messageBusRoute = true;
+  // Late route synthesis runs after the final automatic delegate-marking pass. Propagate the admitted surface's
+  // execution context here so SymbolTableTraversal injects the proxy-master witness used by the route prologue
+  // and unlocking-frame validator. Early synthesis reaches the same state through the later marking pass.
+  if (isDelegateRoute && !route.modifiers.includes(FunctionModifier.DELEGATE)) {
+    route.modifiers.push(FunctionModifier.DELEGATE);
+  }
   route.graphDelegateSlotCount = eligible.reduce((maximum, handler) => {
     let count = 0;
     walkInvocationAst(handler.body, (node) => {
@@ -4149,6 +4222,15 @@ function compileResolvedAst(
       loweredFunctionPointerTables.add(selectorName.slice('__fnsel_'.length));
     }
   }
+  // Delegate variants must mark the source entry surface before an early route snapshots handler eligibility.
+  // The final marking pass below remains necessary for entry points synthesized by later lowerings.
+  let earlyDelegateFunctionsMarked = 0;
+  if (mergedCompilerOptions.autoDelegate && out) {
+    earlyDelegateFunctionsMarked = autoMarkDelegateFunctions(
+      ast, mergedCompilerOptions.forceStateful ?? false,
+    );
+    out.delegateFunctionsMarked = earlyDelegateFunctionsMarked;
+  }
   const synthesizeBatchBeforeLowering = !!mergedCompilerOptions.messageBus
     && supportsAtomicMessageBus(ast, mergedCompilerOptions)
     && ast.contract.functions.some((fn) => {
@@ -4415,7 +4497,8 @@ function compileResolvedAst(
   // inheritance/modifier/getter expansion) and before SymbolTableTraversal injects _proxyMasterIndex. `delegate`
   // is never written in source; see AutoMarkDelegateFunctions.
   if (mergedCompilerOptions.autoDelegate && out) {
-    out.delegateFunctionsMarked = autoMarkDelegateFunctions(ast, mergedCompilerOptions.forceStateful ?? false);
+    out.delegateFunctionsMarked = earlyDelegateFunctionsMarked
+      + autoMarkDelegateFunctions(ast, mergedCompilerOptions.forceStateful ?? false);
   }
 
   if (!synthesizeBatchBeforeLowering && supportsAtomicMessageBus(ast, mergedCompilerOptions)) {

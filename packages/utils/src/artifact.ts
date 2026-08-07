@@ -711,11 +711,11 @@ export interface InvocationAnalysisArtifact {
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
  *
  * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
- * blob envelope, NOT the trailing region, is the binding constraint - an argument-carried value caps at 202
- * bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than
- * the region. Silent drift between the copies would therefore move a real limit.
+ * blob envelope, NOT the trailing region, is the binding constraint. The bound is the BCH maximum stack-item
+ * size: the blob is one unlocking-bytecode push and can use the canonical PUSHDATA2 form through 520 bytes.
+ * Silent drift between the copies would therefore move a real consensus-facing limit.
  */
-export const MAX_MESSAGE_BUS_BLOB_BYTES = 223;
+export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';

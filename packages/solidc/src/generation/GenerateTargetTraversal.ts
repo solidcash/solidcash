@@ -11879,14 +11879,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Visit data expression
     node.data = this.visit(node.data);
 
+    // An ARGUMENT LIST frames every element as its own pushdata push, composites included. The inline
+    // convention - `emitPushdataDecodeLastField` handing a struct back as-is, `emitPushdataDecode` walking
+    // the struct's own fields to measure it - belongs to STATE COMMITMENTS, where a struct is stored
+    // unframed. Applying it here handed on the still-framed blob, so the first field access decoded the
+    // frame's own PUSHDATA1 header as field 0, consumed the whole payload, and left the next field
+    // decoding an empty remainder. A composite under 76 bytes carries a 1-byte frame and hides this.
+    const isFramedComposite = (type: Type): boolean =>
+      type instanceof StructType || type instanceof ArrayType;
+
     // Skip fields before the target index
     for (let i = 0; i < node.index; i++) {
-      this.emitPushdataSkip(node.schema[i], locationData);
+      if (isFramedComposite(node.schema[i])) this.emitGenericPushdataSkip(node.schema[i], locationData);
+      else this.emitPushdataSkip(node.schema[i], locationData);
     }
 
     // Decode the target field
     const isLast = node.index === node.schema.length - 1;
-    if (isLast) {
+    if (isFramedComposite(node.schema[node.index])) {
+      this.emitGenericPushdataDecode(node.schema[node.index], locationData);
+      this.emit(Op.OP_DROP, locationData); // drop remainder; the unframed composite is below it
+    } else if (isLast) {
       this.emitPushdataDecodeLastField(node.schema[node.index], locationData);
     } else {
       this.emitPushdataDecode(node.schema[node.index], locationData);

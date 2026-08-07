@@ -226,6 +226,16 @@ it must not silently compile to incorrect covenant behavior.
     signature verification inside the probe alone does not weaken any check that decides acceptance.
   - The diagnostic added alongside this now names the swallowed probe failure on `error.cause`, so the refusal
     explains itself instead of surfacing a bare OP_VERIFY.
+  - Skipping the probe is NOT a fix, tested directly: with the probe disabled outright, nine of the ten still
+    fail. Discovery is genuinely required for these shapes, so the probe has to be made to succeed rather than
+    avoided.
+  - Mechanism for whoever takes it: for `OP_INVOKE` contracts the signature arguments are not signed during
+    scenario evaluation at all. `LibauthTemplate.ts` (`resolveArgsForOpInvoke`) pre-computes them from
+    `buildLibauthTransaction()` and substitutes raw bytes, because `OP_INVOKE` rewrites `state.instructions` and
+    so changes the `coveredBytecode` an ordinary Key-typed signature would cover. The probe runs on the
+    fee-less phase-1 build, so it carries a signature computed for that shape. Determining why that
+    pre-computed signature does not verify during the probe's scenario evaluation is the next step, and it needs
+    instrumentation rather than inference.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

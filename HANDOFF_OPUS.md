@@ -292,3 +292,15 @@ used for reading pushdata-encoded state/memory values, and the stack carries `0x
 directly beneath, so a `__yulmem` read is the leading candidate - consistent with `checkParams` taking
 `string memory title_` from `publishJobPost`'s `string calldata title_`. Confirm which read it is before
 changing anything; the arguments themselves are verified correct.
+
+The decoder is `emitIntDecodeSubroutine` (GTT ~2824): "returns [raw_bytes, remainder]... Handles OP_0,
+OP_1NEGATE, OP_1-OP_16, PUSHDATA1/2, and standard pushdata (1-75)". It decodes successive pushdata-encoded
+fields out of a STATE COMMITMENT blob, each call consuming one field and returning the remainder.
+
+An EMPTY blob therefore means the decode ran PAST THE END of the commitment: the implementation is reading more
+state fields than the co-spent commitment actually carries. Input 102 is the implementation executing in the
+PROXY's state context, and the proxy's data NFTs are inputs 1-2 (`DataNft_cb3a64c1`). So the concrete next
+check is: how many fields does `MarketplaceV1`'s state layout expect, versus how many the proxy's commitment
+holds at inputs 1/2 - i.e. a proxy/implementation state-layout width mismatch, not a memory problem.
+
+(Supersedes the `__yulmem` guess above: `0x20` on the stack is incidental, the decoder is a state reader.)

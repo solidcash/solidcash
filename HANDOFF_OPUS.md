@@ -1758,3 +1758,17 @@ pre-existing value will see nothing. `emitGenericPushdataDecode` is the likely s
 
 Suggested first move: dump input 102's unlocking-script arguments and identify which one is empty, rather than
 reading the body - the body is shared and the empty ARGUMENT is the actual defect.
+
+### Input 102: one hypothesis tested and FALSIFIED
+
+Tested: on an INSERT the callee's chunkable collection has no prior entry, so the 5e1b7163 read-side fix sets no
+witness at all, leaving a zero-length item where the covenant splits off a 1-byte prefix. Supplying the
+canonical "zero length prefix" (`new Uint8Array([0])`) for the absent-entry case changed NOTHING - same error,
+same input. Hypothesis falsified and the change REVERTED rather than left in as unverified behaviour.
+
+What the arg dump shows: input 102 carries SEVERAL empty (`'0:'`) arguments, not one, interleaved with real
+ones (`'4:51024456'`, `'25:76a914c4841b8f...'`, `'1:81'`). So "find the empty argument" is not selective enough
+- most of them are legitimately empty. The next step must identify WHICH argument the failing OP_SPLIT consumes,
+by mapping the failing instruction's stack depth back to an argument position, not by looking for emptiness.
+
+Do not retry the absent-entry-witness idea; it is measured and dead.

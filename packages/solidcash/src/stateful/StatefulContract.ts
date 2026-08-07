@@ -10706,6 +10706,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               let childBlockInputs: UnlockableUtxo[] | undefined;
               const childCompilerInternalArgs: Record<string, FunctionArgument> = {};
+              /** Rebuilt chunk payloads for the callee's chunkable C2 values, by route entry slot. */
+              const childValueWitnesses = new Map<number, Uint8Array>();
               const childBatchTargets = new Map<number, Uint8Array>();
               const childBatchLists = new Map<string, SortedList>();
               const childBatchPredecessorOutputs: Array<{
@@ -10827,6 +10829,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const keySlot = keyToSlotMulti(keys);
                         childBatchTargets.set(slot.slotIndex ?? 0, keySlot);
                         childBatchLists.set(access.collection, list);
+                        // P5b: a chunkable value stored LONG (len > 60) keeps only `root32 || headData28` in the
+                        // entry, and the route's read covenant requires `sha256(valueWitness) == root`. Rebuild it
+                        // from the CALLEE's chunk UTXOs - the caller's `entryValueWitnesses` describes the caller's
+                        // own collections and is empty here, which left the witness EMPTY and failed the check.
+                        if (collection.chunkableValue && list.has(keySlot)) {
+                          const tail = list.find(keySlot)!.value;
+                          const storedLength = tail.length >= 4
+                            ? tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24) : 0;
+                          if (storedLength > 60) {
+                            const root = tail.slice(4, 36);
+                            const chunkAddress = getValueChunkAddress(
+                              entryContract, callee.categoryId, access.collection, keySlot, root,
+                            );
+                            const expectedChunks = Math.ceil((storedLength - VALUE_HEAD_SIZE) / VALUE_CHUNK_SIZE);
+                            const byIndex = new Map<number, { chunkIndex: number; chunkData: Uint8Array }>();
+                            for (const chunk of (await this.inner.provider.getUtxos(chunkAddress))
+                              .filter((utxo) => utxo.token?.category === callee.categoryId
+                                && (utxo.token?.nft?.commitment?.length ?? 0) > 0)
+                              .map((utxo) => parseValueChunkCommitment(utxo.token!.nft!.commitment))) {
+                              if (chunk.chunkIndex < expectedChunks) byIndex.set(chunk.chunkIndex, chunk);
+                            }
+                            const joined = joinValueChunks(
+                              tail.slice(36, 64),
+                              [...byIndex.values()].sort((a, b) => a.chunkIndex - b.chunkIndex),
+                              storedLength,
+                            );
+                            if (binToHex(sha256Sync(joined)) === binToHex(root)) {
+                              childValueWitnesses.set(slot.slotIndex ?? 0, joined);
+                            }
+                          }
+                        }
                         try {
                           const exists = list.has(keySlot);
                           entry = (exists ? list.find(keySlot) : list.predecessorOf(keySlot))?.utxo;
@@ -11024,10 +11057,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   primary.fusedReturnGroupIndex = childExternalGroupIndex;
                 }
               }
+              // Publish the callee's chunkable-value witnesses alongside the C2 batch witnesses; the delegate
+              // arg fill reads them by name. Emitted unconditionally - a route may read a chunkable value
+              // without carrying any sorted-batch WRITE.
+              for (const [routeSlot, payload] of childValueWitnesses) {
+                childCompilerInternalArgs[`__internal__valueWitness_${routeSlot}`] = payload;
+              }
+              const childHasInternalArgs = Object.keys(childCompilerInternalArgs).length > 0;
               if (proxyCallee && childCompilerRoute && delegateCallGroupIndex !== undefined) {
                 lowLevelCallUtxoGroups[delegateCallGroupIndex].compilerRoute = {
                   ...childCompilerRoute,
-                  ...((selectedFn?.sortedBatchInfo?.length ?? 0) > 0 && {
+                  ...(childHasInternalArgs && {
                     internalArgs: childCompilerInternalArgs,
                   }),
                 };
@@ -11043,7 +11083,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 externalContract: callee,
                 ...(childCompilerRoute && { compilerRoute: {
                   ...childCompilerRoute,
-                  ...((selectedFn?.sortedBatchInfo?.length ?? 0) > 0 && {
+                  ...(childHasInternalArgs && {
                     internalArgs: childCompilerInternalArgs,
                   }),
                 } }),
@@ -11521,7 +11561,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
             }
             const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
-            if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
+            if (witness) {
+              // A route reads the CALLEE's collections, so its chunkable-value witnesses are the callee's, not
+              // this caller's. The block composition resolves them from the callee's chunk UTXOs and publishes
+              // them on the route's internalArgs; `entryValueWitnesses` stays the fallback for an ordinary
+              // delegate, whose entries really are the caller's.
+              const routeWitness = group.compilerRoute?.internalArgs?.[inp.name];
+              if (routeWitness !== undefined) return routeWitness;
+              return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
+            }
             const anchorWitness = inp.name.match(/^__internal__extcallAnchorIdx(\d+)$/);
             if (anchorWitness) {
               const band = anchorBandBySlot.get(Number(anchorWitness[1]));

@@ -390,8 +390,13 @@ and whether the 7 co-spent EntryNfts include a bracketing pair for the empty key
 
 ### The blocking check, pinned to a slot
 
-The abort is an `OP_EQUALVERIFY` at block-layout INPUT offset 8. Entry offsets are `3 + slotIndex`, so
-that is entry slot 5 of the route's 26. From `delegateArtifact.messageBus.route.entryAccesses`:
+The abort is an `OP_EQUALVERIFY` whose stack carries index `0x72` = 114, i.e. block offset 8 if that is
+an input index (block base 106). Entry offsets are `3 + slotIndex`, which would make it entry slot 5.
+TREAT THAT MAPPING AS UNCONFIRMED: the lbc the covenant expected is `aa20a2d9fabc...87`, which is the
+ARBITRATORS entry address (input 110 = slot 1), not the `users` address slot 5 would need. Either the
+index on the stack is not the one used in the comparison, or the check belongs to slot 6
+(`arbitrators_0_r0`). Establish which before acting. From
+`delegateArtifact.messageBus.route.entryAccesses`:
 
 ```text
 slot 5 = { collection: 'users', keyParams: ['__message_bus_key_users_0_r0'],
@@ -427,3 +432,28 @@ Two candidate directions, not yet tested:
 `SOLIDC_TRACE_ITEMS` (stack items per step, default 4), `SOLIDC_TRACE_RING` (steps kept, default 520),
 `SOLIDC_TRACE_COMMITMENT` (commitment hex width, default 24). The trace now also prints push DATA per
 instruction and the complete final stack - that is what identified the decoded values by content.
+
+
+### Entry-resolution measurements (`SOLIDC_DEBUG_ROUTE_CONCISE=1` -> `nested-entry-resolution`)
+
+Live C2 lists at the time of the call:
+
+```text
+users        slots: 0000..(head), 3e16384e..(user1)
+arbitrators  slots: 0000..(head)            <- only the head
+```
+
+Keys the SDK computed:
+
+```text
+users_sender_0      479d2968..   (msg.sender for the CALLEE is the CALLER CONTRACT's lbc, not user1)
+users_0_r0          75def5fc..   (the zero-address filler 76a914+20 zero bytes+88ac)
+users_0_r2          3e16384e..   (real: user1)
+arbitrators_0_r0    75def5fc..   (same filler)
+```
+
+So `users_0_r0` (75def5fc) is ABSENT and its predecessor is `3e16384e` - the SAME UTXO
+`users_0_r2` needs, and the same one `users_sender_0` (479d2968, also absent) resolves to. Three slots
+want one entry UTXO and it can only be co-spent once; `runtimeAliasPriorSlots` exists for exactly this,
+which is why some row slots legitimately stay placeholders. Whether the covenant agrees for a
+WRITE-capable slot is the open question.

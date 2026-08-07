@@ -185,7 +185,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-07T19:56:23.842Z',
+  updatedAt: '2026-08-07T20:00:07.196Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [
@@ -503,7 +503,7 @@ export default {
         messageBus: true,
       },
     },
-    updatedAt: '2026-08-07T19:56:24.012Z',
+    updatedAt: '2026-08-07T20:00:07.313Z',
     delegateProxyStateOutputCountPinned: true,
     invocationAnalysis: {
       version: 1,

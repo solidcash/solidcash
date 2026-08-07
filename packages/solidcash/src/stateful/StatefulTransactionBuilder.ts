@@ -3170,7 +3170,9 @@ export class StatefulTransactionBuilder {
         (globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_TRACE_COMMITMENT ?? '24',
       );
       for (const idx of candidates) {
-        const ring: Array<{ ip: number; opcode: number; depth: number; top: string[]; data?: string }> = [];
+        const ring: Array<{
+          ip: number; opcode: number; depth: number; top: string[]; data?: string; bodyLen: number;
+        }> = [];
         const vm = createVirtualMachineBch2026ForProvider(this.builderOptions.provider, {
           opcodes: new Set(Array.from({ length: 256 }, (_unused, opcode) => opcode)),
           beforeOperation: (unknownState) => {
@@ -3181,6 +3183,9 @@ export class StatefulTransactionBuilder {
             ring.push({
               ip: state.ip,
               opcode: instruction?.opcode ?? 0,
+              // Body length identifies the frame: a failure inside a small outlined helper is usually a defect
+              // at its CALL SITE, and the frame change is what points there.
+              bodyLen: state.instructions.length,
               depth: state.stack.length,
               data: instruction?.data === undefined ? undefined : binToHex(instruction.data).slice(0, 64),
               top: state.stack.slice(-traceWidth).map((item) => {
@@ -3202,7 +3207,7 @@ export class StatefulTransactionBuilder {
         // eslint-disable-next-line no-console
         console.error(`[covenant VM trace] input ${idx}: ${finalState.error}\n${ring.map((step, stepIndex) => (
           `  ip=${step.ip} op=0x${step.opcode.toString(16).padStart(2, '0')}`
-          + `${step.data === undefined ? '' : `(${step.data})`} depth=${step.depth} top=[${step.top.join(' ')}]`
+          + `${step.data === undefined ? '' : `(${step.data})`} body=${step.bodyLen} depth=${step.depth} top=[${step.top.join(' ')}]`
           + (stepIndex === ring.length - 1 ? '  <-- FAILS HERE' : '')
         )).join('\n')}\nfinal stack:\n${finalStack}\ninputs=\n${sourceOutputs.map((input, inputIndex) => (
           `  ${inputIndex}:${binToHex(input.lockingBytecode).slice(0, 80)}:${input.token?.nft?.capability ?? '-'}:`

@@ -1801,3 +1801,28 @@ The added code is correct for the path it is on and is kept, but to identify the
 helper the RING path needs the instruction array (or at least a body identity) captured per step. That is a
 small change to what `ring` records, at its push site. Do that first; everything downstream of "which call site
 passes the empty operand" is still blocked on it.
+
+### ROOT CAUSE of input 102 found: an empty OP_UTXOTOKENCOMMITMENT
+
+Adding `bodyLen` to the ring dump (frame identity) exposed the call site immediately:
+
+    ip=693 op=0x01(2f) body=7503   <- push 0x2f (47)
+    ip=694 op=0x79     body=7503   <- OP_PICK  (pick the input index at depth 47)
+    ip=695 op=0xd2     body=7503   <- OP_UTXOTOKENCOMMITMENT  -> pushes an EMPTY item
+    ip=697 op=0x8a     body=7503   <- OP_INVOKE helper 69
+    ip=1   op=0x7f     body=69     <- <1> OP_SPLIT on that empty item   <-- FAILS
+
+The decode helper is fine and the argument is fine in shape: the covenant read the token commitment of an INPUT
+and got NOTHING. So an input the covenant expects to carry an NFT commitment is carrying none - the SDK has a
+plain/funder input where a commitment-bearing NFT belongs.
+
+**Prime suspect - and it is this round's own chunk work.** The block is 1:1 input/output. The chunk work
+replaces funder passthrough OUTPUTS at 145/146 with chunk NFTs, but the INPUTS at the paired positions are
+still funders with no token. If the covenant reads the UTXO commitment at a chunk position, it gets empty,
+which is exactly this failure. On an INSERT there are no pre-existing chunk UTXOs to spend, so the input side
+cannot simply mirror the output side - decide deliberately what the input at a NEW chunk position must be
+(a funder is evidently not it).
+
+Verify before building: re-run with the chunk placement disabled and see whether input 102 still fails. If it
+passes without the chunks, the input pairing is the defect and it belongs to this feature. That is a cheap,
+decisive test and it is the RIGHT next action.

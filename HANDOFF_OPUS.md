@@ -1044,3 +1044,52 @@ DO NOT guess at a fourth variant. Establish first, with `SOLIDC_DEBUG_MASTER_BAS
 on `emitEntryInputIndex`/`emitBlockSlotIndex`, (a) which emitter writes those two `OP_INPUTINDEX OP_6
 OP_ADD` sequences, and (b) whether `routeProxyMasterBottomOrdinal` is set in that compile at that moment.
 Both are one instrumented compile away; three uninstrumented attempts produced nothing.
+
+### The two facts, measured (as this file instructed) - and what they show
+
+`SOLIDC_DEBUG_ENTRY_SITE=1` prints every entry-slot base emission with its emitter, function, offset,
+`routeProxyMasterBottomOrdinal` and the tracked-witness index.
+
+```text
+via                  fn              offset  ordinal    trackedWitness  flag
+emitBlockSlotIndex   __message_bus1    6      undefined      -1          isDelegate=false   x78
+emitEntryInputIndex  __message_bus1    8/9    undefined      90          mbRoute=true       x48
+```
+
+(a) The failing base comes from **`emitBlockSlotIndex`**, not `emitEntryInputIndex`, in a compile where
+`currentFunctionIsDelegate` is FALSE and the witness is NOT on the frame.
+(b) `routeProxyMasterBottomOrdinal` is `undefined` EVERYWHERE - the contract-level probe on the route's
+parameter list never matched, because the witness parameter is not on the node at `visitContract` time.
+
+A self-capturing variant (learn the ordinal from any emission that CAN still see the witness, reuse it in
+bodies that cannot) was implemented and compiled: **byte-identical across the WHOLE artifact**
+(`c05693` 10 -> 10, depth-picks 855 -> 855). Reverted.
+
+MEASUREMENT CORRECTION worth carrying: count these patterns across `delegateArtifact.bytecode` AND every
+`functionBodies` value. Counting only `functionBodies['53434231']` sees 2 of the 10 occurrences - the
+OP_DEFINE'd helper bodies live in the contract-level bytecode.
+
+### THE LEAD THAT EXPLAINS ALL OF IT
+
+`delegate-function-selection` for the nested delegate group reports:
+
+```text
+groupLocalIdx: 1, contract: 'MarketplaceDataV1', functionName: '__message_bus1',
+functionArgCount: 23, compilerRouteArgCount: 23, candidates: []
+```
+
+`candidates: []` means `bArt.abi` contains NO function named `__message_bus1` - i.e. `bArt` is the MAIN
+MarketplaceDataV1 artifact, whose ABI has no route (only `delegateArtifact.messageBus` does). The route
+ABI is being taken from `group.compilerRoute.abiFunction` while the CONTRACT resolved for the group is
+the main one.
+
+That matches the measurement exactly: the failing site is `emitBlockSlotIndex / __message_bus1 / offset 6
+/ isDelegate=false`, which is the MAIN artifact's compile of the route - where addressing the block from
+`OP_INPUTINDEX` is correct for a standalone call and wrong when the route runs as a proxy's
+implementation. Every codegen fix applied to the DELEGATE VARIANT cannot move a site that executes from
+the MAIN script.
+
+NEXT: establish which SCRIPT input 105 actually carries - compare its locking bytecode against both the
+main and the delegate-variant artifact for MarketplaceDataV1. If it is the main one, this is the
+`_externalRegistry` resolution-order family recorded much earlier in this file (blocker B), not a codegen
+bug, and the fix belongs in how the nested delegate group picks its contract.

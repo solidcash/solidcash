@@ -93,12 +93,15 @@ export default class RegtestNetworkProvider implements NetworkProvider {
   async getUtxos(address: string): Promise<Utxo[]> {
     await this.ensureReady();
     await this.importAddressIfNeeded(address);
-    // Token-aware addresses request token UTXOs; plain addresses skip them (shared-node safety).
-    const decoded = isHex(address) ? undefined : cashAddressToLockingBytecode(address);
-    const includeTokens = typeof decoded === 'object' ? decoded.tokenSupport : true;
-    const result = includeTokens
-      ? await this.readRpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false, { includeTokens: true })
-      : await this.readRpc.request<ListUnspent>('listunspent', 0, 9999999, [address], false);
+    // Always request token UTXOs. The CashAddress token-support flag describes the ADDRESS ENCODING, not what
+    // the script underneath may hold: a p2sh32 covenant is addressable in both forms and the locking bytecode is
+    // identical, so gating the query on that flag hid real token UTXOs. `deriveLogicalCreateAddress` encodes
+    // `type: 'p2sh'`, so every logical CREATE anchor - which is an immutable NFT - was invisible here and
+    // `resolveLogicalIdentity` reported "found 0" for an anchor that existed on chain. MockNetworkProvider
+    // returns token UTXOs regardless, which is why this only ever failed against a live node.
+    const result = await this.readRpc.request<ListUnspent>(
+      'listunspent', 0, 9999999, [address], false, { includeTokens: true },
+    );
     return result.map((u) => this.listUnspentItemToUtxo(u));
   }
 

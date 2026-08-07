@@ -336,7 +336,21 @@ it must not silently compile to incorrect covenant behavior.
     Reproduce both across several chain states before treating either as settled.
   - Neither reproduces on mocknet at any consensus limits, so both join the CREATE-anchor item as findings that
     require a live node to observe.
-- [ ] Fix the logical CREATE identity anchor, which is missing on a live network.
+- [x] Logical CREATE identity anchor: NOT a product defect. Two separate causes, both outside the compiler.
+  - `RegtestNetworkProvider.getUtxos` gated its `listunspent` on the CashAddress token-support flag, so a
+    non-token address returned no token UTXOs. `deriveLogicalCreateAddress` encodes a plain script address, and
+    the anchor is an immutable NFT, so every anchor was invisible and `resolveLogicalIdentity` reported "found
+    0" for anchors that existed on chain. That flag describes the address ENCODING, not what the script may
+    hold - the locking bytecode is identical either way - so the query now always includes tokens.
+    `MockNetworkProvider` returns token UTXOs regardless, which is why this only ever failed against a live node.
+  - With the anchors visible the same test reported "ambiguous ... found 65". The logical address is
+    deterministic in (deployer, nonce) and the suite reuses one key at nonce 0, so every historical run left
+    another anchor at the same address. That is test contamination, not a protocol fault: a real deployer
+    consumes each nonce once.
+  - Also hardened while here: the identity used p2sh20. A 160-bit script hash offers only about 2^80 collision
+    resistance, so a second seed hashing alike would let an attacker present a different deployer/nonce for the
+    same logical address. It is now p2sh32, matching the project rule that stateful features never take a p2sh20
+    path.
   - `ContractFactory.test.ts` fails on a freshly wiped chain with `Logical contract identity at bchreg:pzarnm7r...
     is missing or invalid (expected exactly one authenticated immutable anchor, found 0)`, thrown by
     `resolveLogicalIdentity` (`src/stateful/logical-identity.ts:193`) immediately after a successful

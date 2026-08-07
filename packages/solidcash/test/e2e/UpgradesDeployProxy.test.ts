@@ -6,7 +6,6 @@ import {
   resolveLogicalIdentity, upgrades,
 } from '../../src/index.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
-import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 // ethers/hardhat OpenZeppelin-upgrades-style proxy deploy for stateful contracts:
@@ -44,9 +43,23 @@ const CUSTOM_PROXY = `pragma solidcash >=0.8.0;
     }
   }`;
 
+/**
+ * A FRESH key per call. The logical CREATE address is deterministic in (deployer, nonce) and these deploys use
+ * nonce 0, so reusing one key leaves another immutable anchor at the same address on every run and
+ * `resolveLogicalIdentity` then legitimately reports "ambiguous ... found N". A real deployer consumes each
+ * nonce once, so uniqueness here restores the property the test means to assert.
+ */
+function freshPrivateKey(): Uint8Array {
+  const key = new Uint8Array(32);
+  crypto.getRandomValues(key);
+  // Keep the value non-zero and below the secp256k1 group order.
+  key[0] = (key[0] & 0x7f) | 0x01;
+  return key;
+}
+
 async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
-  const signer = new Signer(alicePriv, provider);
+  const signer = new Signer(freshPrivateKey(), provider);
   // Two genesis-valid funders: one for the implementation, one for the proxy.
   await provider.addUtxo(signer.getAddress(), { txid: 'a1'.repeat(32), vout: 0, satoshis: 1_000_000n });
   await provider.addUtxo(signer.getAddress(), { txid: 'b2'.repeat(32), vout: 0, satoshis: 1_000_000n });

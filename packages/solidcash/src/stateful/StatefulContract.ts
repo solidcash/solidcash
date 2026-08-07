@@ -4045,7 +4045,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ? (artifact.functionBodies as Record<string, string> | undefined)?.[constructorAbi.selector]
       : undefined) ?? '';
     const constructBodyBytes = typeof constructBodyHex === 'string' ? constructBodyHex.length / 2 : 0;
-    const useSparseProbe = (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000
+    // The sparse observer is an approximation of the faithful trace (it records only the inspected opcodes and
+    // the EQUALVERIFY adjacent to each). SOLIDCASH_FAITHFUL_DEPLOY_PROBE=1 forces the faithful path so a
+    // derivation failure can be attributed to the contract rather than to the observer.
+    const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
+      && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000
       && constructBodyBytes > 2_000;
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
@@ -4365,6 +4369,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probeBuilder.inputs,
       );
       const program = { inputIndex: 0, sourceOutputs, transaction };
+      if ((globalThis as any).process?.env?.SOLIDCASH_DEPLOY_TRACE) {
+        console.error(`[DEPLOY-SHAPE] iter=${iter} inputs=${probeBuilder.inputs.length}`
+          + ` outputs=${transaction.outputs.length} blockSize=${constructorAbi?.blockLayout?.blockSize}`
+          + ` slots=${(constructorAbi?.blockLayout?.slots ?? []).map((s) => s.kind).join(',')}\n  inputs:\n    `
+          + probeBuilder.inputs.map((u: any, n: number) => `[${n}] unlock=${u.unlocker ? 'yes' : 'NO'}`
+            + ` token=${u.token ? u.token.category.slice(0, 8) : '-'}`
+            + ` nft=${u.token?.nft ? (u.token.nft.commitment || '(empty)').slice(0, 24) : '-'}`).join('\n    ')
+          + '\n  outputs:\n    '
+          + transaction.outputs.map((o: any, n: number) => `[${n}] lock=${binToHex(o.lockingBytecode).slice(0, 20)}`
+            + ` nft=${o.token?.nft ? (binToHex(o.token.nft.commitment) || '(empty)').slice(0, 40) : '-'}`).join('\n    '));
+      }
       let fullTrace: AuthenticationProgramStateCommon[];
       if (useSparseProbe) {
         // Large private-network contracts can execute millions of instructions. vm.debug() clones every state,
@@ -4505,6 +4520,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const insnSample = failedStep === undefined
           ? ''
           : ` ops=[${(failedStep.instructions ?? []).slice(0, 12).map((i) => `0x${(i.opcode ?? 0).toString(16)}`).join(' ')}]`;
+        // The message above deliberately stays short. SOLIDCASH_DEPLOY_TRACE dumps the whole failing script,
+        // the full stack and the steps leading in, which is what an unexplained constructor OP_VERIFY needs.
+        if ((globalThis as any).process?.env?.SOLIDCASH_DEPLOY_TRACE && failedStep !== undefined) {
+          const failIdx = fullTrace.lastIndexOf(failedStep);
+          const asm = (failedStep.instructions ?? []).map((i: any, n: number) => {
+            const data = i.data === undefined ? '' : `(${binToHex(i.data)})`;
+            return `${n === failedStep.ip ? '>>' : '  '}${n}:0x${(i.opcode ?? 0).toString(16)}${data}`;
+          });
+          console.error(`[DEPLOY-TRACE] iter=${iter} ip=${failedStep.ip}/${failedStep.instructions.length}`
+            + ` err=${vmError}\n  script:\n    ${asm.join('\n    ')}`
+            + `\n  stack(${failedStep.stack.length}):\n    `
+            + failedStep.stack.map((s: Uint8Array, n: number) => `[${n}] ${binToHex(s)}`).join('\n    ')
+            + '\n  prev steps (op = the instruction ABOUT to run at that ip):\n    '
+            + fullTrace.slice(Math.max(0, failIdx - 20), failIdx + 1).map((s: any) => {
+              const op = s.instructions?.[s.ip]?.opcode;
+              return `len=${s.instructions?.length} ip=${s.ip} op=0x${(op ?? 0).toString(16)}`
+                + ` stack=[${(s.stack ?? []).slice(-3).map((x: Uint8Array) => binToHex(x) || '(empty)').join(' ')}]`;
+            }).join('\n    '));
+        }
         throw new Error(
           'Failed to derive initial state commitments from '
           + 'constructor. Ensure the constructor writes all '
@@ -4633,6 +4667,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       trailingEntryCommits[collectionIndex] = binToHex(encodeEntryCommitment(
         new Uint8Array(32), materialized[0]?.slot ?? new Uint8Array(32),
       ));
+    }
+
+    // Trace-derived commitments never pass through `buildPushdataCommitment`, so its commitment-limit check
+    // does not cover them and an over-packed state layout only surfaces as the node's opaque
+    // `excessive token commitment length`. Name it here instead, against the layout's own published limit.
+    const limit = stateLayout.commitmentLimit;
+    if (limit !== undefined) {
+      currentCommitments.forEach((commitment, nftIndex) => {
+        const size = (commitment?.length ?? 0) / 2;
+        if (size > limit) {
+          const packed = stateLayout.variables
+            .filter((variable) => variable.nftIndex === nftIndex).map((variable) => variable.name);
+          throw new Error(
+            `Derived state commitment for data NFT ${nftIndex} is ${size} bytes, over the ${limit}-byte `
+            + `commitment limit. The variables packed into it (${packed.join(', ')}) do not fit one NFT.`,
+          );
+        }
+      });
     }
 
     return {

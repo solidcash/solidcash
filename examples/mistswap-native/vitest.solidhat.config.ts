@@ -21,6 +21,9 @@ export default defineConfig(solidcashHardhatPreset({
     passWithNoTests: true,
     testTimeout: 120000,
     hookTimeout: 300000,
+    // MasterChef / MasterChefV2 split into many facets and their workers died with `Worker exited unexpectedly`,
+    // dropping 24 tests from the report with no per-test result. Give each fork more heap than Node's default.
+    poolOptions: { forks: { execArgv: ['--max-old-space-size=4096'] } },
     server: { deps: { inline: [/mistswap\/mistswap/] } },
   },
   resolve: {

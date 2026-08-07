@@ -657,3 +657,34 @@ Two candidate directions:
   `__message_bus_key_arbitrators_0_r0` (slot 6) - the bound set is exactly `keyWitnessValues` in
   `_buildRepeatedRouteCall` (~12960), which would have to be threaded into the block-composition loop
   (~10730).
+
+### PROOF BY CONSTRUCTION: the remaining blocker is a route design gap, not an SDK bug
+
+`arbitrators` holds exactly ONE live entry (the head). This batch needs absence proofs for TWO distinct
+absent keys in it:
+
+```text
+route slot 1  arbitrators_sender_0  key b514c397 (the caller's logical address)  absent -> brackets the head
+route slot 6  arbitrators_0_r0      key e3b0c442 (address(0), row 0's argument)  absent -> brackets the head
+```
+
+One outpoint cannot be two inputs. Both assignments were BUILT AND RUN:
+
+- Default (first-come): slot 1 takes the head -> slot 6 is a placeholder -> abort reading slot 6 at input
+  115 (`0x73`), the failure this file has been tracking.
+- With an SDK gate that only claims an entry for a slot an admitted row actually keys: slot 6 takes the
+  head -> slot 0 (`users_sender_0`) is a placeholder -> abort reading slot 0 at input 109 (`0x6d`),
+  which proves the canonical msg.sender slot is read UNCONDITIONALLY, not selector-gated.
+- With that gate plus "a msg.sender-keyed slot always counts as keyed": slot 1 wins again -> back to the
+  first failure.
+
+So no assignment of the single head entry satisfies the covenant. The gate was reverted; it trades one
+failure for another and changes co-spend selection broadly for no gain.
+
+The fix has to be on the covenant side: let a slot prove ABSENCE by reference to another slot's co-spent
+bracketing entry, the read-path analogue of the write path's runtime-alias gate (GTT ~15030). The
+soundness obligation is the same one the write path already carries - the alias arm must still PROVE that
+some co-spent prior slot's entry brackets this key, or a spender could claim "absent" for a key that
+exists by pointing the slot at a funder. The write path's note says an inactive slot "is authenticated
+later by predOut=-2 iff its slot hash duplicates an allowed prior identity"; the read path needs the same
+treatment, and `runtimeAliasPriorSlots` already publishes the admissible prior slots per slot.

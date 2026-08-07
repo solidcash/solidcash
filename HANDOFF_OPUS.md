@@ -1207,3 +1207,24 @@ So the over-marking comes from somewhere else in this branch's WIP (54964087). N
 `compiler.ts` hunks against a DelegateInferred run - it is a single commit, so `git checkout
 54964087^ -- packages/solidc/src/compiler.ts`, rebuild, and run the one file gives the answer in one
 cycle. Remember upstream is GREEN on this file, so the cause is definitely in this branch.
+
+### DelegateInferred bisected across the compiler-side files
+
+Each branch-modified compiler file was swapped for its `solidcash_v0.13.1` version in turn, rebuilt, and
+the one test file re-run:
+
+```text
+branch as-is                                6 failures
+upstream packages/solidc/src/compiler.ts    5 failures   <- accounts for exactly ONE
+upstream packages/utils/src/outline.ts      6 failures   <- not a cause
+upstream .../generation/GenerateTargetTraversal.ts  6 failures   <- not a cause
+```
+
+So the WIP `compiler.ts` owns 1 of the 6; the other 5 are NOT in the compiler at all. The remaining
+branch-vs-upstream deltas are SDK-side (`StatefulContract.ts`, `Contract.ts`, `message-bus/graph.ts`,
+`utils/artifact.ts`, `upgrades.ts`). Bisect those next, the same way.
+
+GIT TRAP that briefly lost the working tree here: `git checkout <branch> -- <path>` STAGES the fetched
+version, so a following `git checkout -- <path>` restores from the INDEX (still the other branch's file),
+not from HEAD. Use `git checkout HEAD -- <path>` to undo it, and verify with a grep for a known local
+change before rebuilding.

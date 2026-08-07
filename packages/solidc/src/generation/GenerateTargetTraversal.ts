@@ -680,6 +680,14 @@ class NftIndexCollector extends AstTraversal {
   }
 }
 
+/**
+ * Whether a declared type is one whose access the compiler lowers through structural helpers - struct field
+ * extract/prefix/skip, array element/split/truncate. Used to decide whether a contract needs the subroutine
+ * usage probe at all, before any helper has been allocated.
+ */
+const isAggregate = (type: unknown): boolean =>
+  type instanceof StructType || type instanceof ArrayType || type instanceof TupleType;
+
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
   sourceMap: string;
@@ -2741,9 +2749,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * map on failure (conservative).
    */
   private subroutineUseProbe(node: ContractNode): Map<bigint, number> | null {
-    // Subroutine sites only arise from packed state/entry reads, state/entry writes, or events.
+    // Subroutine sites arise from packed state/entry reads, state/entry writes and events - and also from
+    // structural helpers (struct field extract/prefix/skip, array element/split/truncate), which a contract
+    // with no state at all can have plenty of. Skipping the probe for those left their ids assigned purely in
+    // first-come order, so `rehomeHotHelperIds` never ran and the single-byte pool went to whichever helper
+    // happened to be emitted first rather than the one invoked most.
+    // Subroutine sites arise from packed state/entry reads, state/entry writes and events - and also from
+    // structural helpers (struct field extract/prefix/skip, array element/split/truncate), which a contract
+    // with no state at all can have plenty of. Skipping the probe there was not a missed id assignment but a
+    // missed EXTRACTION: `count(id)` reads the probe's tally, so with no probe every captured subroutine
+    // scores zero uses, `capturedSubroutineIsProfitable` refuses it, and the helper is inlined at every site.
+    // Detected from the declarations rather than the helper maps, which are still empty this early.
+    const usesAggregates = node.structDefinitions.length > 0
+      || node.stateVariables.some((variable) => isAggregate(variable.type))
+      || node.functions.some((fn) => fn.parameters.some((parameter) => isAggregate(parameter.type))
+        || fn.returnTypes.some((type) => isAggregate(type)));
     if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0
-      && !node.emitsEvent) {
+      && !node.emitsEvent && !usesAggregates) {
       return null;
     }
     // Body gen mutates deployTargets accumulatively; snapshot/restore so the probe leaves it clean.

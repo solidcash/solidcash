@@ -10836,7 +10836,30 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                               outputBlockSlot: -1,
                             });
                           }
-                        } catch { entry = undefined; }
+                          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                            console.error('nested-entry-pick', {
+                              collection: access.collection,
+                              blockSlot: childBlockInputs.length,
+                              routeSlot: slot.slotIndex,
+                              keySlot: binToHex(keySlot).slice(0, 16),
+                              exists,
+                              picked: entry ? `${entry.txid.slice(0, 12)}:${entry.vout}` : 'NONE',
+                            });
+                          }
+                        } catch (error) {
+                          entry = undefined;
+                          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                            ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                            console.error('nested-entry-pick-threw', {
+                              collection: access.collection,
+                              blockSlot: childBlockInputs.length,
+                              routeSlot: slot.slotIndex,
+                              keySlot: binToHex(keySlot).slice(0, 16),
+                              reason: (error as Error).message,
+                            });
+                          }
+                        }
                       }
                     }
                     childBlockInputs.push(entry ? {

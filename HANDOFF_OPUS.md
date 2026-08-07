@@ -593,3 +593,67 @@ and with the proxy master at 106 those give 108,109,110,109,109,113,108,109,116 
 So either the base for that site is not 106, or the index is built somewhere else again. Resolve that
 before touching any emitter: print the index-producing instructions the same way `abortingFrame` prints
 the aborting ones (the span begins mid-expression, at `OP_ADD`, because the outliner cut it there).
+
+---
+
+## Session update (2026-08-07, third pass): entry slots now address the right input
+
+### Landed: 32eb5ea8 - a message-bus route's entry slots are rooted at the PROXY master
+
+`emitEntryInputIndex`'s delegate branch emitted a bare `OP_INPUTINDEX` as the entry base. Correct for an
+ordinary delegate (implementation-relative slots), wrong for a compiler-owned route, which is the
+implementation of a PROXY-owned block - `emitTrailingBlockBase` already documents that its fixed entry /
+event / return / trailing slots "all begin at the proxy master". The route runs at input 105 with its
+block rooted at 106, so every entry read was one slot short: slot 6 (`arbitrators_0_r0`, offset 9) was
+read at 114 instead of 115. Verified byte-level (`c059` = `OP_INPUTINDEX OP_9` is gone; the bottom-
+relative proxy pick appears 376x) and at runtime (the failing index moved 114 -> 115).
+
+Regression evidence: `yarn test:fast` reproduces the documented baseline EXACTLY (15 failures across the
+same 6 compiler files); the 75-file SDK subset reproduces its 13 pre-existing failures in the same 4
+files.
+
+### TRAP that cost two attempts at this exact fix
+
+**A test run does NOT recompile the marketplace project just because `.marketplace/cache/solidcash` was
+removed.** Both earlier attempts looked like no-ops because the test loaded artifacts built by the
+previous compiler. Always force
+
+```bash
+node packages/solidhat/dist/cli.js compile --config solidcash.config.ts
+```
+
+and ASSERT the emitted bytes changed before concluding anything about a codegen edit.
+
+### The remaining blocker, now measured rather than inferred
+
+New diagnostic `nested-entry-pick` (SOLIDC_DEBUG_ROUTE_CONCISE) prints what each entry slot resolves to.
+For the MarketplaceData route:
+
+```text
+arbitrators routeSlot=1  key=b514c397(caller)  exists=false  picked=5734899c3659:5
+arbitrators routeSlot=6  key=e3b0c442(zero)    exists=false  picked=5734899c3659:5   <-- SAME UTXO
+arbitrators routeSlot=13,15,17,19,21,23,25     exists=false  picked=5734899c3659:5   <-- SAME UTXO
+users       routeSlot=5,12,16,18,...           exists=false  picked=73217b2db2ec:6   <-- SAME UTXO
+users       routeSlot=14 key=3e16384e(user1)   exists=true   picked=73217b2db2ec:8
+```
+
+`arbitrators` holds exactly one live entry (the head), so EVERY absent key brackets to it. The SDK
+resolves each slot independently and hands the same outpoint to eight slots; one outpoint can be one
+input, so all but the first end up as balanced placeholders - and the covenant's READ path rejects a
+placeholder.
+
+Note the asymmetry that makes this fixable: the WRITE path already has the runtime-alias gate
+(GTT ~15030 - it compares the slot's locking bytecode to the entry covenant address and SKIPS the
+physical upsert when the slot is a funder, "an inactive slot is authenticated later by predOut=-2 iff its
+slot hash duplicates an allowed prior identity"). The READ path has no equivalent, so it hard-fails.
+
+Two candidate directions:
+- Compiler: give the read path the same alias gate, with the same soundness obligation - on the alias
+  arm it must still be PROVEN that some co-spent prior slot's entry brackets this key, otherwise a
+  spender could claim "absent" for a key that exists by pointing the slot at a funder.
+- SDK: only resolve an entry co-spend for a slot whose key witness is actually BOUND by a row in this
+  batch, so the contended UTXO goes to the slot that needs it. In this batch NO row binds
+  `__message_bus_key_arbitrators_sender_0` (slot 1) while row 0 DOES bind
+  `__message_bus_key_arbitrators_0_r0` (slot 6) - the bound set is exactly `keyWitnessValues` in
+  `_buildRepeatedRouteCall` (~12960), which would have to be threaded into the block-composition loop
+  (~10730).

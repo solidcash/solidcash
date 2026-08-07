@@ -272,9 +272,24 @@ it must not silently compile to incorrect covenant behavior.
     placement: `Contract` layers a salt prologue and an external-library `OP_DROP` around the self-pin, so the
     ordering has to match rather than assume the simple case.
   - That the `checkSig` failure moves but the tests do not pass also means the redeem-script mismatch is A defect
-    rather than THE blocker. What remains behind it is the ordering problem noted earlier: the phase-1
-    transaction has not yet been given the outputs discovery is supposed to add, so the covenant cannot be
-    satisfied at probe time however correct the script is.
+    rather than THE blocker.
+  - THE BLOCKER IS ISOLATED, to one gate and one rule. Forcing every relaxed-consensus gate to its relaxed branch
+    while leaving `maximumInputBytes` at the real 10,000 makes all fifty tests pass, so the VM limit itself is
+    not what fails; the code path the gate selects is. Bisecting the five gates, forcing ONLY
+    `evaluateProbeTrace` (`StatefulContract.ts:986`) is sufficient on its own.
+  - That function feeds two very different traces into one consumer. Relaxed limits use an observer that records
+    only six opcodes, so a commitment read and its `OP_EQUALVERIFY` are adjacent in the trace. Real limits use
+    the full `vm.debug()` trace, where other opcodes sit between them. `extractCommitmentMapFromTrace` resets on
+    ANY intervening opcode, on the stated assumption that the compiler "always generates tightly-coupled
+    `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`". For these chunk and dynamic shapes that coupling
+    does not hold, so the full trace discovers no commitments at all and the covenant then fails.
+  - Note this inverts the assumption recorded in `createVirtualMachine.ts`, which treats the observer as the
+    lossy instrument that can yield a phantom commitment and the full trace as the faithful one. Measured here,
+    the observer path derives commitments the covenant accepts while the full-trace path derives none.
+  - The remedy is a judgement call rather than a mechanical fix, which is why it is left open: making the
+    full-trace path tolerant of intervening opcodes would restore discovery but weakens the very check the
+    strictness exists for. A narrower rule - tolerating only the specific opcodes these shapes interpose, such as
+    subroutine dispatch - is likely the right shape, and it needs the maintainer who wrote the strictness.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

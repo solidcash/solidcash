@@ -217,6 +217,15 @@ it must not silently compile to incorrect covenant behavior.
   - The remedy direction is therefore that a probe failure must not be silently swallowed when the build depends
     on what the probe was meant to discover. The signature is not final at probe time, which is why
     `require(checkSig(s, pk))` fails inside it.
+  - The signature really is the blocker, not a source-map misattribution. The same two-dynamic-array write
+    compiled WITHOUT a signature check completes its call with no probe error at all, while `ChunkedArrays`,
+    which gates the same write behind `require(checkSig(s, pk))`, fails. Discovery therefore works; it is
+    signature-gated covenants that cannot satisfy a probe run before signing.
+  - That makes the fix well scoped: the probe exists only to discover commitments and output counts, and the
+    real preflight plus the node still validate the finished transaction in full, so satisfying or bypassing
+    signature verification inside the probe alone does not weaken any check that decides acceptance.
+  - The diagnostic added alongside this now names the swallowed probe failure on `error.cause`, so the refusal
+    explains itself instead of surfacing a bare OP_VERIFY.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

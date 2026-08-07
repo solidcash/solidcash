@@ -76,10 +76,12 @@ import {
   encodeLockingBytecodeP2pkh,
   bigIntToVmNumber,
   vmNumberToBigInt,
+  encodeDataPush,
   utf8ToBin,
   binToUtf8,
   lockingBytecodeToCashAddress,
 } from '@bitauth/libauth';
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import { Contract } from '../Contract.js';
 import {
@@ -830,7 +832,7 @@ function decodeScriptNumber(valueBytes: Uint8Array): bigint {
  * op); the caller then falls back to entryKeyOverrides / placeholder.
  */
 function evalComputedKey(
-  label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string }[],
+  label: string | undefined, args: FunctionArgument[], inputs: readonly { name: string; type?: string }[],
 ): Uint8Array | undefined {
   if (!label) return undefined;
   const encode = (value: unknown): Uint8Array | undefined => {
@@ -850,8 +852,54 @@ function evalComputedKey(
     }
     return undefined;
   };
+  const splitTopLevelList = (s: string): string[] => {
+    const parts: string[] = [];
+    let depth = 0;
+    let start = 0;
+    for (let i = 0; i < s.length; i++) {
+      if (s[i] === '(' || s[i] === '[' || s[i] === '{') depth++;
+      else if (s[i] === ')' || s[i] === ']' || s[i] === '}') depth--;
+      else if (s[i] === ',' && depth === 0) { parts.push(s.slice(start, i)); start = i + 1; }
+    }
+    parts.push(s.slice(start));
+    return parts;
+  };
+  /**
+   * One `abi.encode` operand as its minimal little-endian body, to be wrapped in a minimal script push by the
+   * caller. Pinned by AbiEncodeKeccakParity.test.ts. Anything that test does not cover returns undefined so
+   * the caller falls back to the VM probe: a mis-encoded preimage yields a wrong digest and therefore a wrong
+   * C2 entry key, which corrupts state SILENTLY rather than failing.
+   */
+  const abiEncodeOperandBody = (label: string): Uint8Array | undefined => {
+    const value = evalValue(label);
+    if (value === undefined) return undefined;
+    // Resolve the declared type when the operand names a parameter, so a cashaddr `address` is never mistaken
+    // for a UTF-8 `string` (both arrive as JS strings).
+    const idMatch = label.match(/^id:(.+)$/);
+    const declared = idMatch ? inputs.find((i) => i.name === idMatch[1])?.type ?? '' : '';
+    if (typeof value === 'bigint' || typeof value === 'number') return bigIntToVmNumber(BigInt(value));
+    if (typeof value === 'string') {
+      if (declared === 'string') return utf8ToBin(value);
+      // An address hashes as its LOCKING BYTECODE, not as the cashaddr text (same rule as `encode` above).
+      if (declared.startsWith('address') || value.includes(':')) return addressToLockScript(value);
+      return undefined;
+    }
+    if (value instanceof Uint8Array) return value;
+    return undefined;
+  };
   const evalValue = (s: string): unknown => {
-    let m = s.match(/^id:(.+)$/);
+    let m = s.match(/^abienc\((.*)\)$/);
+    if (m) {
+      const bodies = splitTopLevelList(m[1]).map(abiEncodeOperandBody);
+      if (bodies.some((body) => body === undefined)) return undefined;
+      const pushes = (bodies as Uint8Array[]).map((body) => encodeDataPush(body));
+      const total = pushes.reduce((n, push) => n + push.length, 0);
+      const out = new Uint8Array(total);
+      let at = 0;
+      for (const push of pushes) { out.set(push, at); at += push.length; }
+      return out;
+    }
+    m = s.match(/^id:(.+)$/);
     if (m) {
       const idx = inputs.findIndex((i) => i.name === m![1]);
       if (idx < 0) return undefined;
@@ -904,6 +952,7 @@ function evalComputedKey(
         case 'ripemd160': return ripemd160Sync(inner);
         case 'sha256': return sha256Sync(inner);
         case 'hash256': return hash256Sync(inner);
+        case 'keccak256': return keccak_256(inner);
         default: return undefined;
       }
     }
@@ -12201,6 +12250,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       return Array.isArray(array) && (typeof index === 'bigint' || typeof index === 'number')
         ? array[Number(index)] as FunctionArgument
         : undefined;
+    }
+    if (expression.kind === 'abiEncode') {
+      const values = (expression.args ?? []).map(evaluate);
+      if (values.some((value) => value === undefined)) return undefined;
+      const parts: Uint8Array[] = [];
+      for (const value of values) {
+        // NOT asBytes: that yields big-endian fixed width (the PACKED form). abi.encode is a BCH-native wire
+        // format - each operand as a minimal script push of its minimal little-endian body
+        // (docs/evm-abi-parity.md:27), pinned by AbiEncodeKeccakParity.test.ts.
+        const body = typeof value === 'bigint' || typeof value === 'number'
+          ? bigIntToVmNumber(BigInt(value))
+          : typeof value === 'string' ? utf8ToBin(value)
+            : value instanceof Uint8Array ? value : undefined;
+        // Shapes that test does not pin (bool, address, arrays, structs) fall back to the VM probe rather
+        // than risk a wrong digest: a mis-encoded preimage keys state under a bogus entry and fails silently.
+        if (body === undefined) return undefined;
+        parts.push(encodeDataPush(body));
+      }
+      return concat(parts);
     }
     if (expression.kind === 'bytesConcat' || expression.kind === 'abiEncodePacked') {
       const values = (expression.args ?? []).map(evaluate);

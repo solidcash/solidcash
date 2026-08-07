@@ -3,6 +3,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from '../direct-compile.js';
 import { ContractFactory, HDSigner } from '../../src/index.js';
 import { createTestProvider } from '../test-util.js';
+import { addressToLockScript } from '../../src/utils.js';
 
 /**
  * GATE for computing a keccak256 preimage OFF-CHAIN instead of recovering it from a VM probe.
@@ -177,5 +178,41 @@ contract StrEnc() {
       minimalPush(172800n),
     )));
     expect(asHex(await contract.last()), 'string + bytes + uint256').toEqual(expected);
+  }, 300000);
+
+  // Timelock's `target` is an address, and address is the one operand the SDK encoder refuses to encode until
+  // it is pinned here (addresses arrive as cashaddr strings but hash as LOCKING BYTECODE, so a UTF-8 encoding
+  // of the address text would be silently wrong).
+  it('encodes an address argument as its locking bytecode', async () => {
+    const provider = createTestProvider();
+    const signer = HDSigner.fromPhrase(
+      'test test test test test test test test test test test junk',
+      provider,
+    );
+    for (let i = 0; i < 12; i++) {
+      await provider.addUtxo(signer.getAddress(), {
+        txid: Buffer.alloc(32, i + 150).toString('hex'),
+        vout: 0,
+        satoshis: 100_000_000n,
+      });
+    }
+    const src = `pragma solidcash >=0.8.0;
+contract AddrEnc() {
+  bytes32 public last;
+  function record(address a, uint256 n) public {
+    last = keccak256(abi.encode(a, n));
+    require(true, "n");
+  }
+}`;
+    const contract = await new ContractFactory(compileString(src, { forceStateful: true }), signer).deploy();
+    await contract.deployed();
+
+    const target = signer.getAddress();
+    await contract.record(target, 5n).send();
+    const expected = hex(keccak_256(concat(
+      minimalPushBytes(addressToLockScript(target)),
+      minimalPush(5n),
+    )));
+    expect(asHex(await contract.last()), 'address + uint256').toEqual(expected);
   }, 300000);
 });

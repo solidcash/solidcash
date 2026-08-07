@@ -288,7 +288,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (!fn.graphEmissionHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
-          || this.containsMsgSender(fn)
+          || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
@@ -480,6 +480,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
       || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn);
+  }
+
+  /**
+   * A keccak256 co-spends a side-car at a BLOCK-LAYOUT slot of the calling entry point, and its slot index is
+   * the caller's emission ordinal. An OP_INVOKE subroutine has neither: it is compiled with no block layout (so
+   * the read falls back to the stateless count-relative form, which names the funder once inlined into a
+   * stateful block) and its own emission index restarts at 0, which is the caller's first slot, not the
+   * caller's slot for THIS call. Inline it so each caller emits the call against its own layout and ordinal.
+   *
+   * Measured on MistSwap's BentoBox, whose private `_calculateDomainSeparator` is reached from the constructor,
+   * `DOMAIN_SEPARATOR` and `setMasterContractApproval` - three callers with different keccak counts.
+   */
+  private containsKeccak(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof FunctionCallNode && node.identifier.name === 'keccak256') found = true;
+    });
+    return found;
   }
 
   // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as

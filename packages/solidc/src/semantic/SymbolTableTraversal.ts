@@ -240,7 +240,23 @@ class IdentifierNameCounter extends AstTraversal {
   }
 }
 
-function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Set()): number {
+/**
+ * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is
+ * P2SH32 (`OP_HASH256 <32> OP_EQUAL` = 35 B), so 36 with the push prefix.
+ */
+const ADDRESS_MAX_ENCODED_BYTES = 36;
+
+/**
+ * The width an address contributed before it was measured. Event chunking still uses it: `collectEmitStatements`
+ * turns a >128-byte event into chunkCount > 1, but nothing downstream splits the blob or reserves the extra
+ * `event` slots, so widening it there fails code generation with `Block slot not found: event[N]` instead of
+ * fixing anything. State-variable packing, which does honour the real width, uses ADDRESS_MAX_ENCODED_BYTES.
+ */
+const ADDRESS_EVENT_CHUNK_BYTES = 9;
+
+function getMaxPushdataEncodedSizeForType(
+  type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
+): number {
   if (type === PrimitiveType.BOOL) return 1;
   if (type === PrimitiveType.BIGINT) return 9;
   if (type === PrimitiveType.PUBKEY) return 34;
@@ -267,8 +283,13 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
     if (n <= 255) return n + 2;
     return n + 3;
   }
-  if (type instanceof AddressType) return 9; // Address uses pushdata encoding
-  if (type instanceof ValueType) return getMaxPushdataEncodedSizeForType(type.underlyingType, seen);
+  // An address IS its locking bytecode, stored inline, so it costs its widest encoding - not the 9 bytes of a
+  // generic handle. Under-estimating packs too many addresses into one NFT and the commitment overflows the
+  // 128-byte consensus limit at send time (MistSwap SushiMaker deploy: 171 B).
+  if (type instanceof AddressType) return addressBytes;
+  if (type instanceof ValueType) {
+    return getMaxPushdataEncodedSizeForType(type.underlyingType, seen, addressBytes);
+  }
   if (type instanceof StructType) {
     // A struct reaches itself only through a dynamic array / mapping (returns a bounded handle below). A direct
     // or fixed-array self / mutual reference has no finite size - reject cleanly rather than recursing forever.
@@ -277,11 +298,11 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
         + 'through a dynamic array or mapping');
     }
     const next = new Set(seen).add(type.name);
-    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next), 0);
+    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next, addressBytes), 0);
   }
   if (type instanceof ArrayType && type.bound !== undefined) {
     return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT, seen)
-      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen);
+      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes);
   }
   return 9;
 }
@@ -289,6 +310,12 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
 // Object keys that are RESOLVED cross-reference back-edges, not structural children. Once SymbolTable sets them a
 // generic child-walk that follows them cycles (a FunctionCall's `resolvedFunction` -> its body -> a call back to it,
 // the OZ SafeERC20.safeTransfer <-> _callOptionalReturn mutual recursion). Ad-hoc analysis walks must skip them.
+/**
+ * The subset of RESOLVED_BACKREF_KEYS that leaves the current CONTRACT. A walk collecting work that this
+ * contract's own block must fund follows the intra-contract edges and stops at these.
+ */
+const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract']);
+
 const RESOLVED_BACKREF_KEYS = new Set([
   'location', 'definition', 'resolvedFunction', 'collection', 'stateVariable', 'errorDefinition',
   'referencedContract', 'symbolTable', 'type',
@@ -3152,7 +3179,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         let eventSignature: string;
         if (eventDef) {
           const maxSize = eventDef.parameters.reduce(
-            (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type), 0,
+            (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type, new Set(), ADDRESS_EVENT_CHUNK_BYTES), 0,
           );
           chunkCount = maxSize > 128 ? Math.ceil(maxSize / 128) : 1;
           eventSignature = eventDef.signature;
@@ -3160,7 +3187,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Use max chunk count across all candidates (resolution deferred to TypeCheck)
           chunkCount = Math.max(...candidates!.map((c) => {
             const maxSize = c.parameters.reduce(
-              (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type), 0,
+              (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type, new Set(), ADDRESS_EVENT_CHUNK_BYTES), 0,
             );
             return maxSize > 128 ? Math.ceil(maxSize / 128) : 1;
           }));
@@ -3783,7 +3810,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       counts.set(node.identifier.name, (counts.get(node.identifier.name) ?? 0) + 1);
     }
 
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      // Skip only the edges that leave this CONTRACT. `referencedContract` reaches another contract, whose
+      // library calls run in ITS block, not ours: counting them over-reserves this function's side-car slots
+      // and shifts every later block-layout slot (MistSwap `createPair`: one keccak256, EIGHT slots reserved).
+      //
+      // `resolvedFunction` is deliberately NOT skipped, unlike in the sibling walkers. An internal helper's
+      // body is inlined into its caller, so its library calls really do execute in the caller's block and must
+      // be counted here - skipping it loses the entry point's side-car slot, `keccakPreimageParams` and
+      // `keccakCompute` entirely (a constructor calling a private `keccak256` helper reserves nothing).
+      if (CROSS_CONTRACT_BACKREF_KEYS.has(key)) continue;
       if (value instanceof Node) {
         this.countLibraryCalls(value, counts, visited);
       } else if (Array.isArray(value)) {

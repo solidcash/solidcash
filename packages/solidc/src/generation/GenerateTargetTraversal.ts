@@ -954,6 +954,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private outlinedDynamicReadBasis?: FunctionDefinitionNode;
 
+  /**
+   * Same idea as the dynamic-read basis, for the keccak256 side-car index.
+   *
+   * A helper compiled on its own sub-traversal has no block layout, so `emitKeccakComputeCall` falls back to the
+   * STATELESS count-relative read (`OP_TXINPUTCOUNT - n`). Inlined into a stateful block that is wrong: the last
+   * input is the funder and the last output the event, while the SDK positions the side-car at the block-layout
+   * slot. Compile the helper against a reaching entry point's layout instead, when one can stand for all of them.
+   */
+  private keccakSideCarBasisByFunctionId: Map<number, FunctionDefinitionNode> = new Map();
+
+  private keccakSideCarBasis?: FunctionDefinitionNode;
+
   private static readonly OUTLINED_TRAILING_BASE = '__internal__outlinedTrailingBase';
 
   // Dynamic-write RMW value stack names (`__internal__dynwrite_value_<name>`) that emitDynamicWriteVerification
@@ -1883,6 +1895,41 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * chunk run is laid out by the SDK from the footprint of whichever ENTRY the spender invoked, so that is what
    * its emitted basis has to be checked against.
    */
+  /**
+   * `entryPointsReaching` walks `node.functions` only, and the CONSTRUCTOR is `node.constructorDef` - a separate
+   * field - so a helper reached solely from a constructor gets no entry there. The keccak side-car basis needs
+   * exactly that case (MistSwap's BentoBox calls its `keccak256` helper from the constructor and nowhere else),
+   * so it uses this variant, which seeds reachability from the constructor and receive handler too.
+   */
+  private keccakEntryPointsReaching(node: ContractNode): Map<number, FunctionDefinitionNode[]> {
+    const extras = [node.constructorDef, node.fallbackDef, node.receiveDef]
+      .filter((fn): fn is FunctionDefinitionNode => fn !== undefined);
+    const functions = [...node.functions, ...extras];
+    const direct = new Map<number, Set<number>>();
+    for (const fn of functions) {
+      if (fn.functionId === undefined) continue;
+      direct.set(fn.functionId, fn.body ? this.collectInvokedFunctionIds(fn.body) : new Set<number>());
+    }
+    const reaching = new Map<number, FunctionDefinitionNode[]>();
+    for (const entry of functions) {
+      // A constructor has no `isEntryPoint` flag but is always its own root.
+      if (!entry.isEntryPoint && !extras.includes(entry)) continue;
+      const seen = new Set<number>();
+      const pending = entry.body ? [...this.collectInvokedFunctionIds(entry.body)] : [];
+      while (pending.length > 0) {
+        const id = pending.pop()!;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        for (const next of direct.get(id) ?? []) pending.push(next);
+      }
+      for (const id of seen) {
+        if (!reaching.has(id)) reaching.set(id, []);
+        reaching.get(id)!.push(entry);
+      }
+    }
+    return reaching;
+  }
+
   private entryPointsReaching(node: ContractNode): Map<number, FunctionDefinitionNode[]> {
     const functions = node.fallbackDef ? [...node.functions, node.fallbackDef] : [...node.functions];
     const direct = new Map<number, Set<number>>();
@@ -2375,6 +2422,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
     }
+    // keccak256 side-car basis. Narrow on purpose: exactly ONE reserved side-car slot, at the same offset in
+    // every reaching entry point. That is the shape where the helper's own emission index (0) provably names the
+    // same slot the entry point reserved; with several slots the helper's indices and the entry point's own
+    // calls could collide, so those keep today's count-relative fallback.
+    this.keccakSideCarBasisByFunctionId = new Map();
+    for (const [functionId, entries] of this.keccakEntryPointsReaching(node)) {
+      const target = functionsById.get(functionId);
+      if (!target || target.blockLayout || indirect.has(functionId) || entries.length === 0) continue;
+      const sideCarOffsets = (fn: FunctionDefinitionNode): number[] => (fn.blockLayout?.slots ?? [])
+        .filter((slot) => slot.kind === 'keccakSideCar').map((slot) => slot.offset);
+      const first = sideCarOffsets(entries[0]);
+      if (first.length !== 1) continue;
+      if (!entries.every((entry) => {
+        const offsets = sideCarOffsets(entry);
+        return offsets.length === 1 && offsets[0] === first[0];
+      })) continue;
+      this.keccakSideCarBasisByFunctionId.set(functionId, entries[0]);
+    }
     // OP_DEFINE internal/private functions (subroutine-only) + entry points actually invoked internally (via
     // `this.f` / function pointers). An entry point never called internally compiles as an entry point only, so it
     // can read constructor params (the subroutine path is param-less - only declared args are pushed). Key on
@@ -2808,6 +2873,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     subTraversal.outlinedDynamicReadThreadedFunctionIds = this.outlinedDynamicReadThreadedFunctionIds;
     subTraversal.outlinedDynamicReadBasis = func.functionId === undefined
       ? undefined : this.outlinedDynamicReadBasisByFunctionId.get(func.functionId);
+    subTraversal.keccakSideCarBasisByFunctionId = this.keccakSideCarBasisByFunctionId;
+    subTraversal.keccakSideCarBasis = func.functionId === undefined
+      ? undefined : this.keccakSideCarBasisByFunctionId.get(func.functionId);
 
     // Visit the function definition to generate its body bytecode
     subTraversal.currentFunction = func;
@@ -3165,6 +3233,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    */
   private outlineSharedFunctionBodies(locationData: SingleLocationData): void {
     if (this.definedBodyRecords.length === 0) return;
+    // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
+    // attributed to (or cleared of) span sharing without bisecting the optimiser.
+    if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
     const result = outlineSharedSpans(
       this.definedBodyRecords.map((record) => {
         // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
@@ -6518,6 +6589,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
       ? argNode.name : null;
     const i = (fn.keccakPreimageParams ??= []).length;
+    // The reaching entry point's side-car slot, when this helper can borrow it (see keccakSideCarBasis). It
+    // decides BOTH the read index below and `absoluteForward`, which selects the stateful covenant hash - the
+    // SDK deploys a stateful side-car, so reading its slot while checking the stateless hash fails integrity.
+    const basisSlot = fn.blockLayout || i !== 0
+      ? undefined
+      : (this.keccakSideCarBasis?.blockLayout?.slots ?? [])
+        .find((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === 0);
     // X83. Refuse before emitting anything, on exactly the condition the fixed-slot read below would abort on:
     // a stateful call outside any keccak loop whose side-car slot the block layout never reserved. Checked
     // against the layout rather than against `keccakInLoop` so a slot-count disagreement is named too. A
@@ -6551,6 +6629,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         return;
       }
       if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', i, loc); return; }
+      // A helper has no layout of its own. When every reaching entry point reserves the SAME single side-car
+      // slot, read that slot instead of falling through to the stateless count-relative form - inlined into a
+      // stateful block the last input is the funder, not the side-car (MistSwap's BentoBox constructor).
+      if (basisSlot) {
+        this.emitMasterInputIndex(loc);
+        this.emit(encodeInt(BigInt(basisSlot.offset)), loc);
+        this.emit(Op.OP_ADD, loc);
+        return;
+      }
       this.emit(countOp, loc);
       this.emit(encodeInt(BigInt(offset)), loc);
       this.emit(Op.OP_SUB, loc);
@@ -6574,7 +6661,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
     // (self-preserve via OP_INPUTINDEX); the count-relative stateless single/multi call uses offset-from-end.
-    const absoluteForward = fn.blockLayout != null || this.keccakLoopActive;
+    const absoluteForward = fn.blockLayout != null || this.keccakLoopActive || basisSlot !== undefined;
     if (this.keccakLoopActive) {
       // Dynamic loop: compare the covenant bytecode DIRECTLY (it is a compile-time constant) instead of hashing it.
       // Re-hashing the ~2.4KB covenant every iteration would blow the per-input hash-density budget (~5 iters); a

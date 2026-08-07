@@ -898,3 +898,28 @@ timestamp in place of the `00` the SDK sent, and the rebuild is where the length
 So the next investigation is COVENANT-side, in the route's reconstruction of `event_` after it overwrites
 `timestamp_` - not in `_evaluateExternalExpression` or `encodeFunctionArgument`, both of which are now
 confirmed correct by measurement.
+
+
+### It is a TRUNCATION BY EXACTLY 2 BYTES, not a rebuild
+
+Comparing the two stack items in full (trace stack dump widened to 460 hex chars):
+
+```text
+209 bytes  4c cf | <207-byte payload> ...30303030 0000     the SDK's value, correct
+207 bytes  4c cd | <205-byte payload> ...303030303030      common prefix with the above = 205 bytes
+```
+
+The 205-byte payload is byte-for-byte the FIRST 205 bytes of the 207-byte payload. Nothing is rebuilt or
+reordered - the value is simply cut short by 2, losing `timestamp_` (`00`) and the last byte of `data_`,
+and then re-wrapped with a prefix that matches the truncated length (`4c cd`).
+
+Two bytes is exactly the size of a PUSHDATA1 header (`4c XX`). That is the signature to chase: something
+unwraps the 209-byte item, and instead of `split 2, drop header -> 207` it ends up with `207 - 2 = 205` -
+a header-size subtraction applied one time too many, or applied to the payload rather than the item.
+
+This retargets the search again, and narrowly: it is NOT the struct schema, NOT the field order, NOT the
+`timestamp_` overwrite rebuilding anything. Look for where the route unwraps a PUSHDATA1-framed `bytes`
+argument (the `AbiDecodeAtNode{data=id:rowArgs,...}` extraction of `event_` from the row args is the prime
+candidate) and check its header-size arithmetic against the >=76-byte PUSHDATA1 case. A value under 76
+bytes uses a 1-byte header and would hide this bug entirely, which is consistent with every existing test
+passing.

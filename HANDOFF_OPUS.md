@@ -1772,3 +1772,20 @@ ones (`'4:51024456'`, `'25:76a914c4841b8f...'`, `'1:81'`). So "find the empty ar
 by mapping the failing instruction's stack depth back to an argument position, not by looking for emptiness.
 
 Do not retry the absent-entry-witness idea; it is measured and dead.
+
+### Input 102 narrowed to the exact failing site
+
+    ip=1 op=0x7f depth=53 top=[20 01 <empty> 01]   <-- FAILS HERE   (520 trace lines into input 102)
+
+`ip=1` means this is the SECOND instruction of its body, so the failure is inside a tiny OUTLINED DECODE HELPER
+(`<1> OP_SPLIT` - read a 1-byte length prefix), not in the contract body. OP_SPLIT pops the index (`01`) and
+splits the item below it, which is EMPTY.
+
+That relocates the defect: the helper is fine and generic, and the empty item is an ARGUMENT passed in by its
+caller. So the question is no longer "which witness is empty" but "which call site invokes this decode helper
+with an empty operand, at stack depth 53". Recover the caller from the frame chain (the `callerFrame`
+diagnostic already prints it for the route probes - extend the same capture to the final preflight, which
+currently prints only the failing frame).
+
+This also explains why the several empty arguments on input 102 were a red herring: most are legitimately
+empty, and the one that matters is whichever reaches THIS helper.

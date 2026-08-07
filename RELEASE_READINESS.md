@@ -147,6 +147,17 @@ it must not silently compile to incorrect covenant behavior.
     `NestedArrayFixedInner` (two), `SplitLayoutAgreementX162`, `X167ArrayCopyReplaces` (two) and
     `X171ArrayAssignReplaces` (four). The compiler performance work changed neither class, so these findings
     track the current candidate revision even though the BCHN run that corroborated them does not.
+  - **Every failure is marginal by a hair, and one byte fixes each.** The VM reports the arithmetic, and across
+    the four failures that print it the overshoot is 16, 103, 80 and 39 operation units against budgets of
+    541,600 to 804,800 - between 0.003% and 0.018% over. One extra byte of unlocking bytecode buys 800 units, so
+    a single byte of density reserve clears every one of them.
+  - That reframes the item. This is not "array lowering is too expensive"; these contracts sit a hair over the
+    line and the size campaign removed the headroom they were living on. Two mitigations follow, and the second
+    is preferable. A reserve can be bought today with no compiler change, because `Contract`'s `salt` bakes a
+    dead push into the redeem script and for p2sh32 the redeem script counts toward the unlocking bytecode - but
+    salt changes the contract address, and it caps at 520 bytes. Better, the size optimiser should refuse a cut
+    that leaves a contract with no density headroom; mainline already added `scripts/density-headroom.ts`, which
+    is the measurement that gate would need.
   - **The bytecode-size campaign makes this WORSE, and the effect is already measurable.** The budget is
     `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`, so a smaller script buys a smaller
     budget: size headroom and density headroom trade against each other. Re-running the budget-only sweep after

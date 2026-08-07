@@ -2240,6 +2240,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!verifierProgram) {
         throw new Error(`Contract '${artifact.contractName}' publishes no message bus verifier program`);
       }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_VERIFIER_LIMIT === '1') {
+        // eslint-disable-next-line no-console
+        console.error('verifier-limit', {
+          contract: artifact.contractName,
+          maximumInputBytes: options.provider.consensusLimits?.maximumInputBytes,
+          hasLimits: !!options.provider.consensusLimits,
+          providerCtor: options.provider.constructor?.name,
+        });
+      }
       const verifierAddress = scriptToLockingBytecode(
         buildMessageBusVerifierCovenantScript(
           verifierProgram, options.provider.consensusLimits?.maximumInputBytes ?? 10_000,

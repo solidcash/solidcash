@@ -1352,3 +1352,36 @@ NEXT, and it is now the highest-value target in this file: shrink
 (`maximumRows` / `maximumParticipants` in the atomic message-bus capability drive its size). 2776 bytes
 of headroom are needed - 22%. `packages/solidc/test/journal-message-bus/MessageBusVerifierSize.test.ts`
 is one of the 6 baseline compiler failures and is probably measuring exactly this.
+
+### The verifier ceiling is a WIRING gap, not a real consensus limit
+
+`SOLIDC_DEBUG_VERIFIER_LIMIT=1` (new, at the deploy-path builder call) reports:
+
+```text
+verifier-limit { contract: 'UnicrowDispute', maximumInputBytes: 1000000,
+                 hasLimits: true, providerCtor: 'MockNetworkProvider' }
+```
+
+So at THAT site the provider's limit is 1,000,000 - two orders of magnitude above the 12,776-byte
+verifier. The `MessageBusVerifierCapacityError` therefore did NOT come from this call. Some OTHER site
+built the verifier with the 10,000 DEFAULT.
+
+Every builder invocation in `packages/solidcash/src` passes
+`contract.provider.consensusLimits?.maximumInputBytes ?? 10_000`, so the failing one is a call whose
+`contract` carries a provider WITHOUT `consensusLimits` - most likely an inner `Contract` constructed
+during deploy without the configured provider. `messageBusVerifierCovenantHex` (utils ~140) is the one
+export that drops the parameter entirely, but it has no callers in src, so it is not the path.
+
+Second, separate discrepancy: `solidcash.config.ts` sets `maximumInputBytes: 10_000_000` and `hre.ts:42`
+merges it (`{ ...MOCK_CONSENSUS_LIMITS, ...netCfg?.consensus }`), yet the provider reports **1,000,000**.
+The configured value is not surviving into the provider either.
+
+This reframes the whole blocker. The 10 KB "consensus ceiling" that blocks BOTH DelegateInferred fixes is
+not consensus at all on this network - it is a default reached because a provider lost its limits. Fix
+the wiring (find the Contract instance without `consensusLimits`, and why 10_000_000 becomes 1_000_000)
+and the verifier headroom problem likely disappears, unblocking both fixes at once. That is a far cheaper
+path than shrinking `buildMessageBusVerifierCovenantScript` by 22%.
+
+To reproduce: re-apply either DelegateInferred fix (the view state-predicate or the overloaded-view
+guard), run the focused marketplace test, and read the stack under `MessageBusVerifierCapacityError` -
+it names the call site directly.

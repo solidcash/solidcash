@@ -169,6 +169,7 @@ export default function autoMarkDelegateFunctions(ast: Ast, forceStateful = fals
   for (const fn of contract.functions) {
     if (!isDelegateEligible(fn, callables)) continue;
     if (fn.modifiers.includes(FunctionModifier.VIEW)) {
+      if (contract.functions.some((other) => other !== fn && other.name === fn.name)) continue;
       fn.sourceReadOnly = true;
       fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW);
     }

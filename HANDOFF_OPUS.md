@@ -1881,3 +1881,25 @@ which of the two is wrong by measuring where the callee's master input ACTUALLY 
 `nestedMasterIndices[groupIdx]`: if the master is right and only the entry pick is off, the defect is in the
 entry OFFSET inside the block, not in the base, and patching the base would be wrong even though it would move
 this particular test.
+
+### The off-by-one is an EXTRA INPUT, not a wrong base (measured)
+
+Full input dump around the failure (SOLIDC_DEBUG_INPUTS=1):
+
+    102:nft=(empty)   <- the input being validated: the route MASTER
+    103..112: nfts (data/state band)   113,114,115: PLAIN   116,117: nfts   118..122: PLAIN
+    123:nft=3e16384e..1976a914c4841b8f..88ac2102   <- the users ENTRY the covenant wants
+
+master = 102. The covenant picks 122 = **master + 20**. The entry is at 123 = **master + 21**.
+
+So `nestedMasterIndices` is CORRECT - the master lands exactly where the covenant addresses it - and the
+earlier "wrong input base" suspicion is FALSIFIED. The defect is that the SDK places ONE EXTRA INPUT inside the
+block ahead of that entry, shifting every entry offset by one. This is why a `+1` on `nestedInputBase` would
+have been the wrong fix even though it would have turned this test green: it would have moved the master too,
+breaking the many route tests that currently pass.
+
+Next: diff the block's INPUT composition against `blockLayout.slots` for this route - walk `group.blockInputs`
+positions 1..21 and find which one has no corresponding slot (the extra). The `block-loop-pos` diagnostic
+already prints the OUTPUT side per si; add the same for inputs and the surplus position falls straight out.
+Candidates visible in the dump: the PLAIN runs at 113-115 and 118-122 are funder bands, and one of them is
+evidently one longer than the layout expects.

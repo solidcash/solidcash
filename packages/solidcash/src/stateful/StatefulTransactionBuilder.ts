@@ -1930,6 +1930,23 @@ export class StatefulTransactionBuilder {
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+
+          // A route's computed value chunks are pinned by absolute index, which can fall PAST the block layout
+          // (blockInputs outruns slots) where the loop would otherwise emit a funder passthrough. Keyed by si so
+          // it covers both that region and a defined trailing band; see deriveRouteValueChunks.
+          const derivedChunk = group.derivedTrailingOutputs?.get(si);
+          if (derivedChunk) {
+            builder.addOutput({
+              to: derivedChunk.lockingBytecode,
+              amount: 1000n,
+              token: {
+                amount: 0n,
+                category: group.categoryId,
+                nft: { capability: 'mutable', commitment: derivedChunk.commitment },
+              },
+            });
+            continue;
+          }
           const plannedInsertIndex = group.plannedEntryInserts
             ?.findIndex((planned) => planned.outputBlockSlot === si) ?? -1;
           const batchPredecessor = group.batchPredecessorOutputs
@@ -2016,28 +2033,10 @@ export class StatefulTransactionBuilder {
             continue;
           }
 
-          if (slot?.kind === 'trailing') {
-            // Derived route chunks claim specific slots, so they are placed before the positional dynamic-chunk
-            // queue draws from the band. The two do not currently co-occur; if they ever do, the queue keeps its
-            // relative order but shifts past whatever slots the derived outputs already took.
-            const derived = group.derivedTrailingOutputs?.get(si);
-            if (derived) {
-              builder.addOutput({
-                to: derived.lockingBytecode,
-                amount: 1000n,
-                token: {
-                  amount: 0n,
-                  category: group.categoryId,
-                  nft: { capability: 'mutable', commitment: derived.commitment },
-                },
-              });
-              continue;
-            }
-            if (externalDynamicChunkIdx < externalDynamicChunks.length) {
-              const output = externalDynamicChunks[externalDynamicChunkIdx++];
-              builder.addOutput(output);
-              continue;
-            }
+          if (slot?.kind === 'trailing' && externalDynamicChunkIdx < externalDynamicChunks.length) {
+            const output = externalDynamicChunks[externalDynamicChunkIdx++];
+            builder.addOutput(output);
+            continue;
           }
 
           // X13: B's return event belongs to B's OWN block slot, paired with the funding input the block now

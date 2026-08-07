@@ -643,11 +643,8 @@ function extractRouteChunkPin(
   return undefined;
 }
 
-const routeChunkCommitmentsPlaced = new WeakMap<ExternalCallUtxoGroup, Set<string>>();
-
 function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
-  stb: StatefulTransactionBuilder,
 ): boolean {
   if (!group.blockLayout || !group.compilerRoute) return false;
   const pin = extractRouteChunkPin(trace);
@@ -660,30 +657,13 @@ function deriveRouteValueChunks(
       outputIndex: pin.outputIndex, blockSlot, kind, commitmentBytes: pin.commitment.length / 2,
     });
   }
-  const output = {
-    to: pin.lockingBytecode,
-    amount: 1000n,
-    token: {
-      amount: 0n,
-      category: group.categoryId,
-      nft: { capability: 'mutable' as const, commitment: pin.commitment },
-    },
-  };
-  if (kind === 'trailing') {
-    // Inside the callee's balanced band (emitTrailingBlockBase with a defined trailingBase).
-    const derived = group.derivedTrailingOutputs ?? new Map();
-    if (derived.get(blockSlot)?.commitment === pin.commitment) return false;
-    derived.set(blockSlot, { commitment: pin.commitment, lockingBytecode: pin.lockingBytecode });
-    group.derivedTrailingOutputs = derived;
-    return true;
-  }
-  // No trailingBase: the covenant addresses chunks at master + blockSize, i.e. after the whole callee block,
-  // which is the region appendValueChunks() fills.
-  const seen = routeChunkCommitmentsPlaced.get(group) ?? new Set<string>();
-  if (seen.has(pin.commitment)) return false;
-  seen.add(pin.commitment);
-  routeChunkCommitmentsPlaced.set(group, seen);
-  stb.addValueChunkOutput(output);
+  // Keyed by block position for both cases: inside a defined trailing band, and - with no trailingBase, as
+  // here - past the layout entirely, where the block loop would otherwise emit a funder passthrough.
+  if (blockSlot < 0) return false;
+  const derived = group.derivedTrailingOutputs ?? new Map();
+  if (derived.get(blockSlot)?.commitment === pin.commitment) return false;
+  derived.set(blockSlot, { commitment: pin.commitment, lockingBytecode: pin.lockingBytecode });
+  group.derivedTrailingOutputs = derived;
   return true;
 }
 
@@ -6091,7 +6071,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   progressed = true;
                 }
               }
-              if (deriveRouteValueChunks(group, bOutputBase, entryTrace, stb)) progressed = true;
+              if (deriveRouteValueChunks(group, bOutputBase, entryTrace)) progressed = true;
               if (!progressed || pass === entrySlotCount) break;
               const nextProbe = stb.build();
               entryTrace = evaluateProbeTrace(this.inner.provider, {

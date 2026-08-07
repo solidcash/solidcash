@@ -1624,3 +1624,21 @@ Marketplace artifacts do NOT need recompiling for SDK-only changes - `.marketpla
 the working dir is `.marketplace` (run from repo root: `npx vitest --config vitest.solidhat.config.ts run -t ...`).
 `examples/effectiveacceleration` is a DIFFERENT, broader target whose config compiles the whole upstream EACC
 set and currently fails on MockSablierLockup/@prb-math; it is not this grind's path.
+
+### Placement: third attempt also missed, and the exact open question
+
+Keying the derived chunk by block position `si` (covering positions past the layout, where the block loop
+emits a funder passthrough) did NOT replace output 145 either. So output 145 is not emitted by that loop at all.
+
+**The one measurement that unblocks this.** `extractRouteChunkPin` reports `outputIndex: 145` and, with
+`bOutputBase = 3`, `blockSlot 142`. The block loop keys on `si` against ITS own output base. Those two bases do
+not correspond, and until that is resolved every placement attempt is a guess. Establish, in one run:
+  1. which code path emits the output currently at absolute index 145 (it is `aa20953ccf..`, no token - the same
+     bytecode as indices 38/39, so a funder/passthrough, NOT a covenant-managed slot), and
+  2. what absolute index the block loop's `si` maps to, i.e. the loop's output base vs `bOutputBase`.
+Log every emitted output with (absolute index, emitting branch) for the callee group and diff against the
+covenant's expectation `master + blockSize + isInsert`. THEN choose the channel.
+
+Three placement channels have now been written against inferred geometry and all three missed. The extraction
+half is solid and verified; do not rewrite it. The next change should be the measurement above, not a fourth
+channel.

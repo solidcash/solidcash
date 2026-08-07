@@ -845,3 +845,31 @@ build this `JobEventData` (the artifact records the whole expression tree under
 `bytes32` argument instead of UTF-8-encoding it, and the length prefix that comes out one short needs to
 be re-derived once that is fixed. Compare against how the DIRECT (non-batch) external-call path encodes
 the same struct - `publishJobEvent` also has a direct callsite.
+
+### Landed: the bytesN hex-string fix - and the off-by-one that survives it
+
+`asBytes` in `_evaluateExternalExpression` UTF-8-encoded an ethers `bytesN` hex string, so
+`abi.encodePacked(contentHash_)` packed 66 ASCII characters instead of 32 bytes. Fixed; the row argument
+went from 243 to 209 bytes and now carries the hash verbatim. Regression-clean over 71 files.
+
+A SEPARATE off-by-one survives, and it was present before the hex fix too. The encoded `JobEventData`
+still does not add up:
+
+```text
+outer 4c cf (207)  ->  item is 209 bytes                     consistent
+inner 4c cd (205)  ->  205 bytes of struct payload
+  00                          type_      1
+  19 + 25 bytes               address_  26   (cum 27)
+  4c b1 (177) + 177 bytes     data_    179   (cum 206)  <-- ALREADY 1 PAST the 205-byte payload
+  <timestamp_>                                          <-- no room at all
+```
+
+`data_`'s pushdata prefix declares 177 while only 176 bytes follow it, so every later field decode runs
+off the end - which is the `emitPushdataDecodeLastField` abort. The pieces INSIDE `data_` are individually
+correct (`20` + the 32-char title, the 32-byte contentHash, `00` multipleApplicants, `01 02 4456` for
+`["DV"]`, ...), so the defect is in the length prefix or a dropped tail byte, not in the parts.
+
+Next: dump the SDK-side `event_` value (the struct-constructor array from `_evaluateExternalExpression`)
+and each `bytes.concat` part's length just before `encodeFunctionArgument`, and compare the sum against
+the emitted `data_` prefix. The `timestamp_` field is the likely suspect - check whether it is being
+evaluated at all, since the payload has no room for it.

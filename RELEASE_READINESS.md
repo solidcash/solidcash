@@ -242,9 +242,17 @@ it must not silently compile to incorrect covenant behavior.
     bytes because chunked shapes append covenant witness pushes and shift its `numArgs - i` index: instrumenting
     the extraction shows the unlocking script holds exactly `numArgs + 2` instructions for every affected call
     (`setA` 6/6, `setB` 7/7, `lenB` 3/3), so the layout assumption and the index arithmetic both hold.
-  - What remains untested is whether the scenario transaction libauth generates from the template is
-    byte-identical to the `buildLibauthTransaction()` output the signature was computed over. A difference there
-    would invalidate an otherwise correct signature. That comparison is the next concrete step.
+  - ROOT CAUSE, measured. The scenario transaction libauth evaluates is NOT the transaction the signature was
+    computed over. Comparing the two for the failing `ChunkedArrays` call, they differ only in input 0's
+    unlocking bytecode and by exactly 37 bytes every time: 1312 against 1275, then 1372 against 1335. Input
+    count, output count and every output are identical, so no sighash difference arises from the outputs.
+  - That is sufficient to break the signature precisely because these are `OP_INVOKE` contracts. `OP_INVOKE`
+    rewrites `state.instructions`, so `checkSig`'s `coveredBytecode` is the executing script rather than the
+    redeem script. A 37-byte-shorter unlocking script therefore covers different bytes, and the signature
+    pre-computed from the builder's script cannot verify against the template's reconstruction of it.
+  - The fix is therefore in the template, not in signing: `getLibauthTemplate` must reconstruct input 0's
+    unlocking script byte-identically to what the builder emits for chunked and dynamic shapes. Identifying the
+    37 missing bytes is the remaining step, and it is a bounded comparison rather than an open question.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

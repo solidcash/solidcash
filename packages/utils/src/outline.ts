@@ -37,15 +37,31 @@ const BARRIER_OPS = new Set<number>([
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
 ]);
 
-// Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
-const MINIMUM_WINDOW_ELEMENTS = 8;
+/**
+ * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
+ *
+ * Was 8, calibrated when an identifier cost a three-byte push and a site therefore cost four bytes. Ids now
+ * come from a single-byte pool first, so a site costs two and shorter spans start paying: purely on size, 5 is
+ * the optimum (90,395 -> 89,930 on the corpus, and independently 5,503 -> 5,470 on the real-world examples).
+ *
+ * 7 IS THE FLOOR ANYWAY, and the reason is not size. Sharing more aggressively than that breaks machinery that
+ * reads the script's structure rather than just running it: at 5 the SDK could no longer derive a return value
+ * (`SolidityCorpusBehavior`), and split facet sizing, split call-edge unions and proxy delegate initialisers
+ * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
+ * cost model, so this takes the 262 bytes 7 is worth and leaves the rest.
+ */
+const MINIMUM_WINDOW_ELEMENTS = 7;
+// Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
+// below this width sharing one cannot repay a definition however often it repeats.
+const MINIMUM_POOLED_CONSTANT_BYTES = 6;
 // Candidate groups examined per round, most-repeated first. Bounds the per-round extension work.
 const CANDIDATE_GROUPS_PER_ROUND = 512;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
 const MAXIMUM_ROUNDS = 6;
-// Compact helper identifiers descend from -12, so an outlined id encodes in one or two VM-number bytes: a push
-// of at most three bytes. Costing every site at that width can under-state a saving but never over-state one.
+// Fallback identifier width when the caller does not report what its next allocation costs. Compact helper
+// identifiers descend from -12, so one encodes in one or two VM-number bytes: a push of at most three bytes.
+// Costing every site at that width can under-state a saving but never over-state one.
 const PROBE_IDENTIFIER_PUSH_BYTES = 3;
 // Keeps allocated identifiers inside the two-byte VM-number range the cost model above assumes.
 const MAXIMUM_OUTLINED_FUNCTIONS = 4096;
@@ -187,6 +203,27 @@ function savingsOf(bytes: number, count: number, idPushBytes: number): number {
   return count * bytes - definitionCost - count * siteCost;
 }
 
+const scriptBytes = (script: Script): number =>
+  script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
+
+/**
+ * Total bytes the caller will emit for this corpus: every body verbatim, plus one
+ * `<body-push> <id-push> OP_DEFINE` per outlined function.
+ *
+ * Per-candidate savings are estimated against the corpus as it stood at the start of a round, so a round that
+ * applies several overlapping-in-effect candidates can cost more than the sum of its parts promised. Measuring
+ * the whole corpus is what lets a round be judged on its actual result rather than on that estimate.
+ */
+function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[]): number {
+  let total = bodies.reduce((sum, body) => sum + scriptBytes(body.script), 0);
+  for (const fn of functions) {
+    const bytes = scriptBytes(fn.script);
+    const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
+    total += definitionOverhead + bytes + elementByteSize(fn.id) + 1;
+  }
+  return total;
+}
+
 /**
  * Every profitable outlining candidate across `bodies`, best-saving first.
  *
@@ -217,7 +254,7 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
   });
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
-  const groups: Occurrence[][] = [];
+  const groups: { occurrences: Occurrence[]; seed: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
     const exact = new Map<string, Occurrence[]>();
@@ -228,14 +265,39 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       group.push(occurrence);
       exact.set(key, group);
     }
-    for (const group of exact.values()) if (group.length >= 2) groups.push(group);
+    for (const group of exact.values()) {
+      if (group.length >= 2) groups.push({ occurrences: group, seed: MINIMUM_WINDOW_ELEMENTS });
+    }
   }
-  groups.sort((left, right) => right.length - left.length);
+  groups.sort((left, right) => right.occurrences.length - left.occurrences.length);
+  groups.splice(CANDIDATE_GROUPS_PER_ROUND);
+
+  // A large repeated constant never reaches the window length, however many times it appears and however big
+  // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
+  // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
+  // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
+  const constants = new Map<string, Occurrence[]>();
+  bodies.forEach((body, bodyIndex) => {
+    for (let i = 0; i < body.script.length; i += 1) {
+      const element = body.script[i];
+      if (typeof element === 'number') continue;
+      if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
+      const next = body.script[i + 1];
+      if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
+      // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
+      if (body.script[i + 2] === Op.OP_DEFINE) continue;
+      const key = elementKey(element);
+      const group = constants.get(key) ?? [];
+      group.push({ body: bodyIndex, start: i });
+      constants.set(key, group);
+    }
+  });
+  for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });
 
   const candidates: Candidate[] = [];
-  for (const group of groups.slice(0, CANDIDATE_GROUPS_PER_ROUND)) {
+  for (const { occurrences: group, seed } of groups) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    let length = MINIMUM_WINDOW_ELEMENTS;
+    let length = seed;
     for (;;) {
       const first = group[0];
       const at = length;
@@ -284,7 +346,10 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       saved,
     });
   }
-  candidates.sort((left, right) => right.saved - left.saved);
+  // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
+  // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
+  // remainder. Preferring length on equal savings keeps the containing span whole.
+  candidates.sort((left, right) => right.saved - left.saved || right.bytes - left.bytes);
   return candidates;
 }
 
@@ -299,6 +364,12 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
 export function outlineSharedSpans(
   bodies: OutlineBody[],
   allocateId: () => Uint8Array,
+  /**
+   * Encoded push width of the identifier `allocateId` would hand out next, without consuming it. Supplying it
+   * makes the cost model exact; without it every site is costed at the widest identifier a helper can need,
+   * which silently rejects candidates that are in fact profitable.
+   */
+  peekIdPushBytes?: () => number,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -319,8 +390,11 @@ export function outlineSharedSpans(
         script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
       })),
     ];
-    // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
-    const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES);
+    // The width every candidate is costed at. It decides both which candidates clear the bar and the order they
+    // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
+    // marginal candidates back.
+    const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
+    const candidates = findCandidates(corpus, idPushBytes);
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
@@ -337,7 +411,7 @@ export function outlineSharedSpans(
         return true;
       });
       if (free.length < 2) continue;
-      if (savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES) <= 0) continue;
+      if (savingsOf(candidate.bytes, free.length, idPushBytes) <= 0) continue;
       for (const occurrence of free) {
         for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
       }
@@ -349,10 +423,21 @@ export function outlineSharedSpans(
           locationData: corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
         },
         occurrences: free,
-        saved: savingsOf(candidate.bytes, free.length, PROBE_IDENTIFIER_PUSH_BYTES),
+        saved: savingsOf(candidate.bytes, free.length, idPushBytes),
       });
     }
     if (applied.length === 0) break;
+
+    // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
+    // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
+    const before = emittedBytes(working, functions);
+    const snapshot = corpus.map((entry) => ({
+      entry,
+      script: [...entry.script],
+      locationData: [...entry.locationData],
+      anchors: entry.anchors ? [...entry.anchors] : undefined,
+      origins: entry.origins ? [...entry.origins] : undefined,
+    }));
 
     // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
     const edits = applied.flatMap((entry) =>
@@ -377,10 +462,23 @@ export function outlineSharedSpans(
       }
     }
 
-    for (const entry of applied) {
-      functions.push(entry.definition);
-      savedBytes += entry.saved;
+    for (const entry of applied) functions.push(entry.definition);
+
+    const after = emittedBytes(working, functions);
+    if (after >= before) {
+      // The round did not pay for itself. Put every mutated array back and stop: the next round would re-measure
+      // the same corpus against the same identifier width and reach the same decision.
+      functions.length -= applied.length;
+      for (const saved of snapshot) {
+        saved.entry.script.splice(0, saved.entry.script.length, ...saved.script);
+        saved.entry.locationData.splice(0, saved.entry.locationData.length, ...saved.locationData);
+        if (saved.anchors) saved.entry.anchors = saved.anchors;
+        const { origins } = saved.entry;
+        if (saved.origins && origins) origins.splice(0, origins.length, ...saved.origins);
+      }
+      break;
     }
+    savedBytes += before - after;
   }
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {

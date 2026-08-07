@@ -1,4 +1,5 @@
 import {
+  binToHex,
   encodeDataPush,
   hexToBin,
   disassembleBytecodeBch,
@@ -192,6 +193,32 @@ export function normaliseScript(script: Script): Script {
     }
     return element;
   });
+}
+
+/**
+ * Scripts whose new-vs-old optimiser agreement has already been established in this process.
+ *
+ * Both optimisers rewrite ASM derived from the script alone - the location/log/require bookkeeping rides along
+ * but never steers a replacement - so the same script cannot reach a different verdict on a second check.
+ * Nearly half of all checks ARE a second check: the verifier-binder pass recompiles the same function bodies
+ * that the first pass already verified, and only the generated route differs between them.
+ *
+ * Bounded, because a long-lived process (a test run) would otherwise accumulate every body it ever compiled.
+ * Clearing only means checks run again, which is the safe direction.
+ */
+const OPTIMISER_CROSS_CHECK_MEMO_LIMIT = 4096;
+const crossCheckedScripts = new Set<string>();
+
+/**
+ * True when `script` still needs the `optimiseBytecodeOld` cross-check, recording it so an identical script
+ * skips. Callers keep their own failure message, since each site names a different artifact.
+ */
+export function needsOptimiserCrossCheck(script: Script): boolean {
+  const key = binToHex(scriptToBytecode(script));
+  if (crossCheckedScripts.has(key)) return false;
+  if (crossCheckedScripts.size >= OPTIMISER_CROSS_CHECK_MEMO_LIMIT) crossCheckedScripts.clear();
+  crossCheckedScripts.add(key);
+  return true;
 }
 
 /** True when two scripts serialise to the same bytecode, and therefore render to the same ASM. */

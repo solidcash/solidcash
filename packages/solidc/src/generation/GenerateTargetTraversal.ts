@@ -1,5 +1,5 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
-import { hexToBin, binToHex } from '@bitauth/libauth';
+import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
@@ -12,6 +12,7 @@ import {
   TupleType,
   Script,
   scriptsEqual,
+  needsOptimiserCrossCheck,
   normaliseScript,
   scriptToBytecode,
   scriptToAsm,
@@ -688,6 +689,14 @@ class NftIndexCollector extends AstTraversal {
   }
 }
 
+/**
+ * Whether a declared type is one whose access the compiler lowers through structural helpers - struct field
+ * extract/prefix/skip, array element/split/truncate. Used to decide whether a contract needs the subroutine
+ * usage probe at all, before any helper has been allocated.
+ */
+const isAggregate = (type: unknown): boolean =>
+  type instanceof StructType || type instanceof ArrayType || type instanceof TupleType;
+
 export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private locationData: FullLocationData = []; // detailed location data needed for sourcemap creation
   sourceMap: string;
@@ -746,13 +755,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
   }>();
 
+  private freeFunctionIds: bigint[] = [];
   private dataNftPreserveIds = new Map<number, bigint>();
   private dataNftCommitPreserveIds = new Map<number, bigint>();
   private dataNftOutputCommitmentIds = new Map<number, bigint>();
   private compactHelperIds = {
     next: -12n,
     used: new Set<bigint>(),
+    cheap: [] as bigint[],
+    /**
+     * Ids this allocator actually handed out, as opposed to the ones merely reserved against collision.
+     *
+     * Consumers that have to recover "which definitions are compiler helpers" from a finished script cannot do
+     * it by numeric range: an allocation can come from the single-byte pool, whose values are indistinguishable
+     * from small user function ids. This is the authoritative set. Shared by reference with every sub-traversal
+     * and probe, so an id allocated on any of them is recorded once.
+     */
+    allocated: new Set<bigint>(),
   };
+
+  /**
+   * Widest push a compact helper id can need, and the width outlining used before it could ask for the real
+   * one. Kept as the second cost model to try, because costing at it is what stops marginal candidates from
+   * claiming sites that longer spans would have shared.
+   */
+  private static readonly OUTLINE_CONSERVATIVE_ID_PUSH_BYTES = 3;
+
+  /**
+   * Script numbers whose push is a single byte, so an id drawn from here costs one byte less at its OP_DEFINE
+   * and at every OP_INVOKE of it.
+   *
+   * libauth's minimal `encodeDataPush` folds a one-byte push of 1..16 to OP_1..OP_16 and of -1 to OP_1NEGATE;
+   * every other one-byte script number needs OP_PUSHBYTES_1 plus its byte. -1 is permanently the int-decode
+   * subroutine, so in practice this is the 1..16 range minus whatever user function ids occupy it.
+   */
+  private static readonly SINGLE_BYTE_PUSH_IDS: readonly bigint[] = [
+    -1n, 1n, 2n, 3n, 4n, 5n, 6n, 7n, 8n, 9n, 10n, 11n, 12n, 13n, 14n, 15n, 16n,
+  ];
+
+  /**
+   * Instructions whose failure the SDK reports against a source position. Relocating one changes the
+   * instruction space the VM reports its pointer in, and the failure gets blamed on whatever line the shared
+   * body inherited from its first site.
+   */
+  private static readonly ATTRIBUTED_FAILURE_OPS = new Set<number>([
+    Op.OP_VERIFY, Op.OP_EQUALVERIFY, Op.OP_NUMEQUALVERIFY, Op.OP_CHECKSIGVERIFY,
+    Op.OP_CHECKMULTISIGVERIFY, Op.OP_CHECKDATASIGVERIFY,
+    Op.OP_CHECKLOCKTIMEVERIFY, Op.OP_CHECKSEQUENCEVERIFY, Op.OP_SPLIT,
+  ]);
 
   /**
    * This traversal is the dry run `subroutineUseProbe` uses to count subroutine sites. Its emitted bytes are
@@ -789,14 +839,176 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   ];
 
   private allocateCompactHelperId(): bigint {
+    // Single-byte-push ids first: they are a strictly cheaper encoding of the same identifier, and there are far
+    // fewer of them than a large contract needs, so spending them before falling back is always the better trade.
+    //
+    // Except on the usage probe. It emits EVERY function body, so it reaches helpers the real pass may never
+    // emit, and it runs first - handing the pool out in probe order spent all seventeen before the real pass
+    // began. The probe takes fallback ids and `rehomeHotHelperIds` then moves the pool onto the helpers the
+    // probe measured as hottest, which is the assignment that actually pays.
+    while (!this.isSubroutineUseProbe && this.compactHelperIds.cheap.length > 0) {
+      const id = this.compactHelperIds.cheap.shift()!;
+      if (!this.compactHelperIds.used.has(id)) {
+        this.compactHelperIds.used.add(id);
+        this.compactHelperIds.allocated.add(id);
+        return id;
+      }
+    }
     while (true) {
       const id = this.compactHelperIds.next;
       this.compactHelperIds.next -= 1n;
       if (id !== 0n && !this.compactHelperIds.used.has(id)) {
         this.compactHelperIds.used.add(id);
+        this.compactHelperIds.allocated.add(id);
         return id;
       }
     }
+  }
+
+  /** Ids handed out to compiler helpers, for consumers that must tell a helper definition from a user one. */
+  get allocatedHelperIds(): ReadonlySet<bigint> {
+    return this.compactHelperIds.allocated;
+  }
+
+  /**
+   * Push a fixed-width byte constant, using `<minimal> <width> OP_NUM2BIN` when that is shorter.
+   *
+   * A 256-bit-parity constant is pushed at its full width even when its value is tiny: bytes32(0) costs 33
+   * bytes. OP_NUM2BIN rebuilds exactly those bytes from the minimal script number plus a width - it zero-pads
+   * the magnitude and re-sets the sign bit in the last byte, which is precisely how the constant is laid out -
+   * so the stack item is identical and only the encoding shrinks. bytes32(0) goes from 33 bytes to 4.
+   *
+   * Emitted here rather than rewritten later so every instruction pointer is recorded against the final
+   * instruction sequence, and so the optimiser cross-check sees one input rather than two.
+   */
+  private emitFixedWidthConstant(bytes: Uint8Array, locationData: SingleLocationData): void {
+    const minimal = GenerateTargetTraversalWithLocation.minimalScriptNumberOf(bytes);
+    const asNum2bin = minimal === undefined ? undefined : [minimal, encodeInt(BigInt(bytes.length))];
+    const width = (element: Uint8Array): number => encodeDataPush(element).length;
+    if (asNum2bin === undefined
+      || width(asNum2bin[0]) + width(asNum2bin[1]) + 1 >= width(bytes)) {
+      this.emit(bytes, locationData);
+      return;
+    }
+    this.emit(asNum2bin[0], locationData);
+    this.emit(asNum2bin[1], locationData);
+    this.emit(Op.OP_NUM2BIN, locationData);
+  }
+
+  /**
+   * The minimal script number whose OP_NUM2BIN widening to `element.length` reproduces `element` byte for byte,
+   * or undefined when no such number exists (a negative zero, which OP_NUM2BIN never produces).
+   */
+  private static minimalScriptNumberOf(element: Uint8Array): Uint8Array | undefined {
+    if (element.length === 0) return undefined;
+    const sign = element[element.length - 1] & 0x80;
+    const magnitude = new Uint8Array(element);
+    magnitude[magnitude.length - 1] &= 0x7f;
+    let end = magnitude.length;
+    while (end > 0 && magnitude[end - 1] === 0) end -= 1;
+    if (end === 0) return sign === 0 ? new Uint8Array() : undefined;
+    // A magnitude already using bit 7 of its top byte needs one more byte to carry the sign.
+    const minimal = new Uint8Array(end + ((magnitude[end - 1] & 0x80) !== 0 ? 1 : 0));
+    minimal.set(magnitude.subarray(0, end), 0);
+    minimal[minimal.length - 1] |= sign;
+    return minimal;
+  }
+
+  /**
+   * Every map that remembers "this structural helper is function id N". A helper's id is looked up here each
+   * time it is emitted, so rewriting these before any real emission relocates the helper wholesale.
+   */
+  private helperIdMaps(): Map<never, bigint>[] {
+    return [
+      this.structSkipIds, this.structFieldPrefixIds, this.structFieldExtractIds, this.scanLoopIds,
+      this.arrayElementIds, this.arraySplitIds, this.arrayTruncateIds, this.stateDecodeIds, this.stateReadIds,
+      this.dataNftPreserveIds, this.dataNftCommitPreserveIds, this.dataNftOutputCommitmentIds,
+      this.sortedEntryAddressIds,
+    ] as unknown as Map<never, bigint>[];
+  }
+
+  /**
+   * Move the single-byte id pool onto the helpers the probe pushed most, saving a byte at each of those pushes.
+   *
+   * Runs between the probe and the real pass, so nothing has been emitted yet and relocating a helper is just a
+   * map rewrite. Ids are **relocated, never swapped, and a vacated id is never recycled**: every new id comes
+   * from the free pool and the old one stays marked used. A map missed by this rewrite therefore leaves that
+   * helper on an id nothing else can take - a saving not collected, never a collision.
+   */
+  private rehomeHotHelperIds(probe: GenerateTargetTraversalWithLocation): void {
+    const pool = this.compactHelperIds;
+    if (pool.cheap.length === 0) return;
+    // `bumpSubroutineUse` already counts a use at every site that reaches a helper, whether that site ends up
+    // an OP_INVOKE or inlined, so the probe's tally is the site count without re-deriving it from bytes.
+    // Two uses is the floor for a helper to be worth defining at all (`capturedSubroutineIsProfitable` refuses
+    // below it), and a helper that stays inlined never emits its id - so a single-use helper would spend a pool
+    // slot on nothing.
+    const hottest = [...probe.subroutineUseCount]
+      .filter(([id, uses]) => uses >= 2 && pool.allocated.has(id) && encodeDataPush(encodeInt(id)).length > 1)
+      .sort((left, right) => right[1] - left[1] || Number(right[0] - left[0]))
+      .slice(0, pool.cheap.length);
+    if (hottest.length === 0) return;
+
+    const relocated = new Map<bigint, bigint>();
+    for (const [id] of hottest) {
+      const cheapId = pool.cheap.shift();
+      if (cheapId === undefined) break;
+      relocated.set(id, cheapId);
+      pool.used.add(cheapId);
+      pool.allocated.add(cheapId);
+    }
+    for (const map of this.helperIdMaps()) {
+      for (const [key, id] of map) {
+        const moved = relocated.get(id);
+        if (moved !== undefined) map.set(key, moved);
+      }
+    }
+    // The probe's tally is what `visitContract` consults to decide which helpers are worth an OP_DEFINE, and it
+    // is keyed by id. Leaving it behind makes every relocated helper look unused, so it is inlined at each site
+    // instead of shared - which grew one corpus contract by 10% and pushed it past the 10,000-byte script limit.
+    for (const [id, moved] of relocated) {
+      const uses = probe.subroutineUseCount.get(id);
+      if (uses === undefined) continue;
+      probe.subroutineUseCount.delete(id);
+      probe.subroutineUseCount.set(moved, uses);
+    }
+  }
+
+  private snapshotCompactHelperIds(): { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] } {
+    const { next, used, cheap, allocated } = this.compactHelperIds;
+    return { next, used: [...used], cheap: [...cheap], allocated: [...allocated] };
+  }
+
+  /**
+   * Rewind the identifier pool so a speculative allocation run can be discarded.
+   *
+   * Restores in place rather than replacing the object: sub-traversals and probes are handed the same pool by
+   * reference, so swapping it here would leave them allocating out of an orphan.
+   */
+  private restoreCompactHelperIds(
+    snapshot: { next: bigint; used: bigint[]; cheap: bigint[]; allocated: bigint[] },
+  ): void {
+    const pool = this.compactHelperIds;
+    pool.next = snapshot.next;
+    pool.used.clear();
+    for (const id of snapshot.used) pool.used.add(id);
+    pool.allocated.clear();
+    for (const id of snapshot.allocated) pool.allocated.add(id);
+    pool.cheap.splice(0, pool.cheap.length, ...snapshot.cheap);
+  }
+
+  /**
+   * Encoded push width to cost an as-yet-unallocated helper id at, without consuming one.
+   *
+   * Deliberately ignores the single-byte pool. A caller that allocates several ids in one batch gets at most a
+   * handful of cheap ones before the pool runs dry, so quoting the cheap width would over-state the saving on
+   * every id after the first - and a cost model that over-states makes the pass emit code it cannot pay for.
+   * The descending fallback range is what a batch actually draws from.
+   */
+  private peekCompactHelperIdPushBytes(): number {
+    let next = this.compactHelperIds.next;
+    while (next === 0n || this.compactHelperIds.used.has(next)) next -= 1n;
+    return encodeDataPush(encodeInt(next)).length;
   }
 
   // State-related tracking
@@ -1412,6 +1624,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.userFunctionDefs.set(f.name, f);
     }
 
+    // Free functions are OP_DEFINE'd here, before visitContract seeds the helper-id pool, so record their ids
+    // for that seeding: a helper drawn on top of one would redefine an already-defined identifier.
+    this.freeFunctionIds = node.freeFunctions
+      .filter((f) => f.functionId !== undefined)
+      .map((f) => BigInt(f.functionId!));
+
     // Emit OP_DEFINE for each free function
     for (const f of node.freeFunctions) {
       this.emitFunctionDefine(f);
@@ -1422,9 +1640,84 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Minimally encode output by going Script -> ASM -> Script
     this.output = normaliseScript(this.output);
 
+    // Peephole BEFORE sharing. A span moved into a helper body becomes an opaque data push, so the optimiser
+    // that runs after code generation can never reach inside it - whatever shuffles were still in that span
+    // would be frozen there. `optimiseBytecode` runs to a fixed point, so the later pass over the rewritten
+    // script is a no-op on everything this already folded.
+    const optimised = optimiseBytecode(
+      this.output, this.locationData, this.consoleLogs, this.requires, this.constructorParameterCount,
+    );
+    this.output = optimised.script;
+    this.locationData = optimised.locationData;
+    this.consoleLogs = optimised.logs;
+    this.requires = optimised.requires;
+
+    this.poolTopLevelConstants(node);
+
     this.sourceMap = generateSourceMap(this.locationData);
 
     return node;
+  }
+
+  /**
+   * Share repeated material in the contract-level script itself.
+   *
+   * `outlineSharedFunctionBodies` only ever sees the OP_DEFINE'd bodies, and a single-entry-point contract does
+   * not have one - its body is emitted straight into this script - so a wide constant repeated a dozen times
+   * there was never a candidate for anything. Running the same pass over the finished top-level script reaches
+   * it, with the definitions prepended so every one is registered before the first OP_INVOKE can run.
+   *
+   * Every recorded require/log pointer is passed as an anchor, so no shared span may contain one, and the
+   * survivors are remapped through the pass's own index map rather than by arithmetic on shift amounts.
+   */
+  private poolTopLevelConstants(node: SourceFileNode): void {
+    const pointers = this.instructionPointerFields();
+    // A pointer is an output index offset by the constructor-argument pushes the unlocking script supplies.
+    const toIndex = (ip: number): number => ip - this.constructorParameterCount;
+    // Anchor every instruction whose failure the SDK reports against a source position, not just the recorded
+    // require/log pointers. Inside an OP_DEFINE'd body every require is recorded and therefore anchored, but the
+    // contract-level script also carries verifies that were never registered as requires - a library's own
+    // `require`, for one - and those are attributed purely through the source map. Moved into a shared body, the
+    // VM reports a pointer in that body's instruction space and the failure is blamed on the wrong line.
+    const anchors = [
+      ...pointers.map((pointer) => toIndex(pointer.ip)).filter((index) => index >= 0),
+      ...this.output.flatMap((element, index) => (
+        typeof element === 'number' && GenerateTargetTraversalWithLocation.ATTRIBUTED_FAILURE_OPS.has(element)
+          ? [index] : [])),
+    ];
+    const result = outlineSharedSpans(
+      [{ script: this.output, locationData: this.locationData, anchors }],
+      () => encodeInt(this.allocateCompactHelperId()),
+      () => this.peekCompactHelperIdPushBytes(),
+    );
+    if (result.functions.length === 0) return;
+
+    const body = result.bodies[0];
+    const locationData: SingleLocationData = { location: node.location, positionHint: PositionHint.START };
+    const definitions: Script = [];
+    const definitionLocations: FullLocationData = [];
+    for (const outlined of result.functions) {
+      definitions.push(scriptToBytecode(outlined.script), outlined.id, Op.OP_DEFINE);
+      definitionLocations.push(locationData, locationData, locationData);
+    }
+
+    this.output = [...definitions, ...body.script];
+    this.locationData = [...definitionLocations, ...body.locationData];
+    // Remap through the rewrite, then shift by the prologue the definitions added in front of everything.
+    for (const pointer of pointers) {
+      const index = toIndex(pointer.ip);
+      if (index < 0) continue;
+      pointer.ip = (body.indexMap[index] ?? index) + definitions.length + this.constructorParameterCount;
+    }
+  }
+
+  /** Every recorded instruction pointer, as writable references, so a rewrite can remap them all in one place. */
+  private instructionPointerFields(): { ip: number }[] {
+    return [
+      ...this.requires,
+      ...this.consoleLogs,
+      ...this.consoleLogs.flatMap((entry) => entry.data.filter((item): item is StackItem => typeof item !== 'string')),
+    ];
   }
 
   visitContract(node: ContractNode): Node {
@@ -1465,13 +1758,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...(node.fallbackDef ? [node.fallbackDef] : []),
       ...(node.receiveDef ? [node.receiveDef] : []),
     ];
-    this.compactHelperIds = { next: -12n, used: new Set() };
+    this.compactHelperIds = { next: -12n, used: new Set(), cheap: [], allocated: new Set() };
     for (const id of GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS) {
       this.compactHelperIds.used.add(id);
     }
+    // Reserve only the function ids that are actually emitted as identifiers. A function's number reaches the
+    // script in exactly two ways: `emitFunctionDefine` gives every non-entry-point function an OP_DEFINE, and a
+    // direct internal call or a function-pointer value pushes the number for an OP_INVOKE - the set
+    // `collectInvokedFunctionIds` returns. An entry point that is never called internally is reached only
+    // through its four-byte selector, so its number is free for a helper to take, which matters because those
+    // numbers are exactly the low ones the single-byte pool is drawn from.
+    const invokedFunctionIds = this.collectInvokedFunctionIds(node);
+    this.invokedFunctionIdsCache = { node, ids: invokedFunctionIds };
     for (const fn of contractFunctionsForIds) {
-      if (fn.functionId !== undefined) this.compactHelperIds.used.add(BigInt(fn.functionId));
+      if (fn.functionId === undefined) continue;
+      if (fn.isEntryPoint && !invokedFunctionIds.has(fn.functionId)) continue;
+      this.compactHelperIds.used.add(BigInt(fn.functionId));
     }
+    for (const id of invokedFunctionIds) this.compactHelperIds.used.add(BigInt(id));
+    for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
+    this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
+      .filter((id) => !this.compactHelperIds.used.has(id));
     // C2 sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
     // standard read-only preservation / satoshi epilogue must skip it (its output is not the co-spent input).
     this.sortedCollections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
@@ -1952,9 +2259,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // target). A public function only needs its internal-subroutine OP_DEFINE when it is actually invoked
   // internally; otherwise it compiles as an entry point only (like external) - so a constructor-param-using
   // entry point is not forced through the param-less subroutine path.
+  // Memo for the contract-level call, which visitContract and emitFunctionDefinesAndDispatch both need and which
+  // walks the whole contract AST. Keyed on the node so a different contract never reads a stale set.
+  private invokedFunctionIdsCache?: { node: Node; ids: Set<number> };
+
   private collectInvokedFunctionIds(
     node: Node, ids: Set<number> = new Set(), visited: Set<Node> = new Set(),
   ): Set<number> {
+    if (this.invokedFunctionIdsCache?.node === node && visited.size === 0 && ids.size === 0) {
+      return this.invokedFunctionIdsCache.ids;
+    }
     if (visited.has(node)) return ids;
     visited.add(node);
     if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
@@ -2404,6 +2718,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * (byte-identical to the inline path, with any nested subroutines inlined). Marks it defined
    * and returns the emitted span for the dead-DEFINE splice.
    */
+  /**
+   * Peephole-optimise a helper body compiled on its own sub-traversal, the way the entry-point path already
+   * optimises the bodies it emits. Without it a captured helper ships whatever the emitters produced verbatim -
+   * this path did not even normalise - so the stack shuffles the table folds away stayed in every copy.
+   */
+  private static optimisedHelperBody(sub: GenerateTargetTraversalWithLocation): Script {
+    const normalised = normaliseScript(sub.output);
+    return optimiseBytecode(
+      normalised,
+      sub.locationData.slice(0, normalised.length),
+      [...sub.consoleLogs],
+      [...sub.requires],
+      0, // no constructor param pushes in a helper body
+    ).script;
+  }
+
   private defineCapturedSubroutine(
     id: bigint,
     inlineEmit: (t: GenerateTargetTraversalWithLocation) => void,
@@ -2442,7 +2772,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyBytecode = scriptToBytecode(sub.output);
+    const bodyScript = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    if (!this.isSubroutineUseProbe && sub.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(normaliseScript(sub.output))) {
+      if (!scriptsEqual(optimiseBytecodeOld(normaliseScript(sub.output)), bodyScript)) {
+        throw new Error('Function body optimisation mismatch - please report this issue');
+      }
+    }
+    const bodyBytecode = scriptToBytecode(bodyScript);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
     this.emit(bodyBytecode, locationData);
@@ -2485,7 +2822,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
-    const body = scriptToBytecode(sub.output);
+    // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
+    // against a size the emitted subroutine never has.
+    const body = scriptToBytecode(GenerateTargetTraversalWithLocation.optimisedHelperBody(sub));
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;
@@ -2515,9 +2854,23 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * map on failure (conservative).
    */
   private subroutineUseProbe(node: ContractNode): Map<bigint, number> | null {
-    // Subroutine sites only arise from packed state/entry reads, state/entry writes, or events.
+    // Subroutine sites arise from packed state/entry reads, state/entry writes and events - and also from
+    // structural helpers (struct field extract/prefix/skip, array element/split/truncate), which a contract
+    // with no state at all can have plenty of. Skipping the probe for those left their ids assigned purely in
+    // first-come order, so `rehomeHotHelperIds` never ran and the single-byte pool went to whichever helper
+    // happened to be emitted first rather than the one invoked most.
+    // Subroutine sites arise from packed state/entry reads, state/entry writes and events - and also from
+    // structural helpers (struct field extract/prefix/skip, array element/split/truncate), which a contract
+    // with no state at all can have plenty of. Skipping the probe there was not a missed id assignment but a
+    // missed EXTRACTION: `count(id)` reads the probe's tally, so with no probe every captured subroutine
+    // scores zero uses, `capturedSubroutineIsProfitable` refuses it, and the helper is inlined at every site.
+    // Detected from the declarations rather than the helper maps, which are still empty this early.
+    const usesAggregates = node.structDefinitions.length > 0
+      || node.stateVariables.some((variable) => isAggregate(variable.type))
+      || node.functions.some((fn) => fn.parameters.some((parameter) => isAggregate(parameter.type))
+        || fn.returnTypes.some((type) => isAggregate(type)));
     if (this.stateVariables.length === 0 && this.collectionCount === 0 && this.eventDefinitions.length === 0
-      && !node.emitsEvent) {
+      && !node.emitsEvent && !usesAggregates) {
       return null;
     }
     // Body gen mutates deployTargets accumulatively; snapshot/restore so the probe leaves it clean.
@@ -2564,6 +2917,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.dataNftCommitPreserveIds = new Map(probe.dataNftCommitPreserveIds);
       this.dataNftOutputCommitmentIds = new Map(probe.dataNftOutputCommitmentIds);
       this.compactHelperIds = probe.compactHelperIds;
+      this.rehomeHotHelperIds(probe);
       return probe.subroutineUseCount;
     } catch {
       return new Map(GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.map((id) => [id, 2]));
@@ -2750,7 +3104,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // chunk-read bases back or the contract-level check sees an empty list and passes vacuously.
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
-    // Serialize the function body to bytecode data
+    // Serialize the function body to bytecode data.
+    //
+    // NOT peephole-optimised, unlike an entry point's body or a captured helper's. A user function's body is
+    // the one place a `require` can fail without being recorded as one - a library function's own require
+    // reaches the VM from in here - and its debug record is a FLAT fill of the function's location, so the SDK
+    // attributes a failure through the contract-level source map. Folding instructions inside the body moves
+    // the reported pointer relative to that map and the failure lands on the wrong line (measured: a library
+    // require blamed on the contract declaration instead of its own line). Worth ~94 bytes over the corpus,
+    // which is not worth an error message that points somewhere else.
     const bodyScript = normaliseScript(subTraversal.output);
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1'
       && func.name === '__message_bus_handler_approve') {
@@ -3060,7 +3422,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // discarded, and running it there is worse than useless: `subroutineUseProbe` catches whatever the probe
     // throws and falls back to defining every subroutine, so a mismatch would silently degrade codegen instead
     // of reporting itself. The real pass re-runs this on the body that is actually emitted.
-    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    if (!this.isSubroutineUseProbe && normalizedOutput.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(normalizedOutput)) {
       const optimisedBytecodeOld = optimiseBytecodeOld(normalizedOutput);
       if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
         throw new Error('Function body optimisation mismatch - please report this issue');
@@ -3100,27 +3463,52 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
       ?.SOLIDC_DISABLE_SHARED_OUTLINE === '1') return;
     if (this.definedBodyRecords.length === 0) return;
-    const result = outlineSharedSpans(
-      this.definedBodyRecords.map((record) => {
-        // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
-        // instruction pointer against these, and a pointer reported from inside a shared body would not match.
-        const debugInfo = record.selectorHex === undefined
-          ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
-        const anchors = [
-          ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
-          ...(debugInfo?.logs ?? []).flatMap((entry) => [
-            entry.ip,
-            // Each logged value records the pointer at which it is readable off the stack.
-            ...entry.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip])),
-          ]),
-        ];
-        return { script: record.script, locationData: record.locationData, anchors };
-      }),
-      () => encodeInt(this.allocateCompactHelperId()),
-    );
-    if (result.functions.length === 0) return;
+    const bodies = this.definedBodyRecords.map((record) => {
+      // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
+      // instruction pointer against these, and a pointer reported from inside a shared body would not match.
+      const debugInfo = record.selectorHex === undefined
+        ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
+      const anchors = [
+        ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
+        ...(debugInfo?.logs ?? []).flatMap((entry) => [
+          entry.ip,
+          // Each logged value records the pointer at which it is readable off the stack.
+          ...entry.data.flatMap((item) => (typeof item === 'string' ? [] : [item.ip])),
+        ]),
+      ];
+      return { script: record.script, locationData: record.locationData, anchors };
+    });
 
-    result.bodies.forEach((body, index) => {
+    // Outlining picks candidates greedily, and the identifier width it costs them at decides both which ones
+    // clear the bar and the order they claim sites in. A narrower width is the truthful one, but it also admits
+    // marginal candidates whose sites fragment the longer spans a later round would have shared - on one corpus
+    // contract that cost 47 bytes more than never admitting them. Neither width dominates, so run both and keep
+    // whichever actually emitted less. Attempts are independent: each starts from the same bodies and has the
+    // identifier pool restored underneath it.
+    const widths = [
+      this.peekCompactHelperIdPushBytes(),
+      GenerateTargetTraversalWithLocation.OUTLINE_CONSERVATIVE_ID_PUSH_BYTES,
+    ];
+    let result: ReturnType<typeof outlineSharedSpans> | undefined;
+    let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
+    const entryPool = this.snapshotCompactHelperIds();
+    for (const width of new Set(widths)) {
+      this.restoreCompactHelperIds(entryPool);
+      const attempt = outlineSharedSpans(
+        bodies.map((body) => ({ ...body, script: [...body.script], locationData: [...body.locationData] })),
+        () => encodeInt(this.allocateCompactHelperId()),
+        () => width,
+      );
+      if (result === undefined || attempt.savedBytes > result.savedBytes) {
+        result = attempt;
+        winningPool = this.snapshotCompactHelperIds();
+      }
+    }
+    this.restoreCompactHelperIds(winningPool!);
+    const outcome = result!;
+    if (outcome.functions.length === 0) return;
+
+    outcome.bodies.forEach((body, index) => {
       const record = this.definedBodyRecords[index];
       const bytecode = scriptToBytecode(body.script);
       this.output[record.outputIndex] = bytecode;
@@ -3143,7 +3531,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         });
       }
     });
-    result.bodies.forEach((body, index) => {
+    outcome.bodies.forEach((body, index) => {
       const functionId = this.definedBodyRecords[index].functionId;
       if (functionId !== undefined) {
         this.invokedFunctionBytecodes.set(functionId, scriptToBytecode(body.script));
@@ -3158,7 +3546,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     });
 
-    for (const outlined of result.functions) {
+    for (const outlined of outcome.functions) {
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE === '1') {
         console.error('shared-span-helper', {
           id: binToHex(outlined.id),
@@ -6813,7 +7201,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       node.parameters[0] = this.visit(node.parameters[0]);
       this.popFromStack();
       this.emit(Op.OP_DROP, loc);
-      this.emit(new Uint8Array(32), loc);
+      this.emitFixedWidthConstant(new Uint8Array(32), loc);
       this.pushToStack('(value)');
       return node;
     }
@@ -10106,7 +10494,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   visitStringLiteral(node: StringLiteralNode): Node {
-    this.emit(node.solidityBytes ?? encodeString(node.value), {
+    // `solidityBytes` is the value right-padded to its declared width, so a short string in a wide slot is
+    // mostly zeros and encodes far smaller through OP_NUM2BIN.
+    this.emitFixedWidthConstant(node.solidityBytes ?? encodeString(node.value), {
       location: node.location,
       positionHint: PositionHint.START,
     });
@@ -10118,7 +10508,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // A placeholder for an unsupported-but-valid construct (e.g. `new bytes(n)` with a runtime length) that was
     // deferred from AstBuilder so non-primary contracts do not fail the file; error now that it is being compiled.
     if (node.codegenError) throw new Error(node.codegenError);
-    this.emit(node.value, { location: node.location, positionHint: PositionHint.START });
+    this.emitFixedWidthConstant(node.value, { location: node.location, positionHint: PositionHint.START });
     this.pushToStack('(value)');
     return node;
   }
@@ -16471,7 +16861,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
       }, field);
     };
-    const zero32 = (): void => this.emit(new Uint8Array(32), loc);
+    const zero32 = (): void => this.emitFixedWidthConstant(new Uint8Array(32), loc);
     const bin = (op: Op): void => this.emit(op, loc);
 
     for (const batch of node.sortedBatchInfo ?? []) {

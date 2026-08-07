@@ -352,17 +352,20 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // DECIDES for `.build()`; it now reads the provider through `LibauthTemplate` -> `debugTemplate` ->
     // `createProgram`, both halves landed together so an optional parameter nobody supplies could not read as
     // provider-aware while behaving bare.
-    const provider = costProfile(150, false);
+    // 140 rather than the 150 the other rows use: the budget is calibrated against this shape's operation
+    // cost, and helper ids drawn from the single-byte pool shortened the recursive body enough that 150 no
+    // longer refuses it. See X130 row 1, which pins the same shape at the same budget.
+    const provider = costProfile(140, false);
     let buildError: string | undefined;
     try {
       await (await recursionContract(provider) as unknown as Recursor).decrement(3n).build();
     } catch (error) { buildError = (error as Error).message; }
     expect(buildError, '.build() still admits a shape the decider refuses').toBeDefined();
     // Pinned as budget x density, never as a literal, so it measures the PUBLISHED value.
-    assertDensityCeiling(buildError!, 150);
+    assertDensityCeiling(buildError!, 140);
     // And the decider refuses the same shape, measured on the funded bytes rather than inherited from row 2.
     const { error } = await sendCapturingPreflightInput(await recursionContract(provider), 3n);
-    assertDensityCeiling(error!, 150);
+    assertDensityCeiling(error!, 140);
   });
 
   it('6b. GUARD: the .build() gate still refuses a structurally unbounded recursion', async () => {

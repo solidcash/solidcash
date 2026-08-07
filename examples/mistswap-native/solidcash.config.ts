@@ -13,6 +13,10 @@ export default defineConfig({
   compiler: {
     solidityImportCompat: true,
     ecrecover: 'p2pkh',
+    // Pure / zero-state Solidity ports (ChainlinkOracleV2, library-like mocks) still need a master NFT +
+    // blockLayout so view/pure returns emit returnEvent outputs and can be staticCall-derived. Without this
+    // they compile as classic P2SH scripts with no returnEvent slot and StatefulContract pure-read fails.
+    forceStateful: true,
   },
   networks: {
     mock: {

@@ -1042,7 +1042,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
   // Runtime-alias routes preserve their C2 topology witnesses on the altstack across OP_INVOKE handler calls.
   // They are restored lazily at the first wrapper-level collection flush, before any deep witness lookup.
+  // The name list is frozen at preflight so restore pops the exact same count/order even when a later final-use
+  // OP_ROLL removes a key param from the tracked stack (e.g. `emit Approval(owner, spender, amount)` after
+  // `_allowances[msg.sender][spender] = amount`). Re-filtering keyParams at restore desyncs the altstack and
+  // scrambles Slot/Proof/Next/PredOut (predOut then fails as a non-minimal / out-of-range UTXO index).
   private c2WitnessSnapshotsRestored: boolean = false;
+  private c2WitnessSnapshotNames: string[] | null = null;
   // CASE (b) PENDING-DEFER: a new recipient whose bracketing predecessor is ANOTHER credited recipient (not the debit).
   // Each UPDATE iteration co-spends its entry but DEFERS the mint into these registers; the NEXT iteration flushes them,
   // re-pointing the pending entry to the current key iff it lands in the pending's gap (proving it a new node right
@@ -3811,6 +3816,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     this.c2WitnessSnapshotsRestored = false;
+    this.c2WitnessSnapshotNames = null;
     this.emitRuntimeAliasWitnessPreflight(node);
 
     // Allocate the complete semantic transfer frame before visiting control flow. Branch/loop-local allocation
@@ -13937,15 +13943,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack(); // untrack the data value (stays on real stack)
     // Real stack: [..., data]  (1 untracked)
 
-    // Get call input index (1 untracked push)
-    if (this.currentFunction.blockLayout) {
+    // Get call input index (1 untracked push). Prefer the runtime witness when present so a multi-UTXO
+    // callee band can sit after the caller's trailing resources (dynamic chunks / C2 batch preds).
+    // Fall back to the fixed block-layout slot only for legacy artifacts that still publish one.
+    //
+    // `data` sits untracked on the real stack (1 deep), so OP_PICK depth is trackedIndex + 1.
+    const paramName = this.lowLevelCallCount === 1
+      ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
+    const paramIdx = this.getStackIndex(paramName, true);
+    if (paramIdx >= 0) {
+      this.emit(encodeInt(BigInt(paramIdx + 1)), locationData);
+      this.emit(Op.OP_PICK, locationData);
+    } else if (this.currentFunction.blockLayout) {
       this.emitBlockSlotIndex('lowLevelCall', callIndex, locationData);
     } else {
-      const paramName = this.lowLevelCallCount === 1
-        ? '__internal__callInputIndex' : `__internal__callInputIndex${callIndex}`;
-      const paramIdx = this.getStackIndex(paramName);
-      this.emit(encodeInt(BigInt(paramIdx)), locationData);
-      this.emit(Op.OP_PICK, locationData);
+      throw new Error(`Low-level call index parameter '${paramName}' is missing from the stack`);
     }
     // Real stack: [..., data, inputIdx]
 
@@ -16148,7 +16160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     // Keep an untouched copy of every topology witness above the mutable handler frame. Internal handler calls
     // may legally reorder the original parameter cells while preserving stack depth; all post-body C2 work reads
-    // these snapshots instead.
+    // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
     const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
       `__internal__c2BatchSlot_${slot}`,
       `__internal__c2BatchProof_${slot}`,
@@ -16160,6 +16172,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
     ];
+    this.c2WitnessSnapshotNames = names;
     for (const name of names) {
       copy(name);
       this.emit(Op.OP_TOALTSTACK, loc);
@@ -16174,7 +16187,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       `__internal__c2BatchNext_${slot}`,
       `__internal__c2BatchPredOut_${slot}`,
     ]));
-    const names = [
+    // Prefer the frozen preflight list. Recomputing keyParams here is unsafe: a final-use OP_ROLL in the body
+    // (emit args, later statements) removes those names from the tracked stack, so a re-filter would pop fewer
+    // altstack items than preflight pushed and scramble every subsequent topology witness.
+    const names = this.c2WitnessSnapshotNames ?? [
       ...topologyNames,
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
@@ -18480,6 +18496,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *     co-spent), so a shrink/replace leaves no stale chunk. Together these pin the exact chunk set.
    * See docs/dynamic-storage.md.
    */
+  /**
+   * True when an external-call slot's source site is only reachable under a While/DoWhile in the current
+   * function (or the slot is an array-element / inline-loop dispatch). Such slots must not claim a fixed
+   * co-spend footprint or fixed epilogue verification: empty loops (MasterChef first `poolInfo.push` with
+   * `withUpdate`) execute zero iterations and have no callees to co-spend.
+   */
+  private isExternalCallSlotLoopNested(slot: ExternalCallSlot): boolean {
+    if (slot.loopArrayVar || slot.inlineLoopDispatch) return true;
+    const target = slot.sourceCallNode;
+    if (!target || !this.currentFunction?.body) return false;
+    const seen = new Set<object>();
+    const walk = (value: unknown, inLoop: boolean): boolean => {
+      if (!(value instanceof Node) || seen.has(value)) return false;
+      seen.add(value);
+      if (value === target) return inLoop;
+      const nextLoop = inLoop || value instanceof WhileNode || value instanceof DoWhileNode;
+      for (const [key, child] of Object.entries(value)) {
+        if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+          'referencedContract', 'stateVariable', 'collection', 'sourceCallNode'].includes(key)) continue;
+        if (child instanceof Node) {
+          if (walk(child, nextLoop)) return true;
+        } else if (Array.isArray(child)) {
+          for (const item of child) {
+            if (walk(item, nextLoop)) return true;
+          }
+        }
+      }
+      return false;
+    };
+    return walk(this.currentFunction.body, false);
+  }
+
   private emitDynamicWriteVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.body.location, positionHint: PositionHint.END };
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
@@ -18614,8 +18662,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // --- verify chunk output i (untracked working values; expected is already built & tracked) ---
       // outIdx = masterInputIndex + blockSize + sum(collection-iter counts) + sum(foreign-read counts)
       //          + sum(prior written-var counts) + i
+      //
+      // Loop-nested external calls do NOT reserve a fixed co-spend footprint (see isExternalCallSlotLoopNested).
       const returningExternalSlots = this.externalCallSlots
-        .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch);
+        .filter((slot) => slot.hasReturnValues && !slot.inlineLoopDispatch
+          && !this.isExternalCallSlotLoopNested(slot));
       if (returningExternalSlots.length > 0) {
         // Returning co-spends publish their event after every callee block and before this caller's dynamic
         // chunks. Anchor to the authenticated LAST return-event index rather than summing interface-declared
@@ -18630,10 +18681,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_1ADD, loc);
       } else {
         this.emitTrailingBlockBase(blockSize, loc);
-        // Non-returning callee blocks still precede local dynamic chunks. Their declared footprint is the only
-        // available compile-time anchor; identity/selector checks remain fail-closed if the declaration is wrong.
+        // Non-returning, non-loop callee blocks still precede local dynamic chunks.
         const externalCallOutputCount = this.externalCallSlots
-          .filter((slot) => !slot.inlineLoopDispatch)
+          .filter((slot) => !slot.inlineLoopDispatch && !this.isExternalCallSlotLoopNested(slot))
           .reduce((sum, slot) => sum + 1 + slot.requiredDataNftIndices.length, 0);
         if (externalCallOutputCount > 0) {
           this.emit(encodeInt(BigInt(externalCallOutputCount)), loc);
@@ -20549,6 +20599,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitArrayExternalCallLoop(slot, node);
         continue;
       }
+      // Loop-nested call without loopArrayVar (MasterChef updatePool.mint inside massUpdatePools' for-loop):
+      // the call only runs when the loop body runs. A fixed epilogue would require co-spends even when the
+      // loop is empty (first poolInfo.push), which fails identity checks against the master's own inputs.
+      // Verification of reached iterations is the loop body's responsibility (inlined call site).
+      if (this.isExternalCallSlotLoopNested(slot)) continue;
       const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 
       // B's master input index (per-slot runtime index when the SDK filled one - fn-ptr calls + multi-call
@@ -20744,7 +20799,17 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const callMode = slot.callMode ?? ExternalCallMode.REGULAR;
 
     // --- read whole array -> blob (pushdata(count) ++ framed element LBCs); co-spends arr's chunks once ---
-    this.emitReadStateArrayBlob(sv, loc, '(aec_blob)'); // [..., (aec_blob)]
+    // Prefer the PRE-write array when this function also mutates it (MasterChef.add: massUpdatePools then
+    // poolInfo.push). The mass-update loop only ran over the pre-push elements; verifying co-spends against
+    // the post-push array would demand a balanceOf for the brand-new pool that was never updated. Reading
+    // the pending write value would use post-push length; force the input-state path instead.
+    if (sv.isDynamic && this.pendingDynamicWrites.has(sv.name)) {
+      this.emitDynamicReadLoop(sv, loc); // input-state reassembly, ignore pending write
+      this.emitReframeDynamicArrayRead(sv, loc);
+      this.stack[0] = '(aec_blob)';
+    } else {
+      this.emitReadStateArrayBlob(sv, loc, '(aec_blob)'); // [..., (aec_blob)]
+    }
     this.emitPushdataDecode(PrimitiveType.BIGINT, loc); // [count, remainder] remainder top
     this.emit(Op.OP_SWAP, loc);                          // [remainder, count] count top
     this.popFromStack();                                 // drop (aec_blob) tracking
@@ -21357,7 +21422,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // (The actual return value reading is done in visitExternalFunctionCall)
 
     const allReturningSlotCount = this.externalCallSlots.filter((s) => s.hasReturnValues).length;
-    const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues && !s.inlineLoopDispatch);
+    // Skip loop-nested slots (empty massUpdatePools must not demand return-event outputs).
+    const returningSlots = this.externalCallSlots.filter((s) => s.hasReturnValues && !s.inlineLoopDispatch
+      && !this.isExternalCallSlotLoopNested(s));
 
     for (const slot of returningSlots) {
       // Determine the parameter name for this slot's return output index

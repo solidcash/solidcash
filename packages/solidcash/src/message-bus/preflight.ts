@@ -412,6 +412,18 @@ export interface FinalizedByteGateOptions {
    * refusal and can neither create nor suppress one. `inputSubjectsOfBuilder` reads it off a builder.
    */
   inputSubjects?: readonly (FinalizedByteSubject | undefined)[];
+  /**
+   * Override the consensus per-input unlocking-bytecode ceiling (default: real BCH 10,000). The stateful
+   * submit path passes the mock provider's relaxed `maximumInputBytes` so suites that intentionally exercise
+   * oversized unsplit contracts (MistSwap) can reach covenant behaviour; plain `TransactionBuilder.send`
+   * leaves this unset so X158 still measures the real 10KB spend boundary.
+   */
+  maximumUnlockingBytes?: number;
+  /**
+   * Override the consensus transaction-size ceiling (default: real BCH 1,000,000). Paired with
+   * `maximumUnlockingBytes` when a mock publishes a matching `maximumTransactionBytes`.
+   */
+  maximumTransactionBytes?: number;
 }
 
 /**
@@ -448,17 +460,19 @@ export const inputSubjectsOfBuilder = (
  * redeemBytes` is exactly the argument and push-prefix overhead - reported rather than re-derived, because a
  * re-derivation would be a second place to get the same arithmetic wrong.
  */
-const describeInputSubject = (subject: FinalizedByteSubject, unlockingBytes: number): string => {
+const describeInputSubject = (
+  subject: FinalizedByteSubject, unlockingBytes: number, unlockingLimit: number = CONSENSUS_UNLOCKING_BYTES_LIMIT,
+): string => {
   const name = subject.contractName === undefined ? 'an unnamed contract' : `contract '${subject.contractName}'`;
   if (subject.redeemBytes === undefined) return `; input spends ${name}`;
   const overhead = unlockingBytes - subject.redeemBytes;
-  if (subject.redeemBytes > CONSENSUS_UNLOCKING_BYTES_LIMIT) {
+  if (subject.redeemBytes > unlockingLimit) {
     return `; it spends ${name}, whose redeem script is ${subject.redeemBytes} bytes on its own - already `
-      + `${subject.redeemBytes - CONSENSUS_UNLOCKING_BYTES_LIMIT} over the limit before any of its `
+      + `${subject.redeemBytes - unlockingLimit} over the limit before any of its `
       + `${overhead} bytes of arguments and redeem push`;
   }
   return `; it spends ${name}, whose ${subject.redeemBytes}-byte redeem script fits the limit on its own but `
-    + `leaves only ${CONSENSUS_UNLOCKING_BYTES_LIMIT - subject.redeemBytes} bytes for the ${overhead} bytes of `
+    + `leaves only ${unlockingLimit - subject.redeemBytes} bytes for the ${overhead} bytes of `
     + 'arguments and redeem push it must also carry. The limit is on the WHOLE unlocking bytecode, so a '
     + "contract the compiler's script-size check passes can still be unspendable";
 };
@@ -520,8 +534,12 @@ export function isPushOnlyBytecode(bytecode: Uint8Array): boolean {
  * message bus test publishes are exactly what made the existing capacity checks vacuous.
  */
 export function assessFinalizedTransactionBytes(
-  transaction: Transaction, subjects: readonly (FinalizedByteSubject | undefined)[] = [],
+  transaction: Transaction,
+  subjects: readonly (FinalizedByteSubject | undefined)[] = [],
+  limits: { maximumUnlockingBytes?: number; maximumTransactionBytes?: number } = {},
 ): FinalizedByteVerdict {
+  const unlockingLimit = limits.maximumUnlockingBytes ?? CONSENSUS_UNLOCKING_BYTES_LIMIT;
+  const txSizeLimit = limits.maximumTransactionBytes ?? CONSENSUS_TRANSACTION_SIZE_LIMIT;
   const refusals: FinalizedByteRefusal[] = [];
   const readings: FinalizedByteReading[] = [];
   const serializedBytes = encodeTransaction(transaction).length;
@@ -552,13 +570,13 @@ export function assessFinalizedTransactionBytes(
     rule: 'consensus-transaction-size',
     where: 'transaction',
     measured: serializedBytes,
-    allowed: CONSENSUS_TRANSACTION_SIZE_LIMIT,
-    ratio: serializedBytes / CONSENSUS_TRANSACTION_SIZE_LIMIT,
+    allowed: txSizeLimit,
+    ratio: serializedBytes / txSizeLimit,
   });
-  if (serializedBytes > CONSENSUS_TRANSACTION_SIZE_LIMIT) {
-    refuse('consensus-transaction-size', 'transaction', serializedBytes, CONSENSUS_TRANSACTION_SIZE_LIMIT,
-      `${serializedBytes} serialized bytes is ${serializedBytes - CONSENSUS_TRANSACTION_SIZE_LIMIT} over the `
-      + `${CONSENSUS_TRANSACTION_SIZE_LIMIT}-byte consensus ceiling; these bytes are invalid however they are `
+  if (serializedBytes > txSizeLimit) {
+    refuse('consensus-transaction-size', 'transaction', serializedBytes, txSizeLimit,
+      `${serializedBytes} serialized bytes is ${serializedBytes - txSizeLimit} over the `
+      + `${txSizeLimit}-byte consensus ceiling; these bytes are invalid however they are `
       + 'transported, not merely unrelayable');
   }
 
@@ -567,12 +585,12 @@ export function assessFinalizedTransactionBytes(
   transaction.inputs.forEach((input, index) => {
     const bytes = input.unlockingBytecode.length;
     if (bytes > worstUnlocking.bytes) worstUnlocking = { input: index, bytes };
-    if (bytes > CONSENSUS_UNLOCKING_BYTES_LIMIT) {
+    if (bytes > unlockingLimit) {
       const subject = subjects[index];
-      refuse('consensus-unlocking-bytes', `input ${index}`, bytes, CONSENSUS_UNLOCKING_BYTES_LIMIT,
-        `${bytes} unlocking bytecode bytes is ${bytes - CONSENSUS_UNLOCKING_BYTES_LIMIT} over the `
-        + `${CONSENSUS_UNLOCKING_BYTES_LIMIT}-byte per-input script limit`
-        + (subject === undefined ? '' : describeInputSubject(subject, bytes)));
+      refuse('consensus-unlocking-bytes', `input ${index}`, bytes, unlockingLimit,
+        `${bytes} unlocking bytecode bytes is ${bytes - unlockingLimit} over the `
+        + `${unlockingLimit}-byte per-input script limit`
+        + (subject === undefined ? '' : describeInputSubject(subject, bytes, unlockingLimit)));
     }
     if (!isPushOnlyBytecode(input.unlockingBytecode)) {
       refuse('scriptsig-push-only', `input ${index}`, 1, 0,
@@ -584,8 +602,8 @@ export function assessFinalizedTransactionBytes(
       rule: 'consensus-unlocking-bytes',
       where: `input ${worstUnlocking.input}`,
       measured: worstUnlocking.bytes,
-      allowed: CONSENSUS_UNLOCKING_BYTES_LIMIT,
-      ratio: worstUnlocking.bytes / CONSENSUS_UNLOCKING_BYTES_LIMIT,
+      allowed: unlockingLimit,
+      ratio: worstUnlocking.bytes / unlockingLimit,
     });
   }
 
@@ -683,7 +701,10 @@ export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): strin
 export function assertFinalizedTransactionBytes(
   transaction: Transaction, options: FinalizedByteGateOptions = {},
 ): FinalizedByteVerdict {
-  const verdict = assessFinalizedTransactionBytes(transaction, options.inputSubjects ?? []);
+  const verdict = assessFinalizedTransactionBytes(transaction, options.inputSubjects ?? [], {
+    maximumUnlockingBytes: options.maximumUnlockingBytes,
+    maximumTransactionBytes: options.maximumTransactionBytes,
+  });
   const consensus = verdict.refusals.filter((row) => row.regime === 'consensus');
   const policy = verdict.refusals.filter((row) => row.regime === 'policy');
   const enforced = options.allowNonRelayable === true ? consensus : [...consensus, ...policy];

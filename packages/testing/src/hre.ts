@@ -266,9 +266,38 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       : sdkDeployContract(loaded as T, args, runner ?? defaultRunner(), overrides);
   }) as SolidcashEthers['deployContract'];
 
+  // ethers-compatible block surface used by Hardhat-era helpers (MistSwap `test/utilities/time.ts`):
+  //   ethers.provider.getBlockNumber() / getBlock("latest") / send("evm_mine", ...)
+  // MockNetworkProvider already implements `send` for the common evm_* methods; layer the missing
+  // getBlock* shims without mutating the underlying NetworkProvider instance.
+  const ethersProvider = provider as NetworkProvider & {
+    getBlockNumber?: () => Promise<number>;
+    getBlock?: (tag?: string | number) => Promise<{ number: number; timestamp: number; hash?: string }>;
+    getBlockHeight: () => Promise<number>;
+    getBlockTime?: () => number;
+    getBlockHash?: (height: number) => Promise<string>;
+  };
+  if (typeof ethersProvider.getBlockNumber !== 'function') {
+    ethersProvider.getBlockNumber = async (): Promise<number> => ethersProvider.getBlockHeight();
+  }
+  if (typeof ethersProvider.getBlock !== 'function') {
+    ethersProvider.getBlock = async (
+      _tag: string | number = 'latest',
+    ): Promise<{ number: number; timestamp: number; hash?: string }> => {
+      const number = await ethersProvider.getBlockHeight();
+      const timestamp = typeof ethersProvider.getBlockTime === 'function'
+        ? ethersProvider.getBlockTime()
+        : Math.floor(Date.now() / 1000);
+      const hash = typeof ethersProvider.getBlockHash === 'function'
+        ? await ethersProvider.getBlockHash(number)
+        : undefined;
+      return { number, timestamp, hash };
+    };
+  }
+
   const ethers: SolidcashEthers = {
     ...ethersUtils,
-    provider,
+    provider: ethersProvider,
     getSigners,
     getSigner: async (index = 0, o = {}): Promise<Signer> => {
       const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };

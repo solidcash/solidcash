@@ -1,7 +1,7 @@
 import { binToHex, decodeTransactionUnsafe, hexToBin } from '@bitauth/libauth';
 import { type Artifact, type StateValue, type EventDefinitionAbi, type StateLayout } from '@solidcash/utils';
 import { DebugResults } from '../debugging.js';
-import { tryParseEventCommitment } from '../stateful/StateReader.js';
+import { tryParseEventCommitment, valuesEqual } from '../stateful/StateReader.js';
 import type { ExtractEventNames, EventMatcherArgs, EmittingContract } from '../types/event-inference.js';
 
 // Untyped fallback for the runtime implementation
@@ -40,6 +40,41 @@ interface ArtifactHolder {
 function getArtifact(contract: EmittingContract): ArtifactHolder {
   return (contract as any).artifact ?? (contract as any).inner?.artifact
     ?? (contract as any).implementation?.inner?.artifact ?? {};
+}
+
+/**
+ * Event definitions for `toEmit`. Prefer `artifact.events`; when empty (common for Solidity-compat
+ * ERC20Mock where parent OZ events were not re-hosted), reconstruct from ABI `emits` annotations.
+ * Standard ERC20 names are applied when the signature matches so `.withArgs(from, to, value)` works.
+ */
+function resolveEventDefinitions(art: ArtifactHolder & {
+  abi?: readonly { emits?: readonly { eventName: string; eventSignature: string }[] }[];
+}): EventDefinitionAbi[] {
+  if (art.events && art.events.length > 0) return [...art.events];
+  const bySig = new Map<string, EventDefinitionAbi>();
+  const standardNames: Record<string, string[]> = {
+    'Transfer(address,address,uint256)': ['from', 'to', 'value'],
+    'Approval(address,address,uint256)': ['owner', 'spender', 'value'],
+  };
+  for (const fn of art.abi ?? []) {
+    for (const emitted of fn.emits ?? []) {
+      if (bySig.has(emitted.eventSignature)) continue;
+      const match = emitted.eventSignature.match(/^(\w+)\((.*)\)$/);
+      const types = (match?.[2] ?? '').split(',').map((t) => t.trim()).filter(Boolean);
+      const names = standardNames[emitted.eventSignature]
+        ?? types.map((_, i) => `arg${i}`);
+      bySig.set(emitted.eventSignature, {
+        name: emitted.eventName,
+        signature: emitted.eventSignature,
+        parameters: types.map((type, i) => ({
+          name: names[i] ?? `arg${i}`,
+          type,
+          ...(type === 'address' && i < 2 ? { indexed: true } : {}),
+        })),
+      });
+    }
+  }
+  return [...bySig.values()];
 }
 
 interface Debuggable {
@@ -248,9 +283,12 @@ expect.extend({
   ) {
     const matcherHint = this.utils.matcherHint('toEmit', 'transaction', `contract, '${eventName}'`, { isNot: this.isNot });
 
-    // Find the event definition in the contract's artifact
+    // Find the event definition in the contract's artifact. Some Solidity-compat artifacts (e.g. OZ ERC20Mock)
+    // emit Transfer/Approval via ABI `emits` but leave `artifact.events` empty when parent event definitions
+    // were not re-hosted onto the child. Reconstruct a minimal definition from emit signatures so MistSwap's
+    // `expect(...).to.emit(token, "Transfer")` still works.
     const art = getArtifact(contract);
-    const eventDefs = art.events ?? [];
+    const eventDefs = resolveEventDefinitions(art);
     const eventDef = eventDefs.find((e) => e.name === eventName);
     if (!eventDef) {
       const available = eventDefs.map((e) => e.name).join(', ') || 'none';
@@ -381,22 +419,7 @@ expect.extend({
   },
 });
 
-function valuesEqual(a: StateValue, b: StateValue): boolean {
-  if (a instanceof Uint8Array && b instanceof Uint8Array) {
-    return a.length === b.length && a.every((v, i) => v === b[i]);
-  }
-  if (typeof a === 'object' && typeof b === 'object' && a !== null && b !== null
-    && !(a instanceof Uint8Array) && !(b instanceof Uint8Array)) {
-    const aKeys = Object.keys(a as Record<string, StateValue>);
-    const bKeys = Object.keys(b as Record<string, StateValue>);
-    if (aKeys.length !== bKeys.length) return false;
-    return aKeys.every((k) => valuesEqual(
-      (a as Record<string, StateValue>)[k],
-      (b as Record<string, StateValue>)[k],
-    ));
-  }
-  return a === b;
-}
+// valuesEqual is imported from StateReader (address CashAddress vs locking-bytecode coercion).
 
 function formatValue(v: StateValue): string {
   if (v instanceof Uint8Array) return `0x${binToHex(v)}`;

@@ -9,7 +9,7 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, randomUtxo } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
 import { registerDeployment } from './deployment-registry.js';
 
@@ -137,6 +137,22 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
 
+    // Pure / library contracts (no CashToken state): inject a zero-width stateLayout so they can still
+    // go through StatefulContract.deploy + the dispatch Proxy (MistSwap ChainlinkOracleV2 / RewarderBrokenMock
+    // call pure/view methods as `oracle.getDataParameter(...)` / `peek(...)`).
+    const dataNftCount = this.artifact.stateLayout?.dataNftCount ?? 0;
+    const deployArtifact = (!this.artifact.stateLayout || dataNftCount === 0)
+      ? {
+        ...this.artifact,
+        stateLayout: this.artifact.stateLayout ?? {
+          variables: [],
+          dataNftCount: 0,
+          commitmentLimit: 128,
+          collections: [],
+        },
+      } as T
+      : this.artifact;
+
     let { fundingUtxo, funder, changeAddress } = overrides;
     if (!fundingUtxo) {
       if (!signer) {
@@ -146,8 +162,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
         );
       }
       const verifierCount = overrides.messageBusVerificationInputCount
-        ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
-      fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact, new Set(), 1 + verifierCount);
+        ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
+      fundingUtxo = await selectGenesisFundingUtxo(signer, deployArtifact, new Set(), 1 + verifierCount);
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
     }
@@ -173,7 +189,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
           }).address,
         ),
       }] : undefined);
-      result = await StatefulContract.deploy<T>(this.artifact, constructorArgs, {
+      result = await StatefulContract.deploy<T>(deployArtifact, constructorArgs, {
         provider,
         fundingUtxo,
         funder,
@@ -195,7 +211,14 @@ export class ContractFactory<T extends Artifact = Artifact> {
 
     const contract = result.contract as DeployedContract<T>;
     if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
-    if (signer) (contract as StatefulContract)._logicalNonceSigner = signer;
+    // Bind the deploying Signer as both the logical-nonce source AND the call funder. Without `_signer`,
+    // a post-deploy call that reads msg.sender / tx.origin (Ownable.onlyOwner, ERC20.approve, mint, ...)
+    // falls back to P2SH32 OP_TRUE dummy funders, so emitTxOrigin sees no native P2PKH input and the
+    // covenant OP_VERIFYs an empty origin (MistSwap SushiToken mint/approve/renounceOwnership).
+    if (signer) {
+      (contract as StatefulContract)._logicalNonceSigner = signer;
+      (contract as StatefulContract)._signer = signer;
+    }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {

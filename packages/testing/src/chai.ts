@@ -31,10 +31,42 @@ function normalizeAddressPair(actual: any, expected: any): [any, any] {
   return [actual, expected];
 }
 
+const isNumericString = (v: unknown): v is string => typeof v === 'string' && /^-?\d+$/.test(v);
+
+/** ethers-v5 BigNumber / testing-shim BigNumber / BN.js duck-type. */
+const isBigNumberishObject = (v: unknown): boolean => {
+  if (v === null || typeof v !== 'object' || v instanceof Uint8Array) return false;
+  const o = v as { toBigInt?: unknown; _isBigNumber?: unknown; _value?: unknown };
+  return typeof o.toBigInt === 'function' || o._isBigNumber === true || typeof o._value === 'bigint';
+};
+
+const isNumericLike = (v: unknown): boolean =>
+  typeof v === 'bigint' || typeof v === 'number' || isNumericString(v) || isBigNumberishObject(v);
+
+/** Normalize hex string / Uint8Array so `expect(bytes).to.equal(hexlify(...))` and reverse work. */
+function normalizeBytesPair(actual: any, expected: any): [any, any] {
+  const toBytes = (v: unknown): Uint8Array | null => {
+    if (v instanceof Uint8Array) return v;
+    if (typeof v === 'string' && /^0x[0-9a-fA-F]*$/i.test(v)) {
+      const hex = v.length % 2 === 0 ? v.slice(2) : `0${v.slice(2)}`;
+      const out = new Uint8Array(hex.length / 2);
+      for (let i = 0; i < out.length; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+      return out;
+    }
+    return null;
+  };
+  const ab = toBytes(actual);
+  const eb = toBytes(expected);
+  if (ab && eb) return [ab, eb];
+  return [actual, expected];
+}
+
 /** Apply Hardhat's address and integer coercions recursively for `.deep.equal(...)` struct/array comparisons. */
 function normalizeDeepPair(actual: any, expected: any): [any, any] {
   let [a, e] = normalizeAddressPair(actual, expected);
-  if ((typeof a === 'bigint' && typeof e === 'number') || (typeof a === 'number' && typeof e === 'bigint')) {
+  [a, e] = normalizeBytesPair(a, e);
+  // bigint ↔ number ↔ numeric-string ↔ ethers BigNumber (MistSwap `expect(x).to.equal(getBigNumber(...))`).
+  if (isNumericLike(a) && isNumericLike(e)) {
     return [big(a), big(e)];
   }
   if (Array.isArray(a) && Array.isArray(e)) {
@@ -69,11 +101,21 @@ function ensureVitest(): any {
   return vexpect;
 }
 
-type Numeric = bigint | number;
-function big(v: Numeric | { toBigInt(): bigint }): bigint {
+type Numeric = bigint | number | string;
+function big(v: Numeric | { toBigInt(): bigint } | object): bigint {
   if (typeof v === 'bigint') return v;
   if (typeof v === 'number') return BigInt(Math.trunc(v));
-  if (v && typeof (v as any).toBigInt === 'function') return (v as any).toBigInt();
+  if (typeof v === 'string' && /^-?\d+$/.test(v)) return BigInt(v);
+  if (v && typeof (v as { toBigInt?: () => bigint }).toBigInt === 'function') {
+    return (v as { toBigInt: () => bigint }).toBigInt();
+  }
+  if (v && typeof (v as { _value?: unknown })._value === 'bigint') {
+    return (v as { _value: bigint })._value;
+  }
+  if (v && (v as { _isBigNumber?: boolean })._isBigNumber === true
+    && typeof (v as { _hex?: string })._hex === 'string') {
+    return BigInt((v as { _hex: string })._hex);
+  }
   return BigInt(v as any);
 }
 
@@ -129,6 +171,20 @@ async function sumToken(category: string, account: any): Promise<bigint> {
     .reduce((s: bigint, u: any) => s + (u.token?.amount ?? 0n), 0n);
 }
 
+/** Resolve an account handle to a CashAddress / locking-bytecode key for ERC20 balanceOf. */
+async function accountAddress(account: any): Promise<string> {
+  if (typeof account === 'string') return account;
+  if (typeof account?.getAddress === 'function') return account.getAddress();
+  if (typeof account?.address === 'string') return account.address;
+  throw new Error('changeTokenBalance(s): cannot resolve account address');
+}
+
+/** Waffle-style ERC20 balance via `token.balanceOf(account)`. */
+async function erc20Balance(token: any, account: any): Promise<bigint> {
+  const addr = await accountAddress(account);
+  return big(await token.balanceOf(addr));
+}
+
 async function runAction(action: any): Promise<void> {
   const result = typeof action === 'function' ? action() : action;
   if (result && typeof result.then === 'function') await result;
@@ -137,8 +193,24 @@ async function runAction(action: any): Promise<void> {
 /** Ordered event field names from a contract's artifact, for positional `.withArgs`. */
 function eventFieldNames(contract: any, eventName: string): string[] {
   const art = contract?.artifact ?? contract?.inner?.artifact ?? contract?.implementation?.inner?.artifact ?? {};
-  const def = (art.events ?? []).find((e: any) => e.name === eventName);
-  return (def?.inputs ?? []).map((i: any) => i.name);
+  const fromEvents = (art.events ?? []).find((e: any) => e.name === eventName);
+  if (fromEvents?.parameters?.length) return fromEvents.parameters.map((i: any) => i.name);
+  if (fromEvents?.inputs?.length) return fromEvents.inputs.map((i: any) => i.name);
+  // Fallback when artifact.events is empty: reconstruct from ABI emits (ERC20Mock / OZ parents).
+  const standardNames: Record<string, string[]> = {
+    'Transfer(address,address,uint256)': ['from', 'to', 'value'],
+    'Approval(address,address,uint256)': ['owner', 'spender', 'value'],
+  };
+  for (const fn of art.abi ?? []) {
+    for (const emitted of fn.emits ?? []) {
+      if (emitted.eventName !== eventName) continue;
+      if (standardNames[emitted.eventSignature]) return standardNames[emitted.eventSignature];
+      const match = String(emitted.eventSignature).match(/^\w+\((.*)\)$/);
+      const types = (match?.[1] ?? '').split(',').map((t: string) => t.trim()).filter(Boolean);
+      return types.map((_: string, i: number) => `arg${i}`);
+    }
+  }
+  return [];
 }
 
 class EmitAssertion implements PromiseLike<void> {
@@ -201,13 +273,9 @@ class Assertion {
 
   // --- equality ---
   equal(expected: any): this {
-    let [a, e] = normalizeDeepPair(this.actual, expected);
-    // Hardhat's chai matchers treat integer-like JS numbers and ethers bigint results as the same numeric value.
-    // Preserve strict equality for all other values while allowing unchanged Solidity tests to use either form.
-    if ((typeof a === 'bigint' && typeof e === 'number') || (typeof a === 'number' && typeof e === 'bigint')) {
-      a = big(a);
-      e = big(e);
-    }
+    // normalizeDeepPair already coerces bigint/number/numeric-string pairs (ethers BigNumber era:
+    // `expect(totalSupply).to.equal("1100")`).
+    const [a, e] = normalizeDeepPair(this.actual, expected);
     const ev = ensureVitest();
     (this.negate ? ev(a).not : ev(a)).toEqual(e);
     return this;
@@ -378,20 +446,37 @@ class Assertion {
     });
   }
 
-  async changeTokenBalance(category: string, account: any, delta: Numeric): Promise<void> {
-    const before = await sumToken(category, account);
+  /**
+   * Waffle `changeTokenBalance(token, account, delta)` when `token.balanceOf` exists; otherwise treat the first
+   * argument as a CashToken category id and sum FT amounts on the account's UTXOs.
+   */
+  async changeTokenBalance(tokenOrCategory: any, account: any, delta: Numeric): Promise<void> {
+    const isErc20 = typeof tokenOrCategory?.balanceOf === 'function';
+    const before = isErc20
+      ? await erc20Balance(tokenOrCategory, account)
+      : await sumToken(tokenOrCategory, account);
     await runAction(this.actual);
-    const after = await sumToken(category, account);
+    const after = isErc20
+      ? await erc20Balance(tokenOrCategory, account)
+      : await sumToken(tokenOrCategory, account);
     const got = after - before;
     if ((got === big(delta)) === this.negate) {
       throw new Error(`expected token balance change ${this.negate ? 'not ' : ''}${delta}, got ${got}`);
     }
   }
 
-  async changeTokenBalances(category: string, accounts: any[], deltas: Numeric[]): Promise<void> {
-    const before = await Promise.all(accounts.map((a) => sumToken(category, a)));
+  /**
+   * Waffle `changeTokenBalances(token, accounts, deltas)` (ERC20Mock MistSwap tests) or category-id FT form.
+   */
+  async changeTokenBalances(tokenOrCategory: any, accounts: any[], deltas: Numeric[]): Promise<void> {
+    const isErc20 = typeof tokenOrCategory?.balanceOf === 'function';
+    const before = await Promise.all(accounts.map((a) => (isErc20
+      ? erc20Balance(tokenOrCategory, a)
+      : sumToken(tokenOrCategory, a))));
     await runAction(this.actual);
-    const after = await Promise.all(accounts.map((a) => sumToken(category, a)));
+    const after = await Promise.all(accounts.map((a) => (isErc20
+      ? erc20Balance(tokenOrCategory, a)
+      : sumToken(tokenOrCategory, a))));
     accounts.forEach((_, i) => {
       const got = after[i] - before[i];
       if (got !== big(deltas[i])) throw new Error(`account[${i}] expected token change ${deltas[i]}, got ${got}`);

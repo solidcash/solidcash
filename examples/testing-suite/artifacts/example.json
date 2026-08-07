@@ -13,10 +13,10 @@
       ]
     }
   ],
-  "bytecode": "OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTBIN OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP OP_0 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL",
+  "bytecode": "OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL",
   "source": "contract Example() {\n  function test(int value) {\n    console.log(value, \"test\");\n    require(value == 1, \"Wrong value passed\");\n  }\n}\n",
   "debug": {
-    "bytecode": "76765102ff00989301218001207f77008875519c",
+    "bytecode": "76765102ff008d9301218001207f7701008875519c",
     "sourceMap": "2:16:2:25;;;;;;;;;;;;;;4:21:4:22;:4::46:1",
     "logs": [
       {
@@ -40,7 +40,7 @@
       }
     ]
   },
-  "fingerprint": "75a5b95ae8bec1ed7b706514abfc963292c094ff875f3f19d128b4b9c07eadcb",
+  "fingerprint": "94e416504230dbd4ab77bfbe23a6518120a6575169e598e6ed4e864fa417f8e4",
   "compiler": {
     "name": "solidc",
     "version": "0.13.1",
@@ -48,10 +48,10 @@
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,
       "commitmentLimit": 128,
-      "messageBus": true
+      "messageBus": false
     }
   },
-  "updatedAt": "2026-08-05T19:14:54.315Z",
+  "updatedAt": "2026-08-06T22:05:53.354Z",
   "invocationAnalysis": {
     "version": 1,
     "protocolVersions": [
@@ -87,12 +87,5 @@
         "recursive": false
       }
     ]
-  },
-  "diagnostics": [
-    {
-      "severity": "error",
-      "code": "message-bus-route-not-synthesized",
-      "message": "No message-bus route was synthesized for 'Example': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - 'test': not-examined-by-route-synthesis."
-    }
-  ]
+  }
 }

@@ -2115,8 +2115,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
+        // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
+        // a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
+        // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
+        // batch path is what mint/transfer use successfully; constructors need the same shape.
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => fixedSortedWriteCount > 1 || stateArrayLastCollections.has(collection))
+          .filter(([collection]) => fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
@@ -2744,12 +2748,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Assign sequential callIndex to each low-level call node (updates callMode in array)
         this.assignLowLevelCallIndices(node.body, { counter: 0 });
 
-        // Inject _callInputIndex parameter(s) - only for non-stateful contracts.
-        // Stateful contracts use block layout offsets instead.
-        // Skip delegatecall (proxy doesn't verify delegate's calldata).
-        if (this.isStatefulContract) {
-          // Block layout provides the offset - no _callInputIndex needed
-        } else for (let i = 0; i < lowLevelCallCount; i++) {
+        // Inject _callInputIndex for every non-delegatecall low-level call.
+        // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
+        // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
+        // collides with the caller's trailing region (dynamic chunks, C2 batch preds). A runtime index
+        // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
+        // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
+        for (let i = 0; i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls![i].callMode === 'delegatecall') continue;
           const paramName = lowLevelCallCount === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${i}`;
           const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
@@ -11654,15 +11659,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'returnEvent', offset: offset++ });
     }
 
-    // Low-level call slots. In a balanced message-bus batch block, a delegate is a real
-    // co-spent covenant paired with its preserved output just like other
-    // low-level callees; direct wrappers continue to use their positional
-    // delegate-input witness.
+    // Low-level call slots. Ordinary address.call / staticcall use a runtime __internal__callInputIndex
+    // witness (see visitFunctionDefinition) so multi-UTXO callees can sit after the caller's trailing
+    // region. Only delegatecall keeps a fixed layout slot (paired with proxy co-spend geometry).
+    // In a balanced message-bus batch block, a delegate is a real co-spent covenant paired with its
+    // preserved output; direct wrappers continue to use their positional delegate-input witness.
     if (node.lowLevelCalls) {
       for (let i = 0; i < node.lowLevelCalls.length; i++) {
         // Direct delegate implementations already own a reserved slot next to the data-NFT region above.
         if (node.lowLevelCalls[i].callMode === 'delegatecall'
           && !node.graphEmissionHandler && !node.messageBusRoute) continue;
+        // Non-delegatecall: runtime callInputIndex, no fixed slot.
+        if (node.lowLevelCalls[i].callMode !== 'delegatecall') continue;
         slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
       }
     }

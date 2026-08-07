@@ -94,10 +94,10 @@ export default {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
       commitmentLimit: 128,
-      messageBus: true,
+      messageBus: false,
     },
   },
-  updatedAt: '2026-08-05T19:14:54.622Z',
+  updatedAt: '2026-08-06T22:05:53.617Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [
@@ -160,11 +160,4 @@ export default {
       },
     ],
   },
-  diagnostics: [
-    {
-      severity: 'error',
-      code: 'message-bus-route-not-synthesized',
-      message: 'No message-bus route was synthesized for \'TransferWithTimeout\': it has no message-bus batch entry point and cannot participate in a message bus. Only the direct per-function route exists. Rejected entry points - \'transfer\': not-examined-by-route-synthesis; \'timeout\': not-examined-by-route-synthesis.',
-    },
-  ],
 } as const;

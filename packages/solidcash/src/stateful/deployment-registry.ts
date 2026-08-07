@@ -49,3 +49,21 @@ export function findDeploymentByLockingBytecode(
   }
   return undefined;
 }
+
+/**
+ * Find the most recently deployed contract whose ABI exposes `functionName`.
+ * Used when an external call is typed as an interface (e.g. IERC20.balanceOf) but
+ * Hardhat suites only registered the concrete mock (ERC20Mock) under its own name.
+ */
+export function findDeploymentImplementing(
+  provider: NetworkProvider, functionName: string,
+): RegisteredDeployment | undefined {
+  const current = deployments.get(provider) ?? [];
+  for (let index = current.length - 1; index >= 0; index--) {
+    const entry = current[index];
+    const artifact = (entry.contract as { inner?: { artifact?: { abi?: readonly { name?: string }[] } } })
+      ?.inner?.artifact;
+    if (artifact?.abi?.some((fn) => fn.name === functionName)) return entry;
+  }
+  return undefined;
+}

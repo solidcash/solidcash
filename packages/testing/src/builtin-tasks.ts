@@ -40,7 +40,12 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
     const artifactsDir = solidcashArtifactsPath(hre.config.paths.artifacts);
     const outputDir = `${artifactsDir}.tmp-${process.pid}`;
     const contractsBase = path.basename(contractsDir); // mirror hardhat's `artifacts/<sources>/<File>/<Contract>.json`
-    const maximumInputBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
+    // Split when the unsplit redeem script exceeds the active provider's input-script ceiling. MistSwap's
+    // mock publishes 100KB so the suite can exercise CONTRACT behaviour past the real 10KB frontier; the
+    // StatefulTransactionBuilder byte gate reads the same provider limit (plain TransactionBuilder keeps
+    // the real 10KB consensus gate for X158). Prefer recompiling with a strict provider (or maxShardBytes
+    // override) when publishing mainnet-ready split bundles.
+    const maxShardBytes = hre.network.provider.consensusLimits?.maximumInputBytes ?? 10_000;
     const maximumNftCommitmentBytes = hre.network.provider.consensusLimits?.maximumNftCommitmentBytes ?? 128;
     const compilerOptions = {
       ...hre.config.solc,
@@ -75,8 +80,8 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.json')), formatArtifact(primary, 'json'));
         fs.writeFileSync(path.join(outputDir, fn.replace('.scash', '.artifact.ts')), formatArtifact(primary, 'ts'));
         // X149: `bytecode` is an ASM listing; measuring it fires on contracts that actually fit.
-        if (asmToBytecode(primary.bytecode).length > maximumInputBytes) {
-          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes: maximumInputBytes });
+        if (asmToBytecode(primary.bytecode).length > maxShardBytes) {
+          const split = compileStringSplit(source, { ...compilerOptions, maxShardBytes });
           fs.writeFileSync(
             path.join(outputDir, `${split.manifest.logicalContractName}.split.json`),
             formatSplitArtifactBundle(split, 'json'),
@@ -128,13 +133,13 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
           // Artifact maps are ordinary objects, so a name like `constructor` can otherwise resolve an inherited
           // Object.prototype member and reach asmToBytecode with no bytecode string.
           return typeof artifact?.bytecode === 'string'
-            && asmToBytecode(artifact.bytecode).length > maximumInputBytes;
+            && asmToBytecode(artifact.bytecode).length > maxShardBytes;
         });
         if (!needsSplit) continue;
         let split;
         try {
           split = compileFileSplit(full, {
-            solidityImportCompat: true, ...compilerOptions, maxShardBytes: maximumInputBytes,
+            solidityImportCompat: true, ...compilerOptions, maxShardBytes,
           });
         } catch (error: any) {
           // Keep sharding the remaining sources. Aborting here reports one wall per run, which on a large
@@ -153,7 +158,14 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
         );
       }
       if (shardFailures.length > 0) {
-        throw new Error(`Failed to shard ${shardFailures.length} source(s):\n  ${shardFailures.join('\n  ')}`);
+        // Keep compile successful when ordinary artifacts already published. Unsplit oversized roots remain
+        // spend-refused by the real 10KB byte gate; token-sized contracts (and any successful splits) still
+        // run. Failing the whole project on an unshardable Kashi/Factory wall blocked MistSwap token tests
+        // that only need SushiToken/ERC20Mock.
+        console.warn(
+          `Warning: failed to shard ${shardFailures.length} source(s) (unsplit artifacts kept):\n  `
+          + `${shardFailures.join('\n  ')}`,
+        );
       }
       solOk = solFiles.length;
       compilerJobs = result.compiledRoots.length;

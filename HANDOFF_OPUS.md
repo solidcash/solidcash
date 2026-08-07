@@ -1743,3 +1743,18 @@ baseline is therefore **53 failures / 21 files**, and solidc **15 / 6**.
 (Method note for re-running this: `git checkout <ref> -- <path>` STAGES what it fetches, so restore with
 `git checkout HEAD -- <path>`, never a bare `git checkout -- <path>`, which would restore from the index and
 silently wipe the working changes.)
+
+### Next blocker: input 102, and what is already ruled out
+
+The failing trace at input 102 iterates a body carrying a `53434231` ("SCB1") magic-prefixed item alongside a
+`4b6685e7020000000000` value, and splits 1 byte off an item that is EMPTY.
+
+Already ruled out: the `users` collection witness is populated and sound (`nested-value-witness` reports
+`rootMatches: true`, storedLength 106), so this is NOT the read-side witness family fixed in 5e1b7163, despite
+the empty-item signature suggesting it. Look instead for a SECOND witness/decode site whose source is empty on
+an INSERT specifically - the marketplace path under test creates a brand-new job, so any decode that assumes a
+pre-existing value will see nothing. `emitGenericPushdataDecode` is the likely shape (its length prefix is a
+1-byte split, matching "requested split index: 1").
+
+Suggested first move: dump input 102's unlocking-script arguments and identify which one is empty, rather than
+reading the body - the body is shared and the empty ARGUMENT is the actual defect.

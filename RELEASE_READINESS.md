@@ -357,6 +357,11 @@ it must not silently compile to incorrect covenant behavior.
     deterministic in (deployer, nonce) and the suite reuses one key at nonce 0, so every historical run left
     another anchor at the same address. That is test contamination, not a protocol fault: a real deployer
     consumes each nonce once.
+  - Verified on BCHN v29 against a chain already carrying the historical anchors: `ContractFactory` passes 9/9
+    and `UpgradesDeployProxy` passes. `LargeContractSplitting` no longer reports an identity error at all; it now
+    exceeds its 180-second budget instead, which is the same performance class as the `AtomicMessageBus`
+    timeouts and not an identity fault. Note that two regtest suites run concurrently against the one shared node
+    produce `txn-mempool-conflict`, so a contended run cannot be read as a result.
   - Also hardened while here: the identity used p2sh20. A 160-bit script hash offers only about 2^80 collision
     resistance, so a second seed hashing alike would let an attacker present a different deployer/nonce for the
     same logical address. It is now p2sh32, matching the project rule that stateful features never take a p2sh20

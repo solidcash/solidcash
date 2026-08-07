@@ -2143,3 +2143,26 @@ elsewhere rather than forcing an off-chain evaluation.
 
 Everything else at this site is now instrumented and accounted for: 26 entry slots visited, 23 pick, and the
 3-slot gap is fully explained by unresolvable expression labels.
+
+### The remaining three are PER-ROW keys, and the fix resolves only row 0
+
+Labels (added to the `key-sources` probe):
+
+    slotIndex  4  jobEvents    AbiDecodeAtNode{data=id:rowArgs,index=0,schema=[,,]}   -> PICKS
+    slotIndex  9  userReviews  AbiDecodeAtNode{data=id:rowArgs,index=0,schema=[,,]}   -> does NOT pick
+    slotIndex 10  jobEvents    AbiDecodeAtNode{data=id:rowArgs,index=0,schema=[,]}    -> does NOT pick
+    slotIndex 11  userReviews  AbiDecodeAtNode{data=id:rowArgs,index=0,schema=[,]}    -> does NOT pick
+
+Slots 4 and 9 carry the SAME label yet behave differently, so the label shape is not the discriminator. The
+neighbouring param-keyed labels give it away: `__message_bus_key_users_0_r0`, `..._r1`, `..._r2` - these are
+message-bus BATCH ROWS. The key is decoded from `rowArgs`, i.e. per-row data, but `evalComputedKey` is being
+handed `routePlanningArgs` - one flat arg list for the whole route. It therefore resolves the row-0 access
+(slot 4) and returns undefined for the later rows (9, 10, 11).
+
+**So the fix as landed is right in mechanism and wrong in scope:** it must evaluate the label against THAT
+ROW's args, not the route's planning args. The row is already identifiable at the pick site - the same `_rN`
+suffix convention appears on sibling accesses, and `graphBlockhashSelections` on the group carries `rowArgs`
+per row (see the ExternalCallUtxoGroup type). Thread the row's args into the `evalComputedKey` call and all
+four (4, 9, 10, 11) should resolve by the same mechanism.
+
+That is a small, well-defined change, and it is the last known blocker for `post job 1`.

@@ -10889,6 +10889,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                           slotIndex: slot.slotIndex,
                           collection: access.collection,
                           kinds: keySources.map((src) => src.kind).join(','),
+                          labels: keySources.map((src) => ('expressionLabel' in src
+                            ? src.expressionLabel : src.paramName) ?? '?').join(' | '),
                         });
                       }
                       const keys = keySources.map((source, keyIndex) => {

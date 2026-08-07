@@ -1928,3 +1928,24 @@ this one-slot skew.
 
 Three suspects have now been falsified in order - wrong input base, surplus input, wrong witness - each by
 direct measurement. Do not re-open them.
+
+### Entry-slot mapping measured: `blockSlot = routeSlot + 3`, with GAPS
+
+`nested-entry-pick` for group 0, all with `exists: false` (every key is new in this test):
+
+    users/routeSlot 0 -> blockSlot 3    arbitrators/1 -> 4    meceTags/2 -> 5    jobEvents/3 -> 6
+    users/routeSlot 5 -> blockSlot 8    arbitrators/6 -> 9    ...
+
+The +3 offset is consistent, so the base is fine. But **routeSlot 4 is absent** - the SDK never picks it, and
+blockSlot 7 is consequently backfilled with a funder (`7:entry/plain` in the block dump). The same shape
+recurs at the failure: blockSlot 20 = routeSlot 17 holds a FUNDER, while the users entry the covenant wants
+sits at blockSlot 21 = routeSlot 18.
+
+`exists: false` is the thread to pull. For a non-existent key the SDK supplies the PREDECESSOR entry (the
+absence-bracket proof); when the predecessor lookup yields nothing it falls back to a funder. So the question
+is why routeSlot 17's access resolves to no predecessor while routeSlot 18's resolves to the users entry -
+i.e. whether two accesses are competing for one entry and one of them is silently losing it. That would
+explain both the skipped routeSlot 4 and the failure at 17, as the same bug appearing twice.
+
+Start at the `nested-entry-pick` site: log the KEY each routeSlot resolves and the predecessor it finds, then
+compare routeSlot 17 and 18. If they resolve the same key, the duplicate-access case is the bug.

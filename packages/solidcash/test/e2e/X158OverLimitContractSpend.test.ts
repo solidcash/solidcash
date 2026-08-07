@@ -29,7 +29,7 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
  *
  * On the `Bulk` family below the overhead is 125 bytes - 21 for the `bytes20` constructor push, 3 for the
  * OP_PUSHDATA2 redeem prefix, 34 for the pubkey, 66 for the signature, 1 for `k` - so the true boundary sits
- * at 9,881 script bytes, 119 below the compiler's threshold. Rows 1 and 2 are that boundary to the byte, and
+ * at 9,879 script bytes, 121 below the compiler's threshold. Rows 1 and 2 are that boundary to the byte, and
  * the compiler is SILENT on both: `artifact.diagnostics` is undefined for a contract every spend of which is
  * invalid at consensus. That band is what no compile-time check can reach, because at compile time the call
  * arguments do not exist yet.
@@ -145,8 +145,8 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
   it('0. the pair differs in size ONLY, and the compiler is silent on both', () => {
     // Both sides are the same contract with one statement more or less. Neither carries a diagnostic: the
     // compiler's check is on the un-constructed script and both are under its 10,000-byte threshold.
-    expect(asmToBytecode(OVER.bytecode).length).toBe(9881);
-    expect(asmToBytecode(UNDER.bytecode).length).toBe(9869);
+    expect(asmToBytecode(OVER.bytecode).length).toBe(9879);
+    expect(asmToBytecode(UNDER.bytecode).length).toBe(9867);
     expect(OVER.diagnostics).toBeUndefined();
     expect(UNDER.diagnostics).toBeUndefined();
     // The unit trap that produced five wrong measurements: `artifact.bytecode` is an ASM LISTING, so its
@@ -157,14 +157,14 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
 
   it('1. REFUSES the spend at the contract input, naming the contract and the overage', async () => {
     const { builder, unlockingBytes } = await bulkSpend(OVER);
-    // 9,881 script + 21 constructor push + 3 redeem prefix + 34 pubkey + 66 signature + 1 for `k` = 10,006.
-    expect(unlockingBytes).toBe(10_006);
+    // 9,879 script + 21 constructor push + 3 redeem prefix + 34 pubkey + 66 signature + 1 for `k` = 10,004.
+    expect(unlockingBytes).toBe(10_004);
     const message = await sendError(builder);
     expect(message).toMatch(/\[consensus\] consensus-unlocking-bytes at input 0/);
-    expect(message).toMatch(/10006 unlocking bytecode bytes is 6 over the 10000-byte per-input script limit/);
+    expect(message).toMatch(/10004 unlocking bytecode bytes is 4 over the 10000-byte per-input script limit/);
     // The contract by name, and where its bytes went - an index alone does not say which contract to shrink.
-    expect(message).toMatch(/it spends contract 'Bulk', whose 9902-byte redeem script fits the limit on its own/);
-    expect(message).toMatch(/leaves only 98 bytes for the 104 bytes of arguments and redeem push/);
+    expect(message).toMatch(/it spends contract 'Bulk', whose 9900-byte redeem script fits the limit on its own/);
+    expect(message).toMatch(/leaves only 100 bytes for the 104 bytes of arguments and redeem push/);
     // Exactly one rule fired: a refusal that also tripped dust or size would prove nothing about this one.
     expect(message).toMatch(/refused by 1 byte rule\(s\)/);
   }, 300_000);
@@ -173,7 +173,7 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
     // Differs from row 1 in the repetition count alone: same constructor argument, same call arguments, same
     // output, same provider profile. Row 1 therefore measures the 10,000-byte ceiling and not the shape.
     const { builder, unlockingBytes } = await bulkSpend(UNDER);
-    expect(unlockingBytes).toBe(9_994);
+    expect(unlockingBytes).toBe(9_992);
     await expect(builder.send()).resolves.toBeDefined();
   }, 300_000);
 
@@ -198,16 +198,16 @@ describe('X158 - the over-limit refusal at the spend boundary', () => {
   }, 300_000);
 
   it('4. a contract over the limit ON ITS OWN reports that instead, with its own arithmetic', async () => {
-    // The plain case the compiler DOES see: 930 statements is 10,001 script bytes, so `contract-size-limit`
+    // The plain case the compiler DOES see: 931 statements is 10,012 script bytes, so `contract-size-limit`
     // fires at compile time. The spend refusal then reports the redeem script as already over, rather than
     // claiming the arguments pushed it over.
-    const huge = compileString(source(930));
+    const huge = compileString(source(931));
     expect(huge.diagnostics?.[0].code).toBe('contract-size-limit');
     const { builder } = await bulkSpend(huge);
     const message = await sendError(builder);
-    expect(message).toMatch(/10126 unlocking bytecode bytes is 126 over the 10000-byte per-input script limit/);
+    expect(message).toMatch(/10137 unlocking bytecode bytes is 137 over the 10000-byte per-input script limit/);
     expect(message).toMatch(
-      /it spends contract 'Bulk', whose redeem script is 10022 bytes on its own - already 22 over the limit/,
+      /it spends contract 'Bulk', whose redeem script is 10033 bytes on its own - already 33 over the limit/,
     );
     expect(message).toMatch(/before any of its 104 bytes of arguments and redeem push/);
   }, 300_000);

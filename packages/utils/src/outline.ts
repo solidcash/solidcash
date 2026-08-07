@@ -34,8 +34,20 @@ const BARRIER_OPS = new Set<number>([
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
 ]);
 
-// Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
-const MINIMUM_WINDOW_ELEMENTS = 8;
+/**
+ * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
+ *
+ * Was 8, calibrated when an identifier cost a three-byte push and a site therefore cost four bytes. Ids now
+ * come from a single-byte pool first, so a site costs two and shorter spans start paying: purely on size, 5 is
+ * the optimum (90,395 -> 89,930 on the corpus, and independently 5,503 -> 5,470 on the real-world examples).
+ *
+ * 7 IS THE FLOOR ANYWAY, and the reason is not size. Sharing more aggressively than that breaks machinery that
+ * reads the script's structure rather than just running it: at 5 the SDK could no longer derive a return value
+ * (`SolidityCorpusBehavior`), and split facet sizing, split call-edge unions and proxy delegate initialisers
+ * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
+ * cost model, so this takes the 262 bytes 7 is worth and leaves the rest.
+ */
+const MINIMUM_WINDOW_ELEMENTS = 7;
 // Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
 // below this width sharing one cannot repay a definition however often it repeats.
 const MINIMUM_POOLED_CONSTANT_BYTES = 6;

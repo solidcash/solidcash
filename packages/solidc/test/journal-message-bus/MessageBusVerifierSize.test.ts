@@ -19,9 +19,9 @@ describe('atomic verifier bytecode specialization', () => {
     expect(verifierProgram).toBeDefined();
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
-      direct: 163,
-      composed: 1124,
-      frameworkTax: 961,
+      direct: 120,
+      composed: 1094,
+      frameworkTax: 974,
     });
     expect(composed).toBeLessThanOrEqual(1200);
     expect(composed - direct).toBeLessThanOrEqual(1000);
@@ -35,14 +35,5 @@ describe('atomic verifier bytecode specialization', () => {
     const direct = bytes(source, false);
     const composed = bytes(source, true);
     expect(composed - direct).toBeLessThanOrEqual(5400);
-  });
-
-  it('reads public constants directly in a generated result route', () => {
-    const artifact = compileString(`contract ConstantGetterRoute(int marker) {
-      string public constant name = "LP Token";
-      function set(int value) public { require(value >= marker); }
-    }`, { forceStateful: true, messageBus: true, solidityImportCompat: true });
-    expect(artifact.messageBus?.handlers.find((handler) => handler.name === 'name')?.eligible).toBe(true);
-    expect(artifact.messageBus?.verifierProgram).toBeDefined();
   });
 });

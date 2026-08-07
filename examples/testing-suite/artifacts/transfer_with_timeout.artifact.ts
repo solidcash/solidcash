@@ -97,7 +97,7 @@ export default {
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-07T07:11:40.702Z',
+  updatedAt: '2026-08-07T14:27:55.958Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

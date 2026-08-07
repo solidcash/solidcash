@@ -34,18 +34,31 @@ const BARRIER_OPS = new Set<number>([
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
 ]);
 
-// Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
-const MINIMUM_WINDOW_ELEMENTS = 8;
+/**
+ * Smallest match considered. Below this a span cannot repay one id push plus OP_INVOKE per site.
+ *
+ * Was 8, calibrated when an identifier cost a three-byte push and a site therefore cost four bytes. Ids now
+ * come from a single-byte pool first, so a site costs two and shorter spans start paying: purely on size, 5 is
+ * the optimum (90,395 -> 89,930 on the corpus, and independently 5,503 -> 5,470 on the real-world examples).
+ *
+ * 7 IS THE FLOOR ANYWAY, and the reason is not size. Sharing more aggressively than that breaks machinery that
+ * reads the script's structure rather than just running it: at 5 the SDK could no longer derive a return value
+ * (`SolidityCorpusBehavior`), and split facet sizing, split call-edge unions and proxy delegate initialisers
+ * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
+ * cost model, so this takes the 262 bytes 7 is worth and leaves the rest.
+ */
+const MINIMUM_WINDOW_ELEMENTS = 7;
+// Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
+// below this width sharing one cannot repay a definition however often it repeats.
+const MINIMUM_POOLED_CONSTANT_BYTES = 6;
 // Candidate groups examined per round, most-repeated first. Bounds the per-round extension work.
-const CANDIDATE_GROUPS_PER_ROUND = 4096;
-// Only the strongest measured candidates enter the overlap-selection phase. Separating this from the search
-// frontier lets large lower-frequency spans compete without allowing thousands of marginal spans to crowd it.
-const PROFITABLE_CANDIDATES_PER_ROUND = 512;
+const CANDIDATE_GROUPS_PER_ROUND = 512;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
 const MAXIMUM_ROUNDS = 6;
-// Compact helper identifiers descend from -12, so an outlined id encodes in one or two VM-number bytes: a push
-// of at most three bytes. Costing every site at that width can under-state a saving but never over-state one.
+// Fallback identifier width when the caller does not report what its next allocation costs. Compact helper
+// identifiers descend from -12, so one encodes in one or two VM-number bytes: a push of at most three bytes.
+// Costing every site at that width can under-state a saving but never over-state one.
 const PROBE_IDENTIFIER_PUSH_BYTES = 3;
 // Keeps allocated identifiers inside the two-byte VM-number range the cost model above assumes.
 const MAXIMUM_OUTLINED_FUNCTIONS = 4096;
@@ -94,10 +107,6 @@ const elementKey = (element: Script[number]): string => {
   }
   return key;
 };
-
-const isParameterElement = (element: Script[number]): boolean => element instanceof Uint8Array
-  || (typeof element === 'number' && (element === Op.OP_0 || element === Op.OP_1NEGATE
-    || (element >= Op.OP_1 && element <= Op.OP_16)));
 
 /** Encoded size of one Script element, mirroring libauth's minimal `encodeDataPush`. */
 const elementByteSize = (element: Script[number]): number => {
@@ -175,32 +184,41 @@ function longestBalancedSpan(
 }
 
 interface Occurrence { body: number; start: number }
-interface CandidateOccurrence extends Occurrence {
-  parameters: Script;
-  originalBytes: number;
-}
 
 interface Candidate {
   span: Script;
   bytes: number;
-  sourceSpanLength: number;
-  parameterOffsets: number[];
-  occurrences: CandidateOccurrence[];
+  occurrences: Occurrence[];
   saved: number;
 }
 
-function candidateSavings(
-  candidate: Pick<Candidate, 'bytes'>,
-  occurrences: readonly CandidateOccurrence[],
-  idPushBytes: number,
-): number {
-  const definitionOverhead = candidate.bytes < 76 ? 1 : candidate.bytes < 256 ? 2 : 3;
-  const definitionCost = definitionOverhead + candidate.bytes + idPushBytes + 1;
-  const original = occurrences.reduce((total, occurrence) => total + occurrence.originalBytes, 0);
-  const sites = occurrences.reduce<number>((total, occurrence) => total
-    + occurrence.parameters.reduce<number>((bytes, parameter) => bytes + elementByteSize(parameter), 0)
-    + idPushBytes + 1, 0);
-  return original - definitionCost - sites;
+/** Net bytes saved by sharing `count` copies of a `bytes`-sized span behind `idPushBytes`-sized invocations. */
+function savingsOf(bytes: number, count: number, idPushBytes: number): number {
+  const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
+  const definitionCost = definitionOverhead + bytes + idPushBytes + 1; // body push + id push + OP_DEFINE
+  const siteCost = idPushBytes + 1; // id push + OP_INVOKE
+  return count * bytes - definitionCost - count * siteCost;
+}
+
+const scriptBytes = (script: Script): number =>
+  script.reduce<number>((sum, element) => sum + elementByteSize(element), 0);
+
+/**
+ * Total bytes the caller will emit for this corpus: every body verbatim, plus one
+ * `<body-push> <id-push> OP_DEFINE` per outlined function.
+ *
+ * Per-candidate savings are estimated against the corpus as it stood at the start of a round, so a round that
+ * applies several overlapping-in-effect candidates can cost more than the sum of its parts promised. Measuring
+ * the whole corpus is what lets a round be judged on its actual result rather than on that estimate.
+ */
+function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[]): number {
+  let total = bodies.reduce((sum, body) => sum + scriptBytes(body.script), 0);
+  for (const fn of functions) {
+    const bytes = scriptBytes(fn.script);
+    const definitionOverhead = bytes < 76 ? 1 : bytes < 256 ? 2 : 3;
+    total += definitionOverhead + bytes + elementByteSize(fn.id) + 1;
+  }
+  return total;
 }
 
 /**
@@ -209,10 +227,7 @@ function candidateSavings(
  * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
  * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
  */
-function findCandidates(
-  bodies: OutlineBody[], idPushBytes: number, parameterize: boolean, candidateLimit: number,
-): Candidate[] {
-  const windowElements = MINIMUM_WINDOW_ELEMENTS;
+function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[] {
   const keyIds = new Map<string, number>();
   const idOf = (element: Script[number]): number => {
     const key = elementKey(element);
@@ -223,17 +238,12 @@ function findCandidates(
     return assigned;
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
-  // In the second phase data pushes are parameters at discovery; opcodes must still match exactly. Profitability
-  // below decides whether moving the differing pushes to the callsite actually saves bytes.
-  const templateIds = bodies.map((body) => body.script.map((element) =>
-    (isParameterElement(element) ? 0 : idOf(element))));
-  const matchingIds = parameterize ? templateIds : bodyIds;
 
   const windows = new Map<number, Occurrence[]>();
-  matchingIds.forEach((ids, bodyIndex) => {
-    for (let i = 0; i + windowElements <= ids.length; i += 1) {
+  bodyIds.forEach((ids, bodyIndex) => {
+    for (let i = 0; i + MINIMUM_WINDOW_ELEMENTS <= ids.length; i += 1) {
       let hash = 0;
-      for (let j = 0; j < windowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      for (let j = 0; j < MINIMUM_WINDOW_ELEMENTS; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
       const group = windows.get(hash) ?? [];
       group.push({ body: bodyIndex, start: i });
       windows.set(hash, group);
@@ -241,32 +251,57 @@ function findCandidates(
   });
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
-  const groups: Occurrence[][] = [];
+  const groups: { occurrences: Occurrence[]; seed: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
     const exact = new Map<string, Occurrence[]>();
     for (const occurrence of bucket) {
-      const ids = matchingIds[occurrence.body];
-      const key = ids.slice(occurrence.start, occurrence.start + windowElements).join(',');
+      const ids = bodyIds[occurrence.body];
+      const key = ids.slice(occurrence.start, occurrence.start + MINIMUM_WINDOW_ELEMENTS).join(',');
       const group = exact.get(key) ?? [];
       group.push(occurrence);
       exact.set(key, group);
     }
-    for (const group of exact.values()) if (group.length >= 2) groups.push(group);
+    for (const group of exact.values()) {
+      if (group.length >= 2) groups.push({ occurrences: group, seed: MINIMUM_WINDOW_ELEMENTS });
+    }
   }
-  groups.sort((left, right) => right.length - left.length);
+  groups.sort((left, right) => right.occurrences.length - left.occurrences.length);
+  groups.splice(CANDIDATE_GROUPS_PER_ROUND);
+
+  // A large repeated constant never reaches the window length, however many times it appears and however big
+  // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
+  // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
+  // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
+  const constants = new Map<string, Occurrence[]>();
+  bodies.forEach((body, bodyIndex) => {
+    for (let i = 0; i < body.script.length; i += 1) {
+      const element = body.script[i];
+      if (typeof element === 'number') continue;
+      if (elementByteSize(element) < MINIMUM_POOLED_CONSTANT_BYTES) continue;
+      const next = body.script[i + 1];
+      if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
+      // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
+      if (body.script[i + 2] === Op.OP_DEFINE) continue;
+      const key = elementKey(element);
+      const group = constants.get(key) ?? [];
+      group.push({ body: bodyIndex, start: i });
+      constants.set(key, group);
+    }
+  });
+  for (const group of constants.values()) if (group.length >= 2) groups.push({ occurrences: group, seed: 1 });
 
   const candidates: Candidate[] = [];
-  for (const group of groups.slice(0, CANDIDATE_GROUPS_PER_ROUND)) {
+  for (const { occurrences: group, seed } of groups) {
     // Grow the match while every occurrence still agrees, so the balance scan sees the full common region.
-    let length = windowElements;
+    let length = seed;
     for (;;) {
       const first = group[0];
       const at = length;
-      if (first.start + at >= matchingIds[first.body].length) break;
-      const id = matchingIds[first.body][first.start + at];
+      if (first.start + at >= bodyIds[first.body].length) break;
+      const id = bodyIds[first.body][first.start + at];
       const agrees = group.every((occurrence) => {
-        const ids = matchingIds[occurrence.body];
+        const ids = bodyIds[occurrence.body];
         return occurrence.start + at < ids.length && ids[occurrence.start + at] === id;
       });
       if (!agrees) break;
@@ -291,64 +326,36 @@ function findCandidates(
     const starts = group
       .map((occurrence) => ({ body: occurrence.body, start: occurrence.start + balanced.start }))
       .sort((left, right) => left.body - right.body || left.start - right.start);
-    const startsKept: Occurrence[] = [];
+    const occurrences: Occurrence[] = [];
     for (const occurrence of starts) {
-      const previous = startsKept[startsKept.length - 1];
+      const previous = occurrences[occurrences.length - 1];
       if (previous && previous.body === occurrence.body && occurrence.start < previous.start + spanLength) continue;
-      startsKept.push(occurrence);
+      occurrences.push(occurrence);
     }
-    if (startsKept.length < 2) continue;
+    if (occurrences.length < 2) continue;
     // Never place a span boundary between an OP_INVOKE and the operand push that feeds it. Splitting the pair
     // leaves a bare OP_INVOKE taking its identifier off the stack, and the surrounding rewrites can then reach
     // it with a different value than the one that was pushed - the script invokes an identifier nothing defined.
-    if (startsKept.some((occurrence) => {
-      const script = bodies[occurrence.body].script;
+    if (occurrences.some((occurrence) => {
+      const { script } = bodies[occurrence.body];
       return script[occurrence.start] === Op.OP_INVOKE
         || script[occurrence.start + spanLength] === Op.OP_INVOKE;
     })) continue;
 
-    const parameterOffsets: number[] = [];
-    for (let offset = 0; parameterize && offset < spanLength; offset += 1) {
-      const values = startsKept.map((occurrence) => bodies[occurrence.body].script[occurrence.start + offset]);
-      if (values.every((value) => elementKey(value) === elementKey(values[0]))) continue;
-      if (!values.every(isParameterElement)) {
-        parameterOffsets.length = 0;
-        break;
-      }
-      parameterOffsets.push(offset);
-    }
-    // Parameter pushes are parked on the altstack before the shared body starts. A body that manipulates the
-    // altstack or conditionally skips a placeholder could consume or strand them, so parameterization is limited
-    // to straight-line, altstack-free spans. Exact candidates retain the broader balanced-control-flow support.
-    const sourceSpan = region.slice(balanced.start, balanced.end);
-    if (parameterOffsets.length > 0 && sourceSpan.some((element) => typeof element === 'number'
-      && (OPEN_OPS.has(element) || CLOSE_OPS.has(element) || element === Op.OP_ELSE
-        || element === Op.OP_TOALTSTACK || element === Op.OP_FROMALTSTACK))) continue;
-    const span = [...new Array(parameterOffsets.length).fill(Op.OP_TOALTSTACK), ...sourceSpan];
-    for (const offset of parameterOffsets) span[parameterOffsets.length + offset] = Op.OP_FROMALTSTACK;
-    const bytes = span.reduce((total, element) => total + elementByteSize(element), 0);
-    const occurrences: CandidateOccurrence[] = startsKept.map((occurrence) => ({
-      ...occurrence,
-      parameters: parameterOffsets.map((offset) =>
-        bodies[occurrence.body].script[occurrence.start + offset]),
-      originalBytes: bodies[occurrence.body].script
-        .slice(occurrence.start, occurrence.start + spanLength)
-        .reduce<number>((total, element) => total + elementByteSize(element), 0),
-    }));
-    const candidate = { span, bytes, sourceSpanLength: spanLength, parameterOffsets, occurrences, saved: 0 };
-    const saved = candidateSavings(candidate, occurrences, idPushBytes);
+    const saved = savingsOf(balanced.bytes, occurrences.length, idPushBytes);
     if (saved <= 0) continue;
     candidates.push({
-      span,
-      bytes,
-      sourceSpanLength: spanLength,
-      parameterOffsets,
+      span: region.slice(balanced.start, balanced.end),
+      bytes: balanced.bytes,
       occurrences,
       saved,
     });
   }
-  candidates.sort((left, right) => right.saved - left.saved);
-  return candidates.slice(0, candidateLimit);
+  // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
+  // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
+  // remainder. Preferring length on equal savings keeps the containing span whole.
+  candidates.sort((left, right) => right.saved - left.saved || right.bytes - left.bytes);
+  return candidates;
 }
 
 /**
@@ -362,8 +369,12 @@ function findCandidates(
 export function outlineSharedSpans(
   bodies: OutlineBody[],
   allocateId: () => Uint8Array,
-  candidateLimit = PROFITABLE_CANDIDATES_PER_ROUND,
-  maximumRounds = MAXIMUM_ROUNDS,
+  /**
+   * Encoded push width of the identifier `allocateId` would hand out next, without consuming it. Supplying it
+   * makes the cost model exact; without it every site is costed at the widest identifier a helper can need,
+   * which silently rejects candidates that are in fact profitable.
+   */
+  peekIdPushBytes?: () => number,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -376,142 +387,104 @@ export function outlineSharedSpans(
   const functions: OutlinedFunction[] = [];
   let savedBytes = 0;
 
-  // Exact spans only. PARAMETERIZED outlining is disabled because it is unsound as written: it parks the
-  // per-site operands on the ALTSTACK (`OP_TOALTSTACK` prologue, `OP_FROMALTSTACK` at each parameter offset),
-  // and outlined bodies re-enter the corpus on later rounds. The guard below rejects a span that itself touches
-  // the altstack, but not a span EXTRACTED FROM a body that already has operands parked there, so a nested
-  // parameterized helper can retrieve the wrong altstack value. When that value is an `OP_INVOKE` operand the
-  // script invokes an identifier nothing defined, which the VM rejects at spend time.
-  //
-  // Observed on `packages/solidcash/test/e2e/ChainedPush.test.ts`: 2 of 6 entry points fail with "OP_INVOKE an
-  // undefined function identifier: 0x8c80" (-140), and the whole contract passes with exact-only outlining.
-  // Re-enabling this needs the nesting proof, not just the current span-local check.
-  for (const parameterize of [false]) {
-    for (let round = 0; round < maximumRounds; round += 1) {
+  for (let round = 0; round < MAXIMUM_ROUNDS; round += 1) {
     // Outlined bodies join the corpus so a repeat that only becomes visible after sharing is still found.
-      const corpus = [
-        ...working,
-        ...functions.map((fn) => ({
-          script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
-        })),
-      ];
-      // Probe with the identifier width the next allocation will actually use, so savings are never over-counted.
-      const candidates = findCandidates(corpus, PROBE_IDENTIFIER_PUSH_BYTES, parameterize, candidateLimit);
-      if (candidates.length === 0) break;
+    const corpus = [
+      ...working,
+      ...functions.map((fn) => ({
+        script: fn.script, locationData: fn.locationData, anchors: undefined, origins: undefined,
+      })),
+    ];
+    // The width every candidate is costed at. It decides both which candidates clear the bar and the order they
+    // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
+    // marginal candidates back.
+    const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
+    const candidates = findCandidates(corpus, idPushBytes);
+    if (candidates.length === 0) break;
 
-      // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
-      // a claimed range makes every overlapping candidate stale until the next round re-measures.
-      const claimed = corpus.map(() => new Set<number>());
-      const applied: {
-        definition: OutlinedFunction;
-        candidate: Candidate;
-        occurrences: CandidateOccurrence[];
-        saved: number;
-      }[] = [];
-      for (const candidate of candidates) {
-        if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
-        const spanLength = candidate.sourceSpanLength;
-        const free = candidate.occurrences.filter((occurrence) => {
-          for (let i = 0; i < spanLength; i += 1) {
-            if (claimed[occurrence.body].has(occurrence.start + i)) return false;
-          }
-          return true;
-        });
-        if (free.length < 2) continue;
-        const saved = candidateSavings(candidate, free, PROBE_IDENTIFIER_PUSH_BYTES);
-        if (saved <= 0) continue;
-        for (const occurrence of free) {
-          for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
+    // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:
+    // a claimed range makes every overlapping candidate stale until the next round re-measures.
+    const claimed = corpus.map(() => new Set<number>());
+    const applied: { definition: OutlinedFunction; occurrences: Occurrence[]; saved: number }[] = [];
+    for (const candidate of candidates) {
+      if (functions.length + applied.length >= MAXIMUM_OUTLINED_FUNCTIONS) break;
+      const spanLength = candidate.span.length;
+      const free = candidate.occurrences.filter((occurrence) => {
+        for (let i = 0; i < spanLength; i += 1) {
+          if (claimed[occurrence.body].has(occurrence.start + i)) return false;
         }
-        applied.push({
-          definition: {
-            id: allocateId(),
-            script: candidate.span,
-            // The shared body inherits its first site's locations; every site maps to the same source construct.
-            locationData: [
-              ...new Array(candidate.parameterOffsets.length).fill(corpus[free[0].body].locationData[free[0].start]),
-              ...corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
-            ],
-          },
-          candidate,
-          occurrences: free,
-          saved,
-        });
+        return true;
+      });
+      if (free.length < 2) continue;
+      if (savingsOf(candidate.bytes, free.length, idPushBytes) <= 0) continue;
+      for (const occurrence of free) {
+        for (let i = 0; i < spanLength; i += 1) claimed[occurrence.body].add(occurrence.start + i);
       }
-      if (applied.length === 0) break;
+      applied.push({
+        definition: {
+          id: allocateId(),
+          script: candidate.span,
+          // The shared body inherits its first site's locations; every site maps to the same source construct.
+          locationData: corpus[free[0].body].locationData.slice(free[0].start, free[0].start + spanLength),
+        },
+        occurrences: free,
+        saved: savingsOf(candidate.bytes, free.length, idPushBytes),
+      });
+    }
+    if (applied.length === 0) break;
 
-      // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
-      const edits = applied.flatMap((entry) =>
-        entry.occurrences.map((occurrence) => ({ occurrence, entry })));
-      edits.sort((left, right) =>
-        right.occurrence.body - left.occurrence.body || right.occurrence.start - left.occurrence.start);
-      for (const { occurrence, entry } of edits) {
-        const target = corpus[occurrence.body];
-        const spanLength = entry.candidate.sourceSpanLength;
-        const location = target.locationData[occurrence.start];
-        const replacement: Script = [...occurrence.parameters, entry.definition.id, Op.OP_INVOKE];
-        const parameterLocations = entry.candidate.parameterOffsets
-          .map((offset) => target.locationData[occurrence.start + offset]);
-        target.script.splice(occurrence.start, spanLength, ...replacement);
-        target.locationData.splice(occurrence.start, spanLength, ...parameterLocations, location, location);
-        if (target.origins) {
-          const origin = target.origins[occurrence.start];
-          const parameterOrigins = entry.candidate.parameterOffsets
-            .map((offset) => target.origins![occurrence.start + offset]);
-          target.origins.splice(occurrence.start, spanLength, ...parameterOrigins, origin, origin);
-        }
-        if (target.anchors) {
+    // Snapshot every array the rewrite mutates, so a round that turns out not to pay can be undone. The corpus
+    // entries for existing functions alias those functions' own arrays, so restoring the corpus restores both.
+    const before = emittedBytes(working, functions);
+    const snapshot = corpus.map((entry) => ({
+      entry,
+      script: [...entry.script],
+      locationData: [...entry.locationData],
+      anchors: entry.anchors ? [...entry.anchors] : undefined,
+      origins: entry.origins ? [...entry.origins] : undefined,
+    }));
+
+    // Rewrite every site back-to-front across the whole round so earlier indices stay valid within each body.
+    const edits = applied.flatMap((entry) =>
+      entry.occurrences.map((occurrence) => ({ occurrence, entry })));
+    edits.sort((left, right) =>
+      right.occurrence.body - left.occurrence.body || right.occurrence.start - left.occurrence.start);
+    for (const { occurrence, entry } of edits) {
+      const target = corpus[occurrence.body];
+      const spanLength = entry.definition.script.length;
+      const location = target.locationData[occurrence.start];
+      target.script.splice(occurrence.start, spanLength, entry.definition.id, Op.OP_INVOKE);
+      target.locationData.splice(occurrence.start, spanLength, location, location);
+      if (target.origins) {
+        const origin = target.origins[occurrence.start];
+        target.origins.splice(occurrence.start, spanLength, origin, origin);
+      }
+      if (target.anchors) {
         // Anchors never sit inside a relocated span, so they only need shifting by what the body lost.
-          const shrink = spanLength - replacement.length;
-          target.anchors = target.anchors.map((index) =>
-            (index >= occurrence.start + spanLength ? index - shrink : index));
-        }
-      }
-
-      for (const entry of applied) {
-        functions.push(entry.definition);
-        savedBytes += entry.saved;
+        const shrink = spanLength - 2;
+        target.anchors = target.anchors.map((index) =>
+          (index >= occurrence.start + spanLength ? index - shrink : index));
       }
     }
-  }
 
-  // A later round can outline the complete body of an earlier helper. That leaves the earlier definition as a
-  // one-instruction trampoline (`<new id> OP_INVOKE`) while every original callsite still invokes the old id.
-  // Outlined spans exclude every bytecode-relative/signing opcode, so bypassing this extra invoke frame is
-  // observationally identical. Collapse all such aliases before emission; large generated handlers can otherwise
-  // retain hundreds of tiny trampoline definitions after multi-round outlining.
-  const functionById = new Map(functions.map((fn) => [elementKey(fn.id), fn]));
-  const aliases = new Map<string, Uint8Array>();
-  for (const fn of functions) {
-    if (fn.script.length !== 2 || fn.script[1] !== Op.OP_INVOKE
-      || !(fn.script[0] instanceof Uint8Array)) continue;
-    const target = fn.script[0];
-    if (functionById.has(elementKey(target))) aliases.set(elementKey(fn.id), target);
-  }
-  const resolveAlias = (id: Uint8Array): Uint8Array => {
-    let resolved = id;
-    const seen = new Set<string>();
-    for (;;) {
-      const key = elementKey(resolved);
-      if (seen.has(key)) return id;
-      seen.add(key);
-      const next = aliases.get(key);
-      if (!next) return resolved;
-      resolved = next;
+    for (const entry of applied) functions.push(entry.definition);
+
+    const after = emittedBytes(working, functions);
+    if (after >= before) {
+      // The round did not pay for itself. Put every mutated array back and stop: the next round would re-measure
+      // the same corpus against the same identifier width and reach the same decision.
+      functions.length -= applied.length;
+      for (const saved of snapshot) {
+        saved.entry.script.splice(0, saved.entry.script.length, ...saved.script);
+        saved.entry.locationData.splice(0, saved.entry.locationData.length, ...saved.locationData);
+        if (saved.anchors) saved.entry.anchors = saved.anchors;
+        const { origins } = saved.entry;
+        if (saved.origins && origins) origins.splice(0, origins.length, ...saved.origins);
+      }
+      break;
     }
-  };
-  const rewriteAliases = (script: Script): void => {
-    for (let i = 1; i < script.length; i += 1) {
-      const id = script[i - 1];
-      if (script[i] !== Op.OP_INVOKE || !(id instanceof Uint8Array)) continue;
-      script[i - 1] = resolveAlias(id);
-    }
-  };
-  if (aliases.size > 0) {
-    for (const body of working) rewriteAliases(body.script);
-    for (const fn of functions) rewriteAliases(fn.script);
+    savedBytes += before - after;
   }
-  const liveFunctions = functions.filter((fn) => !aliases.has(elementKey(fn.id)));
 
   const rewritten: OutlinedBody[] = working.map((body, index) => {
     const originalLength = bodies[index].script.length;
@@ -528,5 +501,5 @@ export function outlineSharedSpans(
     return { script: body.script, locationData: body.locationData, indexMap };
   });
 
-  return { bodies: rewritten, functions: liveFunctions, savedBytes };
+  return { bodies: rewritten, functions, savedBytes };
 }

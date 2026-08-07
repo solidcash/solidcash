@@ -161,28 +161,31 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     ).toBe('0.0.8');
   });
 
-  it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 150 x density, and so does the decider', async () => {
+  it('1. FAIL-OPEN CLOSED: .build() refuses depth 3 at 140 x density, and so does the decider', async () => {
     // The exact shape X121 row 6 pinned as still-admitted. `.build()` now refuses it.
-    const provider = budgetProfile(150);
+    // The budget is calibrated against this shape's operation cost, so it moves whenever codegen does: helper
+    // ids drawn from the single-byte pool shortened the recursive body enough that 150 x density no longer
+    // refuses it. 140 restores the refusal; row 1b's 800 is still the accepting contrast.
+    const provider = budgetProfile(140);
     const { builder, error } = await buildOutcome(provider, 3n);
     expect(builder, '.build() still admits a shape the decider refuses').toBeUndefined();
     expect(error).toMatch(/Recursive state invocation 'decrement' does not fit or fails its concrete BCH VM/);
     expect(error).toMatch(/exceed the operation cost density limit/);
-    const density = assertDensityCeiling(error!, 150);
+    const density = assertDensityCeiling(error!, 140);
 
-    // And the DECIDER refuses that shape at the same published 150 x density, measured on the funded bytes
+    // And the DECIDER refuses that shape at the same published 140 x density, measured on the funded bytes
     // rather than inherited from another row. Density control length is `41 + unlockingBytecodeLength`, so the
     // send path's fully signed input is a byte or two off the build path's; the BUDGET is what must agree.
     const { builder: funded, error: sendError } = await sendCapturingPreflightInput(
       await recursionContract(provider), 3n,
     );
     expect(funded).toBeDefined();
-    assertDensityCeiling(sendError!, 150);
+    assertDensityCeiling(sendError!, 140);
     let submitError: string | undefined;
     try { await provider.sendRawTransaction(funded!.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError, 'the decider accepted a shape .build() refused').toBeDefined();
     expect(submitError).toMatch(/mandatory-script-verify-flag-failed/);
-    assertDensityCeiling(submitError!, 150);
+    assertDensityCeiling(submitError!, 140);
     expect(density).toBeGreaterThan(0);
   });
 

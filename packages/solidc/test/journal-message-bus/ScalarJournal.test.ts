@@ -1,3 +1,5 @@
+import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm } from '@solidcash/utils';
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
 
@@ -16,7 +18,7 @@ describe('Release 1 scalar journal lowering', () => {
     expect(run?.requiredNftIndices).toEqual([0]);
   });
 
-  it('emits a multi-site scalar helper smaller than duplicating its body', () => {
+  it('stores a multi-site scalar helper once and invokes it at every site', () => {
     const journalized = compileString(`${PREFIX}
       function update(int n) internal { ${HELPER_BODY} }
       function run(int a, int b, int c) {
@@ -24,18 +26,16 @@ describe('Release 1 scalar journal lowering', () => {
       }
     }`, { forceStateful: true });
 
-    const duplicated = compileString(`${PREFIX}
-      function run(int a, int b, int c) {
-        int n = a; ${HELPER_BODY}
-        n = b; ${HELPER_BODY}
-        n = c; ${HELPER_BODY}
-        require(a >= 0);
-      }
-    }`, { forceStateful: true });
+    // `update` is the first declared function, so it holds function id 0 - which pushes as OP_0. One stored
+    // body, one OP_INVOKE per call site, is the whole point of lowering a multi-site scalar write to a helper.
+    const asm = bytecodeToAsm(hexToBin(journalized.debug.bytecode));
+    expect([...asm.matchAll(/OP_0 OP_INVOKE/g)]).toHaveLength(3);
 
-    const journalizedBytes = journalized.debug.bytecode.length / 2;
-    const duplicatedBytes = duplicated.debug.bytecode.length / 2;
-    expect(journalizedBytes).toBeLessThan(duplicatedBytes);
+    // This used to be pinned as "smaller than writing the body out three times". That comparison stopped
+    // discriminating once the contract-level script itself was outlined: the hand-duplicated variant now has
+    // its repeated span shared too, and compiles SMALLER than the journalized one (482 vs 554 bytes) without
+    // either shape having regressed - both shrank. A budget on the shipped shape is what still catches growth.
+    expect(journalized.debug.bytecode.length / 2).toBeLessThan(600);
   });
 
   it('marks direct and mutual recursive entry closures for concrete SDK preflight', () => {

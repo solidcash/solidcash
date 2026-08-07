@@ -7,6 +7,7 @@ import {
   computeBytecodeFingerprintWithConstructorArgs, computeFunctionSelector, computeFunctionSignature,
   encodeComputedBlockhashKey, EnumType, FunctionType, generateSourceMap, MappingType,
   MAX_MESSAGE_BUS_BLOB_BYTES,
+  needsOptimiserCrossCheck,
   optimiseBytecode, optimiseBytecodeOld, OPTIMISER_COMPAT_CHECK_MAX_OPS, PrimitiveType, scriptToAsm, scriptsEqual,
   scriptToBytecode, bytecodeToScript, decodeInt, Op, ATOMIC_MESSAGE_BUS_DOMAIN_HEX,
   ATOMIC_MESSAGE_BUS_MAX_PARTICIPANTS, ATOMIC_MESSAGE_BUS_MAX_ROWS,
@@ -4371,7 +4372,8 @@ function compileResolvedAst(
     constructorParamLength,
   );
 
-  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+  if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+    && needsOptimiserCrossCheck(traversal.output)) {
     const optimisedBytecodeOld = optimiseBytecodeOld(traversal.output);
     if (!scriptsEqual(optimisedBytecodeOld, optimisationResult.script)) {
       console.error(scriptToAsm(optimisedBytecodeOld));
@@ -4584,8 +4586,14 @@ function compileResolvedAst(
     // atomic verifier; embedding all of them can make the verifier covenant exceed BCH's 10KB script limit. Begin
     // with the verifier and the dynamically selected compact-helper namespace, then add only statically invoked
     // outlines, transitively. OP_INVOKE hard-fails on an omitted definition, so this is an exact fail-closed closure.
-    const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()]
-      .filter((id) => !functionNameById.has(id) || id === verifierFunction?.functionId));
+    // A helper is identified by having been ALLOCATED as one, not by its numeric range and not by lacking a
+    // name: helper ids are drawn from a single-byte pool as well as the descending one, and a single-byte value
+    // is indistinguishable from a small user function id. Missing one strands its OP_DEFINE outside the
+    // verifier program and the participant dies at run time with "OP_INVOKE an undefined function identifier".
+    const isHelperId = (id: number): boolean => id <= -12
+      || traversal.allocatedHelperIds.has(BigInt(id))
+      || id === verifierFunction?.functionId;
+    const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()].filter(isHelperId));
     if (verifierFunction?.functionId !== undefined) requiredVerifierIds.add(verifierFunction.functionId);
     const pendingVerifierIds = [...requiredVerifierIds];
     while (pendingVerifierIds.length > 0) {
@@ -5748,7 +5756,8 @@ function compileReferencedContracts(
 
     // MD2: run the same backwards-compat cross-check on referenced/child contracts too (it was only applied to
     // the top-level contract, so an optimiser divergence in a child script would have shipped unchecked).
-    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS) {
+    if (traversal.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(traversal.output)) {
       const optimisedOld = optimiseBytecodeOld(traversal.output);
       if (!scriptsEqual(optimisedOld, optimisationResult.script)) {
         throw new Error(`New bytecode optimisation is not backwards compatible (referenced contract '${contractName}'), `

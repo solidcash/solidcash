@@ -1949,3 +1949,28 @@ explain both the skipped routeSlot 4 and the failure at 17, as the same bug appe
 
 Start at the `nested-entry-pick` site: log the KEY each routeSlot resolves and the predecessor it finds, then
 compare routeSlot 17 and 18. If they resolve the same key, the duplicate-access case is the bug.
+
+### THE BUG: some routeSlots are never picked, and their entry slots get funder-filled
+
+Full `nested-entry-pick` sequence for group 0 (all `exists: false`, every key new in this test):
+
+    routeSlot 0 users, 1 arbitrators, 2 meceTags, 3 jobEvents, [4 MISSING], 5 users, 6 arbitrators, ...
+    ... [17 MISSING], 18 users, 19 arbitrators, 20 users, 21 arbitrators, 22 users, ...
+
+routeSlots **4 and 17 are never picked**. The SDK's picking loop simply produces no entry for them, so their
+block slots (7 and 20) are backfilled with funders - and blockSlot 20 is precisely the one the covenant reads,
+giving the empty `OP_UTXOTOKENCOMMITMENT` and the OP_SPLIT abort.
+
+So this is NOT a shift, NOT a base error, NOT a surplus input, and NOT the chunk work (all four measured and
+excluded). Every picked entry lands correctly at `routeSlot + 3`. The defect is that specific entry ACCESSES
+produce no pick at all.
+
+Next, and it is now a narrow question: take the route's `entryAccesses[4]` and `entryAccesses[17]` and find why
+the picking loop skips them where it handles their neighbours. The neighbours differ only in collection, so
+compare what is distinct about those two accesses - a `keySource` the loop cannot resolve (an expression key,
+a msgSender key, or a key referencing a call result) is the most likely shape, since those are exactly the
+cases that would `continue` past a pick. Note 4 and 17 are 13 apart, not a fixed period, so this is
+access-specific, not a modulo/cycle artifact.
+
+`nested-entry-pick` already prints collection/blockSlot/routeSlot/keySlot/exists; add the ACCESS (keySources
+and operations) at the same site and the two skipped ones will identify themselves immediately.

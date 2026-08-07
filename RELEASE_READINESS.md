@@ -147,6 +147,13 @@ it must not silently compile to incorrect covenant behavior.
     `NestedArrayFixedInner` (two), `SplitLayoutAgreementX162`, `X167ArrayCopyReplaces` (two) and
     `X171ArrayAssignReplaces` (four). The compiler performance work changed neither class, so these findings
     track the current candidate revision even though the BCHN run that corroborated them does not.
+  - **The bytecode-size campaign makes this WORSE, and the effect is already measurable.** The budget is
+    `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`, so a smaller script buys a smaller
+    budget: size headroom and density headroom trade against each other. Re-running the budget-only sweep after
+    merging the eight `size(solidc)` commits takes the genuine failures from four to seven. `BehaviorParityPins`,
+    `FunctionPointerArrayCall` and `NestedStructArrayWrite` (two) were already over; `MultiDimensionalArray`,
+    `NestedArrayDelete` and `SolidityCorpusBehavior` have newly crossed the line. Any further size work should be
+    measured against this sweep, not only against byte counts.
   - The chain-free method is predictive, confirmed twice against the live node. `BehaviorParityPins` was found on
     BCHN first and then reproduced on mocknet; `FunctionPointerArrayCall` went the other way, predicted by the
     budget sweep and only later confirmed on BCHN when the matrix reached that file in batch 25. `ChunkedArrays`

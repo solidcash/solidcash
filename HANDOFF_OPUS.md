@@ -304,3 +304,126 @@ check is: how many fields does `MarketplaceV1`'s state layout expect, versus how
 holds at inputs 1/2 - i.e. a proxy/implementation state-layout width mismatch, not a memory problem.
 
 (Supersedes the `__yulmem` guess above: `0x20` on the stack is incidental, the decoder is a state reader.)
+
+---
+
+## Session update (2026-08-07, later): the nested route now returns real values
+
+### Landed: 2b8d0866 - compiler-route delegate block gets its own input/output frames
+
+Root cause of BOTH remaining symptoms was one thing: `nestedMasterIndices` in `StatefulContract.ts`
+(~11040) is a DENSE frame - one input per resource - and under `compilerRouteDelegateBlock` neither the
+input nor the output layout is dense.
+
+Measured physical layout for the focused `post job 1` (`SOLIDC_DEBUG_ROUTE_INPUTS=1`):
+
+```text
+0        SolidCashProxy.__forward          (Marketplace proxy master)
+1,2      DataNft_cb3a64c1                  (its state)
+3..101   funders                           (route block padding, blockSize=102)
+102..104 MarketplaceV1.publishJobPost      (low-level delegate group 0)
+105      MarketplaceDataV1.__message_bus1  (low-level delegate group 1)
+106..207 SolidCashProxy.__forward + block  (external group 0)
+208..    FakeToken.__message_bus1          (external group 1)
+```
+
+`nestedMasterIndices[0]` was `6` (1 + 2 dataNfts + 3 delegate inputs). Two witnesses read it:
+
+1. `__internal__proxyMasterIndex` = 6, so the route prologue
+   (`OP_DEPTH OP_1SUB OP_PICK; OP_1 OP_ADD; OP_UTXOTOKENCOMMITMENT`) read an empty commitment and the
+   pushdata decoder died at `OP_1 OP_SPLIT`. The base is now
+   `lowLevelCallInputBase + all low-level inputs` = 106, and an associated delegate takes its rank in
+   the contiguous implementation band (`_buildInputs` puts EVERY low-level input right after the block,
+   ahead of the callee band - it does NOT interleave, unlike the legacy `delegateEntriesAfterLowLevel`
+   path). `masterInputIndex` and `__internal__delegateInputIndex` follow the same band.
+2. `physicalReturnIndexForGroup` = `nestedMasterIndices + returnSlot.offset` = 43, but an in-block
+   return event is an OUTPUT offset. Output positions are NOT stretched by the block (funder slots
+   produce no outputs), so a separate `nestedOutputBases` now gives 3 + 37 = 40. 43 was an ENTRY NFT
+   whose leading 32 zero bytes decoded as an EMPTY return value rather than failing - that is where the
+   "return event carries zeros" symptom came from. It was never a missing derivation step: phase-1
+   return derivation DOES run for nested groups (`route-return-derivation` fires for both).
+
+Legacy (non-route-block) layouts keep the established input-base reading, so nothing else moves.
+
+### Regression evidence
+
+`UpgradesDeployProxy` (2), `DelegateInferred` (6) and `X50DefaultProxyRegenerated` (2) fail IDENTICALLY
+with the new frame disabled in place (temporary `SC_LEGACY_NESTED_FRAME` switch, since removed), so all
+10 are pre-existing in this worktree - they come from the uncommitted compiler/`utils/outline.ts` WIP,
+not from this change. The other 20 proxy/external-call e2e files pass.
+
+### Current failure, and what it actually is
+
+```text
+messageBus: BCH-2026 preflight failed at input 102:
+OP_SPLIT with an invalid index. stack item length: 23; requested split index: -41
+```
+
+Input 102 is `MarketplaceV1.publishJobPost` inside `checkParams`. It now reads output 40 (the real
+return event), unwraps the route's outer `bytes`, skips one prior row's bool, and decodes - but the
+blob content is wrong: `1976a914a55476015c13afb8afb92160329a8cde976f1f2e88ac` = `abi.encode(<the
+MarketplaceData owner address>)`, not the packed `[bool][string][bool]` row results.
+
+That value comes from `extractPendingReturnCommitment` (`StatefulContract.ts` ~735), the FALLBACK the
+return derivation takes when the primary extraction finds nothing. It scans the last 32 trace steps for
+any canonical-pushdata stack item, and here it grabbed the owner address off an aborted probe. The same
+heuristic gives FakeToken `1976a914c4841b...88ac` (user1's address) - also implausible as a
+`balanceOf`/`approve` result. The heuristic fires wrongly and should fail loudly instead.
+
+The reason the primary extraction finds nothing: the group-0 probe ABORTS before the return-event
+comparison, inside row 0 of the batch. `progressive-route-entries` shows `revealed: []` and the abort
+is an `OP_EQUALVERIFY` of `aa20953ccfa596...87` (a balanced-slot placeholder at block slot 8, input
+114) against `aa20a2d9fabc...87` (an entry NFT lbc), with `9bd3de9500` (the `arbitratorRegistered`
+selector) on the stack.
+
+So: row 0 is `arbitratorRegistered(address(0))`. In source that call is CONDITIONAL -
+`if (arbitrator_ != address(0))` - and `arbitrator_` IS the zero address in this test, so it must not
+execute. The SDK batched it anyway (the artifact records `"occurrence": "conditional"`), the callee
+route executes it, and proving `arbitrators[address(0)]` absent in a SORTED (C2) mapping needs the
+bracketing entry co-spent, which is not there.
+
+NEXT: this is the conditionally-executed-row soundness question the earlier notes flagged. Either the
+SDK must not emit a row for a call whose guard is false off-chain (it already evaluates caller state -
+`_evaluateExternalExpression`), or the route must carry the bracketing entry for an absent sorted key.
+Confirm which by checking whether `arbitrators` is sorted in MarketplaceDataV1's `stateLayout.collections`
+and whether the 7 co-spent EntryNfts include a bracketing pair for the empty key.
+
+### The blocking check, pinned to a slot
+
+The abort is an `OP_EQUALVERIFY` at block-layout INPUT offset 8. Entry offsets are `3 + slotIndex`, so
+that is entry slot 5 of the route's 26. From `delegateArtifact.messageBus.route.entryAccesses`:
+
+```text
+slot 5 = { collection: 'users', keyParams: ['__message_bus_key_users_0_r0'],
+           operations: ['read','write'], runtimeAliasPriorSlots: [0] }
+```
+
+The SDK co-spent entries at offsets 3,4,5,6,10,11,17 = slots 0,1,2,3,7,8,14
+(`users_sender`, `arbitrators_sender`, `meceTags`, `jobEvents`, `userRatings`, `userReviews`,
+`users_0_r2`). Slot 5 got a balanced-slot placeholder (`aa20953ccf...87`, no token), and the covenant
+compared that against the entry-NFT lbc `aa20a2d9fabc...87`.
+
+Note WHICH slots were skipped without complaint: 12-25 are all `operations: ['read']` alias slots.
+Slots 5 and 6 are the only row-0 slots with `['read','write']`. So a read-only alias slot may stay a
+placeholder, a write-capable one may not - and slot 5's key is
+`__message_bus_key_users_0_r0` = `76a914` + 20 zero bytes + `88ac`, the zero-address FILLER the SDK
+uses for unused row keys.
+
+All six MarketplaceDataV1 collections are `sorted: true` (C2), so an absent key needs its bracketing
+entry co-spent; a filler key has none.
+
+Two candidate directions, not yet tested:
+- Make the row-0 slot requirement selector-conditional in the generated route, so a row whose handler
+  never touches `users` does not force slot 5 to be materialized. (The abort carries `9bd3de9500` =
+  `arbitratorRegistered`, which reads `arbitrators` - slot 6 - not `users`.)
+- Or stop emitting a batch row for a call whose off-chain guard is false (`"occurrence": "conditional"`
+  is already in the artifact; `arbitrator_ == address(0)` here so the call must not run). CHECK FIRST
+  whether the caller's `emitExternalBatchRowReturn` prior-row skip is guarded by the same condition -
+  it iterates `physicalSlot.batchInvocations` STATICALLY by `logicalIndex`, so dropping a row would
+  misalign every later row's decode unless that skip is conditional too.
+
+### Diagnostics added this session (in `_logCovenantFailureTrace`)
+
+`SOLIDC_TRACE_ITEMS` (stack items per step, default 4), `SOLIDC_TRACE_RING` (steps kept, default 520),
+`SOLIDC_TRACE_COMMITMENT` (commitment hex width, default 24). The trace now also prints push DATA per
+instruction and the complete final stack - that is what identified the decoded values by content.

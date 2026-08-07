@@ -1998,3 +1998,18 @@ covenant still reads a commitment there - which would make this a COVENANT/SDK d
 conditional entry slot is live, not a picking bug.
 
 That is the last unexplored branch; everything else at this site is now instrumented and excluded.
+
+### Caution on the last measurement: the run was TRUNCATED, not informative
+
+The `entry-slot-visit` probe (logging every entry slot before any guard, with `slotIndex`/`conditional`/
+`softDelete`) is committed and correct, but its run did not complete - the log is 219 lines with no test result,
+and diagnostics that HAD fired in earlier runs (`blockInputs g0`) reported zero as well. Zero counts from that
+run therefore say nothing about which code paths execute.
+
+Do NOT conclude from it that the `for (const slot of selectedLayout.slots)` loop is dead for this case. Re-run
+the probe to completion first; it is the measurement that identifies why positions 7 and 20 never pick, and it
+is the last unexplored branch at this site.
+
+Same caution applies to reading the earlier `entry-pick-SKIP` / `nested-entry-pick-threw` zeros: those came
+from a run that DID complete (`mkt_skip.log`), so they stand - but verify the log ends with a test result
+before trusting any zero-count as evidence of absence.

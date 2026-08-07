@@ -10855,6 +10855,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     const data = childData[dataIndex++];
                     if (data) childBlockInputs.push(data);
                   } else if (slot.kind === 'entry') {
+                    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                      ?.SOLIDC_DEBUG_INPUTS === '1') {
+                      console.error('entry-slot-visit', {
+                        pos: childBlockInputs.length,
+                        slotIndex: slot.slotIndex,
+                        conditional: slot.conditional,
+                        softDelete: slot.softDelete,
+                      });
+                    }
                     const access = selectedFn?.entryAccesses?.[slot.slotIndex ?? 0];
                     const collection = childLayout.collections?.find(
                       (candidate) => candidate.name === access?.collection

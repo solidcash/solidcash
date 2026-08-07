@@ -8,7 +8,7 @@ import type { Artifact } from '@solidcash/utils';
 // they describe the same token:
 //
 //   native_usdt.scash      the one-file reference spec (over the input limit)
-//   nusdt*.scash           the six hand-written delegate-library facets
+//   nusdt.scash + nusdt_facet.scash   the hand-split master and its one facet
 //   nusdt_inherited.scash  the inheritance rewrite the built-in splitter cuts up
 //
 // They HAD diverged. The monolith carried seven on-chain view functions the
@@ -40,9 +40,7 @@ beforeAll(() => {
   monolith = surfaceOf([compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact]);
   facets = surfaceOf([
     compileFile(fx('nusdt.scash'), { messageBus: false }) as Artifact,
-    ...['nusdt_admin.scash', 'nusdt_supply.scash', 'nusdt_boundary.scash'].map(
-      (f) => compileFile(fx(f), { brandLibrary: true, messageBus: false }) as Artifact,
-    ),
+    compileFile(fx('nusdt_facet.scash'), { brandLibrary: true, messageBus: false }) as Artifact,
   ]);
   inherited = surfaceOf([compileFile(fx('nusdt_inherited.scash'), { messageBus: false }) as Artifact]);
 }, 300000);

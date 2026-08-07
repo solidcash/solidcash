@@ -6991,20 +6991,26 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const kvIdx = entryAbiFunction!.inputs.findIndex((inp) => inp.name === keyNames[0]);
           const stateArrayKeyValues = access.keySources?.[0]?.kind === 'stateArrayLast'
             ? onChainState.state[access.keySources[0].stateArrayName ?? ''] as unknown[] : undefined;
-          const kv = access.keySources?.[0]?.kind === 'constant'
-            ? BigInt(access.keySources[0].constantValue ?? '0')
-            : access.keySources?.[0]?.kind === 'msgSender'
-              ? addressToLockScript(this._signer!.getAddress())
-              : access.keySources?.[0]?.kind === 'expression'
-                ? (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(
-                  access.keySources[0].expressionLabel ?? '',
-                ) && (this._signer ?? this._logicalNonceSigner)
-                  ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
-                  : evalComputedKey(access.keySources[0].expressionLabel, entryArgs, entryAbiFunction!.inputs)
+          // A STATE-VARIABLE key (`bal[this.owner]`) resolves from the state the builder just read, exactly as
+          // `encodeKey` above does for the slot hash. Without this branch it fell through to a parameter lookup
+          // that cannot match, leaving keyValue undefined - which silently disabled the runtime-alias comparison
+          // further down, because an undefined key matches nothing.
+          const kv = access.keySources?.[0]?.kind === 'state'
+            ? encodeKey(keyNames[0], keyTypes[0] ?? collection.keyType, 0)
+            : access.keySources?.[0]?.kind === 'constant'
+              ? BigInt(access.keySources[0].constantValue ?? '0')
+              : access.keySources?.[0]?.kind === 'msgSender'
+                ? addressToLockScript(this._signer!.getAddress())
+                : access.keySources?.[0]?.kind === 'expression'
+                  ? (/^(?:call:_msgSender\(\)|nullop:msg\.sender)$/.test(
+                    access.keySources[0].expressionLabel ?? '',
+                  ) && (this._signer ?? this._logicalNonceSigner)
+                    ? addressToLockScript((this._signer ?? this._logicalNonceSigner)!.getAddress())
+                    : evalComputedKey(access.keySources[0].expressionLabel, entryArgs, entryAbiFunction!.inputs)
                   ?? overrides?.entryKeyOverrides?.get(slotIndex) ?? new Uint8Array(0))
-                : access.keySources?.[0]?.kind === 'stateArrayLast'
-                  ? stateArrayKeyValues![stateArrayKeyValues!.length - 1] as bigint | boolean | Uint8Array | string
-                  : entryArgs[kvIdx] as bigint | boolean | Uint8Array | string;
+                  : access.keySources?.[0]?.kind === 'stateArrayLast'
+                    ? stateArrayKeyValues![stateArrayKeyValues!.length - 1] as bigint | boolean | Uint8Array | string
+                    : entryArgs[kvIdx] as bigint | boolean | Uint8Array | string;
           // A sorted mapping write OR `delete m[k]` (== assign default, Solidity semantics) both upsert the entry,
           // so the SDK co-spends it the same way. bool sets are value mappings too (true=0x01, false/delete=empty).
           const isWrite = access.operations.includes('write') || access.operations.includes('delete');

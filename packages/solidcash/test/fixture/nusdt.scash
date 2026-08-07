@@ -1,8 +1,7 @@
 pragma solidcash >=0.8.0;
 
-import { UsdtSupply } from "./nusdt_supply.scash";
-import { UsdtAdmin } from "./nusdt_admin.scash";
-import { UsdtBoundary } from "./nusdt_boundary.scash";
+import { UsdtFacet } from "./nusdt_facet.scash";
+
 
 // =============================================================================
 // NativeUsdt - proxy master for a drop-in port of Ethereum USDT (TetherToken,
@@ -18,10 +17,16 @@ import { UsdtBoundary } from "./nusdt_boundary.scash";
 // intra-function splitting.
 //
 // The partition follows docs/large-contract-splitting.md strategy S2: a proxy
-// master holding the state, plus facets deployed as BRANDED DELEGATE LIBRARIES
-// (docs/library-contracts.md). Each facet rides its OWN co-spent input with its
+// master holding the state, plus a facet deployed as a BRANDED DELEGATE LIBRARY
+// (docs/library-contracts.md). The facet rides its OWN co-spent input with its
 // own 10 KB budget, so splitting multiplies the available budget instead of
 // compressing code.
+//
+// ONE facet, not three. The 10,000 B cap is on the whole UNLOCKING BYTECODE -
+// redeem script plus constructor arguments plus the call's own arguments - and
+// each extra facet costs the master a constructor argument (~72 B deployed for
+// one, ~171 B for three). The master runs at ~9,760 B of usable budget, so that
+// difference is not decorative. See packages/solidc/docs/native-usdt-port.md s1.2.
 //
 // WHERE THE LINE IS DRAWN: BY WRITE KIND, NOT BY SUBJECT. A mapping UPDATE
 // settles through a delegate, but a first-touch INSERT cannot - an insert mints
@@ -185,19 +190,19 @@ contract NativeUsdt(address initialOwner) {
     // up in the ABI of the function being called, so a renamed forwarder parameter
     // silently breaks slot derivation ("Cannot convert value to bytes for type
     // address") rather than failing at compile time.
-    function redeem(int amount) { UsdtSupply.redeem(amount); }
-    function destroyBlackFunds(address blackListedUser) { UsdtSupply.destroyBlackFunds(blackListedUser); }
-    function setParams(int newBasisPoints, int newMaxFee) { UsdtSupply.setParams(newBasisPoints, newMaxFee); }
-    function transferOwnership(address newOwner) { UsdtAdmin.transferOwnership(newOwner); }
-    function pause() { UsdtAdmin.pause(); }
-    function unpause() { UsdtAdmin.unpause(); }
-    function removeBlackList(address clearedUser) { UsdtAdmin.removeBlackList(clearedUser); }
-    function unfreeze(address user) { UsdtAdmin.unfreeze(user); }
-    function deprecate(address newAddress) { UsdtAdmin.deprecate(newAddress); }
-    function setQuarantineBlocks(int blocks) { UsdtAdmin.setQuarantineBlocks(blocks); }
-    function tick(int nowHeight) { UsdtBoundary.tick(nowHeight); }
-    function deposit(bytes32 category, int nowHeight, int amount) { UsdtBoundary.deposit(category, nowHeight, amount); }
-    function claimDeposit() { UsdtBoundary.claimDeposit(); }
+    function redeem(int amount) { UsdtFacet.redeem(amount); }
+    function destroyBlackFunds(address blackListedUser) { UsdtFacet.destroyBlackFunds(blackListedUser); }
+    function setParams(int newBasisPoints, int newMaxFee) { UsdtFacet.setParams(newBasisPoints, newMaxFee); }
+    function transferOwnership(address newOwner) { UsdtFacet.transferOwnership(newOwner); }
+    function pause() { UsdtFacet.pause(); }
+    function unpause() { UsdtFacet.unpause(); }
+    function removeBlackList(address clearedUser) { UsdtFacet.removeBlackList(clearedUser); }
+    function unfreeze(address user) { UsdtFacet.unfreeze(user); }
+    function deprecate(address newAddress) { UsdtFacet.deprecate(newAddress); }
+    function setQuarantineBlocks(int blocks) { UsdtFacet.setQuarantineBlocks(blocks); }
+    function tick(int nowHeight) { UsdtFacet.tick(nowHeight); }
+    function deposit(bytes32 category, int nowHeight, int amount) { UsdtFacet.deposit(category, nowHeight, amount); }
+    function claimDeposit() { UsdtFacet.claimDeposit(); }
 
     // ---- The INSERT path, direct (non-delegated) ----
     // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a C2 INSERT
@@ -293,6 +298,7 @@ contract NativeUsdt(address initialOwner) {
         this.frozen[user] = true;
         emit Frozen(user);
     }
+
 
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));

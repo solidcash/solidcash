@@ -32,7 +32,7 @@ extensions: **quarantined admission**, **blacklist** (USDT-native, extended), an
 Everything is written in SolidCash. No hand-rolled Bitcoin Script covenant was introduced; the split uses
 the shipped `library` + `brandLibrary` delegate machinery and the standard token-container primitive.
 
-### 1.1 Why it is four files, not one
+### 1.1 Why it is two files, not one
 
 The monolith (`native_usdt.scash`, kept as the readable reference spec) compiles to **12,612 B**. BCH enforces
 `MAX_INPUT_BYTESIZE = 10,000` bytes **per spending input** - the P2SH32 redeem script plus its unlocking data.
@@ -41,23 +41,19 @@ function is over the limit (largest body 964 B) - the sum is. So this needs part
 `large-contract-splitting.md` strategy S2: a proxy master holding state plus facets deployed as branded
 delegate libraries, each riding its own co-spent input with its own 10 KB budget.
 
-Measured, after the split (all under the cap, verified by a test). The middle column is the intermediate
-measurement at `83c0a8da`, kept because of what it got wrong (see the note at the top). `nusdt_transfer.scash`
-and `nusdt_spend.scash` no longer exist: their functions moved into the master when the insert path did (s3.1),
-which is why the master grew back to 9,748 B:
+The port went 6 files -> 4 -> **2**. Moving the insert path into the master (s3.1) emptied
+`nusdt_transfer.scash` and `nusdt_spend.scash`; merging what was left into one facet bought back the
+constructor-argument space the master needed (s1.4).
 
-| script | 07-25 | 08-07 @`83c0a8da` | 08-07 @`804b786b` | vs 07-25 | contents |
-| --- | --: | --: | --: | --: | --- |
-| `nusdt.scash` (master) | 7,992 | 4,934 | **9,748** | +22.0% | state, the FT-moving functions, and the whole INSERT path |
-| `nusdt_admin.scash` | 8,570 | 3,281 | **2,608** | -69.6% | Ownable, Pausable, `removeBlackList`, `unfreeze`, `deprecate` |
-| `nusdt_supply.scash` | 6,054 | 3,001 | **2,729** | -54.9% | `redeem`, `destroyBlackFunds`, `setParams` |
-| `nusdt_boundary.scash` | 5,936 | 3,673 | **3,586** | -39.6% | `tick`, `deposit`, `claimDeposit` |
-| `native_usdt.scash` (monolith) | 32,644 | 13,698 | **12,612** | -61.4% | the whole surface in one file |
+| script | 07-25 | 08-07 @`83c0a8da` | now | contents |
+| --- | --: | --: | --: | --- |
+| `nusdt.scash` (master) | 7,992 | 4,934 | **9,689** | state, the FT-moving functions, and the whole INSERT path |
+| `nusdt_facet.scash` | - | - | **6,238** | everything delegated: all 14 UPDATE-only functions |
+| *(dissolved)* `nusdt_transfer` / `nusdt_spend` / `nusdt_admin` / `nusdt_supply` / `nusdt_boundary` | | | - | |
+| `native_usdt.scash` (monolith) | 32,644 | 13,698 | **12,612** | the whole surface in one file |
 
-Everything shrank, including the two facets that carried the sorted-mapping hot paths - those were the last
-to, and only once the subroutine probe was gated on for aggregate-using contracts. That headroom is what let
-the insert path move back into the master. Sum of the four shipping scripts: **18,671 B**, against 25,139 B
-across six before the move and 44,031 B on 2026-07-25.
+Sum of the two shipping scripts: **15,927 B**, against 18,671 B across four, 25,139 B across six, and
+44,031 B on 2026-07-25.
 
 Splitting still multiplies the available budget rather than compressing code, and that is still the reason
 the contract exists at all - but the margin is now 2,612 B over the cap, not 22,644 B.
@@ -73,14 +69,40 @@ Two rules the split must obey, both learned the hard way and both now pinned by 
   parameter fails at transaction-build time ("Cannot convert value to bytes for type address"), not at compile
   time.
 
-### 1.2 Named forwarders, not a `fallback` dispatcher
+### 1.2 The 10,000 B limit is on the whole unlocking bytecode, and it has three layers
+
+This cost two wrong measurements before it was pinned down, so it is worth stating flatly. The cap applies to
+the ENTIRE unlocking bytecode of an input, which is:
+
+    redeem script  +  constructor arguments  +  the call's own arguments  +  the redeem push
+
+The compiler's script-size check - and `scriptToBytecode(asmToScript(artifact.bytecode)).length`, which this
+document used throughout - sees only the FIRST of those. Measured on this master: 9,689 B of artifact,
+9,761 B of deployed redeem script once one facet address is baked in, and a further ~239 B needed for a single
+`address` argument at call time. A contract the compiler passes can be entirely unspendable, and the SDK's
+preflight says so in as many words:
+
+> `... whose 9,856-byte redeem script fits the limit on its own but leaves only 144 bytes for the 239 bytes of
+> arguments and redeem push it must also carry. The limit is on the WHOLE unlocking bytecode, so a contract the
+> compiler's script-size check passes can still be unspendable`
+
+Two consequences shaped the final layout. Each additional facet costs the master one constructor argument
+(~72 B in the deployed script for one, ~171 B for three), which is why the three remaining facets were merged
+into one (s1.1) - that alone bought back ~99 B. And the master's usable budget is not 10,000 B but roughly
+9,760 B, which is what makes s3.1's remaining gap a hard wall rather than a near miss.
+
+The port's own size test asserts the artifact figure, which is the number that rots quietly. What actually
+proved this was the SDK preflight refusing a built transaction, so the check that matters is a spend, not a
+compile.
+
+### 1.3 Named forwarders, not a `fallback` dispatcher
 
 A single `fallback(bytes)` Diamond dispatcher is smaller (master ~5.8 KB) and was tried first. It does not
 work: the SDK derives C2 entry slots from the ABI of the function being called, and a bytes-blob fallback
 hides the facet's arguments, so every param-keyed mapping write fails slot derivation. Named forwarders keep
 those parameters in the master's own ABI - and preserve the named ABI a drop-in replacement wants anyway.
 
-### 1.3 The shipped auto-splitter does not handle this contract - SUPERSEDED, see s5
+### 1.4 The shipped auto-splitter does not handle this contract - SUPERSEDED, see s5
 
 **This section was measured at `83c0a8da` and no longer holds.** It read: run against `native_usdt.scash`,
 `compileFileSplit` does not converge - its probe explored facet groupings of 10,115 to 12,741 B, every one
@@ -175,12 +197,17 @@ proven or measured:
    creates the key at zero; every later facet write to it is an UPDATE and settles. Proven end-to-end in
    `DelegateMappingProbe.test.ts` ("a direct zero-value register is enough..."). Costs one small master
    function per mapping that needs first-touch, and makes account-opening an explicit step - a deviation from
-   ERC-20, where `transfer` to a never-seen address just works.
+   ERC-20, where `transfer` to a never-seen address just works. NOT used here: shape 2 covers six of the eight
+   without any semantic deviation, and the master then has no room left for shape 1 (see the second limitation
+   below, which is exactly this collision).
 2. **Move the insert path back into the master (no semantic deviation).** This was impossible when the port was
    written - `transfer` alone cost 6,222 B inline against a 7,992 B master. It now costs 2,794 B, and **six of
    the eight insert-path functions fit**:
 
-   | master variant | bytes | spare |
+   Artifact bytes, so the "spare" column overstates the real headroom by the constructor and call arguments -
+   see s1.2. The final master measures 9,689 B of artifact and 9,761 B of deployed redeem script.
+
+   | master variant | bytes | artifact spare |
    | --- | --: | --: |
    | all forwarded (before the move) | 4,784 | 5,216 |
    | `+ transfer` | 7,578 | 2,422 |
@@ -191,10 +218,11 @@ proven or measured:
 
    That is `transfer`, `transferFrom`, `approve`, `issue`, `addBlackList` and `freeze` all direct, under the
    cap. The functions that only ever UPDATE (`redeem`, `destroyBlackFunds`, `removeBlackList`, `unfreeze`) can
-   stay in facets, because updates settle through a delegate. What does **not** fit in the remaining 252 B is
-   the quarantine boundary: `deposit` first-touches `pendingAmount` / `pendingUnlockAt`, and `claimDeposit`
-   can first-touch `balances`. Those two still need shape 1, or their own budget - note `cancelDeposit` is
-   already a direct master function, so the boundary is partly there.
+   stay in facets, because updates settle through a delegate. What does **not** fit is the quarantine
+   boundary: `deposit` first-touches `pendingAmount` / `pendingUnlockAt`, and `claimDeposit` can first-touch
+   `balances`. Those two need shape 1, and shape 1 is what no longer fits - see the second limitation below,
+   which is this collision measured out. `cancelDeposit` is already a direct master function, so the boundary
+   is partly there.
 
 Shape 2 is what was implemented - see below. The blocker went from "a designed-but-unimplemented upstream
 feature on the critical path" to "a budget allocation problem inside a 10,000 B master", and the budget turned
@@ -205,7 +233,8 @@ out to cover six of the eight.
 The insert path moved into the master, and the split is now drawn by WRITE KIND rather than by subject matter:
 a function that can create a key runs directly on the master; only update-only functions are delegated.
 `transfer`, `transferFrom`, `approve`, `issue`, `addBlackList` and `freeze` moved in (master 9,748 B, 252 B
-spare); `redeem`, `destroyBlackFunds`, `removeBlackList` and `unfreeze` stayed on their facets because an
+spare in artifact terms); `redeem`, `destroyBlackFunds`, `removeBlackList` and `unfreeze` stayed on the facet
+because an
 UPDATE through a delegate settles.
 
 That emptied two facets outright - `nusdt_transfer.scash` and `nusdt_spend.scash` held nothing else - so the
@@ -220,15 +249,33 @@ Two limitations remain, each pinned by a test:
 1. **`transfer` from the OWNER.** USDT credits the fee to the owner, so `transfer` writes
    `balances[msg.sender]` and `balances[this.owner]` - two distinct key SOURCES that are ONE key whenever the
    owner is the sender, which is every transfer out of freshly issued supply. The C2 batch planner is handed
-   the same slot twice and refuses, correctly: one entry UTXO cannot be co-spent twice. The compiler has an
-   alias mechanism for this (`batchAliasSkips`) but it only pairs slots it nominated as candidates, and the
-   collision here is a runtime fact. Pairing by resolved target gets past the planner and then hits the same
-   duplicate at the entry co-spend (`Duplicate stateful input ... roles entry:1,entry:2`), so a real fix spans
-   the batch planner AND entry co-spend/block-layout planning. Not attempted: that is the C2 value-derivation
-   path, where a partial change risks a silent miscompile rather than an error. Not worked around in the
-   contract either - dropping the separate owner credit would deviate from the source this port reproduces.
+   the same slot twice and refuses, correctly: one entry UTXO cannot be co-spent twice.
+
+   Attempted, and taken three of four layers before stopping. The mechanism already exists - the compiler's
+   `runtimeAliasPriorSlots` makes the generated covenant carry a runtime gate, so an aliased slot occupies a
+   FUNDING position instead of being co-spent - but it is nominated only for message-bus routes with row-local
+   identities. Extending the nomination to ordinary batches works and the control case (three distinct keys)
+   keeps settling; dropping the aliased entry from the co-spend clears the duplicate input. What is left is the
+   balanced block itself: the covenant pins an exact collection-output cardinality, and an aliased slot has to
+   be funded into that block rather than removed from it. Reverted rather than shipped half-done, because a
+   partial change on the C2 value-derivation path fails as a silent miscompile, not an error.
+
+   One genuine bug WAS found and kept along the way: the builder's `kv` resolution had no `kind: 'state'`
+   branch, so a state-variable key (`bal[this.owner]`) left `keyValue` undefined and silently disabled every
+   downstream key comparison. Fixed - it is the same gap as s4.2, in a second place.
+
+   Not worked around in the contract either: dropping the separate owner credit would deviate from the source
+   this port exists to reproduce.
 2. **`deposit` / `claimDeposit`.** Both first-touch (`pendingAmount` / `pendingUnlockAt`, and `balances` for a
-   never-seen claimant) and neither fits in the master's remaining 252 B.
+   never-seen claimant), so they need key creation on the master - and the master has no room. Attempted and
+   measured: a guarded, permissionless `openAccount(address)` opening all three mappings costs ~300 B (~474 B
+   for the writes, less ~174 B recovered by delegating `issue` again). Two things had to be true for it to fit
+   and only one was. Merging the three remaining facets into one bought back ~99 B of constructor argument, but
+   the deployed redeem still reached 9,856 B and the call needs 239 B for its `address` argument against the
+   144 B left - see s1.2. The guards are not droppable: without them `openAccount` would zero a live balance or
+   a pending deposit, so it is exactly the guards that cost the budget. Making it owner-only would pay for
+   itself, but it would also make the issuer a liveness dependency, which is the one property the quarantine
+   design exists to avoid.
 
 ## 4. Incidental findings
 
@@ -253,7 +300,8 @@ Two limitations remain, each pinned by a test:
    line number.
 4. **Suite maintenance the merge forced** (all applied): compile with `messageBus: false` to match
    `test/direct-compile.ts` (the default `auto` mode builds bus routes this contract never takes); give
-   `beforeAll` an explicit 180 s budget, since compiling the whole port overruns the suite's 10 s `hookTimeout`; and provision
+   `beforeAll` an explicit 180 s budget, since compiling the whole port overruns the suite's 10 s
+   `hookTimeout`; and provision
    **two** plain funder UTXOs per top-up, because a facet call co-spends master + facet and the builder now
    wants one plain funder per covenant input. The mock provider also now requires `@mem-cash/validation` 0.0.8
    exactly - 0.0.7 silently ignores published consensus limits, which would let shapes pass `.build()` and fail
@@ -280,12 +328,12 @@ Ownable is reached along five paths, so this leans on C3 linearization. It holds
 
 | | hand-split facets | inheritance + auto-split |
 | --- | --- | --- |
-| files to write | 4 `.scash` + 1 doc-only `.inc` | **1** |
-| state layout declared | 4 times, guarded by a parity test | **once** |
+| files to write | 2 `.scash` + 1 doc-only `.inc` | **1** |
+| state layout declared | twice, guarded by a parity test | **once** |
 | `pendingDeposits` | two parallel mappings (facets collided on `struct Pending`) | **the struct** |
 | forwarders | 13 named, parameter names must match the facet's | **none** |
-| scripts produced | 4, hand-partitioned | **3**, compiler-partitioned |
-| total bytecode | 18,671 B | **15,995 B** |
+| scripts produced | **2**, hand-partitioned | 3, compiler-partitioned |
+| total bytecode | **15,927 B** | 15,995 B |
 
 Shards: root 1,403 B, `Facet0` 9,987 B, `Facet1` 4,605 B. Note `Facet0` is **13 B** under the cap - the
 splitter packs to the limit, so this bundle is one small edit away from needing a re-plan. That is the
@@ -312,11 +360,16 @@ because that whole block is gated on `this._signer`. Nothing errored: the transa
 native P2PKH input, and `emitTxOrigin` - which scans for exactly that input - then failed at the facet's own
 input. `SplitContractBundle` hit it hardest because `deployed.call.f()` never connects explicitly.
 
-Fixed in `SplitContractBundle.deploy`, which connects the deployed root and facets to the deploying signer.
-Deliberately NOT fixed in `ContractFactory.deploy`, where ethers parity would put it: setting `_signer` on
-every factory-deployed contract changes funder provisioning for all of them and breaks six tests across
-`EntryWriteBehavior` and `SolidityCorpusBehavior` that depend on the current input layout. That is a real gap,
-worth closing on its own terms and with those six examined one by one - it is not this fix's to take on.
+Fixed in `ContractFactory.deploy`, which is where ethers parity puts it: a factory-deployed contract is now
+connected to the factory's signer, so `deployed.call.f()` funds exactly like `contract.connect(signer).call.f()`.
+
+That fix was first taken narrowly, in `SplitContractBundle.deploy`, because the general form broke six tests
+across `EntryWriteBehavior` and `SolidityCorpusBehavior` and those looked like they depended on the input
+layout. They did not. Every one failed with `Signer has 1 available plain UTXO(s) but N funder(s) needed` -
+they were under-funded fixtures that passed only because the funder requirement was computed and then silently
+skipped. `fundedSigner()` now defaults to several coins instead of one, all six pass, and the narrow
+workaround was removed. Worth recording as a caution: "my fix breaks unrelated tests" was the wrong reading,
+and the right move was to read the failures rather than route around them.
 
 **Zero-parameter events.** `SplitContractBundle` wires facet event ARGUMENTS onto the call, guarded by
 `values.every(v => v !== undefined)` - which is vacuously TRUE for an empty parameter list. So a zero-parameter

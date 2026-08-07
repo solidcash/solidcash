@@ -17,7 +17,7 @@ import {
 
 // =============================================================================
 // NativeUsdt: a drop-in port of Ethereum USDT backed by a real CashTokens FT,
-// split across a proxy master + three branded delegate-library facets so every
+// split across a proxy master + ONE branded delegate-library facet so every
 // spending input stays under MAX_INPUT_BYTESIZE (10,000 B).
 //
 // The split is drawn by WRITE KIND: a mapping UPDATE settles through a delegate
@@ -35,9 +35,7 @@ const fx = (n: string): URL => new URL(`../fixture/${n}`, import.meta.url);
 const scriptSize = (a: Artifact): number => scriptToBytecode(asmToScript(a.bytecode)).length;
 
 const FACETS = {
-  UsdtSupply: 'nusdt_supply.scash',
-  UsdtAdmin: 'nusdt_admin.scash',
-  UsdtBoundary: 'nusdt_boundary.scash',
+  UsdtFacet: 'nusdt_facet.scash',
 } as const;
 type FacetName = keyof typeof FACETS;
 
@@ -108,7 +106,7 @@ interface Deployed {
 
 let categorySeed = 0x10;
 
-// Stand up the whole diamond: proxy master, three branded facets registered for
+// Stand up the whole diamond: proxy master, one branded facet registered for
 // L.f() auto-wiring, and a premint of real FTs in the master's token container.
 //
 // Categories are pre-chosen because the link is circular: the master embeds each
@@ -225,7 +223,7 @@ async function flagOf(d: Deployed, name: 'isBlackListed' | 'frozen', addr: Uint8
 }
 
 describe('NativeUsdt / structural: the split is what makes the contract deployable', () => {
-  it('every script - master and all three facets - fits the 10,000 B per-input limit', () => {
+  it('every script - master and the facet - fits the 10,000 B per-input limit', () => {
     const rows: Array<[string, number]> = [['nusdt.scash (master)', scriptSize(masterArt)]];
     for (const name of Object.keys(FACETS) as FacetName[]) {
       rows.push([FACETS[name], scriptSize(facetArt[name])]);
@@ -361,7 +359,7 @@ describe('NativeUsdt / genesis, supply and the FT boundary', () => {
 });
 
 describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-end)', () => {
-  it('pause and unpause round-trip through the UsdtAdmin facet', async () => {
+  it('pause and unpause round-trip through the facet', async () => {
     const d = await deployAll();
     await d.as(d.signers.owner).call.pause().send();
     expect((await readState(d)).paused).toBe(true);
@@ -506,13 +504,23 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(false);
   });
 
-  // Pinned: the two that do not fit in the master's remaining budget.
-  it('deposit is still refused: it first-touches, and does not fit in the master', async () => {
+  // The quarantine boundary stays out of reach, and the reason is a BUDGET, not a
+  // missing mechanism. deposit first-touches pendingAmount/pendingUnlockAt and
+  // claimDeposit can first-touch balances, so both need key creation on the master
+  // - and the master has no room. A guarded openAccount(address) costs ~300 B and
+  // the master cannot spare it: measured, its redeem script reaches 9,856 B and the
+  // 10,000 B cap applies to the WHOLE unlocking bytecode, which must also carry the
+  // constructor argument and the call's own arguments (239 B for one address).
+  //
+  // That three-layer budget is worth stating plainly, because the compiler's own
+  // script-size check only sees the first layer: a contract it passes can still be
+  // unspendable, and the preflight says so in as many words.
+  it('deposit is still refused: it first-touches, and key creation does not fit', async () => {
     const d = await deployAll();
     await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
     await d.fund(d.signers.owner);
-    // Assert the covenant refusal specifically - a bare toThrow() here would also
-    // be satisfied by a build-time argument error and stop discriminating.
+    // Assert the covenant refusal specifically - a bare toThrow() would also be
+    // satisfied by a build-time argument error and stop discriminating.
     await expect(
       d.as(d.signers.bob).call.deposit(d.ftCategory, 1n, 5n * UNIT).send(),
     ).rejects.toThrow(/OP_VERIFY|input 0/);

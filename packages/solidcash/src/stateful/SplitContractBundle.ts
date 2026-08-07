@@ -240,22 +240,6 @@ export class SplitContractBundle {
         });
       transactions.push(root.deploymentTransaction());
       if (logicalAddress) (root as StatefulContract)._logicalAddress = logicalAddress;
-      // Connect the deployed pieces to the deploying signer, so `deployed.call.f()` funds like
-      // `contract.connect(signer).call.f()`. A facet route is a delegatecall, and a delegated impl reading
-      // msg.sender resolves it through emitTxOrigin - which needs the sender's native P2PKH input in the
-      // transaction. The builder works that requirement out correctly (`delegateUsesMsgSender`) and then
-      // skips provisioning it, because the whole funder block is gated on `_signer` being set. Nothing
-      // errors; the transaction is simply built without that input and the facet's covenant fails at its
-      // own input. See SplitFacetMsgSender.test.ts.
-      //
-      // Deliberately NOT fixed in ContractFactory.deploy, which is where ethers parity would put it: setting
-      // `_signer` on every factory-deployed contract changes funder provisioning for all of them, and it
-      // breaks 6 tests across EntryWriteBehavior and SolidityCorpusBehavior that depend on the current input
-      // layout. That is a real gap worth closing on its own terms; it is not this fix's to take on.
-      if (signer) {
-        (root as StatefulContract)._signer = signer;
-        for (const facet of Object.values(facets)) (facet as StatefulContract)._signer = signer;
-      }
       nonceReservation?.commit();
       return new SplitContract(this.bundle, root, facets, transactions);
     } catch (error) {

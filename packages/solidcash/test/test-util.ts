@@ -277,8 +277,13 @@ export async function getSigner(
  * A single pre-funded signer (account 0) with `count` funding UTXOs - the common shortcut for a
  * ContractFactory runner: `getContractFactory(artifact, await fundedSigner()).deploy(...)`. Each funding UTXO
  * backs one `factory.deploy()` (its txid becomes the token category); pass `count > 1` to deploy repeatedly.
+ *
+ * The default is several coins, not one, because a factory-deployed contract is CONNECTED to its signer, so
+ * calls on it draw native P2PKH funders for msg.sender/tx.origin resolution the way `connect(signer)` always
+ * did. With one coin the deploy consumed it and the first such call failed - which used to be invisible,
+ * because the funder requirement was computed and then silently skipped when no signer was attached.
  */
-export async function fundedSigner(count = 1, satoshis = 1_000_000n): Promise<HDSigner> {
+export async function fundedSigner(count = 4, satoshis = 1_000_000n): Promise<HDSigner> {
   const provider = createTestProvider();
   if (provider instanceof MockNetworkProvider) {
     return (await provider.getSigners(1, { fundingUtxos: count, satoshis }))[0];

@@ -190,7 +190,17 @@ export class ContractFactory<T extends Artifact = Artifact> {
 
     const contract = result.contract as DeployedContract<T>;
     if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
-    if (signer) (contract as StatefulContract)._logicalNonceSigner = signer;
+    // ethers parity: `factory.deploy()` returns a contract CONNECTED to the factory's signer, so a call on it
+    // needs no explicit `.connect(signer)`. Without `_signer` the builder computed `neededFunders` correctly and
+    // then skipped provisioning them, because that whole block is gated on a signer being present. Nothing
+    // errored: the transaction was simply built without the sender's native P2PKH input, so any covenant reading
+    // msg.sender / tx.origin (emitTxOrigin scans for exactly that input) failed at its own input. It bit
+    // SplitContractBundle hardest, whose `deployed.call.f()` never connects explicitly - see
+    // SplitFacetMsgSender.test.ts.
+    if (signer) {
+      (contract as StatefulContract)._signer = signer;
+      (contract as StatefulContract)._logicalNonceSigner = signer;
+    }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {

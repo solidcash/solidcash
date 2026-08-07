@@ -51,8 +51,12 @@ export const MINIMUM_WINDOW_ELEMENTS = 7;
 // Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
 // below this width sharing one cannot repay a definition however often it repeats.
 const MINIMUM_POOLED_CONSTANT_BYTES = 6;
-// Candidate groups examined per round, most-repeated first. Bounds the per-round extension work.
-const CANDIDATE_GROUPS_PER_ROUND = 512;
+// Candidate groups examined per round, most-valuable first. Bounds the per-round extension work.
+//
+// Was 512, which was binding: raising it recovers 77 bytes over the corpus and saturates at this value, with
+// no measurable compile-time cost. Rounds do NOT need raising - 12 of them emit exactly what 6 do, so the
+// fixed point really is reached inside the existing budget.
+const CANDIDATE_GROUPS_PER_ROUND = 1024;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
 const MAXIMUM_ROUNDS = 6;
@@ -266,7 +270,17 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
       if (group.length >= 2) groups.push({ occurrences: group, seed: MINIMUM_WINDOW_ELEMENTS });
     }
   }
-  groups.sort((left, right) => right.occurrences.length - left.occurrences.length);
+  // Ranked by the gross bytes a group could share - occurrences times the encoded size of its seed - not by
+  // occurrence count. Count alone treats a seed of eight one-byte opcodes as equal to one carrying a 32-byte
+  // constant, so the truncation below could drop the more valuable group.
+  const seedBytes = (group: { occurrences: Occurrence[]; seed: number }): number => {
+    const { body, start } = group.occurrences[0];
+    let total = 0;
+    for (let i = start; i < start + group.seed; i += 1) total += elementByteSize(bodies[body].script[i]);
+    return total;
+  };
+  const rank = new Map(groups.map((group) => [group, group.occurrences.length * seedBytes(group)]));
+  groups.sort((left, right) => rank.get(right)! - rank.get(left)!);
   groups.splice(CANDIDATE_GROUPS_PER_ROUND);
 
   // A large repeated constant never reaches the window length, however many times it appears and however big

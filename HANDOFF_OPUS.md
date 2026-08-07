@@ -1903,3 +1903,28 @@ positions 1..21 and find which one has no corresponding slot (the extra). The `b
 already prints the OUTPUT side per si; add the same for inputs and the surplus position falls straight out.
 Candidates visible in the dump: the PLAIN runs at 113-115 and 118-122 are funder bands, and one of them is
 evidently one longer than the layout expects.
+
+### CORRECTION: not a surplus input either. It is entry-slot ASSIGNMENT, off by one.
+
+    [blockInputs g0] n=102 slots=102 :: 0:master 1:dataNft 2:dataNft 3:entry/NFT ... 20:entry/plain 21:entry/plain
+    [blockInputs g1] n=82  slots=82
+
+Both groups have `blockInputs.length == slots.length`, so there is NO surplus input and the previous section's
+conclusion is RETRACTED. With group 0's master at 102:
+
+- block offset 20 (abs 122) IS an `entry` slot, but the SDK filled it with a PLAIN funder -> empty commitment
+  -> the OP_SPLIT failure.
+- the users entry NFT landed at offset 21 (abs 123), also an `entry` slot.
+
+So the block geometry, the master, and the input count are all correct. The defect is the ENTRY-TO-SLOT
+ASSIGNMENT: the entry the covenant reads at entry-slot N is being placed at entry-slot N+1, and the vacated
+slot is backfilled with a funder (which is why it presents as "empty commitment" rather than "missing input").
+
+That points at the routeSlot -> blockSlot mapping, the same mapping `nested-entry-pick` prints
+(`blockSlot: 3, routeSlot: 0` / `blockSlot: 4, routeSlot: 1`). Compare, for the failing collection, the
+covenant's expected entry ordinal against the `routeSlot` the SDK assigns; an entry that resolves to the
+predecessor rather than the key itself (or an insert reserving a slot ahead of the read) would produce exactly
+this one-slot skew.
+
+Three suspects have now been falsified in order - wrong input base, surplus input, wrong witness - each by
+direct measurement. Do not re-open them.

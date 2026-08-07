@@ -1940,6 +1940,14 @@ export class StatefulTransactionBuilder {
         let eventIdx = 0;
         let keccakIdx = 0;
         let externalDynamicChunkIdx = 0;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_INPUTS === '1') {
+          // eslint-disable-next-line no-console
+          console.error(`[blockInputs g${groupIndex}] n=${group.blockInputs.length} `
+            + `slots=${group.blockLayout.slots.length} :: ${group.blockInputs.slice(0, 24)
+              .map((bi, k) => `${k}:${group.blockLayout!.slots[k]?.kind ?? '-'}`
+                + `/${bi.token?.nft?.commitment ? 'NFT' : 'plain'}`).join(' ')}`);
+        }
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];

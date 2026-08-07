@@ -6888,19 +6888,6 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // call's side-car at offset (N - i) from the end. i = its emission index; for a single call offset is 1
     // (the last input/output), byte-compatibly with the single-hash case.
     const argNode = node.parameters[0];
-    // `keccak256(type(C).creationCode)` hashes a blob this traversal already holds, so fold it. On chain it is
-    // not merely wasteful but impossible at this size: a Uniswap pair's creation code is 12,509 bytes = 92
-    // keccak blocks, and one side-car input funds three. `countLibraryCalls` skips the same shape, so no
-    // side-car slot is reserved for it either.
-    if (argNode instanceof TypeIntrospectionNode && argNode.contractName
-      && (argNode.property === 'creationCode' || argNode.property === 'runtimeCode')) {
-      const childBytecode = this.compiledBytecodes.get(argNode.contractName);
-      if (childBytecode) {
-        this.emit(Uint8Array.from(keccak_256(childBytecode)), loc);
-        this.pushToStack('(value)');
-        return node;
-      }
-    }
     const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
       ? argNode.name : null;
     const i = (fn.keccakPreimageParams ??= []).length;
@@ -7269,6 +7256,24 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Result-NFT model: keccak256 is computed by a co-spent side-car and read from its NFT commitment,
     // instead of loading the blob and running it on the contract's own input budget. Decided per-function
     // in SymbolTableTraversal (node.keccakCompute): stateless single-call direct-param keccak by default.
+    // `keccak256(type(C).creationCode)` hashes a blob this traversal already holds, so fold it to the digest.
+    // It must be folded BEFORE the side-car gate below: `countLibraryCalls` skips this shape, so
+    // `keccakCompute` is false and the gate would drop the call through to the generic external-library path.
+    // On chain it is not merely wasteful but impossible at this size - a Uniswap pair's creation code is
+    // 12,509 bytes = 92 keccak blocks, and one side-car input funds three.
+    if (node.identifier.name === GlobalFunction.KECCAK256 && node.parameters.length === 1) {
+      const arg = node.parameters[0];
+      if (arg instanceof TypeIntrospectionNode && arg.contractName
+        && (arg.property === 'creationCode' || arg.property === 'runtimeCode')) {
+        const childBytecode = this.compiledBytecodes.get(arg.contractName);
+        if (childBytecode) {
+          this.emit(Uint8Array.from(keccak_256(childBytecode)),
+            { location: node.location, positionHint: PositionHint.END });
+          this.pushToStack('(value)');
+          return node;
+        }
+      }
+    }
     if (this.currentFunction?.keccakCompute && node.identifier.name === GlobalFunction.KECCAK256) {
       return this.emitKeccakComputeCall(node);
     }

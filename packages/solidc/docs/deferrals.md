@@ -1880,3 +1880,31 @@ idle machine, and `poolOptions.forks.execArgv: ['--max-old-space-size=4096']` is
 MasterChef is 10,837 bytes and MasterChefV2 13,789, so both are split, and both take a synthesized message-bus
 route. Nothing beyond the preflight message has been established - no bisect, no trace. Start with
 `SOLIDCASH_COVENANT_TRACE=1` and the same instrumentation used for the constructor wall above.
+
+## keccak256 of a preimage larger than one side-car's block budget (2026-08-07)
+
+**PARTLY RESOLVED; the remaining half is deferred.** A keccak compute side-car funds three 64-byte blocks
+(~407 B) per input, so a larger preimage is refused:
+
+```
+keccak256 preimage too large (12509 B = 92 blocks); a single side-car input funds at most 3 keccak blocks
+(~407 B). Split the hash or use multiple side-cars.
+```
+
+RESOLVED for the case that mattered. The MistSwap instance (56 PairKashi / SushiSwapSwapper tests) was
+`UniswapV2Factory.pairCodeHash()` = `keccak256(type(UniswapV2Pair).creationCode)`, whose preimage the COMPILER
+already holds. That now folds to a constant in code generation, with `countLibraryCalls` skipping the same
+shape so no `keccakSideCar` slot is reserved for it. Note `FoldHashLiterals` could not do this: it runs
+pre-semantic, and `creationCode` only becomes bytes once the child has been compiled.
+
+STILL DEFERRED: a hash of RUNTIME data longer than ~407 bytes. The error names the intended design ("use
+multiple side-cars"), but a single logical hash spanning several side-car inputs is not implemented - the
+covenant would have to chain the keccak block state from one side-car's output commitment into the next
+input's, and the SDK would have to plan and fund that chain.
+
+**What it would take:** a chained side-car protocol (side-car i consumes the running state committed by i-1,
+the last commits the digest), plus SDK planning that splits the preimage on 64-byte block boundaries and sizes
+the co-spend set from the actual argument length.
+
+**Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
+computes off-chain; the refusal above still fires when the caller declines to fund the chain.

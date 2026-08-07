@@ -2040,3 +2040,30 @@ from an empty list, and the fix belongs at the head/sentinel node rather than an
 touched so far. Note the C2 design does have a structural HEAD node (`parsed.slot.every(byte => byte === 0)`
 is treated as "structural, not a logical entry" in the read path) - that sentinel is very likely what should be
 co-spent here and is not being.
+
+### FINAL NARROWING: slotIndex 4 and 17 die in KEY RESOLUTION, before the pick
+
+`entry-pick-result` (logged immediately after `list.has` / `list.predecessorOf`, on SOLIDC_DEBUG_INPUTS):
+
+    slotIndex 0 users        gotEntry: true  predecessor: found
+    slotIndex 1 arbitrators  gotEntry: true  predecessor: found
+    slotIndex 2 meceTags     gotEntry: true  predecessor: found
+    slotIndex 3 jobEvents    gotEntry: true  predecessor: found
+    [slotIndex 4 ABSENT]
+    slotIndex 5 users        gotEntry: true  predecessor: found
+    slotIndex 7 userRatings, 8 userReviews ... all fine
+
+So every slot that reaches the pick RESOLVES CLEANLY - `predecessor: found` everywhere, `gotEntry: true`
+everywhere. The head-of-list/empty-predecessor hypothesis from the previous section is therefore FALSIFIED: no
+slot fails for want of a predecessor.
+
+slotIndex 4 and 17 never reach that line at all, and they DO pass the `access && collection?.sorted` guard
+(visits=35, skips=0). So they exit in the narrow window between the guard and the `try { list.has(keySlot) }`
+block - which contains exactly one thing: the KEY RESOLUTION `keySources.map(...)`. A key source that cannot be
+resolved there (an expression key, a call-result key, or a source kind the mapper does not handle) is the
+remaining candidate, and it is the ONLY code left in that window.
+
+Next, and it should be quick: wrap/instrument the `keySources.map(...)` for slotIndex 4 and 17 and print each
+source's `kind`. Whatever those two accesses use for their keys that the others do not IS the bug. Identify the
+collection behind `entryAccesses[4]` at the same time - it is not in the logged set (users/arbitrators/
+meceTags/jobEvents/userRatings/userReviews all resolve), so it is a distinct collection worth naming.

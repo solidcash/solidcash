@@ -10986,6 +10986,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         try {
                           const exists = list.has(keySlot);
                           entry = (exists ? list.find(keySlot) : list.predecessorOf(keySlot))?.utxo;
+                          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                            ?.SOLIDC_DEBUG_INPUTS === '1') {
+                            console.error('entry-pick-result', {
+                              slotIndex: slot.slotIndex,
+                              collection: access.collection,
+                              exists,
+                              gotEntry: entry !== undefined,
+                              predecessor: exists ? 'n/a' : (list.predecessorOf(keySlot) ? 'found' : 'NONE'),
+                            });
+                          }
                           if (!exists) {
                             childPlannedEntryInserts.push({
                               blockSlot: childBlockInputs.length,

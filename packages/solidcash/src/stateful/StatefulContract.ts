@@ -12853,7 +12853,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const widthMatch = typeHint.match(/^u?int(\d+)$/);
         return uintBe(BigInt(value), widthMatch ? Number(widthMatch[1]) / 8 : 32);
       }
-      if (typeof value === 'string') return utf8ToBin(value);
+      // An ethers `bytesN` argument arrives as a `0x`-prefixed hex STRING. UTF-8-encoding it packed the 66
+      // characters of "0xa0b1.." where the covenant expects 32 raw bytes, which also desynchronised the
+      // enclosing length prefix. Decode a canonical fixed-width hex literal; anything else (including a
+      // user string that merely starts with "0x") keeps the text encoding.
+      if (typeof value === 'string') {
+        const fixedWidthHex = /^0x([0-9a-fA-F]{2})+$/.exec(value);
+        const isBytesHint = typeHint.startsWith('bytes');
+        if (fixedWidthHex && (isBytesHint || (value.length - 2) % 2 === 0) && value.length <= 66
+          && (isBytesHint || value.length === 66)) {
+          return hexToBin(value.slice(2));
+        }
+        return utf8ToBin(value);
+      }
       if (value instanceof Uint8Array) {
         if (typeHint === 'uint160' || typeHint === 'address') return value.slice(-20);
         return value;

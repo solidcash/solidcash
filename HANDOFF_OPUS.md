@@ -1228,3 +1228,48 @@ GIT TRAP that briefly lost the working tree here: `git checkout <branch> -- <pat
 version, so a following `git checkout -- <path>` restores from the INDEX (still the other branch's file),
 not from HEAD. Use `git checkout HEAD -- <path>` to undo it, and verify with a grep for a known local
 change before rebuilding.
+
+### DelegateInferred root-caused - and the trade-off that blocks shipping the fix
+
+Bisected properly this time. The earlier bisect swapped the wrong files: `git diff --name-only
+solidcash_v0.13.1 -- packages/` shows this branch differs from upstream in **11 solidc src files**, not
+the two I had been testing. (Note the pathspec: `-- 'packages/*/src'` matches NOTHING; use `-- packages/`.)
+
+Swapping `packages/solidc/src/semantic/AutoMarkDelegateFunctions.ts` for its upstream version takes
+DelegateInferred from **6 failures to 1**. Its 12-line delta is the cause:
+
+```ts
+-  FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.INTERNAL, ...   // VIEW removed
++  FunctionModifier.PURE, FunctionModifier.INTERNAL, ...
+-  if (!reachableFrom(fn, callables).some(touchesProxyState)) return false;
++  if (!fn.modifiers.includes(FunctionModifier.VIEW)
++    && !reachableFrom(fn, callables).some(touchesProxyState)) return false;   // views skip the state test
+   ...
++  if (fn.modifiers.includes(FunctionModifier.VIEW)) { fn.sourceReadOnly = true; strip VIEW; }
+   fn.modifiers.push(FunctionModifier.DELEGATE);
+```
+
+The second hunk makes EVERY view eligible - including views that touch no state. They get marked delegate,
+get `__internal__proxyMasterIndex` injected, and once VIEW is stripped a view overload collides with its
+non-view twin (`Ambiguous call: set(bigint,bigint,bigint), set(bigint,bigint,bigint)`). That is all six
+symptoms.
+
+A tighter rule faithful to the stated intent - keep VIEW out of INELIGIBLE_MODIFIERS, but require
+`touchesProxyState` of views TOO - was implemented and measured:
+
+```text
+DelegateInferred      6 -> 1        (same as upstream's file)
+SDK proxy subset     11 -> 8
+solidc project        unchanged (15 failures, same 6 files)
+marketplace           REGRESSED: now fails at compile time with
+                      "message bus verifier covenant is 12983 bytes; active consensus permits at most 10000"
+                      instead of reaching BCH preflight
+```
+
+REVERTED on that last line: it moves the primary target backwards, from a preflight failure to a hard
+capacity wall. The blanket-view marking is load-bearing for the route's verifier size - marking fewer
+views changes route admission and inflates the verifier program past 10 KB.
+
+So this is a genuine trade-off, not a bug to squash: the fix for 5 SDK tests needs to land TOGETHER with a
+verifier-size mitigation for the marketplace route. Both halves are now precisely characterised; do not
+land either alone.

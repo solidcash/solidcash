@@ -569,3 +569,27 @@ So the remaining work is one of:
   is false here). Blocked as written: `emitExternalBatchRowReturn` skips prior rows' return fields
   STATICALLY by `logicalIndex`, so dropping a row misaligns every later row's decode. Dropping the row
   therefore needs a matching conditional skip on the caller side.
+
+### Falsified: the entry index is NOT the delegate `OP_INPUTINDEX` branch
+
+`emitEntryInputIndex` (GTT ~16669) has three branches, and `emitTrailingBlockBase` (~21899) documents
+that for a message-bus route the fixed entry/event/return/trailing slots "all begin at the proxy
+master". The delegate branch nevertheless computes `OP_INPUTINDEX + offset`, which for a route running
+at input 105 with its block rooted at 106 is one short. Changed it to `emitMasterInputIndex()` when
+`currentFunction.messageBusRoute`, rebuilt solidc, wiped `.marketplace/cache/solidcash` and recompiled
+the whole project: the aborting frame and the failing index are BYTE-IDENTICAL (`0x72` = 114 both
+ways). Reverted, and the project has been recompiled again with the reverted compiler so the artifacts
+match source.
+
+So the failing index comes from the `sortedBatchInfo` branch (`emitMasterInputIndex` + a picked
+`__internal__c2BatchProof_<slot>`), not the delegate branch. But the witnesses the SDK supplies to the
+MarketplaceDataV1 route are
+
+```text
+c2BatchProof_0=2 _1=3 _2=4 _3=3 _4=3 _5=7 _6=2 _7=3 _8=10
+```
+
+and with the proxy master at 106 those give 108,109,110,109,109,113,108,109,116 - NONE of them is 114.
+So either the base for that site is not 106, or the index is built somewhere else again. Resolve that
+before touching any emitter: print the index-producing instructions the same way `abortingFrame` prints
+the aborting ones (the span begins mid-expression, at `OP_ADD`, because the outliner cut it there).

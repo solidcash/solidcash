@@ -1590,3 +1590,37 @@ Verification of this round was still in flight at the context boundary: `yarn bu
 artifacts recompiling (a truncated compile leaves half-written artifacts - confirm `Compiled 9/9 file(s)`
 before trusting any result), then the focused `post job 1` run, then the documented regression baselines
 (solidc project: 15 failures / 6 files; SDK 64-file proxy+delegate subset: 11 failures).
+
+### Correction to the section above, and where it actually stands
+
+Two assumptions in the first implementation were wrong, both now measured rather than reasoned:
+
+1. **The entry head is NOT available.** The probe aborts with `revealed: []` - the chunk pin is verified before
+   any entry commitment - so there is no head to give (slot, root, length), and the sha256-root recovery it
+   described cannot run. Retracted.
+2. **There is no trailing band here.** This route's layout has `trailingBase` UNDEFINED, so
+   `emitTrailingBlockBase` addresses chunks at `master + blockSize`, i.e. AFTER the whole callee block, not
+   inside it. The `derivedTrailingOutputs` channel is kept (it is correct for a layout that does define
+   `trailingBase`) but is not the path this contract takes.
+
+**What works.** `extractRouteChunkPin` reads the pin straight out of the aborting frame, where the covenant has
+already computed everything: output index 145, the chunk address `aa20 0d8e..87`, and the exact 128-byte
+commitment (`0000` ++ the job bytes). It is guarded by the chunk-loop instruction signature
+(`<126> OP_MUL <28> OP_ADD`) so it cannot fire on any other OP_OUTPUTBYTECODE pin, and by a p2sh32 shape check.
+Confirmed stable across probe passes.
+
+**What does not.** Placement. `addValueChunkOutput` appends at the very end, and the covenant wants absolute
+index 145, which is ALREADY OCCUPIED by a different p2sh32 output. So this is not a missing output - it is a
+geometry mismatch: either the SDK materializes fewer outputs for the callee block than `blockSize`, shifting
+everything, or index 145 belongs to a slot the SDK is filling with something else.
+
+**Next step is diagnosis, not code.** Dump the built output list around 140-150 with each output's origin and
+compare against the callee's block geometry (master input index + blockSize + isInsert). That answers whether
+the block is short or the base is off, and only then is the placement mechanism worth choosing. Do NOT add
+another placement channel before that measurement - two have already been written against guessed geometry.
+
+**Baselines re-confirmed this round:** solidc 15 failures / 6 files (unchanged). SDK subset run pending.
+Marketplace artifacts do NOT need recompiling for SDK-only changes - `.marketplace/artifacts` is current, and
+the working dir is `.marketplace` (run from repo root: `npx vitest --config vitest.solidhat.config.ts run -t ...`).
+`examples/effectiveacceleration` is a DIFFERENT, broader target whose config compiles the whole upstream EACC
+set and currently fails on MockSablierLockup/@prb-math; it is not this grind's path.

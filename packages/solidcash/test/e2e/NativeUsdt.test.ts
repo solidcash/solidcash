@@ -17,11 +17,16 @@ import {
 
 // =============================================================================
 // NativeUsdt: a drop-in port of Ethereum USDT backed by a real CashTokens FT,
-// split across a proxy master + five branded delegate-library facets so every
+// split across a proxy master + three branded delegate-library facets so every
 // spending input stays under MAX_INPUT_BYTESIZE (10,000 B).
 //
+// The split is drawn by WRITE KIND: a mapping UPDATE settles through a delegate
+// but a first-touch INSERT cannot (the proxy conserves its own-category mutable
+// NFT count, and an insert mints a node), so every function that can create a key
+// lives on the master and only update-only functions are delegated.
+//
 // The monolith is still unspendable, but the margin has collapsed: 32,644 B when
-// this was written, 13,360 B now, against a 10,000 B cap. Splitting is still what
+// this was written, 12,612 B now, against a 10,000 B cap. Splitting is still what
 // makes the contract exist - it is no longer what makes it exist by a wide margin.
 // =============================================================================
 
@@ -30,8 +35,6 @@ const fx = (n: string): URL => new URL(`../fixture/${n}`, import.meta.url);
 const scriptSize = (a: Artifact): number => scriptToBytecode(asmToScript(a.bytecode)).length;
 
 const FACETS = {
-  UsdtTransfer: 'nusdt_transfer.scash',
-  UsdtSpend: 'nusdt_spend.scash',
   UsdtSupply: 'nusdt_supply.scash',
   UsdtAdmin: 'nusdt_admin.scash',
   UsdtBoundary: 'nusdt_boundary.scash',
@@ -105,7 +108,7 @@ interface Deployed {
 
 let categorySeed = 0x10;
 
-// Stand up the whole diamond: proxy master, five branded facets registered for
+// Stand up the whole diamond: proxy master, three branded facets registered for
 // L.f() auto-wiring, and a premint of real FTs in the master's token container.
 //
 // Categories are pre-chosen because the link is circular: the master embeds each
@@ -205,16 +208,24 @@ async function readState(d: Deployed): Promise<Record<string, unknown>> {
   return (await d.master.getState()) as Record<string, unknown>;
 }
 
-// Balance of an address, read from the sorted-mapping entry UTXOs. Unused while the
-// facet mapping-write gap blocks every balance-moving function; it is the reader
-// those tests need once the gap closes.
+// Readers over the sorted-mapping entry UTXOs.
 export async function balanceOf(d: Deployed, addr: Uint8Array): Promise<bigint> {
   const v = await (d.master.state as Record<string, (k: Uint8Array) => Promise<unknown>>).balances(addr);
   return (v ?? 0n) as bigint;
 }
 
+async function allowanceOf(d: Deployed, owner: Uint8Array, spender: Uint8Array): Promise<bigint> {
+  const read = (d.master.state as Record<string, (a: Uint8Array, b: Uint8Array) => Promise<unknown>>).allowed;
+  return ((await read(owner, spender)) ?? 0n) as bigint;
+}
+
+async function flagOf(d: Deployed, name: 'isBlackListed' | 'frozen', addr: Uint8Array): Promise<boolean> {
+  const read = (d.master.state as Record<string, (k: Uint8Array) => Promise<unknown>>)[name];
+  return ((await read(addr)) ?? false) as boolean;
+}
+
 describe('NativeUsdt / structural: the split is what makes the contract deployable', () => {
-  it('every script - master and all five facets - fits the 10,000 B per-input limit', () => {
+  it('every script - master and all three facets - fits the 10,000 B per-input limit', () => {
     const rows: Array<[string, number]> = [['nusdt.scash (master)', scriptSize(masterArt)]];
     for (const name of Object.keys(FACETS) as FacetName[]) {
       rows.push([FACETS[name], scriptSize(facetArt[name])]);
@@ -238,10 +249,10 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
   // audit than six. It compiles, and it can never be SPENT - this pins the exact
   // reason the split exists rather than leaving it as a claim in a comment.
   //
-  // The overshoot is now 3,360 B, not 22,644 B: upstream outlining took the
-  // monolith from 32,644 B to 13,360 B and the largest single body from 6,555 B
-  // to 964 B. Asserting a fixed multiple of the cap would re-rot, so assert the
-  // shape that actually matters - over the cap, no single body responsible.
+  // The overshoot is now 2,612 B, not 22,644 B: upstream outlining took the
+  // monolith from 32,644 B to 12,612 B and the largest single body from 6,555 B
+  // to under 1 KB. Asserting a fixed multiple of the cap would re-rot, so assert
+  // the shape that actually matters - over the cap, no single body responsible.
   it('the single-file monolith compiles but is unspendable, which is why we split', () => {
     const mono = compileFile(fx('native_usdt.scash'), { messageBus: false }) as Artifact;
     expect(scriptSize(mono)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
@@ -406,45 +417,104 @@ describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-
 });
 
 // =============================================================================
-// STILL BLOCKED, but for a different reason than when this was written, and the
-// reason now names its own fix.
+// THE MAPPING SURFACE, unblocked.
 //
-// It used to be that NO mapping write through a facet settled: the `L.f()`
-// forwarder publishes entryAccesses = null, so the SDK provisioned no entry UTXOs
-// at all. X11 (837c8b8d) fixed that by routing the implementation's accesses, and
-// DelegateMappingProbe.test.ts now shows the split that remains:
+// Two facts set the shape here. A mapping UPDATE through a delegate facet
+// settles (X11, 837c8b8d, routed the implementation's entry accesses). A mapping
+// INSERT does not, and cannot: an insert mints an entry node, so the
+// transaction's own-category mutable NFT count rises, and a delegatecall master
+// conserves that count. That is the same defence which refuses an appended
+// fabricated entry node, so the proxy cannot admit one without admitting both.
 //
-//   UPDATE through a facet - settles, value lands.
-//   INSERT through a facet - refused at the proxy's own input, because a
-//                            delegatecall master conserves the count of its
-//                            own-category mutable NFTs and an insert mints one.
+// So the split is drawn by WRITE KIND, not by subject matter: every function
+// that can first-touch a key runs directly on the master, and only update-only
+// functions are delegated. `transfer`, `transferFrom`, `approve`, `issue`,
+// `addBlackList` and `freeze` moved into the master (9,748 B, 252 B spare);
+// `redeem`, `destroyBlackFunds`, `removeBlackList` and `unfreeze` stay on their
+// facets because they only ever write a key that already exists.
 //
-// Every function below is still refused, but only because on a fresh deployment
-// every one of these keys is NEW - they are all inserts. Nothing in this master
-// creates a key: its only non-delegated mapping writes are `withdraw`'s
-// `balances[sender] -= amount` (gated on `balances[sender] >= amount`, so the key
-// must already exist) and `cancelDeposit`'s zeroing of the pending mappings
-// (whose keys the delegated `deposit` would have had to create). So the contract
-// can never get its first key, and the whole mapping surface stays unreachable.
+// This also deleted two facets outright - nusdt_transfer.scash and
+// nusdt_spend.scash held nothing else - so the port is four scripts, not six.
 //
-// The fix is a contract change, not an upstream one: key creation has to happen
-// in a direct (non-delegated) master function. A zero-value `register(k)` is
-// enough and is cheap - proven in DelegateMappingProbe. See docs/native-usdt-port.md
-// for the two candidate shapes and their measured budgets.
+// Still refused: `deposit` and `claimDeposit`. Both first-touch (pendingAmount /
+// pendingUnlockAt, and balances for a never-seen claimant) and neither fits in
+// the master's remaining 252 B. They are pinned below.
 // =============================================================================
-describe('NativeUsdt / mapping-write facet routes (blocked: delegated INSERT)', () => {
-  const mappingWriters: Array<[string, (d: Deployed) => Promise<unknown>]> = [
-    ['issue', (d) => d.as(d.signers.owner).call.issue(1000n * UNIT).send()],
-    ['transfer', (d) => d.as(d.signers.owner).call.transfer(ADDR.bob(), 1n * UNIT).send()],
-    ['approve', (d) => d.as(d.signers.owner).call.approve(ADDR.bob(), 1n * UNIT).send()],
-    ['addBlackList', (d) => d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send()],
-    ['freeze', (d) => d.as(d.signers.owner).call.freeze(ADDR.carol()).send()],
-  ];
+describe('NativeUsdt / the mapping surface', () => {
+  it('issue credits the owner and moves supply', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.issue(1000n * UNIT).send();
+    const st = await readState(d);
+    expect(st.totalSupply).toBe(1000n * UNIT);
+    expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
+  });
 
-  for (const [name, run] of mappingWriters) {
-    it(`${name} is refused: on a fresh deploy its mapping write is an INSERT`, async () => {
-      const d = await deployAll();
-      await expect(run(d)).rejects.toThrow();
-    });
-  }
+  // KNOWN LIMITATION, pinned. USDT credits the fee to the owner, so `transfer`
+  // writes `balances[msg.sender]` AND `balances[this.owner]` - two distinct key
+  // SOURCES that resolve to ONE key whenever the owner is the sender, which is
+  // every transfer out of freshly issued supply. The C2 batch planner is then
+  // handed the same slot twice and refuses ("C2 batch upsert contains a duplicate
+  // slot"), correctly: one entry UTXO cannot be co-spent twice.
+  //
+  // The compiler already has an alias mechanism for this (batchAliasSkips), but
+  // it only pairs slots it nominated as candidates, and collision here is a
+  // RUNTIME fact. Pairing by resolved target gets past the planner and then hits
+  // the same duplicate at the entry co-spend ("Duplicate stateful input ...
+  // roles entry:1,entry:2"), so the fix spans the batch planner AND the entry
+  // co-spend/block-layout planning. Not attempted here: that is the C2 value
+  // derivation path, and a partial change there risks a silent miscompile rather
+  // than an error.
+  //
+  // Not worked around in the contract either - dropping the separate owner
+  // credit would deviate from the deployed USDT this port exists to reproduce.
+  it('transfer from the OWNER is refused: the fee credit aliases the sender slot', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.issue(1000n * UNIT).send();
+    await d.fund(d.signers.owner);
+    await expect(
+      d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send(),
+    ).rejects.toThrow(/duplicate slot/i);
+  });
+
+  it('approve records an allowance for a never-seen spender', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.approve(ADDR.bob(), 7n * UNIT).send();
+    expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(7n * UNIT);
+  });
+
+  it('addBlackList and freeze both first-touch their flag mappings', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send();
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.freeze(ADDR.carol()).send();
+    expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(true);
+    expect(await flagOf(d, 'frozen', ADDR.carol())).toBe(true);
+  });
+
+  // An UPDATE-only route, still delegated, still settling - the other half of
+  // the boundary and the reason the facets did not all have to be dissolved.
+  it('removeBlackList settles through the facet, because it is an UPDATE', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send();
+    expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(true);
+    await d.fund(d.signers.owner);
+    await d.as(d.signers.owner).call.removeBlackList(ADDR.carol()).send();
+    expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(false);
+  });
+
+  // Pinned: the two that do not fit in the master's remaining budget.
+  it('deposit is still refused: it first-touches, and does not fit in the master', async () => {
+    const d = await deployAll();
+    await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
+    await d.fund(d.signers.owner);
+    // Assert the covenant refusal specifically - a bare toThrow() here would also
+    // be satisfied by a build-time argument error and stop discriminating.
+    await expect(
+      d.as(d.signers.bob).call.deposit(d.ftCategory, 1n, 5n * UNIT).send(),
+    ).rejects.toThrow(/OP_VERIFY|input 0/);
+  });
 });

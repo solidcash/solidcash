@@ -1,7 +1,5 @@
 pragma solidcash >=0.8.0;
 
-import { UsdtTransfer } from "./nusdt_transfer.scash";
-import { UsdtSpend } from "./nusdt_spend.scash";
 import { UsdtSupply } from "./nusdt_supply.scash";
 import { UsdtAdmin } from "./nusdt_admin.scash";
 import { UsdtBoundary } from "./nusdt_boundary.scash";
@@ -11,19 +9,29 @@ import { UsdtBoundary } from "./nusdt_boundary.scash";
 // 0xdAC17F958D2ee523a2206206994597C13D831ec7, solc v0.4.18) backed by a REAL
 // CashTokens fungible token.
 //
-// WHY THIS IS SPLIT. The monolithic version of this contract compiles to ~32.6 KB
+// WHY THIS IS SPLIT. The monolithic version of this contract compiles to 12,612 B
 // of script. BCH applies MAX_INPUT_BYTESIZE = 10,000 bytes PER SPENDING INPUT
 // (the P2SH32 redeem script plus its unlocking data), so a monolith cannot be
 // spent at all - its deploy probe cannot even run one instruction. No single
-// function is over the limit; the 32.6 KB is the SUM of all bodies plus one
-// shared dispatcher. So this needs partitioning, not intra-function splitting.
+// function is over the limit (largest body 964 B); the total is the SUM of all
+// bodies plus one shared dispatcher. So this needs partitioning, not
+// intra-function splitting.
 //
 // The partition follows docs/large-contract-splitting.md strategy S2: a proxy
-// master holding the state, plus per-function facets deployed as BRANDED DELEGATE
-// LIBRARIES (docs/library-contracts.md). Each facet rides its OWN co-spent input
-// with its own 10 KB budget, so splitting multiplies the available budget instead
-// of compressing code. Measured: transfer inline costs 6,222 B in the master,
-// versus 214 B as a forwarder with the logic on the facet's own input.
+// master holding the state, plus facets deployed as BRANDED DELEGATE LIBRARIES
+// (docs/library-contracts.md). Each facet rides its OWN co-spent input with its
+// own 10 KB budget, so splitting multiplies the available budget instead of
+// compressing code.
+//
+// WHERE THE LINE IS DRAWN: BY WRITE KIND, NOT BY SUBJECT. A mapping UPDATE
+// settles through a delegate, but a first-touch INSERT cannot - an insert mints
+// an entry node, so the transaction's own-category mutable NFT count rises, and a
+// delegatecall master conserves that count (the same defence that refuses an
+// appended fabricated entry node). So every function that can CREATE a key runs
+// directly here - transfer, transferFrom, approve, issue, addBlackList, freeze -
+// and only update-only functions are delegated: redeem, destroyBlackFunds,
+// removeBlackList, unfreeze. That is what makes the mapping surface reachable at
+// all; see packages/solidc/docs/native-usdt-port.md s3.
 //
 // Soundness of the split rests on the library BRAND, not on an address: a facet
 // compiled with { brandLibrary: true } pins the co-spent master's category in its
@@ -53,7 +61,14 @@ import { UsdtBoundary } from "./nusdt_boundary.scash";
 
 contract NativeUsdt(address initialOwner) {
 
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+
     // ---- events emitted from the master itself ----
+    event Transfer(address indexed from, address indexed to, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Issue(int amount);
+    event AddedBlackList(address indexed user);
+    event Frozen(address indexed user);
     event Withdrawal(address indexed from, int value);
     event DepositCancelled(address indexed to, int value);
 
@@ -170,25 +185,114 @@ contract NativeUsdt(address initialOwner) {
     // up in the ABI of the function being called, so a renamed forwarder parameter
     // silently breaks slot derivation ("Cannot convert value to bytes for type
     // address") rather than failing at compile time.
-    function transfer(address to, int value) { UsdtTransfer.transfer(to, value); }
-    function transferFrom(address from, address to, int value) { UsdtSpend.transferFrom(from, to, value); }
-    function approve(address spender, int value) { UsdtAdmin.approve(spender, value); }
-    function issue(int amount) { UsdtSupply.issue(amount); }
     function redeem(int amount) { UsdtSupply.redeem(amount); }
     function destroyBlackFunds(address blackListedUser) { UsdtSupply.destroyBlackFunds(blackListedUser); }
     function setParams(int newBasisPoints, int newMaxFee) { UsdtSupply.setParams(newBasisPoints, newMaxFee); }
     function transferOwnership(address newOwner) { UsdtAdmin.transferOwnership(newOwner); }
     function pause() { UsdtAdmin.pause(); }
     function unpause() { UsdtAdmin.unpause(); }
-    function addBlackList(address evilUser) { UsdtAdmin.addBlackList(evilUser); }
     function removeBlackList(address clearedUser) { UsdtAdmin.removeBlackList(clearedUser); }
-    function freeze(address user) { UsdtAdmin.freeze(user); }
     function unfreeze(address user) { UsdtAdmin.unfreeze(user); }
     function deprecate(address newAddress) { UsdtAdmin.deprecate(newAddress); }
     function setQuarantineBlocks(int blocks) { UsdtAdmin.setQuarantineBlocks(blocks); }
     function tick(int nowHeight) { UsdtBoundary.tick(nowHeight); }
     function deposit(bytes32 category, int nowHeight, int amount) { UsdtBoundary.deposit(category, nowHeight, amount); }
     function claimDeposit() { UsdtBoundary.claimDeposit(); }
+
+    // ---- The INSERT path, direct (non-delegated) ----
+    // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a C2 INSERT
+    // mints one, so a first-touch mapping write cannot settle through a facet. These six each
+    // first-touch a key, so they run HERE, on the master, where the write is direct.
+    // The update-only functions (redeem, destroyBlackFunds, removeBlackList, unfreeze) stay on
+    // their facets, because an UPDATE through a delegate does settle.
+
+    function transfer(address to, int value) {
+        require(!this.paused);
+        require(!this.deprecated);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        int fee = (value * this.basisPointsRate) / 10000;
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+        int sendAmount = value - fee;
+
+        require(this.balances[sender] >= value);
+        this.balances[sender] = this.balances[sender] - value;
+        this.balances[to] = this.balances[to] + sendAmount;
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner] + fee;
+            emit Transfer(sender, this.owner, fee);
+        }
+        emit Transfer(sender, to, sendAmount);
+    }
+
+    function transferFrom(address from, address to, int value) {
+        require(!this.paused);
+        require(!this.deprecated);
+        address spender = msg.sender;
+        require(!this.isBlackListed[from]);
+        require(!this.frozen[from]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        int currentAllowance = this.allowed[from][spender];
+
+        int fee = (value * this.basisPointsRate) / 10000;
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
+        }
+
+        // USDT decrements only FINITE allowances; MAX_UINT is the infinite sentinel.
+        if (currentAllowance < MAX_ALLOWANCE) {
+            require(currentAllowance >= value);
+            this.allowed[from][spender] = currentAllowance - value;
+        }
+
+        int sendAmount = value - fee;
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.balances[to] = this.balances[to] + sendAmount;
+        if (fee > 0) {
+            this.balances[this.owner] = this.balances[this.owner] + fee;
+            emit Transfer(from, this.owner, fee);
+        }
+        emit Transfer(from, to, sendAmount);
+    }
+
+    function approve(address spender, int value) {
+        require(!this.deprecated);
+        address tokenOwner = msg.sender;
+        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    function issue(int amount) {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+
+    function addBlackList(address evilUser) {
+        require(msg.sender == this.owner);
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function freeze(address user) {
+        require(msg.sender == this.owner);
+        this.frozen[user] = true;
+        emit Frozen(user);
+    }
 
     function authorize(pubkey pk, sig s) unsafe {
         require(checkSig(s, pk));

@@ -40,6 +40,15 @@ pragma solidcash >=0.8.0;
 //     nothing to forward to. The flag, the address, and the Deprecate event are
 //     all kept, and the ERC20 entry points refuse to operate once deprecated.
 //
+//   * No on-chain view functions. `balanceOf` / `allowance` / `totalSupply` /
+//     `getBlackListStatus` / `getOwner` / `getFrozenStatus` / `getPendingAmount`
+//     are read off-chain from UTXOs via the SDK (`sc.state.*`, `sc.balances(who)`),
+//     which is free; keeping them on-chain spends script budget on data any
+//     client already has. This file carried them for a while after the shipping
+//     split dropped them, which made the "reference spec" describe a contract
+//     nobody deploys - NativeUsdtSurfaceParity.test.ts now pins the three
+//     arrangements to one surface so that cannot recur.
+//
 //   * Authorization uses `msg.sender`, exactly as Solidity does. On BCH this
 //     resolves to the first non-token-bearing P2PKH input's locking bytecode (or
 //     a co-spent contract's), and consensus already required that input to carry
@@ -264,20 +273,6 @@ contract NativeTetherToken(address initialOwner) {
         emit Approval(tokenOwner, spender, value);
     }
 
-    // ==== ERC20 views ====
-
-    function balanceOf(address who) view returns (int) {
-        return this.balances[who];
-    }
-
-    function allowance(address tokenOwner, address spender) view returns (int) {
-        return this.allowed[tokenOwner][spender];
-    }
-
-    function getTotalSupply() view returns (int) {
-        return this.totalSupply;
-    }
-
     // ==== BlackList ====
 
     function addBlackList(address evilUser) onlyOwner {
@@ -303,14 +298,6 @@ contract NativeTetherToken(address initialOwner) {
         emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
     }
 
-    function getBlackListStatus(address maker) view returns (bool) {
-        return this.isBlackListed[maker];
-    }
-
-    function getOwner() view returns (address) {
-        return this.owner;
-    }
-
     // ==== Extension: freeze ====
     // Reversible and non-destructive, unlike the blacklist. A frozen account can
     // neither send nor receive, and cannot claim a matured deposit.
@@ -323,10 +310,6 @@ contract NativeTetherToken(address initialOwner) {
     function unfreeze(address user) onlyOwner {
         this.frozen[user] = false;
         emit Unfrozen(user);
-    }
-
-    function getFrozenStatus(address user) view returns (bool) {
-        return this.frozen[user];
     }
 
     // ==== Supply management ====
@@ -479,7 +462,4 @@ contract NativeTetherToken(address initialOwner) {
         emit QuarantineParams(blocks);
     }
 
-    function getPendingAmount(address who) view returns (int) {
-        return this.pendingDeposits[who].amount;
-    }
 }

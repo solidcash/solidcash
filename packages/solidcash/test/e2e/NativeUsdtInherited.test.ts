@@ -12,17 +12,22 @@ import { alicePriv, aliceAddress } from '../fixture/vars.js';
 
 // =============================================================================
 // The same USDT port composed by INHERITANCE and partitioned by the built-in
-// splitter, instead of by six hand-written delegate-library facets.
+// splitter, instead of by hand-written delegate-library facets.
 //
 // What this buys over nusdt*.scash (see docs/native-usdt-port.md s5):
-//   one declaration of the state layout instead of six copies; `struct Pending`
+//   one declaration of the state layout instead of four copies; `struct Pending`
 //   back instead of two parallel mappings; no forwarders; 3 scripts totalling
-//   15,995 B instead of 6 totalling 25,139 B; and a partition the compiler
+//   15,995 B instead of 4 totalling 18,671 B; and a partition the compiler
 //   re-plans instead of a hand-drawn line that rots.
 //
-// What still blocks it: msg.sender does not resolve inside an auto-split facet
-// (SplitFacetMsgSender.test.ts has the minimal repro), and every USDT entry
-// point is onlyOwner or reads msg.sender for the sender's own balance.
+// Owner-gated routes settle here now: the two bugs that blocked them - msg.sender
+// not resolving in a facet, and a zero-parameter event emitted twice - are fixed
+// and pinned by SplitFacetMsgSender.test.ts.
+//
+// What still does not work is the mapping surface, and for the same reason as in
+// the hand-split arrangement: a delegated first-touch INSERT is refused by the
+// proxy. The hand-split works around it by keeping the insert path on the master;
+// here the splitter chooses the partition, so that lever is not available.
 // =============================================================================
 
 const MAX_INPUT_BYTESIZE = 10000;
@@ -32,10 +37,12 @@ const scriptSize = (a: Artifact): number => scriptToBytecode(asmToScript(a.bytec
 let flat: Artifact;
 let bundle: SplitArtifactBundle;
 
+// The splitter's probe explores facet groupings and recompiles each one, which is ~60 s on an idle machine
+// and several times that when the suite runs in parallel with others - hence the outsized hook budget.
 beforeAll(() => {
   flat = compileFile(fx('nusdt_inherited.scash'), { messageBus: false }) as Artifact;
   bundle = compileFileSplit(fx('nusdt_inherited.scash'), { messageBus: false });
-}, 300000);
+}, 900000);
 
 describe('NativeUsdtInherited / composition', () => {
   // Ownable is reached along five paths (Pausable, BasicToken via StandardToken and
@@ -82,9 +89,9 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       expect(size, `${name} is ${size} B, over the ${MAX_INPUT_BYTESIZE} B per-input limit`)
         .toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     }
-    // Fewer, smaller scripts than the hand-rolled six (25,139 B at the same commit).
-    expect(rows.length).toBeLessThan(6);
-    expect(rows.reduce((a, [, s]) => a + s, 0)).toBeLessThan(25139);
+    // Fewer, smaller scripts than the hand-rolled four (18,671 B at the same commit).
+    expect(rows.length).toBeLessThan(4);
+    expect(rows.reduce((a, [, s]) => a + s, 0)).toBeLessThan(18671);
   });
 
   it('routes every ABI function to the root or a facet', () => {
@@ -123,8 +130,24 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
     expect(state.quarantineBlocks).toBe(10n);
     expect(state.owner).toStrictEqual(addressToLockScript(aliceAddress));
 
-    // ...but no USDT entry point can be called, because all of them read
-    // msg.sender. SplitFacetMsgSender.test.ts isolates why.
-    await expect(deployed.call.pause().send()).rejects.toThrow(/OP_VERIFY/);
+    // Owner-gated scalar routes settle through the facets. All of these read
+    // msg.sender, and `pause` also emits a zero-parameter event - the two bugs
+    // SplitFacetMsgSender.test.ts pins.
+    await deployed.call.pause().send();
+    expect((await deployed.root.getState()).paused).toBe(true);
+    await deployed.call.unpause().send();
+    expect((await deployed.root.getState()).paused).toBe(false);
+    await deployed.call.setParams(5n, 10n).send();
+    expect((await deployed.root.getState()).basisPointsRate).toBe(5n);
+    await deployed.call.setQuarantineBlocks(25n).send();
+    expect((await deployed.root.getState()).quarantineBlocks).toBe(25n);
+
+    // Mapping entry points remain refused, at the ROOT's input rather than a
+    // facet's: on a fresh deployment each one is a first-touch INSERT, and a
+    // delegatecall proxy conserves its own-category mutable NFT count. Same
+    // boundary as the hand-rolled facets (s3), so it is a property of the
+    // delegatecall mechanism and not of how the facets were authored.
+    await expect(deployed.call.addBlackList(addressToLockScript(aliceAddress)).send())
+      .rejects.toThrow(/OP_VERIFY/);
   }, 300000);
 });

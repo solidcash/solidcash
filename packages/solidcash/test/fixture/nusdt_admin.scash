@@ -58,35 +58,10 @@ library UsdtAdmin {
         emit Unpause();
     }
 
-    // USDT carries the EIP-20 race-condition guard: a non-zero allowance must be
-    // zeroed before it can be changed to another non-zero value. Reproduced.
-    function approve(address spender, int value) public {
-        require(!this.deprecated);
-        address tokenOwner = msg.sender;
-        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
-        this.allowed[tokenOwner][spender] = value;
-        emit Approval(tokenOwner, spender, value);
-    }
-
-    function addBlackList(address evilUser) public {
-        require(msg.sender == this.owner);
-        this.isBlackListed[evilUser] = true;
-        emit AddedBlackList(evilUser);
-    }
-
     function removeBlackList(address clearedUser) public {
         require(msg.sender == this.owner);
         this.isBlackListed[clearedUser] = false;
         emit RemovedBlackList(clearedUser);
-    }
-
-    // Freeze is reversible and non-destructive, unlike the blacklist: a frozen
-    // account can neither send nor receive and cannot claim a matured deposit,
-    // but its funds are never seizable.
-    function freeze(address user) public {
-        require(msg.sender == this.owner);
-        this.frozen[user] = true;
-        emit Frozen(user);
     }
 
     function unfreeze(address user) public {

@@ -32,19 +32,6 @@ library UsdtSupply {
     int backedSupply;
     int clock;
 
-    // Releases preminted reserve into circulation rather than creating tokens.
-    // Consensus makes over-issuance impossible: the FTs must already sit in the
-    // container, and `containerSeen` was read from the container itself.
-    function issue(int amount) public {
-        require(msg.sender == this.owner);
-        require(amount > 0);
-        require(this.containerSeen >= this.backedSupply + amount);
-        this.balances[this.owner] = this.balances[this.owner] + amount;
-        this.totalSupply = this.totalSupply + amount;
-        this.backedSupply = this.backedSupply + amount;
-        emit Issue(amount);
-    }
-
     function redeem(int amount) public {
         require(msg.sender == this.owner);
         require(amount > 0);

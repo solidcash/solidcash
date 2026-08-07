@@ -8,38 +8,66 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';
 
 // =============================================================================
-// `msg.sender` does not resolve inside an auto-split FACET.
+// REGRESSION: `msg.sender` inside an auto-split FACET, and a zero-parameter
+// event emitted from one. Both were broken; both are fixed.
 //
-// This is a blocking gap for the built-in splitter, because every access-
-// controlled contract reads msg.sender - `onlyOwner` is the whole of Ownable,
-// and therefore of every OZ-derived contract and of USDT itself.
+// 1. msg.sender. `ContractFactory.deploy` set `_logicalNonceSigner` but never
+//    `_signer`, so a contract returned by a Signer-backed factory was not
+//    "connected" for funding purposes. The builder computed `neededFunders = 1`
+//    correctly (delegateUsesMsgSender fires) and then skipped provisioning it,
+//    because that whole block is gated on `this._signer`. Nothing errored: the
+//    transaction was simply built with no native P2PKH input, and emitTxOrigin -
+//    which scans for exactly that input - then failed at the facet's own input.
+//    SplitContractBundle hit this hardest, since `deployed.call.f()` never
+//    connects explicitly. Fixed in ContractFactory.deploy, which is also ethers
+//    parity: a factory-deployed contract is connected to the factory's signer.
 //
-// The three probes below isolate it to the resolution, not to the comparison:
+// 2. Zero-parameter events. SplitContractBundle wires facet event ARGUMENTS onto
+//    the call, guarded by `values.every(v => v !== undefined)` - vacuously TRUE
+//    for an empty parameter list. So a zero-parameter event got a manual emit on
+//    top of the one the builder already lays out from the facet's published
+//    `emits`, and the covenant refused the duplicate output.
 //
-//   unsplit `guarded`  - settles, so the guard itself is sound.
-//   split   `bump`     - settles, so scalar writes through a facet are fine.
-//   split   `guarded`  - fails at the FACET's input.
-//   split   `vacuous`  - fails too, and `msg.sender == msg.sender` is a
-//                        tautology, so no value comparison can be responsible.
-//
-// `bump` and `guarded` are the same scalar write on the same facet; msg.sender
-// is the only difference between them.
-//
-// emitTxOrigin scans for the first input that is neither OP_INPUTINDEX nor
-// token-bearing. A split call co-spends TWO covenant inputs (root and facet),
-// which is the structural difference from the unsplit case; the scan running at
-// the facet's own input is what fails. Not root-caused further here.
+// Each probe isolates one variable: `bump` vs `guarded` differ only by the
+// sender check, and the three event functions differ only by what they emit.
 // =============================================================================
 const SRC = `pragma solidcash >=0.8.0;
 contract Probe(address initialOwner) {
   public address owner;
   public int a;
   public int b;
-  constructor() { this.owner = initialOwner; this.a = 0; this.b = 0; }
+  public int c;
+  event Zero();
+  event One(int v);
+  constructor() { this.owner = initialOwner; this.a = 0; this.b = 0; this.c = 0; }
   function bump() { this.a = this.a + 1; }
   function guarded() { require(msg.sender == this.owner); this.b = this.b + 1; }
   function vacuous() { require(msg.sender == msg.sender); this.b = this.b + 1; }
+  function zeroParamEvent() { require(msg.sender == this.owner); this.c = this.c + 1; emit Zero(); }
+  function oneParamEvent() { require(msg.sender == this.owner); this.c = this.c + 1; emit One(7); }
 }`;
+
+async function deploySplit(): Promise<{ deployed: Awaited<ReturnType<SplitContractBundle['deploy']>> }> {
+  const compiled = compileStringSplit(SRC, { forceSplit: true });
+  const provider = createTestProvider();
+  const signer = new Signer(alicePriv, provider);
+  const funding = [];
+  for (const byte of ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'ea', 'eb', 'ec']) {
+    funding.push(await provider.addUtxo(signer.getAddress(), {
+      txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
+    }));
+  }
+  const deployed = await SplitContractBundle.from(compiled, signer).deploy(
+    [addressToLockScript(aliceAddress)],
+    {
+      fundingUtxo: funding[0],
+      facetOverrides: Object.fromEntries(compiled.manifest.facets.map((f, i) => [
+        f.name, { fundingUtxo: funding[i + 1] },
+      ])),
+    },
+  );
+  return { deployed };
+}
 
 describe('auto-split facet: msg.sender', () => {
   it('resolves when the contract is NOT split (control)', async () => {
@@ -50,44 +78,38 @@ describe('auto-split facet: msg.sender', () => {
     const art = compileString(SRC);
     const contract = new Contract(art, [owner], { provider });
     const { categoryId } = await setupStatefulUtxos(provider, contract, art.stateLayout!,
-      { owner, a: 0n, b: 0n }, { saltContract: true });
+      { owner, a: 0n, b: 0n, c: 0n }, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.connect(signer).call.guarded().send();
     expect((await sc.getState()).b).toBe(1n);
   });
 
-  it('does NOT resolve inside a facet, while a plain write on the same facet settles', async () => {
+  it('resolves inside a facet, without an explicit connect on the deployed bundle', async () => {
     const compiled = compileStringSplit(SRC, { forceSplit: true });
-    // Both guarded functions must land on a facet for the comparison to mean anything.
+    // The comparison only means something if both land on a facet rather than the root.
     const routeOf = (fn: string): string =>
       (compiled.manifest.routes.find((r) => r.function === fn) as { target: string } | undefined)?.target ?? '?';
     expect(routeOf('bump')).not.toBe('root');
     expect(routeOf('guarded')).toBe(routeOf('bump'));
 
-    const provider = createTestProvider();
-    const signer = new Signer(alicePriv, provider);
-    const funding = [];
-    for (const byte of ['e1', 'e2', 'e3', 'e4', 'e5', 'e6', 'e7', 'e8', 'e9', 'ea']) {
-      funding.push(await provider.addUtxo(signer.getAddress(), {
-        txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
-      }));
-    }
-    const factory = SplitContractBundle.from(compiled, signer);
-    const facetOverrides = Object.fromEntries(compiled.manifest.facets.map((f, i) => [
-      f.name, { fundingUtxo: funding[i + 1] },
-    ]));
-    const deployed = await factory.deploy([addressToLockScript(aliceAddress)], {
-      fundingUtxo: funding[0], facetOverrides,
-    });
-
-    // The same scalar write, without a sender check, settles through the facet.
+    const { deployed } = await deploySplit();
     await deployed.call.bump().send();
     expect((await deployed.root.getState()).a).toBe(1n);
+    // Adding the sender check is the only difference, and it now settles too.
+    await deployed.call.guarded().send();
+    expect((await deployed.root.getState()).b).toBe(1n);
+    // A tautology exercises resolution without any comparison outcome.
+    await deployed.call.vacuous().send();
+    expect((await deployed.root.getState()).b).toBe(2n);
+  });
+});
 
-    // Adding the sender check is the only change, and it fails.
-    await expect(deployed.call.guarded().send()).rejects.toThrow(/OP_VERIFY/);
-    // A tautology fails identically, so this is resolution and not comparison.
-    await expect(deployed.call.vacuous().send()).rejects.toThrow(/OP_VERIFY/);
-    expect((await deployed.root.getState()).b, 'neither guarded write landed').toBe(0n);
+describe('auto-split facet: events', () => {
+  it('emits a zero-parameter event exactly once, like a parameterised one', async () => {
+    const { deployed } = await deploySplit();
+    await deployed.call.oneParamEvent().send();
+    expect((await deployed.root.getState()).c).toBe(1n);
+    await deployed.call.zeroParamEvent().send();
+    expect((await deployed.root.getState()).c, 'the zero-parameter emit settled').toBe(2n);
   });
 });

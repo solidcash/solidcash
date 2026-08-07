@@ -1642,3 +1642,31 @@ covenant's expectation `master + blockSize + isInsert`. THEN choose the channel.
 Three placement channels have now been written against inferred geometry and all three missed. The extraction
 half is solid and verified; do not rewrite it. The next change should be the measurement above, not a fourth
 channel.
+
+### The measurement, and the actual crux
+
+The `si -> absolute output` map (SOLIDC_DEBUG_CHUNK_GEOM=1, left in place) settled the geometry:
+
+- Absolute output **145 is `si: 39, kind: 'trailing'`** - so the chunks DO land in the callee's trailing band,
+  and `trailingBase` IS defined. The earlier "no trailing band / lands past the layout" conclusion was an
+  artifact of keying by the wrong base (`bOutputBase` = 3 is not the block's output base) and is RETRACTED.
+- si 39 = trailingBase(38) + 1, exactly the covenant's `master + trailingBase + isInsert`. The FIRST
+  implementation's placement rule was right all along; it never ran because the wrong key made `kind` read
+  `undefined`.
+- **si 39 maps to absOut 42 in one build shape and 145 in another, 77 times each.** Absolute indices are NOT
+  stable across the probe and final builds; block position is. Placement is therefore keyed by position, and
+  the chunk's own index (the commitment's 2-byte LE prefix) fixes its offset within the band.
+
+**The crux, unresolved.** With placement now position-correct and stable (pin fires exactly twice, no spurious
+outputs), output 145 is still not what the covenant wants. The probe build the derivation runs against and the
+build whose geometry produced index 145 are not the same shape - that is what the two `si 39` mappings mean.
+Until the probe build reproduces the final build's output geometry, no placement key can satisfy the pin.
+
+Next: find why the probe build has a different output count/shape than the final build for this route, and
+whether the covenant's 145 was computed under the probe geometry or the final one. That is a question about
+`route-probe-build-start/finish` vs the final `build()`, not about the chunk code, which is now correct as far
+as it can be verified independently.
+
+**Regression state:** solidc 15 failures / 6 files (baseline, unchanged). Full SDK suite was still running at
+the context boundary - it MUST be checked before this branch is trusted, since the chunk placement touches the
+shared block-output loop. `getValueChunkLockingBytecode` lost its unused `contract` parameter (1 call site).

@@ -1930,10 +1930,13 @@ export class StatefulTransactionBuilder {
         for (let si = dataNftEnd; si < group.blockInputs.length; si++) {
           const input = group.blockInputs[si];
           const slot = group.blockLayout.slots[si];
+          if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+            ?.SOLIDC_DEBUG_CHUNK_GEOM === '1') {
+            console.error('block-loop-pos', { si, absOut: builder.outputs.length, kind: slot?.kind });
+          }
 
-          // A route's computed value chunks are pinned by absolute index, which can fall PAST the block layout
-          // (blockInputs outruns slots) where the loop would otherwise emit a funder passthrough. Keyed by si so
-          // it covers both that region and a defined trailing band; see deriveRouteValueChunks.
+          // Keyed by block position: a given position maps to different absolute output indices in the probe
+          // and final builds, so the position is what stays stable. See deriveRouteValueChunks.
           const derivedChunk = group.derivedTrailingOutputs?.get(si);
           if (derivedChunk) {
             builder.addOutput({

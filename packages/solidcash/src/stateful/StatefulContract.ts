@@ -657,12 +657,19 @@ function deriveRouteValueChunks(
       outputIndex: pin.outputIndex, blockSlot, kind, commitmentBytes: pin.commitment.length / 2,
     });
   }
-  // Keyed by block position for both cases: inside a defined trailing band, and - with no trailingBase, as
-  // here - past the layout entirely, where the block loop would otherwise emit a funder passthrough.
-  if (blockSlot < 0) return false;
+  // Keyed by BLOCK POSITION, not absolute index: the same position maps to different absolute indices across
+  // the probe and final builds, but the covenant's own base is position-relative
+  // (emitTrailingBlockBase: master + trailingBase + isInsert), so the position is the stable key.
+  const trailingBase = group.blockLayout.trailingBase;
+  if (trailingBase === undefined) return false;
   const derived = group.derivedTrailingOutputs ?? new Map();
-  if (derived.get(blockSlot)?.commitment === pin.commitment) return false;
-  derived.set(blockSlot, { commitment: pin.commitment, lockingBytecode: pin.lockingBytecode });
+  const insertOffset = (group.plannedEntryInserts ?? []).length > 0 ? 1 : 0;
+  // The chunk's own index is the commitment's 2-byte LE prefix, so each chunk keeps a fixed position rather
+  // than advancing with how many have been placed so far.
+  const chunkIndex = parseInt(pin.commitment.slice(2, 4) + pin.commitment.slice(0, 2), 16);
+  const si = trailingBase + insertOffset + chunkIndex;
+  if (derived.get(si)?.commitment === pin.commitment) return false;
+  derived.set(si, { commitment: pin.commitment, lockingBytecode: pin.lockingBytecode });
   group.derivedTrailingOutputs = derived;
   return true;
 }

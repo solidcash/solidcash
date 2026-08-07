@@ -1952,6 +1952,10 @@ export class StatefulTransactionBuilder {
           // group is not the group it was probed from. See deriveRouteValueChunks.
           const derivedChunk = this.derivedChunkOutputs.get(builder.outputs.length);
           if (derivedChunk) {
+            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+              ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+              console.error('chunk-placed', { groupIndex, si, absOut: builder.outputs.length });
+            }
             builder.addOutput({
               to: derivedChunk.lockingBytecode,
               amount: 1000n,

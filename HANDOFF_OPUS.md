@@ -1700,3 +1700,25 @@ index and look stuck when it is not.
 documented baseline (11) is for a 64-file proxy/delegate SUBSET, not this project, so 53 is NOT yet attributable
 either way - do not read it as a regression or as clean. Get a clean full-project baseline (stash and re-run)
 before trusting this branch. solidc is unchanged at 15 failures / 6 files.
+
+### Chunk placement CONFIRMED working; the remaining blocker is a different failure
+
+`chunk-placed` (left in place behind SOLIDC_DEBUG_ROUTE_CONCISE=1) confirms both chunks are materialized in the
+final builds, in the owning group:
+
+    72 chunk-placed { groupIndex: 1, si: 39, absOut: 145 }
+    71 chunk-placed { groupIndex: 1, si: 40, absOut: 146 }
+
+The chunk-shaped aborts still visible in `progressive-route-entries` are from INTERMEDIATE derivation passes,
+which is how progressive derivation is supposed to look - each pass reveals the next chunk. They are not the
+final failure, and the earlier reading of them as "stuck at 145" was wrong: the extractor only fires on the
+address check, so it keeps reporting that index while later passes move on.
+
+**The remaining failure is not the chunk pin.** The final error is `preflight failed at input 102: OP_SPLIT
+invalid index. stack item length: 0; requested split index: 1` - an OP_SPLIT on an EMPTY stack item, a different
+signature from the chunk pin's OP_OUTPUTBYTECODE/OP_EQUALVERIFY. An empty item at a split points at an empty
+WITNESS, which is the same family as the read-side bug fixed in 5e1b7163 (`childValueWitnesses` was empty
+because the caller's `entryValueWitnesses` describes the caller's own collections). Start there: find which
+witness feeds input 102's split and whether it is populated for the route's callee.
+
+Do NOT keep instrumenting the chunk path - it is placing correctly. The next work is at input 102.

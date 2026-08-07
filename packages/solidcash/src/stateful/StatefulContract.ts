@@ -5749,14 +5749,23 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
             console.error('route-probe-build-finish', { groupIdx, inputs: probeBuilder.inputs.length });
+            console.error('route-probe-output-window', probeBuilder.outputs.slice(38, 50).map((output, offset) => ({
+              index: 38 + offset,
+              bytecode: typeof output.to === 'string' ? output.to : binToHex(output.to),
+              category: output.token?.category,
+              commitment: output.token?.nft?.commitment,
+            })));
           }
           const transaction = probeBuilder.buildLibauthTransaction();
           const sourceOutputs = generateLibauthSourceOutputs(probeBuilder.inputs);
 
           // Get B's master input index
+          // A proxied nested callee's state transition and return blob are authenticated by its co-spent
+          // implementation, not by the forwarding proxy master. Probe that implementation input; probing the
+          // proxy can complete successfully without ever exposing the route's return commitment.
           const expectedMaster = group.delegateCallGroupIndex === undefined
             ? group.masterUtxo
-            : externalCallUtxoGroups[groupIdx].masterUtxo;
+            : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex]?.masterUtxo ?? group.masterUtxo;
           // Composed delegate bands can be interleaved when TransactionBuilder materializes the final input
           // list. The STB's pre-build `allInputs` ordering is therefore not authoritative for a derivation VM
           // run. Resolve the exact outpoint in the probe we are about to execute; retain the layout getter only
@@ -5775,6 +5784,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // so the placeholder does not affect the entry-commitment extraction below; the final build uses this patch.
           if (group.blockLayout && group.blockInputs) {
             const bScPatch = group.externalContract as StatefulContract | null;
+            const bEntryScPatch = group.delegateCallGroupIndex === undefined
+              ? bScPatch
+              : stb.getLowLevelCallUtxoGroups()[group.delegateCallGroupIndex]
+                ?.externalContract as StatefulContract | undefined;
             const bAbiPatch = group.compilerRoute?.abiFunction
               ?? bScPatch?.inner.artifact.abi?.find(
                 (f: { name: string }) => f.name === group.functionName,
@@ -5782,19 +5795,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             for (let si = 0; si < group.blockLayout.slots.length; si++) {
               const s = group.blockLayout.slots[si];
               const input = group.blockInputs[si];
-              if (s?.kind !== 'entry' || !bScPatch || !input?.token?.nft) continue;
+              if (s?.kind !== 'entry' || !bEntryScPatch || !input?.token?.nft) continue;
               const acc = bAbiPatch?.entryAccesses?.[s.slotIndex ?? 0];
               if (!acc) continue;
-              input.unlocker = createEntryNftUnlocker(bScPatch.inner, bMasterIdx, group.categoryId, acc.collection);
+              input.unlocker = createEntryNftUnlocker(
+                bEntryScPatch.inner, bMasterIdx, group.categoryId, acc.collection,
+              );
             }
             // Cross-contract callee LOOP entries (trailing, no block slot): patch their write-mode unlockers with B's
             // real master input index too (the entry covenant's flag=1 path verifies the minting master there).
-            if (group.entryLoopStart !== undefined && group.entryLoopCollection && bScPatch) {
+            if (group.entryLoopStart !== undefined && group.entryLoopCollection && bEntryScPatch) {
               for (let j = 0; j < (group.entryLoopCommitments?.length ?? 0); j++) {
                 const input = group.blockInputs[group.entryLoopStart + j];
                 if (input?.token?.nft) {
                   input.unlocker = createEntryNftUnlocker(
-                    bScPatch.inner, bMasterIdx, group.categoryId, group.entryLoopCollection,
+                    bEntryScPatch.inner, bMasterIdx, group.categoryId, group.entryLoopCollection,
                   );
                 }
               }
@@ -5887,10 +5902,25 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             let entryTrace = fullTrace;
             if (group.compilerRoute) {
               const entryProbe = stb.build();
+              const entryTransaction = entryProbe.buildLibauthTransaction();
+              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                console.error('route-entry-output-window', entryProbe.outputs.slice(38, 50).map((output, offset) => ({
+                  index: 38 + offset,
+                  bytecode: typeof output.to === 'string' ? output.to : binToHex(output.to),
+                  category: output.token?.category,
+                  commitment: output.token?.nft?.commitment,
+                })));
+                console.error('route-entry-libauth-output-44', entryTransaction.outputs[44] && {
+                  bytecode: binToHex(entryTransaction.outputs[44].lockingBytecode),
+                  category: entryTransaction.outputs[44].token?.category
+                    ? binToHex(entryTransaction.outputs[44].token!.category) : undefined,
+                });
+              }
               entryTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,
                 sourceOutputs: generateLibauthSourceOutputs(entryProbe.inputs),
-                transaction: entryProbe.buildLibauthTransaction(),
+                transaction: entryTransaction,
               });
             }
             const entrySlotCount = group.blockLayout.slots.filter((slot) => slot.kind === 'entry').length;
@@ -10359,17 +10389,37 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     tokenSupport: false,
                   });
                   if (typeof address !== 'string') {
-                    deploymentAtAddress = findDeploymentByAddress(this.inner.provider, address.address)?.contract;
+                    deploymentAtAddress ??= findDeploymentByAddress(
+                      this.inner.provider, address.address,
+                    )?.contract;
                   }
                 } catch { /* fall through to interface-name resolution */ }
               }
               // Hardhat-style factories connect externals on the public proxy
               // instance. A manually assembled delegate may instead connect them
-              // directly on the implementation; accept both, preferring the latter.
+              // directly on the implementation. When the source supplies an address, that authenticated value
+              // identifies the instance; an interface-name registration is only a fallback. Otherwise a stale
+              // same-interface binding can silently redirect a state-pinned call to a different deployment.
+              const rawCandidates = nested.interfaceName === '__raw__'
+                ? [...new Set([
+                  ...callInfo.contract._externalRegistry.values(),
+                  ...this._externalRegistry.values(),
+                ])].filter((candidate) => {
+                  const contract = ('proxy' in candidate ? candidate.implementation : candidate) as StatefulContract;
+                  return (contract.inner.artifact.abi as readonly AbiFunction[])
+                    .some((fn) => fn.name === nested.rawFunctionName);
+                }) : [];
+              if (rawCandidates.length > 1 && deploymentAtAddress === undefined) {
+                throw new Error(
+                  `Delegate raw call '${nested.rawFunctionName}' matches more than one connected contract; `
+                  + 'pin its target address in the caller state or arguments.',
+                );
+              }
               const registeredCallee = (
-                callInfo.contract._externalRegistry.get(nested.interfaceName)
+                deploymentAtAddress
+                ?? rawCandidates[0]
+                ?? callInfo.contract._externalRegistry.get(nested.interfaceName)
                 ?? this._externalRegistry.get(nested.interfaceName)
-                ?? deploymentAtAddress
                 ?? findDeploymentByName(this.inner.provider, nested.interfaceName)?.contract
               ) as StatefulContract | {
                 proxy: StatefulContract; implementation: StatefulContract;
@@ -10401,7 +10451,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 );
               }
               const childCompilerRoute = this._buildRepeatedExternalBatch(
-                nested, callInfo.args, callee, callInfo.contract.inner.artifact,
+                nested, callInfo.args, callee, callInfo.contract.inner.artifact, onChainState.state,
+                proxyCallee?.implementation.inner.artifact.delegateArtifact
+                  ?? proxyCallee?.implementation.inner.artifact,
               );
               const childState = await callee.getFullState();
               if (!childState.masterUtxo) {
@@ -10484,13 +10536,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ));
                 delegateCallGroupIndex = existingDelegateIndex >= 0
                   ? existingDelegateIndex : lowLevelCallUtxoGroups.length;
-                if (existingDelegateIndex >= 0) {
-                  if (targetFn.writesState) {
-                    const primaryDelegate = lowLevelCallUtxoGroups[existingDelegateIndex];
-                    primaryDelegate.functionName = nested.functionName;
-                    primaryDelegate.functionArgs = nestedArgs;
-                  }
-                } else {
+                if (existingDelegateIndex < 0) {
                   nestedDelegateProxyGroupByLowLevel.set(delegateCallGroupIndex, childExternalGroupIndex);
                   lowLevelCallUtxoGroups.push({
                     categoryId: proxyCallee.implementation.categoryId,
@@ -10507,9 +10553,33 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               if (childCompilerRoute && proxyCallee) {
-                throw new Error('Nested repeated-call batching through an upgrade proxy is not yet supported');
-              }
-              if (childCompilerRoute) {
+                if (delegateCallGroupIndex === undefined) {
+                  throw new Error('Nested proxy batch route has no delegate implementation group');
+                }
+                const delegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
+                delegate.functionName = childCompilerRoute.abiFunction.name;
+                delegate.functionArgs = childCompilerRoute.args;
+                delegate.compilerRoute = childCompilerRoute;
+                // The proxy still executes its ordinary forwarder; only the co-spent implementation selects the
+                // compiler-owned batch route. Keep route metadata on the proxy group below for physical block
+                // planning, but forward the route selector rather than one logical handler selector.
+                childFunctionName = '__forward';
+                childFunctionArgs = [childCompilerRoute.selector];
+                childWritesState = true;
+                childRequired = Array.from(
+                  { length: childLayout.dataNftCount ?? 0 }, (_, nftIndex) => nftIndex,
+                );
+                childData = childRequired.map((nftIndex) => {
+                  const utxo = childState.dataNftUtxos[nftIndex];
+                  if (!utxo) throw new Error(
+                    `Proxy data NFT at index ${nftIndex} not found for ${nested.interfaceName}`,
+                  );
+                  return {
+                    ...utxo,
+                    unlocker: createDataNftUnlocker(callee.inner, 0, callee.categoryId),
+                  };
+                });
+              } else if (childCompilerRoute) {
                 childFunctionName = childCompilerRoute.abiFunction.name;
                 childFunctionArgs = childCompilerRoute.args;
                 // A repeated route is selected precisely to execute one physical owner for several logical
@@ -10540,6 +10610,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const selectedFn = childCompilerRoute?.abiFunction
                 ?? (callee.inner.artifact.abi as readonly AbiFunction[])
                   .find((fn) => fn.name === childFunctionName);
+              const proxyTargetFn = proxyCallee
+                ? (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
+                  .find((fn) => fn.name === nested.functionName)
+                : undefined;
+              // A compiler route created by an earlier logical call owns the callee's one physical UTXO block
+              // and executes every selector in its batch blob. Solidity lowering still publishes the individual
+              // callsites (including mutually-exclusive SafeERC20 approve branches), so they arrive here too.
+              // Represent those as shared logical groups only; planning their ordinary handler layouts again
+              // would require a second master and, for an absent C2 key, invent a trailing insert slot that the
+              // direct handler deliberately does not have.
+              const logicalSelector = proxyTargetFn?.selector ?? selectedFn?.selector;
+              const sharedCompilerRouteCoversCall = sharedGroupIndex >= 0
+                && logicalSelector !== undefined
+                && externalCallUtxoGroups[sharedGroupIndex].compilerRoute
+                  ?.logicalSelectors.includes(logicalSelector) === true;
               if (childCompilerRoute
                 && (globalThis as { process?: { env?: Record<string, string> } }).process?.env
                   ?.SOLIDC_DEBUG_ROUTE === '1') {
@@ -10552,14 +10637,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       : String(childFunctionArgs[index]),
                   })));
               }
-              if (!proxyCallee) childWritesState ||= selectedFn?.writesState === true;
+              if (!proxyCallee && !sharedCompilerRouteCoversCall) {
+                childWritesState ||= selectedFn?.writesState === true;
+              }
+              if (sharedCompilerRouteCoversCall) childWritesState = false;
+              if (proxyCallee && delegateCallGroupIndex !== undefined
+                && childWritesState && !childCompilerRoute) {
+                const primaryDelegate = lowLevelCallUtxoGroups[delegateCallGroupIndex];
+                primaryDelegate.functionName = nested.functionName;
+                primaryDelegate.functionArgs = nestedArgs;
+              }
               let precomputedReturnCommitment: Uint8Array | undefined;
-              const proxyTargetFn = proxyCallee
-                ? (proxyCallee.implementation.inner.artifact.abi as readonly AbiFunction[])
-                  .find((fn) => fn.name === nested.functionName)
-                : undefined;
               const effectiveReturnFn = proxyTargetFn ?? selectedFn;
               if (nested.hasReturnValues && effectiveReturnFn && !childWritesState
+                && !sharedCompilerRouteCoversCall
                 && effectiveReturnFn.outputs?.length === 1) {
                 const proxyStateNames = proxyCallee
                   ? new Set([
@@ -10599,6 +10690,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 blockSlot: number; outputBlockSlot: number;
               }> = [];
               const selectedLayout = selectedFn?.blockLayout;
+              const routePlanningArgs = childCompilerRoute?.args ?? childFunctionArgs;
               if ((sharedGroupIndex < 0 || childWritesState)
                 && selectedLayout && selectedLayout.blockSize > 1) {
                 childBlockInputs = [];
@@ -10667,18 +10759,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const visibleInputs = selectedFn.inputs
                           .filter((input) => !input.name.startsWith('__internal__'));
                         const paramIndex = visibleInputs.findIndex((input) => input.name === paramName);
-                        const value = paramIndex >= 0 ? childFunctionArgs[paramIndex] : undefined;
-                        return value instanceof Uint8Array ? value
-                          : typeof value === 'bigint' ? bigIntToVmNumber(value)
-                            : typeof value === 'boolean' ? bigIntToVmNumber(value ? 1n : 0n)
-                              : undefined;
+                        const value = paramIndex >= 0 ? routePlanningArgs[paramIndex] : undefined;
+                        if (value === undefined || paramIndex < 0) return undefined;
+                        const encoded = encodeFunctionArgument(
+                          value,
+                          visibleInputs[paramIndex].type,
+                          proxyCallee?.implementation.inner.artifact.structs
+                            ?? callee.inner.artifact.structs
+                            ?? childLayout.structs,
+                        );
+                        return encoded instanceof Uint8Array ? encoded : undefined;
                       });
                       if (keys?.every((key): key is Uint8Array => key !== undefined)) {
                         // The entry covenant derives its locking bytecode from
                         // the ABI collection identifier (the source name), not
                         // the descriptive state-layout signature.
+                        // A proxy owns the category/state, while its delegate implementation owns the entry
+                        // covenant bytecode which authenticates that state. Resolve and unlock C2 entries with
+                        // the implementation contract, retaining the proxy category.
+                        const entryContract = proxyCallee?.implementation.inner ?? callee.inner;
                         const address = getEntryNftAddress(
-                          callee.inner, callee.categoryId, access.collection,
+                          entryContract, callee.categoryId, access.collection,
                         );
                         const addressUtxos = await this.inner.provider.getUtxos(address);
                         if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -10713,7 +10814,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     childBlockInputs.push(entry ? {
                       ...entry,
                       unlocker: createEntryNftUnlocker(
-                        callee.inner, 0, callee.categoryId, access!.collection,
+                        proxyCallee?.implementation.inner ?? callee.inner,
+                        0, callee.categoryId, access!.collection,
                       ),
                     } : await takeFunder());
                   } else if (slot.kind === 'returnEvent') {
@@ -10757,8 +10859,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
                 );
                 const entryLockingBytecode = createEntryNftUnlocker(
-                  callee.inner, 0, callee.categoryId, batch.collection,
+                  proxyCallee?.implementation.inner ?? callee.inner,
+                  0, callee.categoryId, batch.collection,
                 ).generateLockingBytecode();
+                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                  ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                  console.error('nested-batch-entry-lock', {
+                    collection: batch.collection,
+                    selected: binToHex(entryLockingBytecode),
+                    proxy: binToHex(createEntryNftUnlocker(
+                      callee.inner, 0, callee.categoryId, batch.collection,
+                    ).generateLockingBytecode()),
+                    implementation: proxyCallee ? binToHex(createEntryNftUnlocker(
+                      proxyCallee.implementation.inner, 0, callee.categoryId, batch.collection,
+                    ).generateLockingBytecode()) : undefined,
+                  });
+                }
                 predecessorOutputs.forEach((output, ordinal) => {
                   childBatchPredecessorOutputs.push({
                     outputBlockSlot: insertBase + childBatchTrailingCount + ordinal,
@@ -10857,6 +10973,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   primary.fusedReturnGroupIndex = childExternalGroupIndex;
                 }
               }
+              if (proxyCallee && childCompilerRoute && delegateCallGroupIndex !== undefined) {
+                lowLevelCallUtxoGroups[delegateCallGroupIndex].compilerRoute = {
+                  ...childCompilerRoute,
+                  ...((selectedFn?.sortedBatchInfo?.length ?? 0) > 0 && {
+                    internalArgs: childCompilerInternalArgs,
+                  }),
+                };
+              }
               externalCallUtxoGroups.push({
                 categoryId: callee.categoryId,
                 stateLayout: childLayout,
@@ -10916,36 +11040,74 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Complete the nested callee unlockers now that every external group has a
       // stable absolute input position.
+      const denseCallInputBase = 1 + requiredNftIndices.length
+        + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
+      const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
+      const compilerRouteDelegate = lowLevelCallUtxoGroups.find(
+        (g) => g.callMode === 'delegatecall' && g.compilerRoute?.abiFunction.blockLayout,
+      );
+      const compilerRouteDelegateLayout = compilerRouteDelegate?.compilerRoute?.abiFunction.blockLayout;
+      lowLevelCallInputBase = compilerRouteDelegateLayout
+        // A compiler-owned route executes against the proxy's state, but its entry/proof resources still occupy
+        // the complete balanced route block rooted at the proxy master. As for nested proxies, the implementation
+        // follows that physical block; placing it after only the proxy data NFTs overwrites route slot 3.
+        ? compilerRouteDelegateLayout.blockSize
+        : hasDelegatecallGroup
+        // Delegate bytecode binds its proxy-master witness to the physical relation
+        // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.
+          ? 1 + requiredNftIndices.length
+          : denseCallInputBase;
       const delegateInputCount = lowLevelCallUtxoGroups
         .filter((group, groupIndex) => group.callMode === 'delegatecall'
           && !nestedDelegateProxyGroupByLowLevel.has(groupIndex))
         .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
       const hasNestedDelegate = delegateInputCount > 0;
-      let nestedInputBase = hasNestedDelegate
-        ? 1 + requiredNftIndices.length + delegateInputCount
-        : 1 + requiredNftIndices.length + externalReadUtxos.length
-          + outStateInputCount + iterationEntryInputs.length;
+      // `_buildInputs` materializes the complete route block, then EVERY low-level call input, then the
+      // participant blocks - a nested proxy's implementation precedes its own block rather than following it.
+      // The dense frame below is one input per resource and does not describe that layout, so a route block
+      // rebases the callee band onto the physical one.
+      const allLowLevelInputCount = lowLevelCallUtxoGroups
+        .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, 0);
+      let nestedInputBase = compilerRouteDelegateLayout
+        ? lowLevelCallInputBase + allLowLevelInputCount
+        : hasNestedDelegate
+          ? 1 + requiredNftIndices.length + delegateInputCount
+          : 1 + requiredNftIndices.length + externalReadUtxos.length
+            + outStateInputCount + iterationEntryInputs.length;
+      // Output positions are NOT stretched by the route block: the block's funder slots produce no outputs, so
+      // a callee's outputs still start right after the caller's own state. Tracked separately from the input
+      // base because an in-block return event is an OUTPUT offset within the callee's block.
+      let nestedOutputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
+        + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
+        + iterationEntryInputs.length;
       const nestedMasterIndices: number[] = [];
+      const nestedOutputBases: number[] = [];
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
         const child = externalCallUtxoGroups[groupIdx];
         if (child.sharedGroupIndex !== undefined) {
           nestedMasterIndices[groupIdx] = nestedMasterIndices[child.sharedGroupIndex];
+          nestedOutputBases[groupIdx] = nestedOutputBases[child.sharedGroupIndex];
           continue;
         }
         nestedMasterIndices[groupIdx] = nestedInputBase;
+        nestedOutputBases[groupIdx] = nestedOutputBase;
         const childMasterIndex = nestedInputBase;
         child.dataNftUtxos = child.dataNftUtxos.map((utxo) => ({
           ...utxo,
           unlocker: createDataNftUnlocker(child.externalContract.inner, childMasterIndex, child.categoryId),
         }));
-        nestedInputBase += child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
+        const childBlockInputCount = child.blockInputs?.length ?? 1 + child.dataNftUtxos.length;
+        nestedInputBase += childBlockInputCount;
+        nestedOutputBase += childBlockInputCount;
         // Delegate implementations associated with a nested proxy are placed
         // immediately after that proxy block by the transaction builder. Keep
-        // subsequent callee indices aligned with that physical band.
-        if (child.delegateCallGroupIndex !== undefined) {
+        // subsequent callee indices aligned with that physical band. A route block places every
+        // implementation ahead of the callee band instead, and `allLowLevelInputCount` already covers them.
+        if (child.delegateCallGroupIndex !== undefined && !compilerRouteDelegateLayout) {
           const delegate = lowLevelCallUtxoGroups[child.delegateCallGroupIndex];
           if (delegate?.callMode === 'delegatecall') {
             nestedInputBase += 1 + delegate.dataNftUtxos.length;
+            nestedOutputBase += 1 + delegate.dataNftUtxos.length;
           }
         }
       }
@@ -10976,9 +11138,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (physical.returnEventInBlock && physical.blockLayout) {
           const returnSlot = physical.blockLayout.slots.find((slot) => slot.kind === 'returnEvent');
           if (returnSlot) {
+            // An in-block return event is an OUTPUT at that offset of the callee's block. The dense frame made
+            // the input and output bases coincide, so the input base served for both; a route block stretches
+            // only the input side, and reading it there names an unrelated output (an entry NFT, whose leading
+            // zero bytes decode as an empty return value rather than failing outright). Legacy layouts keep the
+            // established input-base reading.
             physicalReturnIndexForGroup.set(
               groupIdx,
-              nestedMasterIndices[physicalGroupIdx] + returnSlot.offset,
+              (compilerRouteDelegateLayout
+                ? nestedOutputBases[physicalGroupIdx] : nestedMasterIndices[physicalGroupIdx])
+              + returnSlot.offset,
             );
           }
         }
@@ -11009,7 +11178,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         child.returnOutputIndex = physicalReturnIndexForGroup.get(
           child.fusedReturnGroupIndex ?? groupIdx,
         );
-        const childFn = child.compilerRoute?.abiFunction
+        const childFn = (child.delegateCallGroupIndex === undefined
+          ? child.compilerRoute?.abiFunction : undefined)
           ?? (child.externalContract.inner.artifact.abi as readonly AbiFunction[])
             .find((f) => f.name === child.functionName);
         if (!childFn) continue;
@@ -11040,15 +11210,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const childBlockSize = child.blockInputs?.length
               ?? child.blockLayout?.blockSize
               ?? 1 + child.dataNftUtxos.length;
+            // Under a route block the implementations are contiguous right after the block, ahead of every
+            // callee, so this one sits at its rank in that band rather than behind its proxy.
+            const routeBlockWitness = compilerRouteDelegateLayout === undefined ? undefined
+              : lowLevelCallUtxoGroups.slice(0, delegateGroup)
+                .reduce((sum, group) => sum + 1 + group.dataNftUtxos.length, lowLevelCallInputBase);
             if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
               ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
               console.error('nested-delegate-input-witness', {
                 groupIdx, childFunction: child.functionName,
-                childMaster: nestedMasterIndices[groupIdx], childBlockSize,
-                witness: nestedMasterIndices[groupIdx] + childBlockSize,
+                childMaster: nestedMasterIndices[groupIdx], childBlockSize, routeBlockWitness,
+                witness: routeBlockWitness ?? nestedMasterIndices[groupIdx] + childBlockSize,
               });
             }
-            return BigInt(nestedMasterIndices[groupIdx] + childBlockSize);
+            return BigInt(routeBlockWitness ?? nestedMasterIndices[groupIdx] + childBlockSize);
           }
           if (input.name.startsWith('__internal__c2Batch')) {
             const value = child.compilerRoute?.internalArgs?.[input.name];
@@ -11061,7 +11236,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             `Unsupported SDK-filled nested delegate callee parameter '${input.name}' on ${child.functionName}.`,
           );
         });
-        const childUnlocker = child.compilerRoute
+        // For a proxied callee, compilerRoute describes the co-spent implementation and the proxy master still
+        // executes its ordinary __forward entry. The implementation group below owns the route unlocker.
+        const childUnlocker = child.compilerRoute && child.delegateCallGroupIndex === undefined
           ? child.externalContract.inner.createCompilerRouteUnlocker(
             child.compilerRoute.abiFunction, child.compilerRoute.selector,
           )(...encoded)
@@ -11126,15 +11303,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         returnEmitBlockOffset = delegateReturnEventOffset;
         returnEmitOutputIndex = (overrides?.blockBase ?? 0) + returnEmitBlockOffset;
       }
-      const denseCallInputBase = 1 + requiredNftIndices.length
-        + externalReadUtxos.length + outStateInputCount + externalCallInputCount;
-      const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
-      lowLevelCallInputBase = hasDelegatecallGroup
-        // Delegate bytecode binds its proxy-master witness to the physical relation
-        // `delegateInput - (1 + proxyDataNftCount)`. Nested callees therefore follow the implementation.
-        ? 1 + requiredNftIndices.length
-        : denseCallInputBase;
-
       // Fix data NFT unlockers with correct master input index
       let currentBase = lowLevelCallInputBase;
       for (let groupLocalIdx = 0; groupLocalIdx < lowLevelCallUtxoGroups.length; groupLocalIdx++) {
@@ -11143,7 +11311,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const proxyPhysicalSize = proxyExternalGroup === undefined ? 0
           : (externalCallUtxoGroups[proxyExternalGroup].blockInputs?.length
             ?? 1 + externalCallUtxoGroups[proxyExternalGroup].dataNftUtxos.length);
-        const masterInputIndex = proxyExternalGroup === undefined
+        // A route block lays every implementation out contiguously right after the block, ahead of the callee
+        // band, so `currentBase` already names this one. Only the legacy interleaved layout puts a nested
+        // proxy's implementation after that proxy's own block.
+        const masterInputIndex = proxyExternalGroup === undefined || compilerRouteDelegateLayout
           ? currentBase : nestedMasterIndices[proxyExternalGroup] + proxyPhysicalSize;
         group.dataNftUtxos = group.dataNftUtxos.map((nftUtxo) => ({
           ...nftUtxo,
@@ -11160,7 +11331,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // same-name entry would compute the synthetic-arg injection from a different overload than the one the
         // unlocker then selects.
         const bSameName = bAbi.filter((f) => f.name === group.functionName);
-        const bFunc = bSameName.find((f) => f.inputs
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+          console.error('delegate-function-selection', {
+            groupLocalIdx, contract: bArt.contractName, functionName: group.functionName,
+            functionArgCount: group.functionArgs.length,
+            compilerRouteArgCount: group.compilerRoute?.args.length,
+            candidates: bSameName.map((f) => f.inputs
+              .filter((inp) => !inp.name.startsWith('__internal__')).length),
+          });
+        }
+        const bFunc = group.compilerRoute?.abiFunction ?? bSameName.find((f) => f.inputs
           .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
           ?? bSameName[0];
         if (bFunc) {
@@ -11269,6 +11450,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 ? -1 : physicalReturnIndexForGroup.get(nestedGroup) ?? -1);
             }
             if (inp.name.startsWith('__internal__c2Batch')) {
+              const compilerRouteValue = group.compilerRoute?.internalArgs?.[inp.name];
+              if (compilerRouteValue !== undefined) return compilerRouteValue;
               const value = entryBatchWitnesses[batchWitnessIndex++];
               if (value !== undefined) {
                 // C2 batch proofs are offsets from the active contract's master input. A delegated
@@ -11313,7 +11496,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           group.masterUtxo = {
             ...(group.masterUtxo as UnlockableUtxo),
-            unlocker: group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
+            unlocker: group.compilerRoute
+              ? group.externalContract.inner.createCompilerRouteUnlocker(
+                group.compilerRoute.abiFunction, group.compilerRoute.selector,
+              )(...encodedArgs)
+              : group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
           };
           if (anchorFillPositions.length > 0) {
             pendingAnchorFills.push({ group, functionName: group.functionName, encodedArgs, positions: anchorFillPositions });
@@ -11701,7 +11888,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // verified at proxyMaster+offset (emitMasterInputIndex=proxyMasterIndex), which is INSIDE the proxy's block -
     // so the proxy must reserve those output-only slots (funder input + event output), shifting the co-spent impl
     // UTXOs after them. __forward's own layout has none. Offsets align: proxy blockSize == impl master+dataNfts.
-    let effectiveBlockLayout = abiFunction?.blockLayout;
+    const compilerRouteDelegateLayout = lowLevelCallUtxoGroups.find(
+      (g) => g.callMode === 'delegatecall' && g.compilerRoute?.abiFunction.blockLayout,
+    )?.compilerRoute?.abiFunction.blockLayout;
+    // The proxy is the physical route owner. Its implementation's compiler-owned route layout therefore replaces
+    // the forwarder's tiny master/data/call layout, exactly like a nested proxy's preassembled `blockInputs`.
+    let effectiveBlockLayout = compilerRouteDelegateLayout ?? abiFunction?.blockLayout;
     // X56. Relocate - never duplicate - the forwarder's returnEvent slot when the impl resolves its own return
     // event at a DIFFERENT index in this block. Unconditional on the send mode: two slots at one offset would
     // have the funder loop position the same index twice, and a plain send has to keep the event where it is.
@@ -11773,6 +11965,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       ...(lowLevelCallUtxoGroups.length > 0 && { lowLevelCallUtxoGroups }),
       ...(lowLevelCallRawInputs.length > 0 && { lowLevelCallRawInputs }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
+        && !compilerRouteDelegateLayout
         && { delegateEntriesAfterLowLevel: true }),
       // X56. Only when the co-spent implementation BOTH emits and returns: its event resolves to the index the
       // forwarder had reserved for the return channel, so the return channel has to follow the events.
@@ -11780,6 +11973,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         && { delegateReturnEventAfterEvents: true }),
       ...(lowLevelCallUtxoGroups.some((group) => group.callMode === 'delegatecall')
         && { lowLevelCallInputBase }),
+      ...(compilerRouteDelegateLayout && { compilerRouteDelegateBlock: true }),
       ...(batchPredCommitments.size > 0 && { batchEntriesBeforeDynamicChunks: true }),
       ...(eventDefs.length > 0 && { eventDefinitions: eventDefs }),
       ...(eventNftLockingBytecodes.size > 0 && { eventNftLockingBytecodes }),
@@ -12702,18 +12896,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     externalContract: StatefulContract,
     callerArtifact: Artifact = this.inner.artifact,
     callerState?: Record<string, StateValue>,
+    calleeRouteArtifact: Artifact = externalContract.inner.artifact,
   ): {
       abiFunction: AbiFunction;
       selector: Uint8Array;
       blob: Uint8Array;
       args: FunctionArgument[];
+      logicalSelectors: string[];
       eventSignaturesBySlot?: Array<string | undefined>;
     } | undefined {
     const rows = externalCall.batchInvocations;
     if (!rows) return undefined;
     if (rows.length < 2) throw new Error('Repeated external message-bus batch batch must contain at least two rows');
 
-    const capability = externalContract.inner.artifact.messageBus;
+    const capability = calleeRouteArtifact.messageBus;
     if (!capability || capability.version !== 1 || capability.selector !== '53434231') {
       throw new Error(
         `${externalCall.interfaceName} does not advertise a compatible message-bus route`,
@@ -12727,7 +12923,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
 
-    const structs = externalContract.inner.artifact.structs
+    const structs = calleeRouteArtifact.structs
       ?? externalContract.inner.stateLayout?.structs;
     const keyWitnessValues = new Map<string, {
       value: FunctionArgument;
@@ -12862,6 +13058,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       selector: hexToBin(capability.selector),
       blob,
       args: [blob, ...routeWitnesses],
+      logicalSelectors: rows.map((row) => row.selector),
       ...(eventSignaturesBySlot.some((signature) => signature !== undefined)
         && { eventSignaturesBySlot }),
     };

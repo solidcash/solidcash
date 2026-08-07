@@ -2013,3 +2013,30 @@ is the last unexplored branch at this site.
 Same caution applies to reading the earlier `entry-pick-SKIP` / `nested-entry-pick-threw` zeros: those came
 from a run that DID complete (`mkt_skip.log`), so they stand - but verify the log ends with a test result
 before trusting any zero-count as evidence of absence.
+
+### Completed re-run: every entry slot IS visited and passes the guard
+
+(The earlier truncation was self-inflicted: those runs passed a Bash timeout above the tool max. Re-run with
+`timeout 540` inside and 600000 on the tool and it completes in ~4 min.)
+
+    visits=35  skips=0     (entry-slot-visit / entry-pick-SKIP, both on SOLIDC_DEBUG_INPUTS)
+    pos 7  -> slotIndex 4    conditional: undefined  softDelete: undefined
+    pos 20 -> slotIndex 17   conditional: undefined  softDelete: undefined
+
+So slotIndex 4 and 17 are NOT skipped by the guard, are NOT conditional, and are NOT soft-deletes. They reach
+the pick code like every other slot. (`picks=0` in this run is only because `nested-entry-pick` is gated on
+SOLIDC_DEBUG_ROUTE_CONCISE, not SOLIDC_DEBUG_INPUTS - do not read it as "no picks happened".)
+
+**Therefore the pick runs and finds NOTHING to co-spend.** `nested-entry-pick` logs inside the found-an-entry
+branch, which is why those two never appear there. With `exists: false` on every key in this test, a pick
+supplies the PREDECESSOR as the absence-bracket proof - and a key that sorts before the first element of its
+list, or a list that is empty, HAS no predecessor. The SDK then falls back to a funder, while the covenant
+still reads a commitment at that slot. That is the failure.
+
+**Hypothesis to test first (highest value, not yet run):** confirm that the collections behind
+`entryAccesses[4]` and `entryAccesses[17]` are empty (or that the key sorts first) at that point in the test.
+If so, the defect is HEAD-OF-LIST ABSENCE: the covenant's absence proof needs an input the SDK cannot supply
+from an empty list, and the fix belongs at the head/sentinel node rather than anywhere this investigation has
+touched so far. Note the C2 design does have a structural HEAD node (`parsed.slot.every(byte => byte === 0)`
+is treated as "structural, not a logical entry" in the read path) - that sentinel is very likely what should be
+co-spent here and is not being.

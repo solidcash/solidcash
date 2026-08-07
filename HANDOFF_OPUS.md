@@ -1670,3 +1670,33 @@ as it can be verified independently.
 **Regression state:** solidc 15 failures / 6 files (baseline, unchanged). Full SDK suite was still running at
 the context boundary - it MUST be checked before this branch is trusted, since the chunk placement touches the
 shared block-output loop. `getValueChunkLockingBytecode` lost its unused `contract` parameter (1 call site).
+
+### The placing group is NOT the owning group (root cause found), and where it stops
+
+`block-loop-pos` with `groupIndex` settled it:
+
+    groupIndex: 1, si: 39, absOut: 145   <- the block that OWNS output 145
+    groupIndex: 0, si: 39, absOut: 42
+
+The chunk pin is extracted while probing **group 0**, but the output it addresses (145) lives in **group 1's**
+block - the covenant's base is the proxy master, so the probed group and the owning group differ. Every
+per-group placement channel therefore stored the chunk where the builder would never look for it. That is the
+single root cause behind all the earlier placement misses, and it is FIXED: the map now lives on the builder
+(`setDerivedChunkOutput`), keyed by absolute output index, and the block loop matches it on
+`builder.outputs.length` across every group.
+
+**Proof the mechanism works:** the pin advanced 145 -> 146. Chunk 0 was accepted and the covenant moved on to
+chunk 1. That is the first time this write has progressed at all.
+
+**Where it stops.** It stops at 146: chunk 1's placement does not stick the way chunk 0's did, and two
+chunk-shaped aborts remain. The probe budget was already extended (one pass per chunk, capped at
+VALUE_CHUNK_MAX_COUNT) and that is not the limit being hit. Next: instrument what is actually emitted at 146 in
+the build that follows the second placement - specifically whether replacing a second funder passthrough in the
+same block shifts anything, and whether the abort at 146 is still check (a) (address) or has moved to check (b)
+(commitment). The extractor only fires on (a), so if it has moved to (b) the pin will keep reporting (a)'s
+index and look stuck when it is not.
+
+**Regression state (IMPORTANT, unresolved):** the full SDK project run reports 53 failures / 21 files. The
+documented baseline (11) is for a 64-file proxy/delegate SUBSET, not this project, so 53 is NOT yet attributable
+either way - do not read it as a regression or as clean. Get a clean full-project baseline (stash and re-run)
+before trusting this branch. solidc is unchanged at 15 failures / 6 files.

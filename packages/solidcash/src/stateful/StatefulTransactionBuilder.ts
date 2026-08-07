@@ -347,6 +347,11 @@ export class StatefulTransactionBuilder {
   // managed - the entry stores sha256(value) and the read verifies the reassembled witness, so these need no
   // on-chain pinning. Commitments are known exactly (buildChunkCommitment) so they never enter auto-derivation.
   private valueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
+
+  /** Route value chunks the derivation recovered, keyed by ABSOLUTE output index. Builder-level, not per-group:
+   * the covenant that pins them is probed as one group but addresses an output in ANOTHER group's block (its
+   * base is the proxy master), so the placing group and the owning group are different. */
+  private derivedChunkOutputs = new Map<number, { commitment: string; lockingBytecode: Uint8Array }>();
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
@@ -1043,6 +1048,14 @@ export class StatefulTransactionBuilder {
    * They are materialized trailing (after dynamic chunks / loop entries) with their commitment fixed, so the
    * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
    */
+  setDerivedChunkOutput(
+    outputIndex: number, chunk: { commitment: string; lockingBytecode: Uint8Array },
+  ): boolean {
+    if (this.derivedChunkOutputs.get(outputIndex)?.commitment === chunk.commitment) return false;
+    this.derivedChunkOutputs.set(outputIndex, chunk);
+    return true;
+  }
+
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
@@ -1932,12 +1945,12 @@ export class StatefulTransactionBuilder {
           const slot = group.blockLayout.slots[si];
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_CHUNK_GEOM === '1') {
-            console.error('block-loop-pos', { si, absOut: builder.outputs.length, kind: slot?.kind });
+            console.error('block-loop-pos', { groupIndex, si, absOut: builder.outputs.length, kind: slot?.kind });
           }
 
-          // Keyed by block position: a given position maps to different absolute output indices in the probe
-          // and final builds, so the position is what stays stable. See deriveRouteValueChunks.
-          const derivedChunk = group.derivedTrailingOutputs?.get(si);
+          // Matched on the absolute index this iteration is about to fill, across every group: the pin's owning
+          // group is not the group it was probed from. See deriveRouteValueChunks.
+          const derivedChunk = this.derivedChunkOutputs.get(builder.outputs.length);
           if (derivedChunk) {
             builder.addOutput({
               to: derivedChunk.lockingBytecode,

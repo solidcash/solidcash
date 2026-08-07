@@ -23,6 +23,7 @@ import {
   VALUE_HEAD_SIZE,
   VALUE_CHUNK_SIZE,
   VALUE_CHUNK_INDEX_SIZE,
+  VALUE_CHUNK_MAX_COUNT,
   joinChunks,
   joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
@@ -645,6 +646,7 @@ function extractRouteChunkPin(
 
 function deriveRouteValueChunks(
   group: ExternalCallUtxoGroup, bOutputBase: number, trace: AuthenticationProgramStateCommon[],
+  stb: StatefulTransactionBuilder,
 ): boolean {
   if (!group.blockLayout || !group.compilerRoute) return false;
   const pin = extractRouteChunkPin(trace);
@@ -657,21 +659,12 @@ function deriveRouteValueChunks(
       outputIndex: pin.outputIndex, blockSlot, kind, commitmentBytes: pin.commitment.length / 2,
     });
   }
-  // Keyed by BLOCK POSITION, not absolute index: the same position maps to different absolute indices across
-  // the probe and final builds, but the covenant's own base is position-relative
-  // (emitTrailingBlockBase: master + trailingBase + isInsert), so the position is the stable key.
-  const trailingBase = group.blockLayout.trailingBase;
-  if (trailingBase === undefined) return false;
-  const derived = group.derivedTrailingOutputs ?? new Map();
-  const insertOffset = (group.plannedEntryInserts ?? []).length > 0 ? 1 : 0;
-  // The chunk's own index is the commitment's 2-byte LE prefix, so each chunk keeps a fixed position rather
-  // than advancing with how many have been placed so far.
-  const chunkIndex = parseInt(pin.commitment.slice(2, 4) + pin.commitment.slice(0, 2), 16);
-  const si = trailingBase + insertOffset + chunkIndex;
-  if (derived.get(si)?.commitment === pin.commitment) return false;
-  derived.set(si, { commitment: pin.commitment, lockingBytecode: pin.lockingBytecode });
-  group.derivedTrailingOutputs = derived;
-  return true;
+  // The pin's absolute index belongs to whichever group's block covers it, which is NOT necessarily the group
+  // this trace came from (the covenant's base is the proxy master). Storing it builder-level lets the block
+  // loop match it wherever it lands.
+  return stb.setDerivedChunkOutput(pin.outputIndex, {
+    commitment: pin.commitment, lockingBytecode: pin.lockingBytecode,
+  });
 }
 
 function extractCommitmentMapFromTrace(
@@ -6015,7 +6008,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // trace can reveal only the first pending commitment. Feed each
             // newly revealed commitment back into the probe and continue
             // until every reachable fixed entry slot has been materialized.
-            for (let pass = 0; group.compilerRoute && pass <= entrySlotCount; pass++) {
+            // Each recovered value chunk costs one extra pass (the covenant only reveals chunk i+1 once i is
+            // satisfied), so the entry-slot budget alone runs out mid-value. Extend it as chunks land, capped.
+            let chunkPasses = 0;
+            for (let pass = 0; group.compilerRoute && pass <= entrySlotCount + chunkPasses; pass++) {
               const revealed = extractCommitmentMapFromTrace(entryTrace,
                 { min: bOutputBase, max: bOutputBase + group.blockInputs.length }, true);
               if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
@@ -6078,8 +6074,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   progressed = true;
                 }
               }
-              if (deriveRouteValueChunks(group, bOutputBase, entryTrace)) progressed = true;
-              if (!progressed || pass === entrySlotCount) break;
+              if (deriveRouteValueChunks(group, bOutputBase, entryTrace, stb)) {
+                progressed = true;
+                if (chunkPasses < VALUE_CHUNK_MAX_COUNT) chunkPasses += 1;
+              }
+              if (!progressed || pass === entrySlotCount + chunkPasses) break;
               const nextProbe = stb.build();
               entryTrace = evaluateProbeTrace(this.inner.provider, {
                 inputIndex: bMasterIdx,

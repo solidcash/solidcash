@@ -3,6 +3,7 @@ import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
+  MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
   encodeInt,
   encodeString,
@@ -2719,7 +2720,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     inlineEmit(sub);
     // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
     // against a size the emitted subroutine never has.
-    const body = scriptToBytecode(GenerateTargetTraversalWithLocation.optimisedHelperBody(sub));
+    const optimised = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    // A STRUCTURAL helper that outlining can reach is left to outlining.
+    //
+    // This check compares defining the helper against writing it out at each site, but inlining is not what
+    // actually happens to those copies: they are byte-identical spans, so the outliner shares them anyway -
+    // with a whole-script cost model, an exact identifier width and a monotone rollback, none of which this
+    // per-helper comparison has. Extracting first only fragments the spans it would have found. Measured over
+    // the corpus, deferring these is worth 506 bytes.
+    //
+    // The FIXED subroutines are excluded, and that split is measured too. Deferring them as well reads 1,983
+    // bytes better in total but ruins the shapes that depend on them: `state_write_in_branch_in_loop` grows
+    // 37%, `nested_branch_state_write` 34%, and three C2 byte budgets blow. Their bodies are large, invoked
+    // from many places, and evidently differ enough per site that the outliner cannot recover them.
+    const barriers = new Set<number>([
+      Op.OP_DEFINE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
+      Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
+    ]);
+    if (!GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.includes(id)
+      && optimised.length >= MINIMUM_WINDOW_ELEMENTS
+      && !optimised.some((op) => typeof op === 'number' && barriers.has(op))) {
+      return false;
+    }
+    const body = scriptToBytecode(optimised);
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;

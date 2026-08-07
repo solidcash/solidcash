@@ -47,7 +47,7 @@ const BARRIER_OPS = new Set<number>([
  * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
  * cost model, so this takes the 262 bytes 7 is worth and leaves the rest.
  */
-const MINIMUM_WINDOW_ELEMENTS = 7;
+export const MINIMUM_WINDOW_ELEMENTS = 7;
 // Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
 // below this width sharing one cannot repay a definition however often it repeats.
 const MINIMUM_POOLED_CONSTANT_BYTES = 6;

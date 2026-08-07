@@ -234,7 +234,12 @@ describe('large-contract state-local splitting', () => {
     // The same source at the limit that USED to be refused (root had AStorage__a@0.1 where the touchC facet
     // had CStorage__c@0.1). It now compiles into more than one facet, and every shard - including the unsplit
     // baseline the manifest fingerprint is taken from - names the same variable at every slot.
-    const divided = compileStringSplit(source, { ...options, maxShardBytes: 1100 });
+    // Derived from what the single facet above actually measured, the way rows 333 and 393 do it, rather than
+    // a literal: a hardcoded 1,100 stopped forcing a split as soon as codegen got denser, and the row then
+    // passed vacuously on one facet instead of testing the divided case at all.
+    const divided = compileStringSplit(source, {
+      ...options, maxShardBytes: together.manifest.facets[0].estimatedRedeemBytes - 1,
+    });
     expect(divided.manifest.facets.length).toBeGreaterThan(1);
     const expected = slots(compileString(source, {
       solidityImportCompat: true, messageBus: false,

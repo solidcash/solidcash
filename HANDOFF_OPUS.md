@@ -688,3 +688,44 @@ some co-spent prior slot's entry brackets this key, or a spender could claim "ab
 exists by pointing the slot at a funder. The write path's note says an inactive slot "is authenticated
 later by predOut=-2 iff its slot hash duplicates an allowed prior identity"; the read path needs the same
 treatment, and `runtimeAliasPriorSlots` already publishes the admissible prior slots per slot.
+
+### Landed: 1580d629 - a C2 READ may fall back to a co-spent aliased entry
+
+The read path now walks the slot's published `runtimeAliasPriorSlots` and selects, at runtime, the first
+that actually holds an entry of this collection (`emitSortedSetRead`, GTT ~14537). Soundness is
+unchanged: the chosen input is still bytecode-verified as a genuine entry, presence still requires ITS
+key to equal OUR H(k), absence still requires OUR H(k) strictly inside ITS bracket. Only WHICH co-spent
+entry supplies the proof is decided at runtime. This is the read-path analogue of the write path's
+existing gate (GTT ~15030).
+
+Regression evidence: `yarn test:fast` reproduces the documented baseline exactly (15 / same 6 files); a
+64-file C2 / sorted / cross-contract / delegate / proxy / upgrade sweep reproduces its 11 pre-existing
+failures in the same 3 files.
+
+### NEXT FRONTIER: chunkable C2 values read inside a route have no value witness
+
+With the entry band passable, the group-0 probe now aborts much deeper, and the aborting frame is
+byte-for-byte `emitChunkableValueRead` (GTT 14398-14413), lines 14406-14409:
+
+```text
+PICK __internal__valueWitness_<slot> ; OP_DUP ; OP_SHA256 ; OP_2 ; OP_PICK ; OP_EQUALVERIFY  <-- HERE
+```
+
+That is the LONG form (stored length > 60): the entry commitment holds `root32 || headData28` and the
+covenant requires `sha256(valueWitness) == root`. Stack at the abort carries the row payload
+`177472f2` + the encoded user1 address (row 2 = `userRegistered(msg.sender)`) and the expected root
+`aa1bf43494482a8a22b636150fdd78fc...`.
+
+`users` values are `User` structs - chunkable - and `users[user1]` EXISTS, so the read takes the present
+arm and needs the witness. The nested composition fills `__internal__valueWitness_<n>` from
+`entryValueWitnesses[n] ?? new Uint8Array()` (StatefulContract ~11455), and for a nested callee that
+array is empty, so the witness defaults to EMPTY - `sha256('')` = `e3b0c442..`, which is not the root.
+
+So the next step is: resolve the callee's chunk data for a chunkable C2 value the route READS, and pass
+it as that slot's value witness. The caller-side machinery for its own entries already exists
+(`entryValueWitnesses`); it has to be produced for nested route callees from the callee's chunk UTXOs.
+
+NOTE the user-visible result is UNCHANGED - `post job 1` still reports the same
+`OP_SPLIT ... index -41` at input 102, because the return blob still cannot be derived
+(`progressive-route-entries` still reveals nothing). All of the movement above is inside the derivation
+probe.

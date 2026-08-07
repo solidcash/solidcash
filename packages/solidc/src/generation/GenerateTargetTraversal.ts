@@ -1568,6 +1568,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Minimally encode output by going Script -> ASM -> Script
     this.output = normaliseScript(this.output);
 
+    // Peephole BEFORE sharing. A span moved into a helper body becomes an opaque data push, so the optimiser
+    // that runs after code generation can never reach inside it - whatever shuffles were still in that span
+    // would be frozen there. `optimiseBytecode` runs to a fixed point, so the later pass over the rewritten
+    // script is a no-op on everything this already folded.
+    const optimised = optimiseBytecode(
+      this.output, this.locationData, this.consoleLogs, this.requires, this.constructorParameterCount,
+    );
+    this.output = optimised.script;
+    this.locationData = optimised.locationData;
+    this.consoleLogs = optimised.logs;
+    this.requires = optimised.requires;
+
     this.poolTopLevelConstants(node);
 
     this.sourceMap = generateSourceMap(this.locationData);
@@ -2593,6 +2605,22 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * (byte-identical to the inline path, with any nested subroutines inlined). Marks it defined
    * and returns the emitted span for the dead-DEFINE splice.
    */
+  /**
+   * Peephole-optimise a helper body compiled on its own sub-traversal, the way the entry-point path already
+   * optimises the bodies it emits. Without it a captured helper ships whatever the emitters produced verbatim -
+   * this path did not even normalise - so the stack shuffles the table folds away stayed in every copy.
+   */
+  private static optimisedHelperBody(sub: GenerateTargetTraversalWithLocation): Script {
+    const normalised = normaliseScript(sub.output);
+    return optimiseBytecode(
+      normalised,
+      sub.locationData.slice(0, normalised.length),
+      [...sub.consoleLogs],
+      [...sub.requires],
+      0, // no constructor param pushes in a helper body
+    ).script;
+  }
+
   private defineCapturedSubroutine(
     id: bigint,
     inlineEmit: (t: GenerateTargetTraversalWithLocation) => void,
@@ -2631,7 +2659,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyBytecode = scriptToBytecode(sub.output);
+    const bodyScript = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    if (!this.isSubroutineUseProbe && sub.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
+      && needsOptimiserCrossCheck(normaliseScript(sub.output))) {
+      if (!scriptsEqual(optimiseBytecodeOld(normaliseScript(sub.output)), bodyScript)) {
+        throw new Error('Function body optimisation mismatch - please report this issue');
+      }
+    }
+    const bodyBytecode = scriptToBytecode(bodyScript);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
     const start = this.output.length;
     this.emit(bodyBytecode, locationData);
@@ -2674,7 +2709,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     sub.dataNftOutputCommitmentIds = this.dataNftOutputCommitmentIds;
     sub.compactHelperIds = this.compactHelperIds;
     inlineEmit(sub);
-    const body = scriptToBytecode(sub.output);
+    // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
+    // against a size the emitted subroutine never has.
+    const body = scriptToBytecode(GenerateTargetTraversalWithLocation.optimisedHelperBody(sub));
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;
@@ -2940,7 +2977,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // chunk-read bases back or the contract-level check sees an empty list and passes vacuously.
     this.dynamicReadBases.push(...subTraversal.dynamicReadBases);
 
-    // Serialize the function body to bytecode data
+    // Serialize the function body to bytecode data.
+    //
+    // NOT peephole-optimised, unlike an entry point's body or a captured helper's. A user function's body is
+    // the one place a `require` can fail without being recorded as one - a library function's own require
+    // reaches the VM from in here - and its debug record is a FLAT fill of the function's location, so the SDK
+    // attributes a failure through the contract-level source map. Folding instructions inside the body moves
+    // the reported pointer relative to that map and the failure lands on the wrong line (measured: a library
+    // require blamed on the contract declaration instead of its own line). Worth ~94 bytes over the corpus,
+    // which is not worth an error message that points somewhere else.
     const bodyScript = normaliseScript(subTraversal.output);
 
     // Emit: <body_bytecode> <function_id> OP_DEFINE

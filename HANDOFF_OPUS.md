@@ -1093,3 +1093,58 @@ NEXT: establish which SCRIPT input 105 actually carries - compare its locking by
 main and the delegate-variant artifact for MarketplaceDataV1. If it is the main one, this is the
 `_externalRegistry` resolution-order family recorded much earlier in this file (blocker B), not a codegen
 bug, and the fix belongs in how the nested delegate group picks its contract.
+
+---
+
+## Merge: `solidcash_v0.13.1` -> `codex/effectiveacceleration-marketplace` (d3857be7)
+
+9 incoming commits, all bytecode-size work (single-byte helper ids, OP_NUM2BIN wide constants,
+contract-level outlining, helper-body peepholing, outlining window 7, subroutine probe for aggregates)
+plus the optimiser cross-check memoisation. The dirty worktree was committed first (54964087) so the
+merge started clean.
+
+Two conflicts, both resolved:
+- `GenerateTargetTraversal.ts` - incoming renamed the chosen outlining attempt to `outcome`; this branch
+  had added a `shared-span-helper` debug over the same loop. Kept the debug, moved onto `outcome`.
+- `defaultProxyArtifact.ts` - generated; took the incoming version, then regenerated with
+  `npx tsx scripts/regenerate-default-proxy.ts` against the merged compiler.
+
+### CORRECTION TO EVERY EARLIER "PRE-EXISTING FAILURE" CLAIM IN THIS FILE
+
+The same SDK subset (C2 / Sorted / Cross / Delegate / Proxy / Upgrade / MsgSender / X50) run on a
+PRISTINE `solidcash_v0.13.1` checkout is **62 files, 0 failures**. So the failures this file has been
+calling "pre-existing" are pre-existing *in this worktree* - they are THIS BRANCH's, not upstream's.
+Upstream is green there. Always baseline against `/Code/cashscript` (the branch's own checkout), not
+against this worktree's previous state.
+
+### The merge regressed that subset 11 -> 26
+
+```text
+before merge (this branch)   after merge
+DelegateInferred            6      6
+MsgSender                   3      3
+UpgradesDeployProxy         2      9    <- +7
+X50DefaultProxyRegenerated  2      2
+DelegateMixedDynamicMappingWrite  -  1  <- new
+ProxyEntryWriteRepro        -      5    <- new
+```
+
+The +7 is diagnosed exactly. `graftDefaultProxy` (`upgrades.ts` ~437) fails closed:
+
+```ts
+const strictTail = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
+if (impl.delegateProxyStateOutputCountPinned === true
+  && !defaultProxyArtifact.bytecode.endsWith(strictTail)) throw ...
+```
+
+The built-in proxy's tail is now `... OP_1 OP_INVOKE OP_NUMEQUALVERIFY OP_2DROP OP_1` - upstream's
+single-byte-helper-id work turned the literal `OP_0` into an invoked helper. The pristine branch has the
+SAME tail and passes, because there `delegateProxyStateOutputCountPinned` is false; this branch's
+compiler sets it true, which arms the guard.
+
+DO NOT just bump `strictTail` (and `relaxedTail`) to the new shape. That guard exists so a
+delegate-AUTHORIZED forwarder is only derived from the exact covenant shape it was certified against -
+the shape genuinely changed, so the derived variant has to be re-verified against the new one before the
+pin moves. That is a deliberate decision for whoever owns that certification, not a mechanical update.
+
+`ProxyEntryWriteRepro` (+5) and `DelegateMixedDynamicMappingWrite` (+1) are NOT yet diagnosed.

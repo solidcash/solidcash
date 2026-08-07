@@ -6,9 +6,13 @@ import { compileString } from './direct-compile.js';
 // Message-bus route synthesis has its own cost and structure regression suite.
 const DIRECT_ROUTE = { forceStateful: true, messageBus: false } as const;
 
+// Dynamically allocated helper ids render either as a hex push or, when the id came from the single-byte pool
+// (script numbers 1..16 and -1, which push as one opcode), as OP_1..OP_16 / OP_1NEGATE. Both are the same kind
+// of definition; only the encoding differs.
 const compactHelperDefinitions = (asm: string): string[] => (
-  [...asm.matchAll(/(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})) OP_DEFINE(?: |$)/g)]
-    .map((match) => match[1])
+  [...asm.matchAll(
+    /(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})|OP_1[0-6]|OP_[1-9]|OP_1NEGATE) OP_DEFINE(?: |$)/g,
+  )].map((match) => match[1])
 );
 
 describe('general C2 bytecode sharing', () => {
@@ -30,7 +34,12 @@ describe('general C2 bytecode sharing', () => {
       DIRECT_ROUTE,
     );
     const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
-    expect(compactHelperDefinitions(asm)).toHaveLength(1);
+    // Sharing means one definition reached from both the read and the write, so assert an id that is invoked
+    // more than once rather than a total helper count: outlining the contract-level script adds its own
+    // definitions, and counting all of them stopped saying anything about this collection's entry address.
+    const shared = compactHelperDefinitions(asm)
+      .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
+    expect(shared.length).toBeGreaterThanOrEqual(1);
     // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes).
     expect(artifact.bytecode.length / 2).toBeLessThan(1920);
   });

@@ -41,8 +41,11 @@ const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
   }`;
 
-const STRICT_TAIL = 'OP_0 OP_NUMEQUALVERIFY OP_2DROP OP_1';
-const RELAXED_TAIL = 'OP_0 OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+// The own-category conservation counts inputs and outputs with two identical loops, so the whole count -
+// including the OP_0 it is compared against - is now shared into one invoked helper. The A/B pair is still
+// exactly one opcode apart: what follows the invoke is `== 0` against `<= 0`.
+const STRICT_TAIL = 'OP_1 OP_INVOKE OP_NUMEQUALVERIFY OP_2DROP OP_1';
+const RELAXED_TAIL = 'OP_1 OP_INVOKE OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
 /** A VALID pushdata state commitment (OP_16 -> counter 16), same one byte as the genuine one after an
  *  increment (OP_6 -> 6). Only position tells the two apart. */
 const FORGED_COMMITMENT = '60';
@@ -137,9 +140,10 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised now agree, at 173 bytes rather than 159 against 158.
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(173);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(173);
+    // The two fields the hand edit desynchronised now agree, at 130 bytes rather than 159 against 158.
+    // (173 until the contract-level script was outlined, which shares the duplicated conservation loop.)
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(130);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(130);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 

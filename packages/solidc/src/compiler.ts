@@ -4472,8 +4472,13 @@ function compileResolvedAst(
     collectDefinitions(optimisationResult.script);
     const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
     if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
+    // A helper is identified by having been allocated as one, not by its numeric range: helper ids are drawn
+    // from a single-byte pool as well as the descending one, and a single-byte value is indistinguishable from
+    // a small user function id. Missing one here strands its OP_DEFINE outside the verifier program, and the
+    // participant fails at run time with "OP_INVOKE an undefined function identifier".
     const verifierFunctionIds = [...verifierBytecodes.keys()]
-      .filter((id) => id <= -12 || id === verifierFunction?.functionId)
+      .filter((id) => id <= -12 || traversal.allocatedHelperIds.has(BigInt(id))
+        || id === verifierFunction?.functionId)
       .sort((a, b) => a - b);
     const verifierFunctions = verifierFunctionIds.map((id) => ({
       id,

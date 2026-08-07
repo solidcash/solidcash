@@ -1312,3 +1312,43 @@ set(bigint,bigint,bigint), set(bigint,bigint,bigint)`. Stripping `VIEW` (autoMar
 makes a `view` overload's signature IDENTICAL to its non-view twin. That is a genuine defect of the new
 rule and must be fixed regardless of the test question - either keep the overloads distinguishable, or
 refuse to mark a view whose stripped signature would collide with an existing one.
+
+### TWO independent correct fixes are now blocked by ONE wall: the verifier size
+
+The overload collision above was FIXED and measured, then reverted for the same reason as the view
+predicate:
+
+```text
+guard: refuse to mark a VIEW that is overloaded at all
+  DelegateInferred   6 -> 4    (both overload tests pass: "selects the overload by arity" and
+                                "executes the delegate overload of an overloaded function")
+  solidc project     unchanged (15 failures, same 6 files)
+  marketplace        REGRESSED: MessageBusVerifierCapacityError, 12776 bytes > 10000
+```
+
+The guard is sound - `set(bigint)` (view) and `set(bigint,bigint)` both land on
+`set(bigint,bigint,bigint)` after SymbolTableTraversal injects the covenant parameters, because a view
+gains a DIFFERENT number of them than a writer (it also carries `__internal__returnOutputIdx`). The
+post-injection shape is not knowable in `autoMarkDelegateFunctions`, so refusing to mark an overloaded
+view is the conservative correct answer.
+
+So BOTH candidate fixes for DelegateInferred - the view state-predicate and the overload guard - are
+correct in isolation and BOTH trip the same wall:
+
+```text
+MessageBusVerifierCapacityError at packages/utils/src/message-bus-verifier.ts:131
+  write-predicate variant -> 12983 bytes
+  overload-guard variant  -> 12776 bytes
+  limit                    10000
+```
+
+The pattern is now unambiguous: **MarketplaceDataV1's route sits right at the verifier ceiling, and ANY
+reduction in the set of delegate-marked views pushes it over.** That makes the verifier size the single
+blocking dependency, not a side issue - it gates the DelegateInferred fixes AND is presumably what the
+route's admission set is being distorted to avoid.
+
+NEXT, and it is now the highest-value target in this file: shrink
+`buildMessageBusVerifierCovenantScript`, or reduce what the marketplace route asks of it
+(`maximumRows` / `maximumParticipants` in the atomic message-bus capability drive its size). 2776 bytes
+of headroom are needed - 22%. `packages/solidc/test/journal-message-bus/MessageBusVerifierSize.test.ts`
+is one of the 6 baseline compiler failures and is probably measuring exactly this.

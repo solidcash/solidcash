@@ -98,6 +98,40 @@ export async function selectGenesisFundingUtxo(
 }
 
 /**
+ * Split one of the signer's coins so it holds at least `needed` plain (token-free) UTXOs.
+ *
+ * A call's funder slots each want their own outpoint, but a wallet accumulates VALUE, not COUNT: a signer that
+ * has deployed a few contracts is left with one large change coin and cannot fund a two-funder call, even
+ * though it is nowhere near broke. `selectGenesisFundingUtxo` already fans out for the genesis case; this is
+ * the same move for ordinary calls. Returns the plain UTXOs afterwards, or undefined if the signer genuinely
+ * cannot cover it (the caller then raises its own, more specific error).
+ */
+export async function fanOutPlainUtxos(
+  signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
+): Promise<Utxo[] | undefined> {
+  const plain = (us: Utxo[]): Utxo[] => us
+    .filter((u) => !u.token && !excludedOutpoints.has(`${u.txid}:${u.vout}`));
+  const current = plain(await signer.getUtxos());
+  if (current.length >= needed) return current;
+
+  const fee = 1000n;
+  const perOutput = 5000n;
+  const missing = needed - current.length;
+  // Spend the largest coin only; splitting several would consume the very outpoints the caller still needs.
+  const [largest] = [...current].sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
+  if (!largest || largest.satoshis < perOutput * BigInt(missing + 1) + fee) return undefined;
+
+  const tb = new TransactionBuilder({ provider: signer.provider });
+  tb.addInput(largest, signer.unlockP2PKH());
+  for (let i = 0; i < missing; i++) tb.addOutput({ to: signer.getAddress(), amount: perOutput });
+  tb.addOutput({ to: signer.getAddress(), amount: largest.satoshis - perOutput * BigInt(missing) - fee });
+  await tb.send();
+
+  const after = plain(await signer.getUtxos());
+  return after.length >= needed ? after : undefined;
+}
+
+/**
  * ethers-style contract factory for stateful contracts. `new ContractFactory(artifact, runner).deploy(...args)`
  * runs a real genesis deploy (like ethers `ContractFactory.deploy`): a Signer runner auto-selects a genesis
  * funding UTXO and funds+signs; a NetworkProvider runner needs an explicit `{ fundingUtxo, funder, changeAddress }`

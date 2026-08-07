@@ -11571,14 +11571,24 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const consumedTxids = new Set(
             (sharedFunderAllocated ?? sharedFunderPool ?? []).map((f) => `${f.txid}:${f.vout}`),
           );
-          const plainUtxos = signerUtxos
+          // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
+          // outpoint hash as a category. Prefer category-neutral sibling outputs for C2 absence witnesses.
+          const orderPlain = (us: Utxo[]): Utxo[] => us
             .filter((u) => !u.token && !consumedTxids.has(`${u.txid}:${u.vout}`))
-            // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
-            // outpoint hash as a category. Prefer category-neutral sibling outputs for C2 absence witnesses.
             .sort((a, b) => Number(a.vout === 0) - Number(b.vout === 0));
+          let plainUtxos = orderPlain(signerUtxos);
+          if (plainUtxos.length < neededFunders) {
+            // A wallet accumulates VALUE, not COUNT: after a few deploys the signer holds one large change coin
+            // and cannot fill two funder slots though it is nowhere near broke. Split one, as the genesis path
+            // already does, before treating this as underfunding.
+            const { fanOutPlainUtxos } = await import('./ContractFactory.js');
+            const fanned = await fanOutPlainUtxos(this._signer, neededFunders, consumedTxids);
+            if (fanned) plainUtxos = orderPlain(await this._signer.getUtxos());
+          }
           if (plainUtxos.length < neededFunders) {
             throw new Error(
-              `Signer has ${plainUtxos.length} available plain UTXO(s) but ${neededFunders} funder(s) needed. `
+              `Signer has ${plainUtxos.length} available plain UTXO(s) but ${neededFunders} funder(s) needed, `
+              + 'and splitting a larger coin did not yield enough. '
               + `Fund the signer address: ${this._signer.getAddress()}`,
             );
           }

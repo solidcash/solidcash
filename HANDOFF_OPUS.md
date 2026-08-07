@@ -1826,3 +1826,21 @@ cannot simply mirror the output side - decide deliberately what the input at a N
 Verify before building: re-run with the chunk placement disabled and see whether input 102 still fails. If it
 passes without the chunks, the input pairing is the defect and it belongs to this feature. That is a cheap,
 decisive test and it is the RIGHT next action.
+
+### Attribution test run: the chunk work is NOT the cause of input 102
+
+With chunk placement disabled at runtime (clean build, `chunk-placed` count = 0), input 102 fails IDENTICALLY:
+
+    preflight failed at input 102: OP_SPLIT invalid index. stack item length: 0; requested split index: 1.
+
+So the empty `OP_UTXOTOKENCOMMITMENT` is INDEPENDENT of the value-chunk feature - the "prime suspect" in the
+previous section (chunk outputs paired with funder inputs) is FALSIFIED. The input carrying no commitment is
+one the route needed regardless, and this defect was simply hidden behind the chunk-pin abort until the chunk
+work let the probe get far enough to reach it.
+
+That also means the chunk feature is not blocking, and the two are separable: input 102 can be worked without
+touching chunks, and its fix is what `post job 1` now needs.
+
+Next: identify WHICH input the covenant picks (the caller pushes `0x2f` = 47 and OP_PICKs, so the input index
+is the stack item at depth 47 at that moment) and what the SDK placed there. `body=7503` is the main contract
+script, ip 693-697, so the source position is recoverable from that artifact's source map.

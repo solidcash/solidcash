@@ -10864,6 +10864,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             if (binToHex(sha256Sync(joined)) === binToHex(root)) {
                               childValueWitnesses.set(slot.slotIndex ?? 0, joined);
                             }
+                            if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                              ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                              console.error('nested-value-witness', {
+                                collection: access.collection,
+                                routeSlot: slot.slotIndex,
+                                storedLength,
+                                rootMatches: binToHex(sha256Sync(joined)) === binToHex(root),
+                                head: binToHex(tail.slice(36, 64)),
+                                value: binToHex(joined).slice(0, 240),
+                              });
+                            }
                           }
                         }
                         try {

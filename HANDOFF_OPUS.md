@@ -791,13 +791,22 @@ The value it walks is the one my witness fix now supplies, and the trace shows i
 19 76a914c4841b8f5e6f10a38dc5e672e1..88ac     <- field 1 is user1's 25-byte address
 ```
 
-`User` is `(address_, publicKey, name, bio, avatar, reputationUp, reputationDown)`, so field 0 should BE
-the address. The stored value carries one extra leading empty field, i.e. the value and the schema are
-shifted by one - which is exactly why a later `emitPushdataDecodeLastField` runs off the end.
+**RETRACTED - that reading of the trace was wrong.** The `00` sits in the PUSHDATA framing shown by the
+trace, not in the value. `nested-value-witness` (new debug) dumps the reconstruction, and
+`users[user1]` is perfectly well-formed - len=106, root matches, and it decodes exactly against the
+`User` schema:
 
-`sha256(witness) == root` PASSES, so the reconstruction is the authenticated value; the shift is in the
-stored bytes, not in the rebuild. That points at the WRITE that produced it: `registerUser` ran earlier in
-the test through the DIRECT (non-route) path, so compare how that path frames a chunkable struct value
-against what the route's read expects. A one-field disagreement between the direct write and the route
-read is the next thing to prove or refute - dump the entry's `tail` (len ++ root ++ head) for
-`users[user1]` right after `registerUser` and decode it against the `User` schema.
+```text
+19 76a914c4841b..88ac                       address_   = user1
+21 02ba5734d8f7091719471e7f7ed6b9df17..     publicKey  = 33 bytes
+08 5465737455736572                         name       = "TestUser"
+07 5465737442696f                           bio        = "TestBio"
+1a 68747470733a2f2f6578616d706c652e636f6d2f617661746172   avatar
+00 00                                       reputationUp / reputationDown = 0
+```
+
+So the value witness path is CORRECT and the struct schema agrees with the stored bytes. Whatever the
+decode runs off the end of, it is NOT this value. The blob on the stack at the abort is 241 bytes
+(`4cf1` = PUSHDATA1 241) beginning `00 19 76a914..` - i.e. something that CONTAINS the address but is
+much larger than the 106-byte `User`, so identify that blob before assuming anything about framing.
+Candidates: the route's `__message_bus_results` accumulator, or a row-args blob.

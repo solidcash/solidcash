@@ -262,6 +262,19 @@ it must not silently compile to incorrect covenant behavior.
     the two disagree for these shapes. Note the consequence is broader than a failed probe: a redeem script that
     differs hashes to a different P2SH address, so the scenario evaluates a different contract than the one being
     spent. Making `getLibauthTemplate` emit the builder's bytecode for contract inputs is the fix.
+  - The missing bytes are exactly the category self-pin that `Contract` prepends for a category-bound stateful
+    contract (`Contract.ts`, "Category self-pin"): a 33-byte `category || 0x02` push, so 34 bytes with its
+    opcode, plus `OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`. 34 + 3 = the 37 observed.
+  - A first attempt at the fix, emitting that prologue at the head of the template's locking script, was tried
+    and REVERTED. It did change behaviour - the `checkSig` failure disappears and the probe then fails later, at
+    transaction level - but it did not clear any of the ten tests and it regressed 45 previously passing corpus
+    tests with `.build() still admits a shape the decider refuses`. Prepending at the head is evidently the wrong
+    placement: `Contract` layers a salt prologue and an external-library `OP_DROP` around the self-pin, so the
+    ordering has to match rather than assume the simple case.
+  - That the `checkSig` failure moves but the tests do not pass also means the redeem-script mismatch is A defect
+    rather than THE blocker. What remains behind it is the ordering problem noted earlier: the phase-1
+    transaction has not yet been given the outputs discovery is supposed to add, so the covenant cannot be
+    satisfied at probe time however correct the script is.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

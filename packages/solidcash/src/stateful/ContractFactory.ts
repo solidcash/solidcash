@@ -116,6 +116,11 @@ export class ContractFactory<T extends Artifact = Artifact> {
    * `factory.deploy(...args, overrides?)`).
    */
   async deploy(...args: Array<ConstructorArgument | DeployContractOptions>): Promise<DeployedContract<T>> {
+    // ethers parity: a deploy argument may be a PROMISE. `resolveProperties` awaits them before encoding, so
+    // suites routinely pass a read straight through - MistSwap's SushiMakerKashi deploys with
+    // `factory.pairCodeHash()` un-awaited. Without this the encoder sees a Promise and refuses the bytes32.
+    // eslint-disable-next-line no-param-reassign
+    args = await Promise.all(args);
     const ctorCount = this.artifact.constructorInputs.length;
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).

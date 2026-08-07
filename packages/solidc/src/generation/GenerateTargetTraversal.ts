@@ -971,6 +971,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // User-defined function tracking (for OP_INVOKE)
   private userFunctionDefs: Map<string, FunctionDefinitionNode> = new Map();
   private isDefineSubTraversal: boolean = false;
+
+  /**
+   * Distance-from-the-bottom of a delegate message-bus route's `__internal__proxyMasterIndex`, captured while
+   * the route's own frame is tracked. OP_INVOKE runs a body on the SAME stack, so the route's ABI frame stays
+   * at the bottom throughout - but the compiler's tracked model inside an OP_DEFINE'd helper is that helper's,
+   * so `getStackIndex` cannot find the witness there and block-relative bases silently fell back to
+   * OP_INPUTINDEX (the route's own input) instead of the proxy master its block is rooted at.
+   */
+  private routeProxyMasterBottomOrdinal?: number;
   // True when the current function has a `return` nested inside a loop (the raw-return stack cleanup can't
   // handle that, so its internal-call subroutine keeps the event-blob return path - see visitReturn).
   private functionHasReturnInLoop: boolean = false;
@@ -1428,6 +1437,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.contractFunctionKeys = new Set(node.functions
       .filter((fn) => fn.functionId !== undefined)
       .map((fn) => `${fn.functionId}:${fn.name}`));
+    // Decided at CONTRACT level so traversal order cannot matter: a route-owned helper may be emitted before
+    // the route itself. Unlocking arguments are reversed, so a delegate route's final ABI parameter - the
+    // proxy-master witness - is pushed FIRST and therefore sits at the PHYSICAL BOTTOM of the frame (the same
+    // `OP_DEPTH OP_1SUB OP_PICK` the route prologue uses). OP_INVOKE runs a helper on that same stack, so the
+    // witness is reachable from a helper too even though the helper's own tracked model has lost sight of it.
+    // Keyed on the WITNESS PARAMETER, not on the DELEGATE modifier: that modifier is not yet on the node when
+    // code is generated (measured - the route reports `external` here while the artifact later shows
+    // `external,delegate`), whereas the parameter is what actually puts the value on the frame.
+    this.routeProxyMasterBottomOrdinal = node.functions.some((fn) => fn.messageBusRoute
+      && fn.parameters.at(-1)?.name === '__internal__proxyMasterIndex') ? 1 : undefined;
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
 
     // Register contract-level constants for inline substitution
@@ -3469,6 +3488,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Delegate tracking
     this.functionHasDelegatecall = node.lowLevelCalls?.some((c) => c.callMode === 'delegatecall') ?? false;
     this.currentFunctionIsDelegate = node.modifiers.includes(FunctionModifier.DELEGATE);
+
 
     // Fallback with bytes parameter: compute msg.data and bind it as the parameter value.
     // The parameter is NOT passed by the SDK - it's computed inline from OP_INPUTBYTECODE.
@@ -21913,6 +21933,18 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       || this.getStackIndex('__internal__proxyMasterIndex', true) >= 0) {
       this.emitPickTrackedFromBottom('__internal__proxyMasterIndex', locationData);
     } else {
+      // A route-owned helper (`__message_bus_*`, emitted as an OP_DEFINE'd body) runs on the ROUTE's stack,
+      // so the witness is still there in absolute terms - only the compiler's per-body tracked model has lost
+      // sight of it. Address it by the ordinal captured from the route's own frame; the emission is
+      // depth-relative, so anything the helper pushed above the frame is irrelevant.
+      if (this.routeProxyMasterBottomOrdinal !== undefined
+        && this.currentFunction?.name?.startsWith('__message_bus')) {
+        this.emit(Op.OP_DEPTH, locationData);
+        this.emit(encodeInt(BigInt(this.routeProxyMasterBottomOrdinal)), locationData);
+        this.emit(Op.OP_SUB, locationData);
+        this.emit(Op.OP_PICK, locationData);
+        return;
+      }
       this.emit(Op.OP_INPUTINDEX, locationData);
     }
   }

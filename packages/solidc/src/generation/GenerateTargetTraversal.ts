@@ -1,4 +1,5 @@
 /* eslint-disable max-len -- dense stack-machine traces retain aligned stack-state annotations */
+import { keccak_256 } from '@noble/hashes/sha3.js';
 import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
@@ -6887,6 +6888,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // call's side-car at offset (N - i) from the end. i = its emission index; for a single call offset is 1
     // (the last input/output), byte-compatibly with the single-hash case.
     const argNode = node.parameters[0];
+    // `keccak256(type(C).creationCode)` hashes a blob this traversal already holds, so fold it. On chain it is
+    // not merely wasteful but impossible at this size: a Uniswap pair's creation code is 12,509 bytes = 92
+    // keccak blocks, and one side-car input funds three. `countLibraryCalls` skips the same shape, so no
+    // side-car slot is reserved for it either.
+    if (argNode instanceof TypeIntrospectionNode && argNode.contractName
+      && (argNode.property === 'creationCode' || argNode.property === 'runtimeCode')) {
+      const childBytecode = this.compiledBytecodes.get(argNode.contractName);
+      if (childBytecode) {
+        this.emit(Uint8Array.from(keccak_256(childBytecode)), loc);
+        this.pushToStack('(value)');
+        return node;
+      }
+    }
     const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
       ? argNode.name : null;
     const i = (fn.keccakPreimageParams ??= []).length;

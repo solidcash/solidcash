@@ -254,6 +254,22 @@ const ADDRESS_MAX_ENCODED_BYTES = 36;
  */
 const ADDRESS_EVENT_CHUNK_BYTES = 9;
 
+/**
+ * `keccak256(type(C).creationCode)` (or `runtimeCode`) hashes a blob the compiler already holds, so code
+ * generation folds it to a constant and never reads a side-car. Counting it would reserve a `keccakSideCar`
+ * slot nobody uses and make the SDK co-spend an input the covenant never looks at.
+ *
+ * It also cannot be computed on chain at this size: a Uniswap pair's creation code is 12,509 bytes = 92 keccak
+ * blocks, and one side-car input funds three.
+ */
+function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
+  if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
+  const arg = node.parameters[0];
+  return arg instanceof TypeIntrospectionNode
+    && (arg.property === 'creationCode' || arg.property === 'runtimeCode')
+    && arg.contractName !== undefined;
+}
+
 function getMaxPushdataEncodedSizeForType(
   type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
 ): number {
@@ -3806,7 +3822,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (visited.has(node)) return counts;
     visited.add(node);
 
-    if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries) {
+    if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries
+      && !isFoldableCreationCodeHash(node)) {
       counts.set(node.identifier.name, (counts.get(node.identifier.name) ?? 0) + 1);
     }
 

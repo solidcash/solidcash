@@ -1178,3 +1178,32 @@ Next suspect is the WIP `compiler.ts` (the early `autoMarkDelegateFunctions` pas
 An attempt to measure that was VOID - the `yarn workspace solidc build` in that run silently failed, so
 the regenerated artifact came from a stale dist. Re-run it and CHECK THE BUILD SUCCEEDED before trusting
 the number.
+
+### Post-merge re-measure of the marketplace test
+
+Re-run with a wiped `.marketplace/cache/solidcash` against the merged compiler: **identical failure**,
+`OP_SPLIT ... stack item length: 0; requested split index: 1` at input 102. So the merge did not disturb
+that path, and the pre-merge diagnostics in this file remain valid.
+
+### DelegateInferred (6) - narrowed, two causes falsified
+
+All six are the SAME defect: OVER-marking. The delegate variant marks functions the test expects to stay
+plain, and one overload ends up duplicated:
+
+```text
+"marks exactly the state-writing externally-callable functions"  ['public','delegate'] should not include 'delegate'
+"injects the proxy master index only on delegate functions"      a plain fn got __internal__proxyMasterIndex
+"executes the delegate overload of an overloaded function"       Ambiguous call: set(bigint,bigint,bigint), set(bigint,bigint,bigint)
+```
+
+Tried and FALSIFIED - do not retry:
+1. Gating this branch's EARLY `autoMarkDelegateFunctions` pass on `synthesizeBatchBeforeLowering` (it runs
+   before inheritance / modifier / getter expansion, so on an ordinary contract it judges a pre-expansion
+   surface). Implemented, built, re-run: still 6 failures. Reverted.
+2. `attachDelegateVariant`'s `variantOptions` no longer forcing `messageBus: false` - NOT applicable here.
+   `DelegateInferred.test.ts` never enables `messageBus`, so the variant synthesizes no route either way.
+
+So the over-marking comes from somewhere else in this branch's WIP (54964087). Next: bisect that commit's
+`compiler.ts` hunks against a DelegateInferred run - it is a single commit, so `git checkout
+54964087^ -- packages/solidc/src/compiler.ts`, rebuild, and run the one file gives the answer in one
+cycle. Remember upstream is GREEN on this file, so the cause is definitely in this branch.

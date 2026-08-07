@@ -158,6 +158,11 @@ it must not silently compile to incorrect covenant behavior.
     salt changes the contract address, and it caps at 520 bytes. Better, the size optimiser should refuse a cut
     that leaves a contract with no density headroom; mainline already added `scripts/density-headroom.ts`, which
     is the measurement that gate would need.
+  - Tested and REJECTED as the lever: raising `MINIMUM_WINDOW_ELEMENTS` in `packages/utils/src/outline.ts` back
+    from 7 to 8, undoing the last size cut and its 262 bytes. The reasoning was that 262 bytes buys about
+    209,600 operation units, far above the overshoots. It made things WORSE - 14 failing tests against 10, with
+    `X158OverLimitContractSpend` newly breaking - so less outlining does not buy density headroom here and the
+    outlining window is not the knob. Reverted.
   - **The bytecode-size campaign makes this WORSE, and the effect is already measurable.** The budget is
     `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`, so a smaller script buys a smaller
     budget: size headroom and density headroom trade against each other. Re-running the budget-only sweep after

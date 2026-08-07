@@ -1516,3 +1516,39 @@ Start from `emitSortedValueChunkPin` (GTT ~14840) for what the covenant expects,
 block composition (`StatefulContract.ts` ~10730, where `childBlockInputs` is built) for where the outputs
 must be added - `childBatchPredecessorOutputs` and `childPlannedEntryInserts` are the existing precedents
 for adding route-owned outputs.
+
+### What the chunk-pin frontier actually needs (scoped)
+
+The caller-side machinery for this already exists, in two flavours (`StatefulContract.ts` ~12160-12185):
+
+```ts
+// value known off-chain -> mint the chunks directly
+for (const mint of valueChunkMints) {
+  const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, mint.collection, mint.slot, mint.digest);
+  mint.chunks.forEach((data, i) => builder.addValueChunkOutput({ to: chunkAddr, ... }));
+}
+// value COMPUTED on-chain -> register it and let auto-derivation extract the pinned commitments from the trace
+for (const collectionName of computedValueChunkCollections) {
+  builder.registerValueChunkVar(collectionName, DUMMY_FUNDER_LOCKING_BYTECODE);
+}
+```
+
+The marketplace write needs the **computed** flavour: `publishJobEvent` does
+`event_.timestamp_ = uint32(block.timestamp)` before `jobEvents[jobId_].push(event_)`, so the SDK cannot
+know the stored bytes off-chain - only the VM trace has them. (`5e1b7163`, the READ-side fix, could
+rebuild its value from existing chunk UTXOs; a WRITE has no such source.)
+
+What is missing is that both paths are CALLER-scoped: `getValueChunkAddress(this.inner, this.categoryId, …)`
+uses the caller's contract and category, and `registerValueChunkVar` is a single global map on the
+builder. A route's chunks belong to the CALLEE (its contract, its category) and must land in that
+callee's TRAILING band - the route block publishes 64 `trailing` slots at `trailingBase: 38` for exactly
+this, and they are currently unused (`external-dynamic-plan` reports `dynamicStateValues: []`).
+
+Note the existing `externalDynamicChunks` planner (`StatefulTransactionBuilder.ts` ~1835) fills that
+trailing band already, but only for `stateLayout.variables` marked `dynamic` - i.e. dynamic STATE
+VARIABLES, not chunkable C2 COLLECTION values. That loop is the natural place to extend, and
+`childBatchPredecessorOutputs` is the precedent for route-owned outputs that the composition adds.
+
+So the shape of the remaining work is: give the callee group a computed-value-chunk registration, derive
+its commitments from the same progressive probe that already derives the callee's entry commitments, and
+emit them into the callee's trailing slots. That is a feature, not a patch - budget accordingly.

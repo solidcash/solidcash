@@ -729,3 +729,39 @@ NOTE the user-visible result is UNCHANGED - `post job 1` still reports the same
 `OP_SPLIT ... index -41` at input 102, because the return blob still cannot be derived
 (`progressive-route-entries` still reveals nothing). All of the movement above is inside the derivation
 probe.
+
+### Landed: 5e1b7163 - a route callee's chunkable C2 value witnesses are rebuilt from ITS chunks
+
+The nested delegate arg fill sourced `__internal__valueWitness_N` from the CALLER's
+`entryValueWitnesses`, which describes the caller's own collections and is empty for a route, so the
+witness defaulted to EMPTY and `sha256('')` failed the covenant's root check. The block composition now
+rebuilds each witness from the callee's chunk UTXOs and publishes it on the route's `internalArgs`
+(which is now attached whenever any internal args exist, not only for a sorted-batch WRITE). Verified:
+the reconstructed 241-byte `User` value reaches the covenant. Regression-clean over a 77-file sweep.
+
+### NEXT FRONTIER (measured, not fixed)
+
+The group-0 probe now aborts INSIDE the int-decode subroutine (69 instructions) on an EMPTY blob. Its
+caller is a 5-instruction outlined helper:
+
+```text
+0: push <0x96>   (helper id -22)
+1: OP_INVOKE
+2: OP_1NEGATE    (helper id -1 = the pushdata int-decode)
+3: OP_INVOKE
+4: OP_DROP
+```
+
+`<decode> ; OP_DROP` is `emitPushdataDecodeLastField`'s generic branch, so a LAST field is being decoded
+out of a blob that has already been exhausted. On the stack at that point are the two reconstructed
+payloads: 243 bytes `4cf100 1976a914c4841b..` and 241 bytes `4cef00 1976a914c4841b..` - i.e. a
+PUSHDATA1-wrapped value whose inner blob begins `00` (an EMPTY first field) followed by `19 76a914..`.
+
+`userRegistered` reads `users[address_].publicKey.length`, so this is the `User` struct field walk
+(`address_, publicKey, name, bio, avatar, reputationUp, reputationDown`). A leading EMPTY field suggests
+the reconstructed value and the struct schema disagree by one field - check whether the witness should be
+the RAW value or the value MINUS its length/head framing before the struct decode consumes it, and
+whether `joinValueChunks`' head slice (`tail.slice(36, 64)`) is the right head for this collection.
+
+The user-visible failure has moved with this: `post job 1` now reports
+`OP_SPLIT ... stack item length: 0; requested split index: 1` (was `length: 23; index: -41`).

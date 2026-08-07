@@ -250,9 +250,18 @@ it must not silently compile to incorrect covenant behavior.
     rewrites `state.instructions`, so `checkSig`'s `coveredBytecode` is the executing script rather than the
     redeem script. A 37-byte-shorter unlocking script therefore covers different bytes, and the signature
     pre-computed from the builder's script cannot verify against the template's reconstruction of it.
-  - The fix is therefore in the template, not in signing: `getLibauthTemplate` must reconstruct input 0's
-    unlocking script byte-identically to what the builder emits for chunked and dynamic shapes. Identifying the
-    37 missing bytes is the remaining step, and it is a bounded comparison rather than an open question.
+  - The 37 bytes are now identified. Decoding both unlocking scripts into instructions shows every push matching
+    except the last, which is the redeem script itself: 1,201 bytes as built against 1,164 in the template. The
+    argument and signature pushes are byte-identical, so nothing is wrong with argument encoding.
+  - Within that redeem script the tails match exactly and only the heads differ. The built script begins with
+    `0x21` - a 33-byte push, so 34 bytes with its opcode - which the template's version does not have at all;
+    the template starts directly at the contract code (`0x4c4e ...`). That leading push is the contract's bound
+    prefix, and its absence accounts for 34 of the 37 bytes.
+  - So the defect is that the template reconstructs the redeem script from the artifact and constructor
+    parameters (`generateLockingScriptParams`) while the builder emits the contract's actual bound bytecode, and
+    the two disagree for these shapes. Note the consequence is broader than a failed probe: a redeem script that
+    differs hashes to a different P2SH address, so the scenario evaluates a different contract than the one being
+    spent. Making `getLibauthTemplate` emit the builder's bytecode for contract inputs is the fix.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.

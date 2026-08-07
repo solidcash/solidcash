@@ -1844,3 +1844,26 @@ touching chunks, and its fix is what `post job 1` now needs.
 Next: identify WHICH input the covenant picks (the caller pushes `0x2f` = 47 and OP_PICKs, so the input index
 is the stack item at depth 47 at that moment) and what the SDK placed there. `body=7503` is the main contract
 script, ip 693-697, so the source position is recoverable from that artifact's source map.
+
+### Input 102 ROOT CAUSE: an off-by-one in the input index the route picks
+
+`[srcOutputs 118-126]` (kept, behind SOLIDC_DEBUG_INPUTS=1):
+
+    118:PLAIN 119:PLAIN 120:PLAIN 121:PLAIN 122:PLAIN
+    123:nft=3e16384e..926500..006a000000aa1bf434..a881976a914c4841b8f5e6f10a38dc5e672e183ffd9be0cd12f88ac2102
+    124:PLAIN 125:PLAIN 126:PLAIN
+
+The covenant PICKs input index `0x7a` = **122** and reads its token commitment. 122 is PLAIN. The entry NFT it
+wants is at **123** - its commitment tail `1976a914c4841b8f..88ac2102` is exactly the `users` entry value
+already confirmed sound by `nested-value-witness`.
+
+So this is an OFF-BY-ONE between the input index the route's covenant computes and where the SDK actually
+places that entry input. Not an empty witness, not a missing output, not the chunk work (all measured and
+excluded). It is the same family as the fix recorded in
+[[marketplace_route_index_frames_2026_08_07]] - "route delegate blocks need SEPARATE input/output index
+frames" - so the remaining defect is very likely one more frame whose INPUT base is still being computed with
+the wrong origin, in the same way the output base was.
+
+Next: find which index frame produces 122 for this pick (the emitter computes it as master + offset; compare
+against where the block loop actually placed the entry input at 123) and correct that one base. The output side
+of this pair is already right, which is why entries and events resolve while this pick does not.

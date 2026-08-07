@@ -3200,6 +3200,15 @@ export class StatefulTransactionBuilder {
           error?: string; stack?: Uint8Array[];
         };
         if (!finalState.error) continue;
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+          ?.SOLIDC_DEBUG_INPUTS === '1') {
+          // eslint-disable-next-line no-console
+          console.error(`[srcOutputs 118-126] ${sourceOutputs.slice(118, 127)
+            .map((so, k) => `${118 + k}:`
+              + `${so.token
+                ? `nft=${so.token.nft?.commitment ? binToHex(so.token.nft.commitment) : '(none)'}`
+                : 'PLAIN'}`).join('  ')}`);
+        }
         const finalStack = (finalState.stack ?? []).map((item, itemIndex) => {
           const hex = binToHex(item);
           return `    [${itemIndex}] ${hex.length > 80 ? `${hex.slice(0, 80)}..(${item.length}B)` : hex}`;

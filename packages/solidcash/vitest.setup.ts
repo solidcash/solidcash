@@ -1,6 +1,4 @@
 import { inspect } from 'util';
-import { mkdirSync } from 'fs';
-import { join } from 'path';
 import './src/test/TestExtensions.js';
 
 inspect.defaultOptions.depth = 10;
@@ -9,11 +7,7 @@ inspect.defaultOptions.depth = 10;
 // process-wide memo cache so tests that recompile the same contract (per-test seed helpers,
 // repeated describe-block compiles) pay the pipeline once per worker. Opt-in via env; harmless
 // in production (off by default). Cached artifacts are structuredCloned, so mutation can't leak.
+// Optional cross-worker disk layer: set SOLIDC_COMPILE_CACHE_DIR to a writable directory when
+// reusing artifacts across vitest forks is worth the I/O (left unset by default — most e2e
+// sources are unique per file, so disk write-on-miss was a net slowdown in full-suite runs).
 process.env.SOLIDC_COMPILE_CACHE ??= '1';
-// Cross-worker disk layer (vitest forks do not share the in-process Map). Scoped under the package
-// so parallel checkouts do not clobber each other; safe to delete any time.
-if (!process.env.SOLIDC_COMPILE_CACHE_DIR) {
-  const dir = join(process.cwd(), 'node_modules', '.cache', 'solidc-compile');
-  mkdirSync(dir, { recursive: true });
-  process.env.SOLIDC_COMPILE_CACHE_DIR = dir;
-}

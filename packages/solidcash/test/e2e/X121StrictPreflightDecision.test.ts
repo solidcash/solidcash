@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, StatefulContract, TransactionBuilder,
 } from '../../src/index.js';
-import { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST } from '../../src/network/MockNetworkProvider.js';
 import { createVirtualMachineBch2026ForProvider } from '../../src/network/createVirtualMachine.js';
 import { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { generateLibauthSourceOutputs, randomUtxo } from '../../src/utils.js';
@@ -289,8 +289,11 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     // ceiling; that is inherent, not a fragile choice of depth. What IS fragile is the 20 -> 24 boundary: a
     // codegen change that shifts per-operation cost moves it, and this row would flip. If it ever does, read
     // the band above rather than relaxing the assertion.
-    const provider = new MockNetworkProvider();
-    expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(10_000_000);
+    // Asked for the relaxed budget by way of the DEFAULT profile until the default became the real 800 (see
+    // MOCK_CONSENSUS_LIMITS). What this row pins is bare-VM-versus-decider divergence at a PUBLISHED relaxed
+    // budget, which is unchanged; it just has to name the budget now instead of inheriting it.
+    const provider = costProfile(MOCK_RELAXED_OPERATION_COST, true);
+    expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
     const sc = await recursionContract(provider);
     const { builder, error } = await sendCapturingPreflightInput(sc, 24n);
     expect(error, 'the repaired gate should no longer refuse this depth').toBeUndefined();

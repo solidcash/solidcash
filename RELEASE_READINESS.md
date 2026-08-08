@@ -115,8 +115,27 @@ it must not silently compile to incorrect covenant behavior.
     as named diagnostics. All negative fixtures are now checked, but 323 over-accepted cases remain a strictness
     review queue. Per release prioritization, the full bench and over-accepted-correctness work are postponed and
     are not release blockers.
-- [ ] Decide the release posture for constructs that exceed the BCH-2026 operation-cost budget, and stop the
+- [x] Decide the release posture for constructs that exceed the BCH-2026 operation-cost budget, and stop the
   mock provider from hiding them.
+  - **DECIDED AND LANDED.** `MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte` is now the REAL 800; every other
+    mock limit stays relaxed, so this is a targeted change rather than "the mock is production now". The
+    asymmetry is the point: the other fields bound how BIG a thing may be, which is visibly artificial when
+    relaxed, while the operation-cost budget bounds how DENSE a script may be, and density does not announce
+    itself - an over-budget contract is indistinguishable from a valid one in every artifact the SDK produces.
+    `MOCK_RELAXED_OPERATION_COST` is exported for harnesses testing the relaxed profile itself.
+  - The three relaxed-profile pins were re-pointed at an explicitly relaxed provider rather than inheriting one:
+    `X121` row 4 and `X130` row 2 now name `MOCK_RELAXED_OPERATION_COST` (the property they test is that the
+    PUBLISHED value is honoured, which is unchanged), and `X129` asserts the new default of 800 plus an
+    unchanged relaxed `maximumInputBytes`, so the asymmetry itself is pinned.
+  - The six over-budget shapes are now explicit PINS via `expectOverOperationCostBudget`, each stating its
+    overshoot and instructing the reader to restore the positive assertion rather than loosen the pin when the
+    lowering gets cheaper. `NestedStructArrayWrite`'s negative row is pinned on the same write rather than
+    deleted, because the write is what exceeds the budget and the pair should be restored together.
+  - What this buys: the shapes that reached a live node before anyone noticed now fail in CI, at the same limit a
+    node applies, and a future size or codegen change that pushes another shape over the line is caught by the
+    ordinary suite instead of by a chain. What it does NOT buy: the six shapes still do not work, and the item
+    below tracks making them cheap enough to restore.
+- [ ] Reduce the operation cost of the six pinned over-budget shapes so their positive assertions can be restored.
   - `MOCK_CONSENSUS_LIMITS` is far looser than `ConsensusBch2026`: `operationCostBudgetPerByte` is 10,000,000
     against a real 800 (12,500x), input and stack items are 1,000,000 against 10,000, and the NFT commitment
     limit is 1,000,000 against 128. Every mocknet test therefore runs with effectively no density control, so a

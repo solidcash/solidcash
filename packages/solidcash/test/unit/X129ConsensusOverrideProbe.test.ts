@@ -95,8 +95,12 @@ describe('X129 - MockNetworkProvider fails closed when the installed decider ign
         `the installed @mem-cash/validation was judged not to honour consensus overrides on ${vmVersion}`,
       ).toBeUndefined();
     }
-    // And the constructor that calls it builds a provider rather than throwing.
-    expect(new MockNetworkProvider().consensusLimits.operationCostBudgetPerByte).toBe(10_000_000);
+    // And the constructor that calls it builds a provider rather than throwing. The default operation-cost
+    // budget is the REAL 800 (see MOCK_CONSENSUS_LIMITS): density is the one limit a relaxed harness cannot
+    // safely hide, because an over-budget contract is indistinguishable from a valid one until it reaches a node.
+    expect(new MockNetworkProvider().consensusLimits.operationCostBudgetPerByte).toBe(800);
+    // The other limits stay relaxed, so this is a targeted change rather than "the mock is production now".
+    expect(new MockNetworkProvider().consensusLimits.maximumInputBytes).toBe(1_000_000);
   });
 
   it('0b. the arithmetic behind each strict point, and which point is a rule on which VM version', () => {

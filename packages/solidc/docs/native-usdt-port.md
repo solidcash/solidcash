@@ -246,26 +246,28 @@ Working end-to-end (24 tests): `issue`, `approve`, `addBlackList`, `freeze` (all
 
 Two limitations remain, each pinned by a test:
 
-1. **`transfer` from the OWNER.** USDT credits the fee to the owner, so `transfer` writes
-   `balances[msg.sender]` and `balances[this.owner]` - two distinct key SOURCES that are ONE key whenever the
-   owner is the sender, which is every transfer out of freshly issued supply. The C2 batch planner is handed
-   the same slot twice and refuses, correctly: one entry UTXO cannot be co-spent twice.
+1. **`transfer` from the OWNER - refused, and the refusal is correct.** USDT credits the fee to the owner, so
+   `transfer` writes `balances[msg.sender]` and `balances[this.owner]`: two distinct key SOURCES that are ONE
+   key whenever the owner is the sender, which is every transfer out of freshly issued supply. The C2 batch
+   planner is handed the same slot twice and refuses - one entry NFT cannot be co-spent twice.
 
-   Attempted, and taken three of four layers before stopping. The mechanism already exists - the compiler's
-   `runtimeAliasPriorSlots` makes the generated covenant carry a runtime gate, so an aliased slot occupies a
-   FUNDING position instead of being co-spent - but it is nominated only for message-bus routes with row-local
-   identities. Extending the nomination to ordinary batches works and the control case (three distinct keys)
-   keeps settling; dropping the aliased entry from the co-spend clears the duplicate input. What is left is the
-   balanced block itself: the covenant pins an exact collection-output cardinality, and an aliased slot has to
-   be funded into that block rather than removed from it. Reverted rather than shipped half-done, because a
-   partial change on the C2 value-derivation path fails as a silent miscompile, not an error.
+   **The obvious fix is unsound, and this is now measured rather than argued.** Dedupe in
+   `SortedList.planBatchUpsert` and let the existing same-proof-UTXO merge downstream handle it: the
+   transaction builds, settles, and **silently drops the second write**. On `transfer(to, 40)` from the owner
+   with `fee = 7`, the owner ends at **60 instead of 67** - the debit applied, the fee credit vanished, nothing
+   raised. Deduping is sound only when the two writes are redundant; these must COMPOSE.
 
-   One genuine bug WAS found and kept along the way: the builder's `kv` resolution had no `kind: 'state'`
-   branch, so a state-variable key (`bal[this.owner]`) left `keyValue` undefined and silently disabled every
-   downstream key comparison. Fixed - it is the same gap as s4.2, in a second place.
+   The nearest existing mechanism is the wrong shape for the same reason. `runtimeAliasPriorSlots` makes the
+   generated covenant carry a runtime gate so a duplicate slot is INACTIVE - which drops its contribution
+   exactly as the dedupe did. It was built for the message bus, where an aliased row IS a no-op; here the
+   second write carries value. Composing them needs a covenant that applies both writes to one entry, and no
+   such path exists.
 
-   Not worked around in the contract either: dropping the separate owner credit would deviate from the source
-   this port exists to reproduce.
+   So the guard stays, and it fails closed on purpose. `C2RuntimeSlotAlias.test.ts` pins the refusal, the
+   control case where the three keys are distinct (owner correctly credited 7), and the reason the tempting
+   fix is wrong. Not worked around in the contract either - dropping the separate owner credit would deviate
+   from the source this port exists to reproduce.
+
 2. **`deposit` / `claimDeposit`.** Both first-touch (`pendingAmount` / `pendingUnlockAt`, and `balances` for a
    never-seen claimant), so they need key creation on the master - and the master has no room. Attempted and
    measured: a guarded, permissionless `openAccount(address)` opening all three mappings costs ~300 B (~474 B

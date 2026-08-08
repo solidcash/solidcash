@@ -1,13 +1,42 @@
 import { formatArtifact } from '@solidcash/utils';
 import { compileString } from 'solidc';
 import fs from 'fs';
-import { URL } from 'url';
+import { createRequire } from 'module';
+import { URL, fileURLToPath } from 'url';
+import path from 'path';
 
-/** True when both artifact outputs exist and are newer than the .scash source. */
+const require = createRequire(import.meta.url);
+
+/**
+ * Newest mtime among inputs that can change emitted artifacts without the .scash
+ * source changing: the .scash itself, and the solidc / @solidcash/utils package
+ * entrypoints (so a compiler rebuild invalidates stale example artifacts).
+ */
+function newestDependencyMtime(sourcePath: string): number {
+  let newest = fs.statSync(sourcePath).mtimeMs;
+  for (const pkg of ['solidc', '@solidcash/utils']) {
+    try {
+      const pkgJson = require.resolve(`${pkg}/package.json`);
+      const mainRel = (JSON.parse(fs.readFileSync(pkgJson, 'utf-8')) as { main?: string }).main
+        ?? 'dist/index.js';
+      const mainPath = path.resolve(path.dirname(pkgJson), mainRel);
+      if (fs.existsSync(mainPath)) {
+        newest = Math.max(newest, fs.statSync(mainPath).mtimeMs);
+      }
+      newest = Math.max(newest, fs.statSync(pkgJson).mtimeMs);
+    } catch {
+      // Package not resolvable — force recompile by treating dep mtime as now.
+      newest = Date.now();
+    }
+  }
+  return newest;
+}
+
+/** True when both artifact outputs exist and are newer than sources + compiler. */
 function artifactsUpToDate(sourcePath: string, outputs: string[]): boolean {
   if (!fs.existsSync(sourcePath)) return false;
-  const sourceMtime = fs.statSync(sourcePath).mtimeMs;
-  return outputs.every((out) => fs.existsSync(out) && fs.statSync(out).mtimeMs >= sourceMtime);
+  const depMtime = newestDependencyMtime(sourcePath);
+  return outputs.every((out) => fs.existsSync(out) && fs.statSync(out).mtimeMs >= depMtime);
 }
 
 export const compile = (): void => {
@@ -21,9 +50,9 @@ export const compile = (): void => {
     const contractFile = new URL(fn, `${directory}/`);
     const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
     const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
-    const sourcePath = contractFile.pathname;
-    const jsonPath = jsonOutputFile.pathname;
-    const tsPath = tsOutputFile.pathname;
+    const sourcePath = fileURLToPath(contractFile);
+    const jsonPath = fileURLToPath(jsonOutputFile);
+    const tsPath = fileURLToPath(tsOutputFile);
 
     if (artifactsUpToDate(sourcePath, [jsonPath, tsPath])) {
       console.log(`Up-to-date ${fn}`);

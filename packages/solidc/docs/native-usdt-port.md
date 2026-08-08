@@ -227,8 +227,9 @@ now), and `openSelf()` opens the keys the delegated routes need.
 
 With those in place the whole mapping surface settles: `issue`, `transfer` (including from the owner, which is
 the entire supply path), a non-owner transfer, the fee round-trip, `approve`, `addBlackList`, `freeze`,
-`removeBlackList`. `deposit` reaches the FACET rather than being refused at the proxy - it then fails only on
-its own delivery proof, which is the contract working. 28 tests in `NativeUsdt.test.ts`.
+`removeBlackList`. `deposit` reaches the FACET rather than being refused at the proxy, but it then fails its
+own delivery proof - and that is a CONTRACT DEFECT, not the contract working. See s3.3. 28 tests in
+`NativeUsdt.test.ts`.
 
 Three deviations this adds, all documented and all forced: fees are swept rather than credited inline, an
 account opens itself before use, and a zero-value fee `Transfer` is logged when no fee applies.
@@ -255,7 +256,42 @@ be shared is the more obvious fix and is wrong here - it costs enough outlining 
 fits its input, taking the suite from 28 passing to 9. The extractor was the side that was wrong, not the
 optimiser.
 
-### 3.3 What the layout costs, and one splitter bug it exposed
+### 3.3 `deposit`'s delivery proof is unsatisfiable, so the boundary cannot be entered
+
+I previously recorded that `deposit` "fails only on its own delivery proof, which is the contract working".
+That was wrong, and the arithmetic says so. The check is:
+
+```
+for (i in tx.outputs) if (tx.outputs[i].tokenCategory == category)
+    delivered += tx.outputs[i].tokenAmount;
+require(delivered >= this.containerSeen + amount);
+```
+
+`containerSeen` is the whole reserve's high-water mark, and **the container is not co-spent by `deposit`** - it
+touches no `this.tokens[...]`, and it runs on a delegate facet where container operations are forbidden
+anyway. So the container's own balance contributes nothing to `delivered`, and a depositor must supply
+`containerSeen + amount` from their own bearer coins in order to move `amount`. Measured: depositing 5 USDT
+against a 1,000,000 USDT premint demands the transaction carry **1,000,005 USDT** of category outputs. The
+check is satisfiable only while `containerSeen == 0`, and `setBacking` makes that false immediately.
+
+So the quarantined admission boundary - the port's headline extension, and the whole subject of s2.3 - has
+never been enterable. Every earlier report that framed this as a test-harness gap was mistaken; the harness
+was fine.
+
+The loop is separately blind to WHERE an output pays: it would happily count one paying the depositor. So even
+the intended proof ("the reserve grew") is not what it checks. A sound version needs one of two things this
+port does not have:
+
+- the **container's locking bytecode** available in contract code, so that only container-paying outputs are
+  summed and the requirement becomes `delivered >= amount`; or
+- the **container co-spent**, so its input/output delta is the measurement - which needs `deposit` on the
+  master, since delegate mode cannot touch a container, and the master has no room for it (s1.2).
+
+Neither is a small change, and a half-sound version - fixing the satisfiability while leaving the destination
+unchecked - would turn an unusable function into a drainable one. Pinned by
+`NativeUsdtDepositProof.test.ts` with the arithmetic, unfixed deliberately.
+
+### 3.4 What the layout costs, and one splitter bug it exposed
 
 `feeAccrued` sits beside the other fee fields rather than at the end of the state block, deliberately: a
 function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` already reads `basisPointsRate` and

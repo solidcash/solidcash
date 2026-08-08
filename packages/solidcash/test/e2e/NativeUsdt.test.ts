@@ -534,11 +534,12 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(false);
   });
 
-  // The quarantine boundary was unreachable: deposit first-touches pendingAmount and
-  // pendingUnlockAt, and a first-touch INSERT is refused at the PROXY's own input (input 0).
-  // With the account open, it reaches the FACET and is judged on its own terms - it fails on
-  // the delivery proof, because this call delivers no FTs to the container. That is the
-  // contract working, not the platform refusing.
+  // The delegated-INSERT boundary used to refuse deposit at the PROXY's own input (input 0).
+  // With the account open it reaches the FACET and is judged on its own terms. It still fails,
+  // on its delivery proof - and that proof is UNSATISFIABLE, which is a defect in the port's
+  // own boundary rather than the platform refusing. NativeUsdtDepositProof.test.ts carries the
+  // arithmetic; docs/native-usdt-port.md s3.3 carries the analysis. This row pins only the
+  // narrow fact that the refusal moved off the proxy.
   it('deposit reaches the facet instead of being refused at the proxy', async () => {
     const d = await deployAll({ quarantineBlocks: 0n });
     await open(d, d.signers.owner);

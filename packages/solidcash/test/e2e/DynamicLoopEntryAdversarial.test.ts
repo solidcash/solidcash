@@ -51,6 +51,16 @@ describe('dynamic loop mapping write - adversarial soundness', () => {
     const honest = decodeTransactionUnsafe(hexToBin(capturedHex));
     expect(honest.outputs.length).toBeGreaterThanOrEqual(3);
 
+    // The covenant refuses these three tampers, but the two backends name the refusal differently: the mock
+    // reports OP_VERIFY at input 0, while BCHN reports `Script failed an OP_EQUALVERIFY operation (code 16)`
+    // and does not name an input for that form. Require a script-verify refusal either way, and the stronger
+    // opcode-and-index form wherever the backend reports one.
+    const COVENANT_REFUSAL = new RegExp(
+      'mandatory-script-verify-flag-failed(?:'
+      + '[\\s\\S]*evaluating input index 0: Program failed an OP_VERIFY operation'
+      + '|[\\s\\S]*OP_EQUALVERIFY)',
+    );
+
     const submitTampered = async (mutate: (tx: ReturnType<typeof decodeTransactionUnsafe>) => void): Promise<void> => {
       const tx = decodeTransactionUnsafe(hexToBin(capturedHex));
       mutate(tx);
@@ -61,14 +71,14 @@ describe('dynamic loop mapping write - adversarial soundness', () => {
     await expect(submitTampered((tx) => {
       tx.outputs[1].token!.nft!.commitment = hexToBin('deadbeef');
     })).rejects.toThrow(
-      /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/,
+      COVENANT_REFUSAL,
     );
 
     // (2) Redirect an entry output to a p2pkh address -> OP_OUTPUTBYTECODE verify rejects.
     await expect(submitTampered((tx) => {
       tx.outputs[1].lockingBytecode = hexToBin(`76a914${'00'.repeat(20)}88ac`);
     })).rejects.toThrow(
-      /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/,
+      COVENANT_REFUSAL,
     );
 
     // (3) Orphan: append a duplicate entry output so the tx has N+1 entry outputs while the counter is N ->
@@ -79,7 +89,7 @@ describe('dynamic loop mapping write - adversarial soundness', () => {
         token: { ...tx.outputs[2].token!, nft: { ...tx.outputs[2].token!.nft! } },
       });
     })).rejects.toThrow(
-      /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/,
+      COVENANT_REFUSAL,
     );
 
     // The same still-unspent inputs settle when no hostile mutation is applied.

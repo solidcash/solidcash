@@ -6,7 +6,6 @@ import {
 } from '../../src/index.js';
 import { Utxo } from '../../src/interfaces.js';
 import { createTestProvider } from '../test-util.js';
-import { alicePriv } from '../fixture/vars.js';
 
 // ethers/hardhat-style factory deploy: `new ContractFactory(artifact, signer).deploy(...args)` (or
 // getContractFactory / deployContract), a real genesis deploy funded by the Signer runner, returning a ready
@@ -14,9 +13,23 @@ import { alicePriv } from '../fixture/vars.js';
 const CHECK = 'contract ChainIdCheck() { function check(uint256 e) { require(block.chainid == e); } }';
 const OWNED = 'contract Owned(int magic) { function check(int m) { require(m == magic); } }';
 
+/**
+ * A FRESH key per call. The logical CREATE address is deterministic in (deployer, nonce), and these tests all
+ * deploy at nonce 0, so reusing one key leaves another immutable anchor at the same address on every run and
+ * `resolveLogicalIdentity` then legitimately reports "ambiguous ... found N". A real deployer consumes each
+ * nonce once, so uniqueness here restores the property the test means to assert.
+ */
+function freshPrivateKey(): Uint8Array {
+  const key = new Uint8Array(32);
+  crypto.getRandomValues(key);
+  // Keep the value non-zero and below the secp256k1 group order.
+  key[0] = (key[0] & 0x7f) | 0x01;
+  return key;
+}
+
 async function fundedSigner(txidByte: string): Promise<{ signer: Signer; fundingUtxo: Utxo }> {
   const provider = createTestProvider();
-  const signer = new Signer(alicePriv, provider);
+  const signer = new Signer(freshPrivateKey(), provider);
   const fundingUtxo: Utxo = { txid: txidByte.repeat(32), vout: 0, satoshis: 1_000_000n };
   await provider.addUtxo(signer.getAddress(), fundingUtxo);
   return { signer, fundingUtxo };

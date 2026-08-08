@@ -3,7 +3,7 @@ import { compileString } from '../../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../../src/index.js';
 import { alicePkh } from '../../fixture/vars.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 
 /**
  * The deciding evidence for round-11's "S2 UNDETERMINED - the boundary is dialect-dependent".
@@ -85,7 +85,7 @@ async function expectRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
+  expectScriptRejection(outcome, 0);
 }
 
 describe('S2 bare-spelling admitted form: unbounded write plus a collection write in one handler', () => {
@@ -131,10 +131,24 @@ describe('S2 bare-spelling admitted form: unbounded write plus a collection writ
     const { provider, hex } = await honestCapture();
     await expectRejection(provider, mutate(hex, (tx) => {
       const source = tx.outputs[OUT.chunk];
-      tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+      // A 1-satoshi output is below a real node's dust threshold, so BCHN refuses the forgery with `dust (code 64)`
+      // before the covenant can object. On live regtest use a dust-viable value funded from the LARGEST output.
+      const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+      const appendedValue = liveRegtest ? 1200n : 1n;
+      if (liveRegtest) {
+        const donor = tx.outputs.reduce(
+          (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+        );
+        if (tx.outputs[donor].valueSatoshis <= appendedValue + 500n) {
+          throw new Error('appendClone: no output can fund the appended value; the forgery would be malformed.');
+        }
+        tx.outputs[donor].valueSatoshis -= appendedValue + 500n;
+      } else {
+        tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+      }
       tx.outputs.push({
         ...source,
-        valueSatoshis: 1n,
+        valueSatoshis: appendedValue,
         lockingBytecode: source.lockingBytecode.slice(),
         token: {
           ...source.token,

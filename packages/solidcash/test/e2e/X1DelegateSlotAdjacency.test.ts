@@ -4,7 +4,9 @@ import { compileStringSplit } from '../direct-compile.js';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle } from '../../src/index.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createTestProvider, getTxOutputs } from '../test-util.js';
+import {
+  createTestProvider, expectScriptRejection, getTxOutputs,
+} from '../test-util.js';
 
 /**
  * X1 - the delegate implementation slot and the proxy's output-only funder slots claimed the same position.
@@ -196,7 +198,7 @@ describe('X1 delegate implementation slot adjacency', () => {
       expect(outcome).toBe('ACCEPTED');
       return;
     }
-    expect(outcome).toContain('error in evaluating input index 2');
+    expectScriptRejection(outcome, 2);
     expect(outcome).toContain('OP_VERIFY');
   }, 300_000);
 });

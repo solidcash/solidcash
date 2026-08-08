@@ -10,7 +10,7 @@ import { ProxyContract } from '../../src/stateful/upgrades.js';
 import { defaultProxyArtifact } from '../../src/stateful/defaultProxyArtifact.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { alicePriv, alicePub } from '../fixture/vars.js';
-import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import { SignatureTemplate } from '../../src/index.js';
 
 /**
@@ -165,7 +165,7 @@ describe('X11 follow-on: collection output-count pin inside a delegate', () => {
     });
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 2');
+    expectScriptRejection(outcome, 2);
     // Nothing landed, so the reader cannot see the fabricated value either.
     expect(SortedList.fromUtxos(await provider.getUtxos(address)).find(FORGED_SLOT)).toBeUndefined();
   }, 300_000);
@@ -204,6 +204,6 @@ describe('X11 follow-on: collection output-count pin inside a delegate', () => {
     });
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 300_000);
 });

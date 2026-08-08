@@ -978,19 +978,40 @@ function extractVerifiedValuesFromTrace(
   return valuesNoIndex;
 }
 
+/** The opcodes `extractCommitmentMapFromTrace` reasons about; every probe trace is reduced to these. */
+const PROBE_TRACE_OPCODES = new Set<number>([
+  Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
+  Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+]);
+
 /** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
 function evaluateProbeTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
 ): AuthenticationProgramStateCommon[] {
+  const targets = PROBE_TRACE_OPCODES;
   if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) {
-    return createVirtualMachineBch2026ForProvider(provider).debug(program) as AuthenticationProgramStateCommon[];
+    // Same instrument shape for both branches. `extractCommitmentMapFromTrace` pairs a commitment read with the
+    // OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for a trace containing
+    // just these opcodes - exactly what the observer below produces. Handing it a raw debug trace made every
+    // pair look interrupted, so on a live network no commitment was ever discovered and the covenant then
+    // failed. Filter to the same opcodes and apply the same pairing rule before returning.
+    const full = createVirtualMachineBch2026ForProvider(provider)
+      .debug(program) as AuthenticationProgramStateCommon[];
+    const filtered: AuthenticationProgramStateCommon[] = [];
+    let awaiting = false;
+    for (const state of full) {
+      const opcode = state.instructions[state.ip]?.opcode;
+      if (opcode === undefined || !targets.has(opcode)) continue;
+      if (opcode === Op.OP_EQUALVERIFY && !awaiting) continue;
+      filtered.push(state);
+      awaiting = opcode !== Op.OP_EQUALVERIFY;
+    }
+    // The observer branch ends with the final evaluation state; mirror that so consumers see the same tail.
+    if (full.length > 0) filtered.push(full[full.length - 1]);
+    return filtered;
   }
   const trace: AuthenticationProgramStateCommon[] = [];
-  const targets = new Set<number>([
-    Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
-    Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
-  ]);
   let awaitingVerification = false;
   const vm = createVirtualMachineBch2026ForProvider(provider, {
     opcodes: targets,

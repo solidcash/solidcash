@@ -11,7 +11,9 @@ import { classifyDelegateParticipant } from '../../src/message-bus/delegate.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 import { alicePriv } from '../fixture/vars.js';
-import { createFeeFunder, createTestProvider, getTxOutputs } from '../test-util.js';
+import {
+  createFeeFunder, createTestProvider, expectScriptRejection, getTxOutputs,
+} from '../test-util.js';
 
 /**
  * X50 - the SDK's shipped `defaultProxyArtifact.ts` was stale in two independent ways, and this file is the
@@ -224,7 +226,7 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     });
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 300_000);
 
   /**

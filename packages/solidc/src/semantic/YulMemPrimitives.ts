@@ -109,6 +109,19 @@ export function memWordStore(off: OffFactory, val: ExpressionNode, src?: Src): A
   return stamp(new AssignNode(memId(src), stamp(new BytesConcatNode([head, word, tail]), src)), src);
 }
 
+// mstore of a CONTIGUOUS RUN of words starting at off: one splice for the whole run instead of one per word.
+// Every element store rebuilds the entire buffer (head ++ word ++ tail), so N separate stores copy the buffer N
+// times - dense in executed operations while emitting almost nothing, which is exactly what the BCH-2026
+// operation-cost budget charges for. Folding a run into a single rebuild keeps the copies at one. Callers must
+// ensure no word expression reads `__yulmem`, since the run's writes all land after every word is evaluated.
+export function memWordStoreRun(off: OffFactory, vals: ExpressionNode[], src?: Src): AssignNode {
+  const head = stamp(new SliceNode(memId(src), intLit(0n, src), off()), src);
+  const words = vals.map((val) => rawWordBytes(val, src));
+  const span = intLit(MEM_WORD * BigInt(vals.length), src);
+  const tail = stamp(new SliceNode(memId(src), add(off(), span, src), memLen(src)), src);
+  return stamp(new AssignNode(memId(src), stamp(new BytesConcatNode([head, ...words, tail]), src)), src);
+}
+
 // mload(off) -> decodeType(bytes32(__yulmem[off : off+32])). `pad` appends a trailing zero word before slicing so a
 // read straddling the written high-water mark returns zeros (the Yul side, where offsets are arbitrary); the
 // high-level side reads only allocated slots so it omits the pad. `decodeType` is the element type (uint256 for a

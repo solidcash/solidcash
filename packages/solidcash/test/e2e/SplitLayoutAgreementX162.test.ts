@@ -248,8 +248,14 @@ describe('X162: the divergence the repair removes was exploitable', () => {
    * construction rather than to the divergence.
    */
   it('CONTROL: the same construction on a repaired bundle writes the variable it names', async () => {
-    const repaired: any = compileStringSplit(SOURCE.replace(/ \+ block\.timestamp/, ' + 2'), {
-      ...OPTIONS, maxShardBytes: 1100,
+    // Measured, not guessed, the same way `dividedBundle` does it. This row carried a literal 1,100, which
+    // stopped forcing a split as soon as codegen got denser - and a control that compiles to ONE facet proves
+    // nothing about a divergence between two.
+    const repairedSource = SOURCE.replace(/ \+ block\.timestamp/, ' + 2');
+    const single = compileStringSplit(repairedSource, OPTIONS);
+    expect(single.manifest.facets).toHaveLength(1);
+    const repaired: any = compileStringSplit(repairedSource, {
+      ...OPTIONS, maxShardBytes: single.manifest.facets[0].estimatedRedeemBytes - 1,
     });
     expect(repaired.manifest.facets.length).toBeGreaterThan(1);
     const target = repaired.manifest.routes.find((r: any) => r.function === 'touchC').target;

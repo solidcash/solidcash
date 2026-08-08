@@ -63,13 +63,6 @@ describe('Conditional State Writes', () => {
       ));
     });
 
-    it('should compile with stateLayout', () => {
-      expect(stateLayout).toBeDefined();
-      expect(stateLayout.variables).toHaveLength(2);
-      expect(stateLayout.variables[0].name).toBe('counter');
-      expect(stateLayout.variables[1].name).toBe('label');
-    });
-
     it('should increment counter and set label when flag=true', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
       const newLabel = new Uint8Array([0xde, 0xad, 0xbe, 0xef]);

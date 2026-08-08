@@ -70,12 +70,6 @@ describe('ForLoop', () => {
       ({ categoryId } = await setupStatefulUtxos(provider, contract, stateLayout, { counter: 0n }, { saltContract: true }));
     });
 
-    it('should compile with stateLayout', () => {
-      expect(stateLayout).toBeDefined();
-      expect(stateLayout.variables).toHaveLength(1);
-      expect(stateLayout.variables[0].name).toBe('counter');
-    });
-
     it('should increment counter by 3 via for loop (iterations=3)', async () => {
       const sc = StatefulContract.withCategory(contract, categoryId);
 

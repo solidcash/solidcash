@@ -37,18 +37,8 @@ describe('Porting features (runtime)', () => {
     await expect(sc.f()).rejects.toThrow(verifyFailure);
   });
 
-  it('SBE-9: hex literal compares as a big-endian integer (compat)', async () => {
-    // 0x0100 == 256; require holds only if the hex literal is read big-endian as the integer 256.
-    const artifact = compileString(
-      `pragma solidity ^0.8.26;
-      contract C { function f(uint256 x) external pure { require(x == 0x0100); } }`,
-      { forceStateful: true, solidityImportCompat: true },
-    );
-    const factory1 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory1.deploy()).f(256n)).resolves.toBeDefined();
-    const factory2 = getContractFactory(artifact, await fundedSigner());
-    await expect((await factory2.deploy()).f(255n)).rejects.toThrow(verifyFailure);
-  });
+  // SBE-9 hex-literal big-endian integer semantics: covered by PortingRuntime
+  // ("uses a hex literal as its big-endian integer value (0x0102 == 258)").
 
   it('SBE-11: implicit named return yields the named value', async () => {
     const artifact = compileString(`contract C() {

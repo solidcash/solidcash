@@ -679,7 +679,10 @@ contract Reader(bytes32 counterCategory) {
         nft: { ...chunk!.token!.nft!, commitment: `${commitment.slice(0, -2)}5b` },
       };
       await expect(hostile.send()).rejects.toThrow(
-        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+        // The mock names the failing input and opcode. BCHN's short form names neither reliably: the
+        // same tamper surfaces as OP_VERIFY, OP_EQUALVERIFY or OP_NUMEQUALVERIFY depending on where
+        // the covenant trips. Enumerating opcodes is fragile, so accept any script-verify refusal.
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation|mandatory-script-verify-flag-failed/,
       );
     });
   });
@@ -747,7 +750,10 @@ contract Reader(bytes32 counterCategory) {
       };
 
       await expect(builder.send()).rejects.toThrow(
-        /error in evaluating input index 0: Program failed an OP_VERIFY operation/,
+        // The mock names the failing input and opcode. BCHN's short form names neither reliably: the
+        // same tamper surfaces as OP_VERIFY, OP_EQUALVERIFY or OP_NUMEQUALVERIFY depending on where
+        // the covenant trips. Enumerating opcodes is fragile, so accept any script-verify refusal.
+        /error in evaluating input index 0: Program failed an OP_VERIFY operation|mandatory-script-verify-flag-failed/,
       );
     });
 
@@ -812,7 +818,10 @@ contract Reader(bytes32 counterCategory) {
       };
 
       await expect(builder.send()).rejects.toThrow(
-        /error in evaluating input index 1: Program failed an OP_VERIFY operation/,
+        // The mock names the failing input and opcode. BCHN's short form names neither reliably: the
+        // same tamper surfaces as OP_VERIFY, OP_EQUALVERIFY or OP_NUMEQUALVERIFY depending on where
+        // the covenant trips. Enumerating opcodes is fragile, so accept any script-verify refusal.
+        /error in evaluating input index 1: Program failed an OP_VERIFY operation|mandatory-script-verify-flag-failed/,
       );
     });
   });

@@ -4,7 +4,8 @@ import { compileString } from '../direct-compile.js';
 import {
   Contract, StatefulContract, TransactionBuilder, getEventNftAddress, readEventsFromChain,
 } from '../../src/index.js';
-import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
+  from '../test-util.js';
 
 /**
  * SEC-10 / SEC-11, general form. Both were reported as reserved-SLOT bugs: a one-armed conditional emit (SEC-10)
@@ -132,17 +133,17 @@ describe('forged event NFTs appended past the block', () => {
   // THE MEASUREMENT. One variable against each control above: one appended output.
   it('refuses an appended own-category event NFT on a function that never emits', async () => {
     const row = await run(NOEMIT, 4n, 'own');
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(row.outcome, 0);
   }, 300_000);
 
   it('refuses an appended own-category event NFT beside a genuine emit', async () => {
     const row = await run(UNCOND, 200n, 'own');
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(row.outcome, 0);
   }, 300_000);
 
   it('refuses an appended own-category event NFT on a not-taken conditional row', async () => {
     const row = await run(COND, 4n, 'own');
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(row.outcome, 0);
   }, 300_000);
 
   /**

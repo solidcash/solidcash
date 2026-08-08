@@ -113,3 +113,6 @@ manual-test.ts
 
 .worktrees
 packages/solidcash/.regtest-progress.json
+
+# transient probe dir written by scripts/release-docs-snippets.ts
+/.docscheck/

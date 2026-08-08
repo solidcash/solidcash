@@ -698,6 +698,16 @@ it must not silently compile to incorrect covenant behavior.
     repo root; the 252 fenced SolidCash blocks under `website/docs` - the first thing a new user copies - were
     ungated. Compiling the 133 that DECLARE a contract, library or interface: 128 compile, 5 are skipped because
     they import a file the docs do not ship, 0 fail. So the docs were not stale; they were simply unwatched.
+  - The TypeScript half is covered too, by the check that pays: every name the docs import from `solidcash`,
+    `solidc` or `@solidcash/utils` must still be exported. 33 names across 3 packages, all resolving. Full
+    type-checking of the 262 TS blocks was deliberately NOT attempted - most are fragments referencing variables
+    defined in the prose around them, so the failures would be about the harness rather than the docs, whereas an
+    import of a renamed or dropped name is what a reader hits immediately.
+  - Method note worth keeping: this must be `tsc`, not a runtime `name in module` check. The runtime version was
+    written first and is wrong - an interface has no runtime presence, so every type-only export reads as
+    missing. It reported `WcTransactionObject` as dropped from `solidcash` when `index.ts` re-exports it
+    perfectly well via `export * from './walletconnect-utils.js'`; `tsc` resolves it without complaint. The gate
+    carries a negative control in its own history: an invented name fails with TS2305, so it is not vacuous.
   - Now gated by `yarn test:docs-snippets` (`scripts/release-docs-snippets.ts`), wired into CI between the
     examples and package-smoke steps. The scope is deliberately narrow so the gate stays trustworthy: fragments
     that never declared a contract are not compiled (they were never meant to stand alone, and failing them would

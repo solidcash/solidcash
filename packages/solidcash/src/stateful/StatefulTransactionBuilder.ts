@@ -3399,6 +3399,22 @@ export class StatefulTransactionBuilder {
       try { covenantBuilder.debug(); } catch (_e) {
         if (typeof _e === 'object' && _e) {
           discoveryProbeFailure = (_e as Error).message;
+          // A CONSENSUS-LIMIT refusal is not a probe artifact and must not be absorbed. The benign case this
+          // try/catch exists for is signature-shaped: the signature is not final at probe time, so a
+          // `require(checkSig(...))` can fail here and still be fine in the finished transaction. An
+          // operation-cost density refusal is the opposite - the final transaction does at least as much work
+          // against a budget its own unlocking length buys, so it cannot pass by continuing. Swallowing it
+          // meant grinding on from an unresolved shape and then reporting an unrelated failure minutes later
+          // (measured: 141 s on a nested struct-array write). Report the real cause now instead.
+          if (/exceed the operation cost density limit/.test(discoveryProbeFailure)) {
+            throw new Error(
+              'BCH-2026 operation-cost budget exceeded while probing the covenant, so the transaction cannot '
+              + 'be built. The budget is operationCostBudgetPerByte x unlockingBytecodeLength, and for p2sh32 '
+              + 'the redeem script counts toward that length, so reserving script bytes (Contract `salt`) '
+              + `raises it. Probe reported: ${discoveryProbeFailure}`,
+              { cause: _e },
+            );
+          }
           console.debug('STB debug() best-effort error:', discoveryProbeFailure);
         }
       }

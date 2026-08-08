@@ -1221,40 +1221,49 @@ function evaluateProbeTrace(
   provider: NetworkProvider,
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
 ): AuthenticationProgramStateCommon[] {
-  const targets = new Set(PROBE_TRACE_OPCODES);
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
-    targets.add(Op.OP_LESSTHAN);
-    targets.add(Op.OP_VERIFY);
-    targets.add(Op.OP_INVOKE);
-    targets.add(Op.OP_ROLL);
-  }
-  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-    ?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1') {
-    for (let opcode = 0; opcode <= 0xff; opcode += 1) targets.add(opcode);
-  }
-  if ((provider.consensusLimits?.maximumInputBytes ?? 10_000) <= 10_000) {
-    // Same instrument shape for both branches. `extractCommitmentMapFromTrace` pairs a commitment read with the
-    // OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for a trace containing
-    // just these opcodes - exactly what the observer below produces. Handing it a raw debug trace made every
-    // pair look interrupted, so on a live network no commitment was ever discovered and the covenant then
-    // failed. Filter to the same opcodes and apply the same pairing rule before returning.
-    const full = createVirtualMachineBch2026ForProvider(provider)
-      .debug(program) as AuthenticationProgramStateCommon[];
-    const filtered: AuthenticationProgramStateCommon[] = [];
-    let awaiting = false;
-    for (const state of full) {
-      const opcode = state.instructions[state.ip]?.opcode;
-      if (opcode === undefined || !targets.has(opcode)) continue;
-      if (opcode === Op.OP_EQUALVERIFY && !awaiting) continue;
-      filtered.push(state);
-      awaiting = opcode !== Op.OP_EQUALVERIFY;
+  const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
+  const debugEnv = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
+  // Production-sized inputs retain the faithful trace for diagnostics. Relaxed/private-network inputs always
+  // use the opcode observer: libauth debug() structured-clones every intermediate state and stack, which made a
+  // cold large-contract fixture spend nearly all CPU cloning and collecting a trace these derivations reduce to
+  // six opcodes. SC_FORCE_FULL_PROBE_TRACE remains available for diagnosing an observer discrepancy.
+  const preferFullDebug = maxIn <= 10_000
+    || debugEnv?.SC_FORCE_FULL_PROBE_TRACE === '1'
+    || debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE === '1'
+    || debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS === '1';
+  if (preferFullDebug) {
+    try {
+      const full = createVirtualMachineBch2026ForProvider(provider)
+        .debug(program) as AuthenticationProgramStateCommon[];
+      // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
+      // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
+      // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
+      if (maxIn <= 10_000 && debugEnv?.SOLIDC_DEBUG_ROUTE_CONCISE !== '1'
+        && debugEnv?.SOLIDC_DEBUG_ROUTE_FULL_OPS !== '1') {
+        const targets = PROBE_TRACE_OPCODES;
+        const filtered: AuthenticationProgramStateCommon[] = [];
+        let awaiting = false;
+        for (const state of full) {
+          const opcode = state.instructions[state.ip]?.opcode;
+          if (opcode === undefined || !targets.has(opcode)) continue;
+          if (opcode === Op.OP_EQUALVERIFY && !awaiting) continue;
+          filtered.push(state);
+          awaiting = opcode !== Op.OP_EQUALVERIFY;
+        }
+        if (full.length > 0) filtered.push(full[full.length - 1]);
+        return filtered;
+      }
+      return full;
+    } catch (err) {
+      // V8 arg-limit / OOM on an oversized script: fall through to the observer.
+      if (maxIn <= 10_000) throw err;
     }
-    // The observer branch ends with the final evaluation state; mirror that so consumers see the same tail.
-    if (full.length > 0) filtered.push(full[full.length - 1]);
-    return filtered;
   }
   const trace: AuthenticationProgramStateCommon[] = [];
+  // Keep the sparse observer tight: extractCommitmentMapFromTrace treats any observed opcode between
+  // OP_OUTPUTTOKENCOMMITMENT and OP_EQUALVERIFY as breaking the commitment pair. Expanding the set
+  // (EQUAL/UTXO*/NUMEQUAL*) produced phantom pairs and multi-data-NFT nftIndex tag mismatches.
+  const targets = PROBE_TRACE_OPCODES;
   let awaitingVerification = false;
   const vm = createVirtualMachineBch2026ForProvider(provider, {
     opcodes: targets,
@@ -4096,7 +4105,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const requiredIndices = constructorAbi?.requiredNftIndices
       ?? Array.from({ length: stateLayout.dataNftCount }, (_, i) => i);
     const { CovenantTransactionBuilder } = await import('./CovenantTransactionBuilder.js');
-    const useSparseProbe = (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    // Sparse probes omit OP_INPUTBYTECODE unless listed; constructors with keccak need full traces
+    // on small contracts and carefully instrumented sparse traces on large ones. Prefer full debug
+    // when the constructor is modest enough that cloning the trace is safe.
+    // The sparse observer is an approximation of the faithful trace (it records only the inspected opcodes and
+    // the EQUALVERIFY adjacent to each). SOLIDCASH_FAITHFUL_DEPLOY_PROBE=1 forces the faithful path so a
+    // derivation failure can be attributed to the contract rather than to the observer.
+    const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
+      && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
     // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.
@@ -13013,8 +13029,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const probe = builder.build();
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
-    const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
@@ -13027,9 +13042,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Uint8Array | undefined {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const trace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
-      inputIndex, sourceOutputs, transaction,
-    }) as AuthenticationProgramStateCommon[];
+    const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });

@@ -458,6 +458,47 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.
+  - **The first option is now measured and REJECTED; take the second.** Two sweeps at head, both reverted:
+    - Setting the mock's `maximumInputBytes` to the real 10,000 fails 8 tests in 5 files, and NONE are the
+      derivation shapes - `ChunkedArrays`, `X171`, `X167`, `NestedArrayFixedInner` and `SplitLayoutAgreementX162`
+      all pass, independently re-confirming `2b05b292`. But that knob is CONFLATED: `maximumInputBytes` also
+      feeds `maximumBytecodeLength` and `maximumStandardUnlockingBytecodeLength`, so four of the eight are
+      `X158OverLimitContractSpend`, a script-SIZE test, not derivation at all. The limit cannot be used to select
+      the derivation path without also tightening the script limit.
+    - Forcing the five derivation gates to their faithful branch while leaving every limit alone isolates it
+      properly. Only `X57ObserverMasking` fails by construction (it asserts an observer IS requested under
+      relaxed limits). But the cost is prohibitive: `NestedStructArrayWrite` alone takes 161 s against about
+      10 s on the sparse path, so a full faithful-path suite is not a viable default.
+  - The observer is NOT removable, which the "just use one algorithm" framing would miss. `createVirtualMachine.ts`
+    records that `vm.debug()` does not merely slow above roughly 100,014 states, it THROWS - libauth's
+    `proxyDebug` spreads the whole state array into `push` and exceeds V8's argument limit. Above ordinary
+    capacity the observer is the only usable instrument, so the gate is a real capability boundary that happens
+    to be keyed on a size proxy.
+  - A separate defect this surfaced, matching the remedy direction already stated above: on the faithful path a
+    density refusal raised INSIDE the probe is swallowed by its best-effort `try/catch`. Forcing that path,
+    `NestedStructArrayWrite`'s unreserved write logs `STB debug() best-effort error: ... exceed the operation
+    cost density limit ... Failing statement: jobs.push();` and then continues for 141 s instead of reporting it.
+    Mocknet does not show this because the sparse path skips the probe, so the shipped configuration gives
+    mocknet users a clean density error and live-network users a swallowed one.
+  - Consequence for the tests added with the density reserve: the "without a reserve is still refused" companion
+    rows assert a refusal that is PATH-DEPENDENT. They hold on the sparse path the mock takes; on the faithful
+    path the same refusal was swallowed by the probe. That is a property of the swallowing defect above, not of
+    the reserve. Fixed below, so both paths now report it.
+  - **BOTH HALVES NOW LANDED.**
+    - The swallowing is fixed. The probe's best-effort `try/catch` exists for a signature-shaped failure - the
+      signature is not final at probe time, so a `require(checkSig(...))` can fail there and still be fine in the
+      finished transaction - and that case still absorbs. A CONSENSUS-LIMIT refusal is the opposite: the final
+      transaction does at least as much work against a budget its own unlocking length buys, so it cannot pass by
+      continuing. An operation-cost density refusal now throws immediately, naming the cause and pointing at the
+      reserve, instead of grinding on from an unresolved shape. Measured on the shape that took 141 s: 1.5 s.
+    - `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` is the standing gate the second completion
+      option asks for. It builds a provider at the real `maximumInputBytes` of 10,000, asserts that this selects
+      the faithful branch AND that the default provider does not (so the split itself is pinned, not assumed),
+      then runs a dynamic chunked write and a whole-array assign through it, plus a fail-closed check that the
+      covenant still refuses a wrong read on that path. Four tests, deliberately small, because the reason the
+      suite does not simply run this way is the 161 s cost measured above.
+    - So mocknet coverage still carries no blanket derivation-path claim, and this file is the explicit statement
+      of what IS claimed for the production path.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,

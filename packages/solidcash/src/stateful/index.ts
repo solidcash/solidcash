@@ -95,6 +95,9 @@ export {
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
 } from './SortedList.js';
 export {
+  takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot,
+} from './deployment-registry.js';
+export {
   getDataNftAddress,
   getMessageBusVerifierAddress,
   getMessageBusVerifierLockingBytecode,

@@ -9,6 +9,14 @@ export interface RegisteredDeployment {
 
 const deployments = new WeakMap<NetworkProvider, RegisteredDeployment[]>();
 
+export interface DeploymentRegistrySnapshot { restore(): void }
+
+/** Capture process-local registrations alongside a mock-chain fixture snapshot. */
+export function takeDeploymentRegistrySnapshot(provider: NetworkProvider): DeploymentRegistrySnapshot {
+  const snapshot = [...(deployments.get(provider) ?? [])];
+  return { restore: () => deployments.set(provider, [...snapshot]) };
+}
+
 /** Record contracts created by the Hardhat-compatible factory on this provider. */
 export function registerDeployment(
   provider: NetworkProvider, deployment: RegisteredDeployment,

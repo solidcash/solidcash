@@ -458,6 +458,32 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.
+  - **The first option is now measured and REJECTED; take the second.** Two sweeps at head, both reverted:
+    - Setting the mock's `maximumInputBytes` to the real 10,000 fails 8 tests in 5 files, and NONE are the
+      derivation shapes - `ChunkedArrays`, `X171`, `X167`, `NestedArrayFixedInner` and `SplitLayoutAgreementX162`
+      all pass, independently re-confirming `2b05b292`. But that knob is CONFLATED: `maximumInputBytes` also
+      feeds `maximumBytecodeLength` and `maximumStandardUnlockingBytecodeLength`, so four of the eight are
+      `X158OverLimitContractSpend`, a script-SIZE test, not derivation at all. The limit cannot be used to select
+      the derivation path without also tightening the script limit.
+    - Forcing the five derivation gates to their faithful branch while leaving every limit alone isolates it
+      properly. Only `X57ObserverMasking` fails by construction (it asserts an observer IS requested under
+      relaxed limits). But the cost is prohibitive: `NestedStructArrayWrite` alone takes 161 s against about
+      10 s on the sparse path, so a full faithful-path suite is not a viable default.
+  - The observer is NOT removable, which the "just use one algorithm" framing would miss. `createVirtualMachine.ts`
+    records that `vm.debug()` does not merely slow above roughly 100,014 states, it THROWS - libauth's
+    `proxyDebug` spreads the whole state array into `push` and exceeds V8's argument limit. Above ordinary
+    capacity the observer is the only usable instrument, so the gate is a real capability boundary that happens
+    to be keyed on a size proxy.
+  - A separate defect this surfaced, matching the remedy direction already stated above: on the faithful path a
+    density refusal raised INSIDE the probe is swallowed by its best-effort `try/catch`. Forcing that path,
+    `NestedStructArrayWrite`'s unreserved write logs `STB debug() best-effort error: ... exceed the operation
+    cost density limit ... Failing statement: jobs.push();` and then continues for 141 s instead of reporting it.
+    Mocknet does not show this because the sparse path skips the probe, so the shipped configuration gives
+    mocknet users a clean density error and live-network users a swallowed one.
+  - Consequence for the tests added with the density reserve: the "without a reserve is still refused" companion
+    rows assert a refusal that is PATH-DEPENDENT. They hold on the sparse path the mock takes; on the faithful
+    path the same refusal is swallowed by the probe. That is a property of the swallowing defect above, not of
+    the reserve.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,

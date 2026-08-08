@@ -10896,6 +10896,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const keys = keySources.map((source, keyIndex) => {
                         if (source.kind === 'msgSender'
                           || ('expressionLabel' in source && source.expressionLabel?.includes('msg.sender'))) {
+                          if (childCompilerRoute?.rowArguments && !childCompilerRoute.rowArguments.some(
+                            (row) => (row.handler.entryAccesses ?? []).some((candidate) =>
+                              candidate.collection === access.collection
+                              && (candidate.keySources ?? []).some((candidateSource) =>
+                                candidateSource.kind === 'msgSender'
+                                || (candidateSource.expressionLabel?.includes('msg.sender') ?? false))),
+                          )) {
+                            // Sorted-batch planning still needs a deterministic target for every reserved
+                            // route slot. Use the same canonical inactive address carried by the route ABI;
+                            // it avoids colliding with an active argument-keyed read of the caller itself.
+                            return encodeLockingBytecodeP2pkh(new Uint8Array(20));
+                          }
                           // The callee sees the caller's Solidity-visible address, which for a proxied caller is
                           // its LOGICAL CREATE address, not the physical covenant. `target` is that address and
                           // is what the route's msg.sender key witness carries, so both must read it: resolving
@@ -10908,8 +10920,53 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         // leaving its entry slot funder-filled while the covenant still reads a commitment
                         // there. Resolve it from its canonical label first, as the direct path does.
                         if (source.kind === 'expression' && 'expressionLabel' in source) {
+                          const expressionLabel = source.expressionLabel;
+                          // Message-bus clones decode their source handler arguments from the authenticated
+                          // per-row `rowArgs` blob. The canonical label retains both the decoded argument index
+                          // and the handler schema arity, which is enough to select the one active row owning
+                          // this collection slot. Evaluating it against the route ABI arguments instead either
+                          // selected row zero accidentally or left later-row slots funder-filled.
+                          const decoded = expressionLabel?.match(
+                            /^AbiDecodeAtNode\{data=id:rowArgs,index=(\d+),schema=\[([^\]]*)\]\}$/,
+                          );
+                          if (decoded && childCompilerRoute?.rowArguments) {
+                            const argumentIndex = Number(decoded[1]);
+                            const schemaArity = decoded[2] === '' ? 0 : decoded[2].split(',').length;
+                            const matchingRows = childCompilerRoute.rowArguments.filter((row) => {
+                              const visible = row.handler.inputs.filter(
+                                (input) => !input.name.startsWith('__internal__'),
+                              );
+                              return visible.length === schemaArity
+                                && (row.handler.entryAccesses ?? []).some(
+                                  (candidate) => candidate.collection === access.collection,
+                                );
+                            });
+                            if (matchingRows.length > 1) {
+                              throw new Error(
+                                `Message-bus expression key for '${access.collection}' matches multiple active rows`,
+                              );
+                            }
+                            const matching = matchingRows[0];
+                            const visible = matching?.handler.inputs.filter(
+                              (input) => !input.name.startsWith('__internal__'),
+                            );
+                            const value = matching?.args[argumentIndex];
+                            const input = visible?.[argumentIndex];
+                            if (value !== undefined && input) {
+                              const encoded = encodeFunctionArgument(
+                                value,
+                                input.type,
+                                proxyCallee?.implementation.inner.artifact.structs
+                                  ?? callee.inner.artifact.structs
+                                  ?? childLayout.structs,
+                              );
+                              if (encoded instanceof Uint8Array) return encoded;
+                            }
+                            // No matching active row means this fixed route slot is intentionally inactive.
+                            return undefined;
+                          }
                           const auto = evalComputedKey(
-                            source.expressionLabel,
+                            expressionLabel,
                             routePlanningArgs,
                             selectedFn.inputs.filter((input) => !input.name.startsWith('__internal__')),
                           );
@@ -10918,6 +10975,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                         const encodedName = source.paramName
                           ?? ('expressionLabel' in source ? source.expressionLabel : undefined)
                           ?? access.keyParams[keyIndex];
+                        // Fixed message-bus routes reserve one witness lane per possible row. Only the handler
+                        // selected in that row may consume its lane. The unused ABI witnesses are canonical
+                        // zeroes, and resolving all of them against the sorted list can select the same
+                        // predecessor repeatedly; the later input de-duplication then keeps an inactive lane
+                        // and funder-fills the active one which the covenant actually reads.
+                        const perRowLane = encodedName?.match(/_r(\d+)$/);
+                        const participatesInSortedBatch = (selectedFn.sortedBatchInfo ?? []).some(
+                          (batch) => batch.slotIndices.includes(slot.slotIndex ?? -1),
+                        );
+                        if (perRowLane && childCompilerRoute?.rowArguments && !participatesInSortedBatch) {
+                          const row = childCompilerRoute.rowArguments[Number(perRowLane[1])];
+                          if (!row || !(row.handler.entryAccesses ?? []).some(
+                            (candidate) => candidate.collection === access.collection,
+                          )) return undefined;
+                        }
                         const paramName = encodedName?.startsWith('id:')
                           ? encodedName.slice(3) : encodedName;
                         const visibleInputs = selectedFn.inputs
@@ -11323,9 +11395,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Output positions are NOT stretched by the route block: the block's funder slots produce no outputs, so
       // a callee's outputs still start right after the caller's own state. Tracked separately from the input
       // base because an in-block return event is an OUTPUT offset within the callee's block.
+      const associatedNestedDelegateGroups = new Set(externalCallUtxoGroups
+        .map((group) => group.delegateCallGroupIndex)
+        .filter((index): index is number => index !== undefined));
+      // The builder preserves delegate implementations which are not owned by a nested proxy before emitting
+      // the external participant blocks. In a compiler-route transaction this includes the currently executing
+      // implementation, so omitting this band made every nested return index one output too low.
+      const leadingDelegateOutputCount = compilerRouteDelegateLayout === undefined ? 0
+        : lowLevelCallUtxoGroups.reduce((sum, group, index) => (
+          group.callMode === 'delegatecall' && !associatedNestedDelegateGroups.has(index)
+            ? sum + 1 + group.dataNftUtxos.length : sum
+        ), 0);
       let nestedOutputBase = 1 + requiredNftIndices.length + externalReadUtxos.length
         + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
-        + iterationEntryInputs.length;
+        + iterationEntryInputs.length + leadingDelegateOutputCount;
       const nestedMasterIndices: number[] = [];
       const nestedOutputBases: number[] = [];
       for (let groupIdx = 0; groupIdx < externalCallUtxoGroups.length; groupIdx++) {
@@ -11349,11 +11432,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // immediately after that proxy block by the transaction builder. Keep
         // subsequent callee indices aligned with that physical band. A route block places every
         // implementation ahead of the callee band instead, and `allLowLevelInputCount` already covers them.
-        if (child.delegateCallGroupIndex !== undefined && !compilerRouteDelegateLayout) {
+        if (child.delegateCallGroupIndex !== undefined) {
           const delegate = lowLevelCallUtxoGroups[child.delegateCallGroupIndex];
           if (delegate?.callMode === 'delegatecall') {
-            nestedInputBase += 1 + delegate.dataNftUtxos.length;
             nestedOutputBase += 1 + delegate.dataNftUtxos.length;
+            if (!compilerRouteDelegateLayout) nestedInputBase += 1 + delegate.dataNftUtxos.length;
           }
         }
       }
@@ -13169,6 +13252,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blob: Uint8Array;
       args: FunctionArgument[];
       logicalSelectors: string[];
+      rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }>;
       eventSignaturesBySlot?: Array<string | undefined>;
     } | undefined {
     const rows = externalCall.batchInvocations;
@@ -13198,6 +13282,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // X199. Intersect with eligibility: the compiler's logical value mode is computed over the FINAL
     // survivors, so a published-but-refused payable handler must not size the admitted route's rows.
     const valueMode = capability.handlers.some((handler) => handler.eligible && handler.usesMsgValue);
+    const rowArguments: Array<{ selector: string; args: FunctionArgument[]; handler: AbiFunction }> = [];
     const encodedRows = rows.map((row, rowIndex) => {
       if (row.logicalIndex !== rowIndex) {
         throw new Error('Repeated external message-bus batch rows must use canonical contiguous callsite indices');
@@ -13218,6 +13303,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!args || args.length !== row.inputs.length) {
         throw new Error(`Could not resolve every argument for external message-bus batch row ${rowIndex}`);
       }
+      const handlerAbi = calleeRouteArtifact.abi.find((fn) => fn.name === handler.name);
+      if (!handlerAbi) throw new Error(`Message-bus handler ABI '${handler.name}' is missing`);
+      rowArguments.push({ selector: row.selector, args, handler: handlerAbi });
       const encoded = args.map((arg, index) =>
         encodeFunctionArgument(arg, row.inputs[index].type, structs));
       if (encoded.some((arg) => !(arg instanceof Uint8Array))) {
@@ -13351,6 +13439,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       blob,
       args: [blob, ...routeWitnesses],
       logicalSelectors: rows.map((row) => row.selector),
+      rowArguments,
       ...(eventSignaturesBySlot.some((signature) => signature !== undefined)
         && { eventSignaturesBySlot }),
     };

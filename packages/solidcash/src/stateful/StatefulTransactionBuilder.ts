@@ -120,6 +120,8 @@ export interface ExternalCallUtxoGroup {
     args: any[];
     /** Logical handler selectors already executed by this physical route owner. */
     logicalSelectors: string[];
+    /** Decoded Solidity-visible arguments for each authenticated logical row. */
+    rowArguments?: Array<{ selector: string; args: any[]; handler: AbiFunction }>;
     internalArgs?: Record<string, any>;
     eventSignaturesBySlot?: Array<string | undefined>;
   };

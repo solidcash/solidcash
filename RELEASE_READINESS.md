@@ -482,8 +482,23 @@ it must not silently compile to incorrect covenant behavior.
     mocknet users a clean density error and live-network users a swallowed one.
   - Consequence for the tests added with the density reserve: the "without a reserve is still refused" companion
     rows assert a refusal that is PATH-DEPENDENT. They hold on the sparse path the mock takes; on the faithful
-    path the same refusal is swallowed by the probe. That is a property of the swallowing defect above, not of
-    the reserve.
+    path the same refusal was swallowed by the probe. That is a property of the swallowing defect above, not of
+    the reserve. Fixed below, so both paths now report it.
+  - **BOTH HALVES NOW LANDED.**
+    - The swallowing is fixed. The probe's best-effort `try/catch` exists for a signature-shaped failure - the
+      signature is not final at probe time, so a `require(checkSig(...))` can fail there and still be fine in the
+      finished transaction - and that case still absorbs. A CONSENSUS-LIMIT refusal is the opposite: the final
+      transaction does at least as much work against a budget its own unlocking length buys, so it cannot pass by
+      continuing. An operation-cost density refusal now throws immediately, naming the cause and pointing at the
+      reserve, instead of grinding on from an unresolved shape. Measured on the shape that took 141 s: 1.5 s.
+    - `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` is the standing gate the second completion
+      option asks for. It builds a provider at the real `maximumInputBytes` of 10,000, asserts that this selects
+      the faithful branch AND that the default provider does not (so the split itself is pinned, not assumed),
+      then runs a dynamic chunked write and a whole-array assign through it, plus a fail-closed check that the
+      covenant still refuses a wrong read on that path. Four tests, deliberately small, because the reason the
+      suite does not simply run this way is the 161 s cost measured above.
+    - So mocknet coverage still carries no blanket derivation-path claim, and this file is the explicit statement
+      of what IS claimed for the production path.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,

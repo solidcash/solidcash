@@ -565,7 +565,11 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     if (memHit) return cloneArtifact(memHit);
     const diskHit = diskCacheGet(cacheKey);
     if (diskHit) {
-      // Promote into the process Map so subsequent hits in this worker skip the disk.
+      // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
+      // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
+      const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
+      diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+      attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName);
       compileCache.set(cacheKey, diskHit);
       return cloneArtifact(diskHit);
     }
@@ -609,6 +613,11 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     }
     throw cause;
   }
+}
+
+/** Clear the in-process compile memo Map (tests / cold-worker simulation). Does not touch disk. */
+export function clearCompileCache(): void {
+  compileCache.clear();
 }
 
 /**

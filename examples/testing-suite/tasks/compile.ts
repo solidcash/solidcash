@@ -7,23 +7,39 @@ import path from 'path';
 
 const require = createRequire(import.meta.url);
 
+/** Newest mtime of any file under dir (recursive). Returns 0 if dir missing/empty. */
+function newestMtimeUnder(dir: string): number {
+  if (!fs.existsSync(dir)) return 0;
+  let newest = 0;
+  const walk = (d: string): void => {
+    for (const ent of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, ent.name);
+      if (ent.isDirectory()) {
+        walk(p);
+      } else if (ent.isFile()) {
+        newest = Math.max(newest, fs.statSync(p).mtimeMs);
+      }
+    }
+  };
+  walk(dir);
+  return newest;
+}
+
 /**
  * Newest mtime among inputs that can change emitted artifacts without the .scash
- * source changing: the .scash itself, and the solidc / @solidcash/utils package
- * entrypoints (so a compiler rebuild invalidates stale example artifacts).
+ * source changing: the .scash itself, and every file under solidc / @solidcash/utils
+ * package roots that affect compilation (package.json + dist tree). Nested dist
+ * files (e.g. dist/compiler.js) can update under incremental tsc without touching
+ * dist/index.js — walking the tree catches those rebuilds.
  */
 function newestDependencyMtime(sourcePath: string): number {
   let newest = fs.statSync(sourcePath).mtimeMs;
   for (const pkg of ['solidc', '@solidcash/utils']) {
     try {
       const pkgJson = require.resolve(`${pkg}/package.json`);
-      const mainRel = (JSON.parse(fs.readFileSync(pkgJson, 'utf-8')) as { main?: string }).main
-        ?? 'dist/index.js';
-      const mainPath = path.resolve(path.dirname(pkgJson), mainRel);
-      if (fs.existsSync(mainPath)) {
-        newest = Math.max(newest, fs.statSync(mainPath).mtimeMs);
-      }
+      const pkgRoot = path.dirname(pkgJson);
       newest = Math.max(newest, fs.statSync(pkgJson).mtimeMs);
+      newest = Math.max(newest, newestMtimeUnder(path.join(pkgRoot, 'dist')));
     } catch {
       // Package not resolvable — force recompile by treating dep mtime as now.
       newest = Date.now();

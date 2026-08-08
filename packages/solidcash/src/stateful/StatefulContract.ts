@@ -6070,7 +6070,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // State data NFTs: output indices [1, 1 + stateCount)
           const stateOutputRange = { min: 1, max: 1 + stateCount };
-          const stateCommits = extractCommitmentsFromTrace(fullTrace2, stateCount, stateOutputRange) ?? [];
+          // Scan EVERY invocation phase, not just the longest redeem-script array. Outlining can share one
+          // `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY` between two data NFTs, so the second
+          // output's verification runs in a later OP_INVOKE phase. Missing it made this list short, and the
+          // list is POSITIONAL - so every later commitment shifted down a slot and surfaced as
+          // `parsePushdataCommitment: nftIndex tag mismatch for NFT index 0: got 2`. The output-index range
+          // and the tight OTC/EQUALVERIFY pairing still keep unrelated matches out, which is the same
+          // reasoning the entry-chunk extractions above already rely on.
+          const stateCommits = extractCommitmentsFromTrace(fullTrace2, stateCount, stateOutputRange, true) ?? [];
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
           let latestEventCommits: string[] = [];

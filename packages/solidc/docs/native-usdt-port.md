@@ -233,7 +233,29 @@ its own delivery proof, which is the contract working. 28 tests in `NativeUsdt.t
 Three deviations this adds, all documented and all forced: fees are swept rather than credited inline, an
 account opens itself before use, and a zero-value fee `Transfer` is logged when no fee applies.
 
-### 3.2 What the layout costs, and one splitter bug it exposed
+### 3.2 A shared commitment verification broke state derivation (fixed)
+
+Merging `solidcash_v0.13.1` at `5ca52bd7` broke six of this suite's delegated scalar routes with
+`parsePushdataCommitment: nftIndex tag mismatch for NFT index 0: got 2`. Bisected to
+`0ecb4d7c size(solidc): rank outlining candidates by value`, which raised the outlining candidate cap so it
+stopped binding. Measured on this master: the number of `OP_OUTPUTTOKENCOMMITMENT` sites fell from 8 to 6 -
+two data-NFT commitment verifications had been merged into ONE shared helper, invoked twice.
+
+`extractCommitmentsFromTrace` is POSITIONAL: the i-th verified output maps to the i-th slot. It was scanning
+only the longest redeem-script instruction array, so the shared helper's SECOND invocation - which runs in a
+later `OP_INVOKE` phase - was never seen. The list came back short and every later commitment shifted down a
+slot, which is why NFT 2's commitment arrived as NFT 0's.
+
+Fixed by passing `scanFullTrace` on that extraction, the same flag the entry and chunk extractions beside it
+already use. One argument. The output-index range plus the tight `OTC`/`OP_EQUALVERIFY` pairing still keep
+unrelated matches out.
+
+Worth recording what did NOT work: making `OP_OUTPUTTOKENCOMMITMENT` a `BARRIER_OP` so the pattern can never
+be shared is the more obvious fix and is wrong here - it costs enough outlining that this master no longer
+fits its input, taking the suite from 28 passing to 9. The extractor was the side that was wrong, not the
+optimiser.
+
+### 3.3 What the layout costs, and one splitter bug it exposed
 
 `feeAccrued` sits beside the other fee fields rather than at the end of the state block, deliberately: a
 function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` already reads `basisPointsRate` and

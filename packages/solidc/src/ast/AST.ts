@@ -324,6 +324,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // create2 salt (`new C{salt}()`): the forwarded param name, a hex literal, or computed (non-trivial -
     // SDK needs an explicit childSalt). Lets the SDK build the child Contract with the salt the covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
+    // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
+    // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
+    creationBytecode?: string;
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];

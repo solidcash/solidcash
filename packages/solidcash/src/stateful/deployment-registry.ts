@@ -9,12 +9,20 @@ export interface RegisteredDeployment {
 
 const deployments = new WeakMap<NetworkProvider, RegisteredDeployment[]>();
 
-export interface DeploymentRegistrySnapshot { restore(): void }
+/** A repeatable snapshot of the Hardhat-compatible deployment registry. */
+export interface DeploymentRegistrySnapshot {
+  restore(): void;
+}
 
-/** Capture process-local registrations alongside a mock-chain fixture snapshot. */
+/**
+ * Capture registrations associated with a provider. Mock-chain snapshots only rewind UTXOs; test fixtures
+ * also need this process-local lookup table rewound so address/interface resolution cannot leak across tests.
+ */
 export function takeDeploymentRegistrySnapshot(provider: NetworkProvider): DeploymentRegistrySnapshot {
   const snapshot = [...(deployments.get(provider) ?? [])];
-  return { restore: () => deployments.set(provider, [...snapshot]) };
+  return {
+    restore: () => deployments.set(provider, [...snapshot]),
+  };
 }
 
 /** Record contracts created by the Hardhat-compatible factory on this provider. */
@@ -25,6 +33,11 @@ export function registerDeployment(
   const withoutOldAddress = current.filter((entry) => entry.address !== deployment.address);
   withoutOldAddress.push(deployment);
   deployments.set(provider, withoutOldAddress);
+}
+
+/** Drop all registrations for a provider (call after MockNetworkProvider.reset between tests). */
+export function clearDeployments(provider: NetworkProvider): void {
+  deployments.delete(provider);
 }
 
 /** Resolve the most recently deployed instance compatible with an interface name. */

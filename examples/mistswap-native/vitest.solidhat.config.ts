@@ -13,7 +13,10 @@ const abs = (specifier: string): string => require.resolve(specifier);
 const UPSTREAM = '/Code/mistswap/mistswap';
 
 export default defineConfig(solidcashHardhatPreset({
-  solidcash: { snapshotBeforeEach: ['**/PairKashi.test.ts'] },
+  solidcash: {
+    // Generic reusable-beforeEach facility; this adapter opts in its unusually expensive PairKashi fixture.
+    snapshotBeforeEach: ['**/PairKashi.test.ts'],
+  },
   test: {
     include: [`${UPSTREAM}/test/**/*.test.ts`],
     // These suites deploy real split contracts in `before` hooks, which is far past Vitest's 10s hook default.
@@ -33,6 +36,8 @@ export default defineConfig(solidcashHardhatPreset({
       'hardhat/config': abs('@solidcash/testing'),
       chai: abs('@solidcash/testing/chai'),
       ethers: abs('@solidcash/testing/ethers-shim'),
+      // MistSwap imports `defaultAbiCoder` from `ethers/lib/utils` (not bare `ethers`).
+      'ethers/lib/utils': abs('@solidcash/testing/ethers'),
       '@nomiclabs/hardhat-ethers': abs('@solidcash/testing'),
       '@nomicfoundation/hardhat-ethers': abs('@solidcash/testing'),
       '@nomiclabs/hardhat-ethers/signers': abs('@solidcash/testing'),

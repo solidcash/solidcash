@@ -705,6 +705,7 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
+        ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {

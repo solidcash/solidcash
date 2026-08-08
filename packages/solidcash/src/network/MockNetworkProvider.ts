@@ -247,6 +247,20 @@ export default class MockNetworkProvider implements NetworkProvider {
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
+  /**
+   * ethers-v5 `provider._network.chainId` surface used by MistSwap digests
+   * (`user.provider._network.chainId` in setMasterContractApproval).
+   */
+  readonly _network: { chainId: number; name: string } = { chainId: 1, name: 'chipnet' };
+
+  /**
+   * Hardhat/ethers internal block surface used by MistSwap permit deadlines:
+   * `(await alice.provider._internalBlockNumber).respTime + 10000`.
+   */
+  get _internalBlockNumber(): { respTime: number; blockNumber: number } {
+    const t = typeof this.getBlockTime === 'function' ? this.getBlockTime() : Math.floor(Date.now() / 1000);
+    return { respTime: Number(t), blockNumber: this.blockHeight };
+  }
 
   constructor(options?: MockNetworkProviderOverrides) {
     this.options = {

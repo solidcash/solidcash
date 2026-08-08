@@ -116,6 +116,8 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
+  /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
+  | 'deployDataNft'
   | 'lowLevelCall'
   | 'trailing';
 
@@ -230,6 +232,9 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
+    // Redeem-script body (hex) Instantiation embeds for the child P2SH address. Prefer this over the
+    // standalone child artifact bytecode when present (referenced-compile can differ in size/content).
+    creationBytecode?: string;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;

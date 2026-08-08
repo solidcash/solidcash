@@ -659,12 +659,14 @@ export function decodePushdataValue(
 
   if (type === 'bool') {
     const boolByte = data[offset];
-    if (boolByte !== 0x00 && boolByte !== 0x51) {
+    // Canonical pushdata true is OP_1 (0x51). VM stack "true" is often the raw script number 0x01
+    // (single-byte 1) when extracted from a return-event commitment before re-encoding — accept both.
+    if (boolByte !== 0x00 && boolByte !== 0x51 && boolByte !== 0x01) {
       throw new Error(
-        `Invalid boolean encoding at offset ${offset}: expected 0x00 or 0x51, got 0x${boolByte.toString(16).padStart(2, '0')}`,
+        `Invalid boolean encoding at offset ${offset}: expected 0x00, 0x01, or 0x51, got 0x${boolByte.toString(16).padStart(2, '0')}`,
       );
     }
-    return { value: boolByte === 0x51, bytesConsumed: 1 };
+    return { value: boolByte === 0x51 || boolByte === 0x01, bytesConsumed: 1 };
   }
 
   if (type === 'pubkey') {

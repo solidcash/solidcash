@@ -11733,12 +11733,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Deploy slots (deploy modifier functions have a genesis input per child deploy site)
-    // Note: deployTargets isn't populated yet at this stage - check modifier instead
+    // Deploy slots (deploy modifier functions have a genesis input per child deploy site).
+    // After each deploy master, reserve a fixed `deployDataNft` slot per child data NFT so the
+    // C2 insert tail (and any other trailing outputs) starts at a covenant-known offset rather
+    // than sharing the first post-blockSize slot with the child's unanchored data NFTs
+    // (see docs/deferrals.md "Factory deploy of a stateful child alongside C2 mapping writes").
+    // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
+    // referenced contract (or deployedDataNftCount once the site has been visited).
     if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
-      const deploySites = this.countDeploySites(node.body);
-      for (let i = 0; i < Math.max(1, deploySites); i++) {
+      const deploySiteCounts = this.listDeploySiteDataNftCounts(node.body);
+      const siteCount = Math.max(1, deploySiteCounts.length);
+      for (let i = 0; i < siteCount; i++) {
         slots.push({ kind: 'deploy', offset: offset++, slotIndex: i });
+        const childDataNfts = deploySiteCounts[i] ?? 0;
+        for (let nftIdx = 0; nftIdx < childDataNfts; nftIdx++) {
+          slots.push({
+            kind: 'deployDataNft', offset: offset++, slotIndex: i, nftIndex: nftIdx,
+          });
+        }
       }
     }
 
@@ -11833,21 +11845,43 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Number of `new C(...)` sites in a function body (each needs its own genesis funding input/slot).
   // Does not descend into referencedContract (a backref to the whole child AST).
   private countDeploySites(body: Node | undefined): number {
-    if (!body) return 0;
-    let count = 0;
+    return this.listDeploySiteDataNftCounts(body).length;
+  }
+
+  /**
+   * Per-deploy-site child data-NFT counts, in source order. Used to reserve fixed `deployDataNft`
+   * layout slots after each deploy master so C2 insert tails no longer collide with child genesis
+   * data NFTs. Always prefers the live referenced contract's packed state variables (oracle fields
+   * included) over a stale Instantiation snapshot.
+   */
+  private listDeploySiteDataNftCounts(body: Node | undefined): number[] {
+    if (!body) return [];
+    const counts: number[] = [];
     const seen = new WeakSet<object>();
     const walk = (n: unknown): void => {
       if (Array.isArray(n)) { for (const it of n) walk(it); return; }
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof InstantiationNode && n.referencedContract) count += 1;
+      if (n instanceof InstantiationNode && n.referencedContract) {
+        const vars = n.referencedContract.stateVariables ?? [];
+        const fromLive = vars.length > 0
+          ? Math.max(...vars.map((sv) => sv.nftIndex ?? 0)) + 1
+          : 0;
+        const dataNfts = Math.max(fromLive, n.deployedDataNftCount ?? 0);
+        // Keep Instantiation metadata in sync so ABI deployTargets and layout agree.
+        if (dataNfts > 0 && n.isStatefulDeploy) {
+          n.deployedDataNftCount = dataNfts;
+          if (vars.length > 0) n.deployedStateVars = [...vars];
+        }
+        counts.push(dataNfts);
+      }
       for (const [key, value] of Object.entries(n)) {
         if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
         walk(value);
       }
     };
     walk(body);
-    return count;
+    return counts;
   }
 
   // True if the body contains a `new C{value:}()` deploy INSIDE a loop (while/do-while; for is already

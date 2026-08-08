@@ -1,5 +1,5 @@
 import { Artifact, asmToBytecode } from '@solidcash/utils';
-import { hexToBin } from '@bitauth/libauth';
+import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import { Contract } from '../Contract.js';
@@ -9,7 +9,7 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript, randomUtxo } from '../utils.js';
+import { addressToLockScript, getNetworkPrefix, randomUtxo } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
 import { registerDeployment } from './deployment-registry.js';
 
@@ -150,6 +150,33 @@ export class ContractFactory<T extends Artifact = Artifact> {
   /** Return a new factory bound to a different runner (ethers `factory.connect`). */
   connect(runner: ContractRunner): ContractFactory<T> {
     return new ContractFactory(this.artifact, runner);
+  }
+
+  /**
+   * ethers `factory.attach(address)` — connect to an already-deployed instance. For stateful contracts the
+   * "address" may be a CashAddress, locking-bytecode hex, raw locking bytecode bytes (event args), or a
+   * category id (txid of the genesis funder). MistSwap does
+   * `UniswapV2Pair.attach((await createPairTx.wait()).events[0].args.pair)`.
+   */
+  attach(addressOrCategory: string | Uint8Array): Promise<ConnectedStatefulContract<T>> {
+    let id: string;
+    if (typeof addressOrCategory === 'string') {
+      id = addressOrCategory;
+    } else if (addressOrCategory instanceof Uint8Array) {
+      // Event-decoded address params are locking-bytecode bytes; encode as CashAddress for at().
+      const provider = this.runner instanceof Signer ? this.runner.provider : (this.runner as NetworkProvider);
+      const prefix = getNetworkPrefix(provider.network);
+      const encoded = lockingBytecodeToCashAddress({
+        bytecode: addressOrCategory, prefix, tokenSupport: true,
+      });
+      if (typeof encoded === 'string') {
+        throw new Error(`ContractFactory.attach: invalid locking bytecode (${encoded})`);
+      }
+      id = encoded.address;
+    } else {
+      throw new Error('ContractFactory.attach: address must be a string or Uint8Array locking bytecode');
+    }
+    return StatefulContract.at(id, this.artifact, this.runner);
   }
 
   /**

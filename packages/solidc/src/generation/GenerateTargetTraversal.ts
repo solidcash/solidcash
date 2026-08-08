@@ -1534,8 +1534,45 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private countOutputOnlySlotsBefore(offset: number): number {
     const layout = this.currentFunction.blockLayout;
     if (!layout) return 0;
-    const outputOnly = new Set<BlockSlotKind>(['transfer', 'tcTransfer', 'event', 'returnEvent']);
+    const outputOnly = new Set<BlockSlotKind>([
+      'transfer', 'tcTransfer', 'event', 'returnEvent', 'deployDataNft',
+    ]);
     return layout.slots.filter((s) => outputOnly.has(s.kind) && s.offset < offset).length;
+  }
+
+  /**
+   * Expand each deploy site's deployDataNft run to match deployTargets[i].dataNftCount (finalized
+   * during body Instantiation). Re-numbers offsets; preserves relative order of all other slots.
+   */
+  private expandDeployDataNftLayout(node: FunctionDefinitionNode): void {
+    if (!node.blockLayout || !node.deployTargets?.length) return;
+    const old = node.blockLayout.slots;
+    const slots: BlockLayoutSlot[] = [];
+    let offset = 0;
+    let deployIdx = 0;
+    for (let i = 0; i < old.length; i++) {
+      const s = old[i];
+      if (s.kind === 'deployDataNft') continue; // re-emitted with the deploy master
+      if (s.kind === 'deploy') {
+        slots.push({ ...s, offset: offset++ });
+        const need = node.deployTargets[deployIdx]?.dataNftCount ?? 0;
+        for (let n = 0; n < need; n++) {
+          slots.push({
+            kind: 'deployDataNft', offset: offset++, slotIndex: deployIdx, nftIndex: n,
+          });
+        }
+        deployIdx += 1;
+        continue;
+      }
+      slots.push({ ...s, offset: offset++ });
+    }
+    const trailingBase = slots.find((slot) => slot.kind === 'trailing')?.offset;
+    const trailingCapacity = slots.filter((slot) => slot.kind === 'trailing').length;
+    node.blockLayout = {
+      blockSize: offset,
+      slots,
+      ...(trailingBase !== undefined && { trailingBase, trailingCapacity }),
+    };
   }
 
   /** X12. `dataNft` slots below `offset` - the ones a delegate leaves in the proxy block, occupying nothing
@@ -4261,6 +4298,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.transfersPreallocatedAtFunctionStart = true;
     }
     node.body = this.visit(node.body) as BlockNode;
+
+    // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
+    // fields packed after semantic Instantiation). Expand deployDataNft layout slots so C2 tails and
+    // child genesis data NFTs no longer share the first post-blockSize index.
+    this.expandDeployDataNftLayout(node);
 
     if (!this.isDefineSubTraversal && node.messageBusRoute === true
       && this.stack.includes('__internal__graphEmissions')) {
@@ -11125,10 +11167,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node.isStatefulDeploy) {
       // deployedDataNftCount was computed in semantic analysis from the child's nftIndex values, but a child
       // imported from another file may not have had its state packed into NFTs yet at that point (the parent's
-      // `new C()` is visited before the child's bin-packing). The state-var nodes are now packed, so recompute
-      // the true per-NFT count from them before any consumer (deployTarget ABI, covenant loop, deploy offset).
-      if (node.deployedStateVars.length > 0) {
-        node.deployedDataNftCount = Math.max(...node.deployedStateVars.map((sv) => sv.nftIndex)) + 1;
+      // `new C()` is visited before the child's bin-packing). Prefer the LIVE referenced contract's packed
+      // state variables (includes later-injected oracle fields); fall back to the Instantiation snapshot.
+      const liveVars = node.referencedContract?.stateVariables?.length
+        ? node.referencedContract.stateVariables
+        : node.deployedStateVars;
+      if (liveVars.length > 0) {
+        node.deployedStateVars = [...liveVars];
+        node.deployedDataNftCount = Math.max(...liveVars.map((sv) => sv.nftIndex ?? 0)) + 1;
       }
 
       // Record deploy target on current function for ABI generation (common to the fixed + inline paths). Map
@@ -11160,6 +11206,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         dataNftCount: node.deployedDataNftCount,
         constructorArgs,
         ...(salt && { salt }),
+        // Body Instantiation just embedded for address computation — pin it for the SDK so
+        // deployFrom builds the child with the same redeem script (not a divergent standalone artifact).
+        creationBytecode: binToHex(bodyBytecode),
       });
 
       // Multi-site deploy (2+ same-contract sites with a conditional): a FUNCTION-LEVEL runtime deploy counter
@@ -17066,6 +17115,16 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (type instanceof BytesType && type.bound !== undefined) {
       this.emit(encodeInt(0n), locationData);
       this.emit(encodeInt(BigInt(type.bound)), locationData);
+      this.emit(Op.OP_NUM2BIN, locationData);
+      return;
+    }
+    // pubkey is a fixed 33-byte value on the stack (before pushdata framing). Default must be 33 zero
+    // bytes so emitPushdataEncode (`<0x21> SWAP CAT`) yields the same 34-byte frame the SDK writes
+    // (`0x21 || zeros33`). OP_0 alone made the framed default just `0x21`, so deploy genesis placed a
+    // 2-byte NFT-4 commitment that StateReader could not parse (PairKashi "found 4 of 5 data NFTs").
+    if (type === PrimitiveType.PUBKEY) {
+      this.emit(encodeInt(0n), locationData);
+      this.emit(encodeInt(33n), locationData);
       this.emit(Op.OP_NUM2BIN, locationData);
       return;
     }

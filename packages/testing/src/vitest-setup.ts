@@ -5,7 +5,8 @@
  */
 import { beforeAll, afterAll, beforeEach, afterEach, it, test, describe } from 'vitest';
 import {
-  takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot, type SnapshotRestorer,
+  clearDeployments, clearSoftBentoTotals, takeDeploymentRegistrySnapshot, takeSoftStateSnapshot,
+  type DeploymentRegistrySnapshot, type SnapshotRestorer, type SoftStateSnapshot,
 } from 'solidcash';
 import './chai.js';
 import { initHre } from './index.js';
@@ -72,51 +73,76 @@ const runner = (original: unknown): unknown => {
 const globals = globalThis as Record<string, unknown>;
 globals.before ??= hook(beforeAll as never);
 globals.after ??= hook(afterAll as never);
-const parseSelectors = (raw: string | undefined): string[] => {
+const parseSnapshotSelectors = (raw: string | undefined): string[] => {
   if (!raw) return [];
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) return parsed;
-  } catch { /* allow the original single literal environment value */ }
+  } catch { /* retain compatibility with the original single-substring environment option */ }
   return [raw];
 };
+
 const globToRegExp = (glob: string): RegExp => {
   let source = '';
   for (let index = 0; index < glob.length; index++) {
     const char = glob[index];
     if (char === '*') {
-      if (glob[index + 1] === '*') { source += '.*'; index++; } else source += '[^/]*';
+      if (glob[index + 1] === '*') {
+        source += '.*';
+        index++;
+      } else source += '[^/]*';
     } else if (char === '?') source += '[^/]';
     else source += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
   }
   return new RegExp(source);
 };
-const fixtureSelectors = parseSelectors(process.env.SOLIDCASH_SNAPSHOT_BEFORE_EACH)
-  .map((selector) => globToRegExp(selector.replaceAll('\\', '/')));
-let fixtureHookRegistered = false;
-let chainSnapshot: SnapshotRestorer | undefined;
-let registrySnapshot: DeploymentRegistrySnapshot | undefined;
 
-const selectedFixtureHook = (): boolean => {
+const snapshotBeforeEachSelectors = parseSnapshotSelectors(process.env.SOLIDCASH_SNAPSHOT_BEFORE_EACH)
+  .map((selector) => globToRegExp(selector.replaceAll('\\', '/')));
+let fixtureSnapshotReady = false;
+let fixtureHookRegistered = false;
+let fixtureChainSnapshot: SnapshotRestorer | undefined;
+let fixtureDeploymentSnapshot: DeploymentRegistrySnapshot | undefined;
+let fixtureSoftStateSnapshot: SoftStateSnapshot | undefined;
+
+const isSelectedFixtureHook = (): boolean => {
+  if (snapshotBeforeEachSelectors.length === 0) return false;
   const stack = new Error().stack?.replaceAll('\\', '/') ?? '';
-  return fixtureSelectors.some((selector) => selector.test(stack));
+  return snapshotBeforeEachSelectors.some((selector) => selector.test(stack));
 };
 
+// Opt-in adapter escape hatch for very large, unmodified Hardhat suites. The selected upstream beforeEach is
+// executed once; later tests retain its closure-bound contract objects and restore every mutable backing store.
 globals.beforeEach = (fn: unknown, timeout?: number): unknown => {
-  if (fixtureHookRegistered || !selectedFixtureHook()) return hook(beforeEach as never)(fn, timeout);
+  if (fixtureHookRegistered || !isSelectedFixtureHook()) return hook(beforeEach as never)(fn, timeout);
   fixtureHookRegistered = true;
   const bound = bindContext(fn) as AnyFn;
+  // eslint-disable-next-line no-console -- intentional once-per-file proof that snapshot fixtures engaged
+  console.info(
+    `[solidcash] snapshot beforeEach active (selectors=${JSON.stringify(process.env.SOLIDCASH_SNAPSHOT_BEFORE_EACH)})`,
+  );
   return beforeEach(async () => {
-    if (chainSnapshot) {
-      await chainSnapshot.restore();
-      registrySnapshot?.restore();
+    const provider = hre.ethers?.provider as {
+      takeSnapshot?: () => Promise<SnapshotRestorer>;
+    } | undefined;
+    if (fixtureSnapshotReady) {
+      const restoreStarted = Date.now();
+      await fixtureChainSnapshot?.restore();
+      fixtureDeploymentSnapshot?.restore();
+      fixtureSoftStateSnapshot?.restore();
+      // eslint-disable-next-line no-console -- timing evidence that restore replaced full redeploy
+      console.info(`[solidcash] snapshot beforeEach restore (${Date.now() - restoreStarted}ms)`);
       return;
     }
+    const setupStarted = Date.now();
     await bound();
-    const provider = hre.ethers?.provider as { takeSnapshot?: () => Promise<SnapshotRestorer> } | undefined;
     if (!provider?.takeSnapshot) throw new Error('Snapshot beforeEach requires a snapshot-capable provider');
-    chainSnapshot = await provider.takeSnapshot();
-    registrySnapshot = takeDeploymentRegistrySnapshot(provider as never);
+    fixtureChainSnapshot = await provider.takeSnapshot();
+    fixtureDeploymentSnapshot = takeDeploymentRegistrySnapshot(provider as never);
+    fixtureSoftStateSnapshot = takeSoftStateSnapshot();
+    fixtureSnapshotReady = true;
+    // eslint-disable-next-line no-console -- timing evidence that first fixture ran once
+    console.info(`[solidcash] snapshot beforeEach captured after setup (${Date.now() - setupStarted}ms)`);
   }, timeout);
 };
 globals.afterEach = hook(afterEach as never);
@@ -137,3 +163,25 @@ globals.xdescribe = typeof describeSkip === 'function' ? runner(describeSkip) : 
 globals.xcontext = globals.xdescribe;
 
 const hre = await initHre(process.cwd());
+// ethers.Contract shim and ported suites look up methods via globalThis.hre.ethers.getContractAt.
+(globalThis as { hre?: typeof hre }).hre = hre;
+
+// Isolate mock-chain state between tests. MistSwap beforeEach redeploys from scratch, but soft-applied
+// UTXOs / spent funders from a prior test otherwise leak (nftIndex tag mismatch, 0 funders).
+// When snapshot fixtures are active, restore is handled above — skip the full provider reset.
+beforeEach(async () => {
+  const provider = hre.ethers?.provider as {
+    reset?: () => void;
+    getSigners?: (count?: number, opts?: { fundingUtxos?: number }) => Promise<unknown[]>;
+  } | undefined;
+  if (fixtureSnapshotReady) return;
+  if (provider && typeof provider.reset === 'function') {
+    provider.reset();
+    try { clearDeployments(provider as never); } catch { /* ignore */ }
+    try { clearSoftBentoTotals(); } catch { /* ignore */ }
+    // Re-fund signers after reset (getSigners only funds once per key without reset of fundedSignerKeys).
+    if (typeof provider.getSigners === 'function') {
+      await provider.getSigners(20, { fundingUtxos: 4 });
+    }
+  }
+});

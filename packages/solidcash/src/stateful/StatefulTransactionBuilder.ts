@@ -457,14 +457,14 @@ export class StatefulTransactionBuilder {
     externalCallInputs: UnlockableUtxo[],
     lowLevelCallInputs: UnlockableUtxo[],
   ): UnlockableUtxo[] {
-    // When funders are provided and no external calls (which add gap outputs),
-    // use offset-indexed ordering so input[offset] matches OP_INPUTINDEX + offset.
-    // With external calls, the gap between readOnly and entries breaks 1:1 correspondence,
-    // so we fall through to the legacy path which both inputs and outputs follow.
+    // When funders are provided, use offset-indexed ordering so input[offset] matches
+    // OP_INPUTINDEX + offset for event/returnEvent/transfer slots. External-call co-spends
+    // follow the complete owner block (+ trailing dynamic chunks); they must NOT fill holes
+    // left by inactive returnEvent slots or the covenant OP_SPLITs empty/wrong commitments
+    // (KashiPair.updateExchangeRate: event+return layout + IOracle.get co-spend).
     const hasExternalGroups = externalOutStateInputs.length > 0 || externalCallInputs.length > 0;
     if (this.blockLayout && this.funderUtxos.length > 0
-      && !this.delegateEntriesAfterLowLevel
-      && (!hasExternalGroups || this.blockhashCoSpendSlotOrdinals !== undefined)) {
+      && !this.delegateEntriesAfterLowLevel) {
       const funderPool = [...this.funderUtxos];
       // Position-indexed array: each element goes at its slot.offset
       const positioned: (UnlockableUtxo | undefined)[] = new Array(this.blockLayout.blockSize);
@@ -559,7 +559,11 @@ export class StatefulTransactionBuilder {
             } else { const f = funderPool.shift(); if (f) positioned[slot.offset] = f; }
             break;
           case 'transfer': case 'tcTransfer': case 'event': case 'returnEvent':
-          case 'deploy': {
+          case 'deploy':
+          case 'deployDataNft': {
+            // Deploy master is funded by the genesis funding UTXO (placed by deployFrom); deployDataNft
+            // slots are output-only child data NFTs and take funder placeholders on the input side when
+            // a general function builder walks the layout.
             const f = funderPool.shift();
             if (f) positioned[slot.offset] = f;
             break;
@@ -584,13 +588,29 @@ export class StatefulTransactionBuilder {
         );
       }
 
-      // Fill the reserved gap (offsets between last readOnly and first entry/SC/TC)
-      // with external outState and external call inputs
+      // Only fill holes that are NOT output-only layout slots (those need funders, not callees).
+      // External outState/call inputs never steal event/returnEvent/transfer offsets.
+      const layoutHoleKinds = new Set(
+        (this.blockLayout?.slots ?? [])
+          .filter((s) => s.kind === 'event' || s.kind === 'returnEvent' || s.kind === 'transfer'
+            || s.kind === 'tcTransfer' || s.kind === 'deploy' || s.kind === 'deployDataNft')
+          .map((s) => s.offset),
+      );
       const gapInputs = [...externalOutStateInputs, ...externalCallInputs];
       let gapIdx = 0;
-      for (let i = 0; i < positioned.length; i++) {
-        if (positioned[i] === undefined && gapIdx < gapInputs.length) {
-          positioned[i] = gapInputs[gapIdx++];
+      // When there are no external groups, preserve the historical gap-fill for entry/TC holes.
+      if (!hasExternalGroups) {
+        for (let i = 0; i < positioned.length; i++) {
+          if (positioned[i] === undefined && gapIdx < gapInputs.length) {
+            positioned[i] = gapInputs[gapIdx++];
+          }
+        }
+      } else {
+        // With external callees: only fill non-output-only holes (e.g. missing entry); callees trail the block.
+        for (let i = 0; i < positioned.length; i++) {
+          if (positioned[i] === undefined && !layoutHoleKinds.has(i) && gapIdx < gapInputs.length) {
+            positioned[i] = gapInputs[gapIdx++];
+          }
         }
       }
 
@@ -603,13 +623,14 @@ export class StatefulTransactionBuilder {
       const hasFixedLlcSlot = this.blockLayout?.slots.some((s) => s.kind === 'lowLevelCall') ?? false;
       const remainingLlc = [...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs];
       const remainingTrailing = trailingInputs.slice(trailingIdx);
+      // Callees after the full owner block + trailing chunks (blockSize-relative pins stay valid).
+      const remainingGap = gapInputs.slice(gapIdx);
       return [
         ...result,
-        // Any overflow gap inputs that didn't fit
-        ...gapInputs.slice(gapIdx),
         // Trailing first when LLC uses a runtime index; fixed-slot LLC already expanded above.
         ...(hasFixedLlcSlot ? remainingLlc : remainingTrailing),
         ...(hasFixedLlcSlot ? remainingTrailing : remainingLlc),
+        ...remainingGap,
         // Leftover funders not consumed by block layout slots (fee-only inputs)
         ...funderPool,
       ];
@@ -1523,6 +1544,61 @@ export class StatefulTransactionBuilder {
       });
     }
 
+    // Block-layout event / returnEvent slots must land at master+offset when they IMMEDIATELY follow
+    // the master+dataNft prefix (KashiPair.updateExchangeRate: event@3 + returnEvent@4 after 2 data
+    // NFTs). Skip early emission when entry/TC/SC slots sit between data and events (ERC20.transfer),
+    // or late emission would double-count / mis-order those frames.
+    const prefixEnd = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length;
+    const allLayoutSlots = this.blockLayout?.slots ?? [];
+    const eventish = allLayoutSlots.filter((s) => s.kind === 'event' || s.kind === 'returnEvent');
+    const minEventOffset = eventish.length > 0 ? Math.min(...eventish.map((s) => s.offset)) : Infinity;
+    const hasMiddleSlots = allLayoutSlots.some((s) => (
+      s.offset >= prefixEnd && s.offset < minEventOffset
+      && s.kind !== 'event' && s.kind !== 'returnEvent'
+    ));
+    const earlyBlockEventSlots = (!hasMiddleSlots && minEventOffset === prefixEnd)
+      ? eventish.sort((a, b) => a.offset - b.offset)
+      : [];
+    const earlyEmittedEventCount = earlyBlockEventSlots.filter((s) => s.kind === 'event').length;
+    const earlyEmittedOwnerReturn = earlyBlockEventSlots.some((s) => s.kind === 'returnEvent');
+    for (const slot of earlyBlockEventSlots) {
+      if (slot.kind === 'event') {
+        // Placeholder; real commitment filled by late merge if already derived. Empty is OK for
+        // conditional inactive emits; active emits are overwritten via eventRawCommitments before send.
+        const emitIndex = slot.slotIndex ?? 0;
+        const placeholder = this.pendingEventPlaceholders.find((p) => p.emitIndex === emitIndex);
+        const raw = this.eventRawCommitments.get(emitIndex) ?? '';
+        const sig = placeholder?.eventSignature
+          ?? this.eventDefinitions[emitIndex]?.signature
+          ?? '';
+        const lockingBytecode = sig ? this.eventNftLockingBytecodes.get(sig) : undefined;
+        if (lockingBytecode) {
+          builder.addOutput({
+            to: lockingBytecode,
+            amount: 1200n,
+            token: {
+              amount: 0n, category: this.categoryId,
+              nft: { capability: 'none', commitment: raw },
+            },
+          });
+        } else {
+          builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+        }
+      } else {
+        // returnEvent: own-category return for this contract (not external-call returns).
+        const own = this.pendingReturnEventOutputs.find((r) => r.categoryId === this.categoryId);
+        builder.addOutput({
+          to: new Uint8Array([0x51]),
+          amount: 800n,
+          token: {
+            amount: 0n,
+            category: this.categoryId,
+            nft: { capability: 'none', commitment: own ? binToHex(own.commitment) : '' },
+          },
+        });
+      }
+    }
+
     // Create read-only data NFT outputs (commitment preserved unchanged)
     for (const roUtxo of this.readOnlyDataNftUtxos) {
       builder.addOutput({
@@ -2278,7 +2354,8 @@ export class StatefulTransactionBuilder {
 
     const reservedEventSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'event').length
       ?? eventOutputEntries.length;
-    for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
+    // Skip events already placed at block-layout offsets right after data NFTs.
+    for (let eventSlot = earlyEmittedEventCount; eventSlot < reservedEventSlots; eventSlot += 1) {
       const eo = eventOutputEntries[eventSlot];
       if (!eo) {
         // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a
@@ -2322,7 +2399,9 @@ export class StatefulTransactionBuilder {
 
     // Create return event outputs (from cross-contract calls with return values). X13: a callee whose full block
     // carries a returnEvent slot already emitted its own return event inside that block above.
+    // Own-category return already emitted early when blockLayout has returnEvent — skip it here.
     for (const re of (this.delegateEntriesAfterLowLevel ? [] : this.tailReturnEventOutputs())) {
+      if (earlyEmittedOwnerReturn && re.categoryId === this.categoryId) continue;
       builder.addOutput({
         to: new Uint8Array([0x51]), // OP_TRUE
         amount: 800n,
@@ -2334,6 +2413,7 @@ export class StatefulTransactionBuilder {
       });
     }
     if (!this.delegateEntriesAfterLowLevel
+      && !earlyEmittedOwnerReturn
       && (this.blockLayout?.trailingCapacity ?? 0) > 0
       && this.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')
       && this.pendingReturnEventOutputs.length === 0) {

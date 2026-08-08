@@ -25,7 +25,11 @@ export interface ViteLikeConfig {
   optimizeDeps?: { exclude?: string[]; [k: string]: unknown };
   plugins?: unknown[];
   solidcash?: {
-    /** Glob(s) selecting modules whose first root beforeEach is a reusable chain fixture. */
+    /**
+     * Glob(s) selecting test modules whose first root beforeEach is a reusable chain fixture. The hook runs
+     * once, then the provider, deployment registry, and mock soft state are restored before each subsequent
+     * test. Additional beforeEach hooks continue to run normally.
+     */
     snapshotBeforeEach?: string | string[];
   };
   [k: string]: unknown;
@@ -50,6 +54,9 @@ export function hardhatAliases(): Record<string, string> {
     'chai-as-promised': stub('chai-plugin'),
     // Redirect the EVM CREATE-address predictors to BCH (category-based) identity; re-exports the rest of ethers.
     ethers: '@solidcash/testing/ethers-shim',
+    // MistSwap PairKashi: `import { defaultAbiCoder } from "ethers/lib/utils"` (v5 path).
+    'ethers/lib/utils': '@solidcash/testing/ethers',
+    'ethers/lib/utils.js': '@solidcash/testing/ethers',
   };
 }
 
@@ -62,23 +69,30 @@ export function hardhatAliases(): Record<string, string> {
  * 2. Relative `require("./kashipair")` (no extension) -> ESM import of the same specifier so Vite can attach
  *    `.ts`. Node's CJS resolver cannot load TypeScript siblings when the suite is executed through Vite.
  *
- * Bare package requires (`ethers`, `bn.js`, `ethereumjs-util`) stay as `require()` so an upstream
- * checkout's own node_modules continues to supply them.
+ * Bare package requires (`bn.js`, `ethereumjs-util`) stay as `require()` so an upstream
+ * checkout's own node_modules continues to supply them. `ethers` is rewritten when aliased so
+ * CashAddress-aware AbiCoder / create-address redirects apply to CJS utilities (kashipair).
  */
 export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin {
   // Specs we own. Longer names first so `hardhat/config` wins over `hardhat`.
+  // Also rewrite `require("ethers")` (MistSwap kashipair / utilities) so CashAddress
+  // reaches our AbiCoder — bare require otherwise hits the upstream ethers v5 install.
   const specs = Object.keys(aliases)
     .filter((name) => name === 'hardhat' || name.startsWith('hardhat/')
       || name.startsWith('@nomicfoundation/hardhat')
       || name.startsWith('@nomiclabs/hardhat')
-      || name === '@openzeppelin/hardhat-upgrades')
+      || name === '@openzeppelin/hardhat-upgrades'
+      || name === 'ethers'
+      || name.startsWith('ethers/'))
     .sort((a, b) => b.length - a.length);
   const alt = specs.length === 0
     ? '(?!)'
     : specs.map((s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('|');
   // const { a, b: c } = require("hardhat")
+  // Nested patterns like `{ utils: { keccak256, defaultAbiCoder } }` need balanced braces
+  // (MistSwap kashipair / utilities) — a flat `[^}]+` stops at the inner `}`.
   const destructureRe = new RegExp(
-    String.raw`(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(\s*(['"])(${alt})\2\s*\)\s*;?`,
+    String.raw`(?:const|let|var)\s*(\{(?:[^{}]|\{[^{}]*\})*\})\s*=\s*require\(\s*(['"])(${alt})\2\s*\)\s*;?`,
     'g',
   );
   // const hh = require("hardhat")
@@ -87,7 +101,7 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
     'g',
   );
   // Relative siblings: const { KashiPair } = require("./kashipair")
-  const relativeDestructureRe = /(?:const|let|var)\s*\{([^}]+)\}\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?/g;
+  const relativeDestructureRe = /(?:const|let|var)\s*(\{(?:[^{}]|\{[^{}]*\})*\})\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?/g;
   const relativeSimpleRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?/g;
 
   return {
@@ -102,7 +116,26 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
       if (id.includes(`${'node_modules'}/`) || id.includes(`${'node_modules'}\\`)) {
         return null;
       }
-      if (!code.includes('require(')) return null;
+      // ESM import of ethers/lib/utils (PairKashi.test.ts) — rewrite even without require().
+      let next = code;
+      const ethersUtilsImportRe = /import\s*(\{[^}]*\})\s*from\s*(['"])ethers\/lib\/utils(?:\.js)?\2\s*;?/g;
+      const ethersUtilsDefaultRe = /import\s+(\w+)\s+from\s*(['"])ethers\/lib\/utils(?:\.js)?\2\s*;?/g;
+      const utilsTarget = aliases['ethers/lib/utils'] ?? aliases['ethers'] ?? '@solidcash/testing/ethers';
+      if (ethersUtilsImportRe.test(code) || ethersUtilsDefaultRe.test(code)) {
+        ethersUtilsImportRe.lastIndex = 0;
+        ethersUtilsDefaultRe.lastIndex = 0;
+        next = next.replace(ethersUtilsImportRe, (_m, binding: string) => (
+          `import ${binding} from ${JSON.stringify(utilsTarget)};`
+        ));
+        next = next.replace(ethersUtilsDefaultRe, (_m, binding: string) => (
+          `import ${binding} from ${JSON.stringify(utilsTarget)};`
+        ));
+      }
+
+      if (!next.includes('require(') && next === code) return null;
+      if (!next.includes('require(') && next !== code) {
+        return { code: next, map: null };
+      }
 
       const imports: string[] = [];
       let n = 0;
@@ -111,13 +144,12 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
         imports.push(`import * as ${idName} from ${JSON.stringify(target)};`);
         return kind === 'default' ? `${idName}.default ?? ${idName}` : idName;
       };
-
-      let next = code;
       if (specs.length > 0 && new RegExp(String.raw`require\(\s*['"](?:${alt})['"]`).test(code)) {
         next = next.replace(destructureRe, (_m, binding: string, _q: string, name: string) => {
           const target = aliases[name];
           if (!target) return _m;
-          return `const {${binding}} = ${take(target, 'ns')};`;
+          // binding already includes surrounding braces: `{ utils: { keccak256, defaultAbiCoder } }`
+          return `const ${binding} = ${take(target, 'ns')};`;
         });
         next = next.replace(simpleRe, (_m, binding: string, _q: string, name: string) => {
           const target = aliases[name];
@@ -129,7 +161,7 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
       // Relative requires: only rewrite when the source looks like a TS/JS suite file.
       if (/\.[cm]?[jt]sx?$/.test(id) && /require\(\s*['"]\.\.?[/]/.test(next)) {
         next = next.replace(relativeDestructureRe, (_m, binding: string, _q: string, rel: string) => (
-          `const {${binding}} = ${take(rel, 'ns')};`
+          `const ${binding} = ${take(rel, 'ns')};`
         ));
         next = next.replace(relativeSimpleRe, (_m, binding: string, _q: string, rel: string) => (
           `const ${binding} = ${take(rel, 'default')};`

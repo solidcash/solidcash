@@ -33,6 +33,7 @@
     "test:all": "yarn test && yarn test:e2e",
     "test:regtest": "yarn workspace solidcash test:regtest",
     "test:package-smoke": "node scripts/release-package-smoke.mjs",
+    "test:docs-snippets": "tsx scripts/release-docs-snippets.ts",
     "test:application-conformance": "node scripts/release-application-conformance.mjs",
     "test:application-regtest": "node scripts/release-application-regtest.mjs",
     "test:generated-project-smoke": "node scripts/release-generated-project-smoke.mjs",

@@ -1,4 +1,9 @@
 import { defineConfig } from 'vitest/config';
+import { availableParallelism } from 'node:os';
+
+// Mocknet e2e is CPU-bound (compile + VM) and mostly isolated per file; use all cores for local iteration.
+// Cap can still be overridden via VITEST_MAX_WORKERS.
+const defaultWorkers = Math.max(1, availableParallelism());
 
 export default defineConfig({
   test: {
@@ -20,5 +25,10 @@ export default defineConfig({
     // and stays under the regtest budget.
     testTimeout: process.env.TESTS_USE_REGTEST ? 180000 : 120000,
     hookTimeout: process.env.TESTS_USE_REGTEST ? 180000 : 10000,
+    // Prefer more file-level parallelism on multi-core hosts (mocknet is process-isolated by file).
+    maxWorkers: process.env.VITEST_MAX_WORKERS
+      ? Number(process.env.VITEST_MAX_WORKERS)
+      : defaultWorkers,
+    fileParallelism: true,
   },
 });

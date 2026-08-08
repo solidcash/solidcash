@@ -38,11 +38,12 @@
     "test": "test"
   },
   "scripts": {
-    "build": "yarn clean && yarn compile",
-    "clean": "rm -rf ./dist",
+    "build": "yarn compile",
+    "clean": "rm -rf ./dist *.tsbuildinfo",
     "compile": "tsc -p tsconfig.build.json",
+    "rebuild": "yarn clean && yarn compile",
     "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
-    "prepare": "yarn build",
+    "prepare": "yarn rebuild",
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run",
     "test:unit": "vitest run --exclude 'test/e2e/**'",

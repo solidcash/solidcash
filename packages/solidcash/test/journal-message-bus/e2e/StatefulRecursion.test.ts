@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString } from '../../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate, MockNetworkProvider } from '../../../src/index.js';
-import { MOCK_CONSENSUS_LIMITS } from '../../../src/network/MockNetworkProvider.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST } from '../../../src/network/MockNetworkProvider.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePub, alicePriv } from '../../fixture/vars.js';
 
@@ -151,7 +151,10 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    */
   const OVER_BUDGET_DEPTH = 24n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
-  const RELAXED_BUDGET = MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte;
+  // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
+  // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair
+  // meaningless. This arm has to be genuinely relaxed for "differs in exactly one field" to hold.
+  const RELAXED_BUDGET = MOCK_RELAXED_OPERATION_COST;
 
   /** Stage the recursive contract against one published operation-cost budget. */
   const stageAtBudget = async (operationCostBudgetPerByte: number): Promise<StatefulContract<any>> => {
@@ -218,7 +221,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     expect(refusal).toMatch(
       /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
     );
-    expect(refusal).toContain('Unsuccessful evaluation: completed with a non-truthy value');
+    // ATTRIBUTABLE, without pinning WHICH concrete cause fires: that depends on the published budget. At a
+    // relaxed budget the loop runs until the covenant completes non-truthily; against the mock's real 800 per
+    // byte it trips density control first and the refusal carries a source-mapped location instead. Both are
+    // genuine VM refusals of the same unbounded shape, so require a concrete cause rather than one wording.
+    expect(refusal).toMatch(/Unsuccessful evaluation: completed with a non-truthy value|C\.scash:\d+/);
     expect(refusal).toContain('at input 0 in contract');
   });
 

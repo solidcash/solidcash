@@ -732,6 +732,17 @@ it must not silently compile to incorrect covenant behavior.
   - The gate proves named-fixture restoration and cold/warm/dependency-invalidated compilation, preserves the last
     valid artifact after a failed rebuild, and verifies `clean` removes artifacts and cache data.
 - [ ] Add a required BCHN regtest smoke suite for release candidates.
+- [-] **Gate run at head, 2026-08-08.** Every locally runnable release gate passes: `lint` (all packages),
+  `spellcheck` (0 issues), `examples`, `test:security-conformance` (15 files, 81 passed, 1 skipped),
+  `test:package-smoke` (6 packed packages), `test:generated-project-smoke`, `test:application-conformance`
+  (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). The BCHN regtest gate is
+  out of scope by maintainer direction and remains the one unrun gate.
+  - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
+    GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
+    scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
+    the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
+    true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
+    to 2,127 and takes 16 s.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.

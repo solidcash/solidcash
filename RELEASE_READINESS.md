@@ -115,6 +115,349 @@ it must not silently compile to incorrect covenant behavior.
     as named diagnostics. All negative fixtures are now checked, but 323 over-accepted cases remain a strictness
     review queue. Per release prioritization, the full bench and over-accepted-correctness work are postponed and
     are not release blockers.
+- [x] Decide the release posture for constructs that exceed the BCH-2026 operation-cost budget, and stop the
+  mock provider from hiding them.
+  - **DECIDED AND LANDED.** `MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte` is now the REAL 800; every other
+    mock limit stays relaxed, so this is a targeted change rather than "the mock is production now". The
+    asymmetry is the point: the other fields bound how BIG a thing may be, which is visibly artificial when
+    relaxed, while the operation-cost budget bounds how DENSE a script may be, and density does not announce
+    itself - an over-budget contract is indistinguishable from a valid one in every artifact the SDK produces.
+    `MOCK_RELAXED_OPERATION_COST` is exported for harnesses testing the relaxed profile itself.
+  - The three relaxed-profile pins were re-pointed at an explicitly relaxed provider rather than inheriting one:
+    `X121` row 4 and `X130` row 2 now name `MOCK_RELAXED_OPERATION_COST` (the property they test is that the
+    PUBLISHED value is honoured, which is unchanged), and `X129` asserts the new default of 800 plus an
+    unchanged relaxed `maximumInputBytes`, so the asymmetry itself is pinned.
+  - The six over-budget shapes are now explicit PINS via `expectOverOperationCostBudget`, each stating its
+    overshoot and instructing the reader to restore the positive assertion rather than loosen the pin when the
+    lowering gets cheaper. `NestedStructArrayWrite`'s negative row is pinned on the same write rather than
+    deleted, because the write is what exceeds the budget and the pair should be restored together.
+  - What this buys: the shapes that reached a live node before anyone noticed now fail in CI, at the same limit a
+    node applies, and a future size or codegen change that pushes another shape over the line is caught by the
+    ordinary suite instead of by a chain. What it does NOT buy: the six shapes still do not work, and the item
+    below tracks making them cheap enough to restore.
+- [-] Reduce the operation cost of the six pinned over-budget shapes so their positive assertions can be restored.
+  - **FIVE OF SIX RESTORED via a density reserve**, which is now expressible end to end: `salt` threads through
+    `DeployOptions` and `DeployContractOptions` to the deployed `Contract`, so `factory.deploy({ salt })` works
+    rather than only the hand-built `new Contract(...)` path. `test-util`'s `densityReserve(bytes = 256)` is the
+    shared helper. `FunctionPointerArrayCall`, `MultiDimensionalArray`, `NestedArrayDelete` and both
+    `NestedStructArrayWrite` rows now assert their real behaviour again, each alongside a companion row that
+    asserts the SAME call without a reserve is still refused - so the reserve is proven to be what carries them,
+    and a lowering that gets cheaper will fail that companion loudly.
+  - Fixing the logical-identity anchor was required for this and is easy to miss: `ContractFactory` built a
+    second `Contract` to compute the address a CREATE anchor commits to, without the salt. A salted deploy would
+    have committed to the unsalted address.
+  - **ONE SHAPE CANNOT BE RESCUED THIS WAY**, and it is the original finding: `BehaviorParityPins`'s `arr[i](x)`,
+    five dispatches over a TEN-element fn-ptr table. Reserves of 256, 512 and the 520-byte salt CAP all still
+    fail, so the shortfall exceeds the 416,000 units a maximum reserve can buy. Compare
+    `FunctionPointerArrayCall` - three dispatches over three elements - which needs only 96 to 128. It stays
+    pinned, now stating that a reserve cannot fix it. Closing it needs a cheaper fn-ptr table.
+  - What a reserve costs, so this is not mistaken for free: a larger script, a different contract address, and
+    the fee on the extra bytes. It is the sanctioned way to satisfy density control, not a way around it.
+  - `MOCK_CONSENSUS_LIMITS` is far looser than `ConsensusBch2026`: `operationCostBudgetPerByte` is 10,000,000
+    against a real 800 (12,500x), input and stack items are 1,000,000 against 10,000, and the NFT commitment
+    limit is 1,000,000 against 128. Every mocknet test therefore runs with effectively no density control, so a
+    green mocknet suite is not evidence that a contract is valid on chain.
+  - First construct caught, during BCHN matrix batch 11: the `function_memory_array` pin in
+    `packages/solidcash/test/e2e/BehaviorParityPins.test.ts`, a runtime-indexed internal fn-ptr memory array
+    (`arr[i](x)`). It passes on mocknet and reverts on BCHN v29.
+  - The full set is now enumerated without any chain, by running `test/e2e` on mocknet with
+    `MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte` set to the real 800 and every other limit left relaxed, so
+    the budget is the single variable. That sweep takes 19 minutes and is deterministic. Exactly four tests in
+    three files exceed the budget, all one family: `NestedStructArrayWrite` (two tests, which report the density
+    limit explicitly), `FunctionPointerArrayCall` (`a[i]()`), and `BehaviorParityPins` (`arr[i](x)`). Runtime
+    indexed function-pointer array dispatch and nested struct-array element writes are the shapes at issue.
+  - Whole-array assign (`X171`), whole-array copy (`X167`), nested fixed-inner arrays and chunk-packed arrays do
+    NOT exceed the budget; they pass when the budget alone is real. They do fail when the other limits are also
+    tightened, which is a separate question tracked in the item below.
+  - The divergence reproduces with no regtest dependency by overriding the mock limits, which also isolates the
+    binding constraint: wide-open defaults resolve; full real BCH-2026 limits reject with the identical live-BCHN
+    error; `operationCostBudgetPerByte: 800` alone rejects; `maximumInputBytes: 10_000` alone resolves. The
+    operation-cost budget binds, not the 10,000-byte script limit.
+  - The overshoot is small and therefore probably optimizable rather than fundamental. Sweeping
+    `operationCostBudgetPerByte` puts the passing threshold between 1,200 and 1,300 against the real 800, so the
+    shape needs roughly 1.6x the available budget, not an order of magnitude.
+  - **Re-validated on the merged base.** Both sweeps were re-run after merging mainline to `86df89a4`, which
+    rewrote `compiler.ts`, `GenerateTargetTraversal.ts`, `utils/script.ts` and the generated parser. The results
+    are identical: the budget sweep still fails exactly `BehaviorParityPins`, `FunctionPointerArrayCall` and
+    `NestedStructArrayWrite` (two tests), and the input-bytes sweep still fails exactly `ChunkedArrays`,
+    `NestedArrayFixedInner` (two), `SplitLayoutAgreementX162`, `X167ArrayCopyReplaces` (two) and
+    `X171ArrayAssignReplaces` (four). The compiler performance work changed neither class, so these findings
+    track the current candidate revision even though the BCHN run that corroborated them does not.
+  - ~~**Every failure is marginal by a hair, and one byte fixes each.** The VM reports the arithmetic, and across
+    the four failures that print it the overshoot is 16, 103, 80 and 39 operation units against budgets of
+    541,600 to 804,800 - between 0.003% and 0.018% over. One extra byte of unlocking bytecode buys 800 units, so
+    a single byte of density reserve clears every one of them.~~
+  - **RETRACTED, and the reasoning error is worth keeping.** The overshoot a density refusal prints is an
+    ARTIFACT OF WHERE THE VM STOPPED, not a measure of the gap: evaluation aborts at the first operation that
+    would exceed the ceiling, so the excess is always a handful of units no matter how much work remained. Every
+    "0.003% over" reading above is that artifact. X121's own comment says the same thing about its depth band
+    ("the overshoot is always a handful of units because the refusal fires on the first operation past the
+    ceiling") - the inference to "one byte fixes it" simply did not apply it here.
+  - **Measured properly, the gap is ~27%, not ~0.01%.** Run the shape on a provider with a relaxed budget so it
+    runs to COMPLETION, then compare its total against the real budget its own unlocking length buys.
+    `FunctionPointerArrayCall`: unlocking 735 B, so a real budget of 588,000, against an actual completion cost
+    of 745,660 - over by 157,660, or 26.8%. Closing that needs about 197 more bytes of unlocking bytecode or
+    about 21% fewer executed operations. Not one byte.
+  - The cost model is flat, which is what makes the count the only lever. Attributing cost per opcode over the
+    7,380-step trace shows no expensive operation to remove: it is ~100 units per executed opcode, spread across
+    ordinary stack traffic - `OP_SWAP` 84,429 over 839 executions, `OP_PUSHBYTES_1` 64,378 over 637, `OP_DROP`
+    54,451, `OP_DUP` 54,171, and `OP_IF`/`OP_ELSE`/`OP_ENDIF` about 45,000 each over ~450. So "make the shape
+    cheaper" means executing ~1,576 fewer operations, not finding a hot spot.
+  - **A density reserve works, and the arithmetic is now measured rather than assumed.** `Contract`'s `salt`
+    bakes `<salt> OP_DROP` into the script, and for p2sh32 the redeem script counts toward the unlocking
+    bytecode, so it buys budget. Sweeping salt size on the `FunctionPointerArrayCall` shape, all at completion:
+    | salt | unlocking | real budget | cost | verdict |
+    | 0 B | 631 B | 504,800 | 697,749 | over by 192,949 |
+    | 100 B | 734 B | 587,200 | 698,536 | over by 111,336 |
+    | 200 B | 834 B | 667,200 | 699,120 | over by 31,920 |
+    | 400 B | 1,035 B | 828,000 | 700,097 | PASSES, 127,903 spare |
+    The cost is nearly FLAT in reserve size - 400 bytes adds 2,348 units, about 6 per byte - while the budget
+    grows at 800 per byte, so each reserve byte nets about +794 of headroom. This is not a trick played on the
+    rule: BCH-2026 density control exists to make a script pay for its operations in bytes, and a reserve is
+    paying that price. The costs are a larger script, a changed contract address, and the 520-byte salt cap.
+  - Reproduce with `packages/solidcash/test/e2e/ZZProfileDensity.test.ts` in the working tree at the time of
+    writing (a temporary diagnostic, not committed): it mocks `createVirtualMachineBch2026ForProvider` to capture
+    every `evaluate` argument set, re-runs each through `vm.debug`, and reports per-input unlocking length, the
+    real 800-per-byte budget that length buys, and the true completion cost. Note the per-INPUT reporting matters:
+    a transaction's other inputs sit far under budget and averaging hides the one that fails.
+  - That reframes the item. This is not "array lowering is too expensive"; these contracts sit a hair over the
+    line and the size campaign removed the headroom they were living on. Two mitigations follow, and the second
+    is preferable. A reserve can be bought today with no compiler change, because `Contract`'s `salt` bakes a
+    dead push into the redeem script and for p2sh32 the redeem script counts toward the unlocking bytecode - but
+    salt changes the contract address, and it caps at 520 bytes. Better, the size optimiser should refuse a cut
+    that leaves a contract with no density headroom; mainline already added `scripts/density-headroom.ts`, which
+    is the measurement that gate would need.
+  - Tested and REJECTED as the lever: raising `MINIMUM_WINDOW_ELEMENTS` in `packages/utils/src/outline.ts` back
+    from 7 to 8, undoing the last size cut and its 262 bytes. The reasoning was that 262 bytes buys about
+    209,600 operation units, far above the overshoots. It made things WORSE - 14 failing tests against 10, with
+    `X158OverLimitContractSpend` newly breaking - so less outlining does not buy density headroom here and the
+    outlining window is not the knob. Reverted.
+  - Tested and REJECTED as the lever: a SIZE FLOOR on outlining (`OUTLINE_SIZE_FLOOR_BYTES = 6_000`, returning
+    bodies un-outlined below it). It looked strong on the density side, taking the budget sweep from 7 failures to
+    2 - only `BehaviorParityPins` (16 units over) and `NestedArrayDelete` survived. It is still wrong, and on its
+    own axis. It costs 15 compiler tests: 10 golden-artifact mismatches in `generation.test.ts` plus 5 real ones,
+    and `ScalarJournal` decides it - that contract is 873 bytes un-outlined against a 600-byte budget, so the
+    floor's premise that "a small contract has nothing to buy" is backwards. A 600-byte contract has roughly
+    500,000 units of budget and executes almost nothing, which makes tiny contracts the LEAST density-constrained,
+    not the most. Size is not the axis; executed operation count is. Reverted.
+  - The cost mechanism is now identified exactly, at the emitted-script level. `memWordStore` in
+    `packages/solidc/src/semantic/YulMemPrimitives.ts` lowers EVERY memory element store to a whole-buffer splice,
+    `__yulmem = __yulmem[0:off] ++ word ++ __yulmem[off+32:len]`. So an N-write run copies the entire buffer N
+    times. The emitted bytes are tiny because outlining shares the splice span and each site becomes an OP_INVOKE
+    (`005c8a7c515d8a5101908a`, about 11 bytes per store), which is why these shapes are maximally dense: near-zero
+    size, full buffer copy per store. This also explains the outlining interaction above without appealing to the
+    window size.
+  - Acted on: `LowerMemoryModel.tryFuseElementWriteRun` now folds a run of consecutive constant-indexed element
+    writes to one memory array into a SINGLE buffer rebuild (`memWordStoreRun`), fusing only when every lowered
+    value reads no `__yulmem` and makes no call, since the fused form evaluates all values before any write lands.
+    On a five-store `uint[] memory` run this is 403 -> 322 emitted ops, about -20%, and it cuts runtime buffer
+    copies from five to one - it buys size AND operation cost together, so it does not pay the usual trade.
+  - Also acted on: `storeStructArgs` fuses the same way. It already hoists every field value into a temp and then
+    emits one `mstore` per field at consecutive `ptr + 32*fi`, so an n-field memory-struct construction copied the
+    buffer n times; the run now collapses to one rebuild (sorted by field index first, since named-field
+    construction can arrive out of order).
+  - NEITHER fusion closes this item, and the measurement is unambiguous rather than merely inconclusive: with both
+    in place the budget sweep still fails exactly 7 tests, and the four VM arithmetic reports are IDENTICAL to the
+    baseline, byte for byte - budgets 541,600 / 572,800 / 663,200 / 804,800 at density control lengths 677 / 716 /
+    829 / 1,006, overshooting by 16 / 103 / 80 / 39. Identical script lengths mean neither fusion fires on any
+    failing shape at all, so this is not "helped but not enough".
+  - Where the failing shapes actually live, so the next attempt does not re-derive it. A function-pointer memory
+    array is not in `memArrays` (instrumented directly: `memArrays.get('arr')` is undefined for the
+    `BehaviorParityPins` shape); it is lowered by the fn-ptr pass family - `LowerBlobFunctionPointers`,
+    `EliminateInternalFnPtrAlias`, `LowerReceivedFnPtrArray`, `ExpandBoundedPointerTableLoop` - into function ids
+    plus an indexed `OP_INVOKE`, which is a different store path entirely. The struct fusion likewise does not
+    reach the nested shapes, which write through `memStructArrays`/`MappingFieldAssignNode` rather than through a
+    constructor. Closing the item means finding the per-store sequence on THOSE paths; the two fusions landed here
+    are worth keeping on their own merits but should not be counted against this blocker.
+  - **The blast radius of making the mock budget real is now measured, and it is small.** Running the WHOLE
+    `test/e2e` suite at head `a504b1c6` with `operationCostBudgetPerByte: 800` and every other mock limit left
+    relaxed: 337 files, 325 passed, 4 skipped, 8 failed; 2,772 tests, 2,736 passed, 9 failed. The targeted
+    eight-file sweep had been missing three of them, so this is the first complete inventory. The nine split into
+    two classes that want opposite treatment:
+    - SIX are the genuine over-budget shapes, in five files: `BehaviorParityPins` (`arr[i](x)`),
+      `FunctionPointerArrayCall` (`a[i]()`), `MultiDimensionalArray` (constant-indexed 2D values),
+      `NestedArrayDelete` (`delete x[i][j]`), and `NestedStructArrayWrite` (both tests).
+    - THREE are tests that deliberately assert the RELAXED profile's semantics and would have to be re-pointed at
+      an explicitly relaxed provider rather than the default: `X121StrictPreflightDecision` ("the bare VM was also
+      FAIL-CLOSED: it refused a depth the decider accepts"), `X129ConsensusOverrideProbe` ("the probe ADMITS the
+      installed tree"), and `X130DebugVmProviderFaithful` ("NEWLY BUILDABLE: depth 24 on the relaxed DEFAULT
+      profile"). These are not product defects; they are the relaxed profile's own pins.
+    So flipping the default costs three test rewrites and makes six genuine shapes visible, against 325 files that
+    do not care. That is the concrete price of "stop the mock provider from hiding them", and it is now a decision
+    with numbers behind it rather than an open question.
+  - Re-measured at head `a504b1c6`, after six further `size(solidc)` commits landed from `codex/bytecode-size-2`.
+    The concern that more size cutting would widen this did NOT materialise: the sweep improves from 7 failures to
+    6. Three overshoots are untouched (16 at length 677, 103 at 716, 80 at 829); the 39-at-length-1006 case is
+    replaced by 32 at length 1463, and `MultiDimensionalArray`'s nested calldata struct copy now passes. So the
+    "size work makes this worse" rule stated above held for the earlier eight commits but not for these six, and
+    the sweep - not the byte count - remains the thing to check per batch.
+  - On how much the two fusions are worth, and on a measurement trap worth not repeating.
+    `scripts/density-headroom.ts` over the 300-contract `valid-contract-files` corpus moves 2 contracts by 41
+    bytes total (`delete_keyword.scash` -22, `struct_local_var.scash` -19), which reads as negligible. It is the
+    wrong yardstick: ZERO of those 300 files use `T[] memory` syntax at all, because that corpus is SolidCash-
+    native rather than Solidity-ported, and the fusions target exactly the Solidity memory model this fork exists
+    to support. The synthetic five-store case is -20%. So the corpus number bounds the benefit for native code,
+    not for ported code, and the honest scope for these two changes is the memory/array/struct/Yul e2e set rather
+    than a corpus byte total. Note also that a byte delta systematically UNDERSTATES them: the win is removing
+    n-1 whole-buffer copies at runtime, which the size metric cannot see at all.
+  - **The bytecode-size campaign makes this WORSE, and the effect is already measurable.** The budget is
+    `operationCostBudgetPerByte * (densityControlBaseLength + inputBytes)`, so a smaller script buys a smaller
+    budget: size headroom and density headroom trade against each other. Re-running the budget-only sweep after
+    merging the eight `size(solidc)` commits takes the genuine failures from four to seven. `BehaviorParityPins`,
+    `FunctionPointerArrayCall` and `NestedStructArrayWrite` (two) were already over; `MultiDimensionalArray`,
+    `NestedArrayDelete` and `SolidityCorpusBehavior` have newly crossed the line. Any further size work should be
+    measured against this sweep, not only against byte counts.
+  - The chain-free method is predictive, confirmed twice against the live node. `BehaviorParityPins` was found on
+    BCHN first and then reproduced on mocknet; `FunctionPointerArrayCall` went the other way, predicted by the
+    budget sweep and only later confirmed on BCHN when the matrix reached that file in batch 25. `ChunkedArrays`
+    likewise reproduces the live failure without a chain. The two shapes still unconfirmed on chain,
+    `NestedStructArrayWrite`, sit past the current checkpoint and should fail when the matrix reaches them.
+  - The cost is the memory-array CONSTRUCTION, not the indexed dispatch. Measured by finding the passing budget
+    for variants that separate the two: the baseline of five `build + dispatch` calls passes only at 1,300; five
+    builds with NO dispatch at all also pass only at 1,300; and building the array ONCE then performing five
+    indexed dispatches through it passes at the real 800. Five ordinary direct calls also pass at 800.
+  - Within construction the cost is the per-element STORES, not the allocation. Holding the call count at five
+    and varying only the shape: capacity ten with five stores passes at 1,300, capacity five with five stores
+    also passes at 1,300, while capacity ten with a SINGLE store passes at the real 800, as does capacity two
+    with a single store. Allocation size is therefore irrelevant and each function-pointer element store carries
+    the weight.
+  - The expense is specific to FUNCTION-POINTER element stores, not to memory writes in general. The same shape
+    built on a plain `int[] memory` array with five stores passes at the real 800, while the function-pointer
+    version needs 1,300. The memory model is therefore not implicated; storing a function pointer into a memory
+    array element is.
+  - The cost is dense rather than large: the marginal emitted size of an extra store is only about 30 to 60
+    bytes, and since the budget scales at 800 per byte, those bytes grant far more budget than they consume in
+    size. The store must therefore emit a great many operations for very few bytes, which is exactly what
+    BCH-2026 density control penalises.
+  - It is NOT the per-function `OP_DEFINE` overhead of making each referenced function invokable. Five stores
+    pointing at a SINGLE function still need 1,200, against 1,300 for five distinct ones, so distinctness is only
+    a secondary increment and the store count dominates. The threshold sits between two stores, which pass at
+    800, and five. Recorded so this line is not re-investigated.
+  - Two independent levers follow, either of which may be enough. Reduce the emitted operation count of a single
+    function-pointer element store; or exploit the fact that in this shape the array is call-invariant, so
+    hoisting or constant-folding it removes all five stores from every call after the first.
+  - An earlier revision of this entry blamed the indexed dispatch. That was wrong: the variant it rested on
+    ("array built but never dispatched") still dispatched, because the `arr[i](x)` sat inside the helper it
+    called, so it isolated nothing. Corrected by the construction-versus-dispatch measurement above.
+  - Note that the budget scales with script size, `operationCostBudgetPerByte * (densityControlBaseLength + input
+    bytes)`. The failing variants are the largest and therefore have the largest budget, yet they are the ones
+    that fail, which is precisely the density the BCH-2026 budget is designed to penalise.
+  - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
+    a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
+    failing on chain.
+- [ ] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
+  network uses.
+  - `relaxedConsensus` and `useSparseProbe` are both selected by
+    `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, at six call sites across
+    `StatefulTransactionBuilder.ts`, `StatefulContract.ts`, `upgrades.ts`, and `SplitContractBundle.ts`.
+    Electrum, regtest, FullStack and Bitcoin RPC publish no `consensusLimits`, so the default 10,000 makes that
+    predicate false and they always take the faithful full-trace path. `MockNetworkProvider` publishes
+    1,000,000, so mocknet always takes the sparse/observer path. The two are different algorithms, not merely
+    different limits.
+  - Ten e2e tests pass only on the sparse path and fail on the faithful one: `ChunkedArrays` (1),
+    `X171ArrayAssignReplaces` (4), `X167ArrayCopyReplaces` (2), `NestedArrayFixedInner` (2),
+    `SplitLayoutAgreementX162` (1). Nine report `preflight failed at input 0: Program failed an OP_VERIFY
+    operation`; the tenth cannot auto-derive its state commitments at all.
+  - Isolation is exact. Setting `maximumInputBytes` to 10,000 produces those ten failures; setting it to 10,001,
+    one byte higher and therefore back above the gate, makes the same five files pass 50/50. A one-byte change
+    in a size limit cannot decide whether those scripts fit, so the gate is the cause and script size is not.
+  - This is corroborated independently on chain, and now on a PRISTINE one. `ChunkedArrays` fails identically on
+    a freshly wiped regtest chain, so it is neither a chain-contamination artifact nor a harness side effect; it
+    is a real defect on the branch every live network takes. The chain-free mocknet reproduction predicted it.
+  - Root cause, with direct evidence. `StatefulTransactionBuilder.ts:3068` runs `covenantBuilder.debug()` only
+    when NOT relaxed, and its own comment says that probe is what "can discover commitments and output counts for
+    dynamic C2 inserts/chunks". Its failure is swallowed by a best-effort `try/catch`. For these array shapes the
+    probe throws, so the discovery never happens and the transaction is then built and funded from an unresolved
+    shape, which fails the covenant with `OP_VERIFY`. The relaxed mock skips the probe entirely and never
+    exercises any of this. Counted over the sweep: the production run emitted 14 swallowed
+    `STB debug() best-effort error` messages across seven files, four of which are the failing array files
+    (`ChunkedArrays`, `NestedArrayFixedInner`, `X167ArrayCopyReplaces`, `X171ArrayAssignReplaces`), while the
+    relaxed run emitted zero. Three files tolerate the swallowed error and still pass, so the swallowed probe is
+    necessary but not sufficient; the shapes that actually depend on the discovery are the ones that break.
+  - The remedy direction is therefore that a probe failure must not be silently swallowed when the build depends
+    on what the probe was meant to discover. The signature is not final at probe time, which is why
+    `require(checkSig(s, pk))` fails inside it.
+  - The signature really is the blocker, not a source-map misattribution. The same two-dynamic-array write
+    compiled WITHOUT a signature check completes its call with no probe error at all, while `ChunkedArrays`,
+    which gates the same write behind `require(checkSig(s, pk))`, fails. Discovery therefore works; it is
+    signature-gated covenants that cannot satisfy a probe run before signing.
+  - That makes the fix well scoped: the probe exists only to discover commitments and output counts, and the
+    real preflight plus the node still validate the finished transaction in full, so satisfying or bypassing
+    signature verification inside the probe alone does not weaken any check that decides acceptance.
+  - The diagnostic added alongside this now names the swallowed probe failure on `error.cause`, so the refusal
+    explains itself instead of surfacing a bare OP_VERIFY.
+  - Skipping the probe is NOT a fix, tested directly: with the probe disabled outright, nine of the ten still
+    fail. Discovery is genuinely required for these shapes, so the probe has to be made to succeed rather than
+    avoided.
+  - Mechanism for whoever takes it: for `OP_INVOKE` contracts the signature arguments are not signed during
+    scenario evaluation at all. `LibauthTemplate.ts` (`resolveArgsForOpInvoke`) pre-computes them from
+    `buildLibauthTransaction()` and substitutes raw bytes, because `OP_INVOKE` rewrites `state.instructions` and
+    so changes the `coveredBytecode` an ordinary Key-typed signature would cover. The probe runs on the
+    fee-less phase-1 build, so it carries a signature computed for that shape. Determining why that
+    pre-computed signature does not verify during the probe's scenario evaluation is the next step, and it needs
+    instrumentation rather than inference.
+  - Two hypotheses tested and REJECTED, recorded so they are not re-tried. First, that the reported
+    `require(checkSig(s, pk))` line was a source-map misattribution: the same shape without a signature check
+    completes with no probe error, so the line is real. Second, that `resolveArgsForOpInvoke` extracted the wrong
+    bytes because chunked shapes append covenant witness pushes and shift its `numArgs - i` index: instrumenting
+    the extraction shows the unlocking script holds exactly `numArgs + 2` instructions for every affected call
+    (`setA` 6/6, `setB` 7/7, `lenB` 3/3), so the layout assumption and the index arithmetic both hold.
+  - ROOT CAUSE, measured. The scenario transaction libauth evaluates is NOT the transaction the signature was
+    computed over. Comparing the two for the failing `ChunkedArrays` call, they differ only in input 0's
+    unlocking bytecode and by exactly 37 bytes every time: 1312 against 1275, then 1372 against 1335. Input
+    count, output count and every output are identical, so no sighash difference arises from the outputs.
+  - That is sufficient to break the signature precisely because these are `OP_INVOKE` contracts. `OP_INVOKE`
+    rewrites `state.instructions`, so `checkSig`'s `coveredBytecode` is the executing script rather than the
+    redeem script. A 37-byte-shorter unlocking script therefore covers different bytes, and the signature
+    pre-computed from the builder's script cannot verify against the template's reconstruction of it.
+  - The 37 bytes are now identified. Decoding both unlocking scripts into instructions shows every push matching
+    except the last, which is the redeem script itself: 1,201 bytes as built against 1,164 in the template. The
+    argument and signature pushes are byte-identical, so nothing is wrong with argument encoding.
+  - Within that redeem script the tails match exactly and only the heads differ. The built script begins with
+    `0x21` - a 33-byte push, so 34 bytes with its opcode - which the template's version does not have at all;
+    the template starts directly at the contract code (`0x4c4e ...`). That leading push is the contract's bound
+    prefix, and its absence accounts for 34 of the 37 bytes.
+  - So the defect is that the template reconstructs the redeem script from the artifact and constructor
+    parameters (`generateLockingScriptParams`) while the builder emits the contract's actual bound bytecode, and
+    the two disagree for these shapes. Note the consequence is broader than a failed probe: a redeem script that
+    differs hashes to a different P2SH address, so the scenario evaluates a different contract than the one being
+    spent. Making `getLibauthTemplate` emit the builder's bytecode for contract inputs is the fix.
+  - The missing bytes are exactly the category self-pin that `Contract` prepends for a category-bound stateful
+    contract (`Contract.ts`, "Category self-pin"): a 33-byte `category || 0x02` push, so 34 bytes with its
+    opcode, plus `OP_INPUTINDEX OP_UTXOTOKENCATEGORY OP_EQUALVERIFY`. 34 + 3 = the 37 observed.
+  - A first attempt at the fix, emitting that prologue at the head of the template's locking script, was tried
+    and REVERTED. It did change behaviour - the `checkSig` failure disappears and the probe then fails later, at
+    transaction level - but it did not clear any of the ten tests and it regressed 45 previously passing corpus
+    tests with `.build() still admits a shape the decider refuses`. Prepending at the head is evidently the wrong
+    placement: `Contract` layers a salt prologue and an external-library `OP_DROP` around the self-pin, so the
+    ordering has to match rather than assume the simple case.
+  - That the `checkSig` failure moves but the tests do not pass also means the redeem-script mismatch is A defect
+    rather than THE blocker.
+  - THE BLOCKER IS ISOLATED, to one gate and one rule. Forcing every relaxed-consensus gate to its relaxed branch
+    while leaving `maximumInputBytes` at the real 10,000 makes all fifty tests pass, so the VM limit itself is
+    not what fails; the code path the gate selects is. Bisecting the five gates, forcing ONLY
+    `evaluateProbeTrace` (`StatefulContract.ts:986`) is sufficient on its own.
+  - That function feeds two very different traces into one consumer. Relaxed limits use an observer that records
+    only six opcodes, so a commitment read and its `OP_EQUALVERIFY` are adjacent in the trace. Real limits use
+    the full `vm.debug()` trace, where other opcodes sit between them. `extractCommitmentMapFromTrace` resets on
+    ANY intervening opcode, on the stated assumption that the compiler "always generates tightly-coupled
+    `<expected> <idx> OP_OUTPUTTOKENCOMMITMENT OP_EQUALVERIFY`". For these chunk and dynamic shapes that coupling
+    does not hold, so the full trace discovers no commitments at all and the covenant then fails.
+  - Note this inverts the assumption recorded in `createVirtualMachine.ts`, which treats the observer as the
+    lossy instrument that can yield a phantom commitment and the full trace as the faithful one. Measured here,
+    the observer path derives commitments the covenant accepts while the full-trace path derives none.
+  - FIXED in `2b05b292`, and it did not require relaxing anything. The framing of "tolerate intervening opcodes
+    or not" was the wrong question: the adjacency rule is correct for the trace it was written against, and the
+    defect was handing it a different one. `evaluateProbeTrace` now reduces the full debug trace through the
+    same opcode filter and pairing rule the observer already applies, so both branches present the extractor the
+    same shape. The check is untouched; production simply behaves like the path the mocknet suite exercises
+    rather than a third behaviour nothing validated.
+  - Verified on BCHN v29: `ChunkedArrays`, `NestedArrayFixedInner` and `X167ArrayCopyReplaces` pass 30/30 on a
+    live node, having failed there in the full matrix. Chain-free, the five affected files pass 50/50 with
+    `maximumInputBytes` at the real 10,000, and mocknet is unchanged at 333 files / 2,745 tests.
+  - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
+    documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
+    shapes on the faithful path.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,
@@ -164,10 +507,95 @@ it must not silently compile to incorrect covenant behavior.
     commit `2e1014f0`, batches 1 through 7 passed 56/449 files. Batch 8 initially reached 221/222 passing tests and
     exposed one mock-vs-live rejection-message mismatch in `UserLibrary.test.ts`; after correction, batches 8 and
     9 passed in full on commit `ea410fd1`, advancing the cumulative diagnostic checkpoint to 72/449 files. Batch
-    10 was intentionally interrupted shortly after starting and is not counted. The full BCHN matrix remains
-    incomplete. Resume diagnostic coverage at batch 10 with `REGTEST_START_AT=72 yarn test:regtest`; the final
-    release evidence must still run plain
-    `yarn test:regtest` from zero on the exact candidate revision.
+    10 was intentionally interrupted shortly after starting and is not counted. Diagnostic coverage then advanced
+    to 152/449 files before being deliberately postponed until the non-BCHN work is exhausted.
+  - Three harness defects were found and fixed during that coverage, none of them product bugs: CashTokens
+    genesis starved of vout-0 coins because regtest halves the subsidy every 150 blocks (measured 0.0 from
+    ~height 2,500) while `createVout0Utxo` never worked, since `sendtoaddress` chose its own change position;
+    BCHN reports a CLTV failure as non-mandatory rather than naming the opcode; and the provider served a fixed
+    100,000-satoshi fee funder while the SDK requested 5,000 or 3,000, so a co-spend that cannot emit change
+    burned the excess as fee.
+  - **A wipe is necessary but NOT sufficient: the suite also contaminates itself within one run.**
+    `DeployThenCallFold.e2e.test.ts` still fails on a freshly wiped chain, and both categories involved were
+    created by that same run: the expected one had 117 confirmations and the one the signer actually chose had
+    561, roughly 444 blocks earlier in the same pass. Every such test builds its signer from the fixed
+    `alicePriv`, so they share one address, and the signer auto-selects among whatever genesis-valid vout-0 UTXOs
+    have accumulated there. The test therefore passes in isolation and fails inside a long serial run - an
+    order-dependent test defect, not a product defect. The durable fix is a per-test signer, or funding selection
+    that prefers the UTXO the test just seeded.
+  - CONFIRMED by the decisive test: `DeployThenCallFold.e2e.test.ts` passes 13/13 alone on a freshly wiped chain,
+    and fails once any other test has spent from the shared address. Note that running it alone on a USED chain
+    still fails, so "alone in a vitest process" is not isolation here - only a wiped chain is.
+  - **Prerequisite 1 - the evidence run needs a WIPED chain.** "From zero" means file zero and is not
+    sufficient. Tests build signers from a fixed key and share one address; the signer auto-selects a
+    genesis-valid vout-0 UTXO from it, so on a chain with history it picks a leftover. Proven in
+    `DeployThenCallFold.e2e.test.ts`: the expected category had 94 confirmations (created by that run) while the
+    received one had 5,395 (left by an earlier run). Run
+    `docker compose -f docker-compose.regtest.yml down -v` first. Residual risk remains within a single run,
+    because a 449-file serial pass contaminates that same address as it goes; the durable fix is per-test
+    signers or funding selection that prefers the just-seeded UTXO.
+  - **Prerequisite 2 - the runner is O(wallet).** `pickLiveFundingInput` runs `listunspent` plus a `gettxout`
+    per candidate at five hot-path call sites. Measured at 23,076 wallet UTXOs: 1,181 ms per call, with the
+    wallet growing about 5,000 UTXOs per hour, so the sweep slows itself down. Mean batch was 457 s and BCHN sat
+    pegged at 99.9% of one core. A wipe resets this; the durable fix is for the provider to roll its own change
+    forward instead of asking the node.
+  - The rejection-message class is now fixed at the source rather than per file. BCHN names the failing input
+    only for some refusals: `Program failed an OP_VERIFY operation` carries `error in evaluating input index N`,
+    while `Script failed an OP_EQUALVERIFY operation (code 16)` does not; the mock always names it. That is why
+    three files needed a portability guard earlier while roughly thirty others asserting the same string did not.
+    `test-util.ts` now exports `expectScriptRejection(outcome, inputIndex)`, which requires the refusal always and
+    the input index only where the node reports one, so no evidence is discarded. Applied to
+    `CollectionIterationDynamicInsertX102`, `DelegateCollectionOutputPin`, and `DelegateEmitFunder`; those three
+    files pass 10/10 on mocknet and remove five known-false failures from the next BCHN pass.
+  - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
+    pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
+    failures are artifacts of a 29,424-UTXO wallet.
+- [ ] Investigate two further live-only failures, each reproduced alone on a freshly wiped chain.
+  - `Erc20LikeApplication.test.ts`, "decodes Transfer event arguments for mint and transfer": the decoded event
+    list omits the mint, whose `from` is the zero address, and leads with the transfer instead. Compare against
+    the known "identical data NFTs unorderable on a non-deterministic provider" issue.
+  - `MsgSenderCrossContractC2.test.ts`, "rejects an LBC-swapped caller": `expect(masterA).toBeDefined()` fails at
+    line 109, so a `getUtxos()` lookup for the caller's master NFT returns nothing straight after setup.
+  - Both were provisionally grouped with the shared-signer order dependence below. That grouping was WRONG: each
+    still fails alone on a pristine chain, so neither is a contamination artifact. Only `DeployThenCallFold`
+    belongs in that group, and it passes 13/13 alone on a pristine chain.
+  - CORRECTION after the full run at `cf6de29c`: `Erc20LikeApplication` PASSED there, so it is state-dependent
+    rather than deterministic and the "genuine live-only finding" label above was over-confident on the strength
+    of a single pristine-and-alone failure. `MsgSenderCrossContractC2` failed again and still stands.
+    Reproduce both across several chain states before treating either as settled.
+  - Neither reproduces on mocknet at any consensus limits, so both join the CREATE-anchor item as findings that
+    require a live node to observe.
+- [x] Logical CREATE identity anchor: NOT a product defect. Two separate causes, both outside the compiler.
+  - `RegtestNetworkProvider.getUtxos` gated its `listunspent` on the CashAddress token-support flag, so a
+    non-token address returned no token UTXOs. `deriveLogicalCreateAddress` encodes a plain script address, and
+    the anchor is an immutable NFT, so every anchor was invisible and `resolveLogicalIdentity` reported "found
+    0" for anchors that existed on chain. That flag describes the address ENCODING, not what the script may
+    hold - the locking bytecode is identical either way - so the query now always includes tokens.
+    `MockNetworkProvider` returns token UTXOs regardless, which is why this only ever failed against a live node.
+  - With the anchors visible the same test reported "ambiguous ... found 65". The logical address is
+    deterministic in (deployer, nonce) and the suite reuses one key at nonce 0, so every historical run left
+    another anchor at the same address. That is test contamination, not a protocol fault: a real deployer
+    consumes each nonce once.
+  - Verified on BCHN v29 against a chain already carrying the historical anchors: `ContractFactory` passes 9/9
+    and `UpgradesDeployProxy` passes. `LargeContractSplitting` no longer reports an identity error at all; it now
+    exceeds its 180-second budget instead, which is the same performance class as the `AtomicMessageBus`
+    timeouts and not an identity fault. Note that two regtest suites run concurrently against the one shared node
+    produce `txn-mempool-conflict`, so a contended run cannot be read as a result.
+  - Also hardened while here: the identity used p2sh20. A 160-bit script hash offers only about 2^80 collision
+    resistance, so a second seed hashing alike would let an attacker present a different deployer/nonce for the
+    same logical address. It is now p2sh32, matching the project rule that stateful features never take a p2sh20
+    path.
+  - `ContractFactory.test.ts` fails on a freshly wiped chain with `Logical contract identity at bchreg:pzarnm7r...
+    is missing or invalid (expected exactly one authenticated immutable anchor, found 0)`, thrown by
+    `resolveLogicalIdentity` (`src/stateful/logical-identity.ts:193`) immediately after a successful
+    `deploy(42n)`. Two tests in the file fail this way.
+  - This was first seen on the contaminated chain and provisionally attributed to leftover UTXOs. The wiped-chain
+    run disproves that attribution: it is a real defect.
+  - It is a THIRD distinct cause, separate from the two items above. It does not reproduce on mocknet even with
+    real consensus limits, so it is not the operation-cost budget and not the sparse/faithful derivation split.
+    Something about resolving anchors against a live provider differs from the mock. Investigate whether the
+    anchor output is never created on this path, is created but not indexed, or is created but fails the
+    authentication predicate in `resolveLogicalIdentity`.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
 
@@ -451,8 +879,9 @@ Update this table whenever a release candidate is cut.
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |
-| BCHN regtest | **PARTIAL PASS** — v29 BIP68 height/MTP proofs pass; five atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. The matrix runs in resumable eight-file processes. Commit `2e1014f0` passed batches 1–7; after the batch-8 assertion correction, commit `ea410fd1` passed batches 8–9, producing a cumulative checkpoint of 72/449 files. Batch 10 was interrupted and is not counted. Resume diagnostics at file 72; a from-zero exact-candidate pass is still required | `REGTEST_START_AT=72 yarn test:regtest`; final `yarn test:regtest` | 2026-08-05 |
+| BCHN regtest | **COMPLETE AT THE CANDIDATE REVISION, NOT GREEN** — the full matrix ran **449/449 files from zero on a freshly wiped chain at `cf6de29c`**, the current branch head, with 12 of 57 batches failing across 15 files and 35 tests, and a single transient RPC error. That is down from 24 failed batches and 39 files on the pre-fix run. Residual failures: 4 tests exceed the operation-cost budget; 10 fail on the sparse/faithful derivation split; 4 are the logical CREATE anchor (`ContractFactory`, `LargeContractSplitting`, `UpgradesDeployProxy`); 1 is the `msg.sender` master lookup; 13 are `AtomicMessageBus*` timeouts at 120-240 s, which are load-related rather than covenant failures; and 3 are a `Sec13` funding artifact refused as `absurdly-high-fee`. `DeployThenCallFold` and `Erc20LikeApplication` both PASSED this run despite failing earlier, so both are state-dependent rather than deterministic - `Erc20LikeApplication` had been recorded as a genuine live-only finding on the strength of one pristine-and-alone failure, and that was over-confident. An earlier attempt at this same run is disregarded: the Docker daemon briefly reported no containers, the matrix continued against an unreachable node, and 57 `fetch failed` errors made everything past batch 26 meaningless.<br><br>Superseded detail from the pre-fix run: v29 BIP68 height/MTP proofs pass, and the atomic composition capstones and the 24-input, 94,651-byte eight-participant maximum are accepted under standard relay policy. Failures resolve into five classes, none unexplained: three genuine product defects (operation-cost budget, derivation-path split, logical CREATE anchor), backend policy/reporting-layer differences, rejection-message forms, one regression from a harness fix of ours, and order-dependent tests. Four harness defects were found and fixed along the way (vout-0 genesis starvation, CLTV rejection form, fee-funder size substitution, and a 1-satoshi forgery that BCHN refused as dust before the covenant could object). The run is **not release evidence** for three independent reasons: it was run at base `43be1dd3` and the branch has since merged mainline to `86df89a4`, which rewrote `compiler.ts`, `GenerateTargetTraversal.ts`, `utils/script.ts` and the generated parser; the three product defects are unfixed; and the suite still contaminates its own shared signer address within a run. A future evidence run must therefore start from a wiped chain AND re-run at the candidate revision. Regtest coverage is currently out of scope by maintainer direction, so the chain-free sweeps below are the maintained check for the density and derivation classes | `REGTEST_CONTINUE_ON_FAILURE=true yarn test:regtest` after `docker compose -f docker-compose.regtest.yml down -v` | 2026-08-06 |
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
+| `@solidcash/testing` package | **PASS after fix** — 7 files, 19/19. `SplitArtifactHre` failed on the candidate revision because `packages/testing/vitest.config.ts` set no `testTimeout`, so it inherited the 5s vitest default while the test compiles a split contract in about 8s. Its sibling packages already set 30s (`solidc`) and 120s (`solidcash`) for exactly that reason; the package now sets 30s. This failure is machine-speed dependent, so it would pass on a fast machine and fail on a slow one | `yarn workspace @solidcash/testing vitest run` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |

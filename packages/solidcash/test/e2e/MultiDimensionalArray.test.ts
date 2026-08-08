@@ -1,6 +1,6 @@
 import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
-import { fundedSigner } from '../test-util.js';
+import { fundedSigner, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
@@ -271,13 +271,23 @@ describe('Multi-Dimensional Arrays', () => {
       expect(tx.txid).toBeDefined();
     });
 
-    it('verify all constant-indexed values', async () => {
+    // Exceeds the real BCH-2026 operation-cost budget at this contract's natural size, so the deploy reserves
+    // density for it. See `densityReserve`.
+    it('verify all constant-indexed values (with a density reserve)', async () => {
+      const factory = getContractFactory(
+        compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
+      );
+      const sc = await factory.deploy({ salt: densityReserve() });
+      const tx = await sc.testConstants();
+      expect(tx.txid).toBeDefined();
+    });
+
+    it('the same call without a density reserve is refused by the operation-cost budget', async () => {
       const factory = getContractFactory(
         compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      const tx = await sc.testConstants();
-      expect(tx.txid).toBeDefined();
+      await expectOverOperationCostBudget(sc.testConstants());
     });
   });
 

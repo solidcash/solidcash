@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { compileStringSplit } from 'solidc';
 import { parsePushdataCommitment } from '@solidcash/utils';
 import { Signer, SplitContractBundle, deriveLogicalCreateAddress, upgrades } from '../../src/index.js';
-import { alicePriv, alicePub } from '../fixture/vars.js';
+import { alicePub } from '../fixture/vars.js';
 import { createTestProvider, getTxOutputs } from '../test-util.js';
 
 const SOURCE = `
@@ -17,9 +17,23 @@ contract SplitCounter() {
 }
 `;
 
+/**
+ * A FRESH key per call. The logical CREATE address is deterministic in (deployer, nonce) and these deploys use
+ * nonce 0, so reusing one key leaves another immutable anchor at the same address on every run and
+ * `resolveLogicalIdentity` then legitimately reports "ambiguous ... found N". A real deployer consumes each
+ * nonce once, so uniqueness here restores the property the test means to assert.
+ */
+function freshPrivateKey(): Uint8Array {
+  const key = new Uint8Array(32);
+  crypto.getRandomValues(key);
+  // Keep the value non-zero and below the secp256k1 group order.
+  key[0] = (key[0] & 0x7f) | 0x01;
+  return key;
+}
+
 async function fundedSigner(): Promise<Signer> {
   const provider = createTestProvider();
-  const signer = new Signer(alicePriv, provider);
+  const signer = new Signer(freshPrivateKey(), provider);
   for (const byte of ['a1', 'b2', 'c3', 'd4']) {
     await provider.addUtxo(signer.getAddress(), { txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n });
   }

@@ -5,7 +5,7 @@ import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 import {
   bytesToSlotValue, encodeEntryCommitment, keyToSlot,
 } from '../../src/stateful/SortedList.js';
@@ -84,13 +84,29 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
   return binToHex(encodeTransaction(tx));
 }
 
-/** Clone an existing entry output, funding the extra bytes out of the trailing change output. */
+/** Clone an existing entry output, funding the extra bytes out of an existing output. */
 function appendEntryOutput(tx: Tx, sourceIndex: number, commitment: Uint8Array): void {
   const source = tx.outputs[sourceIndex];
-  tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  // A 1-satoshi output is below the dust threshold on a real node, so BCHN refuses the forgery with
+  // `dust (code 64)` before the covenant can object - which would prove nothing. On live regtest use a
+  // dust-viable value and fund it from the LARGEST output, since the trailing output is not reliably fat change.
+  const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+  const appendedValue = liveRegtest ? 1200n : 1n;
+  if (liveRegtest) {
+    const donor = tx.outputs.reduce(
+      (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+    );
+    const needed = appendedValue + 500n;
+    if (tx.outputs[donor].valueSatoshis <= needed) {
+      throw new Error(`appendEntryOutput: no output can fund ${needed} satoshis; the forgery would be malformed.`);
+    }
+    tx.outputs[donor].valueSatoshis -= needed;
+  } else {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  }
   tx.outputs.push({
     ...source,
-    valueSatoshis: 1n,
+    valueSatoshis: appendedValue,
     lockingBytecode: source.lockingBytecode.slice(),
     token: { ...source.token!, nft: { ...source.token!.nft!, commitment } },
   });
@@ -103,8 +119,7 @@ function entryOutputIndices(tx: Tx): number[] {
 async function expectCovenantRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-  expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
+  expectScriptRejection(outcome, 0);
 }
 
 async function expectAccepted(provider: Provider, hex: string): Promise<void> {

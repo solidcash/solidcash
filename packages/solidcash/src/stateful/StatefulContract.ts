@@ -439,6 +439,14 @@ export interface DeployOptions {
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
+  /**
+   * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
+   * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
+   * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while
+   * costing about 6 to carry - a net +794. A dense shape that a node refuses can be made valid by reserving
+   * bytes for it. Costs: a larger script, a different contract address, and the 520-byte cap.
+   */
+  salt?: Uint8Array;
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
@@ -1129,6 +1137,12 @@ function extractVerifiedValuesFromTrace(
   return valuesNoIndex;
 }
 
+/** The opcodes `extractCommitmentMapFromTrace` reasons about; every probe trace is reduced to these. */
+const PROBE_TRACE_OPCODES = new Set<number>([
+  Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
+  Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
+]);
+
 /** Evaluate a probe without retaining millions of irrelevant VM states under relaxed private-network limits. */
 function evaluateProbeTrace(
   provider: NetworkProvider,
@@ -1150,7 +1164,7 @@ function evaluateProbeTrace(
     } catch { return 0; }
   })();
   // Prefer full debug when:
-  // - limits are ≤10KB (historical path), or
+  // - limits are ≤10KB (historical / live path), or
   // - unlocking is in the grey band (10_001..16_000) where sparse mis-derives dynamic chunks
   //   (MasterChef poolInfo) but full debug still fits in V8, or
   // - SC_FORCE_FULL_PROBE_TRACE=1.
@@ -1163,7 +1177,28 @@ function evaluateProbeTrace(
       ?.env?.SC_FORCE_FULL_PROBE_TRACE === '1';
   if (preferFullDebug) {
     try {
-      return createVirtualMachineBch2026ForProvider(provider).debug(program) as AuthenticationProgramStateCommon[];
+      const full = createVirtualMachineBch2026ForProvider(provider)
+        .debug(program) as AuthenticationProgramStateCommon[];
+      // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
+      // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
+      // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
+      // Grey-band oversized mocks (MasterChef under 100KB limits) keep the raw debug trace so dynamic
+      // chunk pins still resolve.
+      if (maxIn <= 10_000) {
+        const targets = PROBE_TRACE_OPCODES;
+        const filtered: AuthenticationProgramStateCommon[] = [];
+        let awaiting = false;
+        for (const state of full) {
+          const opcode = state.instructions[state.ip]?.opcode;
+          if (opcode === undefined || !targets.has(opcode)) continue;
+          if (opcode === Op.OP_EQUALVERIFY && !awaiting) continue;
+          filtered.push(state);
+          awaiting = opcode !== Op.OP_EQUALVERIFY;
+        }
+        if (full.length > 0) filtered.push(full[full.length - 1]);
+        return filtered;
+      }
+      return full;
     } catch (err) {
       // V8 arg-limit / OOM on an oversized script: fall through to the observer.
       if (maxIn <= 10_000) throw err;
@@ -1174,10 +1209,7 @@ function evaluateProbeTrace(
   // OP_OUTPUTTOKENCOMMITMENT and OP_EQUALVERIFY as breaking the commitment pair. Expanding the set
   // (EQUAL/UTXO*/NUMEQUAL*) produced phantom pairs and multi-data-NFT nftIndex tag mismatches
   // (SushiToken.mint / transferOwnership). Dynamic-chunk grey-band scripts use full debug above instead.
-  const targets = new Set<number>([
-    Op.OP_OUTPUTTOKENCOMMITMENT, Op.OP_OUTPUTBYTECODE, Op.OP_OUTPUTVALUE,
-    Op.OP_OUTPUTTOKENAMOUNT, Op.OP_OUTPUTTOKENCATEGORY, Op.OP_EQUALVERIFY,
-  ]);
+  const targets = PROBE_TRACE_OPCODES;
   let awaitingVerification = false;
   const vm = createVirtualMachineBch2026ForProvider(provider, {
     opcodes: targets,
@@ -2120,6 +2152,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       provider: options.provider,
       addressType: options.addressType,
       category: hexToBin(categoryId),
+      salt: options.salt,
     });
 
     const stateLayout = artifact.stateLayout;

@@ -28,14 +28,29 @@ export type MockNetworkProviderOverrides = Partial<Omit<MockNetworkProviderOptio
   policy?: Partial<NetworkPolicy>;
 };
 
+/**
+ * `operationCostBudgetPerByte` is REAL here while every other limit stays relaxed, and that asymmetry is
+ * deliberate. The other fields bound how big a thing may be, so relaxing them lets a harness exercise shapes
+ * larger than a production transaction would carry - useful, and visibly artificial. The operation-cost budget
+ * bounds how DENSE a script may be, and density does not announce itself: a contract that passes at a relaxed
+ * budget and fails at the real one looks identical in every artifact the SDK produces. Relaxing it therefore
+ * made a green mocknet suite mean nothing about on-chain validity, which is how several over-budget shapes
+ * reached a live node before anyone noticed. See RELEASE_READINESS.md, "operation-cost budget".
+ *
+ * A harness that genuinely wants the old behaviour asks for it by name:
+ *   new MockNetworkProvider({ consensusLimits: { operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST } })
+ */
 export const MOCK_CONSENSUS_LIMITS: ConsensusLimits = {
   maximumInputBytes: 1_000_000,
   maximumStackItemBytes: 1_000_000,
   maximumTransactionBytes: 10_000_000,
   maximumNftCommitmentBytes: 1_000_000,
-  operationCostBudgetPerByte: 10_000_000,
+  operationCostBudgetPerByte: 800,
   hashDigestIterationsPerByte: 10_000_000,
 };
+
+/** The pre-2026-08 relaxed budget, for harnesses that are testing the relaxed profile itself. */
+export const MOCK_RELAXED_OPERATION_COST = 10_000_000;
 
 // Default simulated block timestamp (unix seconds). Mutable via the time-travel helpers below.
 export const MOCK_DEFAULT_BLOCK_TIME = 1700000000;

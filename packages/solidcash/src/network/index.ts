@@ -5,5 +5,6 @@ export { default as FullStackNetworkProvider } from './FullStackNetworkProvider.
 export {
   default as MockNetworkProvider, FailingMockNetworkProvider,
   type TokenGenesisOutput, type SnapshotRestorer, MOCK_DEFAULT_BLOCK_TIME, MOCK_CONSENSUS_LIMITS,
+  MOCK_RELAXED_OPERATION_COST,
 } from './MockNetworkProvider.js';
 export { default as RegtestNetworkProvider } from './RegtestNetworkProvider.js';

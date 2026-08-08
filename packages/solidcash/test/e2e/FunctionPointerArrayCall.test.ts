@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
-import { fundedSigner } from '../test-util.js';
+import { fundedSigner, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling a function pointer from an array element (`a[i]()`) dispatches to the element's target at runtime.
@@ -23,9 +23,16 @@ const SRC = `contract C {
 }`;
 const artifact = compileString(SRC, { forceStateful: true });
 describe('function pointer array-element call (runtime)', () => {
-  it('a[i]() dispatches to the element target', async () => {
-    const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
+  // Three dispatches exceed the real BCH-2026 operation-cost budget at this contract's natural size, so the
+  // deploy reserves density for them. Measured: this shape needs between 96 and 128 reserve bytes; 256 is the
+  // shared default. The single-dispatch negative below needs none, which is why only this row reserves.
+  it('a[i]() dispatches to the element target (with a density reserve)', async () => {
+    const sc = await getContractFactory(artifact, await fundedSigner()).deploy({ salt: densityReserve() });
     await expect(sc.ok()).resolves.toBeDefined();
+  });
+  it('a[i]() without a density reserve is refused by the operation-cost budget', async () => {
+    const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
+    await expectOverOperationCostBudget(sc.ok());
   });
   it('a wrong expectation reverts (dispatch is real, not constant-folded)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();

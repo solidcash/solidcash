@@ -4,7 +4,7 @@ import { compileString } from '../direct-compile.js';
 import {
   Contract, StatefulContract, TransactionBuilder, getEventNftAddress, readEventsFromChain,
 } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../test-util.js';
 
 /**
  * SEC-10 off the bus. The one-armed conditional emit slot is reserved by `collectEmitStatements` and its
@@ -82,7 +82,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
   };
 
   it('the un-flagged two-armed slot is settled on the else path too', async () => {
-    expect(await forgeTwoArmed()).toContain('error in evaluating input index 0');
+    expectScriptRejection(await forgeTwoArmed(), 0);
   }, 300_000);
 
   const forge = async (x: bigint): Promise<{ outcome: string; events: any[]; eventOffset: number }> => {
@@ -125,7 +125,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
   it('rejects the forged commitment when the branch IS taken', async () => {
     const { outcome, eventOffset } = await forge(200n);
     expect(eventOffset).toBe(2);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 300_000);
 
   /**
@@ -135,7 +135,7 @@ describe('SEC-10 off the bus: plain stateful conditional emit', () => {
    */
   it('rejects the forged commitment when the branch is NOT taken', async () => {
     const { outcome } = await forge(4n);
-    expect(outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(outcome, 0);
   }, 300_000);
 
   it('the forged NFT no longer reads back as a genuine event off the bus either', async () => {

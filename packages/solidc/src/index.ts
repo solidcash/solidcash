@@ -4,9 +4,9 @@ export { compileFile, compileFileMulti, compileFileSplit } from './compileFile.j
 export {
   assertNoReservedMessageBusSelector,
   classifyMessageBusRejection,
+  clearCompileCache,
   compileString, compileStringMulti, compileStringSplit, type CompileOptions, type SplitCompileOptions,
-} from './compiler.js';
-export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '@solidcash/utils';
+} from './compiler.js';export { type ArtifactMap, type SplitArtifactBundle, type SplitManifest } from '@solidcash/utils';
 export { createMapResolver } from './createMapResolver.js';
 export * from './ast/Location.js';
 export * from './ast/error-listeners.js';

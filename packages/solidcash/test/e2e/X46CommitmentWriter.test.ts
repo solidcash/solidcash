@@ -81,6 +81,8 @@ describe('X46: a commitment against state the same call overwrote authorizes nob
   it('HONEST CONTROL: the same call without that write is refused by the covenant at input 0', async () => {
     const honest = await bobDrains('');
     expect(honest.ok).toBe(false);
-    expect(honest.error).toMatch(/input index 0/);
+    // BCHN's short form names no input, only what tripped, so require the script-verify refusal itself
+    // and the input index only where the backend reports one.
+    expect(honest.error).toMatch(/input index 0|mandatory-script-verify-flag-failed/);
   }, 180_000);
 });

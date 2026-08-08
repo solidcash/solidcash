@@ -24,6 +24,13 @@ export interface DeployContractOptions {
   changeAddress?: string;
   fee?: bigint;
   addressType?: AddressType;
+  /**
+   * A dead `<salt> OP_DROP` push baked into the script - CREATE2 addressing, and the DENSITY RESERVE. The
+   * BCH-2026 budget is `operationCostBudgetPerByte x unlockingBytecodeLength` and for p2sh32 the redeem script
+   * counts toward it, so each reserve byte buys 800 units of budget and costs about 6 to carry. See
+   * `DeployOptions.salt`.
+   */
+  salt?: Uint8Array;
   threadCount?: number;
   /** Number of self-preserved message bus verifier instances created in the genesis transaction. */
   messageBusVerificationInputCount?: number;
@@ -223,8 +230,11 @@ export class ContractFactory<T extends Artifact = Artifact> {
         to: addressToLockScript(logicalAddress),
         commitment: buildLogicalIdentityCommitment(
           logicalIdentity!.deployer, logicalIdentity!.nonce,
+          // Must mirror the DEPLOYED contract's options exactly, `salt` included: the anchor commits to an
+          // address, and a salt changes it.
           new Contract(this.artifact, constructorArgs as never, {
             provider, addressType: overrides.addressType, category: hexToBin(fundingUtxo.txid),
+            salt: overrides.salt,
           }).address,
         ),
       }] : undefined);
@@ -236,6 +246,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
         initialState: overrides.initialState as DeployOptions['initialState'],
         fee: overrides.fee,
         addressType: overrides.addressType,
+        salt: overrides.salt,
         threadCount: overrides.threadCount,
         messageBusVerificationInputCount: overrides.messageBusVerificationInputCount,
         initialBalance: overrides.initialBalance,

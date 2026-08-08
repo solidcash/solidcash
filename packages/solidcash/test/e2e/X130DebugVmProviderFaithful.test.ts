@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import {
   Contract, MockNetworkProvider, SignatureTemplate, StatefulContract, TransactionBuilder,
 } from '../../src/index.js';
-import { MOCK_CONSENSUS_LIMITS } from '../../src/network/MockNetworkProvider.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST } from '../../src/network/MockNetworkProvider.js';
 import { StatefulTransactionBuilder } from '../../src/stateful/StatefulTransactionBuilder.js';
 import { randomUtxo } from '../../src/utils.js';
 import { setupStatefulUtxos } from '../test-util.js';
@@ -203,11 +203,13 @@ describe('X130 - the debug VM decides on the published limits (@mem-cash/validat
     expect(sendError, 'the decider refused a shape .build() admitted').toBeUndefined();
   });
 
-  it('2. NEWLY BUILDABLE: depth 24 on the relaxed DEFAULT profile, which the decider accepts', async () => {
-    // The FAIL-CLOSED half. Every unconfigured caller gets this profile; a bare VM applied the stock 800 per
-    // byte and refused, while the provider publishes 10,000,000 and the decider accepts.
-    const provider = new MockNetworkProvider();
-    expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(10_000_000);
+  it('2. NEWLY BUILDABLE: depth 24 on an explicitly RELAXED budget, which the decider accepts', async () => {
+    // The FAIL-CLOSED half: a bare VM applied the stock 800 per byte and refused, while a provider publishing
+    // 10,000,000 has that value read and the decider accepts. This asked for the relaxed budget by way of the
+    // DEFAULT profile until the default became the real 800 (see MOCK_CONSENSUS_LIMITS); the property under
+    // test is that the PUBLISHED value is honoured, so it now names the relaxed budget explicitly.
+    const provider = budgetProfile(MOCK_RELAXED_OPERATION_COST);
+    expect(provider.consensusLimits.operationCostBudgetPerByte).toBe(MOCK_RELAXED_OPERATION_COST);
     const { builder, error } = await buildOutcome(provider, 24n);
     expect(error, '.build() still refuses a depth the decider accepts').toBeUndefined();
     expect(builder).toBeDefined();

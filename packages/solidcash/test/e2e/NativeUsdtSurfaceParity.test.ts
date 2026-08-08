@@ -62,10 +62,14 @@ describe('NativeUsdt / one token, three arrangements', () => {
       'addBlackList', 'removeBlackList', 'pause', 'unpause', 'transferOwnership',
       'setParams', 'deprecate', 'freeze', 'unfreeze', 'setBacking', 'withdraw',
       'tick', 'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
+      // Two platform-forced additions, documented as deviations in native-usdt-port.md:
+      // fees accrue and are swept rather than credited inside transfer, and an account
+      // opens its own keys before use.
+      'collectFees', 'openSelf',
     ]) {
       expect(monolith, `${fn} missing from the shared surface`).toContain(fn);
     }
-    expect(monolith).toHaveLength(22);
+    expect(monolith).toHaveLength(24);
   });
 
   // The deviation says the port reads views off-chain. If one comes back it has

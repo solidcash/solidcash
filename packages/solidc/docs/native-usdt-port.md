@@ -1,9 +1,10 @@
 # Native USDT port: fidelity audit and implementation status
 
-Status: **executing, with two named limitations.** Two arrangements exist: the hand-split `.scash` facets
-(s1, now FOUR files not six) and an inheritance-composed rewrite partitioned by the built-in splitter (s5).
-Files under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts`
-(24, all green).
+Status: **executing.** The whole mapping surface settles, including `transfer` from the owner - the entire
+supply path - and `deposit` reaches the boundary facet. Two arrangements exist: the hand-split `.scash` files
+(s1, master + one facet) and an inheritance-composed rewrite partitioned by the built-in splitter (s5). Files
+under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (28) plus
+`C2RuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to
@@ -159,7 +160,7 @@ rather than hidden.
 `cancelDeposit` is deliberately available to a blacklisted or frozen claimant: refusing admission must not
 mean seizing funds, or wrapping becomes a honeypot and nobody wraps.
 
-## 3. The delegated mapping INSERT wall - characterized, then designed around
+## 3. The delegated mapping INSERT wall, and how the port got past it
 
 **Superseded by measurement.** The original finding was that no sorted-mapping (C2) write through a delegate
 facet worked at all, root-caused to the `L.f()` forwarder publishing `entryAccesses = null` so the SDK
@@ -180,7 +181,7 @@ own-category mutable (`0x01`) NFT count rises by one - and a function issuing a 
 appended fabricated entry node, so a proxy cannot admit one without admitting the other. The implementation
 covenant accepts the same transaction; the master rejects it.
 
-### 3.1 Why the port was nonetheless still blocked end-to-end, and the two ways out
+### 3.1 Why the port was blocked end-to-end, and what it took to clear
 
 Every one of the twelve mapping-touching functions was refused on a fresh deployment, because on a fresh
 deployment **every one of those writes is an insert**. Nothing in the master then created a key: its only
@@ -189,140 +190,63 @@ non-delegated mapping writes were `withdraw`'s `balances[sender] -= amount` (gat
 `pendingAmount` / `pendingUnlockAt` (whose keys `deposit` would have had to create - and `deposit` is
 delegated). So the contract could not get its first key and the whole mapping surface stayed unreachable.
 
-The difference is that this is now a **contract-shape problem with a measured fix**, not a missing upstream
-feature. Key creation has to happen in a direct (non-delegated) master function. Two shapes work, both
-proven or measured:
+Key creation has to happen in a direct (non-delegated) master function, and the master had to be able to
+afford one. Both halves are now solved - the insert path moved into the master (which the upstream size work
+made affordable: `transfer` cost 6,222 B inline against a 7,992 B master when this was written, and 2,794 B
+now), and `openSelf()` opens the keys the delegated routes need.
 
-1. **Zero-value registration (cheap, general).** A direct master `register(address k) { this.balances[k] = 0; }`
-   creates the key at zero; every later facet write to it is an UPDATE and settles. Proven end-to-end in
-   `DelegateMappingProbe.test.ts` ("a direct zero-value register is enough..."). Costs one small master
-   function per mapping that needs first-touch, and makes account-opening an explicit step - a deviation from
-   ERC-20, where `transfer` to a never-seen address just works. NOT used here: shape 2 covers six of the eight
-   without any semantic deviation, and the master then has no room left for shape 1 (see the second limitation
-   below, which is exactly this collision).
-2. **Move the insert path back into the master (no semantic deviation).** This was impossible when the port was
-   written - `transfer` alone cost 6,222 B inline against a 7,992 B master. It now costs 2,794 B, and **six of
-   the eight insert-path functions fit**:
+**Both are now fixed**, by three changes to the contract - none to the covenant, which was right all along.
 
-   Artifact bytes, so the "spare" column overstates the real headroom by the constructor and call arguments -
-   see s1.2. The final master measures 9,689 B of artifact and 9,761 B of deployed redeem script.
+1. **Fees accrue instead of being credited inside `transfer`.** Crediting `balances[this.owner]` there is a
+   SECOND write to the sender's own entry whenever the owner is the sender - which is every transfer out of
+   freshly issued supply. Two writes to one entry cannot compose here (each computes an absolute value from the
+   same input), so the batch planner refuses the duplicate slot, correctly: deduping instead SILENTLY DROPS the
+   second write, and `C2RuntimeSlotAlias.test.ts` pins that measurement. Fees now land in a `feeAccrued`
+   scalar and `collectFees()` sweeps them into the owner's balance. A self-transfer would still put both
+   writes on one entry, so it is refused by name.
 
-   | master variant | bytes | artifact spare |
-   | --- | --: | --: |
-   | all forwarded (before the move) | 4,784 | 5,216 |
-   | `+ transfer` | 7,578 | 2,422 |
-   | `+ transferFrom` | 8,799 | 1,201 |
-   | `+ approve` | 9,189 | 811 |
-   | `+ issue` | 9,578 | 422 |
-   | `+ addBlackList + freeze` | **9,748** | **252** |
+2. **`openSelf()` - each account opens its own keys once.** Two platform rules make this necessary: a
+   first-touch INSERT cannot settle through a delegate, and two ABSENT keys in one collection prove through
+   the SAME predecessor, which would co-spend one entry NFT twice. Creating all five keys up front makes every
+   later route an UPDATE against a distinct entry. Keyed on `msg.sender` ON PURPOSE - that is what makes it
+   fit. `openAccount(address)` costs ~239 B of call arguments against the same 10,000 B cap (s1.2), and that
+   was the whole reason the earlier attempt "did not fit"; an account only ever needs to open itself.
 
-   That is `transfer`, `transferFrom`, `approve`, `issue`, `addBlackList` and `freeze` all direct, under the
-   cap. The functions that only ever UPDATE (`redeem`, `destroyBlackFunds`, `removeBlackList`, `unfreeze`) can
-   stay in facets, because updates settle through a delegate. What does **not** fit is the quarantine
-   boundary: `deposit` first-touches `pendingAmount` / `pendingUnlockAt`, and `claimDeposit` can first-touch
-   `balances`. Those two need shape 1, and shape 1 is what no longer fits - see the second limitation below,
-   which is this collision measured out. `cancelDeposit` is already a direct master function, so the boundary
-   is partly there.
+3. **The fee `Transfer` event is emitted unconditionally.** This was the last blocker and the least obvious.
+   USDT emits it only `if (fee > 0)`, and a NOT-TAKEN emit is bound by SEC-10
+   (`emitNotTakenEventSlotBinding`): its reserved output must carry an EMPTY commitment. With fees at the
+   default 0 that branch is never taken, and the binding failed - which surfaced only as
+   "the VM errored before all commitments could be extracted" during state derivation, four layers behind the
+   original symptom. Emitting it unconditionally costs a zero-value `Transfer` log when no fee applies.
 
-Shape 2 is what was implemented - see below. The blocker went from "a designed-but-unimplemented upstream
-feature on the critical path" to "a budget allocation problem inside a 10,000 B master", and the budget turned
-out to cover six of the eight.
+   Found by tracing the derivation probe's own VM (`_deriveFullTransactionState`, not the sparse probe higher
+   in that file - that path is never reached for this shape) to instruction 251 of a 316-opcode script, then
+   matching the opcode sequence `OP_OUTPUTTOKENCOMMITMENT OP_SIZE OP_NIP OP_0 OP_NUMEQUALVERIFY` against its
+   emitter. Worth remembering as a method: the opcode pattern identified the check faster than a source map
+   would have.
 
-### What executes today - shape 2 is IMPLEMENTED
+With those in place the whole mapping surface settles: `issue`, `transfer` (including from the owner, which is
+the entire supply path), a non-owner transfer, the fee round-trip, `approve`, `addBlackList`, `freeze`,
+`removeBlackList`. `deposit` reaches the FACET rather than being refused at the proxy - it then fails only on
+its own delivery proof, which is the contract working. 28 tests in `NativeUsdt.test.ts`.
 
-The insert path moved into the master, and the split is now drawn by WRITE KIND rather than by subject matter:
-a function that can create a key runs directly on the master; only update-only functions are delegated.
-`transfer`, `transferFrom`, `approve`, `issue`, `addBlackList` and `freeze` moved in (master 9,748 B, 252 B
-spare in artifact terms); `redeem`, `destroyBlackFunds`, `removeBlackList` and `unfreeze` stayed on the facet
-because an
-UPDATE through a delegate settles.
+Three deviations this adds, all documented and all forced: fees are swept rather than credited inline, an
+account opens itself before use, and a zero-value fee `Transfer` is logged when no fee applies.
 
-That emptied two facets outright - `nusdt_transfer.scash` and `nusdt_spend.scash` held nothing else - so the
-port is **four scripts, not six**.
+### 3.2 What the layout costs, and one splitter bug it exposed
 
-Working end-to-end (24 tests): `issue`, `approve`, `addBlackList`, `freeze` (all first-touch inserts),
-`removeBlackList` (an update, still delegated), plus everything that already worked - `setBacking`,
-`withdraw`'s guards, `pause`/`unpause`, `setParams`, `transferOwnership`, `setQuarantineBlocks`, `deprecate`.
+`feeAccrued` sits beside the other fee fields rather than at the end of the state block, deliberately: a
+function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` already reads `basisPointsRate` and
+`maximumFee`. Everything that becomes UPDATE-only once accounts are open (`issue`, `collectFees`,
+`addBlackList`, `freeze`) is delegated to the facet, which is what pays for `openSelf()`: the master lands at
+**8,778 B deployed with 1,222 B of headroom**.
 
-Two limitations remain, each pinned by a test:
-
-1. **`transfer` from the OWNER - refused, and the refusal is correct.** USDT credits the fee to the owner, so
-   `transfer` writes `balances[msg.sender]` and `balances[this.owner]`: two distinct key SOURCES that are ONE
-   key whenever the owner is the sender, which is every transfer out of freshly issued supply. The C2 batch
-   planner is handed the same slot twice and refuses - one entry NFT cannot be co-spent twice.
-
-   **The obvious fix is unsound, and this is now measured rather than argued.** Dedupe in
-   `SortedList.planBatchUpsert` and let the existing same-proof-UTXO merge downstream handle it: the
-   transaction builds, settles, and **silently drops the second write**. On `transfer(to, 40)` from the owner
-   with `fee = 7`, the owner ends at **60 instead of 67** - the debit applied, the fee credit vanished, nothing
-   raised. Deduping is sound only when the two writes are redundant; these must COMPOSE.
-
-   The nearest existing mechanism is the wrong shape for the same reason. `runtimeAliasPriorSlots` makes the
-   generated covenant carry a runtime gate so a duplicate slot is INACTIVE - which drops its contribution
-   exactly as the dedupe did. It was built for the message bus, where an aliased row IS a no-op; here the
-   second write carries value. Composing them needs a covenant that applies both writes to one entry, and no
-   such path exists.
-
-   **Attempted a third time with the `openSelf()` budget lever, and it gets closer without arriving.** With
-   fees accrued to a scalar, `openSelf()` opening all five mappings, and the update-only functions delegated,
-   the master fits with room to spare and `deposit` clears its wall - but `transfer` still fails, now inside
-   state derivation: "the VM errored before all commitments could be extracted", with the untouched data NFTs'
-   variables missing. That is not the data-NFT contiguity theory it looks like (moving `feeAccrued` onto an
-   already-touched NFT changes which variables are reported and nothing else), and it is not the entry count
-   (dropping a read changes nothing).
-
-   Traced one level further, and stopped there. The failing VM is the one inside
-   `_deriveFullTransactionState`, NOT the sparse probe higher up in that file - that path is never reached for
-   this shape, which is why two rounds of instrumentation printed nothing. It fails at instruction 251 of a
-   316-opcode script, inside an `OP_IF`, on the sequence
-   `OP_OUTPUTTOKENCOMMITMENT OP_SIZE OP_NIP OP_0 OP_NUMEQUALVERIFY` - a covenant asserting some output's NFT
-   commitment is EMPTY, against an output whose commitment is not. A second, 10-opcode script fails alongside
-   it. Which output that is, and why the rewrite makes it non-empty, needs the artifact source map to map the
-   instruction back to source. That is the next concrete step; it was not taken.
-
-   **A second collision sits behind it, found by fixing the first.** Removing the owner fee credit from
-   `transfer` (accruing to a scalar and sweeping with a `collectFees`) does eliminate the write collision - and
-   `transfer` then fails on a READ collision instead: it reads `isBlackListed[x]` and `frozen[x]` for BOTH
-   parties, and two ABSENT keys in one collection prove through the SAME predecessor, so one entry NFT is
-   co-spent twice. Pre-creating every key for both parties (a five-mapping `openAccount`) clears that too, and
-   `transfer` then fails a third time inside state derivation. Measured, and then reverted: the rewrite costs
-   an account-opening step on every route, and at HEAD `issue`, `approve`, `addBlackList`, `freeze` and
-   `removeBlackList` already settle WITHOUT one. It traded usability for no gain, so it is not in the tree -
-   only this note is. The lesson for anyone picking it up: the write collision is the first of at least three
-   layers, not the whole problem.
-
-   So the guard stays, and it fails closed on purpose. `C2RuntimeSlotAlias.test.ts` pins the refusal, the
-   control case where the three keys are distinct (owner correctly credited 7), and the reason the tempting
-   fix is wrong. Not worked around in the contract either - dropping the separate owner credit would deviate
-   from the source this port exists to reproduce.
-
-2. **`deposit` / `claimDeposit` - the budget is SOLVABLE, and the blocker moved.** The account-opening
-   function this needs was measured as not fitting, and that measurement was wrong in one respect: it assumed
-   `openAccount(address)`. An account only ever needs to open ITSELF, and `openSelf()` keyed on `msg.sender`
-   carries no address argument - the ~239 B of call arguments that broke the budget. With that, and with the
-   functions that become UPDATE-only once accounts are open delegated to the facet (`issue`, `collectFees`,
-   `addBlackList`, `freeze`), the master measures **8,778 B deployed with 1,222 B of headroom**, and
-   `openSelf()` opening all five mappings fits comfortably.
-
-   Measured with that in place: `deposit` gets PAST the delegated-INSERT wall. It then fails on its own
-   delivery proof, which is a test-harness gap (the probe never actually sends FTs to the container), not a
-   contract or platform limit. So this finding is no longer budget-blocked.
-
-   It is not in the tree because it does not stand alone: the same rewrite is what `transfer` needs, and
-   `transfer` still fails (see below), so landing it would trade 24/24 green for 25/27 plus a mandatory
-   account-opening step on every route. It is written down here so the next attempt starts from the working
-   budget rather than re-deriving it.
-
-3. **`deposit` / `claimDeposit` as they stand today.** Both first-touch (`pendingAmount` / `pendingUnlockAt`, and `balances` for a
-   never-seen claimant), so they need key creation on the master - and the master has no room. Attempted and
-   measured: a guarded, permissionless `openAccount(address)` opening all three mappings costs ~300 B (~474 B
-   for the writes, less ~174 B recovered by delegating `issue` again). Two things had to be true for it to fit
-   and only one was. Merging the three remaining facets into one bought back ~99 B of constructor argument, but
-   the deployed redeem still reached 9,856 B and the call needs 239 B for its `address` argument against the
-   144 B left - see s1.2. The guards are not droppable: without them `openAccount` would zero a live balance or
-   a pending deposit, so it is exactly the guards that cost the budget. Making it owner-only would pay for
-   itself, but it would also make the issuer a liveness dependency, which is the one property the quarantine
-   design exists to avoid.
+The inheritance arrangement (s5) surfaced a genuine splitter bug on the way. `compileFileSplit` plans on
+ARTIFACT size, and the cap is on the deployed unlocking bytecode - so it can emit a bundle whose shards all
+pass its own check and which is still unspendable, one shard's redeem script being over the limit once its
+constructor argument is baked in. Same three-layer budget as s1.2, one level up. Pinned in
+`NativeUsdtInherited.test.ts`; it is the splitter's to fix, since nothing a contract author writes can see it
+and `compileFileSplit` reports success.
 
 ## 4. Incidental findings
 

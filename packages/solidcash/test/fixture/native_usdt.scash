@@ -107,6 +107,10 @@ contract NativeTetherToken(address initialOwner) {
     mapping(address => int) public balances;
     public int basisPointsRate;
     public int maximumFee;
+    // Fees accrue here rather than into balances[this.owner]: crediting the owner inside
+    // transfer is a SECOND write to the sender's own entry whenever the owner is the sender,
+    // and two writes to one entry cannot compose on this platform. collectFees() sweeps it.
+    public int feeAccrued;
     mapping(address => mapping(address => int)) public allowed;
     public bool paused;
     mapping(address => bool) public isBlackListed;
@@ -223,13 +227,12 @@ contract NativeTetherToken(address initialOwner) {
         }
         int sendAmount = value - fee;
 
+        require(to != sender);
         require(this.balances[sender] >= value);
         this.balances[sender] = this.balances[sender] - value;
         this.balances[to] = this.balances[to] + sendAmount;
-        if (fee > 0) {
-            this.balances[this.owner] = this.balances[this.owner] + fee;
-            emit Transfer(sender, this.owner, fee);
-        }
+        this.feeAccrued = this.feeAccrued + fee;
+        emit Transfer(sender, this.owner, fee);
         emit Transfer(sender, to, sendAmount);
     }
 
@@ -253,13 +256,12 @@ contract NativeTetherToken(address initialOwner) {
         }
 
         int sendAmount = value - fee;
+        require(to != from);
         require(this.balances[from] >= value);
         this.balances[from] = this.balances[from] - value;
         this.balances[to] = this.balances[to] + sendAmount;
-        if (fee > 0) {
-            this.balances[this.owner] = this.balances[this.owner] + fee;
-            emit Transfer(from, this.owner, fee);
-        }
+        this.feeAccrued = this.feeAccrued + fee;
+        emit Transfer(from, this.owner, fee);
         emit Transfer(from, to, sendAmount);
     }
 
@@ -462,4 +464,27 @@ contract NativeTetherToken(address initialOwner) {
         emit QuarantineParams(blocks);
     }
 
+
+    // Sweep accrued fees into the owner's balance.
+    function collectFees() {
+        require(msg.sender == this.owner);
+        require(this.feeAccrued > 0);
+        int amount = this.feeAccrued;
+        this.feeAccrued = 0;
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+    }
+
+    // Open YOUR OWN account. Keyed on msg.sender, so it carries no address argument. A
+    // first-touch INSERT cannot settle through a delegate, and two ABSENT keys in one
+    // collection prove through the same predecessor - creating all five keys up front makes
+    // every later route an UPDATE against a distinct entry.
+    function openSelf() {
+        address who = msg.sender;
+        require(this.balances[who] == 0);
+        require(this.pendingDeposits[who].amount == 0);
+        this.balances[who] = 0;
+        this.pendingDeposits[who] = Pending({ amount: 0, unlockAt: 0 });
+        this.isBlackListed[who] = false;
+        this.frozen[who] = false;
+    }
 }

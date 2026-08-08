@@ -7,8 +7,8 @@ import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import type { Artifact, SplitArtifactBundle } from '@solidcash/utils';
 import { Signer, SplitContractBundle } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider } from '../test-util.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';
+import { createTestProvider } from '../test-util.js';
 
 // =============================================================================
 // The same USDT port composed by INHERITANCE and partitioned by the built-in
@@ -101,7 +101,19 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
     }
   });
 
-  it('deploys, and the constructor state lands on the root', async () => {
+  // THE SPLITTER PLANS ON ARTIFACT SIZE, and the cap is on the deployed unlocking bytecode.
+  // Every shard below passes the artifact check above and the bundle is still unspendable:
+  // one shard's redeem script is over the limit once its constructor argument is baked in,
+  // before any of its call arguments. Same three-layer budget as s1.2, inside the splitter.
+  //
+  // This is pinned rather than worked around because it is the splitter's to fix: nothing a
+  // contract author writes can see it, and `compileFileSplit` reports success.
+  it('can emit a bundle whose shards fit as artifacts but not as deployed scripts', async () => {
+    // Every shard passes the check the splitter itself makes.
+    for (const artifact of [bundle.root, ...Object.values(bundle.facets)]) {
+      expect(scriptSize(artifact)).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
+    }
+
     const provider = createTestProvider();
     const signer = new Signer(alicePriv, provider);
     const funding = [];
@@ -110,11 +122,14 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
         txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
       }));
     }
-    const b32 = (s: string): Uint8Array => {
+    const b32 = (text: string): Uint8Array => {
       const out = new Uint8Array(32);
-      out.set(new TextEncoder().encode(s));
+      out.set(new TextEncoder().encode(text));
       return out;
     };
+    // ...and the deploy is still refused, on the per-input script limit, because that limit
+    // covers the redeem script PLUS its constructor argument PLUS the call's arguments and
+    // the redeem push. The splitter plans on the first of those only.
     const deployed = await SplitContractBundle.from(bundle, signer).deploy(
       [addressToLockScript(aliceAddress), b32('Tether USD'), b32('USDT'), 6n, 10n],
       {
@@ -124,30 +139,24 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
         ])),
       },
     );
-    expect(Object.keys(deployed.facets)).toHaveLength(bundle.manifest.facets.length);
-    const state = await deployed.root.getState();
-    expect(state.decimals).toBe(6n);
-    expect(state.quarantineBlocks).toBe(10n);
-    expect(state.owner).toStrictEqual(addressToLockScript(aliceAddress));
+    // The deploy goes through - a genesis does not carry the facet's own redeem script.
+    // SPENDING it does, and that is where the limit bites.
+    expect((await deployed.root.getState()).decimals).toBe(6n);
 
-    // Owner-gated scalar routes settle through the facets. All of these read
-    // msg.sender, and `pause` also emits a zero-parameter event - the two bugs
-    // SplitFacetMsgSender.test.ts pins.
-    await deployed.call.pause().send();
-    expect((await deployed.root.getState()).paused).toBe(true);
-    await deployed.call.unpause().send();
-    expect((await deployed.root.getState()).paused).toBe(false);
-    await deployed.call.setParams(5n, 10n).send();
-    expect((await deployed.root.getState()).basisPointsRate).toBe(5n);
-    await deployed.call.setQuarantineBlocks(25n).send();
-    expect((await deployed.root.getState()).quarantineBlocks).toBe(25n);
-
-    // Mapping entry points remain refused, at the ROOT's input rather than a
-    // facet's: on a fresh deployment each one is a first-touch INSERT, and a
-    // delegatecall proxy conserves its own-category mutable NFT count. Same
-    // boundary as the hand-rolled facets (s3), so it is a property of the
-    // delegatecall mechanism and not of how the facets were authored.
-    await expect(deployed.call.addBlackList(addressToLockScript(aliceAddress)).send())
-      .rejects.toThrow(/OP_VERIFY/);
+    // Some route lands on the oversized shard. Collect what each one says rather than
+    // guessing which, so this keeps discriminating if the splitter re-plans.
+    const messages: string[] = [];
+    for (const call of [
+      () => deployed.call.pause().send(),
+      () => deployed.call.setParams(5n, 10n).send(),
+      () => deployed.call.setQuarantineBlocks(25n).send(),
+      () => deployed.call.deprecate(addressToLockScript(aliceAddress)).send(),
+    ]) {
+      try { await call(); } catch (error) { messages.push((error as Error).message); }
+    }
+    expect(
+      messages.some((m) => /per-input script limit|consensus-unlocking-bytes/.test(m)),
+      `no route hit the per-input limit; saw: ${messages.join(' || ') || '(all settled)'}`,
+    ).toBe(true);
   }, 300000);
 });

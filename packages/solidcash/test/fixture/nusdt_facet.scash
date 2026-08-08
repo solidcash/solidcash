@@ -38,6 +38,7 @@ library UsdtFacet {
     mapping(address => int) balances;
     int basisPointsRate;
     int maximumFee;
+    int feeAccrued;
     mapping(address => mapping(address => int)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
@@ -197,5 +198,35 @@ library UsdtFacet {
         this.pendingUnlockAt[claimant] = 0;
         this.balances[claimant] = this.balances[claimant] + pending;
         emit DepositClaimed(claimant, pending);
+    }
+
+    function issue(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+
+    function collectFees() public {
+        require(msg.sender == this.owner);
+        require(this.feeAccrued > 0);
+        int amount = this.feeAccrued;
+        this.feeAccrued = 0;
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+    }
+
+    function addBlackList(address evilUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function freeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = true;
+        emit Frozen(user);
     }
 }

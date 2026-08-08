@@ -439,53 +439,85 @@ describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-
 // the master's remaining 252 B. They are pinned below.
 // =============================================================================
 describe('NativeUsdt / the mapping surface', () => {
-  it('issue credits the owner and moves supply', async () => {
+  // Each account opens ITSELF once. Two platform rules force this: a first-touch INSERT
+  // cannot settle through a delegate, and two ABSENT keys in one collection prove through
+  // the SAME predecessor, which would co-spend one entry NFT twice. openSelf() is keyed on
+  // msg.sender so it carries no address argument - the 10,000 B cap covers a call's
+  // arguments too, and one address costs ~239 B of it.
+  const open = async (d: Deployed, who: Signer): Promise<void> => {
+    await d.as(who).call.openSelf().send();
+    await d.fund(who);
+  };
+
+  const funded = async (): Promise<Deployed> => {
     const d = await deployAll();
+    await open(d, d.signers.owner);
     await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
     await d.fund(d.signers.owner);
     await d.as(d.signers.owner).call.issue(1000n * UNIT).send();
-    const st = await readState(d);
-    expect(st.totalSupply).toBe(1000n * UNIT);
+    await d.fund(d.signers.owner);
+    return d;
+  };
+
+  it('issue credits the owner and moves supply', async () => {
+    const d = await funded();
+    expect((await readState(d)).totalSupply).toBe(1000n * UNIT);
     expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
   });
 
-  // KNOWN LIMITATION, pinned. USDT credits the fee to the owner, so `transfer`
-  // writes `balances[msg.sender]` AND `balances[this.owner]` - two distinct key
-  // SOURCES that resolve to ONE key whenever the owner is the sender, which is
-  // every transfer out of freshly issued supply. The C2 batch planner is then
-  // handed the same slot twice and refuses ("C2 batch upsert contains a duplicate
-  // slot"), correctly: one entry UTXO cannot be co-spent twice.
-  //
-  // The compiler already has an alias mechanism for this (batchAliasSkips), but
-  // it only pairs slots it nominated as candidates, and collision here is a
-  // RUNTIME fact. Pairing by resolved target gets past the planner and then hits
-  // the same duplicate at the entry co-spend ("Duplicate stateful input ...
-  // roles entry:1,entry:2"), so the fix spans the batch planner AND the entry
-  // co-spend/block-layout planning. Not attempted here: that is the C2 value
-  // derivation path, and a partial change there risks a silent miscompile rather
-  // than an error.
-  //
-  // Not worked around in the contract either - dropping the separate owner
-  // credit would deviate from the deployed USDT this port exists to reproduce.
-  it('transfer from the OWNER is refused: the fee credit aliases the sender slot', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
+  // THE headline. This was refused outright: crediting the fee to balances[this.owner] is a
+  // SECOND write to the sender's own entry whenever the owner is the sender, and two writes
+  // to one entry cannot compose (C2RuntimeSlotAlias.test.ts). Fees accrue to a scalar now.
+  it('transfer from the OWNER settles, which is the whole supply path', async () => {
+    const d = await funded();
+    await open(d, d.signers.bob);
+    await d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send();
+    expect(await balanceOf(d, ADDR.bob())).toBe(40n * UNIT);
+    expect(await balanceOf(d, ADDR.owner())).toBe(960n * UNIT);
+  });
+
+  it('a non-owner transfers on, so balances really move', async () => {
+    const d = await funded();
+    await open(d, d.signers.bob);
+    await open(d, d.signers.carol);
+    await d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send();
+    await d.fund(d.signers.bob);
+    await d.as(d.signers.bob).call.transfer(ADDR.carol(), 15n * UNIT).send();
+    expect(await balanceOf(d, ADDR.bob())).toBe(25n * UNIT);
+    expect(await balanceOf(d, ADDR.carol())).toBe(15n * UNIT);
+  });
+
+  it('the fee accrues and collectFees sweeps it into the owner balance', async () => {
+    const d = await funded();
+    await open(d, d.signers.bob);
+    await d.as(d.signers.owner).call.setParams(10n, 5n).send();
     await d.fund(d.signers.owner);
-    await d.as(d.signers.owner).call.issue(1000n * UNIT).send();
+    await d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send();
+    const fee = (40n * UNIT * 10n) / 10000n;
+    expect(await balanceOf(d, ADDR.bob()), 'recipient gets value - fee').toBe(40n * UNIT - fee);
+    expect((await readState(d)).feeAccrued).toBe(fee);
     await d.fund(d.signers.owner);
-    await expect(
-      d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send(),
-    ).rejects.toThrow(/duplicate slot/i);
+    await d.as(d.signers.owner).call.collectFees().send();
+    expect((await readState(d)).feeAccrued).toBe(0n);
+    expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT - 40n * UNIT + fee);
+  });
+
+  it('refuses a self-transfer by name', async () => {
+    const d = await funded();
+    await expect(d.as(d.signers.owner).call.transfer(ADDR.owner(), 1n * UNIT).send()).rejects.toThrow();
+    expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
   });
 
   it('approve records an allowance for a never-seen spender', async () => {
     const d = await deployAll();
+    await open(d, d.signers.owner);
     await d.as(d.signers.owner).call.approve(ADDR.bob(), 7n * UNIT).send();
     expect(await allowanceOf(d, ADDR.owner(), ADDR.bob())).toBe(7n * UNIT);
   });
 
-  it('addBlackList and freeze both first-touch their flag mappings', async () => {
+  it('addBlackList and freeze settle through the facet', async () => {
     const d = await deployAll();
+    await open(d, d.signers.carol);
     await d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send();
     await d.fund(d.signers.owner);
     await d.as(d.signers.owner).call.freeze(ADDR.carol()).send();
@@ -493,36 +525,37 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await flagOf(d, 'frozen', ADDR.carol())).toBe(true);
   });
 
-  // An UPDATE-only route, still delegated, still settling - the other half of
-  // the boundary and the reason the facets did not all have to be dissolved.
   it('removeBlackList settles through the facet, because it is an UPDATE', async () => {
     const d = await deployAll();
+    await open(d, d.signers.carol);
     await d.as(d.signers.owner).call.addBlackList(ADDR.carol()).send();
-    expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(true);
     await d.fund(d.signers.owner);
     await d.as(d.signers.owner).call.removeBlackList(ADDR.carol()).send();
     expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(false);
   });
 
-  // The quarantine boundary stays out of reach, and the reason is a BUDGET, not a
-  // missing mechanism. deposit first-touches pendingAmount/pendingUnlockAt and
-  // claimDeposit can first-touch balances, so both need key creation on the master
-  // - and the master has no room. A guarded openAccount(address) costs ~300 B and
-  // the master cannot spare it: measured, its redeem script reaches 9,856 B and the
-  // 10,000 B cap applies to the WHOLE unlocking bytecode, which must also carry the
-  // constructor argument and the call's own arguments (239 B for one address).
-  //
-  // That three-layer budget is worth stating plainly, because the compiler's own
-  // script-size check only sees the first layer: a contract it passes can still be
-  // unspendable, and the preflight says so in as many words.
-  it('deposit is still refused: it first-touches, and key creation does not fit', async () => {
-    const d = await deployAll();
+  // The quarantine boundary was unreachable: deposit first-touches pendingAmount and
+  // pendingUnlockAt, and a first-touch INSERT is refused at the PROXY's own input (input 0).
+  // With the account open, it reaches the FACET and is judged on its own terms - it fails on
+  // the delivery proof, because this call delivers no FTs to the container. That is the
+  // contract working, not the platform refusing.
+  it('deposit reaches the facet instead of being refused at the proxy', async () => {
+    const d = await deployAll({ quarantineBlocks: 0n });
+    await open(d, d.signers.owner);
     await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
     await d.fund(d.signers.owner);
-    // Assert the covenant refusal specifically - a bare toThrow() would also be
-    // satisfied by a build-time argument error and stop discriminating.
-    await expect(
-      d.as(d.signers.bob).call.deposit(d.ftCategory, 1n, 5n * UNIT).send(),
-    ).rejects.toThrow(/OP_VERIFY|input 0/);
+    await open(d, d.signers.bob);
+    let message = '';
+    try {
+      await d.as(d.signers.bob).call.deposit(d.ftCategory, 1n, 5n * UNIT).setLocktime(500).send();
+    } catch (error) { message = (error as Error).message; }
+    expect(message, 'refused by the facet, not the proxy at input 0').not.toMatch(/at input 0:/);
+    expect(message, 'and it did fail - no FTs were delivered').toMatch(/OP_VERIFY/);
+  });
+
+  it('openSelf refuses to clobber a live balance', async () => {
+    const d = await funded();
+    await expect(d.as(d.signers.owner).call.openSelf().send()).rejects.toThrow();
+    expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
   });
 });

@@ -18,6 +18,7 @@
     mapping(address => int) balances;
     int basisPointsRate;
     int maximumFee;
+    int feeAccrued;
     mapping(address => mapping(address => int)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;

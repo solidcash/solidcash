@@ -451,6 +451,19 @@ export function expectScriptRejection(outcome: string, inputIndex: number): void
 }
 
 /**
+ * A DENSITY RESERVE: dead bytes baked into the script as `<salt> OP_DROP`.
+ *
+ * The BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for p2sh32
+ * the redeem script counts toward that length. Measured on the `a[i]()` shape, a reserve byte buys 800 units of
+ * budget and costs about 6 to carry, so it nets about +794. That is not a trick played on the rule - density
+ * control exists to make a script pay for its operations in bytes, and this is paying.
+ *
+ * 256 is chosen with margin: the same shape needs between 96 and 128, measured by bisection. The costs are a
+ * larger script, a different contract address, and the 520-byte salt cap.
+ */
+export const densityReserve = (bytes = 256): Uint8Array => new Uint8Array(bytes).fill(0x5a);
+
+/**
  * Pin a shape that is currently OVER the real BCH-2026 operation-cost budget.
  *
  * `MOCK_CONSENSUS_LIMITS` publishes the real `operationCostBudgetPerByte` of 800, so these shapes are refused

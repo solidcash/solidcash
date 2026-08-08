@@ -369,6 +369,14 @@ export interface DeployOptions {
   maxFee?: bigint;         // maximum allowed fee (throws if exceeded)
   addressType?: AddressType;
   threadCount?: number;    // number of master minting NFTs (default: 1)
+  /**
+   * A dead `<salt> OP_DROP` push baked into the script. Beyond CREATE2 addressing this is the DENSITY RESERVE:
+   * the BCH-2026 operation-cost budget is `operationCostBudgetPerByte x unlockingBytecodeLength`, and for
+   * p2sh32 the redeem script counts toward that length, so each reserve byte buys 800 units of budget while
+   * costing about 6 to carry - a net +794. A dense shape that a node refuses can be made valid by reserving
+   * bytes for it. Costs: a larger script, a different contract address, and the 520-byte cap.
+   */
+  salt?: Uint8Array;
   /** Independently spendable, category-branded message bus verifier covenants minted by genesis. */
   messageBusVerificationInputCount?: number;
   initialBalance?: bigint; // initial satoshi container balance (created when > 0)
@@ -1926,6 +1934,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       provider: options.provider,
       addressType: options.addressType,
       category: hexToBin(categoryId),
+      salt: options.salt,
     });
 
     const stateLayout = artifact.stateLayout;

@@ -135,7 +135,24 @@ it must not silently compile to incorrect covenant behavior.
     node applies, and a future size or codegen change that pushes another shape over the line is caught by the
     ordinary suite instead of by a chain. What it does NOT buy: the six shapes still do not work, and the item
     below tracks making them cheap enough to restore.
-- [ ] Reduce the operation cost of the six pinned over-budget shapes so their positive assertions can be restored.
+- [-] Reduce the operation cost of the six pinned over-budget shapes so their positive assertions can be restored.
+  - **FIVE OF SIX RESTORED via a density reserve**, which is now expressible end to end: `salt` threads through
+    `DeployOptions` and `DeployContractOptions` to the deployed `Contract`, so `factory.deploy({ salt })` works
+    rather than only the hand-built `new Contract(...)` path. `test-util`'s `densityReserve(bytes = 256)` is the
+    shared helper. `FunctionPointerArrayCall`, `MultiDimensionalArray`, `NestedArrayDelete` and both
+    `NestedStructArrayWrite` rows now assert their real behaviour again, each alongside a companion row that
+    asserts the SAME call without a reserve is still refused - so the reserve is proven to be what carries them,
+    and a lowering that gets cheaper will fail that companion loudly.
+  - Fixing the logical-identity anchor was required for this and is easy to miss: `ContractFactory` built a
+    second `Contract` to compute the address a CREATE anchor commits to, without the salt. A salted deploy would
+    have committed to the unsalted address.
+  - **ONE SHAPE CANNOT BE RESCUED THIS WAY**, and it is the original finding: `BehaviorParityPins`'s `arr[i](x)`,
+    five dispatches over a TEN-element fn-ptr table. Reserves of 256, 512 and the 520-byte salt CAP all still
+    fail, so the shortfall exceeds the 416,000 units a maximum reserve can buy. Compare
+    `FunctionPointerArrayCall` - three dispatches over three elements - which needs only 96 to 128. It stays
+    pinned, now stating that a reserve cannot fix it. Closing it needs a cheaper fn-ptr table.
+  - What a reserve costs, so this is not mistaken for free: a larger script, a different contract address, and
+    the fee on the extra bytes. It is the sanctioned way to satisfy density control, not a way around it.
   - `MOCK_CONSENSUS_LIMITS` is far looser than `ConsensusBch2026`: `operationCostBudgetPerByte` is 10,000,000
     against a real 800 (12,500x), input and stack items are 1,000,000 against 10,000, and the NFT commitment
     limit is 1,000,000 against 128. Every mocknet test therefore runs with effectively no density control, so a
@@ -166,10 +183,43 @@ it must not silently compile to incorrect covenant behavior.
     `NestedArrayFixedInner` (two), `SplitLayoutAgreementX162`, `X167ArrayCopyReplaces` (two) and
     `X171ArrayAssignReplaces` (four). The compiler performance work changed neither class, so these findings
     track the current candidate revision even though the BCHN run that corroborated them does not.
-  - **Every failure is marginal by a hair, and one byte fixes each.** The VM reports the arithmetic, and across
+  - ~~**Every failure is marginal by a hair, and one byte fixes each.** The VM reports the arithmetic, and across
     the four failures that print it the overshoot is 16, 103, 80 and 39 operation units against budgets of
     541,600 to 804,800 - between 0.003% and 0.018% over. One extra byte of unlocking bytecode buys 800 units, so
-    a single byte of density reserve clears every one of them.
+    a single byte of density reserve clears every one of them.~~
+  - **RETRACTED, and the reasoning error is worth keeping.** The overshoot a density refusal prints is an
+    ARTIFACT OF WHERE THE VM STOPPED, not a measure of the gap: evaluation aborts at the first operation that
+    would exceed the ceiling, so the excess is always a handful of units no matter how much work remained. Every
+    "0.003% over" reading above is that artifact. X121's own comment says the same thing about its depth band
+    ("the overshoot is always a handful of units because the refusal fires on the first operation past the
+    ceiling") - the inference to "one byte fixes it" simply did not apply it here.
+  - **Measured properly, the gap is ~27%, not ~0.01%.** Run the shape on a provider with a relaxed budget so it
+    runs to COMPLETION, then compare its total against the real budget its own unlocking length buys.
+    `FunctionPointerArrayCall`: unlocking 735 B, so a real budget of 588,000, against an actual completion cost
+    of 745,660 - over by 157,660, or 26.8%. Closing that needs about 197 more bytes of unlocking bytecode or
+    about 21% fewer executed operations. Not one byte.
+  - The cost model is flat, which is what makes the count the only lever. Attributing cost per opcode over the
+    7,380-step trace shows no expensive operation to remove: it is ~100 units per executed opcode, spread across
+    ordinary stack traffic - `OP_SWAP` 84,429 over 839 executions, `OP_PUSHBYTES_1` 64,378 over 637, `OP_DROP`
+    54,451, `OP_DUP` 54,171, and `OP_IF`/`OP_ELSE`/`OP_ENDIF` about 45,000 each over ~450. So "make the shape
+    cheaper" means executing ~1,576 fewer operations, not finding a hot spot.
+  - **A density reserve works, and the arithmetic is now measured rather than assumed.** `Contract`'s `salt`
+    bakes `<salt> OP_DROP` into the script, and for p2sh32 the redeem script counts toward the unlocking
+    bytecode, so it buys budget. Sweeping salt size on the `FunctionPointerArrayCall` shape, all at completion:
+    | salt | unlocking | real budget | cost | verdict |
+    | 0 B | 631 B | 504,800 | 697,749 | over by 192,949 |
+    | 100 B | 734 B | 587,200 | 698,536 | over by 111,336 |
+    | 200 B | 834 B | 667,200 | 699,120 | over by 31,920 |
+    | 400 B | 1,035 B | 828,000 | 700,097 | PASSES, 127,903 spare |
+    The cost is nearly FLAT in reserve size - 400 bytes adds 2,348 units, about 6 per byte - while the budget
+    grows at 800 per byte, so each reserve byte nets about +794 of headroom. This is not a trick played on the
+    rule: BCH-2026 density control exists to make a script pay for its operations in bytes, and a reserve is
+    paying that price. The costs are a larger script, a changed contract address, and the 520-byte salt cap.
+  - Reproduce with `packages/solidcash/test/e2e/ZZProfileDensity.test.ts` in the working tree at the time of
+    writing (a temporary diagnostic, not committed): it mocks `createVirtualMachineBch2026ForProvider` to capture
+    every `evaluate` argument set, re-runs each through `vm.debug`, and reports per-input unlocking length, the
+    real 800-per-byte budget that length buys, and the true completion cost. Note the per-INPUT reporting matters:
+    a transaction's other inputs sit far under budget and averaging hides the one that fails.
   - That reframes the item. This is not "array lowering is too expensive"; these contracts sit a hair over the
     line and the size campaign removed the headroom they were living on. Two mitigations follow, and the second
     is preferable. A reserve can be bought today with no compiler change, because `Contract`'s `salt` bakes a

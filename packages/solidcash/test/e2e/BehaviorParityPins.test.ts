@@ -3,7 +3,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { getContractFactory, Contract, SignatureTemplate, StatefulContract } from '../../src/index.js';
-import { fundedSigner, createTestProvider, expectOverOperationCostBudget } from '../test-util.js';
+import { fundedSigner, createTestProvider, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
 import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 
@@ -238,12 +238,13 @@ describe('internal fn-ptr memory array', () => {
   const artifact = compileString(SRC, { forceStateful: true });
 
   describe('function_memory_array corpus: runtime-indexed internal fn-ptr memory array', () => {
-    // OVER BUDGET at the real operation-cost limit: this is the shape that was found on BCHN v29 first and only
-    // then reproduced on mocknet, because the mock used to publish a relaxed budget. Overshoot is 16 units
-    // against a budget of 541,600. See expectOverOperationCostBudget - restore the positive assertion below when
-    // the lowering gets cheaper.
-    it('arr[i](x) is currently over the BCH-2026 operation-cost budget', async () => {
-      const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
+    // STILL OVER BUDGET, and this is the one shape a density reserve cannot rescue. Found on BCHN v29 first and
+    // only then reproduced on mocknet, because the mock used to publish a relaxed budget. Five dispatches over a
+    // ten-element table, against three over three in `FunctionPointerArrayCall` - which a 256-byte reserve does
+    // fix. Measured here: 256, 512 and the 520-byte salt CAP all still fail, so the shortfall exceeds the
+    // 416,000 units the maximum reserve can buy. Closing this one needs a cheaper fn-ptr table, not more bytes.
+    it('arr[i](x) is over the BCH-2026 operation-cost budget even at the maximum density reserve', async () => {
+      const sc = await getContractFactory(artifact, await fundedSigner()).deploy({ salt: densityReserve(520) });
       await expectOverOperationCostBudget(sc.ok());
     });
 

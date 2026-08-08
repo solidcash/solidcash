@@ -33,10 +33,14 @@ import { UsdtFacet } from "./nusdt_facet.scash";
 // an entry node, so the transaction's own-category mutable NFT count rises, and a
 // delegatecall master conserves that count (the same defence that refuses an
 // appended fabricated entry node). So every function that can CREATE a key runs
-// directly here - transfer, transferFrom, approve, issue, addBlackList, freeze -
-// and only update-only functions are delegated: redeem, destroyBlackFunds,
-// removeBlackList, unfreeze. That is what makes the mapping surface reachable at
-// all; see packages/solidc/docs/native-usdt-port.md s3.
+// directly here - transfer, approve, openSelf - and update-only functions are
+// delegated: redeem, destroyBlackFunds, removeBlackList, unfreeze, transferFrom.
+// That is what makes the mapping surface reachable at all; see
+// packages/solidc/docs/native-usdt-port.md s3.
+//
+// `transferFrom` is delegated even though it writes `balances[to]`, because
+// `openSelf` has already created that row - the same precondition every delegated
+// mapping write here relies on. Its budget buys `deposit` a place on the master.
 //
 // Soundness of the split rests on the library BRAND, not on an address: a facet
 // compiled with { brandLibrary: true } pins the co-spent master's category in its
@@ -60,8 +64,9 @@ import { UsdtFacet } from "./nusdt_facet.scash";
 //
 // WHAT STAYS IN THE MASTER. Delegate mode cannot execute token-container
 // operations - `this.tokens[cat].transfer(...)` makes the delegate input fail its
-// covenant (docs/delegatecall.md). The three functions that move real FTs
-// therefore live here: `setBacking`, `withdraw`, `cancelDeposit`.
+// covenant (docs/delegatecall.md), and merely READING a container from a delegating
+// function is refused the same way. The four functions that touch the reserve
+// therefore live here: `setBacking`, `withdraw`, `cancelDeposit`, `deposit`.
 // =============================================================================
 
 contract NativeUsdt(address initialOwner) {
@@ -76,6 +81,7 @@ contract NativeUsdt(address initialOwner) {
     event Frozen(address indexed user);
     event Withdrawal(address indexed from, int value);
     event DepositCancelled(address indexed to, int value);
+    event DepositQuarantined(address indexed to, int value, int unlockAt);
 
     // ---- shared state layout (see nusdt_state.inc) ----
     address owner;
@@ -207,8 +213,51 @@ contract NativeUsdt(address initialOwner) {
     function deprecate(address newAddress) { UsdtFacet.deprecate(newAddress); }
     function setQuarantineBlocks(int blocks) { UsdtFacet.setQuarantineBlocks(blocks); }
     function tick(int nowHeight) { UsdtFacet.tick(nowHeight); }
-    function deposit(bytes32 category, int nowHeight, int amount) { UsdtFacet.deposit(category, nowHeight, amount); }
     function claimDeposit() { UsdtFacet.claimDeposit(); }
+
+    // ---- The container path, direct (non-delegated) ----
+    // Re-entry, step 2, and the one admission function that is NOT delegated. A token
+    // container is a master-only capability: a delegate input fails its covenant on any
+    // container operation, so a facet cannot see the reserve at all - not even to read it.
+    // Its own mapping writes are plain UPDATEs, so this is here for the container alone.
+    // `transferFrom` was moved to the facet to pay for the room; see its note there.
+    function deposit(bytes32 category, int nowHeight, int amount) {
+        require(!this.paused);
+        require(!this.deprecated);
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        require(amount > 0);
+        require(tx.time >= nowHeight);
+        require(nowHeight >= this.clock);
+        this.clock = nowHeight;
+
+        address claimant = msg.sender;
+        require(this.pendingAmount[claimant] == 0);
+
+        // The reserve must GROW by at least `amount` in this transaction. Both sides
+        // derive the token container's p2sh32 on-chain from (master category, backing
+        // category), so this measures the container specifically - an output paying
+        // the depositor, or any other address, is not counted.
+        //
+        // A DELTA, not an absolute. Summing container-paying outputs against
+        // `containerSeen` would look equivalent and is not: anyone can pay the
+        // container address directly, which raises the real balance without raising
+        // the ledger's figure, and a depositor could then credit themselves against
+        // someone else's donation without paying anything. Comparing the two sides of
+        // this transaction makes that impossible, and makes the line preservation as
+        // well as growth - the whole reserve must come back out to the container.
+        int reserveBefore = this.tokens[category].tokenAmount;
+        int reserveAfter = this.outState.tokens[category].tokenAmount;
+        require(reserveAfter >= reserveBefore + amount);
+
+        this.containerSeen = this.containerSeen + amount;
+        this.backedSupply = this.backedSupply + amount;
+
+        int unlockAt = nowHeight + this.quarantineBlocks;
+        this.pendingAmount[claimant] = amount;
+        this.pendingUnlockAt[claimant] = unlockAt;
+        emit DepositQuarantined(claimant, amount, unlockAt);
+    }
 
     // ---- The INSERT path, direct (non-delegated) ----
     // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a C2 INSERT
@@ -241,37 +290,7 @@ contract NativeUsdt(address initialOwner) {
         emit Transfer(sender, to, sendAmount);
     }
 
-    function transferFrom(address from, address to, int value) {
-        require(!this.paused);
-        require(!this.deprecated);
-        address spender = msg.sender;
-        require(!this.isBlackListed[from]);
-        require(!this.frozen[from]);
-        require(!this.frozen[to]);
-        require(value > 0);
-
-        int currentAllowance = this.allowed[from][spender];
-
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-
-        // USDT decrements only FINITE allowances; MAX_UINT is the infinite sentinel.
-        if (currentAllowance < MAX_ALLOWANCE) {
-            require(currentAllowance >= value);
-            this.allowed[from][spender] = currentAllowance - value;
-        }
-
-        int sendAmount = value - fee;
-        require(to != from);
-        require(this.balances[from] >= value);
-        this.balances[from] = this.balances[from] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(from, this.owner, fee);
-        emit Transfer(from, to, sendAmount);
-    }
+    function transferFrom(address from, address to, int value) { UsdtFacet.transferFrom(from, to, value); }
 
     function approve(address spender, int value) {
         require(!this.deprecated);

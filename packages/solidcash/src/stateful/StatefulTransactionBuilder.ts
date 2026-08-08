@@ -40,7 +40,7 @@ import {
 } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
-  Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
+  Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker, Unlocker,
 } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 
@@ -261,6 +261,8 @@ export class StatefulTransactionBuilder {
   private satoshiContainerUtxo?: UnlockableUtxo;
   private satoshiContainerLockingBytecode?: Uint8Array;
   private containerDepositAmount: bigint = 0n;
+  /** Fungible tokens paid INTO each token container this transaction, by category. */
+  private pendingTokenContainerDeposits: Map<string, bigint> = new Map();
   private pendingTokenContainerTransfers: TokenContainerTransferData[] = [];
   private pendingTokenContainerTransferNfts: TokenContainerTransferNftData[] = [];
   private tokenContainerTransferInsertionCounter = 0;
@@ -862,6 +864,32 @@ export class StatefulTransactionBuilder {
   }
 
   /**
+   * Add fungible tokens INTO a token container, the inbound counterpart of
+   * `addTokenContainerTransfer`.
+   *
+   * The tokens are folded into the container's own preserved output rather than paid to a second
+   * output at the same address: the covenant's preservation check reads one designated output slot
+   * per container, and a separate output would leave that slot unchanged and go uncounted.
+   *
+   * The caller must supply the tokens with `addInput` - a deposit moves coins the contract does
+   * not hold, so nothing else can source them.
+   */
+  /** Drop every recorded container deposit, so a re-applied override set replaces rather than doubles. */
+  clearTokenContainerDeposits(): this {
+    this.pendingTokenContainerDeposits.clear();
+    return this;
+  }
+
+  addTokenContainerDeposit(tokenContainerCategoryId: string, amount: bigint): this {
+    if (amount <= 0n) {
+      throw new Error('Token container deposit amount must be positive');
+    }
+    const prior = this.pendingTokenContainerDeposits.get(tokenContainerCategoryId) ?? 0n;
+    this.pendingTokenContainerDeposits.set(tokenContainerCategoryId, prior + amount);
+    return this;
+  }
+
+  /**
    * Set the deposit amount to add to the satoshi container balance.
    * Used by payable functions that receive sats into the container (positive msg.value).
    */
@@ -1400,6 +1428,24 @@ export class StatefulTransactionBuilder {
 
   setLocktime(locktime: number): this {
     this.locktimeOverride = locktime;
+    return this;
+  }
+
+  /**
+   * Append a caller-supplied input after every covenant input.
+   *
+   * It joins `allInputs` rather than being added to the built transaction directly, so the
+   * external-library side-car stays LAST - the covenant's library loader reads it via
+   * OP_INPUTBYTECODE of the final input, and an input appended past it would break every
+   * delegated call.
+   */
+  addInput(utxo: Utxo, unlocker: Unlocker): this {
+    // Idempotent by outpoint. `_applyOverrides` re-runs on the same builder when a send retries
+    // for UTXO staleness, and one outpoint can only be spent once anyway, so a repeat is always
+    // the retry rather than a caller genuinely asking for a double-spend.
+    const already = this.allInputs.some((i) => i.txid === utxo.txid && i.vout === utxo.vout);
+    if (already) return this;
+    this.allInputs.push({ ...utxo, unlocker });
     return this;
   }
 
@@ -2141,7 +2187,9 @@ export class StatefulTransactionBuilder {
         );
       }
 
-      const remainingFtAmount = inputFtAmount - transferredFtAmount;
+      const depositedFtAmount = this.pendingTokenContainerDeposits
+        .get(container.tokenContainerCategoryId) ?? 0n;
+      const remainingFtAmount = inputFtAmount - transferredFtAmount + depositedFtAmount;
 
       // Check if NFT was transferred out
       const nftWasTransferred = this.pendingTokenContainerTransferNfts.some(

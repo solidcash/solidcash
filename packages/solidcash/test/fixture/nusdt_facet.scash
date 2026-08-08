@@ -3,11 +3,16 @@ pragma solidcash >=0.8.0;
 // Facet library: everything the master delegates. One facet rather than three -
 // each additional facet costs the master a constructor argument (~57 B of pushes
 // in the DEPLOYED redeem script, which the artifact's own byte count does not
-// show), and the master needs that room for openAccount.
+// show), and the master needs that room for `openSelf` and `deposit`.
 //
 // Every function here is UPDATE-only on its mappings. A first-touch INSERT cannot
 // settle through a delegate (the proxy conserves its own-category mutable NFT
 // count and an insert mints a node), so key creation lives on the master.
+//
+// The other thing that cannot be delegated is a TOKEN CONTAINER: a delegate input
+// fails its covenant on any container operation, including a plain read. Everything
+// that touches the reserve therefore lives on the master, which is why `deposit` is
+// there and `transferFrom` is here.
 //
 // Runs as a delegate against the proxy master's state, so the state block below
 // MUST stay byte-identical to nusdt_state.inc and to the master.
@@ -29,8 +34,10 @@ library UsdtFacet {
     event Params(int feeBasisPoints, int maxFee);
     event DestroyedBlackFunds(address indexed blackListedUser, int balance);
 
-    event DepositQuarantined(address indexed to, int value, int unlockAt);
+    event Transfer(address indexed from, address indexed to, int value);
     event DepositClaimed(address indexed to, int value);
+
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
 
     // ---- shared state layout (see nusdt_state.inc) ----
     address owner;
@@ -144,40 +151,41 @@ library UsdtFacet {
         this.clock = nowHeight;
     }
 
-    // Re-entry, step 2. Bearer FTs are sent to the container address first (step 1,
-    // which needs no contract call and so cannot be censored); this call proves the
-    // container actually grew by summing EVERY category output of this transaction
-    // and comparing against the ledger's high-water mark. That sum is what makes
-    // the claimed amount unforgeable - a depositor cannot credit themselves more
-    // than they physically delivered.
-    function deposit(bytes32 category, int nowHeight, int amount) public {
+    // Delegated, unlike `transfer`, because every mapping write it makes is an UPDATE:
+    // `allowed[from][spender]` is only written on a branch that already read a live
+    // allowance (so `approve` created the row), and `balances[to]` requires the recipient
+    // to have run `openSelf`. It sits here to buy the master the room for `deposit`,
+    // which cannot be delegated at any size - see the master's note on that function.
+    function transferFrom(address from, address to, int value) public {
         require(!this.paused);
         require(!this.deprecated);
-        require(this.backingSet);
-        require(category == this.backingCategory);
-        require(amount > 0);
-        require(tx.time >= nowHeight);
-        require(nowHeight >= this.clock);
-        this.clock = nowHeight;
+        address spender = msg.sender;
+        require(!this.isBlackListed[from]);
+        require(!this.frozen[from]);
+        require(!this.frozen[to]);
+        require(value > 0);
 
-        address claimant = msg.sender;
-        require(this.pendingAmount[claimant] == 0);
+        int currentAllowance = this.allowed[from][spender];
 
-        int delivered = 0;
-        for (int i = 0; i < tx.outputs.length; i = i + 1) {
-            if (tx.outputs[i].tokenCategory == category) {
-                delivered = delivered + tx.outputs[i].tokenAmount;
-            }
+        int fee = (value * this.basisPointsRate) / 10000;
+        if (fee > this.maximumFee) {
+            fee = this.maximumFee;
         }
-        require(delivered >= this.containerSeen + amount);
 
-        this.containerSeen = this.containerSeen + amount;
-        this.backedSupply = this.backedSupply + amount;
+        // USDT decrements only FINITE allowances; MAX_UINT is the infinite sentinel.
+        if (currentAllowance < MAX_ALLOWANCE) {
+            require(currentAllowance >= value);
+            this.allowed[from][spender] = currentAllowance - value;
+        }
 
-        int unlockAt = nowHeight + this.quarantineBlocks;
-        this.pendingAmount[claimant] = amount;
-        this.pendingUnlockAt[claimant] = unlockAt;
-        emit DepositQuarantined(claimant, amount, unlockAt);
+        int sendAmount = value - fee;
+        require(to != from);
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.balances[to] = this.balances[to] + sendAmount;
+        this.feeAccrued = this.feeAccrued + fee;
+        emit Transfer(from, this.owner, fee);
+        emit Transfer(from, to, sendAmount);
     }
 
     // Re-entry, step 3. Permissionless and consensus-gated: the CLTV compare cannot

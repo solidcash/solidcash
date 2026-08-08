@@ -12350,6 +12350,8 @@ export class StatefulFunctionCall {
   }> = [];
 
   private extraOutputs: Output[] = [];
+  private extraInputs: Array<{ utxo: Utxo; unlocker: Unlocker }> = [];
+  private tokenContainerDeposits: Array<{ tokenContainerCategoryId: string; amount: bigint }> = [];
   private manualEvents: Array<{ name: string; args: StateValueType[] }> = [];
   private detachedEvents: Array<{
     name: string; args: StateValueType[]; definition?: EventDefinitionAbi; lockingBytecode?: Uint8Array;
@@ -12425,7 +12427,9 @@ export class StatefulFunctionCall {
       || this.entryKeyOverrides.size > 0 || this.externalEntryKeyOverrides.size > 0
       || this.entryDeleteSlots.length > 0 || this.transfers.length > 0
       || this.tokenContainerTransfers.length > 0 || this.tokenContainerTransferNfts.length > 0
-      || this.extraOutputs.length > 0 || this.manualEvents.length > 0 || this.detachedEvents.length > 0
+      || this.extraOutputs.length > 0 || this.extraInputs.length > 0
+      || this.tokenContainerDeposits.length > 0
+      || this.manualEvents.length > 0 || this.detachedEvents.length > 0
       || this.externalCallInfos.length > 0 || this.callInfos.length > 0
       || this.registryExternalStateOverrides.size > 0 || this.emitReturnFlag
       || this.containerDepositAmount !== 0n || this.locktimeOverride !== undefined
@@ -12753,6 +12757,35 @@ export class StatefulFunctionCall {
   }
 
   /**
+   * Attach a caller-owned UTXO to this call, spent with `unlocker`.
+   *
+   * The counterpart to `addOutput`. It exists for functions that must be PAID INTO rather than
+   * paid out of - a deposit into a token container, say - where the tokens originate in the
+   * caller's own coins and so cannot be auto-selected: the fee funder contributes pure BCH only.
+   * Without this, `addOutput` with a token would describe an output the transaction has no
+   * source for, and the covenant would be checked against tokens minted from nothing.
+   *
+   * Appended after every covenant input, so state, entry and container input positions - which
+   * the covenant addresses by index - are unaffected.
+   */
+  addInput(utxo: Utxo, unlocker: Unlocker): this {
+    this.extraInputs.push({ utxo, unlocker });
+    return this;
+  }
+
+  /**
+   * Pay fungible tokens INTO one of the contract's token containers - the inbound counterpart of
+   * `tokenContainerTransfer`.
+   *
+   * Supply the tokens with `addInput`; they are folded into the container's own preserved output,
+   * which is the only place the covenant measures a container's balance.
+   */
+  tokenContainerDeposit(tokenContainerCategoryId: string, amount: bigint): this {
+    this.tokenContainerDeposits.push({ tokenContainerCategoryId, amount });
+    return this;
+  }
+
+  /**
    * Provide funding UTXOs for a split function.
    * Required when calling a function with the `split` modifier via `sc.call`.
    */
@@ -12824,6 +12857,7 @@ export class StatefulFunctionCall {
       && this.stateOverrides.length === 0 && this.entryOverrides.length === 0
       && this.entryKeyOverrides.size === 0 && this.externalEntryKeyOverrides.size === 0
       && this.entryDeleteSlots.length === 0 && this.extraOutputs.length === 0
+      && this.extraInputs.length === 0 && this.tokenContainerDeposits.length === 0
       && this.tokenContainerTransfers.length === 0 && this.tokenContainerTransferNfts.length === 0
       && this.externalCallInfos.length === 0
       && this.registryExternalStateOverrides.size === 0
@@ -13209,6 +13243,28 @@ export class StatefulFunctionCall {
       }
     }
 
+    // The locktime has to be on the builder BEFORE the re-derivation below. The initial
+    // derivation ran when the call was created, which is necessarily before `.setLocktime()`
+    // could have been chained onto it, so any function guarded by `require(tx.time >= n)`
+    // probed against nLocktime 0, failed its OP_CHECKLOCKTIMEVERIFY, and derived state from a
+    // run that never reached the writes. The wrong commitments then failed a state NFT's own
+    // sub-covenant, which reads as an unrelated OP_VERIFY several inputs away.
+    if (this.locktimeOverride !== undefined) builder.setLocktime(this.locktimeOverride);
+
+    // Caller-supplied inputs and container deposits go on BEFORE the re-derivation below: the
+    // probe has to execute the transaction the network will see, and a deposit changes the
+    // container's output amount, which the contract can read back via this.outState.tokens[...].
+    for (const { utxo, unlocker } of this.extraInputs) {
+      builder.addInput(utxo, unlocker);
+    }
+    for (const output of this.extraOutputs) {
+      builder.addOutput(output);
+    }
+    builder.clearTokenContainerDeposits();
+    for (const { tokenContainerCategoryId, amount } of this.tokenContainerDeposits) {
+      builder.addTokenContainerDeposit(tokenContainerCategoryId, amount);
+    }
+
     // Apply token container transfers: user overrides replace auto-derived
     if (this.tokenContainerTransfers.length > 0) {
       builder.clearTokenContainerTransfers();
@@ -13306,7 +13362,11 @@ export class StatefulFunctionCall {
       const hasNewContext = this.transfers.length > 0
         || this.tokenContainerTransfers.length > 0
         || this.tokenContainerTransferNfts.length > 0
-        || this.containerDepositAmount > 0n;
+        || this.containerDepositAmount > 0n
+        || this.tokenContainerDeposits.length > 0
+        || this.extraInputs.length > 0
+        || this.extraOutputs.length > 0
+        || this.locktimeOverride !== undefined;
       if (reDerive && hasNewContext) {
         const reResult = await reDerive(builder);
         derived = reResult.state;
@@ -13412,10 +13472,6 @@ export class StatefulFunctionCall {
       builder.setMaximumFeeSatoshis(this.maxFeeOverride);
     }
 
-    // Add extra outputs
-    for (const output of this.extraOutputs) {
-      builder.addOutput(output);
-    }
     for (const event of this.manualEvents) builder.emitEvent(event.name, ...event.args);
     for (const event of this.detachedEvents) {
       if (event.definition && event.lockingBytecode) {

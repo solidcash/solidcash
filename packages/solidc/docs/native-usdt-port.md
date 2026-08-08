@@ -1,10 +1,11 @@
 # Native USDT port: fidelity audit and implementation status
 
 Status: **executing.** The whole mapping surface settles, including `transfer` from the owner - the entire
-supply path - and `deposit` reaches the boundary facet. Two arrangements exist: the hand-split `.scash` files
+supply path - and the quarantined admission boundary now works end to end: `deposit` proves delivery against
+the reserve itself and `claimDeposit` releases it (s3.3). Two arrangements exist: the hand-split `.scash` files
 (s1, master + one facet) and an inheritance-composed rewrite partitioned by the built-in splitter (s5). Files
-under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (28) plus
-`C2RuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
+under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (29) plus
+`NativeUsdtDepositProof`, `C2RuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to
@@ -157,6 +158,11 @@ lags the chain the window is shortened by exactly that lag. `tick` is permission
 fresh, and the issuer - the party the window protects - has both the means and the incentive. Documented
 rather than hidden.
 
+None of this actually ran until the locktime derivation fix in s3.3a: every `require(tx.time >= n)` here was
+being probed against nLocktime 0, so `tick`, `deposit` and `claimDeposit` all failed. The design was right and
+untested at the same time - worth remembering, because the failure surfaced as an OP_VERIFY on an unrelated
+input and read like a contract bug.
+
 `cancelDeposit` is deliberately available to a blacklisted or frozen claimant: refusing admission must not
 mean seizing funds, or wrapping becomes a honeypot and nobody wraps.
 
@@ -227,9 +233,8 @@ now), and `openSelf()` opens the keys the delegated routes need.
 
 With those in place the whole mapping surface settles: `issue`, `transfer` (including from the owner, which is
 the entire supply path), a non-owner transfer, the fee round-trip, `approve`, `addBlackList`, `freeze`,
-`removeBlackList`. `deposit` reaches the FACET rather than being refused at the proxy, but it then fails its
-own delivery proof - and that is a CONTRACT DEFECT, not the contract working. See s3.3. 28 tests in
-`NativeUsdt.test.ts`.
+`removeBlackList`, and the quarantined re-entry path end to end - `deposit` then `claimDeposit`, moving bearer
+FTs into a ledger balance. What that last one took is s3.3. 29 tests in `NativeUsdt.test.ts`.
 
 Three deviations this adds, all documented and all forced: fees are swept rather than credited inline, an
 account opens itself before use, and a zero-value fee `Transfer` is logged when no fee applies.
@@ -256,10 +261,9 @@ be shared is the more obvious fix and is wrong here - it costs enough outlining 
 fits its input, taking the suite from 28 passing to 9. The extractor was the side that was wrong, not the
 optimiser.
 
-### 3.3 `deposit`'s delivery proof is unsatisfiable, so the boundary cannot be entered
+### 3.3 `deposit` was broken twice over, and both are now fixed
 
-I previously recorded that `deposit` "fails only on its own delivery proof, which is the contract working".
-That was wrong, and the arithmetic says so. The check is:
+The original check was:
 
 ```
 for (i in tx.outputs) if (tx.outputs[i].tokenCategory == category)
@@ -267,37 +271,77 @@ for (i in tx.outputs) if (tx.outputs[i].tokenCategory == category)
 require(delivered >= this.containerSeen + amount);
 ```
 
-`containerSeen` is the whole reserve's high-water mark, and **the container is not co-spent by `deposit`** - it
-touches no `this.tokens[...]`, and it runs on a delegate facet where container operations are forbidden
-anyway. So the container's own balance contributes nothing to `delivered`, and a depositor must supply
-`containerSeen + amount` from their own bearer coins in order to move `amount`. Measured: depositing 5 USDT
-against a 1,000,000 USDT premint demands the transaction carry **1,000,005 USDT** of category outputs. The
-check is satisfiable only while `containerSeen == 0`, and `setBacking` makes that false immediately.
+**It was unsatisfiable.** `containerSeen` is the whole reserve's high-water mark, and the container was not
+co-spent, so its balance contributed nothing to `delivered`: a depositor had to supply `containerSeen + amount`
+from their own bearer coins in order to move `amount`. Depositing 5 USDT against a 1,000,000 USDT premint
+demanded the transaction carry **1,000,005 USDT** of category outputs. It could only pass while
+`containerSeen == 0`, which `setBacking` ends immediately.
 
-So the quarantined admission boundary - the port's headline extension, and the whole subject of s2.3 - has
-never been enterable. Every earlier report that framed this as a test-harness gap was mistaken; the harness
-was fine.
+**And it was destination-blind.** The loop summed every category output regardless of where it paid, so it
+would have counted an output paying the depositor. Even if satisfiable, it did not check what it claimed to.
 
-The loop is separately blind to WHERE an output pays: it would happily count one paying the depositor. So even
-the intended proof ("the reserve grew") is not what it checks. A sound version needs one of two things this
-port does not have:
+I twice reported this as "the contract working" and framed it as a test-harness gap. Both were wrong. I then
+recorded it as *unfixable* without the container's locking bytecode - also wrong: `this.outState.tokens[cat]`
+already derives that address on-chain and sums the outputs paying it. It existed only as a compile fixture with
+no VM coverage anywhere in the repo, which is why it was easy to miss.
 
-- the **container's locking bytecode** available in contract code, so that only container-paying outputs are
-  summed and the requirement becomes `delivered >= amount`; or
-- the **container co-spent**, so its input/output delta is the measurement - which needs `deposit` on the
-  master, since delegate mode cannot touch a container, and the master has no room for it (s1.2).
+The proof is now the container's **delta**:
 
-Neither is a small change, and a half-sound version - fixing the satisfiability while leaving the destination
-unchecked - would turn an unusable function into a drainable one. Pinned by
-`NativeUsdtDepositProof.test.ts` with the arithmetic, unfixed deliberately.
+```
+require(this.outState.tokens[category].tokenAmount
+        >= this.tokens[category].tokenAmount + amount);
+```
+
+Both terms derive the container's p2sh32 from (master category, backing category) and sum the inputs and
+outputs that pay it, so this single line is preservation AND growth: every unit of the reserve that entered the
+transaction must leave to the container again, plus `amount`. Destination is proven by construction, so it does
+not lean on the covenant's own container checks.
+
+**Where it had to live.** A token container is a master-only capability - a delegate input fails its covenant
+on any container operation, and merely READING one from a delegating function is refused the same way (a
+proof-only forwarder that delegates afterwards was tried and refused at input 0). So `deposit` is not
+delegated. It does not fit alongside everything else the master held: with the full body the master compiles to
+10,456 B against a ~9,760 B usable budget. `transferFrom` moved to the facet to pay for it - every mapping
+write it makes is an UPDATE once `openSelf` has created the rows, which is the same precondition the other
+delegated writes already rely on. Final sizes: master **9,454 B**, facet **8,375 B**.
+
+Pinned by `NativeUsdtDepositProof.test.ts` (admits a real deposit; refuses one whose FTs pay the depositor -
+the two differ only in destination) and by the full deposit -> claimDeposit flow in `NativeUsdt.test.ts`.
+
+### 3.3a The SDK gaps this uncovered
+
+Three, each needed before the boundary could work at all:
+
+1. **No way to pay INTO a contract.** The call builder had `tokenContainerTransfer` (outbound) and no inbound
+   counterpart, and no way to attach a caller-owned input at all - the fee funder contributes pure BCH only.
+   Added `addInput(utxo, unlocker)` and `tokenContainerDeposit(category, amount)`. The deposit is folded into
+   the container's own preserved output rather than paid to a second output at the same address, because the
+   covenant measures one designated output slot per container. `addInput` appends into `allInputs` so the
+   external-library side-car stays LAST, which its loader requires.
+
+2. **`require(tx.time >= n)` never worked in any stateful contract.** `setLocktime` was applied to the builder
+   only after `_applyOverrides()` had already run state derivation, so the probe executed
+   OP_CHECKLOCKTIMEVERIFY against nLocktime 0, failed, and derived state from a run that never reached the
+   writes. The wrong commitments then failed a state NFT's own sub-covenant - surfacing as an OP_VERIFY several
+   inputs away from the actual cause, which is why it read as a contract bug. This silently broke `tick`,
+   `deposit` and `claimDeposit` alike. **It also means the original input-5 failure I attributed to the
+   delivery proof was most likely this guard**; the proof was independently unsatisfiable by arithmetic, but
+   the attribution was not evidence.
+
+3. **Caller-supplied inputs and outputs were applied after derivation.** Same class of bug: the probe saw a
+   token input with no matching output and refused the transaction as an implicit token burn. All of
+   `addInput`, `addOutput`, `tokenContainerDeposit` and the locktime are now applied before re-derivation.
+
+All three reproduce on `solidcash_v0.13.1` itself and are not specific to this port.
 
 ### 3.4 What the layout costs, and one splitter bug it exposed
 
 `feeAccrued` sits beside the other fee fields rather than at the end of the state block, deliberately: a
 function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` already reads `basisPointsRate` and
 `maximumFee`. Everything that becomes UPDATE-only once accounts are open (`issue`, `collectFees`,
-`addBlackList`, `freeze`) is delegated to the facet, which is what pays for `openSelf()`: the master lands at
-**8,778 B deployed with 1,222 B of headroom**.
+`addBlackList`, `freeze`, and now `transferFrom`) is delegated to the facet. That budget is what pays for
+`openSelf()` and, once `deposit` had to come back to the master for its container access (s3.3), for
+`deposit` too: master **9,454 B**, facet **8,375 B**.
 
 The inheritance arrangement (s5) surfaced a genuine splitter bug on the way, now FIXED. `compileFileSplit`
 planned on ARTIFACT size while the cap is on the deployed unlocking bytecode, so it could emit a bundle whose

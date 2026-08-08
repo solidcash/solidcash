@@ -6,7 +6,9 @@ import { URL } from 'url';
 import { hexToBin } from '@bitauth/libauth';
 import { asmToScript, scriptToBytecode } from '@solidcash/utils';
 import type { Artifact } from '@solidcash/utils';
-import { Contract, StatefulContract, Signer } from '../../src/index.js';
+import {
+  Contract, StatefulContract, Signer, SignatureTemplate,
+} from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
   createTestProvider, setupStatefulUtxos, genesisFtContainer,
@@ -534,24 +536,46 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await flagOf(d, 'isBlackListed', ADDR.carol())).toBe(false);
   });
 
-  // The delegated-INSERT boundary used to refuse deposit at the PROXY's own input (input 0).
-  // With the account open it reaches the FACET and is judged on its own terms. It still fails,
-  // on its delivery proof - and that proof is UNSATISFIABLE, which is a defect in the port's
-  // own boundary rather than the platform refusing. NativeUsdtDepositProof.test.ts carries the
-  // arithmetic; docs/native-usdt-port.md s3.3 carries the analysis. This row pins only the
-  // narrow fact that the refusal moved off the proxy.
-  it('deposit reaches the facet instead of being refused at the proxy', async () => {
+  // The whole quarantined re-entry path, end to end: wrap bearer FTs into the ledger, then
+  // claim them out of quarantine. `deposit` proves delivery against the container itself, so
+  // it runs on the master; `claimDeposit` is update-only and is delegated.
+  // NativeUsdtDepositProof.test.ts pins the proof's two halves separately.
+  it('deposit then claimDeposit moves bearer FTs into a ledger balance', async () => {
     const d = await deployAll({ quarantineBlocks: 0n });
+    const h = await d.provider.getBlockHeight();
     await open(d, d.signers.owner);
     await d.as(d.signers.owner).call.setBacking(d.ftCategory).send();
     await d.fund(d.signers.owner);
     await open(d, d.signers.bob);
-    let message = '';
-    try {
-      await d.as(d.signers.bob).call.deposit(d.ftCategory, 1n, 5n * UNIT).setLocktime(500).send();
-    } catch (error) { message = (error as Error).message; }
-    expect(message, 'refused by the facet, not the proxy at input 0').not.toMatch(/at input 0:/);
-    expect(message, 'and it did fail - no FTs were delivered').toMatch(/OP_VERIFY/);
+    await d.fund(d.signers.bob);
+
+    const coin = {
+      txid: 'de'.repeat(32), vout: 0, satoshis: 100000n,
+      token: { category: d.ftCategory, amount: 5n * UNIT },
+    };
+    await d.provider.addUtxo(d.signers.bob.getAddress(), coin);
+
+    const before = await readState(d);
+    await d.as(d.signers.bob).call.deposit(d.ftCategory, BigInt(h), 5n * UNIT)
+      .setLocktime(h)
+      .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
+      .tokenContainerDeposit(d.ftCategory, 5n * UNIT)
+      .send();
+    expect((await readState(d)).backedSupply).toBe((before.backedSupply as bigint) + 5n * UNIT);
+
+    await d.fund(d.signers.bob);
+    await d.as(d.signers.bob).call.claimDeposit().setLocktime(h).send();
+    expect(await balanceOf(d, ADDR.bob())).toBe(5n * UNIT);
+  });
+
+  // Pins the SDK fix that made every `require(tx.time >= n)` in a stateful contract work: the
+  // locktime now reaches the builder BEFORE state derivation, so the probe does not fail its
+  // OP_CHECKLOCKTIMEVERIFY and derive state from a run that never reached the writes.
+  it('tick advances the clock through the facet', async () => {
+    const d = await deployAll({ quarantineBlocks: 0n });
+    const h = await d.provider.getBlockHeight();
+    await d.as(d.signers.owner).call.tick(BigInt(h)).setLocktime(h).send();
+    expect((await d.master.getState()).clock).toBe(BigInt(h));
   });
 
   it('openSelf refuses to clobber a live balance', async () => {

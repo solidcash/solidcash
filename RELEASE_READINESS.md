@@ -345,8 +345,13 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
     a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
     failing on chain.
-- [ ] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
+- [x] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
   network uses.
+  - **CLOSED via the second completion option, both halves landed.** The gate is
+    `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` and the explicit statement is this entry:
+    mocknet's sparse default carries NO derivation-path claim, and what IS claimed for the production path is
+    exactly what that file asserts. The first option was measured and rejected on two grounds recorded below
+    (the limit is conflated with script size; the faithful path costs 161 s on one file).
   - `relaxedConsensus` and `useSparseProbe` are both selected by
     `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, at six call sites across
     `StatefulTransactionBuilder.ts`, `StatefulContract.ts`, `upgrades.ts`, and `SplitContractBundle.ts`.
@@ -688,7 +693,16 @@ it must not silently compile to incorrect covenant behavior.
 - [ ] Resolve contradictory or stale documentation, including short-circuit behavior and outdated corpus gap
   descriptions.
 - [ ] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
-- [ ] Ensure public website examples compile against the exact release packages.
+- [x] Ensure public website examples compile against the exact release packages.
+  - **Measured, and it was already healthy.** `yarn examples` only ever covered three hand-written files at the
+    repo root; the 252 fenced SolidCash blocks under `website/docs` - the first thing a new user copies - were
+    ungated. Compiling the 133 that DECLARE a contract, library or interface: 128 compile, 5 are skipped because
+    they import a file the docs do not ship, 0 fail. So the docs were not stale; they were simply unwatched.
+  - Now gated by `yarn test:docs-snippets` (`scripts/release-docs-snippets.ts`), wired into CI between the
+    examples and package-smoke steps. The scope is deliberately narrow so the gate stays trustworthy: fragments
+    that never declared a contract are not compiled (they were never meant to stand alone, and failing them would
+    say nothing about the docs being correct), and import-bearing blocks are counted and skipped rather than
+    failed, so the number stays visible instead of being silently absorbed.
 
 ### Solidity corpus and differential testing
 

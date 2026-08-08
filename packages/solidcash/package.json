@@ -45,7 +45,7 @@
     "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
     "prepare": "yarn rebuild",
     "prepublishOnly": "yarn test && yarn lint",
-    "test": "vitest run",
+    "test": "vitest run --exclude 'test/e2e/**'",
     "test:unit": "vitest run --exclude 'test/e2e/**'",
     "test:e2e": "vitest run test/e2e",
     "test:fast": "vitest run --exclude 'test/e2e/**'",

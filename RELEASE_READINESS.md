@@ -760,13 +760,29 @@ it must not silently compile to incorrect covenant behavior.
   `spellcheck` (0 issues), `examples`, `test:security-conformance` (15 files, 81 passed, 1 skipped),
   `test:package-smoke` (6 packed packages), `test:generated-project-smoke`, `test:application-conformance`
   (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). The BCHN regtest gate is
-  out of scope by maintainer direction and remains the one unrun gate.
+  out of scope by maintainer direction and is the one gate not run.
   - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
     GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
     scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
     the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
     true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
     to 2,127 and takes 16 s.
+- [-] **Clean-clone run done, 2026-08-08, and it found two things the in-repo run could not.** The branch was
+  cloned to a fresh directory, installed with `--frozen-lockfile`, built, and gated. Install plus build takes
+  61 s and succeeds; `examples` and `test:docs-snippets` pass unchanged.
+  - `spellcheck` failed on 4 coined words, all written during this session and all in tracked files.
+    <!-- cspell:ignore truthily goldens unrun docscheck -->
+    They were `truthily`, `goldens`, `unrun` and `docscheck`. Reworded rather than added to the dictionary, so the
+    dictionary keeps meaning something. Honest note: the clean clone PROMPTED this catch but was not uniquely
+    able to find it - re-running spellcheck in the working tree shows the same 4. The lesson is to re-run the
+    gate after writing, not that the clone was required.
+  - `yarn test` failed on 6 `solidc` files, EVERY ONE a 30 s timeout and none an assertion, all 6 passing on a
+    warm re-run in the same clone. That first run is exactly what CI performs on every job: the yarn cache
+    restores `node_modules` but not vitest's transform cache, so CI pays the cold cost each time while a
+    developer re-running locally never sees it. `packages/solidc` had the tightest budget in the repo at 30 s
+    against solidcash's 120 s; it is now 60 s, which still fails a genuine hang. Not claimed: that CI is
+    observably flaky today - the clone also ran under load from concurrent sessions, and the honest statement is
+    that the margin was thin enough to disappear under load.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.

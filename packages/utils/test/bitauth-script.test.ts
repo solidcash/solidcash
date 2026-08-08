@@ -9,8 +9,8 @@ import { fixtures } from './fixtures/bitauth-script.fixture.js';
  * matched `fixture.asmBytecode` and `fixture.sourceMap`. Its own comment conceded the point ("this also tests the
  * compiler, but the compiler is tested much more thoroughly in its own test suite") - and that is exactly the
  * problem: `packages/solidc/test/generation/fixtures.ts` already pins the full artifact, bytecode included, for
- * these same contracts (`hodl_vault.scash`, `mecenas.scash`, `transfer_with_timeout.scash`), and those goldens
- * are maintained with the codegen that changes them. This copy was a duplicate that only ever went stale, three
+ * these same contracts (`hodl_vault.scash`, `mecenas.scash`, `transfer_with_timeout.scash`), and those golden
+ * fixtures are maintained with the codegen that changes them. This copy was a duplicate that only ever went stale, three
  * times so far, each time reddening the release `yarn test` gate over an intentional size optimisation - most
  * recently a wide constant rebuilt through `OP_NUM2BIN` and a two-byte helper id folded to a single-byte `OP_1`.
  *

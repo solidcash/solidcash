@@ -113,7 +113,7 @@ for (const file of files) {
   }
 }
 
-const probeDir = path.resolve(here, '../.docscheck');
+const probeDir = path.resolve(here, '../.docs-check');
 const probeFile = path.join(probeDir, 'documented-imports.ts');
 // Plain value imports, and deliberately UNREFERENCED. `tsc` reports a missing export (TS2305) whether or not
 // the name is used, while referencing them would force a choice between type and value position - and the

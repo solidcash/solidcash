@@ -115,4 +115,4 @@ manual-test.ts
 packages/solidcash/.regtest-progress.json
 
 # transient probe dir written by scripts/release-docs-snippets.ts
-/.docscheck/
+/.docs-check/

@@ -269,7 +269,16 @@ Two limitations remain, each pinned by a test:
    state derivation: "the VM errored before all commitments could be extracted", with the untouched data NFTs'
    variables missing. That is not the data-NFT contiguity theory it looks like (moving `feeAccrued` onto an
    already-touched NFT changes which variables are reported and nothing else), and it is not the entry count
-   (dropping a read changes nothing). Un-root-caused; it needs VM-level tracing of the derivation probe.
+   (dropping a read changes nothing).
+
+   Traced one level further, and stopped there. The failing VM is the one inside
+   `_deriveFullTransactionState`, NOT the sparse probe higher up in that file - that path is never reached for
+   this shape, which is why two rounds of instrumentation printed nothing. It fails at instruction 251 of a
+   316-opcode script, inside an `OP_IF`, on the sequence
+   `OP_OUTPUTTOKENCOMMITMENT OP_SIZE OP_NIP OP_0 OP_NUMEQUALVERIFY` - a covenant asserting some output's NFT
+   commitment is EMPTY, against an output whose commitment is not. A second, 10-opcode script fails alongside
+   it. Which output that is, and why the rewrite makes it non-empty, needs the artifact source map to map the
+   instruction back to source. That is the next concrete step; it was not taken.
 
    **A second collision sits behind it, found by fixing the first.** Removing the owner fee credit from
    `transfer` (accruing to a scalar and sweeping with a `collectFees`) does eliminate the write collision - and

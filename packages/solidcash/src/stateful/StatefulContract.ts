@@ -1149,30 +1149,11 @@ function evaluateProbeTrace(
   program: Parameters<ReturnType<typeof createVirtualMachineBch2026ForProvider>['evaluate']>[0],
 ): AuthenticationProgramStateCommon[] {
   const maxIn = provider.consensusLimits?.maximumInputBytes ?? 10_000;
-  // Prefer full debug() whenever the input is at-or-under the ordinary BCH density budget where
-  // libauth's state retention is still bounded and cheap (~10KB). Above that, the observer path is
-  // required to avoid V8 arg-limit crashes — but MistSwap MasterChef (≈10.8KB redeem) sits in a
-  // grey band: dense enough to trip the >10KB gate under the adapter's 100KB mock, yet still small
-  // enough that full debug() succeeds and the sparse observer mis-derives dynamic chunk pins
-  // (poolInfo push leaves 0/N chunks resolved). Prefer full debug up to 16KB of unlocking bytecode
-  // when present on the program; fall back to the observer otherwise.
-  const unlockingBytes = (() => {
-    try {
-      const input = (program as { transaction?: { inputs?: Array<{ unlockingBytecode?: Uint8Array }> } })
-        .transaction?.inputs?.[(program as { inputIndex?: number }).inputIndex ?? 0];
-      return input?.unlockingBytecode?.length ?? 0;
-    } catch { return 0; }
-  })();
-  // Prefer full debug when:
-  // - limits are ≤10KB (historical / live path), or
-  // - unlocking is in the grey band (10_001..16_000) where sparse mis-derives dynamic chunks
-  //   (MasterChef poolInfo) but full debug still fits in V8, or
-  // - SC_FORCE_FULL_PROBE_TRACE=1.
-  // Do NOT force full debug for small scripts under relaxed limits: multi-data-NFT commitments
-  // with nftIndex tags (SushiToken.transferOwnership) were measured correct under sparse and
-  // wrong under full-trace commitment extraction when an event slot shares the block.
+  // Production-sized inputs retain the faithful trace for diagnostics. Relaxed/private-network inputs always
+  // use the opcode observer: libauth debug() structured-clones every intermediate state and stack, which made a
+  // cold large-contract fixture spend nearly all CPU cloning and collecting a trace these derivations reduce to
+  // six opcodes. SC_FORCE_FULL_PROBE_TRACE remains available for diagnosing an observer discrepancy.
   const preferFullDebug = maxIn <= 10_000
-    || (unlockingBytes > 10_000 && unlockingBytes <= 16_000)
     || (globalThis as { process?: { env?: Record<string, string | undefined> } }).process
       ?.env?.SC_FORCE_FULL_PROBE_TRACE === '1';
   if (preferFullDebug) {
@@ -1182,8 +1163,6 @@ function evaluateProbeTrace(
       // Live-network pairing fix (solidcash_v0.13.1): `extractCommitmentMapFromTrace` pairs a commitment
       // read with the OP_EQUALVERIFY that FOLLOWS it and resets on any other opcode, which only holds for
       // a trace containing just the probe opcodes. A raw debug trace makes every pair look interrupted.
-      // Grey-band oversized mocks (MasterChef under 100KB limits) keep the raw debug trace so dynamic
-      // chunk pins still resolve.
       if (maxIn <= 10_000) {
         const targets = PROBE_TRACE_OPCODES;
         const filtered: AuthenticationProgramStateCommon[] = [];
@@ -1207,8 +1186,7 @@ function evaluateProbeTrace(
   const trace: AuthenticationProgramStateCommon[] = [];
   // Keep the sparse observer tight: extractCommitmentMapFromTrace treats any observed opcode between
   // OP_OUTPUTTOKENCOMMITMENT and OP_EQUALVERIFY as breaking the commitment pair. Expanding the set
-  // (EQUAL/UTXO*/NUMEQUAL*) produced phantom pairs and multi-data-NFT nftIndex tag mismatches
-  // (SushiToken.mint / transferOwnership). Dynamic-chunk grey-band scripts use full debug above instead.
+  // (EQUAL/UTXO*/NUMEQUAL*) produced phantom pairs and multi-data-NFT nftIndex tag mismatches.
   const targets = PROBE_TRACE_OPCODES;
   let awaitingVerification = false;
   const vm = createVirtualMachineBch2026ForProvider(provider, {
@@ -4074,16 +4052,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Sparse probes omit OP_INPUTBYTECODE unless listed; constructors with keccak need full traces
     // on small contracts and carefully instrumented sparse traces on large ones. Prefer full debug
     // when the constructor is modest enough that cloning the trace is safe.
-    const constructBodyHex = (constructorAbi?.selector
-      ? (artifact.functionBodies as Record<string, string> | undefined)?.[constructorAbi.selector]
-      : undefined) ?? '';
-    const constructBodyBytes = typeof constructBodyHex === 'string' ? constructBodyHex.length / 2 : 0;
     // The sparse observer is an approximation of the faithful trace (it records only the inspected opcodes and
     // the EQUALVERIFY adjacent to each). SOLIDCASH_FAITHFUL_DEPLOY_PROBE=1 forces the faithful path so a
     // derivation failure can be attributed to the contract rather than to the observer.
     const useSparseProbe = !(globalThis as any).process?.env?.SOLIDCASH_FAITHFUL_DEPLOY_PROBE
-      && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000
-      && constructBodyBytes > 2_000;
+      && (options.provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
     const allEventDefs = artifact.events ?? [];
     // A failing commitment equality stops VM execution, so one probe may reveal only the prefix through the
     // first mismatched data NFT. Allow every state NFT to be learned progressively plus a final convergence run.

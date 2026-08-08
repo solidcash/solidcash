@@ -299,12 +299,14 @@ function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` alread
 `addBlackList`, `freeze`) is delegated to the facet, which is what pays for `openSelf()`: the master lands at
 **8,778 B deployed with 1,222 B of headroom**.
 
-The inheritance arrangement (s5) surfaced a genuine splitter bug on the way. `compileFileSplit` plans on
-ARTIFACT size, and the cap is on the deployed unlocking bytecode - so it can emit a bundle whose shards all
-pass its own check and which is still unspendable, one shard's redeem script being over the limit once its
-constructor argument is baked in. Same three-layer budget as s1.2, one level up. Pinned in
-`NativeUsdtInherited.test.ts`; it is the splitter's to fix, since nothing a contract author writes can see it
-and `compileFileSplit` reports success.
+The inheritance arrangement (s5) surfaced a genuine splitter bug on the way, now FIXED. `compileFileSplit`
+planned on ARTIFACT size while the cap is on the deployed unlocking bytecode, so it could emit a bundle whose
+shards all passed its own check and was still unspendable - one shard measured under the cap and deployed at
+10,030 B once its brand was baked in. Against the DEFAULT cap the planner now budgets the whole spend: the
+shard's constructor arguments plus its widest single entry point's own arguments. An explicit `maxShardBytes`
+stays a literal redeem-script knob, so the tuning call sites that derive limits from `estimatedRedeemBytes` are
+unaffected. Measured on this contract: `Facet1` went 10,030 B deployed and unspendable to 9,322 B with room for
+its arguments, and every route through the bundle now settles.
 
 ## 4. Incidental findings
 

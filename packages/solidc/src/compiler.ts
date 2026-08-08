@@ -176,7 +176,13 @@ export interface CompileOptions extends CompilerOptions {
 }
 
 export interface SplitCompileOptions extends CompileOptions {
-  /** Maximum redeem-script bytes for each generated shard. Defaults to the BCH input limit. */
+  /**
+   * Maximum redeem-script bytes for each generated shard, honoured literally.
+   *
+   * Omit it and the default is the BCH per-input limit, against which the planner additionally budgets the
+   * constructor arguments and the widest entry point's own arguments - because that cap covers the whole
+   * unlocking bytecode, not just the redeem script.
+   */
   maxShardBytes?: number;
   /** Split eligible entry points even when the original artifact already fits. Useful for testing/tuning. */
   forceSplit?: boolean;
@@ -4976,6 +4982,15 @@ const LIFECYCLE_MODIFIERS = new Set([
  */
 export function compileStringSplit(code: string, compilerOptions: SplitCompileOptions = {}): SplitArtifactBundle {
   const { maxShardBytes = MAX_INPUT_BYTESIZE, forceSplit = false, errorListener, ...artifactOptions } = compilerOptions;
+  // Budget the whole SPEND, not just the redeem script - but only against the real consensus cap. An explicit
+  // `maxShardBytes` is a tuning knob expressed in redeem-script bytes and is honoured literally; the default is
+  // the BCH per-input limit, which covers redeem script + constructor arguments + the call's own arguments +
+  // the redeem push. Planning on redeem bytes alone against THAT cap emits bundles which pass every check made
+  // here and are still unspendable (measured: a facet under the cap deployed at 10,030 bytes once its brand was
+  // baked in, and the bundle's first spend was refused at consensus).
+  const budgetWholeSpend = compilerOptions.maxShardBytes === undefined;
+  const spendReserve = (artifact: Artifact, constructorInputs: readonly { type: string }[]): number => (
+    budgetWholeSpend ? widestSpendReserve(artifact, constructorInputs) : 0);
   const merged = normalizeCompilerOptions(artifactOptions);
   merged.__messageBusExplicitlyDisabled = artifactOptions.messageBus === false;
   const baseline = compileString(code, { ...artifactOptions, errorListener });
@@ -5010,13 +5025,17 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   // best-fit heuristic; acceptance always compiles the union and checks its actual optimized bytecode, including
   // shared helpers and delegate covenant overhead. This avoids eagerly recompiling every pair on every round.
   let groups = hardClosureGroups(plans);
+  // Every facet is deployed as a branded delegate library, so it always carries exactly one 32-byte brand.
   const measuredBytes = new Map<string, number>();
   const groupKey = (group: PlannedFunction[]): string => group.map((plan) => plan.name).sort().join(',');
+  // The EFFECTIVE spend size, not the artifact size: redeem script + the brand a branded delegate library
+  // always carries + the widest single entry point's own arguments. The cap covers all of it.
   const measure = (group: PlannedFunction[]): number => {
     const key = groupKey(group);
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
-    const bytes = byteSize(compileFacet(code, merged, errorListener, group, 'ProbeFacet'));
+    const facetProbe = compileFacet(code, merged, errorListener, group, 'ProbeFacet');
+    const bytes = byteSize(facetProbe) + spendReserve(facetProbe, [{ type: 'bytes32' }]);
     measuredBytes.set(key, bytes);
     return bytes;
   };
@@ -5084,8 +5103,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups.forEach((group, index) => {
     const name = `${logicalName}__Facet${index}`;
     const artifact = compileFacet(code, merged, errorListener, group, name);
-    if (byteSize(artifact) > maxShardBytes) {
-      const measured = byteSize(artifact);
+    if (byteSize(artifact) + spendReserve(artifact, [{ type: 'bytes32' }]) > maxShardBytes) {
+      const measured = byteSize(artifact) + spendReserve(artifact, [{ type: 'bytes32' }]);
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(
@@ -5116,7 +5135,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   const root = compileResolvedAst(
     rootAst, code, merged, false, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
   );
-  if (byteSize(root) > maxShardBytes) {
+  const rootShardBytes = maxShardBytes - spendReserve(root, root.constructorInputs);
+  if (byteSize(root) > rootShardBytes) {
     throw new SolidcDiagnosticError(
       'SPLIT_ROOT_CAPACITY',
       `Cannot split '${logicalName}': generated root is ${byteSize(root)} bytes (limit ${maxShardBytes}).`,
@@ -5165,6 +5185,41 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
  * changes; it is now measuring what it always meant to.
  */
 function byteSize(artifact: Artifact): number { return asmToBytecode(artifact.bytecode).length; }
+
+/**
+ * Bytes a shard's constructor arguments and its redeem push add on top of the redeem SCRIPT.
+ *
+ * The per-input cap covers the WHOLE unlocking bytecode - redeem script, constructor arguments, the call's own
+ * arguments and the redeem push - so planning on `byteSize` alone emits bundles that pass every check made
+ * here and are still unspendable. Observed: a facet whose artifact measured under the cap deployed at 10,030
+ * bytes once its brand was baked in, and the bundle's first spend was refused at consensus.
+ *
+ * Conservative by type, because the values are not known at plan time. The call's own arguments are NOT
+ * included - they vary per entry point - so this remains a lower bound, just a much tighter one.
+ */
+function constructorArgReserve(inputs: readonly { type: string }[]): number {
+  const widest = (type: string): number => {
+    if (/^bytes(\d+)$/.test(type)) return Number(/^bytes(\d+)$/.exec(type)![1]);
+    if (type === 'address') return 35;            // p2sh32 locking bytecode, the widest form
+    if (type === 'pubkey') return 33;
+    if (type === 'sig' || type === 'datasig') return 72;
+    if (type === 'bool') return 1;
+    if (/^u?int\d*$/.test(type)) return 32;
+    return 40;                                    // string/bytes/unknown: a deliberate over-estimate
+  };
+  // +1 per argument for its push opcode, +2 overall for the redeem script's own OP_PUSHDATA1 header.
+  return inputs.reduce((total, input) => total + widest(input.type) + 1, 0) + 2;
+}
+
+/**
+ * The widest unlocking bytecode any single entry point of `artifact` can require, on top of its redeem script:
+ * its own arguments plus whatever constructor arguments the shard carries. Internal `__internal__*` parameters
+ * are witness values the SDK supplies and count the same as visible ones.
+ */
+function widestSpendReserve(artifact: Artifact, constructorInputs: readonly { type: string }[]): number {
+  const perEntry = artifact.abi.map((fn) => constructorArgReserve(fn.inputs));
+  return constructorArgReserve(constructorInputs) + (perEntry.length > 0 ? Math.max(...perEntry) : 0);
+}
 
 /**
  * A SHARD IS ONLY A SHARD IF IT AGREES ABOUT WHAT A SLOT MEANS. Nothing here compared the root's storage

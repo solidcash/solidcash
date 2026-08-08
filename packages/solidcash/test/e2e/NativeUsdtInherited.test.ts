@@ -101,15 +101,13 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
     }
   });
 
-  // THE SPLITTER PLANS ON ARTIFACT SIZE, and the cap is on the deployed unlocking bytecode.
-  // Every shard below passes the artifact check above and the bundle is still unspendable:
-  // one shard's redeem script is over the limit once its constructor argument is baked in,
-  // before any of its call arguments. Same three-layer budget as s1.2, inside the splitter.
-  //
-  // This is pinned rather than worked around because it is the splitter's to fix: nothing a
-  // contract author writes can see it, and `compileFileSplit` reports success.
-  it('can emit a bundle whose shards fit as artifacts but not as deployed scripts', async () => {
-    // Every shard passes the check the splitter itself makes.
+  // The splitter used to plan on ARTIFACT size while the cap is on the deployed unlocking
+  // bytecode - redeem script PLUS constructor arguments PLUS the call's own arguments PLUS the
+  // redeem push. It could therefore emit a bundle whose shards all passed its own check and
+  // was still unspendable: one shard measured under the cap and deployed at 10,030 bytes once
+  // its brand was baked in. It now budgets the widest single spend per shard, so a bundle it
+  // accepts can actually be spent.
+  it('emits a bundle whose shards are spendable, not merely small as artifacts', async () => {
     for (const artifact of [bundle.root, ...Object.values(bundle.facets)]) {
       expect(scriptSize(artifact)).toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
     }
@@ -127,9 +125,6 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       out.set(new TextEncoder().encode(text));
       return out;
     };
-    // ...and the deploy is still refused, on the per-input script limit, because that limit
-    // covers the redeem script PLUS its constructor argument PLUS the call's arguments and
-    // the redeem push. The splitter plans on the first of those only.
     const deployed = await SplitContractBundle.from(bundle, signer).deploy(
       [addressToLockScript(aliceAddress), b32('Tether USD'), b32('USDT'), 6n, 10n],
       {
@@ -139,24 +134,22 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
         ])),
       },
     );
-    // The deploy goes through - a genesis does not carry the facet's own redeem script.
-    // SPENDING it does, and that is where the limit bites.
     expect((await deployed.root.getState()).decimals).toBe(6n);
 
-    // Some route lands on the oversized shard. Collect what each one says rather than
-    // guessing which, so this keeps discriminating if the splitter re-plans.
-    const messages: string[] = [];
-    for (const call of [
-      () => deployed.call.pause().send(),
-      () => deployed.call.setParams(5n, 10n).send(),
-      () => deployed.call.setQuarantineBlocks(25n).send(),
-      () => deployed.call.deprecate(addressToLockScript(aliceAddress)).send(),
-    ]) {
-      try { await call(); } catch (error) { messages.push((error as Error).message); }
+    // Every route spends. Collected rather than asserted one at a time, so a future re-plan that
+    // pushes one shard back over the limit names the route it broke.
+    const refused: string[] = [];
+    for (const [name, call] of [
+      ['pause', () => deployed.call.pause().send()],
+      ['unpause', () => deployed.call.unpause().send()],
+      ['setParams', () => deployed.call.setParams(5n, 10n).send()],
+      ['setQuarantineBlocks', () => deployed.call.setQuarantineBlocks(25n).send()],
+      ['deprecate', () => deployed.call.deprecate(addressToLockScript(aliceAddress)).send()],
+    ] as Array<[string, () => Promise<unknown>]>) {
+      try { await call(); } catch (error) { refused.push(`${name}: ${(error as Error).message.slice(0, 120)}`); }
     }
-    expect(
-      messages.some((m) => /per-input script limit|consensus-unlocking-bytes/.test(m)),
-      `no route hit the per-input limit; saw: ${messages.join(' || ') || '(all settled)'}`,
-    ).toBe(true);
+    expect(refused, `routes refused: ${refused.join(' || ')}`).toEqual([]);
+    expect((await deployed.root.getState()).basisPointsRate).toBe(5n);
+    expect((await deployed.root.getState()).quarantineBlocks).toBe(25n);
   }, 300000);
 });

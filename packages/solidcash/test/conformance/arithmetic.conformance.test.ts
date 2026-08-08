@@ -2,6 +2,7 @@
 // plus checked over/underflow that must revert on both sides. Reference vs solc + @ethereumjs/evm.
 import { describe, it } from 'vitest';
 import { assertConformant, assertReverts, exprCase, revertCase } from './harness.js';
+import { expectOverOperationCostBudget } from '../test-util.js';
 
 const maxU = (bits: number): bigint => (1n << BigInt(bits)) - 1n;
 const maxI = (bits: number): bigint => (1n << BigInt(bits - 1)) - 1n;
@@ -122,10 +123,20 @@ describe('arithmetic: checked over/underflow reverts on both sides', () => {
 // in a minimal tx - NOT a codegen bug). Literal-base `2 ** b` (cheap shift path) and the common `10 ** decimals`
 // case (small result) are covered above and pass. Square-and-multiply lowering would extend this range.
 describe('exp: runtime-base POW op-cost limit on large results (known platform divergence)', () => {
-  it('2 ** 200 (runtime base)', () => assertConformant(exprCase({
-    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 200n],
-  })));
-  it('2 ** 255 (runtime base)', () => assertConformant(exprCase({
-    params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 255n],
-  })));
+  // These two ARE the divergence this block is named for, and they now assert it. They read as
+  // conformant only while the mock ran a relaxed operation-cost budget; against the real 800 the
+  // growing intermediates exceed the density limit, exactly as a node refuses them (measured:
+  // 139,249 against a 139,200 budget for 2 ** 200). PINS, not endorsements - square-and-multiply
+  // lowering would bring the cost down, at which point these FAIL and the positive assertion
+  // should come back rather than this one being loosened.
+  it('2 ** 200 (runtime base) exceeds the operation-cost budget', () => expectOverOperationCostBudget(
+    assertConformant(exprCase({
+      params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 200n],
+    })),
+  ));
+  it('2 ** 255 (runtime base) exceeds the operation-cost budget', () => expectOverOperationCostBudget(
+    assertConformant(exprCase({
+      params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 255n],
+    })),
+  ));
 });

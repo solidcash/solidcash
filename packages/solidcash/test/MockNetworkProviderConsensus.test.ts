@@ -1,18 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
-import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../src/index.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../src/index.js';
 
 describe('MockNetworkProvider consensus limits', () => {
-  it('uses relaxed test-harness defaults', () => {
+  // The size limits are relaxed; the operation-cost budget is REAL. That asymmetry is the point:
+  // the other fields bound how BIG a thing may be, which is visibly artificial when relaxed, while
+  // the operation-cost budget bounds how DENSE a script may be - and an over-budget contract is
+  // indistinguishable from a valid one in every artifact the SDK produces.
+  it('relaxes every size limit but keeps the operation-cost budget real', () => {
     const provider = new MockNetworkProvider();
     expect(provider.consensusLimits).toEqual({
       maximumInputBytes: 1_000_000,
       maximumStackItemBytes: 1_000_000,
       maximumTransactionBytes: 10_000_000,
       maximumNftCommitmentBytes: 1_000_000,
-      operationCostBudgetPerByte: 10_000_000,
+      operationCostBudgetPerByte: 800,
       hashDigestIterationsPerByte: 10_000_000,
     });
+    // Pin the asymmetry itself, so relaxing the budget again cannot pass unnoticed.
+    expect(provider.consensusLimits.operationCostBudgetPerByte).not.toBe(MOCK_RELAXED_OPERATION_COST);
     expect(provider.consensusLimits).not.toBe(MOCK_CONSENSUS_LIMITS);
     expect(provider.policy).toEqual({ enforceDust: false });
   });

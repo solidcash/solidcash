@@ -200,6 +200,28 @@ it must not silently compile to incorrect covenant behavior.
     reach the nested shapes, which write through `memStructArrays`/`MappingFieldAssignNode` rather than through a
     constructor. Closing the item means finding the per-store sequence on THOSE paths; the two fusions landed here
     are worth keeping on their own merits but should not be counted against this blocker.
+  - **The blast radius of making the mock budget real is now measured, and it is small.** Running the WHOLE
+    `test/e2e` suite at head `a504b1c6` with `operationCostBudgetPerByte: 800` and every other mock limit left
+    relaxed: 337 files, 325 passed, 4 skipped, 8 failed; 2,772 tests, 2,736 passed, 9 failed. The targeted
+    eight-file sweep had been missing three of them, so this is the first complete inventory. The nine split into
+    two classes that want opposite treatment:
+    - SIX are the genuine over-budget shapes, in five files: `BehaviorParityPins` (`arr[i](x)`),
+      `FunctionPointerArrayCall` (`a[i]()`), `MultiDimensionalArray` (constant-indexed 2D values),
+      `NestedArrayDelete` (`delete x[i][j]`), and `NestedStructArrayWrite` (both tests).
+    - THREE are tests that deliberately assert the RELAXED profile's semantics and would have to be re-pointed at
+      an explicitly relaxed provider rather than the default: `X121StrictPreflightDecision` ("the bare VM was also
+      FAIL-CLOSED: it refused a depth the decider accepts"), `X129ConsensusOverrideProbe` ("the probe ADMITS the
+      installed tree"), and `X130DebugVmProviderFaithful` ("NEWLY BUILDABLE: depth 24 on the relaxed DEFAULT
+      profile"). These are not product defects; they are the relaxed profile's own pins.
+    So flipping the default costs three test rewrites and makes six genuine shapes visible, against 325 files that
+    do not care. That is the concrete price of "stop the mock provider from hiding them", and it is now a decision
+    with numbers behind it rather than an open question.
+  - Re-measured at head `a504b1c6`, after six further `size(solidc)` commits landed from `codex/bytecode-size-2`.
+    The concern that more size cutting would widen this did NOT materialise: the sweep improves from 7 failures to
+    6. Three overshoots are untouched (16 at length 677, 103 at 716, 80 at 829); the 39-at-length-1006 case is
+    replaced by 32 at length 1463, and `MultiDimensionalArray`'s nested calldata struct copy now passes. So the
+    "size work makes this worse" rule stated above held for the earlier eight commits but not for these six, and
+    the sweep - not the byte count - remains the thing to check per batch.
   - On how much the two fusions are worth, and on a measurement trap worth not repeating.
     `scripts/density-headroom.ts` over the 300-contract `valid-contract-files` corpus moves 2 contracts by 41
     bytes total (`delete_keyword.scash` -22, `struct_local_var.scash` -19), which reads as negligible. It is the

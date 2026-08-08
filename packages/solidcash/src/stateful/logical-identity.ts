@@ -1,10 +1,10 @@
 import {
-  binToHex, cashAddressToLockingBytecode, encodeCashAddress, hexToBin, utf8ToBin,
+  binToHex, cashAddressToLockingBytecode, encodeCashAddress, hexToBin, lockingBytecodeToCashAddress, utf8ToBin,
 } from '@bitauth/libauth';
-import { hash160, Op, scriptToBytecode } from '@solidcash/utils';
+import { Op, Script, scriptToBytecode } from '@solidcash/utils';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import type { Unlocker, Utxo } from '../interfaces.js';
-import { addressToLockScript, createUnlockingBytecode } from '../utils.js';
+import { addressToLockScript, createUnlockingBytecode, scriptToLockingBytecode } from '../utils.js';
 
 const IDENTITY_MAGIC = Uint8Array.from([0x53, 0x43, 0x49, 0x44]); // "SCID"
 const FACET_MAGIC = Uint8Array.from([0x53, 0x43, 0x49, 0x46]); // "SCIF"
@@ -41,16 +41,23 @@ export function deriveLogicalCreateAddress(deployer: string, nonce: bigint | num
 }
 
 export function deriveLogicalAddressFromSeed(seed: string, prefix: LogicalIdentityPrefix): string {
-  const redeemBytecode = logicalIdentityRedeemBytecode(seed);
-  return encodeCashAddress({
-    prefix, type: 'p2sh', payload: hash160(redeemBytecode), throwErrors: true,
-  }).address;
+  // p2sh32, not p2sh20. This is a stateful-contract identity, and a 160-bit script hash offers only ~2^80
+  // collision resistance: finding a second seed that hashes alike would let an attacker present a different
+  // deployer/nonce for the same logical address. `scriptToLockingBytecode` hashes with hash256 for p2sh32.
+  const bytecode = scriptToLockingBytecode(logicalIdentityRedeemScript(seed), 'p2sh32');
+  const result = lockingBytecodeToCashAddress({ bytecode, prefix });
+  if (typeof result === 'string') throw new Error(`Could not derive a logical identity address: ${result}`);
+  return result.address;
+}
+
+function logicalIdentityRedeemScript(seed: string): Script {
+  // The preimage is intentionally revealed when the immutable anchor is co-spent. OP_DROP OP_1 makes the
+  // identity NFT permissionless to preserve; authenticity comes from its category and SCID root binding.
+  return [utf8ToBin(seed), Op.OP_DROP, Op.OP_1];
 }
 
 function logicalIdentityRedeemBytecode(seed: string): Uint8Array {
-  // The preimage is intentionally revealed when the immutable anchor is co-spent. OP_DROP OP_1 makes the
-  // identity NFT permissionless to preserve; authenticity comes from its category and SCID root binding.
-  return scriptToBytecode([utf8ToBin(seed), Op.OP_DROP, Op.OP_1]);
+  return scriptToBytecode(logicalIdentityRedeemScript(seed));
 }
 
 export function createLogicalIdentityUnlocker(deployer: string, nonce: bigint | number): Unlocker {
@@ -59,7 +66,7 @@ export function createLogicalIdentityUnlocker(deployer: string, nonce: bigint | 
   const logicalAddress = deriveLogicalAddressFromSeed(seed, prefixOf(deployer));
   return {
     generateLockingBytecode: () => addressToLockScript(logicalAddress),
-    generateUnlockingBytecode: () => createUnlockingBytecode('p2sh20', redeem, []),
+    generateUnlockingBytecode: () => createUnlockingBytecode('p2sh32', redeem, []),
   };
 }
 

@@ -60,13 +60,20 @@ describe('X126 finalized-bytes gate at the stateful submit site', () => {
     const failure = await contract.pay(Uint8Array.of(0x51), 473n).send()
       .then(() => undefined, (error: Error) => error);
     expect(failure).toBeInstanceOf(Error);
-    // The exact arithmetic, not a substring: 473 is one short of 3 * (10 + 148).
-    expect(failure!.message).toMatch(
-      /\[policy\] output-dust at output \d+: 473 satoshis is 1 short of the 474-satoshi dust threshold /,
-    );
-    expect(failure!.message).toMatch(/for a 10-byte output \(3 \* \(10 \+ 148\)\); a node refuses `64: dust`/);
-    // Exactly one rule fired. A refusal that also trips size or push-only would prove nothing about dust.
-    expect(failure!.message).toMatch(/refused by 1 byte rule\(s\)/);
+    // Which LAYER objects is provider-dependent, and both objections are local, which is what "before the
+    // provider is asked" means. On the mock the byte-rule gate reports first. On a live provider the production
+    // branch runs full state derivation, which reaches the same 473-against-474 minimum first and reports it as
+    // a derivation failure. The arithmetic is asserted either way; only the reporting layer is allowed to vary.
+    const policyGate = /\[policy\] output-dust at output \d+: 473 satoshis is 1 short of the 474-satoshi dust/
+      .test(failure!.message);
+    if (policyGate) {
+      expect(failure!.message).toMatch(/for a 10-byte output \(3 \* \(10 \+ 148\)\); a node refuses `64: dust`/);
+      // Exactly one rule fired. A refusal that also trips size or push-only would prove nothing about dust.
+      expect(failure!.message).toMatch(/refused by 1 byte rule\(s\)/);
+    } else {
+      expect(failure!.message).toMatch(/state commitments could not be auto-derived/);
+      expect(failure!.message).toMatch(/473 satoshis, which is less than the required minimum[\s\S]*\(474\)/);
+    }
     // THE POINT: the gate is at the submit site, so the network never saw these bytes.
     expect(broadcasts()).toBe(0);
   });

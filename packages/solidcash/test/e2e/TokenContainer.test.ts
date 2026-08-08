@@ -1,8 +1,11 @@
 /* eslint-disable @typescript-eslint/no-shadow */
 import { compileString } from '../direct-compile.js';
-const providerInputZeroVerifyFailure = new RegExp('^mandatory-script-verify-flag-failed '
-  + '\\(Unable to verify transaction: error in evaluating input index 0: '
-  + 'Program failed an OP_VERIFY operation\\.\\)$');
+// The mock reports the verbose form naming the failing input. BCHN reports a short form naming only what
+// tripped, which for the same tamper can be any OP_<X>VERIFY. Accept either, still requiring a verify refusal.
+const providerInputZeroVerifyFailure = new RegExp('mandatory-script-verify-flag-failed '
+  + '(?:\\(Unable to verify transaction: error in evaluating input index 0: '
+  + 'Program failed an OP_VERIFY operation\\.\\)'
+  + '|\\(Script failed an OP_[A-Z]*VERIFY operation\\))');
 import {
   Contract, StatefulContract,
   StatefulTransactionBuilder,

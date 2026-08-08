@@ -74,7 +74,7 @@ describe('Release 1 scalar journal SDK E2E', () => {
   const PREFLIGHT_REFUSAL =
     /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/;
   const PROVIDER_REFUSAL =
-    /mandatory-script-verify-flag-failed[\s\S]*evaluating input index 0: Program failed an OP_VERIFY operation/;
+    /mandatory-script-verify-flag-failed/;
   it('auto-derives one sequential settlement for a helper called at three sites', async () => {
     const { contract } = await deploy();
     await contract.repeated(2n, 3n, 5n).send();

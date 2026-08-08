@@ -272,6 +272,7 @@ fssz
 fsub
 fullcalldatas
 funcs
+fusable
 functio
 fundable
 Futarchy
@@ -509,6 +510,7 @@ outcat
 outctr
 outidx
 outliner
+outlinable
 OUTPUTCOMMITMENT
 overloadable
 overridding
@@ -574,6 +576,8 @@ rcount
 readback
 READERR
 reassignable
+rebadgeable
+rebadged
 rebindable
 rechunked
 recid
@@ -595,6 +599,7 @@ refetches
 refundee
 refundees
 regen
+rehome
 reinit
 reinitializer
 reinitializers

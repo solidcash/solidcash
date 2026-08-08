@@ -3,7 +3,9 @@ import { compileString } from '../direct-compile.js';
 import { binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract } from '../../src/index.js';
 import { alicePkh } from '../fixture/vars.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import {
+  createTestProvider, expectScriptRejection, setupStatefulUtxos,
+} from '../test-util.js';
 
 /**
  * X10 - the SDK half of the trailing chunk-region bound, measured against X8's pin.
@@ -175,8 +177,7 @@ describe('X10 trailing chunk region beside a C2 entry mint', () => {
     });
     const rejection = await provider.sendRawTransaction(forged)
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(rejection).toContain('mandatory-script-verify-flag-failed');
-    expect(rejection).toContain('error in evaluating input index 0');
+    expectScriptRejection(rejection, 0);
 
     await expect(provider.sendRawTransaction(captured)).resolves.toBeTypeOf('string');
   }, 180_000);

@@ -3391,9 +3391,16 @@ export class StatefulTransactionBuilder {
     // diagnostics before submission. A relaxed mock provider may intentionally admit scripts hundreds of
     // kilobytes long; retaining every VM step for those scripts can take minutes and gigabytes of memory.
     const relaxedConsensus = (provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000;
+    // Retained so a later covenant refusal can say WHY. This probe is best-effort, but the rebuild below depends
+    // on what it discovers, so when it fails the transaction can be assembled from an unresolved shape and the
+    // preflight then refuses it with a bare OP_VERIFY that names no cause.
+    let discoveryProbeFailure: string | undefined;
     if (!relaxedConsensus) {
       try { covenantBuilder.debug(); } catch (_e) {
-        if (typeof _e === 'object' && _e) console.debug('STB debug() best-effort error:', (_e as Error).message);
+        if (typeof _e === 'object' && _e) {
+          discoveryProbeFailure = (_e as Error).message;
+          console.debug('STB debug() best-effort error:', discoveryProbeFailure);
+        }
       }
     }
 
@@ -3539,6 +3546,16 @@ export class StatefulTransactionBuilder {
         assertFinalizedTransactionCovenants(finalBuilder, finalBuilder.buildLibauthTransaction(true));
       } catch (error) {
         this._logCovenantFailureTrace(finalBuilder, error instanceof Error ? error.message : String(error));
+        // Attribution only. The refusal stands and is re-raised UNCHANGED: callers match this message exactly,
+        // including anchored patterns, so the explanation rides on `cause` rather than being appended to it.
+        if (discoveryProbeFailure !== undefined && error instanceof Error && error.cause === undefined) {
+          error.cause = new Error(
+            'A covenant discovery probe failed earlier in this send, so any commitments or output counts it '
+            + 'would have discovered were unavailable when the transaction was assembled. That is a known cause '
+            + 'of this refusal for shapes needing dynamic chunk or entry discovery. The probe reported: '
+            + discoveryProbeFailure,
+          );
+        }
         throw error;
       }
     }

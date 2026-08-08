@@ -3,6 +3,7 @@ import { hexToBin, binToHex, encodeDataPush } from '@bitauth/libauth';
 import {
   asmToScript,
   ArrayType,
+  MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
   encodeInt,
   encodeString,
@@ -825,6 +826,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private static readonly TOKEN_LBC_SUBROUTINE_ID = -9n;
   private static readonly SORTED_VALUE_OUTPUT_SUBROUTINE_ID = -10n;
   private static readonly SORTED_ABSENCE_SUBROUTINE_ID = -11n;
+  /**
+   * Captured subroutines that keep being extracted even when outlining could reach them - which is all of
+   * them. DO NOT DEFER THESE TO OUTLINING; the experiment has been run, per subroutine, and it does not hold.
+   *
+   * On the corpus it looks like free size. Deltas against 89,627 bytes: minting-uniqueness **-1,530**,
+   * master-value-pres -258, token-container -215, int-encode -114, master-self-pres -98, sorted helpers -70,
+   * cat-eq -35, int-decode 0, satoshi-container +5, pushdata-frame +115. Together -2,404.
+   *
+   * It is not free, and the corpus cannot see why, because `bytecode-size-bench` COMPILES and never EXECUTES.
+   *   - Deferring minting-uniqueness alone produces a script whose own covenant fails at the VM:
+   *     `StoragePointerReturningFn` dies on an OP_VERIFY in message-bus preflight, and two recursion-budget
+   *     rows stop being refused for density and start failing their concrete preflight instead.
+   *   - Deferring int-encode, master-self-pres or token-container blows the scalar-journal byte budget, and
+   *     the profitable-looking set together blows three C2 sharing budgets - all on contracts written inline
+   *     in tests, which the corpus does not contain.
+   *
+   * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
+   */
+  private static readonly EXTRACT_EVEN_IF_OUTLINABLE: readonly bigint[] = [-1n, -2n, -3n, -4n, -5n, -6n, -7n, -8n, -9n, -10n, -11n];
+
   private static readonly ALL_SUBROUTINE_IDS = [
     GenerateTargetTraversalWithLocation.INT_DECODE_SUBROUTINE_ID,
     GenerateTargetTraversalWithLocation.PUSHDATA_FRAME_SUBROUTINE_ID,
@@ -2896,7 +2917,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     inlineEmit(sub);
     // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
     // against a size the emitted subroutine never has.
-    const body = scriptToBytecode(GenerateTargetTraversalWithLocation.optimisedHelperBody(sub));
+    const optimised = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    // A STRUCTURAL helper that outlining can reach is left to outlining.
+    //
+    // This check compares defining the helper against writing it out at each site, but inlining is not what
+    // actually happens to those copies: they are byte-identical spans, so the outliner shares them anyway -
+    // with a whole-script cost model, an exact identifier width and a monotone rollback, none of which this
+    // per-helper comparison has. Extracting first only fragments the spans it would have found. Measured over
+    // the corpus, deferring these is worth 506 bytes.
+    //
+    // Which of the FIXED subroutines to leave to outlining is measured one at a time and listed on
+    // `EXTRACT_EVEN_IF_OUTLINABLE`; only minting-uniqueness pays without breaking something.
+    const barriers = new Set<number>([
+      Op.OP_DEFINE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
+      Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
+    ]);
+    if (!GenerateTargetTraversalWithLocation.EXTRACT_EVEN_IF_OUTLINABLE.includes(id)
+      && optimised.length >= MINIMUM_WINDOW_ELEMENTS
+      && !optimised.some((op) => typeof op === 'number' && barriers.has(op))) {
+      return false;
+    }
+    const body = scriptToBytecode(optimised);
     const invokeSize = scriptToBytecode([encodeInt(id), Op.OP_INVOKE]).length;
     const definitionSize = scriptToBytecode([body, encodeInt(id), Op.OP_DEFINE]).length;
     return definitionSize + uses * invokeSize < uses * body.length;

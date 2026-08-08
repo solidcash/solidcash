@@ -5,7 +5,8 @@ import {
   Contract, StatefulContract, getEventNftAddress, readEventsFromChain,
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createFeeFunder, createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createFeeFunder, createTestProvider, expectScriptRejection, setupStatefulUtxos }
+  from '../test-util.js';
 
 /**
  * SEC-14. A zero-parameter event's taken and not-taken rows were byte-identical at the event slot: same event
@@ -129,7 +130,7 @@ describe('SEC-14: zero-parameter event active marker', () => {
    */
   it('refuses diverting the reserved event output on the taken path', async () => {
     const row = await run(PING, 200n, true);
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(row.outcome, 0);
   }, 300_000);
 
   /**
@@ -139,7 +140,7 @@ describe('SEC-14: zero-parameter event active marker', () => {
    */
   it('was already refusing the same diversion on an unconditional emit', async () => {
     const row = await run(PING_UNCOND, 4n, true);
-    expect(row.outcome).toContain('error in evaluating input index 0');
+    expectScriptRejection(row.outcome, 0);
     expect((await run(PING_UNCOND, 4n, false)).slot).toBe('none/01');
   }, 300_000);
 

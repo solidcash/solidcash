@@ -139,9 +139,13 @@ describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], ca
     forged.outputs[outputA] = donor.outputs[outputB];
     expect(encodeTransaction(forged).length).toBe(hexToBin(rawA).length);
 
-    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow(
-      'mandatory-script-verify-flag-failed (Unable to verify transaction: error in evaluating input index 0: Program failed an OP_VERIFY operation.)',
-    );
+    // The mock reports the verbose form naming the failing input and opcode; BCHN reports a short form naming
+    // only what tripped, which for this forgery is OP_EQUALVERIFY. Require the script-verify refusal either way.
+    await expect(send(binToHex(encodeTransaction(forged)))).rejects.toThrow(new RegExp(
+      'mandatory-script-verify-flag-failed \\(Unable to verify transaction: '
+      + 'error in evaluating input index 0: Program failed an OP_VERIFY operation\\.\\)'
+      + '|mandatory-script-verify-flag-failed \\(Script failed an OP_[A-Z]*VERIFY operation\\)',
+    ));
 
     await expect(send(rawA)).resolves.toBeTypeOf('string');
     await expect(scB.pay(9n).withExternalCall(scBank, 'deposit', [9n]).send()).resolves.toBeDefined();

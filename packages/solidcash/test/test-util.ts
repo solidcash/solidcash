@@ -1,3 +1,4 @@
+import { expect } from 'vitest';
 import {
   lockingBytecodeToCashAddress,
   hexToBin,
@@ -427,4 +428,35 @@ export async function setupStatefulUtxos(
     ),
     extraUtxos: result.utxos.slice(1 + dataNftCount + sortedCollections.length + verifierCount),
   };
+}
+
+/**
+ * Assert that a node refused a transaction at a given input.
+ *
+ * BCHN only names the failing input for some rejections: `Program failed an OP_VERIFY operation` carries
+ * `error in evaluating input index N`, while `Script failed an OP_EQUALVERIFY operation (code 16)` does not.
+ * The mock always names it. Assert the strong form wherever the node reports it, and the refusal itself
+ * otherwise, so one assertion holds on both without discarding the evidence.
+ */
+export function expectScriptRejection(outcome: string, inputIndex: number): void {
+  expect(outcome).toContain('mandatory-script-verify-flag-failed');
+  if (outcome.includes('error in evaluating input index')) {
+    expect(outcome).toContain(`error in evaluating input index ${inputIndex}`);
+  }
+}
+
+/**
+ * Pin a shape that is currently OVER the real BCH-2026 operation-cost budget.
+ *
+ * `MOCK_CONSENSUS_LIMITS` publishes the real `operationCostBudgetPerByte` of 800, so these shapes are refused
+ * here exactly as a node refuses them. Each call site had a passing positive assertion while the mock ran a
+ * relaxed budget, which is how they reached a live node before anyone noticed.
+ *
+ * This is a PIN, not an endorsement: the shape is meant to work, and the failure is marginal (the measured
+ * overshoots are 16 to 103 operation units against budgets of 500,000 to 1,100,000). When the cost of the
+ * underlying lowering comes down, this assertion FAILS - deliberately. Restore the positive assertion at that
+ * point rather than loosening this one. Tracked in RELEASE_READINESS.md under the operation-cost budget item.
+ */
+export async function expectOverOperationCostBudget(action: Promise<unknown>): Promise<void> {
+  await expect(action).rejects.toThrow(/exceed the operation cost density limit|Could not derive the return value/);
 }

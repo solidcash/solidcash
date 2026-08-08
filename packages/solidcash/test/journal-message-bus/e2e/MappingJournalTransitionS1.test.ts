@@ -4,7 +4,7 @@ import {
   bigIntToVmNumber, binToHex, decodeTransactionUnsafe, encodeTransaction, hexToBin,
 } from '@bitauth/libauth';
 import { Contract, SignatureTemplate, StatefulContract, TransactionBuilder } from '../../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
+import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '../../test-util.js';
 import { randomUtxo } from '../../../src/utils.js';
 import { alicePkh, alicePriv, alicePub } from '../../fixture/vars.js';
 import p2pkhArtifact from '../../fixture/p2pkh.artifact.js';
@@ -84,13 +84,29 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
   return binToHex(encodeTransaction(tx));
 }
 
-/** Clone an existing token output, funding the extra bytes from the trailing change output. */
+/** Clone an existing token output, funding the extra bytes from an output that can afford them. */
 function appendEntryOutput(tx: Tx, sourceIndex: number, commitment?: Uint8Array): void {
   const source = tx.outputs[sourceIndex];
-  tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  // A 1-satoshi output is below the dust threshold on a real node, so BCHN refuses the forgery with
+  // `dust (code 64)` before the covenant can object, which proves nothing. On live regtest use a dust-viable
+  // value funded from the LARGEST output, since the trailing output is not reliably fat change.
+  const liveRegtest = process.env.TESTS_USE_REGTEST === 'true';
+  const appendedValue = liveRegtest ? 1200n : 1n;
+  if (liveRegtest) {
+    const donor = tx.outputs.reduce(
+      (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+    );
+    const needed = appendedValue + 500n;
+    if (tx.outputs[donor].valueSatoshis <= needed) {
+      throw new Error(`appendEntryOutput: no output can fund ${needed} satoshis; the forgery would be malformed.`);
+    }
+    tx.outputs[donor].valueSatoshis -= needed;
+  } else {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis = 1n;
+  }
   tx.outputs.push({
     ...source,
-    valueSatoshis: 1n,
+    valueSatoshis: appendedValue,
     lockingBytecode: source.lockingBytecode.slice(),
     token: {
       ...source.token!,
@@ -99,9 +115,21 @@ function appendEntryOutput(tx: Tx, sourceIndex: number, commitment?: Uint8Array)
   });
 }
 
-/** Raise the fee out of the trailing change output so a mutation that grows the transaction still relays. */
+/** Raise the fee out of an output that can afford it, so a mutation that grows the transaction still relays. */
 function fundExtraBytes(tx: Tx, satoshis = 200n): void {
-  tx.outputs[tx.outputs.length - 1].valueSatoshis -= satoshis;
+  // The trailing output is not reliably fat change on a live node; draining it pushes it under the dust
+  // threshold and BCHN then refuses with `dust (code 64)` before the covenant can object.
+  if (process.env.TESTS_USE_REGTEST !== 'true') {
+    tx.outputs[tx.outputs.length - 1].valueSatoshis -= satoshis;
+    return;
+  }
+  const donor = tx.outputs.reduce(
+    (best, out, index, all) => (out.valueSatoshis > all[best].valueSatoshis ? index : best), 0,
+  );
+  if (tx.outputs[donor].valueSatoshis <= satoshis + 500n) {
+    throw new Error(`fundExtraBytes: no output can fund ${satoshis} satoshis; the forgery would be malformed.`);
+  }
+  tx.outputs[donor].valueSatoshis -= satoshis;
 }
 
 function commitmentOf(tx: Tx, index: number): ReturnType<typeof decodeEntryCommitment> {
@@ -121,15 +149,19 @@ async function expectCovenantRejection(provider: Provider, hex: string): Promise
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
   expect(outcome).toContain('mandatory-script-verify-flag-failed');
-  expect(outcome).toContain('error in evaluating input index 0');
-  expect(outcome).toContain('Program failed an OP_VERIFY operation');
+  expectScriptRejection(outcome, 0);
+  // Not the opcode: BCHN's short form names whatever tripped, and the same tamper surfaces as OP_VERIFY or
+  // OP_EQUALVERIFY depending on where the covenant objects. `expectScriptRejection` above already
+  // required a script-verify refusal, which is the property under test.
 }
 
 /** BCH token validation refused the transaction: no minting authority exists for the forged category. */
 async function expectTokenValidationRejection(provider: Provider, hex: string): Promise<void> {
   const outcome = await provider.sendRawTransaction(hex)
     .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-  expect(outcome).toContain('Transaction violates token validation');
+  // Same refusal, different wording: the mock says `Transaction violates token validation`, BCHN says
+  // `bad-txns-token-invalid-category`. Both mean CashTokens itself refused the foreign category.
+  expect(outcome).toMatch(/Transaction violates token validation|bad-txns-token-invalid-category/);
 }
 
 async function expectAccepted(provider: Provider, hex: string): Promise<void> {

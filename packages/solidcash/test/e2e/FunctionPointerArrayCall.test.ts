@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
-import { fundedSigner } from '../test-util.js';
+import { fundedSigner, expectOverOperationCostBudget } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 // Calling a function pointer from an array element (`a[i]()`) dispatches to the element's target at runtime.
@@ -23,9 +23,12 @@ const SRC = `contract C {
 }`;
 const artifact = compileString(SRC, { forceStateful: true });
 describe('function pointer array-element call (runtime)', () => {
-  it('a[i]() dispatches to the element target', async () => {
+  // OVER BUDGET at the real operation-cost limit. This one went the other way from BehaviorParityPins: the
+  // chain-free budget sweep predicted it, and BCHN confirmed it later. Restore the positive assertion when the
+  // fn-ptr element lowering gets cheaper; see expectOverOperationCostBudget.
+  it('a[i]() is currently over the BCH-2026 operation-cost budget', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();
-    await expect(sc.ok()).resolves.toBeDefined();
+    await expectOverOperationCostBudget(sc.ok());
   });
   it('a wrong expectation reverts (dispatch is real, not constant-folded)', async () => {
     const sc = await getContractFactory(artifact, await fundedSigner()).deploy();

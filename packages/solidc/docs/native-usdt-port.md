@@ -263,6 +263,14 @@ Two limitations remain, each pinned by a test:
    second write carries value. Composing them needs a covenant that applies both writes to one entry, and no
    such path exists.
 
+   **Attempted a third time with the `openSelf()` budget lever, and it gets closer without arriving.** With
+   fees accrued to a scalar, `openSelf()` opening all five mappings, and the update-only functions delegated,
+   the master fits with room to spare and `deposit` clears its wall - but `transfer` still fails, now inside
+   state derivation: "the VM errored before all commitments could be extracted", with the untouched data NFTs'
+   variables missing. That is not the data-NFT contiguity theory it looks like (moving `feeAccrued` onto an
+   already-touched NFT changes which variables are reported and nothing else), and it is not the entry count
+   (dropping a read changes nothing). Un-root-caused; it needs VM-level tracing of the derivation probe.
+
    **A second collision sits behind it, found by fixing the first.** Removing the owner fee credit from
    `transfer` (accruing to a scalar and sweeping with a `collectFees`) does eliminate the write collision - and
    `transfer` then fails on a READ collision instead: it reads `isBlackListed[x]` and `frozen[x]` for BOTH
@@ -279,7 +287,24 @@ Two limitations remain, each pinned by a test:
    fix is wrong. Not worked around in the contract either - dropping the separate owner credit would deviate
    from the source this port exists to reproduce.
 
-2. **`deposit` / `claimDeposit`.** Both first-touch (`pendingAmount` / `pendingUnlockAt`, and `balances` for a
+2. **`deposit` / `claimDeposit` - the budget is SOLVABLE, and the blocker moved.** The account-opening
+   function this needs was measured as not fitting, and that measurement was wrong in one respect: it assumed
+   `openAccount(address)`. An account only ever needs to open ITSELF, and `openSelf()` keyed on `msg.sender`
+   carries no address argument - the ~239 B of call arguments that broke the budget. With that, and with the
+   functions that become UPDATE-only once accounts are open delegated to the facet (`issue`, `collectFees`,
+   `addBlackList`, `freeze`), the master measures **8,778 B deployed with 1,222 B of headroom**, and
+   `openSelf()` opening all five mappings fits comfortably.
+
+   Measured with that in place: `deposit` gets PAST the delegated-INSERT wall. It then fails on its own
+   delivery proof, which is a test-harness gap (the probe never actually sends FTs to the container), not a
+   contract or platform limit. So this finding is no longer budget-blocked.
+
+   It is not in the tree because it does not stand alone: the same rewrite is what `transfer` needs, and
+   `transfer` still fails (see below), so landing it would trade 24/24 green for 25/27 plus a mandatory
+   account-opening step on every route. It is written down here so the next attempt starts from the working
+   budget rather than re-deriving it.
+
+3. **`deposit` / `claimDeposit` as they stand today.** Both first-touch (`pendingAmount` / `pendingUnlockAt`, and `balances` for a
    never-seen claimant), so they need key creation on the master - and the master has no room. Attempted and
    measured: a guarded, permissionless `openAccount(address)` opening all three mappings costs ~300 B (~474 B
    for the writes, less ~174 B recovered by delegating `issue` again). Two things had to be true for it to fit

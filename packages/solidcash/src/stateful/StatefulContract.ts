@@ -11843,8 +11843,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const probe = builder.build();
     const transaction = probe.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
-    const vm = createVirtualMachineBch2026ForProvider(this.inner.provider);
-    const trace = vm.debug({ inputIndex, sourceOutputs, transaction }) as AuthenticationProgramStateCommon[];
+    const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });
@@ -11857,9 +11856,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Uint8Array | undefined {
     const transaction = builder.buildLibauthTransaction();
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
-    const trace = createVirtualMachineBch2026ForProvider(this.inner.provider).debug({
-      inputIndex, sourceOutputs, transaction,
-    }) as AuthenticationProgramStateCommon[];
+    const trace = evaluateProbeTrace(this.inner.provider, { inputIndex, sourceOutputs, transaction });
     const commitments = extractCommitmentsFromTrace(trace, 1, {
       min: returnOutputIndex, max: returnOutputIndex + 1,
     });

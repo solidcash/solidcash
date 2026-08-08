@@ -666,6 +666,7 @@ function buildFunctionAbiMetadata(
         ...(ea.runtimeAliasPriorSlots?.length
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
+        ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
       })),
     }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {

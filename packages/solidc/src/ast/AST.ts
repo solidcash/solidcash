@@ -269,6 +269,8 @@ export interface EntryAccessInfo {
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
   valueParam?: string;
+  // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
+  valueSource?: string;
 }
 
 export interface TokenContainerAccessInfo {

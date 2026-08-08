@@ -83,7 +83,12 @@ export function encodeFunctionArgument(
     // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
     // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript
     // everywhere the value is used, e.g. keyToSlot of an address[] mapping key).
-    return encodePushdataValue(convertAddressArg(argument, typeStr) as StateValue, typeStr, structs);
+    const encoded = encodePushdataValue(convertAddressArg(argument, typeStr) as StateValue, typeStr, structs);
+    // The unlocking template pushes each encoded argument as one stack item. A sole 0x00 count prefix would be
+    // minimally encoded as OP_0 and arrive as an empty item, so the covenant could no longer split/decode the
+    // array header. The equivalent explicit pushdata form remains two bytes and therefore survives the outer
+    // argument push. This special case is only needed for a top-level empty array argument.
+    return argument.length === 0 ? Uint8Array.from([0x01, 0x00]) : encoded;
   }
   let type = parseType(typeStr);
   if (type === undefined) {

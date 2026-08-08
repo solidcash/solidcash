@@ -2,6 +2,12 @@ import { describe, it, expect } from 'vitest';
 import { encodeInt } from '@solidcash/utils';
 import { encodeFunctionArgument } from '../src/index.js';
 
+describe('encodeFunctionArgument: empty arrays', () => {
+  it('preserves the zero count prefix through the outer unlocking-script push', () => {
+    expect(encodeFunctionArgument([], 'address[]')).toEqual(Uint8Array.from([0x01, 0x00]));
+  });
+});
+
 // SDK encoding of enum-typed arguments. Enums are int-backed; an enum value (bigint) encodes as int
 // even though the ABI type is the enum name (which is not a recognized primitive type string).
 describe('encodeFunctionArgument: enum types', () => {

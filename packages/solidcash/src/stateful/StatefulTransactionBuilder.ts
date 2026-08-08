@@ -166,6 +166,9 @@ export interface ExternalCallUtxoGroup {
   batchPredecessorOutputs?: Array<{
     outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
   }>;
+  /** Entry covenant bytecode for fixed sorted-batch target slots. Absent targets use balanced funder inputs,
+   * whose locking bytecode must not be mirrored when the active route mints the target node. */
+  batchEntryLockingBytecodes?: Map<number, Uint8Array>;
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
 }
@@ -353,7 +356,9 @@ export class StatefulTransactionBuilder {
   /** Route value chunks the derivation recovered, keyed by ABSOLUTE output index. Builder-level, not per-group:
    * the covenant that pins them is probed as one group but addresses an output in ANOTHER group's block (its
    * base is the proxy master), so the placing group and the owning group are different. */
-  private derivedChunkOutputs = new Map<number, { commitment: string; lockingBytecode: Uint8Array }>();
+  private derivedChunkOutputs = new Map<number, {
+    commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
+  }>();
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
@@ -1051,9 +1056,12 @@ export class StatefulTransactionBuilder {
    * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
    */
   setDerivedChunkOutput(
-    outputIndex: number, chunk: { commitment: string; lockingBytecode: Uint8Array },
+    outputIndex: number, chunk: { commitment: string; lockingBytecode: Uint8Array; categoryId?: string },
   ): boolean {
-    if (this.derivedChunkOutputs.get(outputIndex)?.commitment === chunk.commitment) return false;
+    const existing = this.derivedChunkOutputs.get(outputIndex);
+    if (existing?.commitment === chunk.commitment
+      && binToHex(existing.lockingBytecode) === binToHex(chunk.lockingBytecode)
+      && existing.categoryId === chunk.categoryId) return false;
     this.derivedChunkOutputs.set(outputIndex, chunk);
     return true;
   }
@@ -1422,7 +1430,10 @@ export class StatefulTransactionBuilder {
       if (g.sharedGroupIndex !== undefined) continue;
       // Use full block size when available
       base += g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length;
-      if (this.delegateEntriesAfterLowLevel && g.delegateCallGroupIndex !== undefined) {
+      // A proxied participant's implementation output follows that participant block in both the legacy and
+      // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
+      // outputs remain interleaved; omitting it makes every later participant output base one slot too low.
+      if (g.delegateCallGroupIndex !== undefined) {
         const delegate = this.lowLevelCallUtxoGroups[g.delegateCallGroupIndex];
         if (delegate?.callMode === 'delegatecall') base += 1 + delegate.dataNftUtxos.length;
       }
@@ -1971,7 +1982,7 @@ export class StatefulTransactionBuilder {
               amount: 1000n,
               token: {
                 amount: 0n,
-                category: group.categoryId,
+                category: derivedChunk.categoryId ?? group.categoryId,
                 nft: { capability: 'mutable', commitment: derivedChunk.commitment },
               },
             });
@@ -2049,9 +2060,11 @@ export class StatefulTransactionBuilder {
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
             const bEntryOut = this.externalCallEntryOutputs.get(group.categoryId)?.get(si);
+            const entryLockingBytecode = group.batchEntryLockingBytecodes?.get(si)
+              ?? input.unlocker.generateLockingBytecode();
             builder.addOutput(bEntryOut !== undefined
               ? {
-                to: input.unlocker.generateLockingBytecode(),
+                to: entryLockingBytecode,
                 amount: input.satoshis,
                 token: {
                   amount: input.token?.amount ?? 0n,
@@ -2668,6 +2681,24 @@ export class StatefulTransactionBuilder {
             lockingBytecode: binToHex(dv.lockingBytecode),
             outputBase: builder.outputs.length,
             computedBase: this.getChunkOutputBase(),
+            baseParts: {
+              layoutTrailingBase: this.blockLayout?.trailingBase,
+              layoutBlockSize: this.blockLayout?.blockSize,
+              externalCallOutputs: this.externalCallUtxoGroups.map((group) => ({
+                shared: group.sharedGroupIndex,
+                blockInputs: group.blockInputs?.length,
+                fallback: 1 + group.dataNftUtxos.length,
+              })),
+              externalReturns: this.tailReturnEventOutputs()
+                .filter((returnEvent) => returnEvent.categoryId !== this.categoryId).length,
+              lowLevelGroups: this.lowLevelCallUtxoGroups.map((group) => 1 + group.dataNftUtxos.length),
+              lowLevelRaw: this.lowLevelCallRawInputs.length,
+              iterationEntries: this.iterationEntryInputs.length,
+              loopEntries: this._loopEntryOutputCount(),
+              valueChunks: this._valueChunkOutputCount(),
+              pendingOutputs: this.pendingOutputs.length,
+              identityAnchors: this.externalIdentityAnchorUtxos.length + (this.logicalIdentityUtxo ? 1 : 0),
+            },
             count: commitments.length,
           });
         }
@@ -2858,6 +2889,20 @@ export class StatefulTransactionBuilder {
     const externalCallOutputCount = this.externalCallUtxoGroups.reduce(
       (sum, g) => (g.blockInputs ? sum + g.blockInputs.length : sum + 1 + g.dataNftUtxos.length), 0,
     );
+    // A direct delegate is preserved before the proxy-owned entry band (see build()). Its implementation
+    // master/data outputs therefore shift the physical entry indices even though they are not part of the
+    // proxy forwarder's block layout. Delegates associated with an external group are emitted with that group
+    // later and have already been counted above.
+    const associatedDelegates = new Set(this.externalCallUtxoGroups
+      .map((group) => group.delegateCallGroupIndex)
+      .filter((index): index is number => index !== undefined));
+    const leadingDelegateOutputCount = this.delegateEntriesAfterLowLevel
+      ? this.lowLevelCallUtxoGroups.reduce((sum, group, index) => (
+        group.callMode === 'delegatecall' && !associatedDelegates.has(index)
+          ? sum + 1 + group.dataNftUtxos.length : sum
+      ), 0) + (this.delegateReturnEventAfterEvents ? 0 : this.pendingReturnEventOutputs
+        .filter((returnEvent) => returnEvent.categoryId === this.categoryId).length)
+      : 0;
     // When a dynamic-array read coexists with external calls, build() emits the read chunks' preservation
     // outputs BEFORE the callee outputs (loopChunkBeforeCallees), so everything downstream of the entries
     // (transfers, events, RETURN events - this is the chain root they all build on) shifts by the chunk
@@ -2866,7 +2911,8 @@ export class StatefulTransactionBuilder {
     const chunkBeforeCalleeCount = this.externalCallUtxoGroups.length > 0 ? this.iterationEntryInputs.length : 0;
     // Low-level call outputs are now AFTER entries/SC/TCs/transfers/events (matching block layout)
     return masterOutputCount + dataNftOutputCount + readOnlyOutputCount + blockhashOutputCount + keccakOutputCount
-      + ecrecoverOutputCount + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount;
+      + ecrecoverOutputCount + outStateOutputCount + externalCallOutputCount + chunkBeforeCalleeCount
+      + leadingDelegateOutputCount;
   }
 
   /**

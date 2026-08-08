@@ -460,6 +460,8 @@ export interface EntryAccessAbi {
   // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
+  /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
+  valueSource?: string;
 }
 
 export interface ExternalReadAbi {

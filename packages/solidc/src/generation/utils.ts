@@ -170,6 +170,12 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     encodeInt(offset), Op.OP_SPLIT, Op.OP_NIP, encodeInt(20n), Op.OP_SPLIT, Op.OP_DROP,
   ];
   const narrowAddressTo20: Script = [
+    Op.OP_SIZE, encodeInt(0n), Op.OP_EQUAL,
+    Op.OP_IF,
+    // SolidCash represents address(0) as an empty locking bytecode. Solidity narrowing materializes the
+    // corresponding 20-byte zero address rather than attempting to parse it as a P2PKH script.
+    Op.OP_DROP, new Uint8Array(20),
+    Op.OP_ELSE,
     Op.OP_SIZE, encodeInt(20n), Op.OP_EQUAL,
     Op.OP_IF,
     // Raw 20-byte address: already narrowed.
@@ -179,6 +185,7 @@ export function compileCast(from: Type, to: Type, isUnsafe: boolean, solidityCom
     ...extractAddressHash(2n),
     Op.OP_ELSE,
     ...extractAddressHash(3n),
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
     Op.OP_ENDIF,
   ];

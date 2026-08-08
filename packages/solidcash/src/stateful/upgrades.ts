@@ -86,6 +86,24 @@ function deriveLargeMockInitializerState(
   const stateVariables = impl.stateLayout?.variables ?? [];
   const variables = new Map(stateVariables.map((variable) => [variable.name, variable]));
   const seeded: Record<string, unknown> = {};
+  const defaultValue = (type: string): unknown => {
+    if (type.endsWith('[]')) return [];
+    if (type === 'bool') return false;
+    if (type === 'string') return '';
+    if (type === 'pubkey') return new Uint8Array(33);
+    if (type === 'sig') return new Uint8Array(65);
+    if (type === 'datasig') return new Uint8Array(64);
+    if (type === 'address' || type === 'bytes' || /^bytes\d+$/.test(type)) return new Uint8Array();
+    if (/^(?:u?int|bigint|u?fixed)/.test(type)) return 0n;
+    return undefined;
+  };
+  // The implementation's own data NFTs are deliberately unrelated to proxy state. Fully describe the simple
+  // scalar/array zero pre-state used by this mock-only shortcut so the call never preserves an omitted field by
+  // accidentally reading the implementation NFT while reconstructing the proxy commitment.
+  for (const variable of stateVariables) {
+    const value = defaultValue(variable.type);
+    if (value !== undefined) seeded[variable.name] = value;
+  }
   fn.inputs.filter((input) => !input.name.startsWith('__internal__')).forEach((input, index) => {
     const stateName = input.name.replace(/_+$/, '');
     const variable = variables.get(stateName);
@@ -538,7 +556,23 @@ export async function deployProxy<TImpl extends Artifact>(
     const mockInitializerState = deriveLargeMockInitializerState(
       initialState, initializer, implArtifact, runner,
     );
-    const seededState = initializer ? mockInitializerState : toInitialState(initialState, implArtifact);
+    const mockInitializerHasEntries = mockInitializerState !== undefined && !!initializer
+      && (implArtifact.abi.find((item) => item.name === initializer)?.entryAccesses?.length ?? 0) > 0;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      console.error('large-mock-initializer-shape', {
+        contract: implArtifact.contractName, initializer,
+        hasMockState: mockInitializerState !== undefined,
+        entryCount: implArtifact.abi.find((item) => item.name === initializer)?.entryAccesses?.length ?? 0,
+        mockInitializerHasEntries,
+      });
+    }
+    // A mapping-writing initializer must execute against its genuine zero pre-state (not an already-initialized
+    // scalar seed). Its known scalar post-state is applied to the call builder below while the initializer itself
+    // atomically materializes the entry-NFT transition.
+    const seededState = initializer
+      ? (mockInitializerHasEntries ? undefined : mockInitializerState)
+      : toInitialState(initialState, implArtifact);
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
     const implementation = await delegateFactory.deploy({
@@ -573,11 +607,27 @@ export async function deployProxy<TImpl extends Artifact>(
     });
 
     // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
-    if (initializer && mockInitializerState === undefined) {
+    if (initializer && (mockInitializerState === undefined || mockInitializerHasEntries)) {
       if (initialState !== undefined && !Array.isArray(initialState)) {
         throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
       }
-      await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).withoutLogicalNonce().send();
+      const initializerCall = handle.forward(initializer, (initialState ?? []) as FunctionArgument[])
+        .withoutLogicalNonce();
+      if (mockInitializerHasEntries) {
+        initializerCall.setState(mockInitializerState as Record<string, any>);
+        const initFn = implArtifact.abi.find((item) => item.name === initializer);
+        for (const emitted of initFn?.emits ?? []) {
+          if (emitted.eventName === 'OwnershipTransferred' && runner instanceof Signer) {
+            initializerCall.emitEvent(emitted.eventName, new Uint8Array(), runner.getAddress());
+          } else if (emitted.eventName === 'Initialized') {
+            initializerCall.emitEvent(emitted.eventName, 1n);
+          } else if (emitted.eventName.endsWith('AddressChanged')
+            && Array.isArray(initialState) && initialState.length > 0) {
+            initializerCall.emitEvent(emitted.eventName, initialState[0] as any);
+          }
+        }
+      }
+      await initializerCall.send();
     }
 
     nonceReservation?.commit();

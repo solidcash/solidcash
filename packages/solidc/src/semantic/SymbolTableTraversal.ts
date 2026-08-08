@@ -4132,16 +4132,19 @@ export default class SymbolTableTraversal extends AstTraversal {
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
       const valueParam = wholeValueWrite && chunkableValue && node.expression instanceof IdentifierNode
         ? node.expression.name : undefined;
+      const valueSource = wholeValueWrite ? this.canonicalizeExpression(node.expression) : undefined;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
         if (valueParam && existing.valueParam === undefined) existing.valueParam = valueParam;
+        if (valueSource && existing.valueSource === undefined) existing.valueSource = valueSource;
       } else {
         const collSig = computeCollectionSignature(node.collection.name, node.collection.type.toString());
         map.set(slotKey, {
           collection: node.collection.name, collectionSignature: collSig,
           keyParams, keySources, operations: rmw ? ['read', 'write'] : ['write'], slotIndex: -1,
           ...(valueParam !== undefined && { valueParam }),
+          ...(valueSource !== undefined && { valueSource }),
         });
       }
       // Recurse into the value expression (may contain nested mapping accesses)

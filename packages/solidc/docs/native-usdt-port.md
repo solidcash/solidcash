@@ -263,6 +263,17 @@ Two limitations remain, each pinned by a test:
    second write carries value. Composing them needs a covenant that applies both writes to one entry, and no
    such path exists.
 
+   **A second collision sits behind it, found by fixing the first.** Removing the owner fee credit from
+   `transfer` (accruing to a scalar and sweeping with a `collectFees`) does eliminate the write collision - and
+   `transfer` then fails on a READ collision instead: it reads `isBlackListed[x]` and `frozen[x]` for BOTH
+   parties, and two ABSENT keys in one collection prove through the SAME predecessor, so one entry NFT is
+   co-spent twice. Pre-creating every key for both parties (a five-mapping `openAccount`) clears that too, and
+   `transfer` then fails a third time inside state derivation. Measured, and then reverted: the rewrite costs
+   an account-opening step on every route, and at HEAD `issue`, `approve`, `addBlackList`, `freeze` and
+   `removeBlackList` already settle WITHOUT one. It traded usability for no gain, so it is not in the tree -
+   only this note is. The lesson for anyone picking it up: the write collision is the first of at least three
+   layers, not the whole problem.
+
    So the guard stays, and it fails closed on purpose. `C2RuntimeSlotAlias.test.ts` pins the refusal, the
    control case where the three keys are distinct (owner correctly credited 7), and the reason the tempting
    fix is wrong. Not worked around in the contract either - dropping the separate owner credit would deviate

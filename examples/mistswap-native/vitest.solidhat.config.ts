@@ -13,6 +13,7 @@ const abs = (specifier: string): string => require.resolve(specifier);
 const UPSTREAM = '/Code/mistswap/mistswap';
 
 export default defineConfig(solidcashHardhatPreset({
+  solidcash: { snapshotBeforeEach: ['**/PairKashi.test.ts'] },
   test: {
     include: [`${UPSTREAM}/test/**/*.test.ts`],
     // These suites deploy real split contracts in `before` hooks, which is far past Vitest's 10s hook default.

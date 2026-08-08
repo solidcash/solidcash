@@ -4,6 +4,9 @@
  * Referenced automatically by `solidcashHardhatPreset`; or add it manually: setupFiles: ['@solidcash/testing/vitest-setup'].
  */
 import { beforeAll, afterAll, beforeEach, afterEach, it, test, describe } from 'vitest';
+import {
+  takeDeploymentRegistrySnapshot, type DeploymentRegistrySnapshot, type SnapshotRestorer,
+} from 'solidcash';
 import './chai.js';
 import { initHre } from './index.js';
 
@@ -69,7 +72,53 @@ const runner = (original: unknown): unknown => {
 const globals = globalThis as Record<string, unknown>;
 globals.before ??= hook(beforeAll as never);
 globals.after ??= hook(afterAll as never);
-globals.beforeEach = hook(beforeEach as never);
+const parseSelectors = (raw: string | undefined): string[] => {
+  if (!raw) return [];
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (Array.isArray(parsed) && parsed.every((value) => typeof value === 'string')) return parsed;
+  } catch { /* allow the original single literal environment value */ }
+  return [raw];
+};
+const globToRegExp = (glob: string): RegExp => {
+  let source = '';
+  for (let index = 0; index < glob.length; index++) {
+    const char = glob[index];
+    if (char === '*') {
+      if (glob[index + 1] === '*') { source += '.*'; index++; } else source += '[^/]*';
+    } else if (char === '?') source += '[^/]';
+    else source += char.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+  }
+  return new RegExp(source);
+};
+const fixtureSelectors = parseSelectors(process.env.SOLIDCASH_SNAPSHOT_BEFORE_EACH)
+  .map((selector) => globToRegExp(selector.replaceAll('\\', '/')));
+let fixtureHookRegistered = false;
+let chainSnapshot: SnapshotRestorer | undefined;
+let registrySnapshot: DeploymentRegistrySnapshot | undefined;
+
+const selectedFixtureHook = (): boolean => {
+  const stack = new Error().stack?.replaceAll('\\', '/') ?? '';
+  return fixtureSelectors.some((selector) => selector.test(stack));
+};
+
+globals.beforeEach = (fn: unknown, timeout?: number): unknown => {
+  if (fixtureHookRegistered || !selectedFixtureHook()) return hook(beforeEach as never)(fn, timeout);
+  fixtureHookRegistered = true;
+  const bound = bindContext(fn) as AnyFn;
+  return beforeEach(async () => {
+    if (chainSnapshot) {
+      await chainSnapshot.restore();
+      registrySnapshot?.restore();
+      return;
+    }
+    await bound();
+    const provider = hre.ethers?.provider as { takeSnapshot?: () => Promise<SnapshotRestorer> } | undefined;
+    if (!provider?.takeSnapshot) throw new Error('Snapshot beforeEach requires a snapshot-capable provider');
+    chainSnapshot = await provider.takeSnapshot();
+    registrySnapshot = takeDeploymentRegistrySnapshot(provider as never);
+  }, timeout);
+};
 globals.afterEach = hook(afterEach as never);
 globals.it = runner(it);
 globals.test = runner(test);
@@ -87,4 +136,4 @@ globals.xit = typeof itSkip === 'function' ? runner(itSkip) : globals.it;
 globals.xdescribe = typeof describeSkip === 'function' ? runner(describeSkip) : suite;
 globals.xcontext = globals.xdescribe;
 
-await initHre(process.cwd());
+const hre = await initHre(process.cwd());

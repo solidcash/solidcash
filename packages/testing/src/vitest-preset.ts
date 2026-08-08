@@ -20,10 +20,14 @@ import type { Plugin } from 'vite';
 
 /** Minimal structural Vite/Vitest config shape (version-agnostic; `defineConfig` accepts it structurally). */
 export interface ViteLikeConfig {
-  test?: { setupFiles?: string | string[]; [k: string]: unknown };
+  test?: { setupFiles?: string | string[]; env?: Record<string, string>; [k: string]: unknown };
   resolve?: { alias?: Record<string, string>; [k: string]: unknown };
   optimizeDeps?: { exclude?: string[]; [k: string]: unknown };
   plugins?: unknown[];
+  solidcash?: {
+    /** Glob(s) selecting modules whose first root beforeEach is a reusable chain fixture. */
+    snapshotBeforeEach?: string | string[];
+  };
   [k: string]: unknown;
 }
 
@@ -139,14 +143,22 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
 
 /** Merge the SolidCash Hardhat-drop-in settings into a user Vitest config. */
 export function solidcashHardhatPreset(userConfig: ViteLikeConfig = {}): ViteLikeConfig {
+  const { solidcash: solidcashOptions, ...viteConfig } = userConfig;
   const userAlias = (userConfig.resolve?.alias ?? {}) as Record<string, string>;
   const mergedAlias = { ...hardhatAliases(), ...userAlias };
   const userExclude = userConfig.optimizeDeps?.exclude ?? [];
   const userSetup = userConfig.test?.setupFiles;
   const setupList = Array.isArray(userSetup) ? userSetup : userSetup ? [userSetup] : [];
   const userPlugins = Array.isArray(userConfig.plugins) ? userConfig.plugins : [];
+  const snapshotSelectors = solidcashOptions?.snapshotBeforeEach;
+  const fixtureEnv: Record<string, string> = {};
+  if (snapshotSelectors !== undefined) {
+    fixtureEnv.SOLIDCASH_SNAPSHOT_BEFORE_EACH = JSON.stringify(
+      Array.isArray(snapshotSelectors) ? snapshotSelectors : [snapshotSelectors],
+    );
+  }
   return {
-    ...userConfig,
+    ...viteConfig,
     plugins: [cjsHardhatRequirePlugin(mergedAlias), ...userPlugins],
     optimizeDeps: {
       ...userConfig.optimizeDeps,
@@ -160,6 +172,7 @@ export function solidcashHardhatPreset(userConfig: ViteLikeConfig = {}): ViteLik
       globals: true,
       environment: 'node',
       ...userConfig.test,
+      env: { ...userConfig.test?.env, ...fixtureEnv },
       setupFiles: ['@solidcash/testing/vitest-setup', ...setupList],
     },
   };

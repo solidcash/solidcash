@@ -272,6 +272,7 @@ fssz
 fsub
 fullcalldatas
 funcs
+fusable
 functio
 fundable
 Futarchy
@@ -509,6 +510,7 @@ outcat
 outctr
 outidx
 outliner
+outlinable
 OUTPUTCOMMITMENT
 overloadable
 overridding

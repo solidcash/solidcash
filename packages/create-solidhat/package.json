@@ -12,11 +12,12 @@
   "types": "dist/index.d.ts",
   "bin": { "create-solidhat": "dist/cli.js" },
   "scripts": {
-    "build": "yarn clean && yarn compile",
-    "clean": "rm -rf ./dist",
+    "build": "yarn compile",
+    "clean": "rm -rf ./dist *.tsbuildinfo",
     "compile": "tsc -p tsconfig.build.json",
+    "rebuild": "yarn clean && yarn compile",
     "lint": "eslint . --ext .ts --ignore-path ../../.eslintignore",
-    "prepare": "yarn build",
+    "prepare": "yarn rebuild",
     "test": "vitest run --passWithNoTests"
   },
   "dependencies": { "@solidcash/solidhat": "^0.13.1" },

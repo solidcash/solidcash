@@ -30,6 +30,7 @@
     "test": "lerna run test --ignore solidcash-examples && yarn workspace testing-suite test",
     "test:fast": "lerna run test:fast --ignore solidcash-examples --ignore testing-suite",
     "test:e2e": "yarn workspace solidcash test:e2e",
+    "test:all": "yarn test && yarn test:e2e",
     "test:regtest": "yarn workspace solidcash test:regtest",
     "test:package-smoke": "node scripts/release-package-smoke.mjs",
     "test:application-conformance": "node scripts/release-application-conformance.mjs",

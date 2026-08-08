@@ -35,7 +35,11 @@ jobs:
         run: yarn build
 
       - name: Run tests
+        # Default yarn test is unit/fast packages (solidcash excludes e2e). Keep mocknet e2e in CI.
         run: yarn test -- -- --coverage --coverage.provider=v8
+
+      - name: Run solidcash e2e (mocknet)
+        run: yarn test:e2e
 
       - name: Run release application conformance gate
         run: yarn test:application-conformance

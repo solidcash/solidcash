@@ -1,3 +1,6 @@
+import { createHash } from 'crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { join } from 'path';
 import {
   CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache,
 } from 'antlr4';
@@ -182,7 +185,48 @@ export interface SplitCompileOptions extends CompileOptions {
 // Optional process-wide memoization of pure string compiles (same code+options -> same artifact).
 // Off by default; enabled via SOLIDC_COMPILE_CACHE=1 (test harness sets it) since compilation is
 // deterministic. Skipped when a custom errorListener/importResolver is present (non-serializable).
+// When SOLIDC_COMPILE_CACHE_DIR is also set, hits/misses are shared across vitest workers via disk
+// (each worker has its own Map; the directory is the cross-process layer).
 const compileCache = new Map<string, Artifact>();
+
+/** Strip lazy `delegateArtifact` so JSON / structuredClone do not force a second compile pass. */
+function artifactWithoutDelegate(artifact: Artifact): Artifact {
+  return Object.fromEntries(
+    Object.keys(artifact)
+      .filter((key) => key !== 'delegateArtifact')
+      .map((key) => [key, artifact[key as keyof Artifact]]),
+  ) as unknown as Artifact;
+}
+
+function diskCachePath(cacheKey: string): string | undefined {
+  const dir = process.env.SOLIDC_COMPILE_CACHE_DIR;
+  if (!dir) return undefined;
+  const hash = createHash('sha256').update(cacheKey).digest('hex');
+  return join(dir, `${hash}.json`);
+}
+
+function diskCacheGet(cacheKey: string): Artifact | undefined {
+  const file = diskCachePath(cacheKey);
+  if (!file || !existsSync(file)) return undefined;
+  try {
+    return JSON.parse(readFileSync(file, 'utf8')) as Artifact;
+  } catch {
+    return undefined;
+  }
+}
+
+function diskCacheSet(cacheKey: string, artifact: Artifact): void {
+  const file = diskCachePath(cacheKey);
+  if (!file) return;
+  try {
+    const dir = process.env.SOLIDC_COMPILE_CACHE_DIR!;
+    mkdirSync(dir, { recursive: true });
+    // Primary artifact only — re-attaching the lazy delegate on every disk hit would re-run codegen.
+    writeFileSync(file, JSON.stringify(artifactWithoutDelegate(artifact)));
+  } catch {
+    // Cache is best-effort; a full disk or race must not fail the compile.
+  }
+}
 
 /**
  * Clone an artifact without forcing its lazy delegate variant. `structuredClone()` reads enumerable getters,
@@ -194,11 +238,7 @@ function cloneArtifact(artifact: Artifact): Artifact {
   const delegateDescriptor = Object.getOwnPropertyDescriptor(artifact, 'delegateArtifact');
   if (!delegateDescriptor?.get) return structuredClone(artifact);
 
-  const withoutDelegate = Object.fromEntries(
-    Object.keys(artifact)
-      .filter((key) => key !== 'delegateArtifact')
-      .map((key) => [key, artifact[key as keyof Artifact]]),
-  ) as unknown as Artifact;
+  const withoutDelegate = artifactWithoutDelegate(artifact);
   const cloned = structuredClone(withoutDelegate);
   let memo: Artifact | undefined;
   let built = false;
@@ -521,8 +561,18 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   let cacheKey = '';
   if (cacheable) {
     cacheKey = `${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
-    const hit = compileCache.get(cacheKey);
-    if (hit) return cloneArtifact(hit);
+    const memHit = compileCache.get(cacheKey);
+    if (memHit) return cloneArtifact(memHit);
+    const diskHit = diskCacheGet(cacheKey);
+    if (diskHit) {
+      // Disk stores the primary artifact only (JSON cannot preserve the lazy getter).
+      // Re-attach delegateArtifact before promoting so a cold worker matches a warm one.
+      const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
+      diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
+      attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName);
+      compileCache.set(cacheKey, diskHit);
+      return cloneArtifact(diskHit);
+    }
   }
   const mergedCompilerOptions = normalizeCompilerOptions(artifactCompilerOptions);
   mergedCompilerOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
@@ -547,7 +597,10 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     if (artifact.compiler.options) delete artifact.compiler.options.__messageBusVerifierProgram;
   }
   attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, primaryContractName);
-  if (cacheable) compileCache.set(cacheKey, artifact);
+  if (cacheable) {
+    compileCache.set(cacheKey, artifact);
+    diskCacheSet(cacheKey, artifact);
+  }
   return cacheable ? cloneArtifact(artifact) : artifact;
 }
 
@@ -560,6 +613,11 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
     }
     throw cause;
   }
+}
+
+/** Clear the in-process compile memo Map (tests / cold-worker simulation). Does not touch disk. */
+export function clearCompileCache(): void {
+  compileCache.clear();
 }
 
 /**

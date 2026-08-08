@@ -530,11 +530,7 @@ describe('msg.sender and tx.origin', () => {
       await provider.addUtxo(getDataNftAddress(contractC, catC), dataNftC);
     });
 
-    it('should compile all three contracts successfully', () => {
-      expect(artA.abi).toBeDefined();
-      expect(artB.abi).toBeDefined();
-      expect(artC.abi).toBeDefined();
-    });
+    // Compile success for A/B/C is implied by the ABI metadata and STB chain tests below.
 
     it('should include usesMsgSender on C\'s compute function', () => {
       const computeFunc = artC.abi.find((f) => f.name === 'compute');

@@ -1315,13 +1315,11 @@ export class StatefulTransactionBuilder {
    * Get the master input index for an external call group.
    */
   getExternalCallMasterInputIndex(groupIdx: number): number {
-    // A sparse message-bus batch oracle band makes the active co-spend count smaller than its physical width. Resolve the
-    // already-positioned callee master directly rather than reconstructing its base from dense resource counts.
-    if (this.blockhashCoSpendSlotOrdinals) {
-      const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
-      const found = master && this.allInputs.findIndex((input) => input.txid === master.txid && input.vout === master.vout);
-      if (found !== undefined && found >= 0) return found;
-    }
+    // Resolve the already-positioned callee master directly. The caller block can contain output-only funder slots
+    // (events/transfers) and sparse resource bands whose physical width cannot be reconstructed from active UTXO counts.
+    const master = this.externalCallUtxoGroups[groupIdx]?.masterUtxo;
+    const found = master && this.allInputs.findIndex((input) => input.txid === master.txid && input.vout === master.vout);
+    if (found !== undefined && found >= 0) return found;
     let base = 1 + this.dataNftUtxos.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
       + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState inputs
@@ -1343,8 +1341,9 @@ export class StatefulTransactionBuilder {
    * Output layout: master(1) + A's dataNfts + A's readOnlyNfts + preceding groups' (1+dataNfts).
    */
   getExternalCallOutputBase(groupIdx: number): number {
-    let base = 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
-      + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
+    let base = this.blockLayout?.blockSize
+      ?? 1 + this.requiredNftIndices.length + this.readOnlyDataNftUtxos.length + this.blockhashCoSpendUtxos.length
+        + this.keccakComputeCoSpendUtxos.length + this.ecrecoverComputeCoSpendUtxos.length;
     // Skip outState outputs
     for (const g of this.externalOutStateUtxoGroups) {
       base += 1 + g.dataNftUtxos.length + (g.keccakInputs?.length ?? 0);

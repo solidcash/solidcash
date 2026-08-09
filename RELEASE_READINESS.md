@@ -817,6 +817,10 @@ it must not silently compile to incorrect covenant behavior.
   - Constructor C2 batching now resolves every nested mapping key source before hashing the authenticated slot.
     The Solidity corpus nested-getter deployment no longer oscillates, and a dedicated explicit-constructor
     regression proves both the initialized two-key leaf and an absent sibling through covenant execution.
+  - Cross-contract event derivation now locates the callee master from the positioned input set and starts its
+    output block after the caller's full compiled block. Caller event/transfer funder slots therefore no longer
+    make derivation execute the wrong input or write the callee state and event commitments one slot early.
+    `EventAnonymousE2E` passes 43/43, with the adjacent external-call, sorted-write, and sender gates passing 25/25.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

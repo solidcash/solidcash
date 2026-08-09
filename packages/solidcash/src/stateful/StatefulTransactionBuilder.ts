@@ -100,6 +100,8 @@ export interface ExternalCallUtxoGroup {
   requiredDataNftIndices: number[];
   functionName: string;
   functionArgs: any[];
+  /** Exact overload selected for this invocation (plain names are insufficient once ABI names repeat). */
+  abiFunction?: AbiFunction;
   externalContract: any; // StatefulContract - kept as any to avoid circular import
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */

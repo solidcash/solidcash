@@ -11727,6 +11727,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
 
         if (callInfo.type === 'stateful') {
+          const callAbiFunctions = callInfo.contract.inner.artifact.abi
+            .filter((candidate) => candidate.name === callInfo.functionName);
+          const callAbiFunction = callAbiFunctions.find((candidate) => candidate.inputs
+            .filter((input) => !input.name.startsWith('__internal__')).length === callInfo.args.length)
+            ?? callAbiFunctions[0];
           const bState = callInfo.contract.inner.artifact.delegateOnly
             ? await (callInfo.contract as StatefulContract)._getMasterOnlyState()
             : await callInfo.contract.getFullState();
@@ -11765,6 +11770,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             requiredDataNftIndices: bRequiredNftIndices,
             functionName: callInfo.functionName,
             functionArgs: callInfo.args,
+            ...(callAbiFunction && { abiFunction: callAbiFunction }),
             externalContract: callInfo.contract,
             callMode: lowLevelCalls[i].callMode,
           });
@@ -11772,8 +11778,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           if (lowLevelCalls[i].callMode === 'delegatecall') {
             const delegateGroupIndex = lowLevelCallUtxoGroups.length - 1;
-            const delegateAbi = callInfo.contract.inner.artifact.abi as readonly AbiFunction[];
-            const delegateFn = delegateAbi.find((f) => f.name === callInfo.functionName);
+            const delegateFn = callAbiFunction;
             const nestedIndices: number[] = [];
             for (const nested of delegateFn?.externalCalls ?? []) {
               const nestedSources = nested.rawArgSources ?? nested.argSources;
@@ -12252,8 +12257,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // etc. has other slots interleaved that we cannot reserve in the proxy block - unsupported here (fail closed).
       for (const g of lowLevelCallUtxoGroups) {
         if (g.callMode !== 'delegatecall') continue;
-        const gFn = (g.externalContract.inner.artifact.abi as readonly { name: string; blockLayout?: FunctionBlockLayout }[])
-          .find((f) => f.name === g.functionName);
+        const gFn = g.abiFunction
+          ?? (g.externalContract.inner.artifact.abi as readonly AbiFunction[])
+            .find((f) => f.name === g.functionName);
         const extra = (gFn?.blockLayout?.slots ?? []).filter((s) => s.kind !== 'master' && s.kind !== 'dataNft');
         if (extra.length === 0
           || !extra.every((s) => s.kind === 'event' || s.kind === 'entry' || s.kind === 'returnEvent')) continue;
@@ -12350,6 +12356,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             group.functionName,
             group.functionArgs,
             {
+              ...(group.abiFunction && { abiFunction: group.abiFunction }),
               blockBase: masterInputIndex,
               msgSenderCategory: llcMsgSenderCategory,
               omitLocalFeeTail: true,
@@ -12372,7 +12379,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // entry co-spends (or funder placeholders for collapsed/shared C2 proofs), and funders for
           // output-only event/returnEvent slots. Fee-only leftover funders are NOT included.
           const scalarData = priv.dataNftUtxos;
-          const bFunc = callee.inner.artifact.abi.find((f) => f.name === group.functionName);
+          const bFunc = group.abiFunction
+            ?? callee.inner.artifact.abi.find((f) => f.name === group.functionName);
           group.blockLayout = priv.blockLayout ?? bFunc?.blockLayout;
           group.requiredDataNftIndices = scalarData.map((_, i) => i);
           const funderPool = [...(priv.funderUtxos ?? [])];
@@ -12803,8 +12811,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
       const gArt = g.externalContract.inner.artifact;
-      const gFn = (gArt.abi as readonly { name: string; emits?: readonly EmitAbi[] }[])
-        .find((f) => f.name === g.functionName);
+      const gFn = g.abiFunction
+        ?? (gArt.abi as readonly AbiFunction[]).find((f) => f.name === g.functionName);
       if (gFn?.emits) emitInfos.push(...gFn.emits);
       for (const ev of gArt.events ?? []) {
         if (!eventDefs.some((e) => e.signature === ev.signature)) eventDefs.push(ev);
@@ -12833,10 +12841,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const dynamicWrites = [...(abiFunction?.dynamicWrites ?? [])];
     for (const g of lowLevelCallUtxoGroups) {
       if (g.callMode !== 'delegatecall') continue;
-      const gFn = (g.externalContract.inner.artifact.abi as readonly {
-        name: string;
-        dynamicWrites?: readonly string[];
-      }[]).find((f) => f.name === g.functionName);
+      const gFn = g.abiFunction
+        ?? (g.externalContract.inner.artifact.abi as readonly AbiFunction[])
+          .find((f) => f.name === g.functionName);
       for (const name of gFn?.dynamicWrites ?? []) {
         if (!dynamicWrites.includes(name)) dynamicWrites.push(name);
       }
@@ -13152,7 +13159,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       };
       const delegateUsesMsgSender = lowLevelCallUtxoGroups.some((g) => {
         if (g.callMode !== 'delegatecall') return false;
-        const gFn = (g.externalContract.inner.artifact.abi as readonly DelegAbiFn[]).find((f) => f.name === g.functionName);
+        const gFn = (g.abiFunction as DelegAbiFn | undefined)
+          ?? (g.externalContract.inner.artifact.abi as readonly DelegAbiFn[])
+            .find((f) => f.name === g.functionName);
         if (!gFn) return false;
         const directUse = !!gFn.usesMsgSender && !(gFn.externalCalls ?? []).some((ec) => ec.addressIsMsgSender);
         // A msg.sender-KEYED mapping write in the delegate (users[msg.sender]=v) also needs the sender's native
@@ -13300,7 +13309,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // library-using callee needs the side-car too. Check both group lists.
       for (const group of [...externalCallUtxoGroups, ...externalOutStateUtxoGroups]) {
         const bArt = group.externalContract?.inner?.artifact ?? group.externalContract?.artifact;
-        const bFn = bArt?.abi?.find((f: any) => f.name === group.functionName);
+        const bFn = group.abiFunction
+          ?? bArt?.abi?.find((f: any) => f.name === group.functionName);
         sidecarLib = firstSidecarLib(bArt, bFn?.externalLibraries ?? []);
         if (sidecarLib) {
           sidecarSalt = sidecarLib.branded ? hexToBin(group.categoryId) : SHARED_LIBRARY_SALT;

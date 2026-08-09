@@ -188,6 +188,34 @@ export interface SplitCompileOptions extends CompileOptions {
 // When SOLIDC_COMPILE_CACHE_DIR is also set, hits/misses are shared across vitest workers via disk
 // (each worker has its own Map; the directory is the cross-process layer).
 const compileCache = new Map<string, Artifact>();
+const diagnosticConsoleLog = console.log;
+const diagnosticConsoleWarn = console.warn;
+
+function compileCacheLimit(): number {
+  const configured = Number(process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES ?? 128);
+  return Number.isSafeInteger(configured) && configured > 0 ? configured : 128;
+}
+
+function compileCacheGet(cacheKey: string): Artifact | undefined {
+  const artifact = compileCache.get(cacheKey);
+  if (artifact) {
+    // Refresh insertion order: long-running watch sessions retain hot fixtures, not every historical edit.
+    compileCache.delete(cacheKey);
+    compileCache.set(cacheKey, artifact);
+  }
+  return artifact;
+}
+
+function compileCacheSet(cacheKey: string, artifact: Artifact): void {
+  compileCache.delete(cacheKey);
+  const limit = compileCacheLimit();
+  while (compileCache.size >= limit) {
+    const oldest = compileCache.keys().next().value as string | undefined;
+    if (oldest === undefined) break;
+    compileCache.delete(oldest);
+  }
+  compileCache.set(cacheKey, artifact);
+}
 
 /** Strip lazy `delegateArtifact` so JSON / structuredClone do not force a second compile pass. */
 function artifactWithoutDelegate(artifact: Artifact): Artifact {
@@ -557,11 +585,14 @@ function compileWithExternalAdmissionFallback(
 function compileStringUnchecked(code: string, compilerOptions: CompileOptions = {}): Artifact {
   const { errorListener, primaryContractName, ...artifactCompilerOptions } = compilerOptions;
   const cacheable = process.env.SOLIDC_COMPILE_CACHE === '1'
-    && !errorListener && !artifactCompilerOptions.importResolver;
+    && !errorListener && !artifactCompilerOptions.importResolver
+    // Diagnostic-spy tests and callers observing warnings require the pipeline's side effects on every call.
+    // Vitest spies replace these function identities; bypass any existing hit rather than hiding a warning.
+    && console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn;
   let cacheKey = '';
   if (cacheable) {
     cacheKey = `${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
-    const memHit = compileCache.get(cacheKey);
+    const memHit = compileCacheGet(cacheKey);
     if (memHit) return cloneArtifact(memHit);
     const diskHit = diskCacheGet(cacheKey);
     if (diskHit) {
@@ -570,7 +601,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
       const diskOptions = normalizeCompilerOptions(artifactCompilerOptions);
       diskOptions.__messageBusExplicitlyDisabled = artifactCompilerOptions.messageBus === false;
       attachDelegateVariant(diskHit, code, diskOptions, errorListener, primaryContractName);
-      compileCache.set(cacheKey, diskHit);
+      compileCacheSet(cacheKey, diskHit);
       return cloneArtifact(diskHit);
     }
   }
@@ -598,7 +629,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   }
   attachDelegateVariant(artifact, code, mergedCompilerOptions, errorListener, primaryContractName);
   if (cacheable) {
-    compileCache.set(cacheKey, artifact);
+    compileCacheSet(cacheKey, artifact);
     diskCacheSet(cacheKey, artifact);
   }
   return cacheable ? cloneArtifact(artifact) : artifact;
@@ -618,6 +649,11 @@ export function compileString(code: string, compilerOptions: CompileOptions = {}
 /** Clear the in-process compile memo Map (tests / cold-worker simulation). Does not touch disk. */
 export function clearCompileCache(): void {
   compileCache.clear();
+}
+
+/** Current in-process memo entry count (cache diagnostics and tests). */
+export function getCompileCacheEntryCount(): number {
+  return compileCache.size;
 }
 
 /**

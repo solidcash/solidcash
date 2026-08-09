@@ -1,6 +1,41 @@
 We use yarn workspaces + lerna for monorepo management. So to get started, clone this repository and run `yarn` in the root directory to install all dependencies for all packages.
 
-When updating code in one package, you can run `yarn build` in the root directory to build all packages so the changes get propagated to the other packages as well. If you're already in a package directory, you can run the following command to do so:
+Yarn workspaces perform package linking during installation; the postinstall hook goes directly to the
+incremental build rather than running a redundant second dependency resolution through `lerna bootstrap`.
+
+When updating code in one package, run `yarn build:watch` once in the repository root. It keeps TypeScript's package graph in memory and propagates changes to dependent packages incrementally. Keep the relevant Vitest process alive in another terminal so transformed compiler modules are reused too:
+
+The watcher uses TypeScript's direct-dependency assumption to minimize edit latency. This is deliberately a
+development optimization: always run one-shot `yarn build` before handoff so TypeScript exhaustively validates
+transitive dependents.
+
+```bash
+# Compiler tests (an optional file or -t filter can follow `--`)
+yarn test:compiler:watch -- test/Lexer.test.ts
+
+# SDK unit tests, excluding e2e
+yarn test:sdk:watch -- test/unit/EventFiltering.test.ts
+
+# Mocknet e2e tests
+yarn test:e2e:watch -- test/e2e/EventsFacade.test.ts
+```
+
+Vitest reruns affected tests on save. Press `r` to rerun the current selection. Use the one-shot `yarn build` before handing work off; it uses the same incremental project graph.
+
+When returning to a branch or before choosing a focused file, Git-aware one-shot commands run only tests
+affected by uncommitted changes:
+
+```bash
+yarn test:compiler:changed
+yarn test:sdk:changed
+yarn test:e2e:changed
+```
+
+The SDK's `test:unit` command runs only `test/unit`; `test:fast` and the default SDK watch loop add top-level
+SDK regression tests but deliberately exclude conformance and journal/message-bus suites. The comprehensive
+`yarn test` command is unchanged and remains the pre-handoff gate.
+
+If you're already in a package directory, you can run:
 
 ```bash
 pushd ../.. && yarn build && popd

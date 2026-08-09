@@ -46,9 +46,14 @@
     "prepare": "yarn rebuild",
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run --exclude 'test/e2e/**'",
-    "test:unit": "vitest run --exclude 'test/e2e/**'",
+    "test:unit": "vitest run test/unit --no-isolate --maxWorkers='60%'",
+    "test:conformance": "vitest run test/conformance",
     "test:e2e": "vitest run test/e2e",
-    "test:fast": "vitest run --exclude 'test/e2e/**'",
+    "test:e2e:changed": "vitest run --config vitest.e2e.config.ts --changed --passWithNoTests",
+    "test:e2e:watch": "vitest --config vitest.e2e.config.ts",
+    "test:fast": "vitest run --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:changed": "vitest run --no-isolate --maxWorkers='60%' --changed --passWithNoTests --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
+    "test:watch": "vitest --no-isolate --maxWorkers='60%' --exclude 'test/e2e/**' --exclude 'test/conformance/**' --exclude 'test/journal-message-bus/**'",
     "test:regtest": "node scripts/run-regtest-matrix.mjs"
   },
   "dependencies": {

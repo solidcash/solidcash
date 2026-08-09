@@ -15,12 +15,17 @@ describe('C2 fixed-write batch metadata', () => {
     expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1] }]);
   });
 
-  it('does not mark a single fixed upsert as a batch', () => {
+  // A single fixed upsert IS batched now, deliberately. The old `> 1` gate left a lone C2 insert - ERC20Mock's
+  // constructor `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and
+  // fails constructor derivation with OP_EQUALVERIFY against an empty key. The batch path is the shape mint and
+  // transfer already use successfully, so constructors take it too. See SymbolTableTraversal.
+  it('marks a single fixed upsert as a batch, so a lone C2 insert can derive', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;
       function f(int k, int v) external { m[k] = v; require(true); }
     }`, { forceStateful: true });
-    expect(artifact.abi.find((f) => f.name === 'f')?.sortedBatchInfo).toBeUndefined();
+    expect(artifact.abi.find((f) => f.name === 'f')?.sortedBatchInfo)
+      .toEqual([{ collection: 'm', slotIndices: [0] }]);
   });
 
   it('marks only a computed write followed by an actual delete as an alias candidate', () => {

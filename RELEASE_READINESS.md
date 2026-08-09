@@ -770,12 +770,17 @@ it must not silently compile to incorrect covenant behavior.
 - [x] Add fixture/reset and compilation-cache invalidation tests.
   - The gate proves named-fixture restoration and cold/warm/dependency-invalidated compilation, preserves the last
     valid artifact after a failed rebuild, and verifies `clean` removes artifacts and cache data.
-- [ ] Add a required BCHN regtest smoke suite for release candidates.
+- [x] Add a required BCHN regtest smoke suite for release candidates.
+  - The required CI job now starts fresh BCHN v29 and Fulcrum services, runs the maintained serial
+    `yarn test:application-regtest` gate, and always tears down its disposable volumes. The same sequence passes
+    9/9 locally from a freshly wiped chain at `5275f42c5`, covering the ERC-20-like ledger/event/error flow and
+    the independent escrow/oracle/absolute-timelock flow. This smoke does not replace the separate full 449-file
+    BCHN diagnostic matrix.
 - [-] **Gate run at head, 2026-08-08.** Every locally runnable release gate passes: `lint` (all packages),
   `spellcheck` (0 issues), `examples`, `test:security-conformance` (15 files, 81 passed, 1 skipped),
   `test:package-smoke` (6 packed packages), `test:generated-project-smoke`, `test:application-conformance`
-  (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). The BCHN regtest gate is
-  out of scope by maintainer direction and is the one gate not run.
+  (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). This historical snapshot predates
+  the required BCHN application smoke added below; the full BCHN diagnostic matrix remained out of scope.
   - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
     GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
     scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
@@ -911,8 +916,16 @@ it must not silently compile to incorrect covenant behavior.
     against solidcash's 120 s; it is now 60 s, which still fails a genuine hang. Not claimed: that CI is
     observably flaky today - the clone also ran under load from concurrent sessions, and the honest statement is
     that the margin was thin enough to disappear under load.
-- [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
+- [x] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
+  - **PASS at detached commit `5275f42c5` on 2026-08-09.** A newly-created worktree with no dependencies or
+    ignored build output passed `yarn install --frozen-lockfile --ignore-scripts`, `yarn build`, root `yarn lint`,
+    `yarn spellcheck` (2,174 tracked-file checks, zero issues), `yarn examples`, `yarn test:docs-snippets`
+    (128 compiled, 5 documented import-only skips, zero failures), and `yarn test:corpus-baseline`
+    (2,698/2,805 positive; 323/2,158 reviewed over-accepted negatives). The cold root `yarn test` run passed all
+    seven workspaces plus the root testing suite without a timeout; `yarn test:e2e` passed 334 files with 2,668
+    tests passing, 23 skipped, and 3 todo; and `yarn test:package-smoke` packed and consumed all six packages with
+    its maintained 3/3 stateful golden path.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.
 - [x] Pin supported Node 22 and Yarn 1.22.22 in the root manifest and CI install behavior.
 - [x] Update checkout/setup-node to GitHub Actions v4; Codecov remains on v5.

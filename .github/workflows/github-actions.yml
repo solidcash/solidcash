@@ -46,6 +46,16 @@ jobs:
       - name: Run release application conformance gate
         run: yarn test:application-conformance
 
+      - name: Start BCHN v29 release-smoke services
+        run: docker compose -f docker-compose.regtest.yml up -d --wait --wait-timeout 120 bchn fulcrum
+
+      - name: Run BCHN v29 release application smoke
+        run: yarn test:application-regtest
+
+      - name: Stop BCHN v29 release-smoke services
+        if: always()
+        run: docker compose -f docker-compose.regtest.yml down -v
+
       - name: Run generated-project smoke gate
         run: yarn test:generated-project-smoke
 

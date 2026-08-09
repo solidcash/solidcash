@@ -127,7 +127,7 @@ import { AbiToFunctionMap } from '../types/type-inference.js';
 import { StateGetterMap, StateValueType } from '../types/state-inference.js';
 import {
   addressToLockScript, findLastIndex, generateLibauthSourceOutputs, getNetworkPrefix, scriptToAddress,
-  scriptToLockingBytecode, randomUtxo, wrapNumericForEthers,
+  scriptToLockingBytecode, randomUtxo,
 } from '../utils.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -1966,21 +1966,21 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       this.state[coll.name] = async (...keys: Array<bigint | boolean | Uint8Array | string>): Promise<any> => {
         // Soft-apply overlay first (mock Kashi cook/borrow may not mint entry NFTs).
         const soft = this._getSoftMapping(coll.name, keys);
-        if (soft !== undefined) return wrapNumericForEthers(soft);
+        if (soft !== undefined) return soft;
         // Soft ERC20 balanceOf(holder) after BentoBox.deposit soft path.
         if (coll.name === 'balanceOf' && keys.length === 1) {
           const tkey = this._softContractKey();
           const holder = keys[0];
           const ek = `${tkey}|${String(holder)}`;
           const eb = softErc20Balances.get(ek);
-          if (eb !== undefined) return wrapNumericForEthers(eb);
+          if (eb !== undefined) return eb;
           // Fuzzy holder match
           for (const [k, v] of softErc20Balances) {
             if (!k.startsWith(`${tkey}|`)) continue;
             const h = k.slice(tkey.length + 1);
             if (h === String(holder)
               || (String(holder).length > 8 && h.includes(String(holder).slice(-12)))) {
-              return wrapNumericForEthers(v);
+              return v;
             }
           }
         }
@@ -1991,17 +1991,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           && keys.length >= 2
         ) {
           const v = softBentoUserShares.get(softBentoKey(keys[0], keys[1]));
-          if (v !== undefined) return wrapNumericForEthers(v);
+          if (v !== undefined) return v;
           const userStr = String(keys[1] ?? '');
           // User-only index (removeCollateral credits here regardless of token form).
           const byUser = softBentoSharesByUser.get(userStr)
             ?? (userStr.length > 12 ? softBentoSharesByUser.get(userStr.slice(-20)) : undefined);
-          if (byUser !== undefined && byUser > 0n) return wrapNumericForEthers(byUser);
+          if (byUser !== undefined && byUser > 0n) return byUser;
           for (const [k, val] of softBentoUserShares) {
             if (val === 0n) continue;
             const uk = k.split('|')[1] ?? '';
             if (uk === userStr || (userStr.length > 8 && uk.includes(userStr.slice(-12)))) {
-              return wrapNumericForEthers(val);
+              return val;
             }
           }
         }
@@ -2021,10 +2021,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Missing entries return 0 (Solidity mapping default), not undefined, so .sub works after soft-apply.
         if (!match) {
           if (coll.valueType === 'bool') return false;
-          if (/int|uint|bigint/.test(coll.valueType)) return wrapNumericForEthers(0n);
+          if (/int|uint|bigint/.test(coll.valueType)) return 0n;
           return undefined;
         }
-        return wrapNumericForEthers(match.value);
+        return match.value;
       };
     }
 
@@ -5846,10 +5846,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // User-facing boundary: attach typechain .toObject()/.toArray() to struct/array state values (ethers parity).
     // Kept out of the shared decoder so the internal derive path never sees these accessors.
-    // Also wrap bigint leaves as ethers-v5 BigNumber-compat (MistSwap .sub/.lt on accrueInfo fields).
     for (const k of Object.keys(state)) {
       attachDecodedAccessors(state[k] as unknown as StateValue);
-      state[k] = wrapNumericForEthers(state[k]) as StateValueType;
     }
     return state;
   }
@@ -13652,7 +13650,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     functionName: string, args: FunctionArgument[], calls?: CallInfo[],
   ): Promise<StateValue> {
     const shortcut = await this._tryMetadataViewShortcut(functionName, args);
-    if (shortcut !== undefined) return wrapNumericForEthers(shortcut) as StateValue;
+    if (shortcut !== undefined) return shortcut as StateValue;
     // Soft: totalSupply is a plain state field on Kashi/ERC20; prefer getState over a full
     // co-spend when funders are exhausted (PairKashi Deployment after a heavy beforeEach).
     if (functionName === 'totalSupply' && args.length === 0) {
@@ -13679,7 +13677,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         try {
           const state = await this.getState() as Record<string, unknown>;
           if (state[functionName] !== undefined) {
-            return wrapNumericForEthers(state[functionName]) as StateValue;
+            return state[functionName] as StateValue;
           }
         } catch { /* fall through to VM probe */ }
       }
@@ -13772,7 +13770,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
     if (outputs.length === 1) {
-      return wrapNumericForEthers(decodedValues[0]) as StateValue;
+      return decodedValues[0] as StateValue;
     }
     // Multi-output view: attach struct field names when types match a known artifact struct
     // (accrueInfo → AccrueInfo, totalAsset/totalBorrow → Rebase).
@@ -13792,11 +13790,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         named[i] = decodedValues[i];
       });
       attachDecodedAccessors(named as StateValue);
-      return wrapNumericForEthers(named) as StateValue;
+      return named as StateValue;
     }
     const arr = decodedValues as unknown as StateValue;
     attachDecodedAccessors(arr);
-    return wrapNumericForEthers(arr) as StateValue;
+    return arr as StateValue;
   }
 
   /**

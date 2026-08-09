@@ -859,6 +859,9 @@ it must not silently compile to incorrect covenant behavior.
   - Runtime struct read-modify-write loops now retain their compiler recognizer, per-iteration old-value witness,
     and SDK trace-derived output reservation. The focused state transition passes end to end; the adjacent six-file
     C2 loop matrix passes 15/15 and the compiler storage-collection suite passes 245/245.
+  - Computed loop dispatch again separates neutralizable interface locals from live runtime locals and discovers the
+    loop index through the resolved initializer. Typed and stateful computed-dispatch suites pass 14/14, including
+    view-return autoderivation; the adjacent compiler control-flow/external-call suites pass 246/246.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

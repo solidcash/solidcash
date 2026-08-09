@@ -5330,7 +5330,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // A loop may receive its per-iteration callee from another contract or decode it from the current action
         // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
         // binds that witness to the live runtime local before verifying the co-spent callee.
-        if (resolvedInit && this.loopDeclaredLocals.has(addressParam)) {
+        if (resolvedInit && this.loopDeclaredLocals.has(addressParam) && !canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
@@ -5343,7 +5343,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (initExpr && canNeutralize && !loopArrayVar) {
-          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
+          const loopIdx = (resolvedInit
+            ? this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
+            : undefined)
+            ?? this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;

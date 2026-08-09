@@ -1041,6 +1041,8 @@ function computeConvergenceKey(
   entryCommitments?: string[],
   eventCommitments?: string[],
   entryLoopCommitments?: string[],
+  chunkCommitments?: string[],
+  valueChunkCommitments?: string[],
 ): string {
   const parts: string[] = [String(commitmentProgress)];
   // Include actual commitment content (not just count) so that changed values
@@ -1056,6 +1058,12 @@ function computeConvergenceKey(
   }
   if (entryLoopCommitments) {
     for (const c of entryLoopCommitments) parts.push(`le:${c}`);
+  }
+  if (chunkCommitments) {
+    for (const c of chunkCommitments) parts.push(`ch:${c}`);
+  }
+  if (valueChunkCommitments) {
+    for (const c of valueChunkCommitments) parts.push(`vc:${c}`);
   }
   if (derivedTransfers) {
     for (const t of derivedTransfers) {
@@ -8250,6 +8258,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const convergenceKey = computeConvergenceKey(
             commitmentProgress, derivedTransfers, derivedFtTransfers, derivedNftTransfers,
             stateCommits, latestEntryCommits, latestEventCommits, latestLoopEntryCommits,
+            stb.getDynamicChunkVars().flatMap((v) => stb.getChunkRawCommitments(v.name)),
+            stb.getValueChunkVars().flatMap((v) => stb.getValueChunkRawCommitments(v.collection)),
           );
           // P5b: a computed value's ENTRY commitment only derives once the (earlier) value-chunk pin passes, which
           // is one probe AFTER the chunks converge - so with value chunks, do not break on a stable fingerprint
@@ -8259,7 +8269,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const needsPassingProbe = stb.getValueChunkVars().length > 0
             || stb.getDynamicChunkVars().length > 0 || stb.getLoopEntryVars().length > 0;
           if (convergenceKey === prevConvergenceKey && (!needsPassingProbe || !probeHadError)) break;
-          if (seenConvergenceKeys.has(convergenceKey) && (!needsPassingProbe || !probeHadError)) {
+          // Variable output regions can revisit an earlier layout while a later pin is still being exposed. Their
+          // 64-probe bound is the cycle guard; only fixed-layout derivation can prove a repeated key is terminal.
+          if (seenConvergenceKeys.has(convergenceKey) && !needsPassingProbe && !probeHadError) {
             throw new AutoDerivationError(
               'Auto-derivation oscillation detected: derivation state is cycling without converging. '
             + 'This may indicate conflicting covenant constraints.',

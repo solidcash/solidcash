@@ -812,8 +812,8 @@ it must not silently compile to incorrect covenant behavior.
     slot and resolve its absolute output witness only after the participant base is known. All three
     `CrossContractSortedWrite` cases pass (update, insert, and `msg.sender`-keyed insert), alongside
     `ExternalCallAutoDerive` (20/20), `ApproveAddressNested` (3/3), `MsgSenderCrossContractC2` (2/2), and the
-    compiler-route sorted-delete regression. The Git-aware e2e sweep now reports 70 failures across 38 of 448
-    files (3,692 passed, 35 skipped, 8 todo); the gate remains open on the other failure families.
+    compiler-route sorted-delete regression. That intermediate Git-aware e2e sweep reported 70 failures across
+    38 of 448 files (3,692 passed, 35 skipped, 8 todo); the gate remains open on the other failure families.
   - Constructor C2 batching now resolves every nested mapping key source before hashing the authenticated slot.
     The Solidity corpus nested-getter deployment no longer oscillates, and a dedicated explicit-constructor
     regression proves both the initialized two-key leaf and an absent sibling through covenant execution.
@@ -830,6 +830,14 @@ it must not silently compile to incorrect covenant behavior.
     places the routed proxy entry inside the implementation-relative delegate block, derives its commitment at
     that slot, and avoids duplicating it in the root entry tail. The two delegate C2 files pass 8/8, and the full
     delegate plus constructor guard group passes 32/32.
+  - The complete chain-free rerun after those fixes reports 52 failures across 29 of 338 files, with 2,616
+    passing, 23 skipped, and 3 todo tests. This supersedes the 70-failure intermediate baseline while leaving the
+    gate open.
+  - Variable-output auto-derivation now fingerprints dynamic and computed value chunks and allows their bounded
+    probe loop to revisit a temporary layout while later covenant pins become visible. Four formerly failing C2
+    suites pass 44/44 together (`SortedArrayCacheInLoop`, `MappingArrayPush`, `EntryWriteBehavior`, and
+    `SortedMappingLongValue`); the focused adjacent array/struct group clears another seven prior failures. Large
+    fixed-width values still expose a distinct final-layout failure and remain open.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

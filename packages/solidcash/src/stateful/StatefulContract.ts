@@ -12354,6 +12354,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               omitLocalFeeTail: true,
             },
           );
+          // The private builder uses an impossible master outpoint only while deriving its local message-bus
+          // commitments. Composition consumes the real on-chain implementation UTXO, so restore it before
+          // copying the callee block into the parent transaction.
+          calleeBuilder._restoreMessageBusProbeMasterOutpoint();
           // StatefulTransactionBuilder keeps master/data/entry privately; read them for composition.
           const priv = calleeBuilder as unknown as {
             masterUtxo: UnlockableUtxo;

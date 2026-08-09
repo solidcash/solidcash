@@ -46,7 +46,7 @@ contract BareSpellingMixed() {
 }`;
 
 // Measured physical layout of the honest transaction.
-const OUT = { master: 0, dataNft: 1, predecessor: 2, chunk: 3, entryNew: 4 } as const;
+const OUT = { master: 0, dataNft: 1, predecessor: 2, entryNew: 3, chunk: 4 } as const;
 
 type Provider = ReturnType<typeof createTestProvider>;
 

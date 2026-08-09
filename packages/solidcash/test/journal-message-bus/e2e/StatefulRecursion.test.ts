@@ -149,7 +149,7 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    * This row stages its own `MockNetworkProvider` rather than `createTestProvider()` because its subject is
    * the SDK's preflight decider - a pure VM decision on published consensus limits, with no node in it.
    */
-  const OVER_BUDGET_DEPTH = 24n;
+  const OVER_BUDGET_DEPTH = 20n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
   // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
   // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair

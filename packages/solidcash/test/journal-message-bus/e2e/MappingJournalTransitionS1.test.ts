@@ -170,8 +170,8 @@ async function expectAccepted(provider: Provider, hex: string): Promise<void> {
 
 /**
  * A cold-key insert with a REAL predecessor and a REAL successor: LOW and HIGH are already present, so inserting
- * MID must relink LOW to MID and give MID the successor LOW used to own. Output 1 is the recreated predecessor,
- * output 2 is the newly minted node.
+ * MID must relink LOW to MID and give MID the successor LOW used to own. The block-layout entry slot carries the
+ * newly minted node at output 1; the rewritten predecessor is the trailing insert witness at output 2.
  */
 async function capturedBracketedInsert(): Promise<{ deployment: Deployment; hex: string }> {
   const deployment = await deploy();
@@ -185,8 +185,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('inserts a cold key between an authenticated predecessor and successor', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     const tx = decodeTransactionUnsafe(hexToBin(hex));
-    const predecessor = commitmentOf(tx, 1);
-    const inserted = commitmentOf(tx, 2);
+    const inserted = commitmentOf(tx, 1);
+    const predecessor = commitmentOf(tx, 2);
     // The predecessor keeps its own slot and value and now points at the inserted key.
     expect(bytesToSlotValue(predecessor.slot)).toBe(LOW.s);
     expect(bytesToSlotValue(predecessor.nextKey)).toBe(MID.s);
@@ -202,7 +202,7 @@ describe('S1 mapping insertion journal transitions', () => {
     const deployment = await deploy();
     await deployment.sc.getFunction('set')(LOW.k, 11n).send();
     const hex = await capture(deployment.provider, () => deployment.sc.getFunction('set')(HIGH.k, 22n).send());
-    const inserted = commitmentOf(decodeTransactionUnsafe(hexToBin(hex)), 2);
+    const inserted = commitmentOf(decodeTransactionUnsafe(hexToBin(hex)), 1);
     expect(bytesToSlotValue(inserted.slot)).toBe(HIGH.s);
     expect(bytesToSlotValue(inserted.nextKey)).toBe(0n);
     await expectAccepted(deployment.provider, hex);
@@ -212,8 +212,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects an insert whose predecessor keeps its old successor link', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      const predecessor = commitmentOf(tx, 1);
-      setCommitment(tx, 1, encodeEntryCommitment(
+      const predecessor = commitmentOf(tx, 2);
+      setCommitment(tx, 2, encodeEntryCommitment(
         predecessor.slot, slotValueToBytes(HIGH.s), predecessor.value,
       ));
     }));
@@ -224,8 +224,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects an insert whose new node strands the successor', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      const inserted = commitmentOf(tx, 2);
-      setCommitment(tx, 2, encodeEntryCommitment(inserted.slot, new Uint8Array(32), inserted.value));
+      const inserted = commitmentOf(tx, 1);
+      setCommitment(tx, 1, encodeEntryCommitment(inserted.slot, new Uint8Array(32), inserted.value));
     }));
     await expectAccepted(deployment.provider, hex);
   });
@@ -234,8 +234,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects an insert whose new node links back to its predecessor', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      const inserted = commitmentOf(tx, 2);
-      setCommitment(tx, 2, encodeEntryCommitment(
+      const inserted = commitmentOf(tx, 1);
+      setCommitment(tx, 1, encodeEntryCommitment(
         inserted.slot, slotValueToBytes(LOW.s), inserted.value,
       ));
     }));
@@ -246,8 +246,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects an insert whose new node claims a slot outside the proven gap', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      const inserted = commitmentOf(tx, 2);
-      setCommitment(tx, 2, encodeEntryCommitment(
+      const inserted = commitmentOf(tx, 1);
+      setCommitment(tx, 1, encodeEntryCommitment(
         slotValueToBytes(HIGH.s + 1n), inserted.nextKey, inserted.value,
       ));
     }));
@@ -258,8 +258,8 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects an insert that rewrites the predecessor value', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      const predecessor = commitmentOf(tx, 1);
-      setCommitment(tx, 1, encodeEntryCommitment(predecessor.slot, predecessor.nextKey, hexToBin('63')));
+      const predecessor = commitmentOf(tx, 2);
+      setCommitment(tx, 2, encodeEntryCommitment(predecessor.slot, predecessor.nextKey, hexToBin('63')));
     }));
     await expectAccepted(deployment.provider, hex);
   });
@@ -268,7 +268,7 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects a new node minted outside the collection entry covenant', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      tx.outputs[2].lockingBytecode = tx.outputs[tx.outputs.length - 1].lockingBytecode.slice();
+      tx.outputs[1].lockingBytecode = tx.outputs[tx.outputs.length - 1].lockingBytecode.slice();
     }));
     await expectAccepted(deployment.provider, hex);
   });
@@ -277,7 +277,7 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects a new node minted without the mutable entry capability', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => {
-      tx.outputs[2].token!.nft!.capability = 'none';
+      tx.outputs[1].token!.nft!.capability = 'none';
     }));
     await expectAccepted(deployment.provider, hex);
   });
@@ -286,7 +286,7 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects a new node minted under a foreign token category', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectTokenValidationRejection(deployment.provider, mutate(hex, (tx) => {
-      tx.outputs[2].token!.category = hexToBin('33'.repeat(32));
+      tx.outputs[1].token!.category = hexToBin('33'.repeat(32));
     }));
     await expectAccepted(deployment.provider, hex);
   });
@@ -295,7 +295,7 @@ describe('S1 mapping insertion journal transitions', () => {
   // authenticate either of them.
   it('rejects a second authority for the inserted key in the same transaction', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
-    await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => appendEntryOutput(tx, 2)));
+    await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => appendEntryOutput(tx, 1)));
     await expectAccepted(deployment.provider, hex);
   });
 
@@ -304,7 +304,7 @@ describe('S1 mapping insertion journal transitions', () => {
   it('rejects a fabricated node for a key the handler never wrote', async () => {
     const { deployment, hex } = await capturedBracketedInsert();
     await expectCovenantRejection(deployment.provider, mutate(hex, (tx) => appendEntryOutput(
-      tx, 2, encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
+      tx, 1, encodeEntryCommitment(UNWRITTEN_SLOT, new Uint8Array(32), hexToBin('e703')),
     )));
     await expectAccepted(deployment.provider, hex);
   });

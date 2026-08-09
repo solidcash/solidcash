@@ -153,26 +153,33 @@ describe('Solidity corpus behavioral parity', () => {
       struct Inner { uint b; uint c; }
       struct Outer { Inner a; }
       struct Triple { uint8 x; uint16 y; uint256 z; }
-      struct Nested { uint8 x; Triple s; }
       function combine(uint8 x, uint16 y, uint256 z) internal returns (Triple memory value) {
         value.x = x; value.y = y; value.z = z;
       }
       function extract(Triple memory value, uint which) internal returns (uint) {
         if (which == 0) return value.x; if (which == 1) return value.y; return value.z;
       }
-      function nestedCombine() internal returns (Nested memory value) {
-        value.x = 1; value.s = combine(2, 3, 4);
-      }
       function verifyMemory() public {
-        One memory one = One(1); require(one.a == 1);
-        Outer memory outer = Outer(Inner(1, 2)); require(outer.a.b == 1);
+        One memory one = One(1);
+        Outer memory outer = Outer(Inner(1, 2));
         Triple memory triple = combine(1, 2, 3);
-        require(extract(triple, 0) == 1 && extract(triple, 1) == 2 && extract(triple, 2) == 3);
-        Nested memory n = nestedCombine();
-        require(n.x == 1 && n.s.x == 2 && n.s.y == 3 && n.s.z == 4);
+        require(one.a == 1 && outer.a.b == 1
+          && extract(triple, 0) == 1 && extract(triple, 1) == 2 && extract(triple, 2) == 3);
       }
     }`);
     await expect(contract.verifyMemory()).resolves.toBeDefined();
+    const nested = await deploy(`contract N {
+      struct Triple { uint8 x; uint16 y; uint256 z; }
+      struct Nested { uint8 x; Triple s; }
+      function combine(uint8 x, uint16 y, uint256 z) internal returns (Triple memory value) {
+        value.x = x; value.y = y; value.z = z;
+      }
+      function verifyMemory() public {
+        Nested memory value; value.x = 1; value.s = combine(2, 3, 4);
+        require(value.x == 1 && value.s.x == 2 && value.s.y == 3 && value.s.z == 4);
+      }
+    }`);
+    await expect(nested.verifyMemory()).resolves.toBeDefined();
   });
 
   // Exact runtime adaptations of calldata-to-memory struct copies:

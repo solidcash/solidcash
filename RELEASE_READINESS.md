@@ -862,6 +862,9 @@ it must not silently compile to incorrect covenant behavior.
   - Computed loop dispatch again separates neutralizable interface locals from live runtime locals and discovers the
     loop index through the resolved initializer. Typed and stateful computed-dispatch suites pass 14/14, including
     view-return autoderivation; the adjacent compiler control-flow/external-call suites pass 246/246.
+  - Plain `TransactionBuilder.send()` again enforces the fixed production finalized-byte ceiling even when a mock
+    provider advertises relaxed execution limits; provider-specific limits remain available to stateful internal
+    probes. The finalized-byte, over-limit contract, and covenant-absorption suites pass 32/32.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

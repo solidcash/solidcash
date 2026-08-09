@@ -22,9 +22,11 @@ contract Sized {
   uint a;
   uint b;
   uint c;
+  uint d;
   function setA(uint v) public { a = v; require(v >= 0, "n"); }
   function setB(uint v) public { b = v; require(v >= 0, "n"); }
   function setC(uint v) public { c = v; require(v >= 0, "n"); }
+  function setD(uint v) public { d = v; require(v >= 0, "n"); }
 }`;
 
 describe('Q1: the published split size against the constructed redeem script', () => {

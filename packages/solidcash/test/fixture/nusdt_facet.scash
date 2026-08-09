@@ -31,7 +31,6 @@ library UsdtFacet {
 
     event Issue(int amount);
     event Redeem(int amount);
-    event Params(int feeBasisPoints, int maxFee);
     event DestroyedBlackFunds(address indexed blackListedUser, int balance);
 
     event Transfer(address indexed from, address indexed to, int value);
@@ -43,9 +42,6 @@ library UsdtFacet {
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    int basisPointsRate;
-    int maximumFee;
-    int feeAccrued;
     mapping(address => mapping(address => int)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
@@ -134,17 +130,6 @@ library UsdtFacet {
         emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
     }
 
-    // Hardcoded transparency bounds, exactly as deployed USDT: fees can never be
-    // raised past these no matter who owns the contract.
-    function setParams(int newBasisPoints, int newMaxFee) public {
-        require(msg.sender == this.owner);
-        require(newBasisPoints < 20);
-        require(newMaxFee < 50);
-        this.basisPointsRate = newBasisPoints;
-        this.maximumFee = newMaxFee * (10 ** this.decimals);
-        emit Params(this.basisPointsRate, this.maximumFee);
-    }
-
     function tick(int nowHeight) public {
         require(tx.time >= nowHeight);
         require(nowHeight >= this.clock);
@@ -167,25 +152,17 @@ library UsdtFacet {
 
         int currentAllowance = this.allowed[from][spender];
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-
         // USDT decrements only FINITE allowances; MAX_UINT is the infinite sentinel.
         if (currentAllowance < MAX_ALLOWANCE) {
             require(currentAllowance >= value);
             this.allowed[from][spender] = currentAllowance - value;
         }
 
-        int sendAmount = value - fee;
         require(to != from);
         require(this.balances[from] >= value);
         this.balances[from] = this.balances[from] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(from, this.owner, fee);
-        emit Transfer(from, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(from, to, value);
     }
 
     // Re-entry, step 3. Permissionless and consensus-gated: the CLTV compare cannot
@@ -216,14 +193,6 @@ library UsdtFacet {
         this.totalSupply = this.totalSupply + amount;
         this.backedSupply = this.backedSupply + amount;
         emit Issue(amount);
-    }
-
-    function collectFees() public {
-        require(msg.sender == this.owner);
-        require(this.feeAccrued > 0);
-        int amount = this.feeAccrued;
-        this.feeAccrued = 0;
-        this.balances[this.owner] = this.balances[this.owner] + amount;
     }
 
     function addBlackList(address evilUser) public {

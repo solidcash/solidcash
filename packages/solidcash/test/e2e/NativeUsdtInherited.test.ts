@@ -62,7 +62,7 @@ describe('NativeUsdtInherited / composition', () => {
     for (const fn of [
       'transfer', 'transferFrom', 'approve', 'issue', 'redeem', 'destroyBlackFunds',
       'addBlackList', 'removeBlackList', 'freeze', 'unfreeze', 'pause', 'unpause',
-      'transferOwnership', 'setParams', 'deprecate', 'setBacking', 'withdraw',
+      'transferOwnership', 'deprecate', 'setBacking', 'withdraw',
       'tick', 'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
     ]) {
       expect(abi.has(fn), `${fn} missing from the inherited contract`).toBe(true);
@@ -142,14 +142,12 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
     for (const [name, call] of [
       ['pause', () => deployed.call.pause().send()],
       ['unpause', () => deployed.call.unpause().send()],
-      ['setParams', () => deployed.call.setParams(5n, 10n).send()],
       ['setQuarantineBlocks', () => deployed.call.setQuarantineBlocks(25n).send()],
       ['deprecate', () => deployed.call.deprecate(addressToLockScript(aliceAddress)).send()],
     ] as Array<[string, () => Promise<unknown>]>) {
       try { await call(); } catch (error) { refused.push(`${name}: ${(error as Error).message.slice(0, 120)}`); }
     }
     expect(refused, `routes refused: ${refused.join(' || ')}`).toEqual([]);
-    expect((await deployed.root.getState()).basisPointsRate).toBe(5n);
     expect((await deployed.root.getState()).quarantineBlocks).toBe(25n);
   }, 300000);
 });

@@ -75,8 +75,6 @@ function initialState(ownerAddr: Uint8Array): Record<string, unknown> {
   return {
     owner: ownerAddr,
     totalSupply: 0n,
-    basisPointsRate: 0n,
-    maximumFee: 0n,
     paused: false,
     name: b32('Tether USD'),
     symbol: b32('USDT'),
@@ -289,8 +287,8 @@ describe('NativeUsdt / structural: the split is what makes the contract deployab
     for (const name of Object.keys(FACETS) as FacetName[]) {
       for (const f of facetArt[name].abi) all.add(f.name);
     }
-    // Every mutating entry point of the real TetherToken.
-    for (const fn of ['transfer', 'transferFrom', 'approve', 'issue', 'redeem', 'setParams',
+    // Every retained mutating entry point from TetherToken.
+    for (const fn of ['transfer', 'transferFrom', 'approve', 'issue', 'redeem',
       'pause', 'unpause', 'deprecate', 'transferOwnership',
       'addBlackList', 'removeBlackList', 'destroyBlackFunds']) {
       expect(all, `missing USDT entry point ${fn}`).toContain(fn);
@@ -377,22 +375,6 @@ describe('NativeUsdt / admin surface (scalar-state facet routes, working end-to-
     await expect(d.as(d.signers.bob).call.pause().send()).rejects.toThrow();
   });
 
-  it('setParams enforces USDT fee ceilings and scales maximumFee by decimals', async () => {
-    const d = await deployAll();
-    await d.as(d.signers.owner).call.setParams(10n, 5n).send();
-    const st = await readState(d);
-    expect(st.basisPointsRate).toBe(10n);
-    // maximumFee = newMaxFee * 10**decimals, exactly as deployed USDT computes it.
-    expect(st.maximumFee).toBe(5n * UNIT);
-  });
-
-  it('setParams refuses basisPointsRate >= 20 and maxFee >= 50 (transparency bounds)', async () => {
-    const d = await deployAll();
-    await expect(d.as(d.signers.owner).call.setParams(20n, 5n).send()).rejects.toThrow();
-    await d.fund(d.signers.owner);
-    await expect(d.as(d.signers.owner).call.setParams(10n, 50n).send()).rejects.toThrow();
-  });
-
   it('transferOwnership moves the owner and locks the old owner out', async () => {
     const d = await deployAll();
     await d.as(d.signers.owner).call.transferOwnership(ADDR.bob()).send();
@@ -469,9 +451,7 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT);
   });
 
-  // THE headline. This was refused outright: crediting the fee to balances[this.owner] is a
-  // SECOND write to the sender's own entry whenever the owner is the sender, and two writes
-  // to one entry cannot compose (C2RuntimeSlotAlias.test.ts). Fees accrue to a scalar now.
+  // No transfer-fee state or fee leg remains: movement preserves the full requested amount.
   it('transfer from the OWNER settles, which is the whole supply path', async () => {
     const d = await funded();
     await open(d, d.signers.bob);
@@ -491,19 +471,13 @@ describe('NativeUsdt / the mapping surface', () => {
     expect(await balanceOf(d, ADDR.carol())).toBe(15n * UNIT);
   });
 
-  it('the fee accrues and collectFees sweeps it into the owner balance', async () => {
+  it('moves the full value without fee accrual', async () => {
     const d = await funded();
     await open(d, d.signers.bob);
-    await d.as(d.signers.owner).call.setParams(10n, 5n).send();
-    await d.fund(d.signers.owner);
     await d.as(d.signers.owner).call.transfer(ADDR.bob(), 40n * UNIT).send();
-    const fee = (40n * UNIT * 10n) / 10000n;
-    expect(await balanceOf(d, ADDR.bob()), 'recipient gets value - fee').toBe(40n * UNIT - fee);
-    expect((await readState(d)).feeAccrued).toBe(fee);
-    await d.fund(d.signers.owner);
-    await d.as(d.signers.owner).call.collectFees().send();
-    expect((await readState(d)).feeAccrued).toBe(0n);
-    expect(await balanceOf(d, ADDR.owner())).toBe(1000n * UNIT - 40n * UNIT + fee);
+    expect(await balanceOf(d, ADDR.bob())).toBe(40n * UNIT);
+    expect(await balanceOf(d, ADDR.owner())).toBe(960n * UNIT);
+    expect(await readState(d)).not.toHaveProperty('feeAccrued');
   });
 
   it('refuses a self-transfer by name', async () => {

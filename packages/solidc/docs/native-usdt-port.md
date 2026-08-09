@@ -119,25 +119,22 @@ Re-verified 2026-08-07: unchanged.
 
 ### 2.1 Reproduced exactly
 
-- The **fee mechanism**: `fee = value * basisPointsRate / 10000` capped at `maximumFee`, credited to the owner,
-  recipient receives `value - fee`, and BOTH `Transfer` events in the original's order (fee leg first).
 - **`approve`'s EIP-20 race guard**: `require(!((_value != 0) && (allowed[msg.sender][_spender] != 0)))`. This
   IS in the deployed source (line 205) - confirmed, since it is often assumed absent.
 - **`transferFrom` decrements only finite allowances**, with `MAX_UINT = 2**256 - 1` as the infinite sentinel,
   preserved at full width.
-- **`setParams` transparency bounds**: `newBasisPoints < 20`, `newMaxFee < 50`, and
-  `maximumFee = newMaxFee * 10**decimals`.
 - **`issue` / `redeem`**, **`pause` / `unpause`**, **`transferOwnership`**, the whole **BlackList** surface
-  including `destroyBlackFunds` decrementing `totalSupply`, and the **exact event set**
-  (`Transfer`, `Approval`, `Pause`, `Unpause`, `Issue`, `Redeem`, `Deprecate`, `Params`, `AddedBlackList`,
+  including `destroyBlackFunds` decrementing `totalSupply`, and the retained event set
+  (`Transfer`, `Approval`, `Pause`, `Unpause`, `Issue`, `Redeem`, `Deprecate`, `AddedBlackList`,
   `RemovedBlackList`, `DestroyedBlackFunds`).
 
 ### 2.2 Deliberate deviations, each forced or sound
 
 | deviation | why |
 | --- | --- |
+| **No transfer-fee mechanism** | Fee accrual and its administrative controls were intentionally removed. Transfers and `transferFrom` move the full requested value; there are no `basisPointsRate`, `maximumFee`, `Params`, `setParams`, fee-leg event, accumulator, or sweep path. |
 | **No SafeMath** | BCH integers are arbitrary-precision BigInts since May 2025, so wraparound does not exist and `add`/`mul` overflow asserts are vacuous. Underflow still matters (a subtraction goes negative rather than wrapping), so every debit keeps an explicit `require(balance >= value)` - semantically SafeMath.sub's assert at a fraction of the size. |
-| **`decimals` is `uint8`** | `10 ** this.decimals` needs an UNSIGNED exponent. A signed one is a compile error - this is the bug that makes the pre-existing `test/imports/fixtures/usdt_tether.scash` fixture fail to compile today (see s4). |
+| **`decimals` is `uint8`** | This matches the deployed token metadata and prevents invalid negative decimal counts. |
 | **`name`/`symbol` are `bytes32`** | A dynamic-length BCH state variable stores length+hash in the commitment with the bytes in separate CHUNK UTXOs that must be co-spent on EVERY state-reading call - a permanent per-transaction cost for metadata no on-chain logic reads. Both values fit in 32 bytes; richer metadata belongs in BCMR. |
 | **No `upgradedAddress` call forwarding** | On BCH the category ID IS the contract's identity and the `upgrade` modifier preserves it, so holders never change address and there is nothing to forward to. The flag, the successor address, and the `Deprecate` event are all kept, and the ERC20 entry points refuse once deprecated. |
 | **No on-chain view functions** | `balanceOf` / `allowance` / `totalSupply` / `getBlackListStatus` / `getOwner` are read off-chain from UTXOs via the SDK (`sc.state.*`, `sc.balances(who)`), which is free. Keeping them on-chain costs script budget for data any client can already read. |
@@ -201,43 +198,20 @@ afford one. Both halves are now solved - the insert path moved into the master (
 made affordable: `transfer` cost 6,222 B inline against a 7,992 B master when this was written, and 2,794 B
 now), and `openSelf()` opens the keys the delegated routes need.
 
-**Both are now fixed**, by three changes to the contract - none to the covenant, which was right all along.
-
-1. **Fees accrue instead of being credited inside `transfer`.** Crediting `balances[this.owner]` there is a
-   SECOND write to the sender's own entry whenever the owner is the sender - which is every transfer out of
-   freshly issued supply. Two writes to one entry cannot compose here (each computes an absolute value from the
-   same input), so the batch planner refuses the duplicate slot, correctly: deduping instead SILENTLY DROPS the
-   second write, and `C2RuntimeSlotAlias.test.ts` pins that measurement. Fees now land in a `feeAccrued`
-   scalar and `collectFees()` sweeps them into the owner's balance. A self-transfer would still put both
-   writes on one entry, so it is refused by name.
-
-2. **`openSelf()` - each account opens its own keys once.** Two platform rules make this necessary: a
+The reachable mapping surface is restored by `openSelf()`: each account opens its own keys once. Two platform
+rules make this necessary: a
    first-touch INSERT cannot settle through a delegate, and two ABSENT keys in one collection prove through
    the SAME predecessor, which would co-spend one entry NFT twice. Creating all five keys up front makes every
    later route an UPDATE against a distinct entry. Keyed on `msg.sender` ON PURPOSE - that is what makes it
    fit. `openAccount(address)` costs ~239 B of call arguments against the same 10,000 B cap (s1.2), and that
    was the whole reason the earlier attempt "did not fit"; an account only ever needs to open itself.
 
-3. **The fee `Transfer` event is emitted unconditionally.** This was the last blocker and the least obvious.
-   USDT emits it only `if (fee > 0)`, and a NOT-TAKEN emit is bound by SEC-10
-   (`emitNotTakenEventSlotBinding`): its reserved output must carry an EMPTY commitment. With fees at the
-   default 0 that branch is never taken, and the binding failed - which surfaced only as
-   "the VM errored before all commitments could be extracted" during state derivation, four layers behind the
-   original symptom. Emitting it unconditionally costs a zero-value `Transfer` log when no fee applies.
-
-   Found by tracing the derivation probe's own VM (`_deriveFullTransactionState`, not the sparse probe higher
-   in that file - that path is never reached for this shape) to instruction 251 of a 316-opcode script, then
-   matching the opcode sequence `OP_OUTPUTTOKENCOMMITMENT OP_SIZE OP_NIP OP_0 OP_NUMEQUALVERIFY` against its
-   emitter. Worth remembering as a method: the opcode pattern identified the check faster than a source map
-   would have.
-
 With those in place the whole mapping surface settles: `issue`, `transfer` (including from the owner, which is
-the entire supply path), a non-owner transfer, the fee round-trip, `approve`, `addBlackList`, `freeze`,
+the entire supply path), a non-owner transfer, `approve`, `addBlackList`, `freeze`,
 `removeBlackList`, and the quarantined re-entry path end to end - `deposit` then `claimDeposit`, moving bearer
-FTs into a ledger balance. What that last one took is s3.3. 29 tests in `NativeUsdt.test.ts`.
+FTs into a ledger balance. What that last one took is s3.3. 27 tests in `NativeUsdt.test.ts`.
 
-Three deviations this adds, all documented and all forced: fees are swept rather than credited inline, an
-account opens itself before use, and a zero-value fee `Transfer` is logged when no fee applies.
+The account-opening deviation remains documented and platform-forced.
 
 ### 3.2 A shared commitment verification broke state derivation (fixed)
 
@@ -336,12 +310,10 @@ All three reproduce on `solidcash_v0.13.1` itself and are not specific to this p
 
 ### 3.4 What the layout costs, and one splitter bug it exposed
 
-`feeAccrued` sits beside the other fee fields rather than at the end of the state block, deliberately: a
-function must not touch a NON-CONTIGUOUS set of data NFTs, and `transfer` already reads `basisPointsRate` and
-`maximumFee`. Everything that becomes UPDATE-only once accounts are open (`issue`, `collectFees`,
-`addBlackList`, `freeze`, and now `transferFrom`) is delegated to the facet. That budget is what pays for
+Everything that becomes UPDATE-only once accounts are open (`issue`, `addBlackList`, `freeze`, and
+`transferFrom`) is delegated to the facet. That budget is what pays for
 `openSelf()` and, once `deposit` had to come back to the master for its container access (s3.3), for
-`deposit` too: master **9,454 B**, facet **8,375 B**.
+`deposit` too: master **9,310 B**, facet **7,277 B** after removing the transfer-fee mechanism.
 
 The inheritance arrangement (s5) surfaced a genuine splitter bug on the way, now FIXED. `compileFileSplit`
 planned on ARTIFACT size while the cap is on the deployed unlocking bytecode, so it could emit a bundle whose
@@ -451,7 +423,7 @@ and the right move was to read the failures rather than route around them.
 event got a manual emit on top of the one the builder already lays out from the facet's published `emits`, and
 the covenant refused the duplicate output. `pause()` / `unpause()` are exactly that shape.
 
-Measured on the deployed bundle afterwards: `pause`, `unpause`, `setParams`, `setQuarantineBlocks` and
+Measured on the deployed bundle afterwards: `pause`, `unpause`, `setQuarantineBlocks` and
 `deprecate` all settle.
 
 ### 5.3 The delegated-INSERT boundary applies here too

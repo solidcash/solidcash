@@ -9,7 +9,7 @@ pragma solidcash >=0.8.0;
 //
 //   Ownable
 //   Pausable      is Ownable
-//   BasicToken    is Ownable          balances, the fee mechanism, transfer
+//   BasicToken    is Ownable          balances and transfer
 //   StandardToken is BasicToken       allowances, transferFrom, approve
 //   BlackList     is BasicToken       isBlackListed, destroyBlackFunds
 //   Freezable     is Ownable          (extension) reversible per-account freeze
@@ -80,18 +80,12 @@ abstract contract Pausable is Ownable {
     }
 }
 
-// USDT's BasicToken: the balance ledger, the fee mechanism, and `transfer`.
+// USDT's BasicToken: the balance ledger and `transfer`.
 // Deprecation lives here too, because it is what gates the ERC20 entry points.
 abstract contract BasicToken is Ownable {
 
     public int totalSupply;
     mapping(address => int) public balances;
-    public int basisPointsRate;
-    public int maximumFee;
-    // Fees accrue here rather than into balances[this.owner]: crediting the owner inside
-    // transfer is a SECOND write to the sender's own entry whenever the owner is the sender,
-    // and two writes to one entry cannot compose on this platform. collectFees() sweeps it.
-    public int feeAccrued;
     public bytes32 name;
     public bytes32 symbol;
     public uint8 decimals;
@@ -100,21 +94,10 @@ abstract contract BasicToken is Ownable {
 
     event Transfer(address indexed from, address indexed to, int value);
     event Deprecate(address newAddress);
-    event Params(int feeBasisPoints, int maxFee);
 
     modifier notDeprecated() {
         require(!this.deprecated);
         _;
-    }
-
-    // Transparency bounds are USDT's own: the fee rate and cap are hard-limited
-    // in the contract so the issuer cannot silently raise them.
-    function setParams(int newBasisPoints, int newMaxFee) onlyOwner {
-        require(newBasisPoints < 20);
-        require(newMaxFee < 50);
-        this.basisPointsRate = newBasisPoints;
-        this.maximumFee = newMaxFee * (10 ** this.decimals);
-        emit Params(this.basisPointsRate, this.maximumFee);
     }
 
     function deprecate(address newAddress) onlyOwner {
@@ -268,8 +251,6 @@ contract NativeTetherToken(address initialOwner)
         this.owner = initialOwner;
         this.paused = false;
         this.deprecated = false;
-        this.basisPointsRate = 0;
-        this.maximumFee = 0;
         this.totalSupply = 0;
         this.containerSeen = 0;
         this.backedSupply = 0;
@@ -279,9 +260,6 @@ contract NativeTetherToken(address initialOwner)
     }
 
     // ==== ERC20 movement ====
-    // Fee mechanism reproduced exactly: fee = value * basisPointsRate / 10000,
-    // capped at maximumFee, credited to the owner, recipient gets value - fee.
-    // Both USDT Transfer events are emitted in the original's order.
 
     function transfer(address to, int value) whenNotPaused notDeprecated {
         address sender = msg.sender;
@@ -289,19 +267,11 @@ contract NativeTetherToken(address initialOwner)
         require(!this.frozen[sender]);
         require(!this.frozen[to]);
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-        int sendAmount = value - fee;
-
         require(to != sender);
         require(this.balances[sender] >= value);
         this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(sender, this.owner, fee);
-        emit Transfer(sender, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
     }
 
     function transferFrom(address from, address to, int value) whenNotPaused notDeprecated {
@@ -312,25 +282,17 @@ contract NativeTetherToken(address initialOwner)
 
         int currentAllowance = this.allowed[from][spender];
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-
         // USDT only decrements finite allowances; MAX_ALLOWANCE is the sentinel.
         if (currentAllowance < MAX_ALLOWANCE) {
             require(currentAllowance >= value);
             this.allowed[from][spender] = currentAllowance - value;
         }
 
-        int sendAmount = value - fee;
         require(to != from);
         require(this.balances[from] >= value);
         this.balances[from] = this.balances[from] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(from, this.owner, fee);
-        emit Transfer(from, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(from, to, value);
     }
 
     // ==== Supply ====
@@ -454,15 +416,6 @@ contract NativeTetherToken(address initialOwner)
         this.backedSupply = this.backedSupply - p.amount;
         this.tokens[category].transfer(new LockingBytecodeP2PKH(to), p.amount);
         emit DepositCancelled(claimant, p.amount);
-    }
-
-    // Sweep accrued fees into the owner's balance.
-    function collectFees() {
-        require(msg.sender == this.owner);
-        require(this.feeAccrued > 0);
-        int amount = this.feeAccrued;
-        this.feeAccrued = 0;
-        this.balances[this.owner] = this.balances[this.owner] + amount;
     }
 
     // Open YOUR OWN account. Keyed on msg.sender, so it carries no address argument. A

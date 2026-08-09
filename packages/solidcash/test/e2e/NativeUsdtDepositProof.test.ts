@@ -96,9 +96,6 @@ async function deploy(): Promise<Deployed> {
   const state: Record<string, unknown> = {
     owner: ownerAddr,
     totalSupply: 0n,
-    basisPointsRate: 0n,
-    maximumFee: 0n,
-    feeAccrued: 0n,
     paused: false,
     name: b32('Tether USD'),
     symbol: b32('USDT'),

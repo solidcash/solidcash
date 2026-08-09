@@ -60,16 +60,14 @@ describe('NativeUsdt / one token, three arrangements', () => {
     for (const fn of [
       'transfer', 'transferFrom', 'approve', 'issue', 'redeem', 'destroyBlackFunds',
       'addBlackList', 'removeBlackList', 'pause', 'unpause', 'transferOwnership',
-      'setParams', 'deprecate', 'freeze', 'unfreeze', 'setBacking', 'withdraw',
+      'deprecate', 'freeze', 'unfreeze', 'setBacking', 'withdraw',
       'tick', 'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
-      // Two platform-forced additions, documented as deviations in native-usdt-port.md:
-      // fees accrue and are swept rather than credited inside transfer, and an account
-      // opens its own keys before use.
-      'collectFees', 'openSelf',
+      // Platform-forced addition: an account opens its own keys before use.
+      'openSelf',
     ]) {
       expect(monolith, `${fn} missing from the shared surface`).toContain(fn);
     }
-    expect(monolith).toHaveLength(24);
+    expect(monolith).toHaveLength(22);
   });
 
   // The deviation says the port reads views off-chain. If one comes back it has

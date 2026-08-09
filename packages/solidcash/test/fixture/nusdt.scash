@@ -87,14 +87,6 @@ contract NativeUsdt(address initialOwner) {
     address owner;
     int totalSupply;
     mapping(address => int) balances;
-    int basisPointsRate;
-    int maximumFee;
-    // Beside the other fee fields ON PURPOSE: a function must not touch a non-contiguous set
-    // of data NFTs, and transfer already reads basisPointsRate/maximumFee. Fees land here
-    // rather than in balances[this.owner], because crediting the owner inside transfer is a
-    // SECOND write to the sender's own entry whenever the owner is the sender. collectFees()
-    // sweeps it. See packages/solidc/docs/native-usdt-port.md s3.1.
-    int feeAccrued;
     mapping(address => mapping(address => int)) allowed;
     bool paused;
     mapping(address => bool) isBlackListed;
@@ -129,8 +121,6 @@ contract NativeUsdt(address initialOwner) {
         this.owner = initialOwner;
         this.paused = false;
         this.deprecated = false;
-        this.basisPointsRate = 0;
-        this.maximumFee = 0;
         this.totalSupply = 0;
         this.containerSeen = 0;
         this.backedSupply = 0;
@@ -204,7 +194,6 @@ contract NativeUsdt(address initialOwner) {
     // address") rather than failing at compile time.
     function redeem(int amount) { UsdtFacet.redeem(amount); }
     function destroyBlackFunds(address blackListedUser) { UsdtFacet.destroyBlackFunds(blackListedUser); }
-    function setParams(int newBasisPoints, int newMaxFee) { UsdtFacet.setParams(newBasisPoints, newMaxFee); }
     function transferOwnership(address newOwner) { UsdtFacet.transferOwnership(newOwner); }
     function pause() { UsdtFacet.pause(); }
     function unpause() { UsdtFacet.unpause(); }
@@ -275,19 +264,11 @@ contract NativeUsdt(address initialOwner) {
         require(!this.frozen[to]);
         require(value > 0);
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-        int sendAmount = value - fee;
-
         require(to != sender);
         require(this.balances[sender] >= value);
         this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(sender, this.owner, fee);
-        emit Transfer(sender, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
     }
 
     function transferFrom(address from, address to, int value) { UsdtFacet.transferFrom(from, to, value); }
@@ -305,9 +286,6 @@ contract NativeUsdt(address initialOwner) {
     function addBlackList(address evilUser) { UsdtFacet.addBlackList(evilUser); }
 
     function freeze(address user) { UsdtFacet.freeze(user); }
-
-
-    function collectFees() { UsdtFacet.collectFees(); }
 
     function openSelf() {
         address who = msg.sender;

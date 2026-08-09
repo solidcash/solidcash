@@ -5,9 +5,8 @@ pragma solidcash >=0.8.0;
 // 0xdAC17F958D2ee523a2206206994597C13D831ec7, solc v0.4.18) backed by a REAL
 // CashTokens fungible token, with three compliance extensions.
 //
-// The full deployed USDT surface is reproduced: Ownable, Pausable, the fee
-// mechanism (basisPointsRate / maximumFee), issue/redeem, BlackList +
-// destroyBlackFunds, deprecate, and the exact event set.
+// The USDT surface reproduced here includes Ownable, Pausable, issue/redeem, BlackList +
+// destroyBlackFunds, deprecate, and the retained event set.
 //
 // EXTENSIONS (documented in packages/solidc/docs/native-erc20.md):
 //   1. quarantined admission - the ledger has a bearer face. `withdraw` unwraps
@@ -29,10 +28,7 @@ pragma solidcash >=0.8.0;
 //     guarded by an explicit `require(balance >= value)` - semantically the same
 //     as SafeMath.sub's assert, at a fraction of the size.
 //
-//   * `decimals` is `uint8`, not `int`. `10 ** this.decimals` in setParams needs
-//     an UNSIGNED exponent; a signed one is a compile error. (This is the bug
-//     that makes the older test/imports/fixtures/usdt_tether.scash fixture fail
-//     to compile.)
+//   * `decimals` is `uint8`, matching the deployed token metadata.
 //
 //   * The `deprecated` -> `upgradedAddress` call forwarding is not reproduced.
 //     On BCH the contract's category ID IS its identity and the `upgrade`
@@ -82,7 +78,6 @@ contract NativeTetherToken(address initialOwner) {
     event Issue(int amount);
     event Redeem(int amount);
     event Deprecate(address newAddress);
-    event Params(int feeBasisPoints, int maxFee);
     event AddedBlackList(address indexed user);
     event RemovedBlackList(address indexed user);
     event DestroyedBlackFunds(address indexed blackListedUser, int balance);
@@ -105,12 +100,6 @@ contract NativeTetherToken(address initialOwner) {
     public address owner;
     public int totalSupply;
     mapping(address => int) public balances;
-    public int basisPointsRate;
-    public int maximumFee;
-    // Fees accrue here rather than into balances[this.owner]: crediting the owner inside
-    // transfer is a SECOND write to the sender's own entry whenever the owner is the sender,
-    // and two writes to one entry cannot compose on this platform. collectFees() sweeps it.
-    public int feeAccrued;
     mapping(address => mapping(address => int)) public allowed;
     public bool paused;
     mapping(address => bool) public isBlackListed;
@@ -170,8 +159,6 @@ contract NativeTetherToken(address initialOwner) {
         this.owner = initialOwner;
         this.paused = false;
         this.deprecated = false;
-        this.basisPointsRate = 0;
-        this.maximumFee = 0;
         this.totalSupply = 0;
         this.containerSeen = 0;
         this.backedSupply = 0;
@@ -211,9 +198,6 @@ contract NativeTetherToken(address initialOwner) {
     }
 
     // ==== ERC20 ====
-    // Fee mechanism reproduced exactly: fee = value * basisPointsRate / 10000,
-    // capped at maximumFee, credited to the owner, and the recipient receives
-    // value - fee. Both USDT Transfer events are emitted in the same order.
 
     function transfer(address to, int value) whenNotPaused notDeprecated {
         address sender = msg.sender;
@@ -221,19 +205,11 @@ contract NativeTetherToken(address initialOwner) {
         require(!this.frozen[sender]);
         require(!this.frozen[to]);
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-        int sendAmount = value - fee;
-
         require(to != sender);
         require(this.balances[sender] >= value);
         this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(sender, this.owner, fee);
-        emit Transfer(sender, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
     }
 
     function transferFrom(address from, address to, int value) whenNotPaused notDeprecated {
@@ -244,25 +220,17 @@ contract NativeTetherToken(address initialOwner) {
 
         int currentAllowance = this.allowed[from][spender];
 
-        int fee = (value * this.basisPointsRate) / 10000;
-        if (fee > this.maximumFee) {
-            fee = this.maximumFee;
-        }
-
         // USDT only decrements finite allowances; MAX_UINT is the infinite sentinel.
         if (currentAllowance < MAX_ALLOWANCE) {
             require(currentAllowance >= value);
             this.allowed[from][spender] = currentAllowance - value;
         }
 
-        int sendAmount = value - fee;
         require(to != from);
         require(this.balances[from] >= value);
         this.balances[from] = this.balances[from] - value;
-        this.balances[to] = this.balances[to] + sendAmount;
-        this.feeAccrued = this.feeAccrued + fee;
-        emit Transfer(from, this.owner, fee);
-        emit Transfer(from, to, sendAmount);
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(from, to, value);
     }
 
     // USDT's approve carries the EIP-20 race-condition guard: a non-zero
@@ -336,14 +304,6 @@ contract NativeTetherToken(address initialOwner) {
         this.balances[this.owner] = this.balances[this.owner] - amount;
         this.backedSupply = this.backedSupply - amount;
         emit Redeem(amount);
-    }
-
-    function setParams(int newBasisPoints, int newMaxFee) onlyOwner {
-        require(newBasisPoints < 20);
-        require(newMaxFee < 50);
-        this.basisPointsRate = newBasisPoints;
-        this.maximumFee = newMaxFee * (10 ** this.decimals);
-        emit Params(this.basisPointsRate, this.maximumFee);
     }
 
     // ==== Deprecation ====
@@ -464,15 +424,6 @@ contract NativeTetherToken(address initialOwner) {
         emit QuarantineParams(blocks);
     }
 
-
-    // Sweep accrued fees into the owner's balance.
-    function collectFees() {
-        require(msg.sender == this.owner);
-        require(this.feeAccrued > 0);
-        int amount = this.feeAccrued;
-        this.feeAccrued = 0;
-        this.balances[this.owner] = this.balances[this.owner] + amount;
-    }
 
     // Open YOUR OWN account. Keyed on msg.sender, so it carries no address argument. A
     // first-touch INSERT cannot settle through a delegate, and two ABSENT keys in one

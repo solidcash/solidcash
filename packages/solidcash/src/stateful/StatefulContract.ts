@@ -13678,6 +13678,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (outputs.length === 0) {
       throw new Error(`staticCall: '${functionName}' has no return value to read.`);
     }
+    if (outputs.length > 1) {
+      throw new Error(
+        `staticCall: multi-value (tuple) reads are not yet supported for '${functionName}'.`,
+      );
+    }
     // Pure / zero-state contracts compiled without forceStateful lack blockLayout even though the bytecode
     // still takes __internal__returnOutputIdx and verifies a returnEvent. Synthesize the minimal layout the
     // SDK needs so emitReturn can place the probe output (master + dataNfts + external-call reserves + return).

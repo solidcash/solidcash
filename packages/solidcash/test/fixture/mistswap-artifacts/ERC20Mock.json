@@ -1,0 +1,4187 @@
+{
+  "contractName": "ERC20Mock",
+  "constructorInputs": [],
+  "abi": [
+    {
+      "name": "name",
+      "selector": "1581f81c",
+      "inputs": [
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "string"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [
+        0
+      ],
+      "dynamicReads": [
+        "_name"
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "symbol",
+      "selector": "25967ca5",
+      "inputs": [
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "string"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [
+        0
+      ],
+      "dynamicReads": [
+        "_symbol"
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "decimals",
+      "selector": "bb844440",
+      "inputs": [
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint8"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [
+        0
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "totalSupply",
+      "selector": "a368022e",
+      "inputs": [
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual",
+        "override"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [
+        0
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "balanceOf",
+      "selector": "5b46f8f6",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "address"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual",
+        "override"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [],
+      "entryAccesses": [
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "account"
+          ],
+          "operations": [
+            "read"
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 1,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "transfer",
+      "selector": "3b88ef57",
+      "inputs": [
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchSlot_1",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_1",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_1",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_1",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "virtual",
+        "override"
+      ],
+      "writesState": true,
+      "requiredNftIndices": [
+        0
+      ],
+      "entryAccesses": [
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "recipient"
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        },
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "nullop:msg.sender"
+          ],
+          "keySources": [
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            }
+          ],
+          "operations": [
+            "write",
+            "read"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Transfer",
+          "eventSignature": "Transfer(address,address,uint256)",
+          "emitIndex": 0
+        }
+      ],
+      "usesMsgSender": true,
+      "sortedBatchInfo": [
+        {
+          "collection": "_balances",
+          "slotIndices": [
+            0,
+            1
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 6,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 3,
+            "slotIndex": 1
+          },
+          {
+            "kind": "event",
+            "offset": 4,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 5
+          }
+        ]
+      }
+    },
+    {
+      "name": "allowance",
+      "selector": "d864b7ca",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "address"
+        },
+        {
+          "name": "spender",
+          "type": "address"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "uint256"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "view",
+        "virtual",
+        "override"
+      ],
+      "writesState": false,
+      "requiredNftIndices": [],
+      "entryAccesses": [
+        {
+          "collection": "_allowances",
+          "keyParams": [
+            "owner",
+            "spender"
+          ],
+          "operations": [
+            "read"
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 3,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 1,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 2
+          }
+        ]
+      }
+    },
+    {
+      "name": "approve",
+      "selector": "9f0bb8a9",
+      "inputs": [
+        {
+          "name": "spender",
+          "type": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "virtual",
+        "override"
+      ],
+      "writesState": true,
+      "requiredNftIndices": [],
+      "entryAccesses": [
+        {
+          "collection": "_allowances",
+          "keyParams": [
+            "nullop:msg.sender",
+            "spender"
+          ],
+          "keySources": [
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            },
+            {
+              "kind": "param",
+              "paramName": "spender"
+            }
+          ],
+          "operations": [
+            "write"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Approval",
+          "eventSignature": "Approval(address,address,uint256)",
+          "emitIndex": 0
+        }
+      ],
+      "usesMsgSender": true,
+      "sortedBatchInfo": [
+        {
+          "collection": "_allowances",
+          "slotIndices": [
+            0
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 4,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 1,
+            "slotIndex": 0
+          },
+          {
+            "kind": "event",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 3
+          }
+        ]
+      }
+    },
+    {
+      "name": "transferFrom",
+      "selector": "4b6685e7",
+      "inputs": [
+        {
+          "name": "sender",
+          "type": "address"
+        },
+        {
+          "name": "recipient",
+          "type": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchSlot_1",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_1",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_1",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_1",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchSlot_2",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_2",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_2",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_2",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "virtual",
+        "override"
+      ],
+      "writesState": true,
+      "requiredNftIndices": [
+        0
+      ],
+      "entryAccesses": [
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "recipient"
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        },
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "sender"
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        },
+        {
+          "collection": "_allowances",
+          "keyParams": [
+            "sender",
+            "nullop:msg.sender"
+          ],
+          "keySources": [
+            {
+              "kind": "param",
+              "paramName": "sender"
+            },
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            }
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Transfer",
+          "eventSignature": "Transfer(address,address,uint256)",
+          "emitIndex": 0
+        },
+        {
+          "eventName": "Approval",
+          "eventSignature": "Approval(address,address,uint256)",
+          "emitIndex": 1
+        }
+      ],
+      "usesMsgSender": true,
+      "sortedBatchInfo": [
+        {
+          "collection": "_balances",
+          "slotIndices": [
+            0,
+            1
+          ]
+        },
+        {
+          "collection": "_allowances",
+          "slotIndices": [
+            2
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 8,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 3,
+            "slotIndex": 1
+          },
+          {
+            "kind": "entry",
+            "offset": 4,
+            "slotIndex": 2
+          },
+          {
+            "kind": "event",
+            "offset": 5,
+            "slotIndex": 0
+          },
+          {
+            "kind": "event",
+            "offset": 6,
+            "slotIndex": 1
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 7
+          }
+        ]
+      }
+    },
+    {
+      "name": "increaseAllowance",
+      "selector": "8d645723",
+      "inputs": [
+        {
+          "name": "spender",
+          "type": "address"
+        },
+        {
+          "name": "addedValue",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "virtual"
+      ],
+      "writesState": true,
+      "requiredNftIndices": [
+        0
+      ],
+      "entryAccesses": [
+        {
+          "collection": "_allowances",
+          "keyParams": [
+            "nullop:msg.sender",
+            "spender"
+          ],
+          "keySources": [
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            },
+            {
+              "kind": "param",
+              "paramName": "spender"
+            }
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Approval",
+          "eventSignature": "Approval(address,address,uint256)",
+          "emitIndex": 0
+        }
+      ],
+      "usesMsgSender": true,
+      "sortedBatchInfo": [
+        {
+          "collection": "_allowances",
+          "slotIndices": [
+            0
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 5,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "event",
+            "offset": 3,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 4
+          }
+        ]
+      }
+    },
+    {
+      "name": "decreaseAllowance",
+      "selector": "a600a1df",
+      "inputs": [
+        {
+          "name": "spender",
+          "type": "address"
+        },
+        {
+          "name": "subtractedValue",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__returnOutputIdx",
+          "type": "bigint"
+        }
+      ],
+      "outputs": [
+        {
+          "type": "bool"
+        }
+      ],
+      "modifiers": [
+        "public",
+        "virtual"
+      ],
+      "writesState": true,
+      "requiredNftIndices": [
+        0
+      ],
+      "entryAccesses": [
+        {
+          "collection": "_allowances",
+          "keyParams": [
+            "nullop:msg.sender",
+            "spender"
+          ],
+          "keySources": [
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            },
+            {
+              "kind": "param",
+              "paramName": "spender"
+            }
+          ],
+          "operations": [
+            "read",
+            "write"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Approval",
+          "eventSignature": "Approval(address,address,uint256)",
+          "emitIndex": 0
+        }
+      ],
+      "usesMsgSender": true,
+      "sortedBatchInfo": [
+        {
+          "collection": "_allowances",
+          "slotIndices": [
+            0
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 5,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "event",
+            "offset": 3,
+            "slotIndex": 0
+          },
+          {
+            "kind": "returnEvent",
+            "offset": 4
+          }
+        ]
+      }
+    },
+    {
+      "name": "__construct",
+      "selector": "25708367",
+      "inputs": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "supply",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        }
+      ],
+      "modifiers": [
+        "public"
+      ],
+      "requiredNftIndices": [
+        0
+      ],
+      "entryAccesses": [
+        {
+          "collection": "_balances",
+          "keyParams": [
+            "nullop:msg.sender"
+          ],
+          "keySources": [
+            {
+              "kind": "expression",
+              "expressionLabel": "nullop:msg.sender"
+            }
+          ],
+          "operations": [
+            "write"
+          ]
+        }
+      ],
+      "emits": [
+        {
+          "eventName": "Transfer",
+          "eventSignature": "Transfer(address,address,uint256)",
+          "emitIndex": 0
+        }
+      ],
+      "usesMsgSender": true,
+      "dynamicWrites": [
+        "_name",
+        "_symbol"
+      ],
+      "sortedBatchInfo": [
+        {
+          "collection": "_balances",
+          "slotIndices": [
+            0
+          ]
+        }
+      ],
+      "blockLayout": {
+        "blockSize": 4,
+        "slots": [
+          {
+            "kind": "master",
+            "offset": 0
+          },
+          {
+            "kind": "dataNft",
+            "offset": 1,
+            "nftIndex": 0
+          },
+          {
+            "kind": "entry",
+            "offset": 2,
+            "slotIndex": 0
+          },
+          {
+            "kind": "event",
+            "offset": 3,
+            "slotIndex": 0
+          }
+        ]
+      }
+    }
+  ],
+  "bytecode": "0079527a93029f808a0079527aa269007a OP_5 OP_DEFINE 51795179a169007a517a94029f808a77 OP_10 OP_DEFINE 517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f6868686868 OP_1NEGATE OP_DEFINE 8276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e6868 82 OP_DEFINE 76820087636d01006782518763764f87636d014f6776817651a27c60a19a63758101509351806775517c7e6868677501828a6868 83 OP_DEFINE c0c7c0cd88c0cec0d188 84 OP_DEFINE c0ce00c38c6576009f6375516776ce53029b808a686602c5808aa26975 85 OP_DEFINE c0c6c0cc88c0d0c0d3a169 86 OP_DEFINE 01207f75c0ce01207f7588 87 OP_DEFINE 78815379819f69768176009c637567537981a069686d75 8b OP_DEFINE 5169007a75007a75007a75 18 OP_DEFINE c002a6808a7701fe8a02d5808a02b4808a 1581f81c OP_DEFINE 02cc808a7701fe8a02d6808a02b4808a 25967ca5 OP_DEFINE 02cc808a754f8a7c817701838ac00281808a bb844440 OP_DEFINE c08bcf4f8a7c817701838ac00281808a a368022e OP_DEFINE 766b02ae808a01fe8a0284808a02b8808a5202c2808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ce808a51 5b46f8f6 OP_DEFINE 0299808a577982012088755979820120887553796b02c9808a766b02ae808a01fe8a0284808ac0577993028a808a02bb808a760087916952790087916970527901188a02ae808a02a4808a5302ad808a01fe8a0284808ac0607993028a808a5a8a02dc808a5393028b808a53795279558a7c76820293808a537976820293808a7e547a01838a7e5302ad808a7b817c765702c1808a59790287808a5902c6808a63c0577993ce01878ac05702a3808a68c05393cf827700a063c05b7993ce01878ac05b02a3808a686c6c6c02b1808a02c7808a7578c0540298808a02b5808a5493cd88c05493d101878ac05402a5808a5493d30088c05493cc02b004a169775d02c2808a6576009f6375516776d15379876376d3009c63765279945455a5780111799c9b6968688c0068666d0295808a6d6d6d6d6d6d7551 3b88ef57 OP_DEFINE 766b786b76a85202a1808a01fe8a0286808a02b8808a5302c2808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ce808a7551 d864b7ca OP_DEFINE 02b6808a7600879169780087916976a85202a1808a537902d4808a8b028b808a76820293808a7c02d7808a02ac808a02dd808a02b3808a0286808a0002b9808a02a7808a7578c0529302da808a5293cd88c05293d101878ac05202a5808a5293d30088c05293cc02b004a169775702c2808a6576009f6375516776d15379876376d3009c63765279945253a5785b799c9b6968688c0068666d01868a6d6d6d7551 9f0bb8a9 OP_DEFINE 02c0808a587982012088755a7982012088755c7982012088755e79820120887502c9808a5b796b5c796b5d796b5e796b5f796b786b766b02af808a01fe8a0284808ac0587993028a808a02af808a01fe8a0284808ac05d7993028a808a52790087916953790087916954795479547901188a02a4808a52795a8a55795379558a547976820293808a567976820293808a7e577901838a7e58790001208087630280808a67580285808a6859790001208087630280808a67590285808a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87ea8011f7f017f847e01fe8a0286808ac001177993028a808a5a8a57790087916978008791695779a85202a1808a78817c760115798801fe8a0286808ac00117790287808a011779c05493028b808a577902bc808a7c01838a7e5602ad808a547a817c765f02c1808a0111790287808a011179c05393028b808a5602ad808a537a817c765a02c1808a5c790287808a5c02c6808a02cb808ac05393cf827700a063c05e7993ce01878ac05e02a3808a68c05493cf827700a063c001127993ce01878ac0011202a3808a686c6c6c6c6c6c6c6c02b1808a5979029e808a755b79885902ab808a597987635b794f9d675b797600a269755b7976cd5b79c093c788755b790294808a5b79d25a02ab808a5a797e5b79029e808a777e8868515c797600a27778937701fe8a0286808a0002b9808a765379886d755b7a755a7a75597a75587a7502c7808a7c6d5279c0550298808a02b5808a5593cd88c05593d101878ac05502a5808a5593d30088c05593cc02b004a16978c0569302da808a5693cd88c05693d101878ac05602a5808a5693d30088c05693cc02b004a1697b7577011302c2808a6576009f6375516776d15379876376d3009c63765279945557a5780117799c9b6968688c0068666d0295808a6d6d6d6d6d6d6d6d6d7551 4b6685e7 OP_DEFINE 02b6808a02bb808a537a7ca85302a1808a01fe8a0286808ac0587993028a808a558a780087916952790087916902b2808a 8d645723 OP_DEFINE 02b6808a02bb808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba85402a1808a01fe8a0286808ac0597993028a808a5a8a780087916952790087916902b2808a a600a1df OP_DEFINE 02c0808a02a8808a57796b8201838a7b8201838a011201838a56790001208087630280808a67560285808a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a02af808a587900558a02dc808a5293028b808a0002bc808a577a01838a7e02a2808a02cb808a7856797e54797e53797e02d9808a557a75537a757b757701fe8a02d5808a0288808a5302b0808a00656ea06302bf808a5d799352799376cd5502ca808a6751686600c48c6576009f6375516776cd55029b808a68667653798875c002a6808a7701779301789600c38c6576009f6375516776c756029b808a68666e886d6d7501fe8a02d6808a0288808a5202b0808a5402b0808a00657653799f6302bf808a5e799353799352799376cd5602ca808a6751686600c48c6576009f6375516776cd56029b808a6866765479887502cc808a7701779301789600c38c6576009f6375516776c757029b808a68666e886d75777c6d7b757702b3808a0284808a0002b9808a02a7808a76c0530298808a02b5808a5393029c808a7501848a01858a0295808a6d6d6d51 25708367 OP_DEFINE c0ce01207f7501207c7e0763ce01207f5288787e127d88c0ce01207f75886775c0ce01207f51887e787e1c88c0c7c0cd88c0cec0d188c0cfc0d288c0d3c0d0a269c0c6c0cc88687e fe OP_DEFINE 01207f75879b69537901829c646c766b02bd808a02ba808a6375516702be808a01207f75817c81a1689a9102cd808a7702bd808a01207f7581a19b6968577901829c646c766b02bd808a01407f7702ba808a6375516702be808a02c8808a7c81a1689a9102cd808a7702bd808a02c8808aa19b6968 ff OP_DEFINE 00006576c39f6376c09c638b006776ce827792638b006776c776827701199c6376537f750376a91487637601177f770288ac87637b757cc3775167758b006867758b006867758b0068686867516866757682779269 8080 OP_DEFINE 8bce01878ac08bcf02d9808a787600a202b7808a517e00c38c6576009f6375516776ce5302cf808a686602c5808a9d75c0ce01207f75c0c48c6576009f6375516776d15379876376d3009c63007855799c9b6968688c0068666d01868a02c4808a7551 8180 OP_DEFINE 7600a202b7808a 8280 OP_DEFINE 02be808a 8380 OP_DEFINE 1514c24571f972982bb6db979178b073e3ee6cded5f802c3808a 8480 OP_DEFINE 79527e00006576c39f6376c09c638b006776ce5379876378827792916976c77b757c8b00678b0068686751686675777682779269 8580 OP_DEFINE 1514767d00f1d416705417a618246ae183c1963d080102c3808a 8680 OP_DEFINE 9376c7527988cf01207f01207f5279557987645279815579819f69788176009c637567557981a06968686d75 8780 OP_DEFINE 02c3808a 8880 OP_DEFINE 02ba808a 8980 OP_DEFINE 76c752798877cf01207f01207f7087637777778167756f018b8a6d750068 8a80 OP_DEFINE 76cd53798876d102df808a537952797e55797e7cd2886d6d 8b80 OP_DEFINE 012002d8808a 8c80 OP_DEFINE 02d8808a 8d80 OP_DEFINE 7506c0ce01207f7c01207b7e7e1f8800881413fedc43be80eb4fc4333774fe69644bcc89cf4475029000b275517eaa02aa207c7e01877ec0 8e80 OP_DEFINE 6b01207f7701207f75 8f80 OP_DEFINE aa02aa207c7e01877ec0 9080 OP_DEFINE 6c766b01207f7701207f 9180 OP_DEFINE 02cd808a 9280 OP_DEFINE 0087636d0100677501828a68 9380 OP_DEFINE d102df808a 9480 OP_DEFINE 01868a02c4808a 9580 OP_DEFINE 02c4808a 9680 OP_DEFINE 02c8808a 9780 OP_DEFINE 93d288c0ce01207f7506c0ce01207f7c01207b7e7e 9880 OP_DEFINE 787601218001207f7701008875527982012088755379820120887555798201208875 9980 OP_DEFINE 6375516776cd5302cf808a68 9a80 OP_DEFINE 02cf808a 9b80 OP_DEFINE cd88c05393d101878ac05393d101207f770088c05393d30088c05393cc02b004a169 9c80 OP_DEFINE 01207f75817c81a1 9d80 OP_DEFINE c093cf01207f7701207f 9e80 OP_DEFINE 7601218001207f77010088 9f80 OP_DEFINE 01407f7701207f7587 a080 OP_DEFINE 79a87ea8011f7f017f847e a180 OP_DEFINE c08bce01878ac05293cf827700a0 a280 OP_DEFINE 7993ce01207f775188 a380 OP_DEFINE 2645524332303a207472616e7366657220616d6f756e7420657863656564732062616c616e63655579 a480 OP_DEFINE 93d101207f770088c0 a580 OP_DEFINE 8bcf4f8a7c81754f8a7c81 a680 OP_DEFINE 765379886d75537a757b757c6d a780 OP_DEFINE 54796b55796b56796b a880 OP_DEFINE 76cd5379c093c78875 a980 OP_DEFINE 54797600a277789377 aa80 OP_DEFINE 79c093cf01207f75 ab80 OP_DEFINE c08bcf827700a0 ac80 OP_DEFINE 79a8011f7f017f847e ad80 OP_DEFINE 76a8011f7f017f847e ae80 OP_DEFINE 78a8011f7f017f847e af80 OP_DEFINE 798277017793017896 b080 OP_DEFINE 6c6c6c6c6c6c56796b54796b52796b766b6c6c7e6c7e6c7e6b537901829c6453796b78c093cf6b0283808a012002de808a01207f7702d3808a9b690283808a028c808a6375670283808a01207f75817c819f696c766b028c808a6375670283808a01207f77029d808a696868577901829c640283808a01207f75810283808a01407f770289808a637551670283808a0297808a7c81a1689a910283808a028c808a917c810283808a0297808aa19a9b69686c766b02d2808a6c766b02d3808a9b646c6c766b7c6b02a9808a02d1808a01207f758702e0808a01407f7701ff8a686c756c7568577901829c6457796b5579c093cf6b0283808a016002de808a01607f7702d2808a9b690283808a0160028d808a6375670283808a0297808a7c819f696c766b028c808a6375670283808a01607f77029d808a696868537901829c640283808a0297808a0283808a0289808a637551670283808a029d808a689a910283808a0160028d808a917c810283808a01207f7581a19a9b69686c766b02d3808a6c766b02d2808a9b646c6c766b7c6b76cd5779c093c7887502d1808a02a0808a02e0808a01ff8a686c756c75686c755202aa808a58797600a278577987919a7778937701fe8a0284808a0002db808a765379886d75 b180 OP_DEFINE 78a85302a1808a7802d4808a5293028b808a7c76820293808a7b02d7808a02a2808a02dd808a02d0808a0286808a0002db808a02a7808a7578c0539302da808a5393029c808a7757790282808ac0c48c6576009f6375516776d15379876376d3009c63765279945354a5785b799c9b6968688c0068666d0295808a6d6d6d7551 b280 OP_DEFINE 02d0808a b380 OP_DEFINE 0288808a780177930178960000657653799f63c05393789376c755798876ce02df808acf4f8a7c815279884f8a7552797c7e7b757c768b7700675168667855797f757b757777777776820293808ac00281808a b480 OP_DEFINE 1f880088142fb30cfca4728c7f62d6787ef949fc7943d813f575029000b275517e0290808a b580 OP_DEFINE 0299808a53796b02a8808a766b52790001208087630280808a67520285808a68 b680 OP_DEFINE 636ed28876d101207f75c0ce01207f758876d101207f77008876d3008876cd01518876cc02b004a169756775687501848a01858ac0ce01207f75 b780 OP_DEFINE c08b028a808a01838a02ac808a63c08bce01878ac08bce01207f7751886802ac808a63c08bcfc08bd288c08bcec08bd188c08bc7c08bcd8868 b880 OP_DEFINE 02db808a b980 OP_DEFINE 01207f75819f6c766b012002d8808a ba80 OP_DEFINE 53790001208087630280808a67530285808a68 bb80 OP_DEFINE 76820293808a7b76820293808a7e bc80 OP_DEFINE 01207f75816c6c6c766b7c6b7c6b bd80 OP_DEFINE 6c6c6c766b7c6b7c6b be80 OP_DEFINE 7601838a567952790178957f77820178a37f7576820293808a7ec05493 bf80 OP_DEFINE 5279029f808a75537982012088755479820120887556798201208875 c080 OP_DEFINE 798801fe8a0284808ac0 c180 OP_DEFINE 790282808ac0c48c c280 OP_DEFINE 7e0275517e77aa02aa207c7e01877e c380 OP_DEFINE c08bc6c08bcc88c08bd0c08bd3a169 c480 OP_DEFINE c48c6576009f6375516776d1537987637c8c7c688c00686600 c580 OP_DEFINE 79c05293028b808a516301516701006802a2808a c680 OP_DEFINE 577a75567a75557a75547a75537a757b757c6d c780 OP_DEFINE 01407f7701207f7581 c880 OP_DEFINE 02a8808a57796b58796b59796b5a796b c980 OP_DEFINE 7988760294808a787cd28875768b7700 ca80 OP_DEFINE 63c05a7993ce01878ac05a02a3808a68 cb80 OP_DEFINE c002a6808a754f8a7c81 cc80 OP_DEFINE 6c6c766b7c6bd201207f cd80 OP_DEFINE 6d01868a02ac808a630296808a686d ce80 OP_DEFINE 7987637c8b7c688c00 cf80 OP_DEFINE 6c6c6c6c78029e808a7553798878c093cf01207f7578876353794f9d6753797600a26975537902a9808a53790294808a5379d25202ab808a52797e5379029e808a777e88685102aa808a01fe8a d080 OP_DEFINE 6c6c766b7c6b0294808a0292808a756c766b01207f75880292808a7701207f770291808a778802e0808a d180 OP_DEFINE 01207f750283808a01207f7587 d280 OP_DEFINE 01207f750283808a02a0808a d380 OP_DEFINE 817c7657798801fe8a0286808ac059790287808a5979c0 d480 OP_DEFINE 151492fa2beec88b7447bef59cedf3f19045e5bef126 d580 OP_DEFINE 1514c107b50f97aac9a17c27534b79ee97a94d9c668f d680 OP_DEFINE 76820293808a7e7c01838a7e5163015167010068 d780 OP_DEFINE 7f7701207f75760001208087 d880 OP_DEFINE c08bd288c08bc7c08bcd88c08bcec08bd188 d980 OP_DEFINE d288c0ce01207f028e808a da80 OP_DEFINE c48c6576009f029a808a66 db80 OP_DEFINE 817c765c02c1808a5e790287808a5e79c0 dc80 OP_DEFINE 63c0557993ce01878ac05502a3808a686c dd80 OP_DEFINE 7f7701207f756c76028f808a870283808a de80 OP_DEFINE 7601207f77518801878a df80 OP_DEFINE 0292808a7701207f750283808a e080 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE",
+  "source": "// SPDX-License-Identifier: MIT\n\npragma solidity 0.6.12;\n\nimport \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract ERC20Mock is ERC20 {\n    constructor(\n        string memory name,\n        string memory symbol,\n        uint256 supply\n    ) public ERC20(name, symbol) {\n        _mint(msg.sender, supply);\n    }\n}",
+  "debug": {
+    "bytecode": "110079527a93029f808a0079527aa269007a55891051795179a169007a517a94029f808a775a894c4e517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f68686868684f892a8276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e68680182893476820087636d01006782518763764f87636d014f6776817651a27c60a19a63758101509351806775517c7e6868677501828a68680183890ac0c7c0cd88c0cec0d1880184891dc0ce00c38c6576009f6375516776ce53029b808a686602c5808aa269750185890bc0c6c0cc88c0d0c0d3a1690186890b01207f75c0ce01207f75880187891778815379819f69768176009c637567537981a069686d75018b890b5169007a75007a75007a7501188911c002a6808a7701fe8a02d5808a02b4808a041581f81c891002cc808a7701fe8a02d6808a02b4808a0425967ca5891202cc808a754f8a7c817701838ac00281808a04bb8444408910c08bcf4f8a7c817701838ac00281808a04a368022e893b766b02ae808a01fe8a0284808a02b8808a5202c2808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ce808a51045b46f8f6894d38010299808a577982012088755979820120887553796b02c9808a766b02ae808a01fe8a0284808ac0577993028a808a02bb808a760087916952790087916970527901188a02ae808a02a4808a5302ad808a01fe8a0284808ac0607993028a808a5a8a02dc808a5393028b808a53795279558a7c76820293808a537976820293808a7e547a01838a7e5302ad808a7b817c765702c1808a59790287808a5902c6808a63c0577993ce01878ac05702a3808a68c05393cf827700a063c05b7993ce01878ac05b02a3808a686c6c6c02b1808a02c7808a7578c0540298808a02b5808a5493cd88c05493d101878ac05402a5808a5493d30088c05493cc02b004a169775d02c2808a6576009f6375516776d15379876376d3009c63765279945455a5780111799c9b6968688c0068666d0295808a6d6d6d6d6d6d7551043b88ef578941766b786b76a85202a1808a01fe8a0286808a02b8808a5302c2808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ce808a755104d864b7ca894ca102b6808a7600879169780087916976a85202a1808a537902d4808a8b028b808a76820293808a7c02d7808a02ac808a02dd808a02b3808a0286808a0002b9808a02a7808a7578c0529302da808a5293cd88c05293d101878ac05202a5808a5293d30088c05293cc02b004a169775702c2808a6576009f6375516776d15379876376d3009c63765279945253a5785b799c9b6968688c0068666d01868a6d6d6d7551049f0bb8a9894dc90202c0808a587982012088755a7982012088755c7982012088755e79820120887502c9808a5b796b5c796b5d796b5e796b5f796b786b766b02af808a01fe8a0284808ac0587993028a808a02af808a01fe8a0284808ac05d7993028a808a52790087916953790087916954795479547901188a02a4808a52795a8a55795379558a547976820293808a567976820293808a7e577901838a7e58790001208087630280808a67580285808a6859790001208087630280808a67590285808a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87ea8011f7f017f847e01fe8a0286808ac001177993028a808a5a8a57790087916978008791695779a85202a1808a78817c760115798801fe8a0286808ac00117790287808a011779c05493028b808a577902bc808a7c01838a7e5602ad808a547a817c765f02c1808a0111790287808a011179c05393028b808a5602ad808a537a817c765a02c1808a5c790287808a5c02c6808a02cb808ac05393cf827700a063c05e7993ce01878ac05e02a3808a68c05493cf827700a063c001127993ce01878ac0011202a3808a686c6c6c6c6c6c6c6c02b1808a5979029e808a755b79885902ab808a597987635b794f9d675b797600a269755b7976cd5b79c093c788755b790294808a5b79d25a02ab808a5a797e5b79029e808a777e8868515c797600a27778937701fe8a0286808a0002b9808a765379886d755b7a755a7a75597a75587a7502c7808a7c6d5279c0550298808a02b5808a5593cd88c05593d101878ac05502a5808a5593d30088c05593cc02b004a16978c0569302da808a5693cd88c05693d101878ac05602a5808a5693d30088c05693cc02b004a1697b7577011302c2808a6576009f6375516776d15379876376d3009c63765279945557a5780117799c9b6968688c0068666d0295808a6d6d6d6d6d6d6d6d6d7551044b6685e7893102b6808a02bb808a537a7ca85302a1808a01fe8a0286808ac0587993028a808a558a780087916952790087916902b2808a048d645723894c5702b6808a02bb808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba85402a1808a01fe8a0286808ac0597993028a808a5a8a780087916952790087916902b2808a04a600a1df894d930102c0808a02a8808a57796b8201838a7b8201838a011201838a56790001208087630280808a67560285808a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a02af808a587900558a02dc808a5293028b808a0002bc808a577a01838a7e02a2808a02cb808a7856797e54797e53797e02d9808a557a75537a757b757701fe8a02d5808a0288808a5302b0808a00656ea06302bf808a5d799352799376cd5502ca808a6751686600c48c6576009f6375516776cd55029b808a68667653798875c002a6808a7701779301789600c38c6576009f6375516776c756029b808a68666e886d6d7501fe8a02d6808a0288808a5202b0808a5402b0808a00657653799f6302bf808a5e799353799352799376cd5602ca808a6751686600c48c6576009f6375516776cd56029b808a6866765479887502cc808a7701779301789600c38c6576009f6375516776c757029b808a68666e886d75777c6d7b757702b3808a0284808a0002b9808a02a7808a76c0530298808a02b5808a5393029c808a7501848a01858a0295808a6d6d6d5104257083678948c0ce01207f7501207c7e0763ce01207f5288787e127d88c0ce01207f75886775c0ce01207f51887e787e1c88c0c7c0cd88c0cec0d188c0cfc0d288c0d3c0d0a269c0c6c0cc88687e01fe894c7501207f75879b69537901829c646c766b02bd808a02ba808a6375516702be808a01207f75817c81a1689a9102cd808a7702bd808a01207f7581a19b6968577901829c646c766b02bd808a01407f7702ba808a6375516702be808a02c8808a7c81a1689a9102cd808a7702bd808a02c8808aa19b696801ff894c5500006576c39f6376c09c638b006776ce827792638b006776c776827701199c6376537f750376a91487637601177f770288ac87637b757cc3775167758b006867758b006867758b0068686867516866757682779269028080894c638bce01878ac08bcf02d9808a787600a202b7808a517e00c38c6576009f6375516776ce5302cf808a686602c5808a9d75c0ce01207f75c0c48c6576009f6375516776d15379876376d3009c63007855799c9b6968688c0068666d01868a02c4808a755102818089077600a202b7808a028280890402be808a028380891a1514c24571f972982bb6db979178b073e3ee6cded5f802c3808a028480893479527e00006576c39f6376c09c638b006776ce5379876378827792916976c77b757c8b00678b0068686751686675777682779269028580891a1514767d00f1d416705417a618246ae183c1963d080102c3808a028680892c9376c7527988cf01207f01207f5279557987645279815579819f69788176009c637567557981a06968686d75028780890402c3808a028880890402ba808a028980891e76c752798877cf01207f01207f7087637777778167756f018b8a6d750068028a80891876cd53798876d102df808a537952797e55797e7cd2886d6d028b808906012002d8808a028c80890402d8808a028d8089387506c0ce01207f7c01207b7e7e1f8800881413fedc43be80eb4fc4333774fe69644bcc89cf4475029000b275517eaa02aa207c7e01877ec0028e8089096b01207f7701207f75028f80890aaa02aa207c7e01877ec0029080890a6c766b01207f7701207f029180890402cd808a029280890c0087636d0100677501828a680293808905d102df808a029480890701868a02c4808a029580890402c4808a029680890402c8808a029780891593d288c0ce01207f7506c0ce01207f7c01207b7e7e0298808922787601218001207f7701008875527982012088755379820120887555798201208875029980890c6375516776cd5302cf808a68029a80890402cf808a029b808922cd88c05393d101878ac05393d101207f770088c05393d30088c05393cc02b004a169029c80890801207f75817c81a1029d80890ac093cf01207f7701207f029e80890b7601218001207f77010088029f80890901407f7701207f758702a080890b79a87ea8011f7f017f847e02a180890ec08bce01878ac05293cf827700a002a28089097993ce01207f77518802a38089292645524332303a207472616e7366657220616d6f756e7420657863656564732062616c616e6365557902a480890993d101207f770088c002a580890b8bcf4f8a7c81754f8a7c8102a680890d765379886d75537a757b757c6d02a780890954796b55796b56796b02a880890976cd5379c093c7887502a980890954797600a27778937702aa80890879c093cf01207f7502ab808907c08bcf827700a002ac80890979a8011f7f017f847e02ad80890976a8011f7f017f847e02ae80890978a8011f7f017f847e02af80890979827701779301789602b080894dd6016c6c6c6c6c6c56796b54796b52796b766b6c6c7e6c7e6c7e6b537901829c6453796b78c093cf6b0283808a012002de808a01207f7702d3808a9b690283808a028c808a6375670283808a01207f75817c819f696c766b028c808a6375670283808a01207f77029d808a696868577901829c640283808a01207f75810283808a01407f770289808a637551670283808a0297808a7c81a1689a910283808a028c808a917c810283808a0297808aa19a9b69686c766b02d2808a6c766b02d3808a9b646c6c766b7c6b02a9808a02d1808a01207f758702e0808a01407f7701ff8a686c756c7568577901829c6457796b5579c093cf6b0283808a016002de808a01607f7702d2808a9b690283808a0160028d808a6375670283808a0297808a7c819f696c766b028c808a6375670283808a01607f77029d808a696868537901829c640283808a0297808a0283808a0289808a637551670283808a029d808a689a910283808a0160028d808a917c810283808a01207f7581a19a9b69686c766b02d3808a6c766b02d2808a9b646c6c766b7c6b76cd5779c093c7887502d1808a02a0808a02e0808a01ff8a686c756c75686c755202aa808a58797600a278577987919a7778937701fe8a0284808a0002db808a765379886d7502b180894c8078a85302a1808a7802d4808a5293028b808a7c76820293808a7b02d7808a02a2808a02dd808a02d0808a0286808a0002db808a02a7808a7578c0539302da808a5393029c808a7757790282808ac0c48c6576009f6375516776d15379876376d3009c63765279945354a5785b799c9b6968688c0068666d0295808a6d6d6d755102b280890402d0808a02b380894c530288808a780177930178960000657653799f63c05393789376c755798876ce02df808acf4f8a7c815279884f8a7552797c7e7b757c768b7700675168667855797f757b757777777776820293808ac00281808a02b48089251f880088142fb30cfca4728c7f62d6787ef949fc7943d813f575029000b275517e0290808a02b58089200299808a53796b02a8808a766b52790001208087630280808a67520285808a6802b680893a636ed28876d101207f75c0ce01207f758876d101207f77008876d3008876cd01518876cc02b004a169756775687501848a01858ac0ce01207f7502b7808939c08b028a808a01838a02ac808a63c08bce01878ac08bce01207f7751886802ac808a63c08bcfc08bd288c08bcec08bd188c08bc7c08bcd886802b880890402db808a02b980890f01207f75819f6c766b012002d8808a02ba80891353790001208087630280808a67530285808a6802bb80890e76820293808a7b76820293808a7e02bc80890e01207f75816c6c6c766b7c6b7c6b02bd8089096c6c6c766b7c6b7c6b02be80891d7601838a567952790178957f77820178a37f7576820293808a7ec0549302bf80891c5279029f808a7553798201208875547982012088755679820120887502c080890a798801fe8a0284808ac002c1808908790282808ac0c48c02c280890f7e0275517e77aa02aa207c7e01877e02c380890fc08bc6c08bcc88c08bd0c08bd3a16902c4808919c48c6576009f6375516776d1537987637c8c7c688c0068660002c580891479c05293028b808a516301516701006802a2808a02c6808913577a75567a75557a75547a75537a757b757c6d02c780890901407f7701207f758102c880891002a8808a57796b58796b59796b5a796b02c98089107988760294808a787cd28875768b770002ca80891063c05a7993ce01878ac05a02a3808a6802cb80890ac002a6808a754f8a7c8102cc80890a6c6c766b7c6bd201207f02cd80890f6d01868a02ac808a630296808a686d02ce8089097987637c8b7c688c0002cf80894c4d6c6c6c6c78029e808a7553798878c093cf01207f7578876353794f9d6753797600a26975537902a9808a53790294808a5379d25202ab808a52797e5379029e808a777e88685102aa808a01fe8a02d080892a6c6c766b7c6b0294808a0292808a756c766b01207f75880292808a7701207f770291808a778802e0808a02d180890d01207f750283808a01207f758702d280890c01207f750283808a02a0808a02d3808917817c7657798801fe8a0286808ac059790287808a5979c002d4808916151492fa2beec88b7447bef59cedf3f19045e5bef12602d58089161514c107b50f97aac9a17c27534b79ee97a94d9c668f02d680891476820293808a7e7c01838a7e516301516701006802d780890c7f7701207f7576000120808702d8808912c08bd288c08bc7c08bcd88c08bcec08bd18802d980890bd288c0ce01207f028e808a02da80890bc48c6576009f029a808a6602db808911817c765c02c1808a5e790287808a5e79c002dc80891163c0557993ce01878ac05502a3808a686c02dd8089117f7701207f756c76028f808a870283808a02de80890a7601207f77518801878a02df80890d0292808a7701207f750283808a02e08089748c7a82549d8a",
+    "sourceMap": "85:4:89:5;;;170::173;;;7:0:15:1;;;;;;;;;;;;;;;;;;;;;;;;305:4:305:96;;;64::66:5;;;72::74;;;89::91;;;96::98;;;103::105;;;115::118;;;123::125;;;134::137;;;152::156;;;170::173;;;189::192;;;8::14;;;7:0:15:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+    "logs": [],
+    "requires": [],
+    "functionDebug": {
+      "25708367": {
+        "requires": [
+          {
+            "ip": 35,
+            "line": 229,
+            "message": "ERC20: mint to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "11:8:11:22;;8:4:14:5;;;;;56:8:56:22:1;;;12:25:12:31:0;57:8:57:26:1;;;58:20:58:22:0;:8::23:1;;13:14:13:24:0;;;;;;;;;;;;;;229:16:229:23;:35::36;:16::37:1;;:8::74;231:50:231:56:0;;:41::48;:37::38;:8::57:1;;233:40:233:46:0;;:23::35;;;;;;;;:::47:1;;:8::48;;234:18:234:25:0;;:52::58;;:29::47;:::59:1;;:8::60;;;;;;235:30:235:31:0;:8::51:1;;:43::49:0;;:8::51:1;;;8:4:14:5:0;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::0;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "1581f81c": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "65:15:65:20;;;;;;;;;"
+      },
+      "25967ca5": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "73:15:73:22;;;;;;;;"
+      },
+      "bb844440": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "90:15:90:24;;;;;;;;:8::25:1;;89:4:91:5:0;;"
+      },
+      "a368022e": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "97:15:97:27;;;;;;;;:8::28:1;;96:4:98:5:0;;"
+      },
+      "5b46f8f6": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "103:4:105:5;;104:15:104:33;;;;;;;;103:4:105:5:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "3b88ef57": {
+        "requires": [
+          {
+            "ip": 39,
+            "line": 209,
+            "message": "ERC20: transfer from the zero address"
+          },
+          {
+            "ip": 45,
+            "line": 210,
+            "message": "ERC20: transfer to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "115:41:115:55;;:4:118:5;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;17:15:17:25;;209:16:209:22;:34::35;:16::36:1;;:8::79;210:16:210:25:0;;:37::38;:16::39:1;;:8::80;212:37:212:54:0;:29::35;;:8::55:1;;214:18:214:24:0;;:58::98;;:38::44;;;:28::45;;;;;;;;;;:::99:1;;:8::100;;;;;;215:56:215:62:0;;:31::51;;:::63:1;;216:22:216:28:0;:8::49:1;;;;:30::39:0;;:8::49:1;;;;;:41::47:0;;:8::49:1;;;117::117:20;;;::::0;::::1;;;;;;;;;;;;;115:4:118:5:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "d864b7ca": {
+        "requires": [],
+        "logs": [],
+        "sourceMap": "123:4:125:5;;;;124:15:124:42;;;;;;;;;;;123:4:125:5:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "9f0bb8a9": {
+        "requires": [
+          {
+            "ip": 6,
+            "line": 273,
+            "message": "ERC20: approve from the zero address"
+          },
+          {
+            "ip": 11,
+            "line": 274,
+            "message": "ERC20: approve to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "134:38:134:52;;273:16:273:21;:33::34;:16::35:1;;:8::77;274:16:274:23:0;:35::36;:16::37:1;;:8::77;276:20:276:25:0;:8::45:1;;;;:38::44:0;;:8::45:1;;;;;277::277:46;;;;:29::36:0;:8::46:1;;134:4:137:5:0;;;;::::1;;::::0;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "4b6685e7": {
+        "requires": [
+          {
+            "ip": 76,
+            "line": 209,
+            "message": "ERC20: transfer from the zero address"
+          },
+          {
+            "ip": 82,
+            "line": 210,
+            "message": "ERC20: transfer to the zero address"
+          },
+          {
+            "ip": 182,
+            "line": 273,
+            "message": "ERC20: approve from the zero address"
+          },
+          {
+            "ip": 187,
+            "line": 274,
+            "message": "ERC20: approve to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "152:61:152:75;;:4:156:5;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;209:16:209:22;;:34::35;:16::36:1;;:8::79;210:16:210:25:0;;:37::38;:16::39:1;;:8::80;212:48:212:54:0;;:37::46;;:29::35;;:8::55:1;;214:58:214:98:0;;:28::45;;:::99:1;;215:56:215:62:0;;:31::51;;:::63:1;;216:22:216:28:0;;:8::49:1;;;;:30::39:0;;:8::49:1;;;;;:41::47:0;;:8::49:1;;;17:15:17:25:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;154:85:154:127;:77::83;;:39::72;;;16:4:18:5;;154:39:154:72;;;;;;;;;;;;;;;;;;:::128:1;;273:16:273:21:0;;:33::34;:16::35:1;;:8::77;274:16:274:23:0;:35::36;:16::37:1;;:8::77;276::276:45;;;:27::34:0;;;:38::44;:8::45:1;;;;;;;;;;;;;;;;;;;;;;277:22:277:27:0;;:8::46:1;;:38::44:0;:8::46:1;;;155::155:20;;;::::0;;::::1;;;;;;;;;;;;;;;;;;;;::::0;;::::1;;;;;;;;;;;;;152:4:156:5:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::1;;;;;;;;;;::::0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::1;::::0;;;;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+      },
+      "8d645723": {
+        "requires": [
+          {
+            "ip": 27,
+            "line": 273,
+            "message": "ERC20: approve from the zero address"
+          },
+          {
+            "ip": 33,
+            "line": 274,
+            "message": "ERC20: approve to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "170:48:170:66;;17:15:17:25;;171:79:171:89;;16:4:18:5;171:40:171:74;;;;;;;;;;;;;;:::90:1;;273:16:273:21:0;:33::34;:16::35:1;;:8::77;274:16:274:23:0;;:35::36;:16::37:1;;:8::77;276:20:276:25:0;"
+      },
+      "a600a1df": {
+        "requires": [
+          {
+            "ip": 28,
+            "line": 273,
+            "message": "ERC20: approve from the zero address"
+          },
+          {
+            "ip": 34,
+            "line": 274,
+            "message": "ERC20: approve to the zero address"
+          }
+        ],
+        "logs": [],
+        "sourceMap": "189:48:189:71;;17:15:17:25;;190:96:190:135;:79::94;;16:4:18:5;190:40:190:74;;;;;;;;;;;;;;:::136:1;;273:16:273:21:0;:33::34;:16::35:1;;:8::77;274:16:274:23:0;;:35::36;:16::37:1;;:8::77;276:20:276:25:0;"
+      }
+    }
+  },
+  "functionBodies": {
+    "25708367": "02c0808a02a8808a57796b8201838a7b8201838a011201838a56790001208087630280808a67560285808a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a02af808a587900558a02dc808a5293028b808a0002bc808a577a01838a7e02a2808a02cb808a7856797e54797e53797e02d9808a557a75537a757b757701fe8a02d5808a0288808a5302b0808a00656ea06302bf808a5d799352799376cd5502ca808a6751686600c48c6576009f6375516776cd55029b808a68667653798875c002a6808a7701779301789600c38c6576009f6375516776c756029b808a68666e886d6d7501fe8a02d6808a0288808a5202b0808a5402b0808a00657653799f6302bf808a5e799353799352799376cd5602ca808a6751686600c48c6576009f6375516776cd56029b808a6866765479887502cc808a7701779301789600c38c6576009f6375516776c757029b808a68666e886d75777c6d7b757702b3808a0284808a0002b9808a02a7808a76c0530298808a02b5808a5393029c808a7501848a01858a0295808a6d6d6d51",
+    "1581f81c": "c002a6808a7701fe8a02d5808a02b4808a",
+    "25967ca5": "02cc808a7701fe8a02d6808a02b4808a",
+    "bb844440": "02cc808a754f8a7c817701838ac00281808a",
+    "a368022e": "c08bcf4f8a7c817701838ac00281808a",
+    "5b46f8f6": "766b02ae808a01fe8a0284808a02b8808a5202c2808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ce808a51",
+    "3b88ef57": "0299808a577982012088755979820120887553796b02c9808a766b02ae808a01fe8a0284808ac0577993028a808a02bb808a760087916952790087916970527901188a02ae808a02a4808a5302ad808a01fe8a0284808ac0607993028a808a5a8a02dc808a5393028b808a53795279558a7c76820293808a537976820293808a7e547a01838a7e5302ad808a7b817c765702c1808a59790287808a5902c6808a63c0577993ce01878ac05702a3808a68c05393cf827700a063c05b7993ce01878ac05b02a3808a686c6c6c02b1808a02c7808a7578c0540298808a02b5808a5493cd88c05493d101878ac05402a5808a5493d30088c05493cc02b004a169775d02c2808a6576009f6375516776d15379876376d3009c63765279945455a5780111799c9b6968688c0068666d0295808a6d6d6d6d6d6d7551",
+    "d864b7ca": "766b786b76a85202a1808a01fe8a0286808a02b8808a5302c2808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ce808a7551",
+    "9f0bb8a9": "02b6808a7600879169780087916976a85202a1808a537902d4808a8b028b808a76820293808a7c02d7808a02ac808a02dd808a02b3808a0286808a0002b9808a02a7808a7578c0529302da808a5293cd88c05293d101878ac05202a5808a5293d30088c05293cc02b004a169775702c2808a6576009f6375516776d15379876376d3009c63765279945253a5785b799c9b6968688c0068666d01868a6d6d6d7551",
+    "4b6685e7": "02c0808a587982012088755a7982012088755c7982012088755e79820120887502c9808a5b796b5c796b5d796b5e796b5f796b786b766b02af808a01fe8a0284808ac0587993028a808a02af808a01fe8a0284808ac05d7993028a808a52790087916953790087916954795479547901188a02a4808a52795a8a55795379558a547976820293808a567976820293808a7e577901838a7e58790001208087630280808a67580285808a6859790001208087630280808a67590285808a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87ea8011f7f017f847e01fe8a0286808ac001177993028a808a5a8a57790087916978008791695779a85202a1808a78817c760115798801fe8a0286808ac00117790287808a011779c05493028b808a577902bc808a7c01838a7e5602ad808a547a817c765f02c1808a0111790287808a011179c05393028b808a5602ad808a537a817c765a02c1808a5c790287808a5c02c6808a02cb808ac05393cf827700a063c05e7993ce01878ac05e02a3808a68c05493cf827700a063c001127993ce01878ac0011202a3808a686c6c6c6c6c6c6c6c02b1808a5979029e808a755b79885902ab808a597987635b794f9d675b797600a269755b7976cd5b79c093c788755b790294808a5b79d25a02ab808a5a797e5b79029e808a777e8868515c797600a27778937701fe8a0286808a0002b9808a765379886d755b7a755a7a75597a75587a7502c7808a7c6d5279c0550298808a02b5808a5593cd88c05593d101878ac05502a5808a5593d30088c05593cc02b004a16978c0569302da808a5693cd88c05693d101878ac05602a5808a5693d30088c05693cc02b004a1697b7577011302c2808a6576009f6375516776d15379876376d3009c63765279945557a5780117799c9b6968688c0068666d0295808a6d6d6d6d6d6d6d6d6d7551",
+    "8d645723": "02b6808a02bb808a537a7ca85302a1808a01fe8a0286808ac0587993028a808a558a780087916952790087916902b2808a",
+    "a600a1df": "02b6808a02bb808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba85402a1808a01fe8a0286808ac0597993028a808a5a8a780087916952790087916902b2808a"
+  },
+  "fingerprint": "0d6fc401abe395b186b77aac24a088b16abcb5ee6bca3fb44168b137b2694801",
+  "stateLayout": {
+    "variables": [
+      {
+        "name": "_totalSupply",
+        "type": "uint256",
+        "nftIndex": 0,
+        "fieldIndex": 0,
+        "visibility": "private"
+      },
+      {
+        "name": "_name",
+        "type": "string",
+        "nftIndex": 0,
+        "fieldIndex": 1,
+        "visibility": "private",
+        "dynamic": true
+      },
+      {
+        "name": "_symbol",
+        "type": "string",
+        "nftIndex": 0,
+        "fieldIndex": 2,
+        "visibility": "private",
+        "dynamic": true
+      },
+      {
+        "name": "_decimals",
+        "type": "uint8",
+        "nftIndex": 0,
+        "fieldIndex": 3,
+        "visibility": "private"
+      }
+    ],
+    "dataNftCount": 1,
+    "commitmentLimit": 128,
+    "constructorInputs": [
+      {
+        "name": "name",
+        "type": "string"
+      },
+      {
+        "name": "symbol",
+        "type": "string"
+      },
+      {
+        "name": "supply",
+        "type": "uint256"
+      },
+      {
+        "name": "__internal__msgSenderCategory",
+        "type": "bytes32"
+      },
+      {
+        "name": "__internal__c2BatchSlot_0",
+        "type": "bytes32"
+      },
+      {
+        "name": "__internal__c2BatchProof_0",
+        "type": "bigint"
+      },
+      {
+        "name": "__internal__c2BatchNext_0",
+        "type": "bytes32"
+      },
+      {
+        "name": "__internal__c2BatchPredOut_0",
+        "type": "bigint"
+      },
+      {
+        "name": "__internal__c2BatchTrailingCount",
+        "type": "bigint"
+      }
+    ],
+    "collections": [
+      {
+        "name": "_balances",
+        "signature": "_balances:mapping(address => uint256)",
+        "kind": "mapping",
+        "keyType": "address",
+        "valueType": "uint256",
+        "sorted": true
+      },
+      {
+        "name": "_allowances",
+        "signature": "_allowances:mapping(address => mapping(address => uint256))",
+        "kind": "mapping",
+        "keyType": "address",
+        "valueType": "uint256",
+        "keyTypes": [
+          "address",
+          "address"
+        ],
+        "sorted": true
+      }
+    ],
+    "mappings": [
+      {
+        "name": "_balances",
+        "signature": "_balances:mapping(address => uint256)",
+        "kind": "mapping",
+        "keyType": "address",
+        "valueType": "uint256",
+        "sorted": true
+      },
+      {
+        "name": "_allowances",
+        "signature": "_allowances:mapping(address => mapping(address => uint256))",
+        "kind": "mapping",
+        "keyType": "address",
+        "valueType": "uint256",
+        "keyTypes": [
+          "address",
+          "address"
+        ],
+        "sorted": true
+      }
+    ]
+  },
+  "compiler": {
+    "name": "solidc",
+    "version": "0.13.1",
+    "options": {
+      "enforceFunctionParameterTypes": true,
+      "enforceLocktimeGuard": true,
+      "commitmentLimit": 128,
+      "messageBus": false
+    }
+  },
+  "updatedAt": "2026-08-09T20:39:47.668Z",
+  "invocationAnalysis": {
+    "version": 1,
+    "protocolVersions": [
+      1
+    ],
+    "functions": [
+      {
+        "id": 13,
+        "name": "name",
+        "arity": 0,
+        "entryPoint": true,
+        "selector": "1581f81c",
+        "calls": [],
+        "closure": [
+          13
+        ],
+        "component": 0,
+        "recursive": false,
+        "reads": [
+          "state:_name"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "string"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "dynamicReads": [
+          "_name"
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 14,
+        "name": "symbol",
+        "arity": 0,
+        "entryPoint": true,
+        "selector": "25967ca5",
+        "calls": [],
+        "closure": [
+          14
+        ],
+        "component": 1,
+        "recursive": false,
+        "reads": [
+          "state:_symbol"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "string"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "dynamicReads": [
+          "_symbol"
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 15,
+        "name": "decimals",
+        "arity": 0,
+        "entryPoint": true,
+        "selector": "bb844440",
+        "calls": [],
+        "closure": [
+          15
+        ],
+        "component": 2,
+        "recursive": false,
+        "reads": [
+          "state:_decimals"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "uint8"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 16,
+        "name": "totalSupply",
+        "arity": 0,
+        "entryPoint": true,
+        "selector": "a368022e",
+        "calls": [],
+        "closure": [
+          16
+        ],
+        "component": 3,
+        "recursive": false,
+        "reads": [
+          "state:_totalSupply"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 17,
+        "name": "balanceOf",
+        "arity": 1,
+        "entryPoint": true,
+        "selector": "5b46f8f6",
+        "calls": [],
+        "closure": [
+          17
+        ],
+        "component": 4,
+        "recursive": false,
+        "reads": [
+          "collection:_balances:*"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 1,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 18,
+        "name": "transfer",
+        "arity": 2,
+        "entryPoint": true,
+        "selector": "3b88ef57",
+        "calls": [
+          24
+        ],
+        "closure": [
+          18,
+          24
+        ],
+        "component": 5,
+        "recursive": false,
+        "reads": [
+          "collection:_balances:*"
+        ],
+        "writes": [
+          "collection:_balances:*"
+        ],
+        "effects": [
+          "events"
+        ],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "emits": [
+          {
+            "eventName": "Transfer",
+            "eventSignature": "Transfer(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 6,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 3,
+              "slotIndex": 1
+            },
+            {
+              "kind": "event",
+              "offset": 4,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 5
+            }
+          ]
+        }
+      },
+      {
+        "id": 19,
+        "name": "allowance",
+        "arity": 2,
+        "entryPoint": true,
+        "selector": "d864b7ca",
+        "calls": [],
+        "closure": [
+          19
+        ],
+        "component": 6,
+        "recursive": false,
+        "reads": [
+          "collection:_allowances:*"
+        ],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 1,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "id": 20,
+        "name": "approve",
+        "arity": 2,
+        "entryPoint": true,
+        "selector": "9f0bb8a9",
+        "calls": [],
+        "closure": [
+          20
+        ],
+        "component": 7,
+        "recursive": false,
+        "reads": [],
+        "writes": [
+          "collection:_allowances:*"
+        ],
+        "effects": [
+          "events"
+        ],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 4,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 1,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 3
+            }
+          ]
+        }
+      },
+      {
+        "id": 21,
+        "name": "transferFrom",
+        "arity": 3,
+        "entryPoint": true,
+        "selector": "4b6685e7",
+        "calls": [
+          24
+        ],
+        "closure": [
+          21,
+          24
+        ],
+        "component": 8,
+        "recursive": false,
+        "reads": [
+          "collection:_allowances:*",
+          "collection:_balances:*"
+        ],
+        "writes": [
+          "collection:_allowances:*",
+          "collection:_balances:*"
+        ],
+        "effects": [
+          "events"
+        ],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "emits": [
+          {
+            "eventName": "Transfer",
+            "eventSignature": "Transfer(address,address,uint256)",
+            "emitIndex": 0
+          },
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 1
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 8,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 3,
+              "slotIndex": 1
+            },
+            {
+              "kind": "entry",
+              "offset": 4,
+              "slotIndex": 2
+            },
+            {
+              "kind": "event",
+              "offset": 5,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 6,
+              "slotIndex": 1
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 7
+            }
+          ]
+        }
+      },
+      {
+        "id": 22,
+        "name": "increaseAllowance",
+        "arity": 2,
+        "entryPoint": true,
+        "selector": "8d645723",
+        "calls": [],
+        "closure": [
+          22
+        ],
+        "component": 9,
+        "recursive": false,
+        "reads": [
+          "collection:_allowances:*"
+        ],
+        "writes": [
+          "collection:_allowances:*"
+        ],
+        "effects": [
+          "events"
+        ],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 5,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 4
+            }
+          ]
+        }
+      },
+      {
+        "id": 23,
+        "name": "decreaseAllowance",
+        "arity": 2,
+        "entryPoint": true,
+        "selector": "a600a1df",
+        "calls": [],
+        "closure": [
+          23
+        ],
+        "component": 10,
+        "recursive": false,
+        "reads": [
+          "collection:_allowances:*"
+        ],
+        "writes": [
+          "collection:_allowances:*"
+        ],
+        "effects": [
+          "events"
+        ],
+        "unknown": false,
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "bounded": true,
+        "maximumDirectInvocations": 0,
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 5,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 4
+            }
+          ]
+        }
+      },
+      {
+        "id": 24,
+        "name": "_beforeTokenTransfer",
+        "arity": 3,
+        "entryPoint": false,
+        "calls": [],
+        "closure": [
+          24
+        ],
+        "component": 11,
+        "recursive": false,
+        "reads": [],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "bounded": true,
+        "maximumDirectInvocations": 0
+      },
+      {
+        "id": 25,
+        "name": "_msgData",
+        "arity": 0,
+        "entryPoint": false,
+        "calls": [],
+        "closure": [
+          25
+        ],
+        "component": 12,
+        "recursive": false,
+        "reads": [],
+        "writes": [],
+        "effects": [],
+        "unknown": false,
+        "bounded": true,
+        "maximumDirectInvocations": 0
+      }
+    ],
+    "components": [
+      {
+        "id": 0,
+        "functions": [
+          13
+        ],
+        "recursive": false
+      },
+      {
+        "id": 1,
+        "functions": [
+          14
+        ],
+        "recursive": false
+      },
+      {
+        "id": 2,
+        "functions": [
+          15
+        ],
+        "recursive": false
+      },
+      {
+        "id": 3,
+        "functions": [
+          16
+        ],
+        "recursive": false
+      },
+      {
+        "id": 4,
+        "functions": [
+          17
+        ],
+        "recursive": false
+      },
+      {
+        "id": 5,
+        "functions": [
+          18
+        ],
+        "recursive": false
+      },
+      {
+        "id": 6,
+        "functions": [
+          19
+        ],
+        "recursive": false
+      },
+      {
+        "id": 7,
+        "functions": [
+          20
+        ],
+        "recursive": false
+      },
+      {
+        "id": 8,
+        "functions": [
+          21
+        ],
+        "recursive": false
+      },
+      {
+        "id": 9,
+        "functions": [
+          22
+        ],
+        "recursive": false
+      },
+      {
+        "id": 10,
+        "functions": [
+          23
+        ],
+        "recursive": false
+      },
+      {
+        "id": 11,
+        "functions": [
+          24
+        ],
+        "recursive": false
+      },
+      {
+        "id": 12,
+        "functions": [
+          25
+        ],
+        "recursive": false
+      }
+    ]
+  },
+  "delegateArtifact": {
+    "contractName": "ERC20Mock",
+    "constructorInputs": [],
+    "abi": [
+      {
+        "name": "name",
+        "selector": "1581f81c",
+        "inputs": [
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "string"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [
+          0
+        ],
+        "dynamicReads": [
+          "_name"
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "symbol",
+        "selector": "25967ca5",
+        "inputs": [
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "string"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [
+          0
+        ],
+        "dynamicReads": [
+          "_symbol"
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "decimals",
+        "selector": "bb844440",
+        "inputs": [
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "uint8"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [
+          0
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "totalSupply",
+        "selector": "a368022e",
+        "inputs": [
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual",
+          "override"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [
+          0
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "balanceOf",
+        "selector": "5b46f8f6",
+        "inputs": [
+          {
+            "name": "account",
+            "type": "address"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual",
+          "override"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [],
+        "entryAccesses": [
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "account"
+            ],
+            "operations": [
+              "read"
+            ]
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 1,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "transfer",
+        "selector": "3b88ef57",
+        "inputs": [
+          {
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__proxyMasterIndex",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "virtual",
+          "override",
+          "delegate"
+        ],
+        "writesState": true,
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "recipient"
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          },
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "nullop:msg.sender"
+            ],
+            "keySources": [
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              }
+            ],
+            "operations": [
+              "write",
+              "read"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Transfer",
+            "eventSignature": "Transfer(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "usesMsgSender": true,
+        "entryLoopWrites": [
+          "_balances"
+        ],
+        "blockLayout": {
+          "blockSize": 6,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 3,
+              "slotIndex": 1
+            },
+            {
+              "kind": "event",
+              "offset": 4,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 5
+            }
+          ]
+        }
+      },
+      {
+        "name": "allowance",
+        "selector": "d864b7ca",
+        "inputs": [
+          {
+            "name": "owner",
+            "type": "address"
+          },
+          {
+            "name": "spender",
+            "type": "address"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "uint256"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "view",
+          "virtual",
+          "override"
+        ],
+        "writesState": false,
+        "requiredNftIndices": [],
+        "entryAccesses": [
+          {
+            "collection": "_allowances",
+            "keyParams": [
+              "owner",
+              "spender"
+            ],
+            "operations": [
+              "read"
+            ]
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 3,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 1,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 2
+            }
+          ]
+        }
+      },
+      {
+        "name": "approve",
+        "selector": "9f0bb8a9",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__proxyMasterIndex",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "virtual",
+          "override",
+          "delegate"
+        ],
+        "writesState": true,
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_allowances",
+            "keyParams": [
+              "nullop:msg.sender",
+              "spender"
+            ],
+            "keySources": [
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              },
+              {
+                "kind": "param",
+                "paramName": "spender"
+              }
+            ],
+            "operations": [
+              "write"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "usesMsgSender": true,
+        "entryLoopWrites": [
+          "_allowances"
+        ],
+        "blockLayout": {
+          "blockSize": 5,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 4
+            }
+          ]
+        }
+      },
+      {
+        "name": "transferFrom",
+        "selector": "4b6685e7",
+        "inputs": [
+          {
+            "name": "sender",
+            "type": "address"
+          },
+          {
+            "name": "recipient",
+            "type": "address"
+          },
+          {
+            "name": "amount",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__proxyMasterIndex",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "virtual",
+          "override",
+          "delegate"
+        ],
+        "writesState": true,
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "recipient"
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          },
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "sender"
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          },
+          {
+            "collection": "_allowances",
+            "keyParams": [
+              "sender",
+              "nullop:msg.sender"
+            ],
+            "keySources": [
+              {
+                "kind": "param",
+                "paramName": "sender"
+              },
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              }
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Transfer",
+            "eventSignature": "Transfer(address,address,uint256)",
+            "emitIndex": 0
+          },
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 1
+          }
+        ],
+        "usesMsgSender": true,
+        "entryLoopWrites": [
+          "_allowances",
+          "_balances"
+        ],
+        "blockLayout": {
+          "blockSize": 8,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 3,
+              "slotIndex": 1
+            },
+            {
+              "kind": "entry",
+              "offset": 4,
+              "slotIndex": 2
+            },
+            {
+              "kind": "event",
+              "offset": 5,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 6,
+              "slotIndex": 1
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 7
+            }
+          ]
+        }
+      },
+      {
+        "name": "increaseAllowance",
+        "selector": "8d645723",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address"
+          },
+          {
+            "name": "addedValue",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__proxyMasterIndex",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "virtual",
+          "delegate"
+        ],
+        "writesState": true,
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_allowances",
+            "keyParams": [
+              "nullop:msg.sender",
+              "spender"
+            ],
+            "keySources": [
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              },
+              {
+                "kind": "param",
+                "paramName": "spender"
+              }
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "usesMsgSender": true,
+        "entryLoopWrites": [
+          "_allowances"
+        ],
+        "blockLayout": {
+          "blockSize": 5,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 4
+            }
+          ]
+        }
+      },
+      {
+        "name": "decreaseAllowance",
+        "selector": "a600a1df",
+        "inputs": [
+          {
+            "name": "spender",
+            "type": "address"
+          },
+          {
+            "name": "subtractedValue",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__returnOutputIdx",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__proxyMasterIndex",
+            "type": "bigint"
+          }
+        ],
+        "outputs": [
+          {
+            "type": "bool"
+          }
+        ],
+        "modifiers": [
+          "public",
+          "virtual",
+          "delegate"
+        ],
+        "writesState": true,
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_allowances",
+            "keyParams": [
+              "nullop:msg.sender",
+              "spender"
+            ],
+            "keySources": [
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              },
+              {
+                "kind": "param",
+                "paramName": "spender"
+              }
+            ],
+            "operations": [
+              "read",
+              "write"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Approval",
+            "eventSignature": "Approval(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "usesMsgSender": true,
+        "entryLoopWrites": [
+          "_allowances"
+        ],
+        "blockLayout": {
+          "blockSize": 5,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            },
+            {
+              "kind": "returnEvent",
+              "offset": 4
+            }
+          ]
+        }
+      },
+      {
+        "name": "__construct",
+        "selector": "25708367",
+        "inputs": [
+          {
+            "name": "name",
+            "type": "string"
+          },
+          {
+            "name": "symbol",
+            "type": "string"
+          },
+          {
+            "name": "supply",
+            "type": "uint256"
+          },
+          {
+            "name": "__internal__msgSenderCategory",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__c2BatchSlot_0",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__c2BatchProof_0",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__c2BatchNext_0",
+            "type": "bytes32"
+          },
+          {
+            "name": "__internal__c2BatchPredOut_0",
+            "type": "bigint"
+          },
+          {
+            "name": "__internal__c2BatchTrailingCount",
+            "type": "bigint"
+          }
+        ],
+        "modifiers": [
+          "public"
+        ],
+        "requiredNftIndices": [
+          0
+        ],
+        "entryAccesses": [
+          {
+            "collection": "_balances",
+            "keyParams": [
+              "nullop:msg.sender"
+            ],
+            "keySources": [
+              {
+                "kind": "expression",
+                "expressionLabel": "nullop:msg.sender"
+              }
+            ],
+            "operations": [
+              "write"
+            ]
+          }
+        ],
+        "emits": [
+          {
+            "eventName": "Transfer",
+            "eventSignature": "Transfer(address,address,uint256)",
+            "emitIndex": 0
+          }
+        ],
+        "usesMsgSender": true,
+        "dynamicWrites": [
+          "_name",
+          "_symbol"
+        ],
+        "sortedBatchInfo": [
+          {
+            "collection": "_balances",
+            "slotIndices": [
+              0
+            ]
+          }
+        ],
+        "blockLayout": {
+          "blockSize": 4,
+          "slots": [
+            {
+              "kind": "master",
+              "offset": 0
+            },
+            {
+              "kind": "dataNft",
+              "offset": 1,
+              "nftIndex": 0
+            },
+            {
+              "kind": "entry",
+              "offset": 2,
+              "slotIndex": 0
+            },
+            {
+              "kind": "event",
+              "offset": 3,
+              "slotIndex": 0
+            }
+          ]
+        }
+      }
+    ],
+    "bytecode": "0079527a930287808a0079527aa269007a OP_5 OP_DEFINE 51795179a169007a517a940287808a77 OP_10 OP_DEFINE 517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f6868686868 OP_1NEGATE OP_DEFINE 8276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e6868 82 OP_DEFINE 76820087636d01006782518763764f87636d014f6776817651a27c60a19a63758101509351806775517c7e6868677501828a6868 83 OP_DEFINE c0c7c0cd88c0cec0d188 84 OP_DEFINE c0ce00c38c6576009f6375516776ce530281808a68660296808aa26975 85 OP_DEFINE c0c6c0cc88c0d0c0d3a169 86 OP_DEFINE 01207f75c0ce01207f7588 87 OP_DEFINE 78815379819f69768176009c637567537981a069686d75 8b OP_DEFINE 5169007a75007a75007a75 18 OP_DEFINE c0028e808a77c001ee8a02b8808a0299808a 1581f81c OP_DEFINE 02ae808a77c001ee8a02b9808a0299808a 25967ca5 OP_DEFINE 02ae808a754f8a7c817701838ac001f28a bb844440 OP_DEFINE c08bcf4f8a7c817701838ac001f28a a368022e OP_DEFINE 766b760289808a01ee8a01f38ac08b01fa8a0286808a5202b7808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ab808a51 5b46f8f6 OP_DEFINE 0280808a760289808a029d808a529301fa8a02a4808a760087916952790087916970527901188a76a8011f7f017f847e028a808a53790289808a029d808a539301fa8a5a8a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a56935d0297808a686d6d6d53795279558a7c768201ff8a5379768201ff8a7e547a01838a7e530291808a7b817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a56935c0297808a68029c808a78c0540283808a029a808a5493cd88c05493d101f48ac054028d808a5493d30088c05493cc02b004a1697754797600a202ac808a6576009f6375516776d15379876376d3009c63765279945455a57858799c9b6968688c00686601fd8a6d7551 3b88ef57 OP_DEFINE 766b786b76a8520288808ac001ee8a01f68a8b01fa8a0286808a5302b7808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ab808a7551 d864b7ca OP_DEFINE 02a1808a7600879169780087916976a8520288808a5379817cc0520293808a768201ff8a7c768201ff8a01ef8a 9f0bb8a9 OP_DEFINE 02b1808a5502a8808a786b766b780289808a029d808a529301fa8a780289808a029d808a539301fa8a52790087916953790087916954795479547901188a028a808a52795a8a55795379558a5479768201ff8a5679768201ff8a7e577901838a7e587900012080876301f18a675801f58a68597900012080876301f18a675901f58a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87e0289808a529401ee8a01f68a549301fa8a5a8a57790087916978008791695779a8520288808a78817c029e808a540282808a63c0540298808a028f808a516701fe8ac05493760295808a01f68a589301120297808a526802b6808a577902a7808a7e7c01838a7e560291808a547a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a5893600297808a686d6d6d560291808a537a817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a58935f0297808a68029c808ac05294540290808a63c05493ce01f48ac054028b808a685279c0550283808a029a808a5593cd88c05593d101f48ac055028d808a5593d30088c05593cc02b004a16978c0560283808a02a2808a01fb8a5693cd88c05693d101f48ac056028d808a5693d30088c05693cc02b004a1697b757756797600a202ac808a6576009f6375516776d15379876376d3009c63765279945557a5785a799c9b6968688c00686601fd8a6d6d7551 4b6685e7 OP_DEFINE 02a1808a02a4808a537a7ca8530288808a029e808a529301fa8a558a780087916952790087916902b5808a 8d645723 OP_DEFINE 02a1808a02a4808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba8540288808a029e808a529301fa8a5a8a780087916952790087916902b5808a a600a1df OP_DEFINE 02b1808a547982012088755679820120887554796b55796b56796b57796b8201838a7b8201838a011201838a567900012080876301f18a675601f58a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a78a8011f7f017f847e587900558a817c765c7988c001ee8a01f38ac05e790282808a6401fe8a686d755e79c0529376cd5301fc8a01878a537952797e55797e7cd2886d6d0002a7808a7e577a01838a7ec08bce01878ac0520290808a63c05a7993ce01878ac05a79028b808a687856797e54797e53797e02ad808a557a75537a757b7577c001ee8a02b8808a01f78a530292808a00656ea06302a5808a5d799352799376cd5502af808a6751686600c48c6576009f6375516776cd550281808a68667653798875c0028e808a7701779301789600c38c6576009f6375516776c7560281808a68666e886d6d75c001ee8a02b9808a01f78a520292808a540292808a00657653799f6302a5808a5e799353799352799376cd5602af808a6751686600c48c6576009f6375516776cd560281808a6866765479887502ae808a7701779301789600c38c6576009f6375516776c7570281808a68666e886d75777c6d7b75776c6c6c6c78c093cf01207f7701207f7553798878c093cf01207f7578876353794f9d6753797600a26975537976cd5379c093c788755379d1028c808a5379d25279c093cf01207f7552797e5379c093cf01207f7701207f777e88685154797600a277789377c001ee8a01f38a00c48c6576009f6375516776cd530281808a6866765379886d75537a757b757c6d76c05393d288c002a3808a029a808a5393cd88c05393d101878ac053028d808a02b2808a7501848a01858a01868a0284808a6d6d6d51 25708367 OP_DEFINE ce01207f7501207c7e0763ce01207f5288787e127d88c0ce01207f75886775c0ce01207f51887e787e1c88c0c7c0cd88c0cec0d188c0cfc0d288c0d3c0d0a269c0c6c0cc88687e ee OP_DEFINE 7e7c01838a7e5163015167010068c052948bce02a0808ac052945293cf827700a063c05293ce02a0808ac05293ce01207f7751886878c05393d288c0529402a3808a02a2808aaa02aa207c7e01877ec05393cd88c05393d102a0808ac05393d101207f770088c002b2808a7752797600a2636ed28876d102a0808a029b808a6775680294808a6576009f6375516776d15379876376d3009c63765279945354a57856799c9b6968688c006866029f808a7551 ef OP_DEFINE 0294808a f0 OP_DEFINE 00006576c39f6376c09c638b006776ce827792638b006776c776827701199c6376537f750376a91487637601177f770288ac87637b757cc3775167758b006867758b006867758b0068686867516866757682779269 f1 OP_DEFINE 8bce01878ac08bcf02ad808a787600a26302aa808ace01207f7588029b808a67756802a9808a517e02bf808a0296808a9d75c0ce01207f75c0c48c6576009f6375516776d15379876376d3009c63007855799c9b6968688c0068666d01868a02b0808a7551 f2 OP_DEFINE 1514c24571f972982bb6db979178b073e3ee6cded5f802a6808a f3 OP_DEFINE 02a0808a f4 OP_DEFINE 79527e00006576c39f6376c09c638b006776ce5379876378827792916976c77b757c8b00678b0068686751686675777682779269 f5 OP_DEFINE 1514767d00f1d416705417a618246ae183c1963d080102a6808ac0 f6 OP_DEFINE 02a6808a f7 OP_DEFINE ce01207f7588029b808a f8 OP_DEFINE 029b808a f9 OP_DEFINE 76c752798877cf01207f01207f7087637777778167756f018b8a6d750068 fa OP_DEFINE aa02aa207c7e01877ec0 fb OP_DEFINE 798876d17601207f775188 fc OP_DEFINE 029f808a fd OP_DEFINE 5279815579819f69788176009c637567557981a06968 fe OP_DEFINE 0087636d0100677501828a68 ff OP_DEFINE 787601218001207f7701008875527982012088755402a8808a766b 8080 OP_DEFINE 7987637c8b7c688c00 8180 OP_DEFINE 9376c7527988cf01207f01207f5279557987 8280 OP_DEFINE 93d288c0529402a3808a 8380 OP_DEFINE 02b0808a 8480 OP_DEFINE 567954797e58797e7cd28875 8580 OP_DEFINE 01838ac08bcf827700a063c08bce01878ac08bce01207f77518868c08bcf827700a063c08bcfc08bd288c08bcec08bd188c08bc7c08bcd8868 8680 OP_DEFINE 7601218001207f77010088 8780 OP_DEFINE 79a87ea8011f7f017f847e 8880 OP_DEFINE a8011f7f017f847ec0 8980 OP_DEFINE 2645524332303a207472616e7366657220616d6f756e7420657863656564732062616c616e63655579 8a80 OP_DEFINE 93ce01207f775188 8b80 OP_DEFINE 7601207f77518801878a 8c80 OP_DEFINE 93d101207f770088c0 8d80 OP_DEFINE 8bcf4f8a7c81754f8a7c81 8e80 OP_DEFINE 707e57797e7cd288 8f80 OP_DEFINE 93cf827700a0 9080 OP_DEFINE 79a8011f7f017f847e 9180 OP_DEFINE 798277017793017896 9280 OP_DEFINE 9401ee8a01f68a520282808a63c0529376cd5501fc8a01f48a028f808a516701fe8ac052937602b4808a01f68a55935c02bc808a526802b6808a 9380 OP_DEFINE 75c05294c7c05294cd88c05294cec05294d188c05294ce02bf808a02b3808ac7c0cd88c0c6c0cc88c0cec0d188c0ce01207f775288c0cfc0d288c0d0c0d3a169c0ce02bf808a02b3808a5294ce01207f75c0c48c 9480 OP_DEFINE 02b4808a 9580 OP_DEFINE c48c6576009f6375516776d1537987637c8c7c688c00686600 9680 OP_DEFINE 02bc808a 9780 OP_DEFINE 9376cd5501fc8a01f48a 9880 OP_DEFINE 01f78a780177930178960000657653799f63c05393789376c755798876ce028c808acf4f8a7c815279884f8a7552797c7e7b757c768b7700675168667855797f757b7577777777768201ff8ac001f28a 9980 OP_DEFINE 1f880088142fb30cfca4728c7f62d6787ef949fc7943d813f575029000b275517e01fb8a 9a80 OP_DEFINE 76d101207f77008876d3008876cd01518876cc02b004a16975 9b80 OP_DEFINE 6d6d6d5163015167010068c052948bce01f48ac05294520290808a63c05293ce01f48ac052028b808a68c05294530290808a63c05393ce01f48ac053028b808a68 9c80 OP_DEFINE 529401ee8a01f38ac0 9d80 OP_DEFINE c0529401ee8a01f68a 9e80 OP_DEFINE 6dc05294c6c05294cc88c05294d0c05294d3a169c052948bc6c052948bcc88c052948bd0c052948bd3a1696d 9f80 OP_DEFINE 01207f75c05294ce01207f7588 a080 OP_DEFINE 0280808a527900012080876301f18a675201f58a68 a180 OP_DEFINE 1f8800881413fedc43be80eb4fc4333774fe69644bcc89cf4475029000b275517e a280 OP_DEFINE ce01207f7506c0ce01207f7c01207b7e7e a380 OP_DEFINE 537900012080876301f18a675301f58a68 a480 OP_DEFINE 7601838a567952790178957f77820178a37f75768201ff8a7ec05493 a580 OP_DEFINE 7e0275517e77aa02aa207c7e01877e a680 OP_DEFINE 768201ff8a7b768201ff8a a780 OP_DEFINE 7976ce01207f7752887676c77ccd8876c09e69c052949d a880 OP_DEFINE 7501848a01858ac0ce01207f75 a980 OP_DEFINE 6ed28876d101207f75c0 aa80 OP_DEFINE 6d01868ac08bcf827700a0630284808a686d ab80 OP_DEFINE 636ed28876d101f48a01f98a67756801f08a ac80 OP_DEFINE c08bd288c08bc7c08bcd88c08bcec08bd188 ad80 OP_DEFINE c0028e808a754f8a7c81 ae80 OP_DEFINE 01fc8a01878a787cd28875768b7700 af80 OP_DEFINE c08bc6c08bcc88c08bd0c08bd3a169 b080 OP_DEFINE 52790287808a7553798201208875 b180 OP_DEFINE 5393d30088c05393cc02b004a169 b280 OP_DEFINE c48c6576009f6375516776d1537987637c8c7c688c00686600a26975c0 b380 OP_DEFINE cd5501fc8a01f48a537956797e52797e7cd288c0529401ee8a b480 OP_DEFINE 78a8530288808a78817cc0520293808a7c02a7808a01ef8a b580 OP_DEFINE 00c48c6576009f6375516776cd570281808a6866886d6d6d b680 OP_DEFINE 797600a26302aa808a01f88a67756802a9808ac0c48c b780 OP_DEFINE 151492fa2beec88b7447bef59cedf3f19045e5bef126 b880 OP_DEFINE 1514c107b50f97aac9a17c27534b79ee97a94d9c668f b980 OP_DEFINE 93760295808a01f38ac0 ba80 OP_DEFINE 76ce537987637c8b7c688c00 bb80 OP_DEFINE 79009f9476cd5201fc8a01f48a0285808a bc80 OP_DEFINE 0298808a028f808a bd80 OP_DEFINE 009f6375516702bb808a68 be80 OP_DEFINE 00c38c657602be808a66 bf80 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE",
+    "source": "// SPDX-License-Identifier: MIT\n\npragma solidity 0.6.12;\n\nimport \"@openzeppelin/contracts/token/ERC20/ERC20.sol\";\n\ncontract ERC20Mock is ERC20 {\n    constructor(\n        string memory name,\n        string memory symbol,\n        uint256 supply\n    ) public ERC20(name, symbol) {\n        _mint(msg.sender, supply);\n    }\n}",
+    "debug": {
+      "bytecode": "110079527a930287808a0079527aa269007a55891051795179a169007a517a940287808a775a894c4e517f7c760100876375007c6776014f8763754f7c677681760151a27c0160a19a638101509451807c6776014c876375517f7c01007e817f6776014d876375527f7c01007e817f67817f68686868684f892a8276014ba16351807c7e677602ff00a1635280517f75014c7c7e7c7e675380527f75014d7c7e7c7e68680182893476820087636d01006782518763764f87636d014f6776817651a27c60a19a63758101509351806775517c7e6868677501828a68680183890ac0c7c0cd88c0cec0d1880184891dc0ce00c38c6576009f6375516776ce530281808a68660296808aa269750185890bc0c6c0cc88c0d0c0d3a1690186890b01207f75c0ce01207f75880187891778815379819f69768176009c637567537981a069686d75018b890b5169007a75007a75007a7501188912c0028e808a77c001ee8a02b8808a0299808a041581f81c891102ae808a77c001ee8a02b9808a0299808a0425967ca5891102ae808a754f8a7c817701838ac001f28a04bb844440890fc08bcf4f8a7c817701838ac001f28a04a368022e8940766b760289808a01ee8a01f38ac08b01fa8a0286808a5202b7808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ab808a51045b46f8f6894d16010280808a760289808a029d808a529301fa8a02a4808a760087916952790087916970527901188a76a8011f7f017f847e028a808a53790289808a029d808a539301fa8a5a8a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a56935d0297808a686d6d6d53795279558a7c768201ff8a5379768201ff8a7e547a01838a7e530291808a7b817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a56935c0297808a68029c808a78c0540283808a029a808a5493cd88c05493d101f48ac054028d808a5493d30088c05493cc02b004a1697754797600a202ac808a6576009f6375516776d15379876376d3009c63765279945455a57858799c9b6968688c00686601fd8a6d7551043b88ef578945766b786b76a8520288808ac001ee8a01f68a8b01fa8a0286808a5302b7808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ab808a755104d864b7ca892d02a1808a7600879169780087916976a8520288808a5379817cc0520293808a768201ff8a7c768201ff8a01ef8a049f0bb8a9894d230202b1808a5502a8808a786b766b780289808a029d808a529301fa8a780289808a029d808a539301fa8a52790087916953790087916954795479547901188a028a808a52795a8a55795379558a5479768201ff8a5679768201ff8a7e577901838a7e587900012080876301f18a675801f58a68597900012080876301f18a675901f58a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87e0289808a529401ee8a01f68a549301fa8a5a8a57790087916978008791695779a8520288808a78817c029e808a540282808a63c0540298808a028f808a516701fe8ac05493760295808a01f68a589301120297808a526802b6808a577902a7808a7e7c01838a7e560291808a547a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a5893600297808a686d6d6d560291808a537a817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a58935f0297808a68029c808ac05294540290808a63c05493ce01f48ac054028b808a685279c0550283808a029a808a5593cd88c05593d101f48ac055028d808a5593d30088c05593cc02b004a16978c0560283808a02a2808a01fb8a5693cd88c05693d101f48ac056028d808a5693d30088c05693cc02b004a1697b757756797600a202ac808a6576009f6375516776d15379876376d3009c63765279945557a5785a799c9b6968688c00686601fd8a6d6d7551044b6685e7892b02a1808a02a4808a537a7ca8530288808a029e808a529301fa8a558a780087916952790087916902b5808a048d645723894c5102a1808a02a4808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba8540288808a029e808a529301fa8a5a8a780087916952790087916902b5808a04a600a1df894d7d0202b1808a547982012088755679820120887554796b55796b56796b57796b8201838a7b8201838a011201838a567900012080876301f18a675601f58a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a78a8011f7f017f847e587900558a817c765c7988c001ee8a01f38ac05e790282808a6401fe8a686d755e79c0529376cd5301fc8a01878a537952797e55797e7cd2886d6d0002a7808a7e577a01838a7ec08bce01878ac0520290808a63c05a7993ce01878ac05a79028b808a687856797e54797e53797e02ad808a557a75537a757b7577c001ee8a02b8808a01f78a530292808a00656ea06302a5808a5d799352799376cd5502af808a6751686600c48c6576009f6375516776cd550281808a68667653798875c0028e808a7701779301789600c38c6576009f6375516776c7560281808a68666e886d6d75c001ee8a02b9808a01f78a520292808a540292808a00657653799f6302a5808a5e799353799352799376cd5602af808a6751686600c48c6576009f6375516776cd560281808a6866765479887502ae808a7701779301789600c38c6576009f6375516776c7570281808a68666e886d75777c6d7b75776c6c6c6c78c093cf01207f7701207f7553798878c093cf01207f7578876353794f9d6753797600a26975537976cd5379c093c788755379d1028c808a5379d25279c093cf01207f7552797e5379c093cf01207f7701207f777e88685154797600a277789377c001ee8a01f38a00c48c6576009f6375516776cd530281808a6866765379886d75537a757b757c6d76c05393d288c002a3808a029a808a5393cd88c05393d101878ac053028d808a02b2808a7501848a01858a01868a0284808a6d6d6d5104257083678947ce01207f7501207c7e0763ce01207f5288787e127d88c0ce01207f75886775c0ce01207f51887e787e1c88c0c7c0cd88c0cec0d188c0cfc0d288c0d3c0d0a269c0c6c0cc88687e01ee894cb27e7c01838a7e5163015167010068c052948bce02a0808ac052945293cf827700a063c05293ce02a0808ac05293ce01207f7751886878c05393d288c0529402a3808a02a2808aaa02aa207c7e01877ec05393cd88c05393d102a0808ac05393d101207f770088c002b2808a7752797600a2636ed28876d102a0808a029b808a6775680294808a6576009f6375516776d15379876376d3009c63765279945354a57856799c9b6968688c006866029f808a755101ef89040294808a01f0894c5500006576c39f6376c09c638b006776ce827792638b006776c776827701199c6376537f750376a91487637601177f770288ac87637b757cc3775167758b006867758b006867758b006868686751686675768277926901f1894c658bce01878ac08bcf02ad808a787600a26302aa808ace01207f7588029b808a67756802a9808a517e02bf808a0296808a9d75c0ce01207f75c0c48c6576009f6375516776d15379876376d3009c63007855799c9b6968688c0068666d01868a02b0808a755101f2891a1514c24571f972982bb6db979178b073e3ee6cded5f802a6808a01f3890402a0808a01f4893479527e00006576c39f6376c09c638b006776ce5379876378827792916976c77b757c8b00678b006868675168667577768277926901f5891b1514767d00f1d416705417a618246ae183c1963d080102a6808ac001f6890402a6808a01f7890ace01207f7588029b808a01f88904029b808a01f9891e76c752798877cf01207f01207f7087637777778167756f018b8a6d75006801fa890aaa02aa207c7e01877ec001fb890b798876d17601207f77518801fc8904029f808a01fd89165279815579819f69788176009c637567557981a0696801fe890c0087636d0100677501828a6801ff891b787601218001207f7701008875527982012088755402a8808a766b02808089097987637c8b7c688c0002818089129376c7527988cf01207f01207f5279557987028280890a93d288c0529402a3808a028380890402b0808a028480890c567954797e58797e7cd28875028580893901838ac08bcf827700a063c08bce01878ac08bce01207f77518868c08bcf827700a063c08bcfc08bd288c08bcec08bd188c08bc7c08bcd8868028680890b7601218001207f77010088028780890b79a87ea8011f7f017f847e0288808909a8011f7f017f847ec002898089292645524332303a207472616e7366657220616d6f756e7420657863656564732062616c616e63655579028a80890893ce01207f775188028b80890a7601207f77518801878a028c80890993d101207f770088c0028d80890b8bcf4f8a7c81754f8a7c81028e808908707e57797e7cd288028f80890693cf827700a0029080890979a8011f7f017f847e0291808909798277017793017896029280893a9401ee8a01f68a520282808a63c0529376cd5501fc8a01f48a028f808a516701fe8ac052937602b4808a01f68a55935c02bc808a526802b6808a029380894c5475c05294c7c05294cd88c05294cec05294d188c05294ce02bf808a02b3808ac7c0cd88c0c6c0cc88c0cec0d188c0ce01207f775288c0cfc0d288c0d0c0d3a169c0ce02bf808a02b3808a5294ce01207f75c0c48c029480890402b4808a0295808919c48c6576009f6375516776d1537987637c8c7c688c00686600029680890402bc808a029780890a9376cd5501fc8a01f48a029880894c5001f78a780177930178960000657653799f63c05393789376c755798876ce028c808acf4f8a7c815279884f8a7552797c7e7b757c768b7700675168667855797f757b7577777777768201ff8ac001f28a02998089241f880088142fb30cfca4728c7f62d6787ef949fc7943d813f575029000b275517e01fb8a029a80891976d101207f77008876d3008876cd01518876cc02b004a16975029b8089416d6d6d5163015167010068c052948bce01f48ac05294520290808a63c05293ce01f48ac052028b808a68c05294530290808a63c05393ce01f48ac053028b808a68029c808909529401ee8a01f38ac0029d808909c0529401ee8a01f68a029e80892c6dc05294c6c05294cc88c05294d0c05294d3a169c052948bc6c052948bcc88c052948bd0c052948bd3a1696d029f80890d01207f75c05294ce01207f758802a08089150280808a527900012080876301f18a675201f58a6802a18089211f8800881413fedc43be80eb4fc4333774fe69644bcc89cf4475029000b275517e02a2808911ce01207f7506c0ce01207f7c01207b7e7e02a3808911537900012080876301f18a675301f58a6802a480891c7601838a567952790178957f77820178a37f75768201ff8a7ec0549302a580890f7e0275517e77aa02aa207c7e01877e02a680890b768201ff8a7b768201ff8a02a78089177976ce01207f7752887676c77ccd8876c09e69c052949d02a880890d7501848a01858ac0ce01207f7502a980890a6ed28876d101207f75c002aa8089126d01868ac08bcf827700a0630284808a686d02ab808912636ed28876d101f48a01f98a67756801f08a02ac808912c08bd288c08bc7c08bcd88c08bcec08bd18802ad80890ac0028e808a754f8a7c8102ae80890f01fc8a01878a787cd28875768b770002af80890fc08bc6c08bcc88c08bd0c08bd3a16902b080890e52790287808a755379820120887502b180890e5393d30088c05393cc02b004a16902b280891dc48c6576009f6375516776d1537987637c8c7c688c00686600a26975c002b3808919cd5501fc8a01f48a537956797e52797e7cd288c0529401ee8a02b480891878a8530288808a78817cc0520293808a7c02a7808a01ef8a02b580891800c48c6576009f6375516776cd570281808a6866886d6d6d02b6808916797600a26302aa808a01f88a67756802a9808ac0c48c02b7808916151492fa2beec88b7447bef59cedf3f19045e5bef12602b88089161514c107b50f97aac9a17c27534b79ee97a94d9c668f02b980890a93760295808a01f38ac002ba80890c76ce537987637c8b7c688c0002bb80891179009f9476cd5201fc8a01f48a0285808a02bc8089080298808a028f808a02bd80890b009f6375516702bb808a6802be80890a00c38c657602be808a6602bf8089748c7a82549d8a",
+      "sourceMap": "85:4:89:5;;;170::173;;;7:0:15:1;;;;;;;;;;;;;;;;;;;;;;;;305:4:305:96;;;64::66:5;;;72::74;;;89::91;;;96::98;;;103::105;;;115::118;;;123::125;;;134::137;;;152::156;;;170::173;;;189::192;;;8::14;;;7:0:15:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;",
+      "logs": [],
+      "requires": [],
+      "functionDebug": {
+        "25708367": {
+          "requires": [
+            {
+              "ip": 54,
+              "line": 229,
+              "message": "ERC20: mint to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "11:8:11:22;;8:4:14:5;;;;;;;;;;;;;;;;;;;;;;;;56:8:56:22:1;;;12:25:12:31:0;57:8:57:26:1;;;58:20:58:22:0;:8::23:1;;13:14:13:24:0;;;;;;;;;;;;;;229:16:229:23;:35::36;:16::37:1;;:8::74;231:50:231:56:0;;:41::48;:37::38;:8::57:1;;233:40:233:46:0;;:23::35;;;;;;;;:::47:1;;:8::48;;234:18:234:25:0;:8::60:1;;;;;;:52::58:0;;:29::47;:::59:1;;:8::60;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;235:30:235:31:0;:8::51:1;;;:43::49:0;;:8::51:1;;;8:4:14:5:0;;;;;;;;;;;;;;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::1;::::0;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+        },
+        "1581f81c": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "65:15:65:20;;;;;;;;;;"
+        },
+        "25967ca5": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "73:15:73:22;;;;;;;;;"
+        },
+        "bb844440": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "90:15:90:24;;;;;;;;:8::25:1;;89:4:91:5:0;;"
+        },
+        "a368022e": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "97:15:97:27;;;;;;;;:8::28:1;;96:4:98:5:0;;"
+        },
+        "5b46f8f6": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "103:4:105:5;;104:15:104:33;;;;;;;;;;;:8::34:1;;103:4:105:5;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+        },
+        "3b88ef57": {
+          "requires": [
+            {
+              "ip": 17,
+              "line": 209,
+              "message": "ERC20: transfer from the zero address"
+            },
+            {
+              "ip": 23,
+              "line": 210,
+              "message": "ERC20: transfer to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "115:41:115:55;;:4:118:5;;;;;;;;;17:15:17:25;;209:16:209:22;:34::35;:16::36:1;;:8::79;210:16:210:25:0;;:37::38;:16::39:1;;:8::80;212:37:212:54:0;:29::35;;:8::55:1;;214:18:214:24:0;:8::100:1;;;;;;:58::98:0;;:38::44;;:28::45;;;;;;;;:::99:1;;:8::100;;;;;;;;;;;;;;;;;;;;;;;;;;;;;215:56:215:62:0;;:31::51;;:::63:1;;216:22:216:28:0;:8::49:1;;;;:30::39:0;;:8::49:1;;;;;:41::47:0;;:8::49:1;;;117::117:20;;;::::0;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;115:4:118:5;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+        },
+        "d864b7ca": {
+          "requires": [],
+          "logs": [],
+          "sourceMap": "123:4:125:5;;;;124:15:124:42;;;;;;;;;;;;;:8::43:1;;123:4:125:5;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+        },
+        "9f0bb8a9": {
+          "requires": [
+            {
+              "ip": 6,
+              "line": 273,
+              "message": "ERC20: approve from the zero address"
+            },
+            {
+              "ip": 11,
+              "line": 274,
+              "message": "ERC20: approve to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "134:38:134:52;;273:16:273:21;:33::34;:16::35:1;;:8::77;274:16:274:23:0;:35::36;:16::37:1;;:8::77;276:20:276:25:0;:8::45:1;;;;:38::44:0;;:8::45:1;;;;;;277::277:46;;;;:29::36:0;:8::46:1;;;;;"
+        },
+        "4b6685e7": {
+          "requires": [
+            {
+              "ip": 32,
+              "line": 209,
+              "message": "ERC20: transfer from the zero address"
+            },
+            {
+              "ip": 38,
+              "line": 210,
+              "message": "ERC20: transfer to the zero address"
+            },
+            {
+              "ip": 134,
+              "line": 273,
+              "message": "ERC20: approve from the zero address"
+            },
+            {
+              "ip": 139,
+              "line": 274,
+              "message": "ERC20: approve to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "152:61:152:75;;:4:156:5;;;;;;;;;;;;;;;;;;;;;;;;;209:16:209:22;;:34::35;:16::36:1;;:8::79;210:16:210:25:0;;:37::38;:16::39:1;;:8::80;212:48:212:54:0;;:37::46;;:29::35;;:8::55:1;;214:58:214:98:0;;:28::45;;:::99:1;;215:56:215:62:0;;:31::51;;:::63:1;;216:22:216:28:0;;:8::49:1;;;;:30::39:0;;:8::49:1;;;;;:41::47:0;;:8::49:1;;;17:15:17:25:0;;;;;;;;;;;;;;;;;;;;;;;;;;;;154:85:154:127;:77::83;;:39::72;;;16:4:18:5;;154:39:154:72;;;;;;;;;;;;;;:::128:1;;273:16:273:21:0;;:33::34;:16::35:1;;:8::77;274:16:274:23:0;:35::36;:16::37:1;;:8::77;276::276:45;;;:27::34:0;;;:38::44;:8::45:1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;277:22:277:27:0;;:8::46:1;;;:38::44:0;:8::46:1;;;155::155:20;;;::::0;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;::::0;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;152:4:156:5:0;;;;;;;;;;;;;;;;;;::::1;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;"
+        },
+        "8d645723": {
+          "requires": [
+            {
+              "ip": 23,
+              "line": 273,
+              "message": "ERC20: approve from the zero address"
+            },
+            {
+              "ip": 29,
+              "line": 274,
+              "message": "ERC20: approve to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "170:48:170:66;;17:15:17:25;;171:79:171:89;;16:4:18:5;171:40:171:74;;;;;;;;;;:::90:1;;273:16:273:21:0;:33::34;:16::35:1;;:8::77;274:16:274:23:0;;:35::36;:16::37:1;;:8::77;276:20:276:25:0;"
+        },
+        "a600a1df": {
+          "requires": [
+            {
+              "ip": 24,
+              "line": 273,
+              "message": "ERC20: approve from the zero address"
+            },
+            {
+              "ip": 30,
+              "line": 274,
+              "message": "ERC20: approve to the zero address"
+            }
+          ],
+          "logs": [],
+          "sourceMap": "189:48:189:71;;17:15:17:25;;190:96:190:135;:79::94;;16:4:18:5;190:40:190:74;;;;;;;;;;:::136:1;;273:16:273:21:0;:33::34;:16::35:1;;:8::77;274:16:274:23:0;;:35::36;:16::37:1;;:8::77;276:20:276:25:0;"
+        }
+      }
+    },
+    "functionBodies": {
+      "25708367": "02b1808a547982012088755679820120887554796b55796b56796b57796b8201838a7b8201838a011201838a567900012080876301f18a675601f58a6876008791695679780001188a5679c08bcf4f8a7c8177558a01838a78a8011f7f017f847e587900558a817c765c7988c001ee8a01f38ac05e790282808a6401fe8a686d755e79c0529376cd5301fc8a01878a537952797e55797e7cd2886d6d0002a7808a7e577a01838a7ec08bce01878ac0520290808a63c05a7993ce01878ac05a79028b808a687856797e54797e53797e02ad808a557a75537a757b7577c001ee8a02b8808a01f78a530292808a00656ea06302a5808a5d799352799376cd5502af808a6751686600c48c6576009f6375516776cd550281808a68667653798875c0028e808a7701779301789600c38c6576009f6375516776c7560281808a68666e886d6d75c001ee8a02b9808a01f78a520292808a540292808a00657653799f6302a5808a5e799353799352799376cd5602af808a6751686600c48c6576009f6375516776cd560281808a6866765479887502ae808a7701779301789600c38c6576009f6375516776c7570281808a68666e886d75777c6d7b75776c6c6c6c78c093cf01207f7701207f7553798878c093cf01207f7578876353794f9d6753797600a26975537976cd5379c093c788755379d1028c808a5379d25279c093cf01207f7552797e5379c093cf01207f7701207f777e88685154797600a277789377c001ee8a01f38a00c48c6576009f6375516776cd530281808a6866765379886d75537a757b757c6d76c05393d288c002a3808a029a808a5393cd88c05393d101878ac053028d808a02b2808a7501848a01858a01868a0284808a6d6d6d51",
+      "1581f81c": "c0028e808a77c001ee8a02b8808a0299808a",
+      "25967ca5": "02ae808a77c001ee8a02b9808a0299808a",
+      "bb844440": "02ae808a754f8a7c817701838ac001f28a",
+      "a368022e": "c08bcf4f8a7c817701838ac001f28a",
+      "5b46f8f6": "766b760289808a01ee8a01f38ac08b01fa8a0286808a5202b7808a6576009f6375516776d15379876376d3009c63007856799c9b6968688c00686602ab808a51",
+      "3b88ef57": "0280808a760289808a029d808a529301fa8a02a4808a760087916952790087916970527901188a76a8011f7f017f847e028a808a53790289808a029d808a539301fa8a5a8a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a56935d0297808a686d6d6d53795279558a7c768201ff8a5379768201ff8a7e547a01838a7e530291808a7b817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a56935c0297808a68029c808a78c0540283808a029a808a5493cd88c05493d101f48ac054028d808a5493d30088c05493cc02b004a1697754797600a202ac808a6576009f6375516776d15379876376d3009c63765279945455a57858799c9b6968688c00686601fd8a6d7551",
+      "d864b7ca": "766b786b76a8520288808ac001ee8a01f68a8b01fa8a0286808a5302b7808a6576009f6375516776d15379876376d3009c63007857799c9b6968688c00686602ab808a7551",
+      "9f0bb8a9": "02a1808a7600879169780087916976a8520288808a5379817cc0520293808a768201ff8a7c768201ff8a01ef8a",
+      "4b6685e7": "02b1808a5502a8808a786b766b780289808a029d808a529301fa8a780289808a029d808a539301fa8a52790087916953790087916954795479547901188a028a808a52795a8a55795379558a5479768201ff8a5679768201ff8a7e577901838a7e587900012080876301f18a675801f58a68597900012080876301f18a675901f58a682845524332303a207472616e7366657220616d6f756e74206578636565647320616c6c6f77616e63655a7a5979a8537aa87e0289808a529401ee8a01f68a549301fa8a5a8a57790087916978008791695779a8520288808a78817c029e808a540282808a63c0540298808a028f808a516701fe8ac05493760295808a01f68a589301120297808a526802b6808a577902a7808a7e7c01838a7e560291808a547a817cc0029d808a530282808a63c05302bd808a6701fe8ac05302ba808a5893600297808a686d6d6d560291808a537a817cc0029d808a520282808a63c05202bd808a6701fe8ac05202ba808a58935f0297808a68029c808ac05294540290808a63c05493ce01f48ac054028b808a685279c0550283808a029a808a5593cd88c05593d101f48ac055028d808a5593d30088c05593cc02b004a16978c0560283808a02a2808a01fb8a5693cd88c05693d101f48ac056028d808a5693d30088c05693cc02b004a1697b757756797600a202ac808a6576009f6375516776d15379876376d3009c63765279945557a5785a799c9b6968688c00686601fd8a6d6d7551",
+      "8d645723": "02a1808a02a4808a537a7ca8530288808a029e808a529301fa8a558a780087916952790087916902b5808a",
+      "a600a1df": "02a1808a02a4808a2545524332303a2064656372656173656420616c6c6f77616e63652062656c6f77207a65726f547a7ba8540288808a029e808a529301fa8a5a8a780087916952790087916902b5808a"
+    },
+    "fingerprint": "108fa7feb088961651c305ea1fd60e91751f586f3291ed3d8921a3c78a078aee",
+    "stateLayout": {
+      "variables": [
+        {
+          "name": "_totalSupply",
+          "type": "uint256",
+          "nftIndex": 0,
+          "fieldIndex": 0,
+          "visibility": "private"
+        },
+        {
+          "name": "_name",
+          "type": "string",
+          "nftIndex": 0,
+          "fieldIndex": 1,
+          "visibility": "private",
+          "dynamic": true
+        },
+        {
+          "name": "_symbol",
+          "type": "string",
+          "nftIndex": 0,
+          "fieldIndex": 2,
+          "visibility": "private",
+          "dynamic": true
+        },
+        {
+          "name": "_decimals",
+          "type": "uint8",
+          "nftIndex": 0,
+          "fieldIndex": 3,
+          "visibility": "private"
+        }
+      ],
+      "dataNftCount": 1,
+      "commitmentLimit": 128,
+      "constructorInputs": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "symbol",
+          "type": "string"
+        },
+        {
+          "name": "supply",
+          "type": "uint256"
+        },
+        {
+          "name": "__internal__msgSenderCategory",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchSlot_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchProof_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchNext_0",
+          "type": "bytes32"
+        },
+        {
+          "name": "__internal__c2BatchPredOut_0",
+          "type": "bigint"
+        },
+        {
+          "name": "__internal__c2BatchTrailingCount",
+          "type": "bigint"
+        }
+      ],
+      "collections": [
+        {
+          "name": "_balances",
+          "signature": "_balances:mapping(address => uint256)",
+          "kind": "mapping",
+          "keyType": "address",
+          "valueType": "uint256",
+          "sorted": true
+        },
+        {
+          "name": "_allowances",
+          "signature": "_allowances:mapping(address => mapping(address => uint256))",
+          "kind": "mapping",
+          "keyType": "address",
+          "valueType": "uint256",
+          "keyTypes": [
+            "address",
+            "address"
+          ],
+          "sorted": true
+        }
+      ],
+      "mappings": [
+        {
+          "name": "_balances",
+          "signature": "_balances:mapping(address => uint256)",
+          "kind": "mapping",
+          "keyType": "address",
+          "valueType": "uint256",
+          "sorted": true
+        },
+        {
+          "name": "_allowances",
+          "signature": "_allowances:mapping(address => mapping(address => uint256))",
+          "kind": "mapping",
+          "keyType": "address",
+          "valueType": "uint256",
+          "keyTypes": [
+            "address",
+            "address"
+          ],
+          "sorted": true
+        }
+      ]
+    },
+    "compiler": {
+      "name": "solidc",
+      "version": "0.13.1",
+      "options": {
+        "enforceFunctionParameterTypes": true,
+        "enforceLocktimeGuard": true,
+        "commitmentLimit": 128,
+        "messageBus": false
+      }
+    },
+    "updatedAt": "2026-08-09T20:39:49.390Z",
+    "invocationAnalysis": {
+      "version": 1,
+      "protocolVersions": [
+        1
+      ],
+      "functions": [
+        {
+          "id": 13,
+          "name": "name",
+          "arity": 0,
+          "entryPoint": true,
+          "selector": "1581f81c",
+          "calls": [],
+          "closure": [
+            13
+          ],
+          "component": 0,
+          "recursive": false,
+          "reads": [
+            "state:_name"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "string"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "dynamicReads": [
+            "_name"
+          ],
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 14,
+          "name": "symbol",
+          "arity": 0,
+          "entryPoint": true,
+          "selector": "25967ca5",
+          "calls": [],
+          "closure": [
+            14
+          ],
+          "component": 1,
+          "recursive": false,
+          "reads": [
+            "state:_symbol"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "string"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "dynamicReads": [
+            "_symbol"
+          ],
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 15,
+          "name": "decimals",
+          "arity": 0,
+          "entryPoint": true,
+          "selector": "bb844440",
+          "calls": [],
+          "closure": [
+            15
+          ],
+          "component": 2,
+          "recursive": false,
+          "reads": [
+            "state:_decimals"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "uint8"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 16,
+          "name": "totalSupply",
+          "arity": 0,
+          "entryPoint": true,
+          "selector": "a368022e",
+          "calls": [],
+          "closure": [
+            16
+          ],
+          "component": 3,
+          "recursive": false,
+          "reads": [
+            "state:_totalSupply"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "uint256"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 17,
+          "name": "balanceOf",
+          "arity": 1,
+          "entryPoint": true,
+          "selector": "5b46f8f6",
+          "calls": [],
+          "closure": [
+            17
+          ],
+          "component": 4,
+          "recursive": false,
+          "reads": [
+            "collection:_balances:*"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "uint256"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 1,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 18,
+          "name": "transfer",
+          "arity": 2,
+          "entryPoint": true,
+          "selector": "3b88ef57",
+          "calls": [
+            24
+          ],
+          "closure": [
+            18,
+            24
+          ],
+          "component": 5,
+          "recursive": false,
+          "reads": [
+            "collection:_balances:*"
+          ],
+          "writes": [
+            "collection:_balances:*"
+          ],
+          "effects": [
+            "events"
+          ],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "bool"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "emits": [
+            {
+              "eventName": "Transfer",
+              "eventSignature": "Transfer(address,address,uint256)",
+              "emitIndex": 0
+            }
+          ],
+          "blockLayout": {
+            "blockSize": 6,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 2,
+                "slotIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 3,
+                "slotIndex": 1
+              },
+              {
+                "kind": "event",
+                "offset": 4,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 5
+              }
+            ]
+          }
+        },
+        {
+          "id": 19,
+          "name": "allowance",
+          "arity": 2,
+          "entryPoint": true,
+          "selector": "d864b7ca",
+          "calls": [],
+          "closure": [
+            19
+          ],
+          "component": 6,
+          "recursive": false,
+          "reads": [
+            "collection:_allowances:*"
+          ],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "uint256"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "blockLayout": {
+            "blockSize": 3,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 1,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 2
+              }
+            ]
+          }
+        },
+        {
+          "id": 20,
+          "name": "approve",
+          "arity": 2,
+          "entryPoint": true,
+          "selector": "9f0bb8a9",
+          "calls": [],
+          "closure": [
+            20
+          ],
+          "component": 7,
+          "recursive": false,
+          "reads": [],
+          "writes": [
+            "collection:_allowances:*"
+          ],
+          "effects": [
+            "events"
+          ],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "bool"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "emits": [
+            {
+              "eventName": "Approval",
+              "eventSignature": "Approval(address,address,uint256)",
+              "emitIndex": 0
+            }
+          ],
+          "blockLayout": {
+            "blockSize": 5,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 2,
+                "slotIndex": 0
+              },
+              {
+                "kind": "event",
+                "offset": 3,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 4
+              }
+            ]
+          }
+        },
+        {
+          "id": 21,
+          "name": "transferFrom",
+          "arity": 3,
+          "entryPoint": true,
+          "selector": "4b6685e7",
+          "calls": [
+            24
+          ],
+          "closure": [
+            21,
+            24
+          ],
+          "component": 8,
+          "recursive": false,
+          "reads": [
+            "collection:_allowances:*",
+            "collection:_balances:*"
+          ],
+          "writes": [
+            "collection:_allowances:*",
+            "collection:_balances:*"
+          ],
+          "effects": [
+            "events"
+          ],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "bool"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "emits": [
+            {
+              "eventName": "Transfer",
+              "eventSignature": "Transfer(address,address,uint256)",
+              "emitIndex": 0
+            },
+            {
+              "eventName": "Approval",
+              "eventSignature": "Approval(address,address,uint256)",
+              "emitIndex": 1
+            }
+          ],
+          "blockLayout": {
+            "blockSize": 8,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 2,
+                "slotIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 3,
+                "slotIndex": 1
+              },
+              {
+                "kind": "entry",
+                "offset": 4,
+                "slotIndex": 2
+              },
+              {
+                "kind": "event",
+                "offset": 5,
+                "slotIndex": 0
+              },
+              {
+                "kind": "event",
+                "offset": 6,
+                "slotIndex": 1
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 7
+              }
+            ]
+          }
+        },
+        {
+          "id": 22,
+          "name": "increaseAllowance",
+          "arity": 2,
+          "entryPoint": true,
+          "selector": "8d645723",
+          "calls": [],
+          "closure": [
+            22
+          ],
+          "component": 9,
+          "recursive": false,
+          "reads": [
+            "collection:_allowances:*"
+          ],
+          "writes": [
+            "collection:_allowances:*"
+          ],
+          "effects": [
+            "events"
+          ],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "bool"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "emits": [
+            {
+              "eventName": "Approval",
+              "eventSignature": "Approval(address,address,uint256)",
+              "emitIndex": 0
+            }
+          ],
+          "blockLayout": {
+            "blockSize": 5,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 2,
+                "slotIndex": 0
+              },
+              {
+                "kind": "event",
+                "offset": 3,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 4
+              }
+            ]
+          }
+        },
+        {
+          "id": 23,
+          "name": "decreaseAllowance",
+          "arity": 2,
+          "entryPoint": true,
+          "selector": "a600a1df",
+          "calls": [],
+          "closure": [
+            23
+          ],
+          "component": 10,
+          "recursive": false,
+          "reads": [
+            "collection:_allowances:*"
+          ],
+          "writes": [
+            "collection:_allowances:*"
+          ],
+          "effects": [
+            "events"
+          ],
+          "unknown": false,
+          "outputs": [
+            {
+              "type": "bool"
+            }
+          ],
+          "bounded": true,
+          "maximumDirectInvocations": 0,
+          "emits": [
+            {
+              "eventName": "Approval",
+              "eventSignature": "Approval(address,address,uint256)",
+              "emitIndex": 0
+            }
+          ],
+          "blockLayout": {
+            "blockSize": 5,
+            "slots": [
+              {
+                "kind": "master",
+                "offset": 0
+              },
+              {
+                "kind": "dataNft",
+                "offset": 1,
+                "nftIndex": 0
+              },
+              {
+                "kind": "entry",
+                "offset": 2,
+                "slotIndex": 0
+              },
+              {
+                "kind": "event",
+                "offset": 3,
+                "slotIndex": 0
+              },
+              {
+                "kind": "returnEvent",
+                "offset": 4
+              }
+            ]
+          }
+        },
+        {
+          "id": 24,
+          "name": "_beforeTokenTransfer",
+          "arity": 3,
+          "entryPoint": false,
+          "calls": [],
+          "closure": [
+            24
+          ],
+          "component": 11,
+          "recursive": false,
+          "reads": [],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "bounded": true,
+          "maximumDirectInvocations": 0
+        },
+        {
+          "id": 25,
+          "name": "_msgData",
+          "arity": 0,
+          "entryPoint": false,
+          "calls": [],
+          "closure": [
+            25
+          ],
+          "component": 12,
+          "recursive": false,
+          "reads": [],
+          "writes": [],
+          "effects": [],
+          "unknown": false,
+          "bounded": true,
+          "maximumDirectInvocations": 0
+        }
+      ],
+      "components": [
+        {
+          "id": 0,
+          "functions": [
+            13
+          ],
+          "recursive": false
+        },
+        {
+          "id": 1,
+          "functions": [
+            14
+          ],
+          "recursive": false
+        },
+        {
+          "id": 2,
+          "functions": [
+            15
+          ],
+          "recursive": false
+        },
+        {
+          "id": 3,
+          "functions": [
+            16
+          ],
+          "recursive": false
+        },
+        {
+          "id": 4,
+          "functions": [
+            17
+          ],
+          "recursive": false
+        },
+        {
+          "id": 5,
+          "functions": [
+            18
+          ],
+          "recursive": false
+        },
+        {
+          "id": 6,
+          "functions": [
+            19
+          ],
+          "recursive": false
+        },
+        {
+          "id": 7,
+          "functions": [
+            20
+          ],
+          "recursive": false
+        },
+        {
+          "id": 8,
+          "functions": [
+            21
+          ],
+          "recursive": false
+        },
+        {
+          "id": 9,
+          "functions": [
+            22
+          ],
+          "recursive": false
+        },
+        {
+          "id": 10,
+          "functions": [
+            23
+          ],
+          "recursive": false
+        },
+        {
+          "id": 11,
+          "functions": [
+            24
+          ],
+          "recursive": false
+        },
+        {
+          "id": 12,
+          "functions": [
+            25
+          ],
+          "recursive": false
+        }
+      ]
+    }
+  }
+}

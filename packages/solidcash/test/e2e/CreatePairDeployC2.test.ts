@@ -8,7 +8,6 @@ import { createTestProvider, getSigners } from '../test-util.js';
 import { addressToLockScript } from '../../src/utils.js';
 import { getDataNftAddress } from '../../src/stateful/covenant-helpers.js';
 
-const DIR = '/Code/cashscript/.worktrees/mistswap-native-bch/examples/mistswap-native/artifacts/solidcash';
 // Prefer goal scratch; fall back for local runs.
 const SCRATCH = process.env.GROK_SCRATCH
   || '/tmp/grok-goal-253fc4aa8124/implementer';
@@ -19,7 +18,7 @@ const limits = {
 };
 
 function load(name: string) {
-  return JSON.parse(readFileSync(`${DIR}/${name}.json`, 'utf8'));
+  return JSON.parse(readFileSync(new URL(`../fixture/mistswap-artifacts/${name}.json`, import.meta.url), 'utf8'));
 }
 
 describe('createPair deployDataNft + dual getPair (factory wall)', () => {

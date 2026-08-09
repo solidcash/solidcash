@@ -5,8 +5,8 @@ import { defineConfig } from '@solidcash/solidhat/config';
 // worktree.
 export default defineConfig({
   paths: {
-    contracts: '/Code/mistswap/mistswap/contracts',
-    artifacts: 'artifacts',
+    contracts: process.env.MISTSWAP_CONTRACTS ?? '/Code/mistswap/mistswap/contracts',
+    artifacts: process.env.MISTSWAP_ARTIFACTS ?? 'artifacts',
     cache: 'cache',
     tests: '/Code/mistswap/mistswap/test',
   },

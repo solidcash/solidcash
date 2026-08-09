@@ -874,6 +874,10 @@ it must not silently compile to incorrect covenant behavior.
     density refusal the network decider sees. X121/X130 pass 20/20 with their original calibrated thresholds.
   - The corpus struct-memory parity case is split across two contracts at the BCH operation-cost boundary while
     preserving every original allocation, nested struct, internal-call, and field assertion. Both spends pass.
+  - The four MistSwap rows no longer read artifacts from a deleted sibling worktree. Five current-compiler artifacts
+    are checked in as test fixtures and the adapter accepts environment-selected source/artifact roots for repeatable
+    regeneration. The metadata row now passes; the three transaction rows expose real oversized-input/covenant
+    failures that were previously hidden behind ENOENT.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

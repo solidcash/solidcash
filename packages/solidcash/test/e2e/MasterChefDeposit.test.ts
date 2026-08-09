@@ -3,7 +3,6 @@ import { readFileSync } from 'fs';
 import { ContractFactory } from '../../src/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
-const DIR = '/Code/cashscript/.worktrees/mistswap-native-bch/examples/mistswap-native/artifacts/solidcash';
 const limits = {
   maximumInputBytes: 100_000,
   maximumTransactionBytes: 10_000_000,
@@ -15,9 +14,12 @@ describe('MasterChef deposit', () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
     const [alice, bob, dev] = await getSigners(3, { provider, fundingUtxos: 20 });
-    const erc20Art = JSON.parse(readFileSync(`${DIR}/ERC20Mock.json`, 'utf8'));
-    const masterChefArt = JSON.parse(readFileSync(`${DIR}/MasterChef.json`, 'utf8'));
-    const sushiArt = JSON.parse(readFileSync(`${DIR}/SushiToken.json`, 'utf8'));
+    const artifact = (name: string) => JSON.parse(readFileSync(
+      new URL(`../fixture/mistswap-artifacts/${name}.json`, import.meta.url), 'utf8',
+    ));
+    const erc20Art = artifact('ERC20Mock');
+    const masterChefArt = artifact('MasterChef');
+    const sushiArt = artifact('SushiToken');
     const sushi = await new ContractFactory(sushiArt, alice).deploy();
     const lp = await new ContractFactory(erc20Art, alice).deploy('LP', 'LP', 1000000000n);
     const chef = await new ContractFactory(masterChefArt, alice).deploy(

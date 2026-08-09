@@ -1955,7 +1955,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // An `address` state value is a full locking bytecode (e.g. a P2PKH `76a914..88ac`), returned VERBATIM -
       // never decoded/wrapped into a CashAddress or pubkey-hash. It equals `signer.getLockingBytecode()` and the
       // msg.sender / addressToLockScript(arg) forms byte-for-byte, so comparisons work on the raw locking bytecode.
-      this.state[variable.name] = async (): Promise<any> => (await this.getState())[variable.name];
+      this.state[variable.name] = async (...indices: Array<bigint | number>): Promise<any> => {
+        let value: unknown = (await this.getState())[variable.name];
+        for (const rawIndex of indices) {
+          if (!Array.isArray(value)) {
+            throw new Error(`State variable '${variable.name}' is not indexable at this depth.`);
+          }
+          const index = typeof rawIndex === 'bigint' ? Number(rawIndex) : rawIndex;
+          if (!Number.isSafeInteger(index) || index < 0 || index >= value.length) {
+            throw new Error(`Array index ${String(rawIndex)} is out of bounds for '${variable.name}'.`);
+          }
+          value = value[index];
+        }
+        return value;
+      };
     }
     // Solidity-getter parity for mappings: `sc.<mapping>(...keys)` reads the entry value at the given key(s)
     // (sugar over getEntries), or undefined when no entry exists. Nested/composite keys pass multiple args.

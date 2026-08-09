@@ -24,6 +24,9 @@ describe('B8: returning entry functions are spendable standalone', () => {
     const sc = StatefulContract.withCategory(contract, categoryId);
     const tx = await sc.readCounter().send();
     expect(tx.txid).toMatch(/^[0-9a-f]{64}$/);
+    expect(tx.outputs.some((output) => (
+      output.token?.category === categoryId && output.token.nft?.capability === 'none'
+    ))).toBe(false);
   });
 
   it('emits the return value in a return-event output with .emitReturn()', async () => {

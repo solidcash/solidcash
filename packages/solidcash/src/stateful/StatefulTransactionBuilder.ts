@@ -1556,8 +1556,11 @@ export class StatefulTransactionBuilder {
       s.offset >= prefixEnd && s.offset < minEventOffset
       && s.kind !== 'event' && s.kind !== 'returnEvent'
     ));
+    const hasPendingOwnerReturn = this.pendingReturnEventOutputs.some((r) => r.categoryId === this.categoryId);
     const earlyBlockEventSlots = (!hasMiddleSlots && minEventOffset === prefixEnd)
-      ? eventish.sort((a, b) => a.offset - b.offset)
+      ? eventish
+        .filter((slot) => slot.kind !== 'returnEvent' || hasPendingOwnerReturn)
+        .sort((a, b) => a.offset - b.offset)
       : [];
     const earlyEmittedEventCount = earlyBlockEventSlots.filter((s) => s.kind === 'event').length;
     const earlyEmittedOwnerReturn = earlyBlockEventSlots.some((s) => s.kind === 'returnEvent');

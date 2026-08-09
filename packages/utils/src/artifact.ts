@@ -403,7 +403,7 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
-  /** True when this mapping uses the vmap sorted-linked-list backend (SDK drives it via SortedList). */
+  /** True when this is a verified mapping (vmap): its sorted links authenticate present and absent keys. */
   sorted?: boolean;
   /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
    * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */

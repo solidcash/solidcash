@@ -1286,17 +1286,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
 
-    // vmap: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
-    // can OMIT the entry NFT, forcing the covenant to read the type default (false/0), so the guard passes - BCH
-    // Script cannot force an existing entry UTXO to be co-spent. One-time-write / replay / blacklist / hasVoted
-    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT vmap.
+    // Historical C2 backstop for a non-vmap collection: warn when a mapping value feeds a negative guard. A spender
+    // could omit an unauthenticated entry NFT and force the type default, bypassing one-time/replay/blacklist guards.
+    // Every ordinary mapping is now a verified mapping, so its predecessor proof makes this branch inapplicable.
     const guardedMapping = this.negativeGuardMapping(node.expression);
     if (guardedMapping) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
         + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
-        + '/ blacklist patterns (SECURITY-AUDIT vmap). Prefer a positive guard, or commit an entry-set accumulator.',
+        + '/ blacklist patterns (historical finding C2). Prefer a verified mapping or another authenticated set.',
       );
     }
 
@@ -1318,7 +1317,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  // vmap helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
+  // Historical C2 helper. Returns the mapping name if `cond` negatively guards a non-vmap mapping read,
   // or the mirror image. Only direct mapping reads are flagged (the common one-time-write / replay / blacklist
   // idiom); compound conditions are left alone to avoid noise.
   private negativeGuardMapping(cond: ExpressionNode): string | undefined {

@@ -1,10 +1,10 @@
 import { sha256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 
-// Off-chain manager for a vmap-sound sorted linked-list mapping (see docs/verified-mappings.md). Entries are entry
-// NFTs whose commitment is slot(32) ++ nextKey(32) [++ value]; they form a sorted singly-linked list. This class
-// rebuilds the list from the on-chain entry UTXOs and produces the co-spend PLANS the transaction builder needs:
-// non-membership (bracketing predecessor), membership (the entry), insert/delete (predecessor +/- node splices).
+// Off-chain manager for a verified mapping (vmap; see docs/verified-mappings.md). Entries are entry NFTs whose
+// commitment is slot(32) ++ nextKey(32) [++ value]; they form an authenticated sorted singly-linked list. This
+// class rebuilds the list from on-chain entry UTXOs and produces the co-spend plans the transaction builder needs:
+// absence (the bracketing predecessor), membership (the exact entry), and updates (predecessor/node splices).
 // The covenant that consumes these plans is VM-proven in test/e2e/SortedMapping*.test.ts.
 
 const SLOT_BYTES = 32;

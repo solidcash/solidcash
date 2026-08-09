@@ -153,6 +153,10 @@ assert.equal(text.split('\n')[balancesHover.range.start.line].slice(
   balancesHover.range.start.character,
   balancesHover.range.end.character,
 ), 'balances');
+assert.match(
+  hoverAt('enumerable mapping(address holder => int amount) balances', 'mapping').contents.value,
+  /Verified mapping \(vmap\)/,
+);
 
 // Go to definition lands on the declaration name, in this file and across imports.
 const [balancesTarget] = definitionAt('this.balances[msg.sender] = available', 'balances');

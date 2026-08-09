@@ -633,8 +633,8 @@ export class StateAssignNode extends StatementNode {
 
 export class CollectionNode extends Node implements Named {
   immutable: boolean = false;
-  // vmap sorted-linked-list backend: mapping entries form a sorted list keyed by H(key), so non-existence is
-  // authenticated by co-spending the bracketing predecessor. This is mandatory for every mapping.
+  // Verified mapping (vmap) backend: entries form a sorted list keyed by H(key), so non-existence is authenticated
+  // by co-spending the bracketing predecessor. This is mandatory for every mapping.
   sorted: boolean = false;
   // `enumerable mapping(...)`: the mapping may be iterated (`for..of`/`for..in`). A plain `mapping` is NOT
   // enumerable (Solidity parity - mappings are not iterable in Solidity). Only marks intent; arrays are always

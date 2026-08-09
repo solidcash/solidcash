@@ -78,7 +78,7 @@ These compile, but do not mean quite what they mean on the EVM. Each one warns w
 | `payable` | Accepted and inert: every BCH address can receive value. |
 | `transient` | No transaction-scoped storage exists. Lowered to a per-function local, zero-initialised each spend. Warned. |
 | `immutable` | Assigned once in the constructor and read-only afterwards, but stored in the state NFT rather than baked into bytecode. |
-| Mappings | Not iterable by default, exactly as in Solidity. Declare `enumerable mapping(...)` to opt in. |
+| Mappings | Verified mappings (vmaps) preserve default-on-absent reads with authenticated absence proofs. They are not iterable by default; declare `enumerable mapping(...)` to opt in. |
 | Re-entrancy guards | Compile and are harmless, but there is no re-entrancy on a UTXO chain to guard against. |
 
 ## What is intentionally unsupported

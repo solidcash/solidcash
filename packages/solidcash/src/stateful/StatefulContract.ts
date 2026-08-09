@@ -12689,7 +12689,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           indexer?: { storage?: { _test?: { utxo?: { add?: (u: unknown) => void } } } };
         };
         const dust = 1000n;
-        const txid = `sc${'00'.repeat(30)}${(Date.now() & 0xff).toString(16).padStart(2, '0')}`;
+        const txid = `5c${'00'.repeat(30)}${(Date.now() & 0xff).toString(16).padStart(2, '0')}`;
         try {
           if (typeof providerAny.addUtxo === 'function') {
             await providerAny.addUtxo(satoshiContainerAddress, { txid, vout: 0, satoshis: dust });

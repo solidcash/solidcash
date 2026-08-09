@@ -793,6 +793,16 @@ it must not silently compile to incorrect covenant behavior.
   corrected two cold-entry regressions before going green: CommonJS `ethers` now follows the maintained
   CashAddress-aware shim expectation, and branded split facets compose against the root/proxy state block while
   retaining selector-prefixed delegate dispatch.
+- [ ] **Complete SDK e2e gate at the candidate head.** A fresh `yarn test:e2e` audit at `8ca79363f` ran all
+  338 discovered files and found 98 failures across 45 files (2,569 passed, 23 skipped, 3 todo). This contradicts
+  the older head-level e2e attestation above and is a release blocker, even though the root `yarn test` command
+  is green because the solidcash workspace intentionally excludes `test/e2e/**`. The failures are concentrated
+  in C2 auto-derivation/composed message-bus layouts and delegate return/event paths, with a smaller group of
+  stale byte-gate and ordering expectations. The audit also caught a regression from treating every branded
+  delegate library like a split facet; selector and master-only handling is now restricted to `delegateOnly`
+  split artifacts, and the ordinary library, X162 split-layout, proxy-upgrade, and SolidHat split-artifact
+  focused gates pass together. The remaining full-gate failures predate that narrowing and must be closed or
+  explicitly removed from the supported release surface before this item can pass.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an

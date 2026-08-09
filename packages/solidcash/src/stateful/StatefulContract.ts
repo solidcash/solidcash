@@ -12368,7 +12368,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // have no data/entry NFTs of their own. Their state block is the root/proxy block already planned above
           // (including entryBatchWitnesses), so asking the facet to getFullState() can only fail. Encode the facet
           // master directly from the parent-derived witnesses and keep its physical band master-only.
-          if (group.callMode === 'delegatecall' && callee.inner.artifact.brandedLibrary) {
+          if (group.callMode === 'delegatecall'
+            && callee.inner.artifact.brandedLibrary
+            && callee.inner.artifact.delegateOnly) {
             const facetFn = group.abiFunction
               ?? (callee.inner.artifact.abi as readonly AbiFunction[])
                 .find((candidate) => candidate.name === group.functionName);

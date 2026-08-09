@@ -183,15 +183,16 @@ task('compile', 'Compile .scash and .sol contracts to artifacts (per-contract, H
       failures.push(new Error(`Solidity project: ${e.message}`));
     }
 
-    // Publish whatever compiled even when some sources failed. Discarding the fresh output left the PREVIOUS
-    // run's artifacts in place, which is strictly more misleading than partial-but-current ones. The run still
-    // fails loudly with the full failure list, so this cannot be mistaken for success.
-    fs.rmSync(artifactsDir, { recursive: true, force: true });
-    fs.renameSync(outputDir, artifactsDir);
     if (failures.length > 0) {
-      console.error(`Wrote artifacts for the sources that did compile; ${failures.length} group(s) failed.`);
+      // Artifact publication is transactional. A failed project build must not replace the coherent last-known-
+      // good artifact set with a partial graph: consumers and type generation cannot distinguish missing output
+      // caused by a compile error from a contract that was intentionally removed. The command fails loudly and
+      // the temporary output is discarded; a later successful build publishes the complete current graph.
+      fs.rmSync(outputDir, { recursive: true, force: true });
       throw new AggregateError(failures, `Compilation failed for ${failures.length} source group(s)`);
     }
+    fs.rmSync(artifactsDir, { recursive: true, force: true });
+    fs.renameSync(outputDir, artifactsDir);
     const typegen = generateTypechainTargets({
       artifactsDir,
       contractsDir,

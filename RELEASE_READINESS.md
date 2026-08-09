@@ -561,30 +561,16 @@ it must not silently compile to incorrect covenant behavior.
     BCHN reports a CLTV failure as non-mandatory rather than naming the opcode; and the provider served a fixed
     100,000-satoshi fee funder while the SDK requested 5,000 or 3,000, so a co-spend that cannot emit change
     burned the excess as fee.
-  - **A wipe is necessary but NOT sufficient: the suite also contaminates itself within one run.**
-    `DeployThenCallFold.e2e.test.ts` still fails on a freshly wiped chain, and both categories involved were
-    created by that same run: the expected one had 117 confirmations and the one the signer actually chose had
-    561, roughly 444 blocks earlier in the same pass. Every such test builds its signer from the fixed
-    `alicePriv`, so they share one address, and the signer auto-selects among whatever genesis-valid vout-0 UTXOs
-    have accumulated there. The test therefore passes in isolation and fails inside a long serial run - an
-    order-dependent test defect, not a product defect. The durable fix is a per-test signer, or funding selection
-    that prefers the UTXO the test just seeded.
-  - CONFIRMED by the decisive test: `DeployThenCallFold.e2e.test.ts` passes 13/13 alone on a freshly wiped chain,
-    and fails once any other test has spent from the shared address. Note that running it alone on a USED chain
-    still fails, so "alone in a vitest process" is not isolation here - only a wiped chain is.
-  - **Prerequisite 1 - the evidence run needs a WIPED chain.** "From zero" means file zero and is not
-    sufficient. Tests build signers from a fixed key and share one address; the signer auto-selects a
-    genesis-valid vout-0 UTXO from it, so on a chain with history it picks a leftover. Proven in
-    `DeployThenCallFold.e2e.test.ts`: the expected category had 94 confirmations (created by that run) while the
-    received one had 5,395 (left by an earlier run). Run
-    `docker compose -f docker-compose.regtest.yml down -v` first. Residual risk remains within a single run,
-    because a 449-file serial pass contaminates that same address as it goes; the durable fix is per-test
-    signers or funding selection that prefers the just-seeded UTXO.
-  - **Prerequisite 2 - the runner is O(wallet).** `pickLiveFundingInput` runs `listunspent` plus a `gettxout`
-    per candidate at five hot-path call sites. Measured at 23,076 wallet UTXOs: 1,181 ms per call, with the
-    wallet growing about 5,000 UTXOs per hour, so the sweep slows itself down. Mean batch was 457 s and BCHN sat
-    pegged at 99.9% of one core. A wipe resets this; the durable fix is for the provider to roll its own change
-    forward instead of asking the node.
+  - **The two runner prerequisites are now resolved.** `pickLiveFundingInput` caches the wallet-wide
+    `listunspent` result and validates cached candidates with `gettxout`, eliminating a full wallet scan at each
+    genesis/refill while retaining spent-coin safety. Genesis selectors now use provider height/confirmation
+    metadata to prefer the freshly funded eligible vout-0 coin rather than the first coin in arbitrary provider
+    order. That removes the shared-signer category substitution within a long run without changing signer keys.
+  - The decisive live regression deliberately dirties the same BCHN wallet with `Erc20LikeApplication` in one
+    Vitest process, then runs `DeployThenCallFold` in a second process without wiping the chain. The former passes
+    3/3 and the latter passes 13/13; the exact sequence previously selected an older category and failed.
+    A release-evidence matrix should still start from disposable volumes for reproducibility, but no longer
+    depends on pristine state for correct fresh-funding selection.
   - The rejection-message class is now fixed at the source rather than per file. BCHN names the failing input
     only for some refusals: `Program failed an OP_VERIFY operation` carries `error in evaluating input index N`,
     while `Script failed an OP_EQUALVERIFY operation (code 16)` does not; the mock always names it. That is why
@@ -629,17 +615,6 @@ it must not silently compile to incorrect covenant behavior.
     resistance, so a second seed hashing alike would let an attacker present a different deployer/nonce for the
     same logical address. It is now p2sh32, matching the project rule that stateful features never take a p2sh20
     path.
-  - `ContractFactory.test.ts` fails on a freshly wiped chain with `Logical contract identity at bchreg:pzarnm7r...
-    is missing or invalid (expected exactly one authenticated immutable anchor, found 0)`, thrown by
-    `resolveLogicalIdentity` (`src/stateful/logical-identity.ts:193`) immediately after a successful
-    `deploy(42n)`. Two tests in the file fail this way.
-  - This was first seen on the contaminated chain and provisionally attributed to leftover UTXOs. The wiped-chain
-    run disproves that attribution: it is a real defect.
-  - It is a THIRD distinct cause, separate from the two items above. It does not reproduce on mocknet even with
-    real consensus limits, so it is not the operation-cost budget and not the sparse/faithful derivation split.
-    Something about resolving anchors against a live provider differs from the mock. Investigate whether the
-    anchor output is never created on this path, is created but not indexed, or is created but fails the
-    authentication predicate in `resolveLogicalIdentity`.
 - [ ] If deferred, hide or reject every stable-API path that depends on the unfinished architecture and document
   the experimental boundary.
 

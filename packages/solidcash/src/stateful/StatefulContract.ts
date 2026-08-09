@@ -1697,7 +1697,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // master + data NFTs + fee + entry/event/return/trailing buffer (createPair dual getPair + PairCreated).
     // Large factory scripts need multi-10k fees to meet min-relay on the resulting tx.
     const cost = 1200n + 1200n * dataNfts + 40_000n + 12_000n;
-    const utxo = utxos.find((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+    const candidates = utxos.filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost);
+    const { compareGenesisFundingFreshness } = await import('./ContractFactory.js');
+    const utxo = candidates.sort(compareGenesisFundingFreshness)[0];
     if (utxo) return utxo;
     // Every deploy strands its change at a non-zero vout, so a signer that deploys several contracts runs out
     // of vout-0 coins - which is exactly what `selectGenesisFundingUtxo` fans out for on the plain deploy path.

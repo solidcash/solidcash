@@ -67,9 +67,9 @@ export async function selectGenesisFundingUtxo(
   const deployFee = BigInt(Math.max(5000, asmToBytecode(artifact.bytecode).length + 2000));
   const cost = 1200n + 1200n * dataNfts + 1200n * BigInt(identityNftCount) + deployFee + 2400n;
   const excluded = (u: Utxo): boolean => excludedOutpoints.has(`${u.txid}:${u.vout}`);
-  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us.find(
-    (u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u),
-  );
+  const findGenesisUtxo = (us: Utxo[]): Utxo | undefined => us
+    .filter((u) => u.vout === 0 && !u.token && u.satoshis >= cost && !excluded(u))
+    .sort(compareGenesisFundingFreshness)[0];
 
   const existing = findGenesisUtxo(await signer.getUtxos());
   if (existing) return existing;
@@ -102,6 +102,19 @@ export async function selectGenesisFundingUtxo(
     throw new Error(`Fan-out did not yield a genesis-valid vout-0 UTXO at ${signer.getAddress()}.`);
   }
   return created;
+}
+
+/** Prefer the coin most recently funded for this deployment, independent of provider UTXO ordering. */
+export function compareGenesisFundingFreshness(a: Utxo, b: Utxo): number {
+  if (a.confirmations !== undefined && b.confirmations !== undefined
+    && a.confirmations !== b.confirmations) return a.confirmations - b.confirmations;
+  if (a.blockHeight !== undefined && b.blockHeight !== undefined
+    && a.blockHeight !== b.blockHeight) {
+    if (a.blockHeight === 0) return -1;
+    if (b.blockHeight === 0) return 1;
+    return b.blockHeight - a.blockHeight;
+  }
+  return 0;
 }
 
 /**

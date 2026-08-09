@@ -55,18 +55,25 @@ describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
     }
   });
 
-  it('MULTI-CALL: two keccak256 calls co-spend two side-cars, each result read by slot (VM e2e)', async () => {
+  it('MULTI-CALL: two keccak256 calls share one mutable side-car commitment (VM e2e)', async () => {
     const a = hexToBin('deadbeef'.repeat(8)); // 32 B
     const b = new Uint8Array(200).map((_, i) => (i + 3) & 0xff); // 2 blocks, distinct
     const provider = new MockNetworkProvider();
     const contract = new Contract(MULTI, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deploySidecars(provider, 2);
+    await deploySidecars(provider, 1);
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(a, b, evm(a), evm(b)))
       .addOutput({ to: contract.address, amount: 800_000n })
       .send();
     expect(tx.txid).toBeDefined();
+    const sidecars = await provider.getUtxosForLockingBytecode(
+      keccakComputeLockingBytecode(KECCAK256_SHARED_SALT),
+    );
+    expect(sidecars).toHaveLength(1);
+    expect(sidecars[0].token?.nft).toEqual({
+      capability: 'mutable', commitment: binToHex(Uint8Array.from([...evm(a), ...evm(b)])),
+    });
   });
 
   it('MULTI-CALL rejects when a slot result is asserted wrong', async () => {
@@ -75,7 +82,7 @@ describe('keccak256 result-NFT model (compiler + SDK + VM)', () => {
     const provider = new MockNetworkProvider();
     const contract = new Contract(MULTI, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deploySidecars(provider, 2);
+    await deploySidecars(provider, 1);
     // eb is wrong (evm(a) instead of evm(b)) -> the second require fails
     await expect(new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(a, b, evm(a), evm(a)))
@@ -120,7 +127,7 @@ describe('keccak256 result-NFT model (complex / nested args via VM probe)', () =
     const provider = new MockNetworkProvider();
     const contract = new Contract(NESTED, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deploySidecars(provider, 2);
+    await deploySidecars(provider, 1);
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(x, evm(evm(x))))
       .addOutput({ to: contract.address, amount: 800_000n })
@@ -133,7 +140,7 @@ describe('keccak256 result-NFT model (complex / nested args via VM probe)', () =
     const provider = new MockNetworkProvider();
     const contract = new Contract(NESTED3, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deploySidecars(provider, 3);
+    await deploySidecars(provider, 1);
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(x, evm(evm(evm(x)))))
       .addOutput({ to: contract.address, amount: 800_000n })
@@ -155,21 +162,21 @@ describe('keccak256 result-NFT model (complex / nested args via VM probe)', () =
     expect(tx.txid).toBeDefined();
   });
 
-  // A FIXED-bound keccak256 loop (hash chain) unrolls to N syntactic calls -> N side-cars (each a complex-arg
+  // A FIXED-bound keccak256 loop (hash chain) unrolls to N syntactic calls, batched three per side-car (each a complex-arg
   // call resolved by the probe). A runtime-bound loop stays flagged keccakInLoop (unsupported, fails closed).
-  it('FIXED-bound keccak256 loop (hash chain x3) unrolls to 3 side-cars (VM e2e)', async () => {
+  it('FIXED-bound keccak256 loop (hash chain x3) uses one three-result side-car (VM e2e)', async () => {
     const CHAIN = compileString(
       'contract Ch { function f(bytes32 x, bytes32 e) public pure { bytes32 h = x;'
       + ' for (int i = 0; i < 3; i++) { h = keccak256(abi.encodePacked(h)); } require(h == e); } }',
     );
     expect(CHAIN.abi.find((f) => f.name === 'f')?.keccakPreimageParams).toEqual([null, null, null]);
-    expect(CHAIN.externalLibraries?.find((l) => l.name === 'keccak256')?.minInstances).toBe(3);
+    expect(CHAIN.externalLibraries?.find((l) => l.name === 'keccak256')?.minInstances).toBe(1);
     const x = hexToBin('11'.repeat(32));
     let h = x; for (let i = 0; i < 3; i++) h = evm(h);
     const provider = new MockNetworkProvider();
     const contract = new Contract(CHAIN, [], { provider });
     await provider.addUtxo(contract.address, randomUtxo({ satoshis: 1_000_000n }));
-    await deploySidecars(provider, 3);
+    await deploySidecars(provider, 1);
     const tx = await new TransactionBuilder({ provider })
       .addInputs(await contract.getUtxos(), contract.unlock.f(x, h))
       .addOutput({ to: contract.address, amount: 800_000n })

@@ -306,7 +306,7 @@ export interface AbiFunction {
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses
   externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count
-  // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars and fills results.
+  // keccak256 uses the compute-and-commit side-car; send() batches up to three straight-line calls per side-car.
   keccakCompute?: boolean;
   keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
   // computes each R + co-spends per call)
@@ -643,10 +643,9 @@ export interface ExternalLibraryAbi {
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
   code?: string;      // hex blob; present for user-supplied libraries
-  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
-  // its NFT commitment (the contract reads it), rather than the contract running the blob
-  minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
-  // count across the contract's functions (each function co-spends its own per-call side-cars)
+  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns 1-3 hashes in
+  // its own mutable NFT commitment (the contract reads 32-byte slices); no separate result/data NFTs are emitted
+  minInstances?: number; // minimum side-car instances to deploy: ceil(max straight-line keccak call count / 3)
   unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
   // real need is the loop's runtime count, so provision extra side-cars
 }

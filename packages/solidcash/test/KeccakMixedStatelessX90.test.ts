@@ -2,7 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { binToHex } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { compileString } from './direct-compile.js';
-import { keccakComputeLockingBytecode, KECCAK256_SHARED_SALT } from '@solidcash/utils';
+import {
+  keccakComputeLockingBytecode, KECCAK256_SHARED_SALT, KECCAK256_COMPUTE_STATEFUL_COVENANT,
+} from '@solidcash/utils';
 import { Contract, TransactionBuilder, MockNetworkProvider, SignatureTemplate } from '../src/index.js';
 import { buildKeccakComputeSidecar } from '../src/keccak/keccakComputeSidecar.js';
 import { randomUtxo } from '../src/utils.js';
@@ -95,11 +97,11 @@ describe('X90: X83 second face - a STATELESS mixed keccak256 shape, satisfiabili
     // The straight-line call reads count-relative and checks the STATELESS covenant HASH.
     expect(asm.join(' ')).toContain('OP_TXINPUTCOUNT OP_2 OP_SUB');
     expect(asm.join(' ')).toContain('OP_TXOUTPUTCOUNT OP_2 OP_SUB');
-    // The loop reads absolute-forward and byte-compares the 2390-byte STATEFUL covenant inline.
+    // The loop reads absolute-forward and byte-compares the STATEFUL covenant inline.
     expect(asm.join(' ')).toContain('OP_INPUTINDEX OP_1ADD OP_2 OP_PICK OP_ADD');
     const begin = asm.indexOf('OP_BEGIN');
     const until = asm.indexOf('OP_UNTIL');
-    const inlineCovenant = asm.findIndex((t) => t.length === 2390 * 2);
+    const inlineCovenant = asm.indexOf(KECCAK256_COMPUTE_STATEFUL_COVENANT);
     expect(begin).toBeGreaterThan(-1);
     expect(inlineCovenant).toBeGreaterThan(begin);       // the byte compare is INSIDE the loop
     expect(inlineCovenant).toBeLessThan(until);

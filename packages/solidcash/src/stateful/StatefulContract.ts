@@ -5597,8 +5597,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // probe OP_VERIFYs empty at the side-car bind and never learns state commitments.
     const keccakSlotCount = constructorAbi?.blockLayout?.slots
       .filter((slot) => slot.kind === 'keccakSideCar').length ?? 0;
+    const keccakCallCount = constructorAbi?.keccakPreimageParams?.length ?? keccakSlotCount;
     let keccakPreimages: Uint8Array[] = Array.from(
-      { length: keccakSlotCount }, () => new Uint8Array(0),
+      { length: keccakCallCount }, () => new Uint8Array(0),
     );
 
     for (let iter = 0; iter < maxDeployIterations; iter++) {
@@ -5648,7 +5649,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             nft: { capability: 'mutable', commitment: '' },
           },
         };
-        const built = buildKeccakComputeSidecar(keccakPreimages[ki], keccakSalt, scUtxo, true);
+        const batch = keccakPreimages.slice(ki * 3, Math.min(keccakCallCount, ki * 3 + 3));
+        const built = buildKeccakComputeSidecar(batch, keccakSalt, scUtxo, true);
         keccakBuilt.push(built);
         probeBuilder.addInput(scUtxo, built.unlocker);
       }
@@ -5931,7 +5933,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const keccakBase = 1 + stateLayout.dataNftCount;
         try {
           const { callIndex, preimage } = extractKeccakPreimageFromTrace(
-            fullTrace, keccakBase, keccakSlotCount,
+            fullTrace, keccakBase, keccakCallCount, keccakSlotCount,
           );
           const prev = keccakPreimages[callIndex] ?? new Uint8Array(0);
           if (prev.length !== preimage.length || !prev.every((b, i) => b === preimage[i])) {
@@ -7198,6 +7200,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   ): Promise<Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }>> {
     const params = abiFunction.keccakPreimageParams ?? [];
     if (params.length === 0 || !this.categoryId) return [];
+    const batchCount = Math.ceil(params.length / 3);
     // A stateful DYNAMIC keccak loop (keccakLoopReads) reads N runtime trailing side-cars - resolved by the
     // separate _resolveStatefulKeccakLoop progressive-probe path, not the fixed-slot path here. Reaching this
     // with keccakLoopReads set is an internal routing bug (the caller should branch on keccakLoopReads first).
@@ -7213,10 +7216,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Hardhat-parity (mock): auto-fund missing branded keccak compute side-cars so suites that never
     // call a manual deployKeccak helper (MistSwap Timelock.queueTransaction) still work under
     // MockNetworkProvider. Real network providers cannot mint UTXOs here and keep the hard error.
-    if (scUtxos.length < params.length) {
+    if (scUtxos.length < batchCount) {
       const addUtxo = (this.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<Utxo> }).addUtxo;
       if (typeof addUtxo === 'function') {
-        const need = params.length - scUtxos.length;
+        const need = batchCount - scUtxos.length;
         // Distinct dummy category per side-car so the mock indexer accepts them as independent NFTs.
         for (let i = 0; i < need; i++) {
           const cat = randomUtxo().txid;
@@ -7229,9 +7232,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           .filter((u) => u.token?.nft?.capability === 'mutable');
       }
     }
-    if (scUtxos.length < params.length) {
-      throw new Error(`keccak256 needs ${params.length} compute side-car UTXO(s) at the branded address; `
-        + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per keccak256 call.`);
+    if (scUtxos.length < batchCount) {
+      throw new Error(`keccak256 needs ${batchCount} compute side-car UTXO(s) at the branded address; `
+        + `found ${scUtxos.length}. Deploy one mutable-NFT side-car per batch of up to three calls.`);
     }
     const visible = abiFunction.inputs.filter((i) => !i.name.startsWith('__internal__'));
     // Direct-parameter preimages come straight from the args; complex/nested args (recorded null by codegen)
@@ -7290,10 +7293,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       await this._extractStatefulKeccakPreimages(abiFunction, preimages, salt, scUtxos, probeCtx);
     }
     const resolved: Array<{ utxo: Utxo; unlocker: Unlocker; recreate: Output; commitment: Uint8Array }> = [];
-    for (let i = 0; i < params.length; i++) {
-      const preimage = preimages[i];
-      if (!(preimage instanceof Uint8Array)) throw new Error(`keccak256 preimage ${i} could not be resolved.`);
-      const { unlocker, recreate, commitment } = buildKeccakComputeSidecar(preimage, salt, scUtxos[i], true);
+    for (let i = 0; i < batchCount; i++) {
+      const batch = preimages.slice(i * 3, Math.min(params.length, i * 3 + 3));
+      const missing = batch.findIndex((preimage) => !(preimage instanceof Uint8Array));
+      if (missing >= 0) throw new Error(`keccak256 preimage ${i * 3 + missing} could not be resolved.`);
+      const { unlocker, recreate, commitment } = buildKeccakComputeSidecar(
+        batch as Uint8Array[], salt, scUtxos[i], true,
+      );
       resolved.push({ utxo: scUtxos[i], unlocker, recreate, commitment });
     }
     return resolved;
@@ -7370,6 +7376,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const kSlots = abiFunction.blockLayout?.slots.filter((s) => s.kind === 'keccakSideCar') ?? [];
     const base = kSlots[0]?.offset ?? (1 + dataNftUtxos.length);
     const n = preimages.length;
+    const batchCount = Math.ceil(n / 3);
     if (base !== 1 + dataNftUtxos.length + frontRegion.length) {
       throw new Error('keccak256 complex/nested-argument probe: the front-region inputs (external reads / '
         + 'blockhash oracles) do not fill the slots before the keccak side-car; cannot position the probe.');
@@ -7386,8 +7393,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       dataNftUtxos.forEach((u, i) => probe.addInput(u, dataNftUnlockers[i]));
       frontRegion.forEach((u) => probe.addInputs([u])); // unlockable form: u already carries its unlocker
       const recreates: Output[] = [];
-      for (let j = 0; j < n; j++) {
-        const { unlocker, recreate } = buildKeccakComputeSidecar(preimages[j] ?? new Uint8Array(0), salt, scUtxos[j], true);
+      for (let j = 0; j < batchCount; j++) {
+        const batch = preimages.slice(j * 3, Math.min(n, j * 3 + 3))
+          .map((preimage) => preimage ?? new Uint8Array(0));
+        const { unlocker, recreate } = buildKeccakComputeSidecar(batch, salt, scUtxos[j], true);
         probe.addInput(scUtxos[j], unlocker);
         recreates.push(recreate);
       }
@@ -7402,7 +7411,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const transaction = probe.buildLibauthTransaction();
       const sourceOutputs = generateLibauthSourceOutputs(probe.inputs);
       const trace = vm.debug({ inputIndex: 0, sourceOutputs, transaction }) as unknown[];
-      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n);
+      const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
       preimages[callIndex] = preimage;
     }
   }
@@ -7527,14 +7536,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
     const inputs: UnlockableUtxo[] = [];
     const recreates: Output[] = [];
-    for (let i = 0; i < params.length; i++) {
-      const preimage = preimages[i];
-      if (!(preimage instanceof Uint8Array)) throw new Error(`keccak256 preimage ${i} could not be resolved.`);
+    const batchCount = Math.ceil(params.length / 3);
+    for (let i = 0; i < batchCount; i++) {
+      const batch = preimages.slice(i * 3, Math.min(params.length, i * 3 + 3));
+      const missing = batch.findIndex((preimage) => !(preimage instanceof Uint8Array));
+      if (missing >= 0) throw new Error(`keccak256 preimage ${i * 3 + missing} could not be resolved.`);
       if (!scUtxos[i]) {
-        throw new Error(`keccak256 compute side-car UTXO not found for external call (call ${i}); deploy one `
-          + "mutable-NFT side-car per keccak256 call at the callee's branded address.");
+        throw new Error(`keccak256 compute side-car UTXO not found for external call (batch ${i}); deploy one `
+          + "mutable-NFT side-car per batch of up to three calls at the callee's side-car address.");
       }
-      const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, scUtxos[i], true);
+      const { unlocker, recreate } = buildKeccakComputeSidecar(batch as Uint8Array[], salt, scUtxos[i], true);
       inputs.push({ ...scUtxos[i], unlocker });
       recreates.push(recreate);
     }

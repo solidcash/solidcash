@@ -4,7 +4,7 @@
 // so hash256(COVENANT) is a compile-time constant the contract bakes for integrity. Prints the hex constants.
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { asm, binToHex, hexToBin, p2sh32, evalInput, hash256 } from './sidecar.mjs';
-import { genKeccak256var } from './genvar.mjs';
+import { genKeccak256var, genKeccakRegistrar } from './genvar.mjs';
 
 const aTo = (s) => binToHex(asm(s));
 const evm = (b) => keccak_256(b);
@@ -13,8 +13,13 @@ const evm = (b) => keccak_256(b);
 // MUST be inlined as CODE (assembled in the ASM string), not pushed as data.
 const INLINE_KECCAK_ASM = genKeccak256var(aTo);
 const INLINE_KECCAK_HEX = binToHex(asm(INLINE_KECCAK_ASM));
+const KECCAK_FUNCTION_ID = 3;
+// Define the round and reusable keccak body once. Reusing OP_INVOKE keeps a three-hash covenant below P2SH's
+// 10,000-byte redeem limit; inlining the 2.3KB body three times would not.
+const KECCAK_SETUP_ASM = `<${KECCAK_FUNCTION_ID}> ${genKeccakRegistrar(aTo)}`;
+const KECCAK_INVOKE_ASM = `<${KECCAK_FUNCTION_ID}> OP_INVOKE`;
 
-// COVENANT (stack in [pad, P, salt], salt on top): CONDITIONAL brand check - if salt is zero (SHARED, for a
+// COVENANT (stack in [pad, P0, ... Pn, n, salt], salt on top): CONDITIONAL brand check - if salt is zero (SHARED, for a
 // stateless contract with no category) skip it; else (BRANDED) verify input-0's category == salt (the user's
 // "spendable only by the contract of that category" rule). Then drop pad, R = keccak(P) on a CLEAN stack,
 // commit R at the last output, preserve locking + category/capability. Salt-independent -> one covenant hash.
@@ -23,8 +28,22 @@ const COVENANT_ASM =
   `OP_DUP <0x${ZERO32}> OP_EQUAL ` +                                         // [pad,P,salt, isShared]
   'OP_IF OP_DROP ' +                                                         // shared: drop salt -> [pad,P]
   'OP_ELSE OP_0 OP_UTXOTOKENCATEGORY <32> OP_SPLIT OP_DROP OP_EQUALVERIFY OP_ENDIF ' + // branded: in0 cat==salt
-  'OP_NIP ' +                                                                // drop pad -> [P]
-  `${INLINE_KECCAK_ASM} ` +                                                  // [R]  (inline keccak CODE)
+  `${KECCAK_SETUP_ASM} ` +
+  // Hash one to three preimages. Results are concatenated in call order directly into this mutable NFT's
+  // commitment (32, 64, or 96 bytes); no result/data NFT is created.
+  'OP_DUP OP_1 OP_NUMEQUAL OP_IF ' +
+    'OP_DROP OP_NIP ' +                                                      // [P0]
+    `${KECCAK_INVOKE_ASM} ` +                                                // [R0]
+  'OP_ELSE OP_DUP OP_2 OP_NUMEQUAL OP_IF ' +
+    'OP_DROP OP_2 OP_ROLL OP_DROP ' +                                        // [P0,P1]
+    `${KECCAK_INVOKE_ASM} OP_TOALTSTACK ` +                                  // [P0] alt=[R1]
+    `${KECCAK_INVOKE_ASM} OP_FROMALTSTACK OP_CAT ` +                         // [R0||R1]
+  'OP_ELSE OP_3 OP_NUMEQUALVERIFY ' +
+    'OP_3 OP_ROLL OP_DROP ' +                                                // [P0,P1,P2]
+    `${KECCAK_INVOKE_ASM} OP_TOALTSTACK ` +                                  // [P0,P1] alt=[R2]
+    `${KECCAK_INVOKE_ASM} OP_TOALTSTACK ` +                                  // [P0] alt=[R2,R1]
+    `${KECCAK_INVOKE_ASM} OP_FROMALTSTACK OP_CAT OP_FROMALTSTACK OP_CAT ` +   // [R0||R1||R2]
+  'OP_ENDIF OP_ENDIF ' +
   // outIdx = INPUTINDEX + TXOUTPUTCOUNT - TXINPUTCOUNT: this side-car's recreation output (for N side-cars in
   // the last-N inputs recreated as the last-N outputs; N=1 -> the last output, byte-compatible semantics).
   'OP_INPUTINDEX OP_TXOUTPUTCOUNT OP_ADD OP_TXINPUTCOUNT OP_SUB ' +                           // [R, outIdx]
@@ -55,6 +74,7 @@ function contractLock(myC) {
     `<${PAD_SKIP}> OP_SPLIT OP_NIP ` +                    // drop pad push
     '<1> OP_SPLIT OP_NIP ' +                              // drop P's 0x20 prefix
     '<32> OP_SPLIT ' +                                    // [my_P, P, redeempush]
+    '<1> OP_SPLIT OP_NIP ' +                              // drop width marker (OP_1 in this single-hash probe)
     `<${REDEEM_PUSH_PREFIX}> OP_SPLIT OP_NIP ` +          // strip PUSHDATA2 prefix -> [my_P, P, redeem]
     '<1> OP_SPLIT OP_NIP ' +                              // drop redeem's 0x20 (salt push op) -> [my_P, P, C++COVENANT]
     '<32> OP_SPLIT ' +                                    // [my_P, P, C, COVENANT]
@@ -67,7 +87,7 @@ function contractLock(myC) {
 
 function build({ P, commitR, in0Cat = C }) {
   const redeem = buildRedeem(C), scLock = computeLock(C);
-  const scUnlock = asm(`<0x${'00'.repeat(PAD_LEN)}> <0x${binToHex(P)}> <0x${binToHex(redeem)}>`);
+  const scUnlock = asm(`<0x${'00'.repeat(PAD_LEN)}> <0x${binToHex(P)}> OP_1 <0x${binToHex(redeem)}>`);
   const ctUnlock = asm(`<0x${binToHex(P)}> <0x${'00'.repeat(700)}>`);
   const inputs = [
     { outpointIndex: 0, outpointTransactionHash: new Uint8Array(32),         sequenceNumber: 0xffffffff, unlockingBytecode: ctUnlock },
@@ -96,7 +116,7 @@ const nNoCat = !build({ P: new Uint8Array(32).fill(0x11), commitR: evm(new Uint8
 // wrong preimage bound: contract's my_P != side-car's P
 function nMismatch() {
   const redeem = buildRedeem(C), scLock = computeLock(C);
-  const scUnlock = asm(`<0x${'00'.repeat(PAD_LEN)}> <0x${binToHex(new Uint8Array(32).fill(0x11))}> <0x${binToHex(redeem)}>`);
+  const scUnlock = asm(`<0x${'00'.repeat(PAD_LEN)}> <0x${binToHex(new Uint8Array(32).fill(0x11))}> OP_1 <0x${binToHex(redeem)}>`);
   const ctUnlock = asm(`<0x${binToHex(new Uint8Array(32).fill(0x22))}> <0x${'00'.repeat(700)}>`); // my_P=0x22.., side-car P=0x11..
   const inputs = [
     { outpointIndex:0, outpointTransactionHash:new Uint8Array(32), sequenceNumber:0xffffffff, unlockingBytecode: ctUnlock },
@@ -113,6 +133,7 @@ const nBind = nMismatch();
 console.log(`NEG wrong-commit sc-rejects=${nWrongHash}  no-category sc-rejects=${nNoCat}  wrong-preimage ct-rejects=${nBind}`);
 console.log(`\nSPINE ${ok && nWrongHash && nNoCat && nBind ? 'OK' : 'FAIL'}`);
 console.log('\n--- utils constants ---');
+console.log('KECCAK_COMPUTE_COVENANT', binToHex(COVENANT));
 console.log('KECCAK_COMPUTE_INLINE_HEX_LEN', INLINE_KECCAK_HEX.length/2);
 console.log('KECCAK_COMPUTE_COVENANT_HASH', binToHex(COVENANT_HASH));
 console.log('SALT_PREFIX', SALT_PREFIX, ' REDEEM_PUSHDATA2_PREFIX 3  COVENANT_LEN', COVENANT.length);

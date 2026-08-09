@@ -57,14 +57,14 @@ BCH-vs-EVM primitive table.
 | form | how | resolved by |
 |---|---|---|
 | stateless single `keccak256(param)` | 1 side-car, count-relative read (last input) | direct from args |
-| stateless multi `keccak256(a); keccak256(b)` | N side-cars, slot-per-call | direct from args |
+| stateless multi `keccak256(a); keccak256(b)` | up to 3 calls per side-car commitment | direct from args |
 | stateless complex/nested `keccak256(keccak256(x))`, `keccak256(abi.encodePacked(..))` | side-cars + VM probe | `resolveKeccakPreimages` |
 | direct stateful `keccak256(param)` | keccakSideCar block-layout slot, branded | args + block layout |
 | complex/nested stateful | block-slot side-cars + derivation probe | `_extractStatefulKeccakPreimages` |
 | transitive (callee hashes) | side-car co-spent INSIDE the callee's block | `_resolveExternalKeccakSideCars` |
 | transitive + complex/nested in callee | probe the callee in isolation | `_externalKeccakProbeCtx` |
 | front-region (blockhash / external-read before the keccak slot) | thread front-region inputs into the probe | `frontRegionInputs` in the probes |
-| fixed-bound loop `for(i<3)` | unroll to N syntactic calls | `UnrollFixedBoundEntryLoop` |
+| fixed-bound loop `for(i<3)` | unroll and batch up to 3 syntactic calls per side-car | `UnrollFixedBoundEntryLoop` |
 | dynamic loop stateful `for(i<n)` | N trailing side-cars, progressive derivation | `_resolveStatefulKeccakLoop` |
 | dynamic loop stateless `for(i<n)` | N side-cars spliced after the master | `addStatelessKeccakLoopCoSpends` |
 
@@ -187,12 +187,13 @@ class of bug fails loudly.
 
 ## 11. Deploy-time provisioning
 
-The compiler counts references and exposes them so the SDK knows how many side-cars to deploy:
+The compiler counts references and exposes them so the SDK knows how many mutable side-cars to deploy. Each
+straight-line side-car hashes one to three preimages and stores the ordered 32-byte digests directly in its own
+NFT commitment (32, 64, or 96 bytes); it emits no result/data NFTs.
 
 - `AbiFunction.keccakPreimageParams.length` - the static keccak256 call count of a function.
 - `AbiFunction.keccakInLoop` - a call sits inside a loop (runtime-variable count).
-- `ExternalLibraryAbi.minInstances` - the MAX call count across the contract's functions (each
-  function co-spends its own per-call side-cars, so the largest function sets the floor).
+- `ExternalLibraryAbi.minInstances` - the maximum `ceil(callCount / 3)` across straight-line functions.
 - `ExternalLibraryAbi.unbounded` - some function hashes in a loop, so `minInstances` is a LOWER
   bound; the real need is the loop's runtime iteration count.
 - SDK: `keccakSideCarRequirement(artifact)` -> `{ minInstances, unbounded } | undefined`.
@@ -200,7 +201,7 @@ The compiler counts references and exposes them so the SDK knows how many side-c
 | shape | minInstances | unbounded | deploy |
 |---|---|---|---|
 | one (single call) | 1 | false | 1 side-car |
-| several (N calls in the largest fn) | N | false | N side-cars |
+| several (N calls in the largest fn) | ceil(N / 3) | false | ceil(N / 3) side-cars |
 | many (keccak in a loop) | 1 (static floor) | true | provision for the expected iteration count |
 
 Deploy mutable-NFT side-cars at `keccakComputeLockingBytecode(salt, stateful)` - branded (salt =

@@ -107,7 +107,11 @@ function scanKeccakSideCarReads(trace: unknown[], base: number, n: number): { sl
     if (step.stack.length < 2) continue;
     const idx = leSmallNumber(step.stack[step.stack.length - 1]);
     if (idx < base || idx >= base + n) continue;
-    reads.push({ slot: idx - base, arg: Uint8Array.from(step.stack[step.stack.length - 2]) });
+    const markerBytes = step.stack[step.stack.length - 2];
+    const marker = markerBytes.length <= 1 ? leSmallNumber(markerBytes) : 0;
+    reads.push(marker >= 1 && marker <= n && step.stack.length >= 3
+      ? { slot: marker - 1, arg: Uint8Array.from(step.stack[step.stack.length - 3]) }
+      : { slot: idx - base, arg: Uint8Array.from(markerBytes) });
   }
   return reads;
 }
@@ -264,7 +268,7 @@ export class TransactionBuilder {
    * NFT must already exist at keccakComputeLockingBytecode(salt). Call after adding the contract input(s),
    * before send(). See docs/keccak-result-nft.md.
    */
-  async addKeccakComputeCoSpend(preimage: Uint8Array, opts?: { salt?: Uint8Array }): Promise<this> {
+  async addKeccakComputeCoSpend(preimage: Uint8Array | readonly Uint8Array[], opts?: { salt?: Uint8Array }): Promise<this> {
     const salt = opts?.salt ?? this.brandedComputeSalt();
     const lock = keccakComputeLockingBytecode(salt);
     const utxos = await this.provider.getUtxosForLockingBytecode(lock);
@@ -273,7 +277,7 @@ export class TransactionBuilder {
     const sidecar = utxos.find((u) => !this.inputs.some((i) => i.txid === u.txid && i.vout === u.vout));
     if (!sidecar) {
       throw new Error('keccak256 compute side-car UTXO not available; deploy one mutable-NFT side-car per '
-        + 'keccak256 call in the spent function.');
+        + 'batch of up to three keccak256 calls in the spent function.');
     }
     const { unlocker, recreate } = buildKeccakComputeSidecar(preimage, salt, sidecar);
     this.addInput(sidecar, unlocker);                    // LAST input
@@ -323,7 +327,9 @@ export class TransactionBuilder {
       // Resolve each keccak256 call's preimage (direct params from args; complex/nested via a VM probe), then
       // co-spend one side-car per call in call order (the contract reads call i from the i-th of the last N).
       const preimages = await this.resolveKeccakPreimages(input, salt, abiFn.keccakPreimageParams ?? []);
-      for (const preimage of preimages) await this.addKeccakComputeCoSpend(preimage, { salt });
+      for (let i = 0; i < preimages.length; i += 3) {
+        await this.addKeccakComputeCoSpend(preimages.slice(i, i + 3), { salt });
+      }
     }
     return this;
   }
@@ -505,11 +511,13 @@ export class TransactionBuilder {
     const preimages: (Uint8Array | null)[] = params.map((p) => (p ? argFor(p) : null));
     if (preimages.every((p) => p !== null)) return preimages as Uint8Array[]; // all direct params - no probe
     const n = params.length;
+    const batchCount = Math.ceil(n / 3);
     const lock = keccakComputeLockingBytecode(salt);
     const redeem = buildKeccakComputeRedeem(salt);
     const scUtxos = await this.provider.getUtxosForLockingBytecode(lock);
-    if (scUtxos.length < n) {
-      throw new Error(`keccak256 preimage extraction needs ${n} compute side-car UTXOs (one per call); found ${scUtxos.length}.`);
+    if (scUtxos.length < batchCount) {
+      throw new Error(`keccak256 preimage extraction needs ${batchCount} compute side-car UTXOs `
+        + `(one per batch of up to three calls); found ${scUtxos.length}.`);
     }
     const category = scUtxos[0].token?.category ?? binToHex(new Uint8Array(32));
     const contractIdx = this.inputs.indexOf(input);
@@ -527,15 +535,22 @@ export class TransactionBuilder {
         if (guard++ > n) throw new Error('keccak256 preimage extraction did not converge.');
         this.inputs = [...savedInputs];
         this.outputs = [...savedOutputs];
-        for (let j = 0; j < n; j++) {
-          const resolved = preimages[j];
-          const pm = resolved ?? new Uint8Array(0);
-          const commit = resolved ? keccak_256(resolved) : new Uint8Array(32);
+        for (let j = 0; j < batchCount; j++) {
+          const batch = preimages.slice(j * 3, Math.min(n, j * 3 + 3));
+          const pms = batch.map((resolved) => resolved ?? new Uint8Array(0));
+          const commit = Uint8Array.from(batch.flatMap(
+            (resolved) => [...(resolved ? keccak_256(resolved) : new Uint8Array(32))],
+          ));
           this.inputs.push({
             ...scUtxos[j],
             unlocker: {
               generateUnlockingBytecode: () => Uint8Array.from(
-                [...pushDataBytes(new Uint8Array(1)), ...pushDataBytes(pm), ...pushDataBytes(redeem)],
+                [
+                  ...pushDataBytes(new Uint8Array(1)),
+                  ...pms.flatMap((pm) => [...pushDataBytes(pm)]),
+                  ...pushDataBytes(Uint8Array.from([pms.length])),
+                  ...pushDataBytes(redeem),
+                ],
               ),
               generateLockingBytecode: () => lock,
             },
@@ -546,7 +561,7 @@ export class TransactionBuilder {
         const transaction = this.buildLibauthTransaction(true);
         const sourceOutputs = generateLibauthSourceOutputs(this.inputs);
         const trace = keccakProbeVm.debug({ inputIndex: contractIdx, sourceOutputs, transaction }) as unknown[];
-        const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n);
+        const { callIndex, preimage } = extractKeccakPreimageFromTrace(trace, base, n, batchCount);
         preimages[callIndex] = preimage;
       }
     } finally {

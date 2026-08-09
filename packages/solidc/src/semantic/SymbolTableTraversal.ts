@@ -11623,7 +11623,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // runtime-variable number of side-cars from the TRAILING region [blockSize, ..) instead (keccakInLoop), so
     // it allocates no fixed slots here.
     if (node.keccakCompute && !node.keccakInLoop) {
-      const kSlots = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+      const kCalls = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+      const kSlots = Math.ceil(kCalls / 3);
       for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
     }
 

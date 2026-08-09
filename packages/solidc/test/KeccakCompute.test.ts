@@ -19,11 +19,21 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
     expect(lib(a).resultNft).toBe(true);
   });
 
-  it('TWO direct-param keccak256 calls use the compute model (slot-per-call, one side-car each)', () => {
+  it('TWO direct-param keccak256 calls use one batched compute side-car', () => {
     const a = compileString('contract C { function f(bytes a, bytes b) public pure { require(keccak256(a) != keccak256(b)); } }');
     expect(fn(a).keccakCompute).toBe(true);
     expect(fn(a).keccakPreimageParams).toEqual(['a', 'b']); // per-call params in emission order
     expect(lib(a).resultNft).toBe(true);
+  });
+
+  it('packs at most three calls per side-car and starts a second slot for the fourth', () => {
+    const a = compileString(
+      'contract C { function f(bytes a, bytes b, bytes c, bytes d) public pure {'
+      + ' require(keccak256(a) != keccak256(b)); require(keccak256(c) != keccak256(d)); } }',
+    );
+    const f = a.abi.find((candidate) => candidate.name === 'f')!;
+    expect(f.keccakPreimageParams).toEqual(['a', 'b', 'c', 'd']);
+    expect(a.externalLibraries?.find((l) => l.name === 'keccak256')?.minInstances).toBe(2);
   });
 
   it('nested keccak256(keccak256(x)) uses compute; the complex outer arg is recorded null', () => {
@@ -54,7 +64,7 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
       'contract C { function f(bytes a, bytes b) public pure { require(keccak256(a) != keccak256(b)); }'
       + ' function g(bytes x, bytes32 e) public pure { require(keccak256(x) == e); } }',
     );
-    expect(lib(a).minInstances).toBe(2); // f has 2 keccak calls, g has 1 -> deploy 2 side-cars
+    expect(lib(a).minInstances).toBe(1); // f's 2 calls share one mutable side-car commitment
     expect(lib(a).unbounded).toBeFalsy();
   });
 
@@ -65,7 +75,7 @@ describe('keccak256 compute-model selection (soundness gate)', () => {
     );
     expect(fn(a).keccakInLoop).toBe(true);
     expect(lib(a).unbounded).toBe(true);
-    expect(lib(a).minInstances).toBe(2); // static lower bound (1 outside + 1 syntactic in-loop)
+    expect(lib(a).minInstances).toBe(2); // mixed loop shapes retain one physical slot per syntactic call
   });
 
   it('a stateless dynamic keccak loop flags keccakLoopReads and compares the covenant (no per-iteration hash)', () => {

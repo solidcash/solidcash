@@ -6974,6 +6974,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const paramName = argNode instanceof IdentifierNode && fn.parameters.some((p) => p.name === argNode.name)
       ? argNode.name : null;
     const i = (fn.keccakPreimageParams ??= []).length;
+    // A mixed straight-line + dynamic-loop function keeps the legacy one-call trailing window: loop iterations
+    // use a separate forward index family discovered at runtime, so combining its syntactic call with a fixed
+    // call would claim a batch member that is not in the trailing side-car.
+    const batchable = !fn.keccakInLoop;
+    const batchIndex = batchable ? Math.floor(i / 3) : i;
+    const withinBatch = batchable ? i % 3 : 0;
+    const callCount = Number(fn.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+    const batchCount = batchable ? Math.ceil(callCount / 3) : callCount;
+    const batchWidth = batchable ? Math.min(3, callCount - batchIndex * 3) : 1;
     // The reaching entry point's side-car slot, when this helper can borrow it (see keccakSideCarBasis). It
     // decides BOTH the read index below and `absoluteForward`, which selects the stateful covenant hash - the
     // SDK deploys a stateful side-car, so reading its slot while checking the stateless hash fails integrity.
@@ -6986,15 +6995,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // against the layout rather than against `keccakInLoop` so a slot-count disagreement is named too. A
     // stateless function has no block layout and reads count-relative, so it never reaches this lookup.
     if (!this.keccakLoopActive && fn.blockLayout
-      && !fn.blockLayout.slots.some((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === i)) {
+      && !fn.blockLayout.slots.some((slot) => slot.kind === 'keccakSideCar' && slot.slotIndex === batchIndex)) {
       const reason = fn.keccakInLoop
         ? 'keccak-loop-and-straight-line-mix-not-enabled'
         : 'keccak-side-car-slot-not-reserved';
       throw new KeccakSideCarSlotError(node, reason, KECCAK_SIDE_CAR_DETAIL[reason]);
     }
     fn.keccakPreimageParams.push(paramName);
-    const n = Number(fn.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
-    const offset = n - i;
+    const offset = batchCount - batchIndex;
     // Stateful contracts read the side-car from an absolute block-layout slot (master input index + slot
     // offset, same index for the 1:1 input and output). Stateless contracts have no block layout, so they read
     // the last N in/outputs count-relative (countOp - (n-i)). Both land on this call's dedicated side-car.
@@ -7013,7 +7021,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(Op.OP_ADD, loc);
         return;
       }
-      if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', i, loc); return; }
+      if (fn.blockLayout) { this.emitBlockSlotIndex('keccakSideCar', batchIndex, loc); return; }
       // A helper has no layout of its own. When every reaching entry point reserves the SAME single side-car
       // slot, read that slot instead of falling through to the stateless count-relative form - inlined into a
       // stateful block the last input is the funder, not the side-car (MistSwap's BentoBox constructor).
@@ -7034,14 +7042,27 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(Op.OP_SPLIT, loc);
       this.emit(Op.OP_NIP, loc);
     };
+    if (!this.keccakLoopActive) this.emit(encodeInt(BigInt(i + 1)), loc); // probe-visible call ordinal
     fromEnd(Op.OP_TXINPUTCOUNT);
-    this.emit(Op.OP_INPUTBYTECODE, loc);            // [arg, U]  (U = side-car unlocking, any pad/preimage size)
+    this.emit(Op.OP_INPUTBYTECODE, loc);            // [arg, ordinal?, U]
+    if (!this.keccakLoopActive) this.emit(Op.OP_NIP, loc); // [arg, U]
     this.emitGenericPushdataDecode(raw, loc);       // [arg, pad, rest]
     this.emit(Op.OP_NIP, loc);                      // [arg, rest]  (drop the budget pad)
-    this.emitGenericPushdataDecode(raw, loc);       // [arg, preimage, redeempush]
-    this.emit(Op.OP_TOALTSTACK, loc);               // [arg, preimage]  (stash redeempush; no keccak/loop here)
-    this.emit(Op.OP_EQUALVERIFY, loc);              // bind: preimage == arg -> []  (the "master verifies the
-    this.emit(Op.OP_FROMALTSTACK, loc);             //   side-car hashed OUR arg" runtime safety check)
+    // Decode every preimage in this side-car batch. Bind this call's selected member to `arg` and discard the
+    // other members; the remaining blob is `<width><redeem>`.
+    for (let member = 0; member < batchWidth; member++) {
+      this.emitGenericPushdataDecode(raw, loc);     // [arg, preimage, rest]
+      this.emit(Op.OP_TOALTSTACK, loc);             // [arg, preimage] alt=[rest]
+      if (member === withinBatch) this.emit(Op.OP_EQUALVERIFY, loc);
+      else this.emit(Op.OP_DROP, loc);
+      this.emit(Op.OP_FROMALTSTACK, loc);           // [arg? only until selected member, rest]
+    }
+    this.emitGenericPushdataDecode(raw, loc);       // [width, redeempush]
+    this.emit(Op.OP_SWAP, loc);
+    this.emit(encodeInt(BigInt(batchWidth)), loc);
+    this.emit(Op.OP_NUMEQUALVERIFY, loc);           // [redeempush]
+    this.emit(Op.OP_TOALTSTACK, loc);
+    this.emit(Op.OP_FROMALTSTACK, loc);
     dropFirst(3);                                   // strip redeem PUSHDATA2 prefix -> [redeem]
     dropFirst(KECCAK256_COMPUTE_SALT_PREFIX_LENGTH); // strip OP_PUSHBYTES_32 || salt(32) -> [covenant]
     // Absolute-forward reads (block-layout slot OR dynamic loop: input idx == output idx) use the STATEFUL covenant
@@ -7058,7 +7079,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     this.emit(Op.OP_EQUALVERIFY, loc);              // integrity: genuine compute covenant -> []
     fromEnd(Op.OP_TXOUTPUTCOUNT);
-    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [hash]  (this slot's output commitment = keccak256(arg))
+    this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);    // [R0||R1||R2]
+    if (batchWidth > 1) {
+      if (withinBatch > 0) dropFirst(32 * withinBatch);
+      this.emit(encodeInt(32n), loc);
+      this.emit(Op.OP_SPLIT, loc);
+      this.emit(Op.OP_DROP, loc);                   // [hash] selected 32-byte commitment slice
+    }
     this.popFromStack(1);
     this.pushToStack('(value)');
     // Dynamic keccak loop: advance the side-car counter so the next iteration reads the next trailing side-car.

@@ -16056,9 +16056,18 @@ export class StatefulFunctionCall {
   private _preflightRecursiveBuilder(builder: TransactionBuilder): void {
     if (!this._requiresRecursivePreflight()) return;
     try {
-      // debug() evaluates with the artifact's BCH VM target and consensus
-      // resource limits. Unlike send()'s best-effort diagnostic probe, this is
-      // an authorization gate for a concrete recursive invocation.
+      // Evaluate the exact transaction first. Template debugging creates per-script scenarios for source mapping;
+      // those scenarios can reach a later falsy stack result after the real transaction has already crossed its
+      // provider-published density ceiling, masking the resource refusal that the network decider will report.
+      const transaction = builder.buildLibauthTransaction(true);
+      const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
+      const vm = createVirtualMachineBch2026ForProvider(builder.provider);
+      for (let inputIndex = 0; inputIndex < transaction.inputs.length; inputIndex += 1) {
+        const state = vm.evaluate({ inputIndex, sourceOutputs, transaction }) as { error?: string };
+        if (state.error) throw new Error(`input ${inputIndex}: ${state.error}`);
+      }
+      // The exact VM accepted; retain template debugging for source-mapped logical failures that aren't exposed as
+      // a raw resource error. Unlike send()'s best-effort diagnostic probe, this remains an authorization gate.
       builder.debug();
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);

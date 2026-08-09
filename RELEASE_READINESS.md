@@ -869,6 +869,9 @@ it must not silently compile to incorrect covenant behavior.
   - Plain `TransactionBuilder.send()` again enforces the fixed production finalized-byte ceiling even when a mock
     provider advertises relaxed execution limits; provider-specific limits remain available to stateful internal
     probes. The finalized-byte, over-limit contract, and covenant-absorption suites pass 32/32.
+  - Recursive build preflight now evaluates the exact transaction under the provider-published BCH limits before
+    running source-mapped template scenarios. This prevents a later falsy-stack scenario result from masking the
+    density refusal the network decider sees. X121/X130 pass 20/20 with their original calibrated thresholds.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

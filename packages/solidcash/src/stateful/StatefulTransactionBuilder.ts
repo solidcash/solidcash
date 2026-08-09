@@ -1606,8 +1606,17 @@ export class StatefulTransactionBuilder {
       ? eventish.sort((a, b) => a.offset - b.offset)
       : [];
     const earlyEmittedEventCount = earlyBlockEventSlots.filter((s) => s.kind === 'event').length;
-    const earlyEmittedOwnerReturn = earlyBlockEventSlots.some((s) => s.kind === 'returnEvent');
+    // A returnEvent slot is RESERVED by blockSize but only MATERIALIZED by .emitReturn(); the trailing-base
+    // calculation above subtracts one on a plain send for exactly that reason. Early emission used to place
+    // it regardless, so a `returns (T)` function that nobody read produced a stray own-category IMMUTABLE
+    // NFT with an empty commitment - and the SEC-10/SEC-11 placement guard refuses that, because a function
+    // with no events allows no offsets and the witnessed returnOutputIdx is -1. The two halves of this
+    // builder have to agree on whether the slot exists.
+    const ownEarlyReturn = this.pendingReturnEventOutputs.some((r) => r.categoryId === this.categoryId);
+    const earlyEmittedOwnerReturn = ownEarlyReturn
+      && earlyBlockEventSlots.some((s) => s.kind === 'returnEvent');
     for (const slot of earlyBlockEventSlots) {
+      if (slot.kind === 'returnEvent' && !ownEarlyReturn) continue;
       if (slot.kind === 'event') {
         // Placeholder; real commitment filled by late merge if already derived. Empty is OK for
         // conditional inactive emits; active emits are overwritten via eventRawCommitments before send.

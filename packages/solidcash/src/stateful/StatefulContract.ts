@@ -9229,7 +9229,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
-        batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        // An all-UPDATE fixed batch has no trailing predecessor rewrites. Do not register an empty pinned
+        // collection: the same collection may also be written by a runtime loop, whose derived trailing outputs
+        // must remain unpinned (e.g. multiTransfer debits msg.sender, then credits each recipient in a loop).
+        if (predOutputs.length > 0) {
+          batchPredCommitments.set(batch.collection, predOutputs.map((o) => binToHex(o.commitment)));
+        }
         const ownerByUtxo = new Map<string, number>();
         for (const slotIndex of batch.slotIndices) {
           if (batchAliasSkips.has(slotIndex)) {

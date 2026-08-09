@@ -2158,12 +2158,16 @@ export default class SymbolTableTraversal extends AstTraversal {
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
-        // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
-        // a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
-        // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
-        // batch path is what mint/transfer use successfully; constructors need the same shape.
+        // Include every standalone fixed sorted write in the batch path, including a single write. The old `> 1`
+        // gate left a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path,
+        // which has no batch witnesses and fails constructor derivation against an empty key. Do not batch a
+        // collection that is also written by a runtime loop: its fixed write (e.g. multiTransfer's sender debit)
+        // and loop-owned trailing region share one collection output count, while the scalar path already composes
+        // those two regions correctly.
+        const loopWrittenCollections = new Set(ordered.filter((info) => info.inLoop).map((info) => info.collection));
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection))
+          .filter(([collection]) => !loopWrittenCollections.has(collection)
+            && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,

@@ -793,8 +793,12 @@ it must not silently compile to incorrect covenant behavior.
   corrected two cold-entry regressions before going green: CommonJS `ethers` now follows the maintained
   CashAddress-aware shim expectation, and branded split facets compose against the root/proxy state block while
   retaining selector-prefixed delegate dispatch.
-- [ ] **Complete SDK e2e gate at the candidate head.** A fresh `yarn test:e2e` audit at `8ca79363f` ran all
-  338 discovered files and found 98 failures across 45 files (2,569 passed, 23 skipped, 3 todo). This contradicts
+- [ ] **Complete SDK e2e gate at the candidate head.** The initial fresh `yarn test:e2e` audit at `8ca79363f` ran
+  all 338 discovered files and found 98 failures across 45 files. After excluding fixed C2 writes from the batch
+  path when the same collection also owns a runtime loop, the current worktree rerun finds 75 failures across
+  39 files (2,592 passed, 23 skipped, 3 todo). `FullMultiTransfer` and `MultiTransferOzShape` are restored in all
+  seven scenarios, while standalone single-write batching remains covered by `ApproveAddressNested` and
+  `ConstructorBentoShape`. This still contradicts
   the older head-level e2e attestation above and is a release blocker, even though the root `yarn test` command
   is green because the solidcash workspace intentionally excludes `test/e2e/**`. The failures are concentrated
   in C2 auto-derivation/composed message-bus layouts and delegate return/event paths, with a smaller group of
@@ -805,9 +809,10 @@ it must not silently compile to incorrect covenant behavior.
   explicitly removed from the supported release surface before this item can pass.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
-    single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an
-    ERC20 constructor balance initialization, without the batch witnesses required for derivation. Restoring the
-    old predicate restores the old byte sizes but also restores that incorrect transaction shape.
+    standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,
+    including an ERC20 constructor balance initialization, without the batch witnesses required for derivation.
+    A fixed write sharing its collection with a runtime loop remains on the scalar path because batching that
+    write merges two independently-counted trailing regions; this is the multi-transfer exception verified above.
   - The measured 1,952-byte and 2,229-byte outputs are therefore the required cost of the corrected batch path,
     not unexplained drift. The ceilings remain close at 1,990 and 2,270 bytes so future growth is still detected.
     `C2BatchMetadata` now asserts the intended single-write batch metadata, while `DeployThenCallFold` matches only

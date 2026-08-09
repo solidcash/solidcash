@@ -841,10 +841,12 @@ it must not silently compile to incorrect covenant behavior.
     parameter, and a successful derivation probe retains the concrete continuation run it already authenticated.
     The large fixed-width array and struct regressions now pass, the compiler metadata guard passes 6/6, and the
     wider 19-file mapping/value-chunk matrix passes 43/43.
-  - The subsequent complete chain-free rerun reports 31 failures across 19 of 338 files, with 2,637 passing,
-    23 skipped, and 3 todo tests. The remaining failures include multi-variable/iteration trailing-region layout,
-    computed dispatch, byte-gate expectation drift, one corpus behavior case, and four non-reproducible MistSwap
-    diagnostics whose tests point at artifacts in a deleted sibling worktree.
+  - The subsequent complete chain-free rerun initially reported 31 failures across 19 of 338 files, with 2,637
+    passing, 23 skipped, and 3 todo tests. After the chunk-layout and X102 corrections, the authoritative rerun at
+    `6b5d2f440` reports 26 failures across 16 files, with 2,642 passing and the same skip/todo counts. The remaining
+    failures include computed dispatch, runtime struct RMW metadata, byte/provider-limit expectation drift, one
+    corpus behavior case, delegate overload routing, and four non-reproducible MistSwap diagnostics whose tests
+    point at artifacts in a deleted sibling worktree.
   - The two X102 iteration-plus-batch failures were SDK output-base accounting, not covenant-depth failures. Batch
     planning counted preserved dynamic chunks but omitted preserved collection entries, so its predecessor-output
     witness pointed into the iteration band. Counting those authenticated entry UTXOs moves the witness from output

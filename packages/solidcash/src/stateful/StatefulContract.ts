@@ -6345,7 +6345,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Also wrap bigint leaves as ethers-v5 BigNumber-compat (MistSwap .sub/.lt on accrueInfo fields).
     for (const k of Object.keys(state)) {
       attachDecodedAccessors(state[k] as unknown as StateValue);
-      state[k] = wrapNumericForEthers(state[k]) as StateValueType;
+      // Structs and arrays keep the ethers wrapper on their numeric LEAVES, which is what the
+      // MistSwap chains actually use - `(await c.accrueInfo()).interestPerSecond.lt(...)`, and the
+      // mapping getters, which come through _deriveReturnValue and are untouched here. A top-level
+      // scalar is left a plain bigint: nothing can method-chain off `state.totalSupply` that the
+      // bigint does not serve equally, and wrapping it broke `expect(v).toBe(5n)` for every existing
+      // caller - 120 assertions across the e2e suite, on values that were correct.
+      if (typeof state[k] !== 'bigint') {
+        state[k] = wrapNumericForEthers(state[k]) as StateValueType;
+      }
     }
     return state;
   }
@@ -12908,6 +12916,111 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ),
         }));
 
+        // TWO PATHS, and the split is the point. A DELEGATECALL's callee runs against the PROXY's
+        // state, so its unlocker needs witnesses only this caller can compute - the proxy master
+        // index, the msg.sender category, and C2 batch proof offsets REBASED onto the proxy's master
+        // input. Building it from the callee's own `_createBuilder` computes none of those and puts
+        // every index in the wrong frame; that is what took the whole delegate/library surface down.
+        // The builder path below is right for SafeERC20's `address.call`, where msg.sender genuinely
+        // is this contract and the frame is the callee's own - it was just applied to delegatecall
+        // too. Bisected to db11255c6; LibraryDelegate.test.ts is the criterion.
+        //
+        // `callMode` is declared narrower than it is at runtime here (delegatecall groups do land in
+        // this array - `hasDelegatecallGroup` reads the same one), so widen for the comparison.
+        if ((group.callMode as string | undefined) === 'delegatecall') {
+          // Create master UTXO unlocker with function args
+          const bArt = group.externalContract.inner.artifact;
+          type BAbiEntry = { name: string; selector?: string; inputs: readonly { name: string; type: string }[] };
+          const bAbi = bArt.abi as readonly BAbiEntry[];
+          // Pick the overload by visible arity, matching how Contract.unlock dispatches. Taking the first
+          // same-name entry would compute the synthetic-arg injection from a different overload than the one the
+          // unlocker then selects.
+          const bSameName = bAbi.filter((f) => f.name === group.functionName);
+          const bFunc = bSameName.find((f) => f.inputs
+            .filter((inp) => !inp.name.startsWith('__internal__')).length === group.functionArgs.length)
+            ?? bSameName[0];
+          if (bFunc) {
+            let visibleIndex = 0;
+            let batchWitnessIndex = 0;
+            let delegateReturnWitnessIndex = 0;
+            const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
+            const encodedArgs: any[] = bFunc.inputs.map((inp) => {
+              if (!inp.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
+              if (inp.name === '__internal__returnOutputIdx') {
+                return BigInt(proxyExternalGroup === undefined
+                  ? returnEmitOutputIndex
+                  : returnIndexForGroup.get(proxyExternalGroup) ?? -1);
+              }
+              if (inp.name === '__internal__msgSenderCategory') {
+                return nestedDelegateProxyGroupByLowLevel.has(groupLocalIdx)
+                  ? hexToBin(masterUtxo.token?.category ?? this.categoryId).reverse()
+                  : new Uint8Array(32);
+              }
+              if (inp.name === '__internal__proxyMasterIndex') {
+                return BigInt(proxyExternalGroup === undefined
+                  ? groupProxyMasterIndices[groupLocalIdx] ?? 0
+                  : nestedMasterIndices[proxyExternalGroup]);
+              }
+              if (inp.name === '__internal__externalCallInputBase') {
+                const firstNested = nestedGroups[0];
+                return BigInt(firstNested === undefined
+                  ? masterInputIndex + 1 + group.dataNftUtxos.length
+                  : nestedMasterIndices[firstNested]);
+              }
+              if (/^__internal__extcallMasterIdx\d*$/.test(inp.name)) {
+                const suffix = inp.name.slice('__internal__extcallMasterIdx'.length);
+                const slot = suffix === '' ? 0 : Number(suffix);
+                const nestedGroup = nestedGroups[slot];
+                return BigInt(nestedGroup === undefined
+                  ? masterInputIndex + 1 + group.dataNftUtxos.length
+                  : nestedMasterIndices[nestedGroup]);
+              }
+              const selectorWitness = inp.name.match(/^__internal__externalCallSelector(\d+)$/);
+              if (selectorWitness) {
+                const slot = Number(selectorWitness[1]);
+                const call = (bFunc as AbiFunction).externalCalls?.[slot];
+                const interfaces = (bArt.externalInterfaces ?? []) as readonly {
+                  name: string;
+                  abi: readonly { name: string; selector?: string }[];
+                }[];
+                const iface = interfaces.find((candidate) => candidate.name === call?.interfaceName);
+                const target = iface?.abi.find((candidate) => candidate.name === call?.functionName);
+                return target?.selector ? hexToBin(target.selector) : new Uint8Array(4);
+              }
+              if (/^__internal__externalReturnOutputIdx\d*$/.test(inp.name)) {
+                const nestedReturning = nestedGroups.filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
+                const nestedGroup = nestedReturning[delegateReturnWitnessIndex++];
+                return BigInt(nestedGroup === undefined ? -1 : returnIndexForGroup.get(nestedGroup) ?? -1);
+              }
+              if (inp.name.startsWith('__internal__c2Batch')) {
+                const value = entryBatchWitnesses[batchWitnessIndex++];
+                if (value !== undefined) {
+                  // C2 batch proofs are offsets from the active contract's master input. A delegated
+                  // implementation executes with the proxy master as its active/master input, while its
+                  // block-layout offsets are relative to the implementation master. Rebase only physical
+                  // proof inputs; negative values are covenant sentinels and remain unchanged.
+                  if (/^__internal__c2BatchProof_\d+$/.test(inp.name)
+                    && typeof value === 'bigint' && value >= 0n) {
+                    return value + BigInt(masterInputIndex);
+                  }
+                  if (/^__internal__c2BatchPredOut_\d+$/.test(inp.name)
+                    && typeof value === 'bigint' && value >= 0n) {
+                    return value + BigInt(masterInputIndex);
+                  }
+                  return value;
+                }
+              }
+              const witness = inp.name.match(/^__internal__valueWitness_(\d+)$/);
+              if (witness) return entryValueWitnesses[Number(witness[1])] ?? new Uint8Array();
+              throw new Error(`Unsupported SDK-filled delegate parameter '${inp.name}' on ${group.functionName}.`);
+            });
+
+            group.masterUtxo = {
+              ...(group.masterUtxo as UnlockableUtxo),
+              unlocker: group.externalContract.inner.unlock[group.functionName]!(...encodedArgs),
+            };
+          }
+        } else {
         // Build the callee via its own _createBuilder so C2 batch / entry witnesses are computed for the
         // callee (ERC20.transferFrom needs balances+allowances entries), not reused from the caller's
         // entryBatchWitnesses. SafeERC20 low-level call: msg.sender inside the callee is THIS contract.
@@ -13003,6 +13116,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             + (cause instanceof Error ? cause.message : String(cause)),
             { cause },
           );
+        }
         }
 
         if (proxyExternalGroup === undefined) {

@@ -10,6 +10,46 @@ SolidCash is a high-level language for Bitcoin Cash smart contracts with Solidit
     yarn test -t 'name'   # run specific test by name
     yarn lint             # lint all packages
 
+### Fast Development Loop (Use By Default)
+
+For iterative development, do not repeatedly launch one-shot builds and test runners. Their TypeScript and
+Vitest startup/import costs dominate focused tests. Keep these processes alive in separate terminals:
+
+    yarn build:watch
+    yarn test:compiler:watch -- test/SomeCompiler.test.ts
+    yarn test:sdk:watch -- test/unit/SomeSdk.test.ts
+    yarn test:e2e:watch -- test/e2e/SomeE2e.test.ts
+
+`build:watch` assumes changes affect direct dependencies to minimize edit latency. This is not the final type
+gate: run one-shot `yarn build` before handoff to validate all transitive project references.
+
+For a quick Git-aware check that requires no file selection, use `yarn test:compiler:changed`,
+`yarn test:sdk:changed`, or `yarn test:e2e:changed`. These select tests related to uncommitted changes and
+exit successfully when no tests are affected; they do not replace the relevant one-shot suite before handoff.
+
+In `solidcash`, `test:unit` means only `test/unit`. `test:fast`, `test:changed`, and `test:watch` also cover
+top-level SDK regressions but exclude the conformance and journal/message-bus directories. Do not broaden these
+development-loop commands; `yarn test` remains the comprehensive non-root-e2e regression gate.
+
+Pass `-t 'test name'` after the optional file path for a narrower loop. Vitest automatically reruns affected
+tests on save; press `r` to rerun the current selection. Prefer the narrowest relevant file/name during
+implementation, then run the corresponding one-shot suite and `yarn build` before handoff.
+
+Always use `test:e2e:watch` for focused e2e watch runs. Do not run `vitest test/e2e <file>`: Vitest treats
+positional filters as alternatives, so that form runs every e2e file instead of only `<file>`. The dedicated
+e2e watch config restricts discovery while allowing an additional file filter.
+
+The root build uses TypeScript project references. Preserve `tsconfig.packages.json`, package `references`, and
+incremental build metadata; do not replace the build with per-package `tsc -p` loops. Generated testing-suite
+artifacts only need regeneration when contract sources or emitted compiler JavaScript change; `.tsbuildinfo`
+and declaration/source-map timestamp changes must not invalidate them.
+
+Yarn workspaces already link local packages during install. Do not restore `lerna bootstrap` to `postinstall`;
+it performs a redundant second dependency resolution before the build.
+
+CI installs with `--ignore-scripts` because its next step runs the authoritative explicit build. Preserve that
+ordering; allowing workspace lifecycle builds during CI installation compiles the monorepo twice.
+
 ## File Structure
 
     packages/solidc/src/grammar/SolidCash.g4   -- ANTLR4 grammar (source of truth)

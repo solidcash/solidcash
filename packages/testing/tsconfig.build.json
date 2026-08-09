@@ -7,4 +7,9 @@
   "include": [
     "src/**/*",
   ],
+  "references": [
+    { "path": "../utils/tsconfig.build.json" },
+    { "path": "../solidc/tsconfig.build.json" },
+    { "path": "../solidcash/tsconfig.build.json" }
+  ]
 }

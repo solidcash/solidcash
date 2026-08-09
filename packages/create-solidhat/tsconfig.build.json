@@ -1,5 +1,6 @@
 {
   "extends": "../../tsconfig.build.json",
   "compilerOptions": { "outDir": "./dist", "types": ["node"] },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [{ "path": "../solidhat/tsconfig.build.json" }]
 }

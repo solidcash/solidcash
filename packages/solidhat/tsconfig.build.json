@@ -6,5 +6,9 @@
     "module": "Node16",
     "moduleResolution": "Node16"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../testing/tsconfig.build.json" },
+    { "path": "../solidcash/tsconfig.build.json" }
+  ]
 }

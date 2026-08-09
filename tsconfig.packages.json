@@ -1,0 +1,11 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/utils/tsconfig.build.json" },
+    { "path": "packages/solidc/tsconfig.build.json" },
+    { "path": "packages/solidcash/tsconfig.build.json" },
+    { "path": "packages/testing/tsconfig.build.json" },
+    { "path": "packages/solidhat/tsconfig.build.json" },
+    { "path": "packages/create-solidhat/tsconfig.build.json" }
+  ]
+}

@@ -662,9 +662,15 @@ it must not silently compile to incorrect covenant behavior.
     `delegateArtifact`, the SDK selects it with `asDelegate()`/`withDelegatecall`, hidden proxy/delegate input
     indices are derived by the transaction builder, and the expanded 81-test release gate exercises the merged
     compiler/SDK paths.
-- [x] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
+- [~] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
   - `UpgradesDeployProxy.test.ts`, `DelegateInferred.test.ts`, and `DefaultProxyIntegrity.test.ts` are required by
-    `yarn test:security-conformance`; the expanded gate passes 81/81 executed tests with one documented skip.
+    `yarn test:security-conformance`.
+  - The 2026-08-09 release audit removed synthetic mock-success paths and found that the earlier green result was
+    not valid release evidence. Restoring real composed implementation outpoints and reserving their block funders
+    reduced the gate from 26 failures to 7: ordinary delegate mutation, identity pinning, default-proxy integrity,
+    lifecycle/state preservation, and all non-proxy security scenarios now pass. Delegate event placement (three
+    inferred-delegate rows and three built-in proxy rows) still fails the implementation covenant at input 2;
+    delegated external-return materialization separately fails with an empty return blob (`OP_SPLIT 1`).
 - [-] Delegate-mode satoshi and token-container movement, unless explicitly brought into scope.
 - [-] Fallback-only proxy operation, unless the selector-less forwarding protocol is fixed.
 - [-] One identical address for standalone and delegate deployments; the current separate-artifact design is an
@@ -776,6 +782,11 @@ it must not silently compile to incorrect covenant behavior.
     the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
     true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
     to 2,127 and takes 16 s.
+- [~] **Corrective gate run, 2026-08-09 (`codex/release-readiness-final`).** `test:application-conformance`
+  passes 94/94, solidcash `test:fast` passes 562 with 7 skipped and 5 todo, and the focused native state/accessor
+  regressions pass. `test:security-conformance` passes 74 with one documented skip and fails the seven delegate
+  event/return rows described above. The prior 81/81 result depended on mock-only success overlays and must not be
+  used to approve the release.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an
@@ -950,7 +961,7 @@ rg -n --glob '*.{test,spec}.ts' \
 - [ ] No known silent miscompiles in the supported language subset.
 - [ ] All unsupported security-sensitive shapes fail at compile or transaction-construction time.
 - [x] State-bus/Layer-3 scope is integrated and frozen, or clearly excluded.
-- [x] Proxy/delegate scope is explicit and tested by the required integrity gate.
+- [ ] Proxy/delegate scope is explicit and tested by the required integrity gate.
 - [x] Compatibility manifest is complete and published.
 - [ ] Corpus baseline is reproducible, crash-free, and non-regressing.
 - [ ] Clean-checkout CI and BCHN regtest gates pass.

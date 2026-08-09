@@ -27,10 +27,6 @@ const requireFailure = (file: string, line: number, statement: string): string =
   `${file}:${line} Require statement failed at input 0 in contract ${file} at line ${line}.\n`
   + `Failing statement: ${statement}`;
 
-const transactionFailure = (file: string, line: number, statement: string): string =>
-  `${file}:${line} Error in transaction at input 0 in contract ${file} at line ${line}.\n`
-  + `Reason: Program failed an OP_VERIFY operation.\nFailing statement: ${statement}`;
-
 function loadCash(name: string): string {
   return readFileSync(resolve(VALID_DIR, name), 'utf-8');
 }

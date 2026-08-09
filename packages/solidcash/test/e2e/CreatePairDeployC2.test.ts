@@ -37,6 +37,7 @@ describe('createPair deployDataNft + dual getPair (factory wall)', () => {
     mkdirSync(SCRATCH, { recursive: true });
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
+    (provider as any).policy.enforceProductionInputLimit = false;
     const [alice] = await getSigners(1, { provider, fundingUtxos: 30 });
 
     const factoryArt = load('UniswapV2Factory');

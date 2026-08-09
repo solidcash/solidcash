@@ -32,6 +32,12 @@ export interface ConsensusLimits {
 export interface NetworkPolicy {
   /** Apply node relay dust thresholds when constructing and validating outputs. */
   enforceDust: boolean;
+  /**
+   * Enforce BCH's production 10,000-byte input-script ceiling in the SDK before submission. Defaults to true.
+   * Private test networks that deliberately publish a larger consensus limit may explicitly disable this gate;
+   * doing so produces transactions that cannot be relayed on BCH mainnet.
+   */
+  enforceProductionInputLimit?: boolean;
 }
 
 export default interface NetworkProvider {

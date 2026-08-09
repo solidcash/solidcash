@@ -13,8 +13,9 @@ describe('MasterChef deposit', () => {
   it('approve then deposit', async () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
+    (provider as any).policy.enforceProductionInputLimit = false;
     const [alice, bob, dev] = await getSigners(3, { provider, fundingUtxos: 20 });
-    const artifact = (name: string) => JSON.parse(readFileSync(
+    const artifact = (name: string): any => JSON.parse(readFileSync(
       new URL(`../fixture/mistswap-artifacts/${name}.json`, import.meta.url), 'utf8',
     ));
     const erc20Art = artifact('ERC20Mock');

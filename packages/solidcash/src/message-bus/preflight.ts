@@ -817,10 +817,10 @@ export function assertFinalizedBytesWithCovenant(
   const covenant = covenantObjectionOf(builder, transaction);
   // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
   if (covenant === undefined) assertFinalizedTransactionBytes(transaction, {
-      inputSubjects: subjects,
-      maximumUnlockingBytes: limits.maximumUnlockingBytes,
-      maximumTransactionBytes: limits.maximumTransactionBytes,
-    });
+    inputSubjects: subjects,
+    maximumUnlockingBytes: limits.maximumUnlockingBytes,
+    maximumTransactionBytes: limits.maximumTransactionBytes,
+  });
   throw new Error(
     `messageBus: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `

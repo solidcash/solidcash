@@ -7842,7 +7842,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           // State data NFTs: output indices [1, 1 + stateCount)
           const stateOutputRange = { min: 1, max: 1 + stateCount };
-          const stateCommits = extractCommitmentsFromTrace(fullTrace2, stateCount, stateOutputRange) ?? [];
+          // Large contracts can invoke a helper whose instruction array is longer than the outer redeem script,
+          // so redeem-script anchoring is ambiguous. The output range and tightly-paired OTC/EQUALVERIFY pattern
+          // make a full sparse-trace scan safe and ensure state derivation sees the outer commitment checks.
+          const stateCommits = extractCommitmentsFromTrace(fullTrace2, stateCount, stateOutputRange, true) ?? [];
           commitmentProgress += stateCommits.length;
           let latestEntryCommits: string[] = [];
           let latestEventCommits: string[] = [];

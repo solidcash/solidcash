@@ -787,6 +787,12 @@ it must not silently compile to incorrect covenant behavior.
   regressions pass. After restoring delegate event-slot placement, overload identity, and final nested-return
   witnesses, `test:security-conformance` passes 81/81 with one documented skip through real covenant execution.
   This supersedes the prior 81/81 result that depended on mock-only success overlays.
+- [x] **Complete root regression gate, 2026-08-09 (`107b7677d`).** `yarn test` passes from the release worktree:
+  utils 301/301, compiler 3,205/3,205, solidcash 1,199 passed with 17 documented skips and 5 todos,
+  `@solidcash/testing` 27/27, SolidHat 24/24, and the maintained testing suite 25/25. The run caught and
+  corrected two cold-entry regressions before going green: CommonJS `ethers` now follows the maintained
+  CashAddress-aware shim expectation, and branded split facets compose against the root/proxy state block while
+  retaining selector-prefixed delegate dispatch.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an

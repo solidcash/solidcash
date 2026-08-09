@@ -656,6 +656,7 @@ export class StatefulTransactionBuilder {
         return group ? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos] : [];
       };
       const nestedInputs: UnlockableUtxo[] = [];
+      const lowLevelOutpoints = new Set(lowLevelCallInputs.map((input) => `${input.txid}:${input.vout}`));
       for (const group of this.externalCallUtxoGroups) {
         if (group.sharedGroupIndex !== undefined) continue;
         nestedInputs.push(...groupInputs(group));
@@ -670,7 +671,9 @@ export class StatefulTransactionBuilder {
         ...this.lowLevelCallRawInputs,
         ...this.readOnlyDataNftUtxos, ...this.blockhashCoSpendUtxos,
         ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars, ...this.ecrecoverComputeCoSpendUtxos,
-        ...externalOutStateInputs, ...entryInputs, ...this.iterationEntryInputs,
+        ...externalOutStateInputs,
+        ...entryInputs.filter((input) => !lowLevelOutpoints.has(`${input.txid}:${input.vout}`)),
+        ...this.iterationEntryInputs,
         ...this.insertLoopPredecessorInputs, ...nestedInputs,
         ...this.dynamicChunkInputs, ...tokenContainerInputs, ...satoshiContainerInputs,
         ...this.funderUtxos,
@@ -1747,6 +1750,16 @@ export class StatefulTransactionBuilder {
         const slot = group.blockLayout?.slots[index + 1];
         if (slot?.kind === 'event') {
           emitBlockEvent(slot);
+        } else if (slot?.kind === 'entry' && slot.slotIndex !== undefined) {
+          const commitment = this.entryRawCommitments.get(slot.slotIndex)
+            ?? nftUtxo.token?.nft?.commitment ?? '';
+          builder.addOutput({
+            to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis,
+            token: nftUtxo.token && {
+              ...nftUtxo.token,
+              nft: nftUtxo.token.nft && { ...nftUtxo.token.nft, commitment },
+            },
+          });
         } else {
           builder.addOutput({
             to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
@@ -2113,8 +2126,16 @@ export class StatefulTransactionBuilder {
     // shift a later real output down and desync that fixed read, so emit a plain placeholder output for any
     // skipped slot below the fill threshold (see entryPlaceholderFillThreshold).
     const sortedEntries = [...this.entryNfts].sort((a, b) => a.slotIndex - b.slotIndex);
+    const delegatedEntryOutpoints = new Set(this.lowLevelCallUtxoGroups
+      .filter((group) => group.callMode === 'delegatecall')
+      .flatMap((group) => (group.blockLayout?.slots ?? []).flatMap((slot, index) => {
+        if (slot.kind !== 'entry') return [];
+        const input = group.blockInputs?.[index];
+        return input ? [`${input.txid}:${input.vout}`] : [];
+      })));
     const fillThreshold = this.entryPlaceholderFillThreshold();
     for (const entry of sortedEntries) {
+      if (entry.utxo && delegatedEntryOutpoints.has(`${entry.utxo.txid}:${entry.utxo.vout}`)) continue;
       if (this.entryDeletes.has(entry.slotIndex)) {
         if (entry.slotIndex < fillThreshold) {
           // Position-holding placeholder: neutral OP_TRUE, outside the collection address namespace. The covenant

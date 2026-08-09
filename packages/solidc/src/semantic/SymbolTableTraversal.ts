@@ -2166,7 +2166,8 @@ export default class SymbolTableTraversal extends AstTraversal {
         // those two regions correctly.
         const loopWrittenCollections = new Set(ordered.filter((info) => info.inLoop).map((info) => info.collection));
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => !loopWrittenCollections.has(collection)
+          .filter(([collection]) => !node.modifiers.includes(FunctionModifier.DELEGATE)
+            && !loopWrittenCollections.has(collection)
             && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 

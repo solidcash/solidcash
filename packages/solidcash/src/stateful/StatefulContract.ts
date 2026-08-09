@@ -12447,12 +12447,15 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // have no data/entry NFTs of their own. Their state block is the root/proxy block already planned above
           // (including entryBatchWitnesses), so asking the facet to getFullState() can only fail. Encode the facet
           // master directly from the parent-derived witnesses and keep its physical band master-only.
+          const facetFn = group.abiFunction
+            ?? (callee.inner.artifact.abi as readonly AbiFunction[])
+              .find((candidate) => candidate.name === group.functionName);
+          const rootOwnedEntryDelegate = group.callMode === 'delegatecall'
+            && (facetFn?.entryAccesses?.length ?? 0) > 0
+            && (facetFn?.requiredNftIndices?.length ?? 0) === 0;
           if (group.callMode === 'delegatecall'
-            && callee.inner.artifact.brandedLibrary
-            && callee.inner.artifact.delegateOnly) {
-            const facetFn = group.abiFunction
-              ?? (callee.inner.artifact.abi as readonly AbiFunction[])
-                .find((candidate) => candidate.name === group.functionName);
+            && ((callee.inner.artifact.brandedLibrary && callee.inner.artifact.delegateOnly)
+              || rootOwnedEntryDelegate)) {
             if (!facetFn) throw new Error(`Branded facet function '${group.functionName}' is missing from its ABI`);
             const c2Inputs = facetFn.inputs.filter((input) => input.name.startsWith('__internal__c2Batch'));
             const c2ByName = new Map(c2Inputs.map((input, index) => [input.name, entryBatchWitnesses[index]]));
@@ -12476,9 +12479,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             } as UnlockableUtxo;
             group.blockLayout = facetFn.blockLayout;
             group.requiredDataNftIndices = [];
-            group.dataNftUtxos = [];
-            group.blockInputs = [group.masterUtxo as UnlockableUtxo];
-            currentBase += 1;
+            const blockInputs: UnlockableUtxo[] = [group.masterUtxo as UnlockableUtxo];
+            for (const slot of facetFn.blockLayout?.slots.slice(1) ?? []) {
+              if (slot.kind !== 'entry') continue;
+              const access = facetFn.entryAccesses?.[slot.slotIndex ?? 0];
+              const entry = entryNfts.find((candidate) => candidate.slotIndex === (slot.slotIndex ?? 0)
+                && (!access || candidate.collection === access.collection));
+              if (!entry?.utxo) {
+                throw new Error(`Delegate entry slot ${slot.slotIndex ?? 0} has no routed proxy entry UTXO`);
+              }
+              blockInputs.push(entry.utxo as UnlockableUtxo);
+            }
+            group.dataNftUtxos = blockInputs.slice(1);
+            group.blockInputs = blockInputs;
+            currentBase += blockInputs.length;
             continue;
           }
           const calleeBuilder = await callee._createBuilder(
@@ -12552,7 +12566,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
                 blockInputs.push(scalarData[dataIdx++]);
               } else if (slot.kind === 'entry') {
-                const entry = (priv.entryNfts ?? []).find((e) => e.slotIndex === (slot.slotIndex ?? 0));
+                // A delegate executes against the proxy/root collection, not an identically-named collection
+                // owned by its implementation artifact. Reuse the routed entry already resolved above so the
+                // implementation-relative block slot and the proxy entry covenant refer to the same UTXO.
+                const routedAccess = bFunc?.entryAccesses?.[slot.slotIndex ?? 0];
+                const entry = group.callMode === 'delegatecall'
+                  ? entryNfts.find((candidate) => candidate.slotIndex === (slot.slotIndex ?? 0)
+                    && (!routedAccess || candidate.collection === routedAccess.collection))
+                  : (priv.entryNfts ?? []).find((candidate) => candidate.slotIndex === (slot.slotIndex ?? 0));
                 if (entry?.utxo) blockInputs.push(entry.utxo as UnlockableUtxo);
                 else blockInputs.push(await takeFunder());
               } else if (slot.kind === 'event' || slot.kind === 'returnEvent'

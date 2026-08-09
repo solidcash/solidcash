@@ -28,6 +28,17 @@ describe('C2 fixed-write batch metadata', () => {
       .toEqual([{ collection: 'm', slotIndices: [0] }]);
   });
 
+  it('keeps a delegate write scalar because its collection topology belongs to the proxy', () => {
+    const artifact = compileString(`library L {
+      mapping(int => int) m;
+      function f(int k, int v) public { m[k] = v; }
+    }`, { forceStateful: true });
+    const fn = artifact.abi.find((entry) => entry.name === 'f');
+    expect(fn?.modifiers).toContain('delegate');
+    expect(fn?.entryAccesses).toHaveLength(1);
+    expect(fn?.sortedBatchInfo).toBeUndefined();
+  });
+
   it('marks only a computed write followed by an actual delete as an alias candidate', () => {
     const artifact = compileString(`contract C {
       address[] keys;

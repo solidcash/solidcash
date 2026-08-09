@@ -825,6 +825,11 @@ it must not silently compile to incorrect covenant behavior.
     raw-delegatecall placeholder `(true, bytes(0))`. The SDK materializes that internal channel even for a plain
     send while keeping public `.emitReturn()` semantics distinct. `X1DelegateSlotAdjacency` passes 8/8, and the
     formerly failing returning divided-union and large split-contract scenarios pass with their full files.
+  - A delegate's fixed C2 write now keeps the scalar entry protocol because its collection topology is owned by
+    the proxy; the single-write batch expansion remains enabled for ordinary calls and constructors. The SDK
+    places the routed proxy entry inside the implementation-relative delegate block, derives its commitment at
+    that slot, and avoids duplicating it in the root entry tail. The two delegate C2 files pass 8/8, and the full
+    delegate plus constructor guard group passes 32/32.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

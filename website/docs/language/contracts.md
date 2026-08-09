@@ -203,7 +203,7 @@ contract NoTokensAllowed() {
 ```
 
 ### console.log()
-The `console.log` statement can be used to log values during debug evaluation of a transaction. Any variables or primitive values (such as ints, strings, bytes, etc) can be logged. You can read more about debugging in the [debugging guide](/docs/guides/debugging).
+The `console.log` statement can be used to log values during debug evaluation of a transaction. Any variables or primitive values (such as ints, strings, bytes, etc) can be logged. Imports and typed helpers from Hardhat's `console.sol` are also supported; see [console logging and Hardhat compatibility](/docs/guides/debugging#console-logging).
 
 :::note
 Logging is only available in debug evaluation of a transaction, but has no impact on the compiled bytecode or regular (non-debug) execution.

@@ -1636,6 +1636,20 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
+    // Solidity's counterfactual CREATE2 address idiom is recognizable by its 0xff domain byte:
+    // keccak256(abi.encodePacked(hex"ff", deployer, salt, initCodeHash)). That formula produces an EVM
+    // address, not the P2SH32 locking bytecode used by a native BCH deployment. In particular, stateful
+    // SolidCash contracts also self-pin their CashToken category, which is not available to this computation.
+    // Diagnose the hash itself rather than a surrounding address/contract cast so all common cast spellings
+    // (address(uint160(uint256(...))), IFoo(uint256(...)), etc.) are covered.
+    if (this.solidityImportCompat && this.isEvmCreate2AddressHash(node)) {
+      const loc = this.diagLine(node.location);
+      console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
+        + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
+        + 'CashToken category ID. Use the deploying factory\'s registry (for example getPair(token0, token1)) '
+        + 'instead of keccak256(abi.encodePacked(hex"ff", ...)).');
+    }
+
     if (node.fieldNames && node.namedOverloadCandidates) {
       const names = node.fieldNames;
       const argsFor = (f: FunctionDefinitionNode): ExpressionNode[] => {
@@ -1804,6 +1818,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  private isEvmCreate2AddressHash(node: FunctionCallNode): boolean {
+    if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
+    const encoded = node.parameters[0];
+    if (!(encoded instanceof AbiEncodePackedNode) || encoded.parameters.length !== 4) return false;
+    const domain = encoded.parameters[0];
+    return domain instanceof HexLiteralNode
+      && domain.value.length === 1
+      && domain.value[0] === 0xff;
   }
 
   visitReturn(node: ReturnNode): Node {

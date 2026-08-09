@@ -5,6 +5,49 @@ import { compileString } from './direct-compile.js';
 
 // Type casts: bytesN<->bytesM, uint160/bytes20(address), uint256<->int, address casts.
 
+describe('EVM CREATE2 address compatibility warning', () => {
+  const opts = { solidityImportCompat: true };
+
+  it('warns for the canonical pair-address computation through contract and integer casts', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      compileString(`pragma solidity 0.6.12;
+        interface IPair {}
+        contract C {
+          function pairFor(address factory, address token0, address token1, bytes32 pairCodeHash)
+            public pure returns (IPair pair) {
+            pair = IPair(uint256(keccak256(abi.encodePacked(
+              hex"ff", factory, keccak256(abi.encodePacked(token0, token1)), pairCodeHash
+            ))));
+          }
+        }`, opts);
+      expect(log.mock.calls.flat().join(' ')).toMatch(
+        /EVM CREATE2 address computation.*cannot derive a native BCH contract address/,
+      );
+      expect(log.mock.calls.flat().join(' ')).toMatch(/CashToken category ID.*factory's registry/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+
+  it('does not warn for unrelated packed hashes', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      compileString(`pragma solidity 0.6.12; contract C {
+        function hashFour(bytes1 domain, address a, bytes32 b, bytes32 c) public pure returns (bytes32) {
+          return keccak256(abi.encodePacked(domain, a, b, c));
+        }
+        function hashWrongDomain(address a, bytes32 b, bytes32 c) public pure returns (bytes32) {
+          return keccak256(abi.encodePacked(hex"fe", a, b, c));
+        }
+      }`, opts);
+      expect(log.mock.calls.flat().join(' ')).not.toMatch(/EVM CREATE2 address computation/);
+    } finally {
+      log.mockRestore();
+    }
+  });
+});
+
 describe('uint256 <-> int compatibility', () => {
   it.each([
     ['state assign', 'contract C() { uint256 x; function f() { this.x = 5; } }'],

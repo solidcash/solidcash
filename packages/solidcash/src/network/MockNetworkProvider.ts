@@ -548,9 +548,6 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
-    // Hardhat starts near height 0 so MistSwap `advanceBlockTo(89)` works. Keep a
-    // small positive tip (1) rather than 0 for locktime edge cases.
-    this.blockHeight = 1;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 

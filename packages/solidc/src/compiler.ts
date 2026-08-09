@@ -28,12 +28,13 @@ import {
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
-  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
+  MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, StateVariableVisibility,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -1243,6 +1244,8 @@ function synthesizeMessageBusRoute(
       && ['abi', 'bytes', 'string'].includes(node.object.name);
   let contractConsumesLowLevelReturn = false;
   for (const candidate of contract.functions) {
+    // walkInvocationAst is synchronous; this accumulator does not escape the iteration.
+    // eslint-disable-next-line @typescript-eslint/no-loop-func
     walkInvocationAst(candidate.body, (node) => {
       if (node instanceof LowLevelCallNode
         || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)
@@ -5295,14 +5298,14 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
     artifact.contractName = name;
     if (byteSize(artifact) > maxShardBytes) {
-      const measuredBytes = byteSize(artifact);
+      const facetBytes = byteSize(artifact);
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(
         'SPLIT_CLOSURE_CAPACITY',
-        `Cannot split '${logicalName}': facet '${name}' is ${measuredBytes} bytes `
+        `Cannot split '${logicalName}': facet '${name}' is ${facetBytes} bytes `
           + `(limit ${maxShardBytes}); closure: ${handlers.join(', ')}.`,
-        { contractName: logicalName, facet: name, handlers, callChain, measured: measuredBytes, limit: maxShardBytes },
+        { contractName: logicalName, facet: name, handlers, callChain, measured: facetBytes, limit: maxShardBytes },
       );
     }
     facets[name] = artifact;

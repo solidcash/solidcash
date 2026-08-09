@@ -33,7 +33,7 @@ describe('constructor keccak + OwnershipTransferred event', () => {
       });
     }
     const artifact = compileString(SRC, { forceStateful: true });
-    console.log('construct layout', artifact.abi.find(f => f.name==='__construct')?.blockLayout);
+    console.log('construct layout', artifact.abi.find(f => f.name === '__construct')?.blockLayout);
     const factory = new ContractFactory(artifact, signer);
     const c = await factory.deploy(signer.getAddress());
     await c.deployed();

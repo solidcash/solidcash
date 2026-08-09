@@ -13583,38 +13583,38 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (!ilcIsLoopElem) {
         // continue with the ordinary fixed-slot call path below
       } else
-      if (loopSlot?.loopArrayVar
+        if (loopSlot?.loopArrayVar
           && this.currentFunction?.parameters.some((p) => p.name === loopSlot.loopArrayVar)) {
         // A target returned by another contract inside a lowered tail-recursive loop remains a live local at
         // this call site, while its synthesized loopTargets witness supplies the epilogue's stable cardinality
         // and co-spend order. Bind the current witness element to that runtime local before using the ordinary
         // typed loop covenant; this preserves the producing call's exact result and prevents target substitution.
-        if (loopSlot.addressParam && loopSlot.loopIndexExpression
+          if (loopSlot.addressParam && loopSlot.loopIndexExpression
           && loopSlot.loopArrayVar.startsWith('__internal__loopTargets')) {
-          const witnessArray = cloneNode(loopSlot.loopWitnessArrayIds?.[0]
+            const witnessArray = cloneNode(loopSlot.loopWitnessArrayIds?.[0]
             ?? new IdentifierNode(loopSlot.loopArrayVar)) as IdentifierNode;
-          witnessArray.type = new ArrayType(new AddressType(false));
-          const witnessAccess = new ArrayAccessNode(
-            witnessArray, cloneNode(loopSlot.loopIndexExpression) as ExpressionNode,
-          );
-          witnessAccess.location = node.location;
-          witnessAccess.type = new AddressType(false);
-          const equality = new BinaryOpNode(
-            cloneNode(node.addressExpression) as ExpressionNode, BinaryOperator.EQ, witnessAccess,
-          );
-          equality.location = node.location;
-          equality.type = PrimitiveType.BOOL;
-          this.visit(equality);
-          this.emit(Op.OP_VERIFY, locationData);
-          this.popFromStack();
+            witnessArray.type = new ArrayType(new AddressType(false));
+            const witnessAccess = new ArrayAccessNode(
+              witnessArray, cloneNode(loopSlot.loopIndexExpression) as ExpressionNode,
+            );
+            witnessAccess.location = node.location;
+            witnessAccess.type = new AddressType(false);
+            const equality = new BinaryOpNode(
+              cloneNode(node.addressExpression) as ExpressionNode, BinaryOperator.EQ, witnessAccess,
+            );
+            equality.location = node.location;
+            equality.type = PrimitiveType.BOOL;
+            this.visit(equality);
+            this.emit(Op.OP_VERIFY, locationData);
+            this.popFromStack();
+          }
+          // opaqueReturn -> `targets[i].call(data[i])` (Multicall2, reads the return-event); a TYPED call
+          // `IFoo(targets[i]).m(..)` over a param array takes the same per-iteration identity co-spend but verifies
+          // the callee's selector and has no opaque return-event (emitInlineLoopExternalCall branches on opaqueReturn).
+          loopSlot.inlineLoopDispatch = true;
+          this.emitInlineLoopExternalCall(node, loopSlot, locationData);
+          return node;
         }
-        // opaqueReturn -> `targets[i].call(data[i])` (Multicall2, reads the return-event); a TYPED call
-        // `IFoo(targets[i]).m(..)` over a param array takes the same per-iteration identity co-spend but verifies
-        // the callee's selector and has no opaque return-event (emitInlineLoopExternalCall branches on opaqueReturn).
-        loopSlot.inlineLoopDispatch = true;
-        this.emitInlineLoopExternalCall(node, loopSlot, locationData);
-        return node;
-      }
     }
 
     // Handle {value: X} call option - emit a transfer to the callee's address

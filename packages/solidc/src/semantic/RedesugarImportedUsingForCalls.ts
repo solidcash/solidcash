@@ -41,7 +41,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  */
 export default class RedesugarImportedUsingForCalls extends AstTraversal {
   private structToLib = new Map<string, string[]>(); // struct type string -> library names
-  private interfaceToLib = new Map<string, string[]>(); // interface/contract name -> libraries (`using SafeERC20 for IERC20`)
+  // interface/contract name -> libraries, e.g. `using SafeERC20 for IERC20`
+  private interfaceToLib = new Map<string, string[]>();
   private wildcardLibs: string[] = [];             // libraries bound via `using L for *`
   private freeFnNames = new Set<string>();
   private interfaceNames = new Set<string>();      // interface + imported-contract names (interface-cast receivers)

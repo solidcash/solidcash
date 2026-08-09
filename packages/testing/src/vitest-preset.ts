@@ -101,7 +101,10 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
     'g',
   );
   // Relative siblings: const { KashiPair } = require("./kashipair")
-  const relativeDestructureRe = /(?:const|let|var)\s*(\{(?:[^{}]|\{[^{}]*\})*\})\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?/g;
+  const relativeDestructureRe = new RegExp(
+    String.raw`(?:const|let|var)\s*(\{(?:[^{}]|\{[^{}]*\})*\})\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?`,
+    'g',
+  );
   const relativeSimpleRe = /(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*require\(\s*(['"])(\.\.?\/[^'"]+)\2\s*\)\s*;?/g;
 
   return {
@@ -120,7 +123,7 @@ export function cjsHardhatRequirePlugin(aliases: Record<string, string>): Plugin
       let next = code;
       const ethersUtilsImportRe = /import\s*(\{[^}]*\})\s*from\s*(['"])ethers\/lib\/utils(?:\.js)?\2\s*;?/g;
       const ethersUtilsDefaultRe = /import\s+(\w+)\s+from\s*(['"])ethers\/lib\/utils(?:\.js)?\2\s*;?/g;
-      const utilsTarget = aliases['ethers/lib/utils'] ?? aliases['ethers'] ?? '@solidcash/testing/ethers';
+      const utilsTarget = aliases['ethers/lib/utils'] ?? aliases.ethers ?? '@solidcash/testing/ethers';
       if (ethersUtilsImportRe.test(code) || ethersUtilsDefaultRe.test(code)) {
         ethersUtilsImportRe.lastIndex = 0;
         ethersUtilsDefaultRe.lastIndex = 0;

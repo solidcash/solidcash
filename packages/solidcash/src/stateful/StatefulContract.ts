@@ -9196,6 +9196,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // Read-only dynamic chunks are preserved first in the trailing output region. Batch planning happens before
       // those witnesses are materialized below, so count them from the same deterministic addresses here.
       let preservedTrailingCount = 0;
+      // Collection-iteration entries are recreated before batch predecessor outputs too. Batch planning runs
+      // before iterationEntryInputs is materialized below, so count the same authenticated collection UTXOs here.
+      // Omitting this span points __internal__c2BatchPredOut_N into the iteration band (X102): the covenant then
+      // compares an observed-entry output against the balances predecessor input and fails closed.
+      for (const iter of entryAbiFunction?.collectionIterations ?? []) {
+        const collection = stateLayout.collections.find((candidate) => candidate.name === iter.collection);
+        if (!collection) throw new Error(`Unknown collection: ${iter.collection}`);
+        const address = getEntryNftAddress(this.inner, this.categoryId, collection.signature);
+        preservedTrailingCount += (await this.inner.provider.getUtxos(address)).filter((u) =>
+          u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
+          && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
+      }
       const dynamicWriteSet = new Set(entryAbiFunction?.dynamicWrites ?? []);
       for (const varName of new Set(entryAbiFunction?.dynamicReads ?? [])) {
         if (dynamicWriteSet.has(varName)) continue;

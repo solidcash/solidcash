@@ -845,6 +845,11 @@ it must not silently compile to incorrect covenant behavior.
     23 skipped, and 3 todo tests. The remaining failures include multi-variable/iteration trailing-region layout,
     computed dispatch, byte-gate expectation drift, one corpus behavior case, and four non-reproducible MistSwap
     diagnostics whose tests point at artifacts in a deleted sibling worktree.
+  - The two X102 iteration-plus-batch failures were SDK output-base accounting, not covenant-depth failures. Batch
+    planning counted preserved dynamic chunks but omitted preserved collection entries, so its predecessor-output
+    witness pointed into the iteration band. Counting those authenticated entry UTXOs moves the witness from output
+    3 to the actual predecessor at output 5; the X102 controls pass 2/2 and the seven-file batch/iteration/chunk
+    matrix passes 34/34.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

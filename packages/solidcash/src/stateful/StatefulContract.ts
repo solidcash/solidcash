@@ -7390,13 +7390,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           if (group.plannedEntryInserts?.length
             && !group.plannedEntryInsertHandles) {
-            group.plannedEntryInsertHandles = group.plannedEntryInserts.map(({ blockSlot }) => {
+            group.plannedEntryInsertHandles = group.plannedEntryInserts.map(({ blockSlot, commitment }) => {
               const input = group.blockInputs?.[blockSlot];
               if (!input) throw new Error('Planned nested entry insert has no block input.');
               return stb.addExternalCallEntryInsert(
                 group.categoryId,
                 input.unlocker.generateLockingBytecode(),
-                '00',
+                commitment ?? '00',
               );
             });
           }
@@ -10537,6 +10537,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         let bEntryLoopCommitments: string[] | undefined;
         let bEntryLoopStart: number | undefined;
         let bEntryLoopCollection: string | undefined;
+        const bPlannedEntryInserts: Array<{
+          slotIndex: number; blockSlot: number; outputBlockSlot: number; commitment: string;
+        }> = [];
+        const bRelativeOutputInternalArgs = new Set<string>();
         const bHasLoop = (bAbiFunc?.sortedUpsertLoopInfo?.length ?? 0) > 0;
         // B's keccak256 side-cars (transitive): co-spent inside B's block so B's covenant reads them.
         const bKeccak = await this._resolveExternalKeccakSideCars(
@@ -10703,7 +10707,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     // the key to OUR category-pinned locking bytecode - the covenant keys the entry by keyToSlot(caller
                     // LBC) too (emitSortedKeyHash visits msg.sender -> emitMsgSenderMintingVerification -> caller LBC).
                     const effKeyValue = bEntryAccess.keySources?.[0]?.kind === 'msgSender'
-                      ? hexToBin(this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode)
+                      ? addressToLockScript(this.address)
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
@@ -10716,9 +10720,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       );
                       const encodedKeys = bEntryAccess.keyParams.map((name, keyIndex) => {
                         if (bEntryAccess.keySources?.[keyIndex]?.kind === 'msgSender') {
-                          return hexToBin(
-                            this.inner.withCategory(hexToBin(this.categoryId)).lockingBytecode,
-                          );
+                          return addressToLockScript(this.address);
                         }
                         const index = bAbiFunc!.inputs.findIndex((input) => input.name === name);
                         const value = index >= 0 ? bRouteArgs[index] : undefined;
@@ -10755,6 +10757,27 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             bCompilerInternalArgs[`__internal__c2BatchNext_${routeSlot}`] =
                               decodeEntryCommitment(hexToBin(commitment)).nextKey;
                             bCompilerInternalArgs[`__internal__c2BatchPredOut_${routeSlot}`] = -1n;
+                          } else {
+                            const routeSlot = slot.slotIndex ?? 0;
+                            const blockOffset = bBlockLayout.slots.find((candidate) =>
+                              candidate.kind === 'entry' && candidate.slotIndex === routeSlot)?.offset;
+                            if (blockOffset === undefined) {
+                              throw new Error(`External message-bus batch entry slot ${routeSlot} has no block offset`);
+                            }
+                            const plan = bList.planInsert(bSlot);
+                            const predOutName = `__internal__c2BatchPredOut_${routeSlot}`;
+                            bCompilerInternalArgs[`__internal__c2BatchSlot_${routeSlot}`] = bSlot;
+                            bCompilerInternalArgs[`__internal__c2BatchProof_${routeSlot}`] = BigInt(blockOffset);
+                            bCompilerInternalArgs[`__internal__c2BatchNext_${routeSlot}`] =
+                              decodeEntryCommitment(plan.newNodeCommitment).nextKey;
+                            bCompilerInternalArgs[predOutName] = 0n;
+                            bRelativeOutputInternalArgs.add(predOutName);
+                            bPlannedEntryInserts.push({
+                              slotIndex: routeSlot,
+                              blockSlot: blockOffset,
+                              outputBlockSlot: -1,
+                              commitment: binToHex(plan.predNewCommitment),
+                            });
                           }
                         }
                       } catch { matchUtxo = undefined; }
@@ -10869,6 +10892,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 if (!hadFullBlockKinds && !bHasLoop) bBlockInputs = undefined;
               }
             }
+            if (bBlockInputs) {
+              for (const planned of bPlannedEntryInserts) {
+                planned.outputBlockSlot = bBlockInputs.length;
+                bCompilerInternalArgs[`__internal__c2BatchPredOut_${planned.slotIndex}`] =
+                  BigInt(planned.outputBlockSlot);
+                bBlockInputs.push(await makeFunder());
+              }
+            }
           }
         }
 
@@ -10981,7 +11012,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         const bInternalArgs: Record<string, FunctionArgument> = {
           ...bCompilerInternalArgs,
-          ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && { __internal__c2BatchTrailingCount: 0n }),
+          ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
+            __internal__c2BatchTrailingCount: BigInt(bPlannedEntryInserts.length),
+          }),
         };
         // The balanced block's master unlocker is created before entry planning discovers C2 batch witnesses.
         // Rebuild it now so the derivation probe executes with the resolved topology rather than zero defaults.
@@ -11010,6 +11043,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           functionName: callInfo.functionName,
           functionArgs: callInfo.args,
           ...(Object.keys(bInternalArgs).length > 0 && { internalArgs: bInternalArgs }),
+          ...(bRelativeOutputInternalArgs.size > 0 && {
+            relativeOutputInternalArgs: [...bRelativeOutputInternalArgs],
+          }),
           externalContract: callInfo.externalContract,
           ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
           ...(compilerRoute && {
@@ -11028,6 +11064,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }),
           ...(ec.callMode && { callMode: ec.callMode }),
           ...(bBlockInputs && { blockInputs: bBlockInputs, blockLayout: bBlockLayout }),
+          ...(bPlannedEntryInserts.length > 0 && { plannedEntryInserts: bPlannedEntryInserts }),
           ...(bReturnEventInBlock && { returnEventInBlock: true }),
           ...(bKeccak.recreates.length > 0 && { keccakRecreates: bKeccak.recreates }),
           ...(bEntryLoopCommitments && {
@@ -11364,7 +11401,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
           const internalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
           if (internalArgs && Object.prototype.hasOwnProperty.call(internalArgs, paramName)) {
-            bFinalArgs.push(internalArgs[paramName]);
+            const value = internalArgs[paramName];
+            bFinalArgs.push(group.relativeOutputInternalArgs?.includes(paramName)
+              ? BigInt(masterInputIndex) + BigInt(value as bigint)
+              : value);
           } else if (paramName === '__internal__externalCallInputBase') {
             // Where this function's external call groups start in the input sequence: immediately after B's own
             // co-spent block, which is blockInputs wide when a full block was assembled (X13).
@@ -11372,7 +11412,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               + (group.blockInputs ? group.blockInputs.length : 1 + group.dataNftUtxos.length);
             bFinalArgs.push(BigInt(thisGroupEnd));
           } else if (paramName === '__internal__msgSenderCategory') {
-            bFinalArgs.push(hexToBin(meta.callerCategoryId));
+            bFinalArgs.push(hexToBin(meta.callerCategoryId).reverse());
           } else if (paramName === '__internal__blockhashInputIndex') {
             const firstOracleOffset = group.blockLayout?.slots.find(
               (slot) => slot.kind === 'blockhashOracle',
@@ -11482,8 +11522,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // The block's master slot carries the SAME unlocker as group.masterUtxo: the input flattening serializes
         // blockInputs, so a stale block-build-time unlocker there would drop the hidden params resolved here.
         // Extended to in-block returning callees: their __internal__returnOutputIdx is unknown at block-build time.
-        if (group.blockInputs && group.blockLayout
-          && (group.compilerRoute || group.returnEventInBlock === true)) {
+        if (group.blockInputs && group.blockLayout) {
           const masterOffset = group.blockLayout.slots.find((slot) => slot.kind === 'master')?.offset;
           if (masterOffset !== undefined && group.blockInputs[masterOffset]) {
             group.blockInputs[masterOffset] = {

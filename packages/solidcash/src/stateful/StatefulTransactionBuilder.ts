@@ -151,9 +151,11 @@ export interface ExternalCallUtxoGroup {
   entryLoopCollection?: string;
   /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
    * outputs let the first derivation pass reach and reveal both commitments. */
-  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number }>;
+  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number; commitment?: string }>;
   /** Internal handles for the placeholders above. */
   plannedEntryInsertHandles?: number[];
+  /** Hidden output-index arguments stored block-relative until this group's absolute output base is known. */
+  relativeOutputInternalArgs?: string[];
   /** Direct, unambiguous dynamic-write values derived from the callee ABI arguments. */
   dynamicStateValues?: Readonly<Record<string, StateValue>>;
 }

@@ -2686,6 +2686,8 @@ export class LowLevelCallStatementNode extends StatementNode {
 export class ConsoleStatementNode extends Node {
   constructor(
     public parameters: ConsoleParameterNode[],
+    /** Hardhat console.sol entry point (log, logInt, logBytes32, ...). */
+    public method = 'log',
   ) {
     super();
   }

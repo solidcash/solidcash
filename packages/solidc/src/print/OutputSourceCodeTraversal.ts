@@ -790,7 +790,7 @@ export default class OutputSourceCodeTraversal extends AstTraversal {
   }
 
   visitConsoleStatement(node: ConsoleStatementNode): Node {
-    this.addOutput('console.log(', true);
+    this.addOutput(`console.${node.method}(`, true);
     node.parameters = this.visitCommaList(node.parameters) as ConsoleParameterNode[];
     this.addOutput(');\n');
     return node;

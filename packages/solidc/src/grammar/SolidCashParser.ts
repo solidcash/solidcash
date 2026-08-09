@@ -9009,6 +9009,9 @@ export default class SolidCashParser extends Parser {
 			{
 			this.state = 2235;
 			this.match(SolidCashParser.T__103);
+			if (this._input.LA(1) === SolidCashParser.Identifier) {
+				this.match(SolidCashParser.Identifier);
+			}
 			this.state = 2236;
 			this.consoleParameterList();
 			this.state = 2237;
@@ -18964,6 +18967,9 @@ export class ConsoleStatementContext extends ParserRuleContext {
 	}
 	public consoleParameterList(): ConsoleParameterListContext {
 		return this.getTypedRuleContext(ConsoleParameterListContext, 0) as ConsoleParameterListContext;
+	}
+	public Identifier(): TerminalNode | null {
+		return this.getToken(SolidCashParser.Identifier, 0);
 	}
     public get ruleIndex(): number {
     	return SolidCashParser.RULE_consoleStatement;

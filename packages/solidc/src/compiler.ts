@@ -750,9 +750,20 @@ function parseAndResolve(
   code: string, mergedCompilerOptions: CompilerOptions, errorListener?: SolidCashErrorListener,
   primaryName?: string,
 ): Ast {
+  // `console` is tokenized as part of the built-in `console.log` statement, so it is not a general Identifier in
+  // the Solidity selective-import grammar. Normalize Hardhat's equivalent named import before parsing.
+  const parseSource = code.replace(
+    /import\s*\{\s*console\s*\}\s*from\s*(["'])hardhat\/console\.sol\1\s*;/g,
+    (statement) => 'import "hardhat/console.sol";'.padEnd(statement.length, ' '),
+  );
   // Lexing + parsing
-  let ast = parseCode(code, errorListener, mergedCompilerOptions.solidityImportCompat,
+  let ast = parseCode(parseSource, errorListener, mergedCompilerOptions.solidityImportCompat,
     mergedCompilerOptions.chunkedArrays);
+  // Hardhat's console library is a compiler/runtime debugging hook, not a source dependency that SolidCash
+  // should parse or link. Its calls are represented by ConsoleStatementNode and already emit no BCH bytecode,
+  // while retaining artifact log metadata for the SDK debugger. Accept both Solidity import spellings without
+  // requiring hardhat to be installed or invoking a caller-provided resolver.
+  ast.imports = ast.imports.filter((importNode) => importNode.path !== 'hardhat/console.sol');
   const hadImports = ast.imports.length > 0;
 
   // Resolve imports first, so an imported contract is available for setPrimaryContract (compileStringMulti).

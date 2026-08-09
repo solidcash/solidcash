@@ -2389,6 +2389,18 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const value = internalRouteWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
+        // A c2Batch* witness is planned from an EXISTING entry UTXO (see the batch planning block, which fills
+        // these only when an exact entry match is found). Absent one, the route is being asked to insert a cold
+        // entry, and cold-entry predecessor planning is not implemented - the same limitation the resource-shaped
+        // path reports explicitly. Say that, rather than naming an internal witness the caller cannot supply.
+        if (/^__internal__c2Batch/.test(input.name)) {
+          throw new Error(
+            `message-bus batch route cannot plan '${input.name}': no existing collection entry was found to `
+            + 'derive it from, so this call would insert a COLD entry. Cold-entry predecessor planning is not '
+            + 'yet supported on the batch route; seed the entry first, or route the insert through a path that '
+            + 'creates it.',
+          );
+        }
         throw new Error(`message-bus batch route requires compiler-owned witness '${input.name}'`);
       }
       const value = routeWitnesses[routeWitness];

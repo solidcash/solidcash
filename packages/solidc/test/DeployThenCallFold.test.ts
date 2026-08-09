@@ -23,6 +23,9 @@ contract Factory(pubkey deployer) {
     }
 }`;
 
+// `deployTargets` entries gained a `creationBytecode` field when `type(C).creationCode` folding landed, so these
+// rows match the fields they are about rather than the whole object. Exact equality here asserted the SHAPE of a
+// metadata record none of these tests is testing, and broke on a purely additive change.
 describe('deploy-then-call fold (compiler)', () => {
   it('folds a constructor-owned factory guard before straight-line initialization', () => {
     const artifact = compileString(`
@@ -73,14 +76,14 @@ contract Factory(pubkey deployer) {
 }`;
     const make = compileString(src).abi.find((f) => f.name === 'make')!;
     expect(make.modifiers).toContain('deploy');
-    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
+    expect(make.deployTargets).toMatchObject([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
   });
 
   it('folds a direct-setter call into the deploy genesis (no co-spend, covenant carries the post-call state)', () => {
     const folded = compileString(factory('child.configure(c0, a0);'));
     const make = folded.abi.find((f) => f.name === 'make')!;
     // The deploy still happens...
-    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
+    expect(make.deployTargets).toMatchObject([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
     // ...but the call is NOT a co-spend external call (it was folded into the genesis).
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
     // The deploy covenant now verifies the post-configure genesis, so its bytecode differs from a plain
@@ -111,7 +114,7 @@ contract Factory(pubkey deployer) {
 }`;
     const art = compileString(src);
     const make = art.abi.find((f) => f.name === 'make')!;
-    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
+    expect(make.deployTargets).toMatchObject([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 
@@ -133,7 +136,7 @@ contract Factory(pubkey deployer) {
 }`;
     const art = compileString(src);
     const make = art.abi.find((f) => f.name === 'make')!;
-    expect(make.deployTargets).toEqual([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
+    expect(make.deployTargets).toMatchObject([{ contractName: 'Child', dataNftCount: 1, constructorArgs: ['owner'] }]);
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 

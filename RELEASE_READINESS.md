@@ -787,8 +787,21 @@ it must not silently compile to incorrect covenant behavior.
     optimisations apply, which is the shape of a broad size increase). `db11255c6` itself is titled
     "checkpoint: in-progress ... work from a prior session", so unfinished work reaching the release branch is
     the other possibility.
-  - Completion: identify the commit, then either fix the regression or record why the larger output is correct
-    and re-pin with that reasoning attached.
+  - **Narrowed to `db11255c6`**, by continued per-commit probes: PASS at `86df89a42` and `f4462526f` (both
+    prime suspects, so both RULED OUT) and at `6d5fb73b4`; FAIL at `db11255c6`. `274a57267`, the one commit
+    between them, DOES NOT BUILD (exit 2), which is itself worth knowing - a non-building commit reached the
+    release branch. So `db11255c6` "checkpoint: in-progress ... work from a prior session" is the first commit
+    that both builds and fails.
+  - `DeployThenCallFold` is FIXED and was never a regression: `deployTargets` entries gained a
+    `creationBytecode` field when `type(C).creationCode` folding landed, and four rows asserted exact object
+    equality on a metadata record none of them is about. They now match the fields they test. 6/6 pass.
+  - The remaining two failures are ONE story, and it points at a regression rather than a correctness cost.
+    `C2BatchMetadata` shows a SINGLE fixed upsert (`m[k] = v`) is now given `sortedBatchInfo`, which the row
+    exists to forbid; the two size failures are also C2. Spurious batch planning for single writes would inflate
+    C2 codegen, which is exactly the shape of a broad ~20% increase in C2-heavy contracts. If that holds, fixing
+    the batch predicate restores BOTH the metadata row and the sizes, and no threshold needs re-pinning.
+  - Next: confirm that link by checking whether suppressing batch treatment for a single fixed upsert returns
+    `C2BytecodeOptimizations` to its pinned sizes. Do not re-pin before that is answered.
 - [-] **Clean-clone run done, 2026-08-08, and it found two things the in-repo run could not.** The branch was
   cloned to a fresh directory, installed with `--frozen-lockfile`, built, and gated. Install plus build takes
   61 s and succeeds; `examples` and `test:docs-snippets` pass unchanged.

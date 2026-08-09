@@ -767,6 +767,28 @@ it must not silently compile to incorrect covenant behavior.
     the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
     true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
     to 2,127 and takes 16 s.
+- [ ] **Attribute and fix the solidc bytecode-size regression the mistswap merge brought in.**
+  - At HEAD, 3 solidc files fail pinned size thresholds: `C2BytecodeOptimizations` (1952 against < 1620, and
+    2229 against < 1920), `C2BatchMetadata`, and `DeployThenCallFold` (3 rows). About a 20% increase. They were
+    hidden behind the `utils` outline failure, because lerna stops at the first failing package.
+  - **DO NOT RE-PIN.** The tempting reading is that this is the price of a soundness fix - two live in exactly
+    this area, `8c727b03f` (disable unsound parameterized span outlining) and `23a30dcbb` (never split an
+    `OP_INVOKE` from its operand push), and both trade size for correctness. BOTH ARE FALSIFIED: each PASSES
+    7/7 when checked out and built on its own. The regression is not soundness cost, so raising the thresholds
+    would erase a real signal.
+  - Attribution, by building and testing each commit in a throwaway clone (build exit 0 required, or the run is
+    discarded - one probe reported a pass against stale `dist` after a failed build and was thrown out):
+    PASS at `60cfd1fc`, `bcb8ad69e`, `8c727b03f`, `23a30dcbb`; FAIL at `db11255c6` (1956/2236), `c0d185f9c`,
+    `c952176cd` (1959/2240) and HEAD. So the first bad commit is in `(23a30dcbb, db11255c6]`.
+  - That window holds 22 commits, and two are prime suspects because they match the failing tests directly:
+    `f4462526f fix: collapse identical placeholder writes in a C2 batch plan` (the `C2BatchMetadata` row is
+    exactly about whether a single fixed upsert is marked a batch), and `86df89a42 perf(solidc): stop running
+    the optimiser compat oracle inside the usage probe` (skipping the compat oracle can change which
+    optimisations apply, which is the shape of a broad size increase). `db11255c6` itself is titled
+    "checkpoint: in-progress ... work from a prior session", so unfinished work reaching the release branch is
+    the other possibility.
+  - Completion: identify the commit, then either fix the regression or record why the larger output is correct
+    and re-pin with that reasoning attached.
 - [-] **Clean-clone run done, 2026-08-08, and it found two things the in-repo run could not.** The branch was
   cloned to a fresh directory, installed with `--frozen-lockfile`, built, and gated. Install plus build takes
   61 s and succeeds; `examples` and `test:docs-snippets` pass unchanged.

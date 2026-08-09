@@ -836,8 +836,11 @@ it must not silently compile to incorrect covenant behavior.
   - Variable-output auto-derivation now fingerprints dynamic and computed value chunks and allows their bounded
     probe loop to revisit a temporary layout while later covenant pins become visible. Four formerly failing C2
     suites pass 44/44 together (`SortedArrayCacheInLoop`, `MappingArrayPush`, `EntryWriteBehavior`, and
-    `SortedMappingLongValue`); the focused adjacent array/struct group clears another seven prior failures. Large
-    fixed-width values still expose a distinct final-layout failure and remain open.
+    `SortedMappingLongValue`); the focused adjacent array/struct group clears another seven prior failures.
+  - Constructed chunkable assignments are no longer mislabeled as a direct assignment from their first element
+    parameter, and a successful derivation probe retains the concrete continuation run it already authenticated.
+    The large fixed-width array and struct regressions now pass, the compiler metadata guard passes 6/6, and the
+    wider 19-file mapping/value-chunk matrix passes 43/43.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

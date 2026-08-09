@@ -28,6 +28,22 @@ describe('C2 fixed-write batch metadata', () => {
       .toEqual([{ collection: 'm', slotIndices: [0] }]);
   });
 
+  it('does not mislabel a constructed chunkable value as its first element parameter', () => {
+    const artifact = compileString(`contract C {
+      mapping(int => bytes32[]) m;
+      function set(int k, bytes32 a, bytes32 b) external {
+        m[k] = [a, b];
+        require(true);
+      }
+      function direct(int k, bytes32[] value) external {
+        m[k] = value;
+        require(true);
+      }
+    }`, { forceStateful: true });
+    expect(artifact.abi.find((f) => f.name === 'set')?.entryAccesses?.[0]?.valueParam).toBeUndefined();
+    expect(artifact.abi.find((f) => f.name === 'direct')?.entryAccesses?.[0]?.valueParam).toBe('value');
+  });
+
   it('keeps a delegate write scalar because its collection topology belongs to the proxy', () => {
     const artifact = compileString(`library L {
       mapping(int => int) m;

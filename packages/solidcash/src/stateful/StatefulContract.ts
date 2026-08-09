@@ -8072,6 +8072,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 }
               }
               const derivedCount = derived.filter((c) => c !== undefined).length;
+              // Once every chunk pin passes, the successful trace can contain no extractable mismatch pattern.
+              // Preserve the already-authenticated concrete run; an all-placeholder seed still drops here for an
+              // inline value whose size guard emitted no chunk checks.
+              if (derivedCount === 0 && existing.some((commitment) => commitment !== '00')) {
+                commitmentProgress += existing.length;
+                vcOffset += existing.length;
+                continue;
+              }
               const stillLearning = derivedCount > 0 && derived[derivedCount - 1] !== (existing[derivedCount - 1] ?? '00');
               const next: string[] = [];
               for (let i = 0; i < derivedCount; i++) next[i] = derived[i] ?? existing[i] ?? '00';

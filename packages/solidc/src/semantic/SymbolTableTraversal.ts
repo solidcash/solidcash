@@ -4123,8 +4123,13 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Only a WHOLE-value direct-param assign (`m[k] = p`) records the source param. An element/push/pop write's
       // expression is the element, not the whole array value (that value is computed by the RMW -> derived from trace).
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
-      const valueParam = wholeValueWrite && chunkableValue && node.expression instanceof IdentifierNode
-        ? node.expression.name : undefined;
+      const expressionType = this.getExpressionType(node.expression);
+      const valueIdentifier = node.expression instanceof IdentifierNode ? node.expression : undefined;
+      const directValueParam = valueIdentifier !== undefined
+        && this.currentFunction?.parameters.some((parameter) => parameter.name === valueIdentifier.name)
+        && expressionType?.toString() === vt.toString();
+      const valueParam = wholeValueWrite && chunkableValue && directValueParam
+        ? valueIdentifier.name : undefined;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');

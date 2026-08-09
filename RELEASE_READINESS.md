@@ -807,6 +807,10 @@ it must not silently compile to incorrect covenant behavior.
   split artifacts, and the ordinary library, X162 split-layout, proxy-upgrade, and SolidHat split-artifact
   focused gates pass together. The remaining full-gate failures predate that narrowing and must be closed or
   explicitly removed from the supported release surface before this item can pass.
+  - Cross-contract fixed C2 updates now rebuild the callee master probe after entry planning resolves the hidden
+    batch witness. The focused present-entry update passes alongside `ExternalCallAutoDerive` (20/20),
+    `ApproveAddressNested` (3/3), and the compiler-route sorted-delete regression. Cold cross-contract inserts
+    remain failing and are still part of this open gate rather than being conflated with the update fix.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

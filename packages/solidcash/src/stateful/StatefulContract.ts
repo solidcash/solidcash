@@ -10730,16 +10730,17 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       const directKeyBin = effKeyValue instanceof Uint8Array ? effKeyValue
                         : typeof effKeyValue === 'bigint' ? bigIntToVmNumber(effKeyValue)
                           : bigIntToVmNumber(effKeyValue ? 1n : 0n);
-                      const bSlot = compilerRoute ? keyToSlotMulti(encodedKeys) : keyToSlot(directKeyBin);
+                      const batchSlot = bAbiFunc?.sortedBatchInfo?.some((batch) =>
+                        batch.slotIndices.includes(slot.slotIndex ?? 0)) ?? false;
+                      const bSlot = compilerRoute || batchSlot ? keyToSlotMulti(encodedKeys) : keyToSlot(directKeyBin);
                       let unsupportedColdEntry = false;
                       try {
-                        const exact = compilerRoute ? bList.find(bSlot) : undefined;
+                        const exact = compilerRoute || batchSlot ? bList.find(bSlot) : undefined;
                         if (compilerRoute && !exact) unsupportedColdEntry = true;
                         matchUtxo = compilerRoute
                           ? (exact ?? bList.predecessorOf(bSlot))?.utxo
                           : (bList.has(bSlot) ? bList.find(bSlot) : bList.predecessorOf(bSlot))?.utxo;
-                        if (compilerRoute && bAbiFunc?.sortedBatchInfo?.some((batch) =>
-                          batch.slotIndices.includes(slot.slotIndex ?? 0))) {
+                        if (batchSlot) {
                           if (exact) {
                             const routeSlot = slot.slotIndex ?? 0;
                             const blockOffset = bBlockLayout.slots.find((candidate) =>
@@ -10978,6 +10979,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
         }
 
+        const bInternalArgs: Record<string, FunctionArgument> = {
+          ...bCompilerInternalArgs,
+          ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && { __internal__c2BatchTrailingCount: 0n }),
+        };
+        // The balanced block's master unlocker is created before entry planning discovers C2 batch witnesses.
+        // Rebuild it now so the derivation probe executes with the resolved topology rather than zero defaults.
+        if (!compilerRoute && bBlockInputs && bBlockLayout && bAbiFunc) {
+          const firstInternalInput = bAbiFunc.inputs.findIndex((input) => input.name.startsWith('__internal__'));
+          const visibleArgs = callInfo.args.slice(0, firstInternalInput < 0 ? callInfo.args.length : firstInternalInput);
+          const probeArgs = bAbiFunc.inputs.map((input, index) => {
+            if (index < visibleArgs.length) return visibleArgs[index];
+            if (input.name === '__internal__msgSenderCategory') return hexToBin(this.categoryId).reverse();
+            if (Object.prototype.hasOwnProperty.call(bInternalArgs, input.name)) return bInternalArgs[input.name];
+            return defaultInternalFunctionArg(input);
+          });
+          const probeUnlocker = (callInfo.externalContract.inner.unlock as any)[callInfo.functionName](...probeArgs);
+          const masterOffset = bBlockLayout.slots.find((candidate) => candidate.kind === 'master')?.offset;
+          if (masterOffset !== undefined) {
+            bBlockInputs[masterOffset] = { ...bState.masterUtxo!, unlocker: probeUnlocker };
+          }
+        }
+
         externalCallUtxoGroups.push({
           categoryId: externalCategoryId,
           stateLayout: bStatelayout,
@@ -10986,6 +11009,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           requiredDataNftIndices: bRequiredNftIndices,
           functionName: callInfo.functionName,
           functionArgs: callInfo.args,
+          ...(Object.keys(bInternalArgs).length > 0 && { internalArgs: bInternalArgs }),
           externalContract: callInfo.externalContract,
           ...(precomputedReturnCommitment && { precomputedReturnCommitment }),
           ...(compilerRoute && {
@@ -11315,9 +11339,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ?? bAbiAll.find((f) => f.name === group.functionName);
         const bAbiInputs = bAbiFunc?.inputs ?? [];
         const routeArgs = group.compilerRoute ? group.compilerRoute.args : group.functionArgs;
-        const userArgCount = routeArgs.length;
+        const firstInternalArg = bAbiInputs.findIndex((input) => input.name.startsWith('__internal__'));
+        const userArgCount = firstInternalArg < 0 ? routeArgs.length : firstInternalArg;
 
-        let bFinalArgs = [...routeArgs];
+        let bFinalArgs = routeArgs.slice(0, userArgCount);
         let bReturningSlotIdx = 0;
 
         // Pre-compute child group indices for transitive param resolution
@@ -11337,9 +11362,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (let i = userArgCount; i < bAbiInputs.length; i++) {
           const paramName = bAbiInputs[i].name;
 
-          if (group.compilerRoute?.internalArgs
-            && Object.prototype.hasOwnProperty.call(group.compilerRoute.internalArgs, paramName)) {
-            bFinalArgs.push(group.compilerRoute.internalArgs[paramName]);
+          const internalArgs = group.compilerRoute?.internalArgs ?? group.internalArgs;
+          if (internalArgs && Object.prototype.hasOwnProperty.call(internalArgs, paramName)) {
+            bFinalArgs.push(internalArgs[paramName]);
           } else if (paramName === '__internal__externalCallInputBase') {
             // Where this function's external call groups start in the input sequence: immediately after B's own
             // co-spent block, which is blockInputs wide when a full block was assembled (X13).

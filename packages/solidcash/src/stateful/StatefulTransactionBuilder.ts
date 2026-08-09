@@ -110,6 +110,8 @@ export interface ExternalCallUtxoGroup {
   sharedGroupIndex?: number;
   /** Honest SDK probe result for a read fused into another call sharing this master input. */
   precomputedReturnCommitment?: Uint8Array;
+  /** Compiler-owned hidden arguments resolved while assembling this callee's physical resource block. */
+  internalArgs?: Record<string, any>;
   /** Return slot owned by the state-writing call fused into this physical group. */
   fusedReturnGroupIndex?: number;
   /** Absolute output index verified by this physical call's return covenant. */

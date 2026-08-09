@@ -3,12 +3,12 @@
 > **Status:** COMPLETE (2026-07). All 6 domains audited + serious findings verified. This file is written to
 > survive a session reset — a fresh session can read it to regain full context.
 >
-> **4 CRITICAL: C1 (delegatecall), C2 (mapping omission), C3 (un-accessed NFT destruction), C4 (mapping-key
-> collapse).** Plus 8 HIGH, 4 MEDIUM, and LOW findings. **Top fixes: C1, C2, C3, C4.**
+> **Historical findings:** 4 CRITICAL—C1 (delegatecall), C2 (mapping omission), C3 (un-accessed NFT destruction),
+> and C4 (mapping-key collapse)—plus 8 HIGH, 4 MEDIUM, and LOW findings. All four critical findings are fixed;
+> the identifiers below are retained only for audit traceability.
 >
-> **To resume in a fresh session:** read this file top-to-bottom, then (1) fold in any covenant-codegen /
-> semantic-analysis findings (see "PENDING" at the end), (2) verify the not-yet-code-verified items, (3) the
-> top priorities to FIX are **C1 (delegatecall)** and **C2 (mapping omission)**.
+> **To review the audit:** read this file top-to-bottom, then consult the remediation status and current release
+> readiness notes. Historical identifiers such as C2 are finding references, not names for shipped features.
 
 ## REMEDIATION STATUS (2026-07, branch solidcash_v0.13.1)
 All 4 CRITICAL fixed + regression-tested (`packages/solidc/test/SecurityAudit.test.ts` + Stateful e2e):

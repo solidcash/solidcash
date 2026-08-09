@@ -39,14 +39,13 @@ default (`0` / `false`) on omission, which *fails* the guard - the worst case is
 
 ## Historical compiler diagnostic
 
-The compiler warns (`SECURITY-AUDIT C2`) when a `require()` condition is a direct negative guard on a mapping
-read: `require(!m[k])`, `require(m[k] == false)`, or `require(m[k] == 0)` (and the mirror image). Rewrite the
-guard to be positive, or - for full soundness - commit an entry-set accumulator (a count or merkle/nullifier
-root) into the master commitment and require an inclusion/consumption proof on each read (a covenant redesign).
+Before verified mappings shipped, the compiler diagnostic recognized direct negative guards such as
+`require(!m[k])`, `require(m[k] == false)`, and `require(m[k] == 0)`. It warned that an unauthenticated entry
+could be omitted. That warning was only a syntactic backstop and was never the security boundary.
 
-The authors already chose "absent = ERROR" for blockhash oracles for exactly this reason (see
-`block-and-transaction-properties.md`); mappings intentionally keep Solidity's default-on-absent semantics, so
-negative guards need author awareness.
+The helper remains in the compiler for defensive compatibility with any internally constructed non-vmap
+collection. Ordinary mappings are always vmaps, so their membership or absence proof suppresses the warning;
+negative guards require no special rewrite.
 
 ## Lineage: why an earlier audit called this sound
 
@@ -87,14 +86,10 @@ Three cases, exhaustive:
    and writes. The full design space, resource costs, the contention analysis, and a decision matrix are in
    `mapping-soundness-research.md`.
 
-**Rollout.** The fix is the sound *mechanisms* (nullifier / authenticated set) - they make the bug not exist
-regardless of how the guard is phrased. The historical C2 diagnostic escalating from warning to a hard **error** is only a
-fail-closed **backstop for the shapes it recognizes** (`require(!m[k])` and friends): it is a syntactic filter
-over a semantic hole, dodgeable by `if (!m[k]) {...}`, a laundering local, or indirect data flow, so it is *not*
-a guarantee and is worth turning on only once a sound alternative exists to point authors at. Positive-guard
-mappings compile unchanged. Suggested phases: (1) nullifier primitive (reuses the C1 identity-pin machinery);
-(2) the authenticated-set mapping type(s) matched to the access pattern (the heavy lift, the only irreducibly
-authenticated-data-structure piece); (3) the diagnostic-as-error backstop, once (1)/(2) give a redirect.
+**Historical rollout reasoning.** The proposed fix was a sound mechanism—either a nullifier or an authenticated
+set—rather than stronger pattern matching for negative guards. Mandatory verified mappings implemented the
+authenticated-set path. The diagnostic therefore remains a defensive backstop, not a user-facing restriction or
+part of the current mapping model.
 
 ## Current status: shipped end to end
 

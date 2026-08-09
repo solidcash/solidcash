@@ -148,4 +148,17 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
       /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,
     );
   });
+
+  it('derives a constructor write to every key of a nested C2 mapping', async () => {
+    const artifact = compileString(`
+      contract Registry() {
+          mapping(int => mapping(int => int)) values;
+          constructor() { this.values[1][2] = 3; }
+          function check(int a, int b, int expected) { require(this.values[a][b] == expected); }
+      }
+    `);
+    const { result } = await deploy(artifact, [], 'a7b8', {});
+    expect((await result.contract.call.check(1n, 2n, 3n).send()).txid).toBeDefined();
+    expect((await result.contract.call.check(1n, 3n, 0n).send()).txid).toBeDefined();
+  });
 });

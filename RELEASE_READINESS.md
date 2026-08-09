@@ -814,6 +814,9 @@ it must not silently compile to incorrect covenant behavior.
     `ExternalCallAutoDerive` (20/20), `ApproveAddressNested` (3/3), `MsgSenderCrossContractC2` (2/2), and the
     compiler-route sorted-delete regression. The Git-aware e2e sweep now reports 70 failures across 38 of 448
     files (3,692 passed, 35 skipped, 8 todo); the gate remains open on the other failure families.
+  - Constructor C2 batching now resolves every nested mapping key source before hashing the authenticated slot.
+    The Solidity corpus nested-getter deployment no longer oscillates, and a dedicated explicit-constructor
+    regression proves both the initialized two-key leaf and an absent sibling through covenant execution.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

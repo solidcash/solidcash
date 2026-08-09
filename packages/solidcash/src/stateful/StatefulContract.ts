@@ -4983,6 +4983,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       predecessorCommitment: string;
       trailingOutput: number;
     }>();
+    const constructorTargetSlots = new Map<number, Uint8Array>();
     const sortedCollections = [...new Set(entryAccesses.filter((access) => (
       stateLayout.collections?.find((item) => item.name === access.collection)?.sorted
     )).map((access) => access.collection))];
@@ -4998,15 +4999,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         },
       };
       const list = SortedList.fromUtxos([headUtxo]);
-      const writes = accesses.map(({ access }) => {
-        const label = access.keySources?.[0]?.expressionLabel ?? access.keyParams?.[0];
-        const key = resolveConstructorKey(label);
-        if (key === undefined) {
+      const writes = accesses.map(({ access, index }) => {
+        const labels = access.keySources?.map((source, keyIndex) => (
+          source.expressionLabel ?? source.paramName ?? access.keyParams?.[keyIndex]
+        )) ?? access.keyParams;
+        const keys = labels.map((label) => resolveConstructorKey(label));
+        if (keys.some((key) => key === undefined)) {
+          const missing = labels[keys.findIndex((key) => key === undefined)];
           throw new Error(
-            `Cannot derive constructor C2 key '${label ?? '<unknown>'}' for ${collectionName}.`,
+            `Cannot derive constructor C2 key '${missing ?? '<unknown>'}' for ${collectionName}.`,
           );
         }
-        return { slot: keyToSlot(key), value: new Uint8Array() };
+        const slot = keyToSlotMulti(keys as Uint8Array[]);
+        constructorTargetSlots.set(index, slot);
+        return { slot, value: new Uint8Array() };
       });
       const plan = list.planBatchUpsert(writes);
       const targetNext = new Map<number, Uint8Array>();
@@ -5035,10 +5041,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const slotIndex = Number(match[2]);
           const access = entryAccesses[slotIndex];
           const plan = sortedPlans.get(access.collection);
-          const label = access.keySources?.[0]?.expressionLabel ?? access.keyParams?.[0];
-          const key = resolveConstructorKey(label);
-          if (plan === undefined || key === undefined) throw new Error(`Missing constructor C2 witness ${input.name}.`);
-          if (match[1] === 'Slot') internalInitArgs.push(keyToSlot(key));
+          const targetSlot = constructorTargetSlots.get(slotIndex);
+          if (plan === undefined || targetSlot === undefined) throw new Error(`Missing constructor C2 witness ${input.name}.`);
+          if (match[1] === 'Slot') internalInitArgs.push(targetSlot);
           else if (match[1] === 'Proof') internalInitArgs.push(BigInt(plan.proofOffset));
           else if (match[1] === 'Next') internalInitArgs.push(plan.targetNext.get(slotIndex)!);
           else internalInitArgs.push(BigInt(plan.trailingOutput));

@@ -159,19 +159,25 @@ type Recursor = Record<string, (...a: bigint[]) => {
  */
 async function sendCapturingPreflightInput(
   sc: StatefulContract, argument: bigint,
-): Promise<{ builder: TransactionBuilder | undefined; error: string | undefined }> {
+): Promise<{
+  builder: TransactionBuilder | undefined;
+  error: string | undefined;
+  preflight: ((builder: TransactionBuilder) => void) | undefined;
+}> {
   const proto = StatefulTransactionBuilder.prototype as unknown as Record<string, unknown>;
   const original = proto._strictRecursiveVmPreflight as (b: TransactionBuilder) => void;
   let builder: TransactionBuilder | undefined;
+  let preflight: ((target: TransactionBuilder) => void) | undefined;
   proto._strictRecursiveVmPreflight = function capture(this: unknown, b: TransactionBuilder): void {
     builder = b;
+    preflight = (target) => original.call(this, target);
     original.call(this, b);
   };
   try {
     await (sc as unknown as Recursor).decrement(argument).send();
-    return { builder, error: undefined };
+    return { builder, error: undefined, preflight };
   } catch (error) {
-    return { builder, error: (error as Error).message };
+    return { builder, error: (error as Error).message, preflight };
   } finally {
     proto._strictRecursiveVmPreflight = original;
   }
@@ -229,44 +235,62 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
   });
 
   it('2. FAIL-OPEN on recursion: Measurement A falsified, gate and decider both refuse', async () => {
-    // Measurement A's exact shape and profile: a `recursiveStateHandler` at `operationCostBudgetPerByte: 150`.
-    // It was reported to SETTLE while the repair refused it. At 0.0.8 the decider refuses it too.
+    // Assemble and settle the complete recursive spend under the stock budget first. Capturing at a strict
+    // preflight throw leaves later covenant construction unfinished; replaying finalized bytes avoids allowing
+    // that unrelated OP_VERIFY to mask the density decision under test.
+    const assemblyProvider = costProfile(800, false);
+    const assembled = await sendCapturingPreflightInput(await recursionContract(assemblyProvider), 3n);
+    expect(assembled.error).toBeUndefined();
+    expect(assembled.builder).toBeDefined();
+    expect(assembled.preflight).toBeDefined();
+
     const provider = costProfile(150, false);
-    const sc = await recursionContract(provider);
-    const { builder, error } = await sendCapturingPreflightInput(sc, 3n);
-    expect(builder).toBeDefined();
+    const builder = assembled.builder!;
+    builder.provider = provider;
 
     // The repaired gate refuses, quoting the published 150 x density.
-    expect(error).toMatch(/Recursive state invocation failed concrete BCH VM preflight: input 0:/);
-    const density = assertDensityCeiling(error!, 150);
-    expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder!, 0));
+    let preflightError: string | undefined;
+    try { assembled.preflight!(builder); } catch (error) { preflightError = (error as Error).message; }
+    const density = assertDensityCeiling(preflightError!, 150);
+    expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder, 0));
 
-    // The captured builder is the preflight input, not a finalized send: after the density refusal it still
-    // contains a later covenant failure. The strict gate nevertheless speaks first at the published ceiling.
-    expect(evaluateAll(createVirtualMachineBch2026(), builder!)).toMatch(/OP_VERIFY/);
+    // A bare VM accepts these exact finalized bytes. That is the fail-open the provider-faithful gate closes.
+    expect(evaluateAll(createVirtualMachineBch2026(), builder)).toBeUndefined();
+    expect(assertDensityCeiling(evaluateAll(createVirtualMachineBch2026ForProvider(provider), builder)!, 150))
+      .toBe(density);
 
-    // And the decider refuses them at the same published 150 x density. Nothing was broadcast, so submitting
-    // the captured bytes exercises the identical transaction.
+    for (const input of builder.inputs) {
+      const unlockable = input as typeof input & { unlocker: { generateLockingBytecode: () => Uint8Array } };
+      await provider.addUtxo(binToHex(unlockable.unlocker.generateLockingBytecode()), input);
+    }
     let submitError: string | undefined;
-    try { await provider.sendRawTransaction(builder!.build()); } catch (e) { submitError = (e as Error).message; }
+    try { await provider.sendRawTransaction(builder.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError, 'the decider accepted what the repaired gate refused').toBeDefined();
     expect(submitError).toMatch(/mandatory-script-verify-flag-failed/);
-    expect(submitError).toMatch(/OP_VERIFY/);
+    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
   });
 
   it('2b. the same refusal holds with dust ON, so the regime is not what produces it', async () => {
     // enforceDust true -> mem-cash decides in the STANDARD regime; row 2 decided in CONSENSUS. Only that field
     // differs between the two providers.
+    const assemblyProvider = costProfile(800, true);
+    const assembled = await sendCapturingPreflightInput(await recursionContract(assemblyProvider), 3n);
     const provider = costProfile(150, true);
     expect(provider.policy.enforceDust).toBe(true);
-    const sc = await recursionContract(provider);
-    const { builder, error } = await sendCapturingPreflightInput(sc, 3n);
-    const density = assertDensityCeiling(error!, 150);
+    const builder = assembled.builder!;
+    builder.provider = provider;
+    let preflightError: string | undefined;
+    try { assembled.preflight!(builder); } catch (error) { preflightError = (error as Error).message; }
+    const density = assertDensityCeiling(preflightError!, 150);
+    for (const input of builder.inputs) {
+      const unlockable = input as typeof input & { unlocker: { generateLockingBytecode: () => Uint8Array } };
+      await provider.addUtxo(binToHex(unlockable.unlocker.generateLockingBytecode()), input);
+    }
     let submitError: string | undefined;
-    try { await provider.sendRawTransaction(builder!.build()); } catch (e) { submitError = (e as Error).message; }
+    try { await provider.sendRawTransaction(builder.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError).toBeDefined();
-    expect(submitError).toMatch(/OP_VERIFY/);
-    expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder!, 0));
+    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
+    expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder, 0));
   });
 
   it('3. GUARD: relaxing only the attacked field makes gate and decider both accept the recursion', async () => {

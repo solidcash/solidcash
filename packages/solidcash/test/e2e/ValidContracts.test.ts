@@ -273,9 +273,8 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('free_function_void.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.compute(0n));
-      // OP_DEFINE stores the free-function body as opaque pushdata, so a generic inner OP_VERIFY failure maps
-      // to the enclosing entry-function boundary; dedicated require metadata remains statement-precise.
-      await expect(txPromise).rejects.toThrow(transactionFailure('Calculator.scash', 6, 'int x'));
+      // The OP_DEFINE callsite is source-mapped even though the inner require is not.
+      await expect(txPromise).rejects.toThrow(transactionFailure('Calculator.scash', 7, 'assertPositive(x)'));
     });
 
     it('free_function_void: fails when x >= 100', async () => {

@@ -178,6 +178,27 @@ const debugSingleScenario = (
     if (entryPointFuncSelector === undefined) return true;
     return step.controlStack.filter((item) => typeof item === 'object' && item !== null).length === 1;
   };
+  const functionFrameDepth = (step: AuthenticationProgramStateCommon): number =>
+    step.controlStack.filter((item) => typeof item === 'object' && item !== null).length;
+
+  /**
+   * OP_INVOKE restarts `ip` inside an opaque helper body. If that body has no published require metadata, its
+   * relative pointer cannot be interpreted with the entry function's source map. The debug trace retains the
+   * caller state immediately before the function frame is pushed, so attribute the generic failure to that
+   * OP_INVOKE callsite instead.
+   */
+  const invocationCallerStep = (
+    failedStep: AuthenticationProgramStateCommon,
+  ): AuthenticationProgramStateCommon | undefined => {
+    const failedDepth = functionFrameDepth(failedStep);
+    const entryDepth = entryPointFuncSelector === undefined ? 0 : 1;
+    if (failedDepth <= entryDepth) return undefined;
+    const failedIndex = executedDebugSteps.lastIndexOf(failedStep);
+    for (let index = failedIndex - 1; index >= 0; index -= 1) {
+      if (functionFrameDepth(executedDebugSteps[index]) < failedDepth) return executedDebugSteps[index];
+    }
+    return undefined;
+  };
 
   // Returns the logs array for a debug step - either from the function body's debug info
   // or from the main artifact debug info. For steps inside the main script (before OP_INVOKE),
@@ -263,8 +284,9 @@ const debugSingleScenario = (
       );
     }
 
+    const callerStep = invocationCallerStep(lastExecutedDebugStep);
     throw new FailedTransactionEvaluationError(
-      artifact, failingIp, inputIndex, getBitauthUri(template), error, functionSourceMap,
+      artifact, callerStep?.ip ?? failingIp, inputIndex, getBitauthUri(template), error, functionSourceMap,
     );
   }
 

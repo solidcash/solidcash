@@ -579,6 +579,12 @@ it must not silently compile to incorrect covenant behavior.
     the input index only where the node reports one, so no evidence is discarded. Applied to
     `CollectionIterationDynamicInsertX102`, `DelegateCollectionOutputPin`, and `DelegateEmitFunder`; those three
     files pass 10/10 on mocknet and remove five known-false failures from the next BCHN pass.
+  - The fresh candidate sweep at `9c466e8a7` passed batches 1-10 (80 files) and found one classification defect
+    in batch 11: `ApproveAddressNested` deliberately raises mock input/transaction limits to exercise nested C2
+    snapshots, but its indivisible scripts are 790-1,486 bytes and BCH consensus caps pushed stack items at 520
+    bytes. The test now retains its three successful mock behavior cases and, on BCHN, requires the exact 520-byte
+    pre-broadcast refusal. Both modes pass 3/3. This is an explicit unsupported-density boundary, not evidence
+    that the oversized unsplit fixtures execute on chain.
   - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
     pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
     failures are artifacts of a 29,424-UTXO wallet.

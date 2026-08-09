@@ -64,6 +64,9 @@ jobs:
       - name: Compile the public docs snippets
         run: yarn test:docs-snippets
 
+      - name: Verify the reviewed Solidity corpus baseline
+        run: yarn test:corpus-baseline
+
       - name: Test packed release packages in a clean consumer
         run: yarn test:package-smoke
 

@@ -140,8 +140,8 @@ ordering; allowing workspace lifecycle builds during CI installation compiles th
     &                                 -- bitwise AND
     ^                                 -- bitwise XOR
     |                                 -- bitwise OR
-    &&                                -- logical AND (no short-circuit)
-    ||                                -- logical OR (no short-circuit)
+    &&                                -- logical AND (short-circuiting)
+    ||                                -- logical OR (short-circuiting)
     ? :                               -- ternary conditional
     =                                 -- assignment
 

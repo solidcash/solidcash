@@ -1,6 +1,6 @@
 # SolidCash First-Release Readiness Tracker
 
-Last reviewed: 2026-08-05
+Last reviewed: 2026-08-09
 Target: first public SolidCash release (`0.13.1`, unless the release version changes)
 
 ## Current assessment
@@ -690,8 +690,13 @@ it must not silently compile to incorrect covenant behavior.
   | Inline assembly/Yul subset |  |  |  | N/A |  |  |
   | Lifecycle operations |  |  |  |  |  |  |
 
-- [ ] Resolve contradictory or stale documentation, including short-circuit behavior and outdated corpus gap
+- [x] Resolve contradictory or stale documentation, including short-circuit behavior and outdated corpus gap
   descriptions.
+  - The public language guide already described `&&` and `||` correctly, but the downloadable `AGENTS.md`
+    reference contradicted itself by calling them non-short-circuiting in the precedence table and
+    short-circuiting later. The table now agrees with the compiler behavior and its regression coverage.
+  - The corpus README's headline still described the July 2,349/4,876 exploratory denominator. It now names the
+    retained release scope and the reviewed 2,698/2,805 positive and 323/2,158 over-accepted-negative baseline.
 - [ ] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
 - [x] Ensure public website examples compile against the exact release packages.
   - **Measured, and it was already healthy.** `yarn examples` only ever covered three hand-written files at the
@@ -727,18 +732,22 @@ it must not silently compile to incorrect covenant behavior.
   - The scoped runner uses stable file ordering, isolated reusable workers, a per-fixture timeout, configurable
     worker count/negative checking, a resumable fresh-worker retry tier, and writes the corpus revision,
     Node/platform, scope, primary/retry budgets, and retry history.
-- [ ] Add release gates:
-  - [ ] no regression in accepted in-scope positive fixtures;
-  - [ ] no increase in incorrectly accepted negative fixtures;
-  - [ ] zero crashes/internal-error buckets;
-  - [ ] reviewed changes to grouped failure reasons.
+- [x] Add release gates:
+  - [x] no regression in accepted in-scope positive fixtures;
+  - [x] no increase in incorrectly accepted negative fixtures;
+  - [x] zero crashes/internal-error buckets;
+  - [x] reviewed changes to grouped failure reasons.
+  - `yarn test:corpus-baseline` validates the retained scorecard against `release-baseline.json`: positive and
+    negative denominators, acceptance floors/ceilings, zero unresolved negatives/timeouts, exact corpus revision
+    and fixture count. The reviewed scorecard is hash-pinned, so changing a grouped reason requires a deliberate
+    baseline update. CI runs this inexpensive retained-artifact gate without cloning or recompiling the corpus.
 - [-] Triage `NEG-ACCEPTED` cases that indicate missing safety or semantic strictness separately from harmless
   NatSpec/EVM-only diagnostic differences. This compatibility-strictness backlog is explicitly deferred and does
   not block the current release; fail-closed protocol/covenant audits remain separate release gates.
   - All 323 are syntax-test negatives. Initial screening identifies 95 platform/backend-policy candidates and a
     228-case strictness-review queue, led by 78 data-location/storage-reference cases. Five uninitialized-storage-
     pointer cases now reject after branch/zero-iteration-loop definite-assignment tracking. No case is waived yet.
-- [ ] Keep the corpus README, scorecard, and progress log numerically consistent.
+- [x] Keep the corpus README, scorecard, and progress log numerically consistent.
   - Current source material: [`examples/solidity-corpus/README.md`](examples/solidity-corpus/README.md),
     [`scorecard.txt`](examples/solidity-corpus/scorecard.txt), and
     [`PROGRESS.md`](examples/solidity-corpus/PROGRESS.md).
@@ -986,7 +995,7 @@ Update this table whenever a release candidate is cut.
 | Testing suite | **PASS** — 6 files, 25/25; includes maintained stateful compile/deploy/call/event/revert/state/reset path 3/3 | `yarn workspace testing-suite test` | 2026-08-05 |
 | `@solidcash/testing` package | **PASS after fix** — 7 files, 19/19. `SplitArtifactHre` failed on the candidate revision because `packages/testing/vitest.config.ts` set no `testTimeout`, so it inherited the 5s vitest default while the test compiles a split contract in about 8s. Its sibling packages already set 30s (`solidc`) and 120s (`solidcash`) for exactly that reason; the package now sets 30s. This failure is machine-speed dependent, so it would pass on a fast machine and fail on a slow one | `yarn workspace @solidcash/testing vitest run` | 2026-08-05 |
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
-| Solidity corpus | **INFORMATIONAL / DEFERRED** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-05 |
+| Solidity corpus | **PASS (retained baseline gate) / strictness deferred** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. `yarn test:corpus-baseline` pins the corpus revision, counts, unresolved-result floor, and reviewed failure buckets in CI. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-09 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
 | Integrity conformance suite | **PASS** — deterministic fifteen-scenario gate passes 81/81 executed tests (one documented skip), covering every stable physical state backend plus external/delegate composition and lifecycle elements | `yarn test:security-conformance` | 2026-08-05 |

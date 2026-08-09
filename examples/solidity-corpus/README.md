@@ -70,21 +70,17 @@ negative-audit pass alongside its worker and timeout budget.
 retained run accepted. Use it after semantic hardening to update the negative score without repeating all 2,158
 fixtures; the pass and its resulting accepted count are appended to the same metadata history.
 
-## Scorecard (2026-07, 7343 files)
+## Retained release scorecard (2026-08, 7,343 files)
 
-After the pragma unblocks (abicoder/experimental d0a990f9 + typo-reject 8359e4c1; version formats 5a4b6f48):
+The retained baseline on Solidity corpus revision `816d9b2a` is 2,698/2,805 positive fixtures compiled, 107
+named failures, and zero residual timeouts. All 2,158 negative fixtures were checked: 1,835 reject and 323 are
+over-accepted. The full methodology and retry tiers are recorded in `run-metadata.json`; `scorecard.txt` contains
+the reviewed failure buckets.
 
-```
-2349/4876 single-file in-scope compiled (~48%)   |   2527 failed   (+413 vs the 1936 pre-pragma baseline)
-1699 negative correctly rejected (parity)
- 491 NEG-ACCEPTED (solc rejects, we compiled) - mostly natspec / EVM-only rejection reasons
- 277 multifile-skipped
-```
-
-The pragma unblocks moved ~840 files past the first line (+171 abicoder/experimental, +181 version formats);
-the rest fail on the EVM content behind it (Yul, ABIEncoderV2 structs, etc.). The full corpus completes only
-because of the optimiser perf fixes (fc474241 + e3e2060d) - large fixed-array files (e.g. `uint256[500]`)
-previously drove the optimiser O(N^2) and hung the run; it is now O(N).
+`yarn test:corpus-baseline` is the release gate for these retained artifacts. It rejects a positive regression,
+an increase in over-accepted negatives, unresolved negative fixtures, a corpus-revision mismatch, or any change
+to the reviewed grouped-failure snapshot. Updating `release-baseline.json` is therefore an explicit review act,
+not an automatic side effect of running the bench.
 
 ### Remaining top blockers (the gap list)
 

@@ -1,0 +1,16 @@
+{
+  "corpusRevision": "816d9b2aeef4c0d1c0f6d8af2d8aeed3eb7a0762",
+  "fixtureCount": 7343,
+  "positive": {
+    "compiledMinimum": 2698,
+    "inScope": 2805,
+    "maximumFailures": 107
+  },
+  "negative": {
+    "fixtures": 2158,
+    "maximumAccepted": 323,
+    "unchecked": 0,
+    "timeouts": 0
+  },
+  "scorecardSha256": "ec1564ff5189c3a2cf7044e551a200cefa1075989693e835e6c24730e45f5c38"
+}

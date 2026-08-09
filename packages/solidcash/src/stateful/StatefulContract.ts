@@ -8603,7 +8603,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let returnEmitOutputIndex = -1;
     const delegatedReturnFunction = overrides?.calls
       ?.filter((call): call is Extract<CallInfo, { type: 'stateful' }> => call.type === 'stateful')
-      .map((call) => call.contract.inner.artifact.abi.find((fn) => fn.name === call.functionName))
+      .map((call) => {
+        const candidates = call.contract.inner.artifact.abi.filter((fn) => fn.name === call.functionName);
+        return candidates.find((fn) => fn.inputs
+          .filter((input) => !input.name.startsWith('__internal__')).length === call.args.length)
+          ?? candidates[0];
+      })
       .find((fn) => (fn?.outputs?.length ?? 0) > 0);
     const returnAbiFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturnFunction;
     let returnEmitBlockOffset = -1;

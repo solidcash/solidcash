@@ -852,6 +852,10 @@ it must not silently compile to incorrect covenant behavior.
     witness pointed into the iteration band. Counting those authenticated entry UTXOs moves the witness from output
     3 to the actual predecessor at output 5; the X102 controls pass 2/2 and the seven-file batch/iteration/chunk
     matrix passes 34/34.
+  - Delegate return-channel discovery now resolves overloaded functions by their visible argument count. Previously
+    a two-argument void delegate call could inherit the outputs of a same-name one-argument overload and append a
+    spurious return NFT. The delegate/return regression group passes 89/89 and the SDK changed-test gate passes
+    469 tests (6 skipped, 5 todo).
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

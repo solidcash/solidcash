@@ -1562,31 +1562,35 @@ export class StatefulTransactionBuilder {
         .filter((slot) => slot.kind !== 'returnEvent' || hasPendingOwnerReturn)
         .sort((a, b) => a.offset - b.offset)
       : [];
-    const earlyEmittedEventCount = earlyBlockEventSlots.filter((s) => s.kind === 'event').length;
+    const emittedBlockEventIndices = new Set<number>();
     const earlyEmittedOwnerReturn = earlyBlockEventSlots.some((s) => s.kind === 'returnEvent');
+    const emitBlockEvent = (slot: FunctionBlockLayout['slots'][number]): void => {
+      const emitIndex = slot.slotIndex ?? 0;
+      const placeholder = this.pendingEventPlaceholders.find((p) => p.emitIndex === emitIndex);
+      const raw = this.eventRawCommitments.get(emitIndex) ?? '';
+      const sig = placeholder?.eventSignature
+        ?? this.eventDefinitions[emitIndex]?.signature
+        ?? '';
+      const lockingBytecode = sig ? this.eventNftLockingBytecodes.get(sig) : undefined;
+      if (lockingBytecode) {
+        builder.addOutput({
+          to: lockingBytecode,
+          amount: 1200n,
+          token: {
+            amount: 0n, category: this.categoryId,
+            nft: { capability: 'none', commitment: raw },
+          },
+        });
+      } else {
+        builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
+      }
+      emittedBlockEventIndices.add(emitIndex);
+    };
     for (const slot of earlyBlockEventSlots) {
       if (slot.kind === 'event') {
         // Placeholder; real commitment filled by late merge if already derived. Empty is OK for
         // conditional inactive emits; active emits are overwritten via eventRawCommitments before send.
-        const emitIndex = slot.slotIndex ?? 0;
-        const placeholder = this.pendingEventPlaceholders.find((p) => p.emitIndex === emitIndex);
-        const raw = this.eventRawCommitments.get(emitIndex) ?? '';
-        const sig = placeholder?.eventSignature
-          ?? this.eventDefinitions[emitIndex]?.signature
-          ?? '';
-        const lockingBytecode = sig ? this.eventNftLockingBytecodes.get(sig) : undefined;
-        if (lockingBytecode) {
-          builder.addOutput({
-            to: lockingBytecode,
-            amount: 1200n,
-            token: {
-              amount: 0n, category: this.categoryId,
-              nft: { capability: 'none', commitment: raw },
-            },
-          });
-        } else {
-          builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
-        }
+        emitBlockEvent(slot);
       } else {
         // returnEvent: own-category return for this contract (not external-call returns).
         const own = this.pendingReturnEventOutputs.find((r) => r.categoryId === this.categoryId);
@@ -1733,15 +1737,28 @@ export class StatefulTransactionBuilder {
       builder.addOutput({
         to: bMaster.unlocker.generateLockingBytecode(), amount: bMaster.satoshis, token: bMaster.token,
       });
-      for (const nftUtxo of group.dataNftUtxos) {
-        builder.addOutput({
-          to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
-        });
+      for (let index = 0; index < group.dataNftUtxos.length; index += 1) {
+        const nftUtxo = group.dataNftUtxos[index];
+        const slot = group.blockLayout?.slots[index + 1];
+        if (slot?.kind === 'event') {
+          emitBlockEvent(slot);
+        } else {
+          builder.addOutput({
+            to: nftUtxo.unlocker.generateLockingBytecode(), amount: nftUtxo.satoshis, token: nftUtxo.token,
+          });
+        }
       }
     };
     if (this.delegateEntriesAfterLowLevel) {
       this.lowLevelCallUtxoGroups.forEach((_group, groupIndex) => {
-        if (!associatedDelegateOutputs.has(groupIndex)) appendDelegateGroupOutputs(groupIndex);
+        if (!associatedDelegateOutputs.has(groupIndex)) {
+          appendDelegateGroupOutputs(groupIndex);
+          // Delegate event slots are output-only: their paired funder is present at the same input offset,
+          // but the output must be the immutable event NFT rather than a pass-through of that funder.
+          for (const slot of this.blockLayout?.slots ?? []) {
+            if (slot.kind === 'event' && slot.offset === builder.outputs.length) emitBlockEvent(slot);
+          }
+        }
       });
       const proxyReturnEvents = this.pendingReturnEventOutputs
         .filter((returnEvent) => returnEvent.categoryId === this.categoryId);
@@ -2358,7 +2375,8 @@ export class StatefulTransactionBuilder {
     const reservedEventSlots = this.blockLayout?.slots.filter((slot) => slot.kind === 'event').length
       ?? eventOutputEntries.length;
     // Skip events already placed at block-layout offsets right after data NFTs.
-    for (let eventSlot = earlyEmittedEventCount; eventSlot < reservedEventSlots; eventSlot += 1) {
+    for (let eventSlot = 0; eventSlot < reservedEventSlots; eventSlot += 1) {
+      if (emittedBlockEventIndices.has(eventSlot)) continue;
       const eo = eventOutputEntries[eventSlot];
       if (!eo) {
         // A graph route reserves a fixed event frame. Keep every inactive site as a balanced plain output so a

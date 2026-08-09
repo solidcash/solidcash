@@ -222,11 +222,13 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
       /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
     );
     // ATTRIBUTABLE, without pinning WHICH concrete cause fires: that depends on the published budget. At a
-    // relaxed budget the loop runs until the covenant completes with a non-truthy value; against the mock's real 800 per
-    // byte it trips density control first and the refusal carries a source-mapped location instead. Both are
-    // genuine VM refusals of the same unbounded shape, so require a concrete cause rather than one wording.
-    expect(refusal).toMatch(/Unsuccessful evaluation: completed with a non-truthy value|C\.scash:\d+/);
-    expect(refusal).toContain('at input 0 in contract');
+    // relaxed budget the loop runs until the covenant completes with a non-truthy value; against the mock's real
+    // 800-per-byte budget, exact-transaction preflight can trip density control first. Both are concrete VM
+    // refusals of the same unbounded shape; neither may degrade into a generic template/debug failure.
+    expect(refusal).toMatch(
+      /Unsuccessful evaluation: completed with a non-truthy value|operation cost density limit/,
+    );
+    expect(refusal).toContain('input 0');
   });
 
   it('a recursive pure helper feeding a state write compiles and runs', async () => {

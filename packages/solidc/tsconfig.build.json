@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.build.json",
   "compilerOptions": {
     "outDir": "./dist",
+    "rootDir": "./src",
     "types": [
       "node",
       "vitest/globals"
@@ -10,4 +11,5 @@
   "include": [
     "src/**/*",
   ],
+  "references": [{ "path": "../utils/tsconfig.build.json" }]
 }

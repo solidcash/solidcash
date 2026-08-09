@@ -11,7 +11,7 @@ import {
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
-  createTestProvider, setupStatefulUtxos, genesisFtContainer,
+  createTestProvider, setupStatefulUtxos, genesisFtContainer, plainNumerics,
 } from '../test-util.js';
 import {
   alicePriv, bobPriv, aliceAddress, bobTokenAddress,
@@ -167,7 +167,7 @@ const spendBobs = (coin: Utxo): [Utxo, ReturnType<SignatureTemplate['unlockP2PKH
 describe('NativeUsdt / deposit delivery proof', () => {
   it('admits a deposit that actually grows the reserve', async () => {
     const { d, coin } = await ready(5n * UNIT, 'ba'.repeat(32));
-    const before = await d.master.getState();
+    const before = plainNumerics(await d.master.getState());
     // The premint is already in the container, so an absolute-sum proof would have
     // demanded PREMINT + 5 USDT here. The delta proof asks only for the 5.
     expect(before.containerSeen).toBe(PREMINT);
@@ -178,17 +178,17 @@ describe('NativeUsdt / deposit delivery proof', () => {
       .tokenContainerDeposit(d.ftCategory, 5n * UNIT)
       .send();
 
-    const after = await d.master.getState();
+    const after = plainNumerics(await d.master.getState());
     expect(after.backedSupply).toBe(before.backedSupply + 5n * UNIT);
     expect(after.containerSeen).toBe(before.containerSeen + 5n * UNIT);
     const bobAddr = addressToLockScript(d.bob.getAddress());
     const readPending = (d.master.state as Record<string, (k: Uint8Array) => Promise<unknown>>).pendingAmount;
-    expect(await readPending(bobAddr)).toBe(5n * UNIT);
+    expect(plainNumerics(await readPending(bobAddr))).toBe(5n * UNIT);
   }, 300000);
 
   it('refuses a deposit whose FTs pay the depositor instead of the container', async () => {
     const { d, coin } = await ready(5n * UNIT, 'bb'.repeat(32));
-    const before = await d.master.getState();
+    const before = plainNumerics(await d.master.getState());
 
     // Same amount, same category, same everything - only the DESTINATION differs.
     // The old whole-transaction sum could not tell these two tests apart.
@@ -202,13 +202,20 @@ describe('NativeUsdt / deposit delivery proof', () => {
         .send();
     } catch (error) { settled = false; reason = (error as Error).message; }
 
-    expect(settled, 'deposit credited FTs that never reached the container').toBe(false);
+    // NOTE (post-merge of solidcash_v0.13.1): this currently FAILS, and the failure is real but not
+    // a contract defect. `.send()` RESOLVES while the deposit silently no-ops - measured after the
+    // call, containerSeen/backedSupply/clock are all unchanged, so no FTs were credited and the
+    // destination check still holds. What regressed is the SDK reporting success for a transaction
+    // it did not apply; upstream's own e2e suite shows the same "promise resolved instead of
+    // rejecting" class in 5 other places. Left asserting the correct behaviour rather than
+    // weakened to match, so it goes green again when that is fixed.
+    expect(settled, 'deposit neither applied nor threw - send() reported success for a no-op').toBe(false);
     // Refused at input 0 - the MASTER's own script. `deposit` is not delegated: a token
     // container is invisible from a facet, so the proof can only run here.
     expect(reason, 'refused by the master, which is the input that carries the proof').toMatch(/at input 0/);
     expect(reason).toMatch(/OP_VERIFY/);
 
-    const after = await d.master.getState();
+    const after = plainNumerics(await d.master.getState());
     expect(after.containerSeen).toBe(before.containerSeen);
     expect(after.backedSupply).toBe(before.backedSupply);
   }, 300000);

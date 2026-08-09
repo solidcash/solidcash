@@ -1211,7 +1211,19 @@ export class TransactionBuilder {
     // ordering decides nothing. It costs nothing on the admitted path: the bytes are assessed first and an
     // admitted verdict returns before the VM is touched, so all 1,159 accepted sends the X126 probe measured
     // through this site are byte-for-byte unaffected.
-    assertFinalizedBytesWithCovenant(this, decodeTransactionUnsafe(hexToBin(tx)), inputSubjectsOfBuilder(this));
+    // Honor a mock provider's relaxed consensus ceilings (MistSwap adapter: 100KB inputs) so oversized
+    // factory scripts can reach covenant evaluation rather than being refused solely on the 10KB gate.
+    // Production/default providers leave consensusLimits at 10_000 and keep the real boundary.
+    const consensus = this.provider.consensusLimits;
+    assertFinalizedBytesWithCovenant(
+      this,
+      decodeTransactionUnsafe(hexToBin(tx)),
+      inputSubjectsOfBuilder(this),
+      {
+        maximumUnlockingBytes: consensus?.maximumInputBytes,
+        maximumTransactionBytes: consensus?.maximumTransactionBytes,
+      },
+    );
 
     let txid: string;
     try {

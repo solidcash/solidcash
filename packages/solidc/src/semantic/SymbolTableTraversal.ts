@@ -240,7 +240,39 @@ class IdentifierNameCounter extends AstTraversal {
   }
 }
 
-function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Set()): number {
+/**
+ * Widest pushdata encoding of an address: its locking bytecode is stored inline, and the widest form is
+ * P2SH32 (`OP_HASH256 <32> OP_EQUAL` = 35 B), so 36 with the push prefix.
+ */
+const ADDRESS_MAX_ENCODED_BYTES = 36;
+
+/**
+ * The width an address contributed before it was measured. Event chunking still uses it: `collectEmitStatements`
+ * turns a >128-byte event into chunkCount > 1, but nothing downstream splits the blob or reserves the extra
+ * `event` slots, so widening it there fails code generation with `Block slot not found: event[N]` instead of
+ * fixing anything. State-variable packing, which does honour the real width, uses ADDRESS_MAX_ENCODED_BYTES.
+ */
+const ADDRESS_EVENT_CHUNK_BYTES = 9;
+
+/**
+ * `keccak256(type(C).creationCode)` (or `runtimeCode`) hashes a blob the compiler already holds, so code
+ * generation folds it to a constant and never reads a side-car. Counting it would reserve a `keccakSideCar`
+ * slot nobody uses and make the SDK co-spend an input the covenant never looks at.
+ *
+ * It also cannot be computed on chain at this size: a Uniswap pair's creation code is 12,509 bytes = 92 keccak
+ * blocks, and one side-car input funds three.
+ */
+function isFoldableCreationCodeHash(node: FunctionCallNode): boolean {
+  if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
+  const arg = node.parameters[0];
+  return arg instanceof TypeIntrospectionNode
+    && (arg.property === 'creationCode' || arg.property === 'runtimeCode')
+    && arg.contractName !== undefined;
+}
+
+function getMaxPushdataEncodedSizeForType(
+  type: Type, seen: Set<string> = new Set(), addressBytes: number = ADDRESS_MAX_ENCODED_BYTES,
+): number {
   if (type === PrimitiveType.BOOL) return 1;
   if (type === PrimitiveType.BIGINT) return 9;
   if (type === PrimitiveType.PUBKEY) return 34;
@@ -267,8 +299,13 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
     if (n <= 255) return n + 2;
     return n + 3;
   }
-  if (type instanceof AddressType) return 9; // Address uses pushdata encoding
-  if (type instanceof ValueType) return getMaxPushdataEncodedSizeForType(type.underlyingType, seen);
+  // An address IS its locking bytecode, stored inline, so it costs its widest encoding - not the 9 bytes of a
+  // generic handle. Under-estimating packs too many addresses into one NFT and the commitment overflows the
+  // 128-byte consensus limit at send time (MistSwap SushiMaker deploy: 171 B).
+  if (type instanceof AddressType) return addressBytes;
+  if (type instanceof ValueType) {
+    return getMaxPushdataEncodedSizeForType(type.underlyingType, seen, addressBytes);
+  }
   if (type instanceof StructType) {
     // A struct reaches itself only through a dynamic array / mapping (returns a bounded handle below). A direct
     // or fixed-array self / mutual reference has no finite size - reject cleanly rather than recursing forever.
@@ -277,11 +314,11 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
         + 'through a dynamic array or mapping');
     }
     const next = new Set(seen).add(type.name);
-    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next), 0);
+    return type.fields.reduce((sum, f) => sum + getMaxPushdataEncodedSizeForType(f.type, next, addressBytes), 0);
   }
   if (type instanceof ArrayType && type.bound !== undefined) {
     return getMaxPushdataEncodedSizeForType(PrimitiveType.BIGINT, seen)
-      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen);
+      + type.bound * getMaxPushdataEncodedSizeForType(type.elementType, seen, addressBytes);
   }
   return 9;
 }
@@ -289,6 +326,12 @@ function getMaxPushdataEncodedSizeForType(type: Type, seen: Set<string> = new Se
 // Object keys that are RESOLVED cross-reference back-edges, not structural children. Once SymbolTable sets them a
 // generic child-walk that follows them cycles (a FunctionCall's `resolvedFunction` -> its body -> a call back to it,
 // the OZ SafeERC20.safeTransfer <-> _callOptionalReturn mutual recursion). Ad-hoc analysis walks must skip them.
+/**
+ * The subset of RESOLVED_BACKREF_KEYS that leaves the current CONTRACT. A walk collecting work that this
+ * contract's own block must fund follows the intra-contract edges and stops at these.
+ */
+const CROSS_CONTRACT_BACKREF_KEYS = new Set(['referencedContract']);
+
 const RESOLVED_BACKREF_KEYS = new Set([
   'location', 'definition', 'resolvedFunction', 'collection', 'stateVariable', 'errorDefinition',
   'referencedContract', 'symbolTable', 'type',
@@ -861,7 +904,12 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (this.compilerOptions.solidityImportCompat && node.hasDuplicateInheritedEventSignature) {
       throw new EventRedefinitionError(node.eventDefinitions[0] ?? node);
     }
-    const interfaceEventSigs = new Set<string>();
+    // Signature -> indexed layout of every event an implemented interface declares. A contract that redeclares an
+    // interface event IDENTICALLY is the ordinary Solidity shape and simply reuses it; one that redeclares it with
+    // different `indexed` flags is a conflicting redefinition, because the two disagree on the topic layout.
+    const indexedKey = (ev: { parameters: { indexed?: boolean }[] }): string =>
+      ev.parameters.map((parameter) => (parameter.indexed ? '1' : '0')).join(',');
+    const interfaceEventIndexed = new Map<string, string>();
     if (this.compilerOptions.solidityImportCompat) {
       const visitedInterfaces = new Set<string>();
       const collectInterfaceEvents = (name: string): void => {
@@ -870,9 +918,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const iface = this.interfaceMap.get(name);
         if (!iface) return;
         for (const event of iface.eventDefinitions) {
-          interfaceEventSigs.add(computeEventSignature(
+          interfaceEventIndexed.set(computeEventSignature(
             event.name, event.parameters.map((parameter) => parameter.type?.toString() ?? 'address'),
-          ));
+          ), indexedKey(event));
         }
         for (const parent of iface.parents) collectInterfaceEvents(parent);
       };
@@ -881,7 +929,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     for (const ev of node.eventDefinitions) {
       const sig = computeEventSignature(ev.name, ev.parameters.map((p) => p.type?.toString() ?? 'address'));
       ev.signature = sig;
-      if (localEventSigs.has(sig) || interfaceEventSigs.has(sig)) {
+      const interfaceIndexed = interfaceEventIndexed.get(sig);
+      if (localEventSigs.has(sig) || (interfaceIndexed !== undefined && interfaceIndexed !== indexedKey(ev))) {
         throw new EventRedefinitionError(ev);
       }
       localEventSigs.add(sig);
@@ -1723,6 +1772,18 @@ export default class SymbolTableTraversal extends AstTraversal {
     fieldType: (name: string) => Type | undefined,
   ): ExpressionNode | null {
     if (expr instanceof LiteralNode) return expr;
+    // A child constructor or same-transaction initializer observes the deploying contract as msg.sender.
+    // While folding that transition into the parent's deploy covenant, this is exactly the active input's
+    // locking bytecode. Preserve the EVM sequencing without introducing the child's impossible co-spend.
+    if (expr instanceof NullaryOpNode && expr.operator === NullaryOperator.MSG_SENDER) {
+      const inputIndex = new NullaryOpNode(NullaryOperator.INPUT_INDEX);
+      inputIndex.location = expr.location;
+      inputIndex.type = PrimitiveType.BIGINT;
+      const lockingBytecode = new UnaryOpNode(UnaryOperator.INPUT_LOCKING_BYTECODE, inputIndex);
+      lockingBytecode.location = expr.location;
+      lockingBytecode.type = new AddressType(false);
+      return lockingBytecode;
+    }
     if (expr instanceof IdentifierNode) {
       const sub = subs.get(expr.name);
       if (sub) return cloneNode(sub); // forwarded arg or earlier local
@@ -1785,6 +1846,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   private foldStatementList(
     statements: StatementNode[], subs: Map<string, ExpressionNode>,
     fieldExprs: Map<string, ExpressionNode>, fieldType: (name: string) => Type | undefined,
+    writableFieldType: (name: string) => Type | undefined = fieldType,
   ): false | { returnValue?: ExpressionNode, wrote: boolean } {
     let returnValue: ExpressionNode | undefined;
     let wrote = false;
@@ -1808,7 +1870,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (!folded) return false;
         if (subs.has(stmt.identifier.name)) {
           subs.set(stmt.identifier.name, folded);
-        } else if (fieldType(stmt.identifier.name)) {
+        } else if (writableFieldType(stmt.identifier.name)) {
           fieldExprs.set(stmt.identifier.name, folded);
           wrote = true;
         } else {
@@ -1860,11 +1922,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     });
     const fieldExprs = new Map<string, ExpressionNode>();
-    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
-    if (!res) {
-      deployNode.ctorFoldFailed = true; // genesis of ctor-written fields is unknown to later folds
-      return;
+    // Constructor inheritance may prepend an unrelated, non-foldable initialization (e.g. Uniswap's EIP-712
+    // DOMAIN_SEPARATOR) before a later independent `factory = msg.sender`. Retain every safely foldable prefix/
+    // suffix statement while remembering that reads of all other fields remain unknown. The substitutions map is
+    // shared, so straight-line locals still feed later foldable writes.
+    let failed = false;
+    for (const statement of statements) {
+      if (!this.foldStatementList([statement], subs, fieldExprs, fieldType)) failed = true;
     }
+    deployNode.ctorFoldFailed = failed;
     if (fieldExprs.size === 0) return;
     const init = deployNode.foldedStateInit ?? new Map<string, ExpressionNode>();
     for (const [k, v] of fieldExprs) init.set(k, v);
@@ -1895,15 +1961,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
     // An unfolded ctor means the genesis of fields it may have written is unknown: a read miss must fail
     // the fold (returning the type default would bake a wrong value into the covenant).
-    const fieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
-      ? undefined
-      : deployNode.referencedContract?.stateVariables.find((sv) => sv.name === name)?.type);
+    const stateFieldType = (name: string): Type | undefined => deployNode.referencedContract
+      ?.stateVariables.find((sv) => sv.name === name)?.type;
     const subs = new Map<string, ExpressionNode>(); // forwarded args + earlier locals -> parent-context expr
     foo.parameters.forEach((p, i) => { if (i < parentArgs.length) subs.set(p.name, parentArgs[i]); });
     // Seed with the genesis so far (ctor fold + earlier folded calls): a `this.field` read inside foo must
     // see the TRUE current value, not the type default.
     const fieldExprs = new Map<string, ExpressionNode>(deployNode.foldedStateInit ?? []);
-    const res = this.foldStatementList(statements, subs, fieldExprs, fieldType);
+    const readableFieldType = (name: string): Type | undefined => (deployNode.ctorFoldFailed
+      && !fieldExprs.has(name) ? undefined : stateFieldType(name));
+    const res = this.foldStatementList(statements, subs, fieldExprs, readableFieldType, stateFieldType);
     if (!res) return false;
     if (!res.wrote && !res.returnValue) return false; // neither a state transition nor a value
     if (res.wrote) {
@@ -2035,7 +2102,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // second loop-written mapping would have nowhere sound to land (multi-mapping loop-writes stay guarded).
       const loopWritten = new Set<string>();
       this.collectLoopWrittenSlotKeys(node.body, 0, loopWritten, new Set());
-      if (loopWritten.size === 1) {
+      if (loopWritten.size >= 1) {
         for (const [sk, info] of entryAccessMap) {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
@@ -2047,7 +2114,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           // needs a CLEAN trailing region -> single access only. A NON-sorted RMW loop stays guarded (no handler).
           const coll = this.collectionMap.get(info.collection);
           const isSortedRmw = !!coll?.sorted && ops.length === 2 && ops.includes('read') && ops.includes('write');
-          if ((isPureWrite && entryAccessMap.size === 1) || isSortedRmw) info.inLoop = true;
+          if ((!!coll?.sorted && (isPureWrite || isSortedRmw))
+            || (loopWritten.size === 1 && isPureWrite && entryAccessMap.size === 1)) info.inLoop = true;
         }
       }
 
@@ -2090,8 +2158,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
+        // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
+        // a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
+        // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
+        // batch path is what mint/transfer use successfully; constructors need the same shape.
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => fixedSortedWriteCount > 1 || stateArrayLastCollections.has(collection))
+          .filter(([collection]) => fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
@@ -2410,10 +2482,11 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
             if (!node.graphRuntimeEmissionHandler
               && !(slot.argSources ?? []).every((source) =>
-                source.kind === 'forward'
-                && source.paramIndex !== undefined
-                && source.paramIndex >= 0
-                && source.paramIndex < node.parameters.length)) {
+                (source.kind === 'forward'
+                  && source.paramIndex !== undefined
+                  && source.paramIndex >= 0
+                  && source.paramIndex < node.parameters.length)
+                || (source.kind === 'expression' && slot.interfaceName === '__raw__'))) {
               throw new GraphHandlerShapeError(
                 node,
                 `Graph handler '${node.name}' currently requires forwarded identifier arguments`,
@@ -2428,8 +2501,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             // directly; there is intentionally no interface method to resolve.
             if (slot.interfaceName === '__raw__' && slot.functionName === '__raw__') {
               if (slot.argSources?.length !== 1
-                || slot.argSources[0].kind !== 'forward'
-                || slot.argSources[0].paramIndex === undefined) {
+                || (slot.argSources[0].kind !== 'expression'
+                  && (slot.argSources[0].kind !== 'forward'
+                    || slot.argSources[0].paramIndex === undefined))) {
                 throw new GraphHandlerShapeError(
                   node, `Graph handler '${node.name}' requires one forwarded raw calldata argument`,
                 );
@@ -2717,12 +2791,13 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Assign sequential callIndex to each low-level call node (updates callMode in array)
         this.assignLowLevelCallIndices(node.body, { counter: 0 });
 
-        // Inject _callInputIndex parameter(s) - only for non-stateful contracts.
-        // Stateful contracts use block layout offsets instead.
-        // Skip delegatecall (proxy doesn't verify delegate's calldata).
-        if (this.isStatefulContract) {
-          // Block layout provides the offset - no _callInputIndex needed
-        } else for (let i = 0; i < lowLevelCallCount; i++) {
+        // Inject _callInputIndex for every non-delegatecall low-level call.
+        // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
+        // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
+        // collides with the caller's trailing region (dynamic chunks, C2 batch preds). A runtime index
+        // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
+        // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
+        for (let i = 0; i < lowLevelCallCount; i++) {
           if (node.lowLevelCalls![i].callMode === 'delegatecall') continue;
           const paramName = lowLevelCallCount === 1 ? '__internal__callInputIndex' : `__internal__callInputIndex${i}`;
           const param = new ParameterNode(PrimitiveType.BIGINT, paramName);
@@ -3120,7 +3195,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         let eventSignature: string;
         if (eventDef) {
           const maxSize = eventDef.parameters.reduce(
-            (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type), 0,
+            (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type, new Set(), ADDRESS_EVENT_CHUNK_BYTES), 0,
           );
           chunkCount = maxSize > 128 ? Math.ceil(maxSize / 128) : 1;
           eventSignature = eventDef.signature;
@@ -3128,7 +3203,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // Use max chunk count across all candidates (resolution deferred to TypeCheck)
           chunkCount = Math.max(...candidates!.map((c) => {
             const maxSize = c.parameters.reduce(
-              (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type), 0,
+              (sum, p) => sum + getMaxPushdataEncodedSizeForType(p.type, new Set(), ADDRESS_EVENT_CHUNK_BYTES), 0,
             );
             return maxSize > 128 ? Math.ceil(maxSize / 128) : 1;
           }));
@@ -3747,11 +3822,21 @@ export default class SymbolTableTraversal extends AstTraversal {
     if (visited.has(node)) return counts;
     visited.add(node);
 
-    if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries) {
+    if (node instanceof FunctionCallNode && node.identifier.name in this.resolvedLibraries
+      && !isFoldableCreationCodeHash(node)) {
       counts.set(node.identifier.name, (counts.get(node.identifier.name) ?? 0) + 1);
     }
 
-    for (const value of Object.values(node)) {
+    for (const [key, value] of Object.entries(node)) {
+      // Skip only the edges that leave this CONTRACT. `referencedContract` reaches another contract, whose
+      // library calls run in ITS block, not ours: counting them over-reserves this function's side-car slots
+      // and shifts every later block-layout slot (MistSwap `createPair`: one keccak256, EIGHT slots reserved).
+      //
+      // `resolvedFunction` is deliberately NOT skipped, unlike in the sibling walkers. An internal helper's
+      // body is inlined into its caller, so its library calls really do execute in the caller's block and must
+      // be counted here - skipping it loses the entry point's side-car slot, `keccakPreimageParams` and
+      // `keccakCompute` entirely (a constructor calling a private `keccak256` helper reserves nothing).
+      if (CROSS_CONTRACT_BACKREF_KEYS.has(key)) continue;
       if (value instanceof Node) {
         this.countLibraryCalls(value, counts, visited);
       } else if (Array.isArray(value)) {
@@ -4789,11 +4874,13 @@ export default class SymbolTableTraversal extends AstTraversal {
     const gather = (n: Node | undefined, seen: Set<Node>): void => {
       if (!n || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof ExternalFunctionCallNode && n.addressExpression instanceof IdentifierNode) {
-        const nm = n.addressExpression.name;
-        const list = byLocal.get(nm) ?? [];
-        list.push(n);
-        byLocal.set(nm, list);
+      if (n instanceof ExternalFunctionCallNode) {
+        const nm = this.externalReceiverLocal(n.addressExpression);
+        if (nm) {
+          const list = byLocal.get(nm) ?? [];
+          list.push(n);
+          byLocal.set(nm, list);
+        }
       }
       for (const v of Object.values(n)) {
         if (v instanceof Node) gather(v, seen);
@@ -4802,7 +4889,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     };
     gather(body, new Set());
     for (const [localName, calls] of byLocal) {
-      if (calls.length < 2 || !this.findLocalInit(body, localName)) continue;
+      if (calls.length < 2
+        || (!this.findLocalInit(body, localName) && !this.findAssignmentValue(body, localName))) continue;
       // Classify by return: a VOID call is the state-changing mutate (the co-spend); a RETURNING call is a view
       // whose result becomes a caller witness. (The interface AST does not track `view`; hasReturnValues is the
       // sound proxy - the one void mutate's covenant bounds a wrong witness, and a misclassified returning-mutate
@@ -4812,13 +4900,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const c of calls) {
         if (c.callInfo?.hasReturnValues) views.push(c); else mutateCount += 1;
       }
-      // Exactly one mutate (the co-spend) + at least one view. A MULTI-return view (getReserves() -> 3 values) must
+      // Exactly one mutate (the co-spend) + at least one view, OR an all-view compatibility aggregator. A BCH
+      // master UTXO cannot be co-spent twice in one transaction; for an all-view loop the SDK-provided witnesses
+      // are the native query inputs and the function has no state effect for forged values to influence. A
+      // MULTI-return view (getReserves() -> 3 values) must
       // be the RHS of a tuple destructure `(r0, r1,) = pair.getReserves()`, so it can be replaced by per-slot witness
       // accesses; else leave the whole local to fail closed.
-      if (mutateCount !== 1 || views.length === 0) continue;
+      if (!((mutateCount === 1 && views.length > 0) || (mutateCount === 0 && views.length === calls.length))) continue;
       if (views.some((v) => (v.callInfo?.returnTypes?.length ?? 0) !== 1
         && !this.findTupleAssignmentWithRhs(body, v))) continue;
-      const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body);
+      const loopIdx = this.findLoopIndexInComputedTarget(new IdentifierNode(localName), body)
+        ?? this.findLoopOrdinalForLocal(body, localName);
       if (!loopIdx) continue;
       const mkWitness = (retType: Type): ArrayAccessNode => {
         const witnessName = `__internal__viewReturn${this.viewReturnCounter}`;
@@ -4836,7 +4928,16 @@ export default class SymbolTableTraversal extends AstTraversal {
       for (const view of views) {
         const rets = view.callInfo!.returnTypes!;
         if (rets.length === 1) {
-          this.replaceNodeInTree(body, view, mkWitness(rets[0]));
+          const tuple = view.opaqueReturn ? this.findTupleAssignmentWithRhs(body, view) : undefined;
+          if (tuple) {
+            const success = new BoolLiteralNode(true);
+            success.location = view.location;
+            const witness = mkWitness(rets[0]);
+            tuple.tupleExpressions = [success, witness];
+            tuple.tuple = success;
+          } else {
+            this.replaceNodeInTree(body, view, mkWitness(rets[0]));
+          }
         } else {
           const ta = this.findTupleAssignmentWithRhs(body, view)!;
           const accesses = rets.map((rt) => mkWitness(rt));
@@ -4848,6 +4949,16 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private externalReceiverLocal(expression: ExpressionNode): string | undefined {
+    if (expression instanceof IdentifierNode) return expression.name;
+    if (expression instanceof CastNode) return this.externalReceiverLocal(expression.expression);
+    if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+      && (this.interfaceMap.has(expression.identifier.name) || this.contractMap.has(expression.identifier.name))) {
+      return this.externalReceiverLocal(expression.parameters[0]);
+    }
+    return undefined;
+  }
+
   // Count, per bare-local name, how many external calls use it as their RECEIVER (`local.m()`). Restricts the
   // loop-body local-receiver rewrite to single-use locals: a multi-use receiver (`pair.getReserves(); pair.swap()`)
   // would need ONE co-spend to serve several calls (a read + a write on the same UTXO), which the per-call witness
@@ -4856,9 +4967,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     seen: Set<Node> = new Set()): Map<string, number> {
     if (!node || seen.has(node)) return acc;
     seen.add(node);
-    if (node instanceof ExternalFunctionCallNode && node.addressExpression instanceof IdentifierNode) {
-      const nm = node.addressExpression.name;
-      acc.set(nm, (acc.get(nm) ?? 0) + 1);
+    if (node instanceof ExternalFunctionCallNode) {
+      const nm = this.externalReceiverLocal(node.addressExpression);
+      if (nm) {
+        acc.set(nm, (acc.get(nm) ?? 0) + 1);
+      }
     }
     for (const v of Object.values(node)) {
       if (v instanceof Node) this.buildExtCallReceiverCounts(v, acc, seen);
@@ -4901,7 +5014,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (n instanceof IdentifierNode && !seen.has(n.name)) {
         seen.add(n.name);
         // resolve a plain local, then a tuple-destructure element (`(input,output)=(path[i],path[i+1])`) to its RHS
-        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name);
+        const init = this.findLocalInit(body, n.name) ?? this.findTupleInit(body, n.name)
+          ?? this.findAssignmentValue(body, n.name);
         if (init) { walk(init); return; }
       }
       for (const k of Object.keys(n as Record<string, unknown>)) {
@@ -4914,13 +5028,168 @@ export default class SymbolTableTraversal extends AstTraversal {
     return found;
   }
 
+  private findAssignmentValue(node: Node | undefined, name: string,
+    seen: Set<Node> = new Set()): ExpressionNode | undefined {
+    if (!node || seen.has(node)) return undefined;
+    seen.add(node);
+    if (node instanceof AssignNode && node.identifier.name === name) return node.expression;
+    for (const value of Object.values(node)) {
+      if (value instanceof Node) {
+        const found = this.findAssignmentValue(value, name, seen);
+        if (found) return found;
+      } else if (Array.isArray(value)) {
+        for (const item of value) if (item instanceof Node) {
+          const found = this.findAssignmentValue(item, name, seen);
+          if (found) return found;
+        }
+      }
+    }
+    return undefined;
+  }
+
+  private findLoopArrayInComputedTarget(expr: Node, body: Node | undefined): ArrayAccessNode | undefined {
+    let found: ArrayAccessNode | undefined;
+    const names = new Set<string>();
+    const nodes = new Set<Node>();
+    const walk = (node: Node | undefined): void => {
+      if (!node || found || nodes.has(node)) return;
+      nodes.add(node);
+      if (node instanceof ArrayAccessNode && node.array instanceof IdentifierNode
+        && node.index instanceof IdentifierNode) { found = node; return; }
+      if (node instanceof IdentifierNode && !names.has(node.name)) {
+        names.add(node.name);
+        const value = this.findLocalInit(body, node.name) ?? this.findTupleInit(body, node.name)
+          ?? this.findAssignmentValue(body, node.name);
+        if (value) { walk(value); return; }
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(expr);
+    return found;
+  }
+
+  // Numeric range aggregators (`for (id=from; id<to; id++) { token=factory.allPairs(id); i=id-from;
+  // out[i].x=token.x(); }`) have no address-array leaf in the receiver initializer. Reuse an array index local
+  // from the same enclosing loop as the zero-based witness ordinal. Prefer conventional `i`, otherwise the first
+  // loop-local array index; this is used only for all-view witness lowering, never for state-changing dispatch.
+  private findLoopOrdinalForLocal(body: Node | undefined, localName: string): IdentifierNode | undefined {
+    let result: IdentifierNode | undefined;
+    const containsDecl = (node: Node | undefined, seen = new Set<Node>()): boolean => {
+      if (!node || seen.has(node)) return false;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName) return true;
+      if (node instanceof TupleAssignmentNode
+        && node.elements.some((element) => element.name === localName && !element.skip && !element.existing)) return true;
+      return Object.values(node).some((value) => value instanceof Node ? containsDecl(value, seen)
+        : Array.isArray(value) && value.some((item) => item instanceof Node && containsDecl(item, seen)));
+    };
+    const scan = (node: Node | undefined, seen = new Set<Node>()): void => {
+      if (!node || result || seen.has(node)) return;
+      seen.add(node);
+      if ((node instanceof WhileNode || node instanceof DoWhileNode) && containsDecl(node)) {
+        const candidates: IdentifierNode[] = [];
+        const collect = (candidate: Node | undefined, visited = new Set<Node>()): void => {
+          if (!candidate || visited.has(candidate)) return;
+          visited.add(candidate);
+          if (candidate instanceof ArrayAccessNode && candidate.index instanceof IdentifierNode) {
+            candidates.push(candidate.index);
+          }
+          for (const value of Object.values(candidate)) {
+            if (value instanceof Node) collect(value, visited);
+            else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) collect(item, visited);
+          }
+        };
+        collect(node);
+        result = candidates.find((candidate) => candidate.name === 'i') ?? candidates[0];
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) scan(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item, seen);
+      }
+    };
+    scan(body);
+    return result;
+  }
+
+  // Tail-recursion lowering introduces an explicit zero-based `__tail_iteration_*` counter. A computed callee
+  // local inside that loop has no source array index for the ordinary loop-target rewrite to discover, but this
+  // counter is exactly the witness-array ordinal required by typed inline dispatch. Return it only from the loop
+  // that lexically contains the local declaration; an unrelated tail loop cannot become its index.
+  private findTailLoopOrdinalForLocal(body: Node | undefined, localName: string): IdentifierNode | undefined {
+    let result: IdentifierNode | undefined;
+    const containsDeclaration = (node: Node | undefined, seen = new Set<Node>()): boolean => {
+      if (!node || seen.has(node)) return false;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName) return true;
+      return Object.values(node).some((value) => value instanceof Node ? containsDeclaration(value, seen)
+        : Array.isArray(value) && value.some((item) => item instanceof Node
+          && containsDeclaration(item, seen)));
+    };
+    const scan = (node: Node | undefined, seen = new Set<Node>()): void => {
+      if (!node || result || seen.has(node)) return;
+      seen.add(node);
+      if ((node instanceof WhileNode || node instanceof DoWhileNode) && containsDeclaration(node.block)) {
+        const findCounter = (candidate: Node | undefined, visited = new Set<Node>()): void => {
+          if (!candidate || result || visited.has(candidate)) return;
+          visited.add(candidate);
+          if (candidate instanceof IdentifierNode && candidate.name.includes('__tail_iteration_')) {
+            result = candidate;
+            return;
+          }
+          for (const value of Object.values(candidate)) {
+            if (value instanceof Node) findCounter(value, visited);
+            else if (Array.isArray(value)) {
+              for (const item of value) if (item instanceof Node) findCounter(item, visited);
+            }
+          }
+        };
+        findCounter(node.block);
+        // Ordinary `for` loops are desugared to a while whose condition retains the source induction variable.
+        // Prefer the explicit tail-loop ordinal above, then use the canonical condition's first identifier.
+        if (!result) {
+          const findConditionCounter = (candidate: Node | undefined, visited = new Set<Node>()): void => {
+            if (!candidate || result || visited.has(candidate)) return;
+            visited.add(candidate);
+            if (candidate instanceof IdentifierNode && candidate.name !== localName) {
+              result = candidate;
+              return;
+            }
+            for (const value of Object.values(candidate)) {
+              if (value instanceof Node) findConditionCounter(value, visited);
+              else if (Array.isArray(value)) {
+                for (const item of value) if (item instanceof Node) findConditionCounter(item, visited);
+              }
+            }
+          };
+          findConditionCounter(node.condition);
+        }
+        return;
+      }
+      for (const value of Object.values(node)) {
+        if (value instanceof Node) scan(value, seen);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) scan(item, seen);
+      }
+    };
+    scan(body);
+    return result;
+  }
+
   // The per-slot RHS of a tuple-destructure element `(input, output) = (path[i], path[i+1])` -> input := path[i].
   private findTupleInit(node: Node | undefined, name: string, seen: Set<Node> = new Set()): ExpressionNode | undefined {
     if (!node || seen.has(node)) return undefined;
     seen.add(node);
-    if (node instanceof TupleAssignmentNode && node.tupleExpressions) {
+    if (node instanceof TupleAssignmentNode) {
       const idx = node.elements.findIndex((el) => el.name === name && !el.skip);
-      if (idx >= 0 && node.tupleExpressions[idx]) return node.tupleExpressions[idx];
+      if (idx >= 0 && node.tupleExpressions?.[idx]) return node.tupleExpressions[idx];
+      if (idx >= 0 && node.tuple) {
+        const value = new TupleIndexOpNode(cloneNode(node.tuple) as ExpressionNode, idx);
+        value.location = node.location;
+        return value;
+      }
     }
     for (const v of Object.values(node)) {
       if (v instanceof Node) { const r = this.findTupleInit(v, name, seen); if (r) return r; } else if (Array.isArray(v)) {
@@ -4942,15 +5211,38 @@ export default class SymbolTableTraversal extends AstTraversal {
         && (!stateMember.visibilityExplicit
           || (stateMember.visibility !== StateVariableVisibility.PUBLIC
             && stateMember.visibility !== StateVariableVisibility.EXTERNAL));
-      if (concreteCallee && (stateMemberHidden
+      // Split facets deliberately suppress physical getter entry points, but carry a synthetic logical interface
+      // with the root-owned getter declarations needed by self-typed master-contract calls.
+      const splitLogicalGetter = concreteCallee?.isSplitFacet
+        && this.interfaceMap.get(callInfo.interfaceName)?.functions.some(
+          (fn) => fn.name === callInfo.functionName,
+        );
+      if (concreteCallee && !splitLogicalGetter && (stateMemberHidden
         || !concreteCallee.functions.some((f) => f.name === callInfo.functionName))) {
         const missing = new IdentifierNode(`${callInfo.interfaceName}.${callInfo.functionName}`);
         missing.location = node.location;
         throw new UndefinedReferenceError(missing);
       }
       // Each call site gets its own slot (no de-duplication)
-      let addressParam = node.addressExpression instanceof IdentifierNode
-        ? node.addressExpression.name : undefined;
+      // Low-level helpers commonly make the receiver cast explicit (`address(token).call(data)`). The cast is an
+      // identity wrapper in BCH codegen; source the expected locking bytecode from the live identifier just as
+      // for `token.call(data)`. Without peeling it, the call was classified as opaque `__raw__.__raw__` with no
+      // pinned target (BentoBox deposit -> SafeERC20/Address helper).
+      const directAddressIdentifier = (expression: ExpressionNode): IdentifierNode | undefined => {
+        if (expression instanceof IdentifierNode) return expression;
+        if (expression instanceof CastNode && expression.type instanceof AddressType) {
+          return directAddressIdentifier(expression.expression);
+        }
+        return undefined;
+      };
+      const directAddressStateAccess = (expression: ExpressionNode): StateAccessNode | undefined => {
+        if (expression instanceof StateAccessNode) return expression;
+        if (expression instanceof CastNode && expression.type instanceof AddressType) {
+          return directAddressStateAccess(expression.expression);
+        }
+        return undefined;
+      };
+      let addressParam = directAddressIdentifier(node.addressExpression)?.name;
       // An interface/address constant is not a runtime stack source. Peel only the compile-time cast wrappers
       // produced by `IFoo(address(<literal>))`; arbitrary constant expressions remain unrecognized and therefore
       // fail closed below rather than being mistaken for code-baked target identities.
@@ -4969,8 +5261,11 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // A `__extaddr_<var>` address local is the synthesized read of an interface-typed state var (see
       // SynthesizeExternalAddressLocals); record the underlying state var so the SDK resolves it from state.
+      const directStateTarget = addressParam ? this.stateVariableMap.get(addressParam) : undefined;
       const addressStateVar = addressParam?.startsWith('__extaddr_')
-        ? addressParam.slice('__extaddr_'.length) : undefined;
+        ? addressParam.slice('__extaddr_'.length)
+        : directStateTarget?.type instanceof AddressType && directStateTarget.type.interfaceName
+          ? addressParam : directAddressStateAccess(node.addressExpression)?.name;
       // Loop-body local aliasing a per-iteration array element `address input = path[i]; IToken(input).m()`
       // (Router02 fee-on-transfer swap binds `(input, output) = (path[i], path[i+1])`). The local holds `arr[i]`
       // for the CURRENT iteration, so the co-spend target is per-iteration - NOT a function-top fixed slot (which
@@ -4997,6 +5292,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       // MappingAccessNode (the flattened state-array model); a real mapping reaches the same branch and is
       // rejected later in emitArrayExternalCallLoop ("must be a state array"). Local arrays use ArrayAccessNode.
       let loopArrayVar: string | undefined;
+      let loopIndexExpression: ExpressionNode | undefined;
       let loopArrayElemStructType: StructType | undefined;
       let loopArrayElemFieldName: string | undefined;
       let loopWitnessArrayIds: IdentifierNode[] = [];
@@ -5005,32 +5301,88 @@ export default class SymbolTableTraversal extends AstTraversal {
       // un-hoisted - a loop-body local is not single-assign), which the co-spend epilogue cannot read (the local
       // is loop-consumed). Rewrite the call to the witness (like a direct computed target) AND neutralize the now
       // dead initializer to read the same witness, so `pairFor` is not recomputed on-chain (defeating the witness
-      // and risking a size fault). Restricted to a SINGLE-use local with a cast/reference init: a multi-use receiver
-      // would need one co-spend to serve several calls (left to fail closed).
-      if (addressParam && !addressStateVar && node.interfaceName
-        && node.addressExpression instanceof IdentifierNode) {
+      // and risking a size fault). A MULTI-use receiver gets one independently authenticated call slot per method;
+      // keep its cheap source initializer intact so every call can still recover the common loop index.
+      if (addressParam && !addressStateVar
+        && directAddressIdentifier(node.addressExpression)?.name === addressParam) {
         const initExpr = this.findLocalInit(this.currentFunction?.body, addressParam);
-        const canNeutralize = initExpr instanceof CastNode
+        let resolvedInit = initExpr;
+        const resolvedNames = new Set<string>();
+        while (resolvedInit instanceof IdentifierNode && !resolvedNames.has(resolvedInit.name)) {
+          resolvedNames.add(resolvedInit.name);
+          resolvedInit = this.findLocalInit(this.currentFunction?.body, resolvedInit.name)
+            ?? this.findAssignmentValue(this.currentFunction?.body, resolvedInit.name);
+        }
+        const legacyInterfaceCast = initExpr instanceof FunctionCallNode && initExpr.parameters.length === 1
+          && (this.interfaceMap.has(initExpr.identifier.name) || this.contractMap.has(initExpr.identifier.name));
+        const canNeutralize = initExpr instanceof CastNode || legacyInterfaceCast
           || (initExpr instanceof ContractReferenceNode && (initExpr.constructorArgs?.length ?? 0) > 0);
-        if (initExpr && canNeutralize
-          && this.extCallReceiverCounts.get(addressParam) === 1) {
-          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body);
+        // A loop may receive its per-iteration callee from another contract or decode it from the current action
+        // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
+        // binds that witness to the live runtime local before verifying the co-spent callee.
+        if (resolvedInit && this.loopDeclaredLocals.has(addressParam)) {
+          const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
+            ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
+          if (loopIdx) {
+            const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
+            this.loopTargetsCounter += 1;
+            const witness = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
+            loopArrayVar = witnessName;
+            loopIndexExpression = cloneNode(loopIdx) as ExpressionNode;
+            loopWitnessArrayIds.push(witness.arrayId);
+          }
+        }
+        if (initExpr && canNeutralize && !loopArrayVar) {
+          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
+            ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
             this.loopTargetsCounter += 1;
             const call = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
             node.addressExpression = call.access;
             const init = this.buildLoopWitnessAccess(loopIdx, witnessName, node.location);
-            if (initExpr instanceof CastNode) initExpr.expression = init.access;
-            else (initExpr as ContractReferenceNode).constructorArgs[0] = init.access;
+            if (this.extCallReceiverCounts.get(addressParam) === 1) {
+              if (initExpr instanceof CastNode) initExpr.expression = init.access;
+              else if (initExpr instanceof FunctionCallNode) initExpr.parameters[0] = init.access;
+              else (initExpr as ContractReferenceNode).constructorArgs[0] = init.access;
+              loopWitnessArrayIds.push(init.arrayId);
+            }
             loopArrayVar = witnessName;
-            loopWitnessArrayIds = [call.arrayId, init.arrayId];
+            loopWitnessArrayIds.push(call.arrayId);
             addressParam = undefined; // the local is not the address source; the witness is
           }
         }
       }
+      if (addressParam && !addressStateVar && !loopArrayVar && this.loopDeclaredLocals.has(addressParam)) {
+        const access = this.findLoopArrayInComputedTarget(node.addressExpression, this.currentFunction?.body);
+        if (access && access.array instanceof IdentifierNode) {
+          const arrayName = this.resolveInlineAliasName(access.array.name, this.currentFunction?.body);
+          if (this.currentFunction?.parameters.some((parameter) => parameter.name === arrayName)) {
+            loopArrayVar = arrayName;
+            loopIndexExpression = cloneNode(access.index) as ExpressionNode;
+            addressParam = undefined;
+          }
+        }
+      }
       if (!addressParam && !loopArrayVar) {
-        const ae = node.addressExpression;
+        const seenLoopAliases = new Set<string>();
+        const unwrapLoopTarget = (expression: ExpressionNode): ExpressionNode => {
+          if (expression instanceof CastNode) return unwrapLoopTarget(expression.expression);
+          if (expression instanceof FunctionCallNode && expression.parameters.length === 1
+            && (this.interfaceMap.has(expression.identifier.name) || this.contractMap.has(expression.identifier.name))) {
+            return unwrapLoopTarget(expression.parameters[0]);
+          }
+          if (expression instanceof IdentifierNode && !seenLoopAliases.has(expression.name)) {
+            seenLoopAliases.add(expression.name);
+            const initializer = this.findLocalInit(this.currentFunction?.body, expression.name);
+            if (initializer) return unwrapLoopTarget(initializer);
+          }
+          return expression;
+        };
+        const ae = unwrapLoopTarget(node.addressExpression);
+        if (ae !== node.addressExpression && (ae instanceof ArrayAccessNode || ae instanceof MappingAccessNode)) {
+          node.addressExpression = cloneNode(ae) as ExpressionNode;
+        }
         // A loop over a dynamic state array read multiple times is cached to a `__dlcache_V` local by
         // CacheDynamicArrayInLoop; strip the prefix so the co-spend epilogue reads the self-pinned STATE array V.
         const stripCache = (n: string): string => (n.startsWith('__dlcache_') ? n.slice('__dlcache_'.length) : n);
@@ -5062,7 +5414,7 @@ export default class SymbolTableTraversal extends AstTraversal {
               }
             }
           }
-        } else if (ae instanceof FunctionCallNode && node.interfaceName) {
+        } else if (ae instanceof FunctionCallNode) {
           // A per-iteration COMPUTED external-call target `IFoo(pairFor(factory, path[i], path[i+1]))` in a loop:
           // SEAL could not hoist it (a leaf is loop-dependent, so addressParam stays undefined). Rewrite the target
           // to read the callee address from a synthesized witness array `__internal__loopTargets<n>[i]` (the SDK
@@ -5257,6 +5609,9 @@ export default class SymbolTableTraversal extends AstTraversal {
         const sourceName = addressStateVar.slice('ll_'.length);
         const sourceIndex = userVisibleParams.findIndex((param) => param.name === sourceName);
         if (sourceIndex >= 0) addressSource = { kind: 'forward', paramIndex: sourceIndex };
+        else if (this.currentContract?.parameters.some((param) => param.name === sourceName)) {
+          addressSource = { kind: 'constructorArg', paramName: sourceName };
+        }
       }
       const resolveInitializer = (
         expression: ExpressionNode, seen = new Set<Node>(),
@@ -5467,6 +5822,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         addressParam,
         addressStateVar,
         loopArrayVar,
+        ...(loopIndexExpression && { loopIndexExpression }),
         ...(loopWitnessArrayIds.length > 0 && { loopWitnessArrayIds }),
         ...(loopArrayElemStructType && { loopArrayElemStructType, loopArrayElemFieldName }),
         ...(node.selectorArrayVar && { selectorArrayVar: node.selectorArrayVar }),
@@ -7857,7 +8213,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     ]);
     if (this.compilerOptions.solidityImportCompat
       && this.currentFunction?.modifiers.includes(FunctionModifier.PURE)
-      && environmentReads.has(node.operator)) {
+      && environmentReads.has(node.operator)
+      && !(node.operator === NullaryOperator.CHAIN_ID && node.fromInlineAssembly)) {
       throw new InvalidModifierCombinationError(
         this.currentFunction, `'pure' functions cannot read '${node.operator}'`,
       );
@@ -10381,7 +10738,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       return t;
     }
     if (expr instanceof ArrayAccessNode) {
-      const base = this.resolveLowLevelReceiverType(expr.array);
+      // Solidity's parser represents `mappingName[key]` as an ArrayAccessNode until the ordinary expression
+      // visitor lowers it to MappingAccessNode.  For a public mapping, the lexical symbol with the same name is
+      // its synthesized getter, so resolving the identifier through nameType() sees the getter's function type
+      // rather than the storage collection. Prefer the collection declaration here, just as the
+      // MappingAccessNode branch above does, so a direct interface-valued read (`strategy[token].exit(..)`) can
+      // determine its callee ABI before visiting/lowering the receiver.
+      const base = expr.array instanceof IdentifierNode
+        ? this.collectionMap.get(expr.array.name)?.type ?? this.resolveLowLevelReceiverType(expr.array)
+        : expr.array instanceof StateAccessNode
+          ? this.collectionMap.get(expr.array.name)?.type ?? this.resolveLowLevelReceiverType(expr.array)
+          : this.resolveLowLevelReceiverType(expr.array);
       return base instanceof ArrayType ? base.elementType : base instanceof MappingType ? base.valueType : undefined;
     }
     if (expr instanceof TupleIndexOpNode) {
@@ -11345,15 +11712,18 @@ export default class SymbolTableTraversal extends AstTraversal {
       slots.push({ kind: 'returnEvent', offset: offset++ });
     }
 
-    // Low-level call slots. In a balanced message-bus batch block, a delegate is a real
-    // co-spent covenant paired with its preserved output just like other
-    // low-level callees; direct wrappers continue to use their positional
-    // delegate-input witness.
+    // Low-level call slots. Ordinary address.call / staticcall use a runtime __internal__callInputIndex
+    // witness (see visitFunctionDefinition) so multi-UTXO callees can sit after the caller's trailing
+    // region. Only delegatecall keeps a fixed layout slot (paired with proxy co-spend geometry).
+    // In a balanced message-bus batch block, a delegate is a real co-spent covenant paired with its
+    // preserved output; direct wrappers continue to use their positional delegate-input witness.
     if (node.lowLevelCalls) {
       for (let i = 0; i < node.lowLevelCalls.length; i++) {
         // Direct delegate implementations already own a reserved slot next to the data-NFT region above.
         if (node.lowLevelCalls[i].callMode === 'delegatecall'
           && !node.graphEmissionHandler && !node.messageBusRoute) continue;
+        // Non-delegatecall: runtime callInputIndex, no fixed slot.
+        if (node.lowLevelCalls[i].callMode !== 'delegatecall') continue;
         slots.push({ kind: 'lowLevelCall', offset: offset++, slotIndex: i });
       }
     }
@@ -11363,12 +11733,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
     }
 
-    // Deploy slots (deploy modifier functions have a genesis input per child deploy site)
-    // Note: deployTargets isn't populated yet at this stage - check modifier instead
+    // Deploy slots (deploy modifier functions have a genesis input per child deploy site).
+    // After each deploy master, reserve a fixed `deployDataNft` slot per child data NFT so the
+    // C2 insert tail (and any other trailing outputs) starts at a covenant-known offset rather
+    // than sharing the first post-blockSize slot with the child's unanchored data NFTs
+    // (see docs/deferrals.md "Factory deploy of a stateful child alongside C2 mapping writes").
+    // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
+    // referenced contract (or deployedDataNftCount once the site has been visited).
     if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
-      const deploySites = this.countDeploySites(node.body);
-      for (let i = 0; i < Math.max(1, deploySites); i++) {
+      const deploySiteCounts = this.listDeploySiteDataNftCounts(node.body);
+      const siteCount = Math.max(1, deploySiteCounts.length);
+      for (let i = 0; i < siteCount; i++) {
         slots.push({ kind: 'deploy', offset: offset++, slotIndex: i });
+        const childDataNfts = deploySiteCounts[i] ?? 0;
+        for (let nftIdx = 0; nftIdx < childDataNfts; nftIdx++) {
+          slots.push({
+            kind: 'deployDataNft', offset: offset++, slotIndex: i, nftIndex: nftIdx,
+          });
+        }
       }
     }
 
@@ -11463,21 +11845,43 @@ export default class SymbolTableTraversal extends AstTraversal {
   // Number of `new C(...)` sites in a function body (each needs its own genesis funding input/slot).
   // Does not descend into referencedContract (a backref to the whole child AST).
   private countDeploySites(body: Node | undefined): number {
-    if (!body) return 0;
-    let count = 0;
+    return this.listDeploySiteDataNftCounts(body).length;
+  }
+
+  /**
+   * Per-deploy-site child data-NFT counts, in source order. Used to reserve fixed `deployDataNft`
+   * layout slots after each deploy master so C2 insert tails no longer collide with child genesis
+   * data NFTs. Always prefers the live referenced contract's packed state variables (oracle fields
+   * included) over a stale Instantiation snapshot.
+   */
+  private listDeploySiteDataNftCounts(body: Node | undefined): number[] {
+    if (!body) return [];
+    const counts: number[] = [];
     const seen = new WeakSet<object>();
     const walk = (n: unknown): void => {
       if (Array.isArray(n)) { for (const it of n) walk(it); return; }
       if (!(n instanceof Node) || seen.has(n)) return;
       seen.add(n);
-      if (n instanceof InstantiationNode && n.referencedContract) count += 1;
+      if (n instanceof InstantiationNode && n.referencedContract) {
+        const vars = n.referencedContract.stateVariables ?? [];
+        const fromLive = vars.length > 0
+          ? Math.max(...vars.map((sv) => sv.nftIndex ?? 0)) + 1
+          : 0;
+        const dataNfts = Math.max(fromLive, n.deployedDataNftCount ?? 0);
+        // Keep Instantiation metadata in sync so ABI deployTargets and layout agree.
+        if (dataNfts > 0 && n.isStatefulDeploy) {
+          n.deployedDataNftCount = dataNfts;
+          if (vars.length > 0) n.deployedStateVars = [...vars];
+        }
+        counts.push(dataNfts);
+      }
       for (const [key, value] of Object.entries(n)) {
         if (key === 'referencedContract' || key === 'definition' || key === 'symbolTable') continue;
         walk(value);
       }
     };
     walk(body);
-    return count;
+    return counts;
   }
 
   // True if the body contains a `new C{value:}()` deploy INSIDE a loop (while/do-while; for is already

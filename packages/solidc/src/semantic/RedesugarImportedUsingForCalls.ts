@@ -40,8 +40,8 @@ import AstTraversal from '../ast/AstTraversal.js';
  * there); an un-rewritten call would lose its target. The receiver's struct type must already be resolved.
  */
 export default class RedesugarImportedUsingForCalls extends AstTraversal {
-  private structToLib = new Map<string, string>(); // struct type string -> library name
-  private interfaceToLib = new Map<string, string>(); // interface/contract name -> library (`using SafeERC20 for IERC20`)
+  private structToLib = new Map<string, string[]>(); // struct type string -> library names
+  private interfaceToLib = new Map<string, string[]>(); // interface/contract name -> libraries (`using SafeERC20 for IERC20`)
   private wildcardLibs: string[] = [];             // libraries bound via `using L for *`
   private freeFnNames = new Set<string>();
   private interfaceNames = new Set<string>();      // interface + imported-contract names (interface-cast receivers)
@@ -108,13 +108,23 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
       const dot = d.targetTypeName.lastIndexOf('.');
       const bare = dot >= 0 ? d.targetTypeName.slice(dot + 1) : d.targetTypeName;
       const st = structMap.get(d.targetTypeName) ?? structMap.get(bare);
-      if (st) { this.structToLib.set(st.toString(), d.libraryName); continue; }
+      if (st) { this.addBinding(this.structToLib, st.toString(), d.libraryName); continue; }
       // `using SafeERC20 for IERC20`: the target is an interface (or imported contract) type. Bound methods dispatch
       // on an interface-cast receiver `IERC20(x).method(..)`, which parses as a MethodCall (not a namespaced call).
       if (this.interfaceNames.has(d.targetTypeName) || this.interfaceNames.has(bare)) {
-        this.interfaceToLib.set(bare, d.libraryName);
+        this.addBinding(this.interfaceToLib, bare, d.libraryName);
       }
     }
+  }
+
+  private addBinding(bindings: Map<string, string[]>, key: string, libraryName: string): void {
+    const libraries = bindings.get(key) ?? [];
+    if (!libraries.includes(libraryName)) libraries.push(libraryName);
+    bindings.set(key, libraries);
+  }
+
+  private findMethodLibrary(libraries: string[] | undefined, methodName: string): string | undefined {
+    return libraries?.find((libraryName) => this.freeFnNames.has(`${libraryName}.${methodName}`));
   }
 
   private processFunction(fn: FunctionDefinitionNode, base: Map<string, Type>): void {
@@ -148,7 +158,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
         const recv = nm.slice(0, dot);
         const method = nm.slice(dot + 1);
         const t = varTypes.get(recv);
-        let lib = t instanceof StructType ? this.structToLib.get(t.toString()) : undefined;
+        let lib = t instanceof StructType ? this.findMethodLibrary(this.structToLib.get(t.toString()), method) : undefined;
         // `using L for *` binds L's free functions as methods on ANY type. Resolve when the receiver is a known
         // non-interface local/param/state var - excluding contract/interface-typed receivers (AddressType with
         // interfaceName), whose `recv.method()` is an external call, not a using-for.
@@ -160,8 +170,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
         // (which stays an external call - it is not an `L.method` free fn). Rewrite pre-inlining so an external-call
         // helper like SafeERC20.safeTransfer reaches its inliner (a SymbolTable-time resolution is too late).
         if (!lib && t instanceof AddressType && t.interfaceName) {
-          const l = this.interfaceToLib.get(t.interfaceName);
-          if (l && this.freeFnNames.has(`${l}.${method}`)) lib = l;
+          lib = this.findMethodLibrary(this.interfaceToLib.get(t.interfaceName), method);
         }
         if (lib && this.freeFnNames.has(`${lib}.${method}`)) {
           const recvId = new IdentifierNode(recv);
@@ -221,7 +230,7 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
     if (recv instanceof MappingAccessNode || recv instanceof ArrayAccessNode || recv instanceof FieldAccessNode) {
       const rt = this.resolveExprType(recv, varTypes);
       if (rt instanceof StructType) {
-        const lib = this.structToLib.get(rt.toString())
+        const lib = this.findMethodLibrary(this.structToLib.get(rt.toString()), node.methodName)
           ?? this.wildcardLibs.find((wl) => this.freeFnNames.has(`${wl}.${node.methodName}`));
         if (lib && this.freeFnNames.has(`${lib}.${node.methodName}`)) {
           const id = new IdentifierNode(`${lib}.${node.methodName}`);
@@ -246,8 +255,8 @@ export default class RedesugarImportedUsingForCalls extends AstTraversal {
       if (t instanceof AddressType && t.interfaceName) ifaceName = t.interfaceName;
     }
     if (!ifaceName) return undefined;
-    const lib = this.interfaceToLib.get(ifaceName);
-    if (!lib || !this.freeFnNames.has(`${lib}.${node.methodName}`)) return undefined;
+    const lib = this.findMethodLibrary(this.interfaceToLib.get(ifaceName), node.methodName);
+    if (!lib) return undefined;
     const id = new IdentifierNode(`${lib}.${node.methodName}`);
     id.location = node.location;
     const call = new FunctionCallNode(id, [recv, ...node.parameters]);

@@ -75,7 +75,10 @@ let currentSourceFunction: FunctionDefinitionNode | undefined;
 const YUL_NON_PURE_CALLS = new Set([
   'address', 'balance', 'origin', 'caller', 'callvalue', 'gasprice', 'extcodesize', 'extcodecopy', 'extcodehash',
   'blockhash', 'coinbase', 'timestamp', 'number', 'difficulty', 'prevrandao',
-  'gaslimit', 'chainid', 'selfbalance', 'basefee', 'blobhash', 'blobbasefee', 'sload', 'tload', 'gas',
+  // `chainid()` lowers to the compiler-selected network constant, so unlike its EVM
+  // counterpart it is deterministic and valid in a SolidCash pure function. This also
+  // preserves Solidity 0.6 sources, whose assembly purity checker admitted chainid().
+  'gaslimit', 'selfbalance', 'basefee', 'blobhash', 'blobbasefee', 'sload', 'tload', 'gas',
   'call', 'callcode', 'delegatecall', 'staticcall', 'create', 'create2',
 ]);
 
@@ -1959,6 +1962,7 @@ function lowerCall(call: YulFunctionCallNode): ExpressionNode {
   const { name, args } = call;
   if (name in NULLARY_CONTEXT && args.length === 0) {
     const nullary = loc(new NullaryOpNode(NULLARY_CONTEXT[name]), call);
+    nullary.fromInlineAssembly = true;
     return ADDRESS_CONTEXT.has(name) ? loc(new CastNode(UINT256, nullary, false), call) : nullary;
   }
   // returndatasize() -> the length of the last low-level call's return-event data (0 if no call preceded it).

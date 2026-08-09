@@ -242,33 +242,108 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
     },
   });
 
+  // After a factory deploys, auto-register every deployTarget child whose artifact is already compiled
+  // into `artifactsDir`. Hardhat/MistSwap suites call `factory.createPair(...)` without an explicit
+  // `registerChild(UniswapV2Pair)` — the multi-contract compile already produced both artifacts, so
+  // looking them up by the ABI's deployTargets is the least-surprise path (see createPair wall).
+  type Registerable = {
+    registerChild?: (a: Artifact) => unknown;
+    inner?: { artifact?: Artifact };
+    artifact?: Artifact;
+  };
+  const registerDeployTargetChildren = (deployed: Registerable): void => {
+    if (typeof deployed.registerChild !== 'function') return;
+    const art = deployed.inner?.artifact ?? deployed.artifact;
+    const targets = (art?.abi ?? [])
+      .flatMap((fn) => fn.deployTargets ?? [])
+      .map((t) => t.contractName)
+      .filter((name): name is string => typeof name === 'string' && name.length > 0);
+    for (const name of new Set(targets)) {
+      try {
+        const child = loadArtifactByName(artifactsDir, name);
+        deployed.registerChild(child);
+      } catch {
+        // Child not compiled yet / name mismatch — leave unresolved; deployFrom will still error clearly.
+      }
+    }
+  };
+
+  const wrapFactoryDeploy = <T extends Artifact>(factory: ContractFactory<T>): ContractFactory<T> => {
+    const original = factory.deploy.bind(factory);
+    factory.deploy = (async (...args: Parameters<ContractFactory<T>['deploy']>) => {
+      const deployed = await original(...args);
+      registerDeployTargetChildren(deployed as Registerable);
+      return deployed;
+    }) as ContractFactory<T>['deploy'];
+    return factory;
+  };
+
   const contractFactory = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     runner?: ContractRunner): ContractFactory<T> | HardhatSplitContractFactory => {
     const loaded = resolveArtifact(artifactOrName);
     const boundRunner = runner ?? defaultRunner();
-    return isSplitBundle(loaded)
-      ? new HardhatSplitContractFactory(SplitContractBundle.from(loaded, boundRunner))
-      : sdkGetContractFactory(loaded as T, boundRunner);
+    if (isSplitBundle(loaded)) {
+      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, boundRunner));
+    }
+    return wrapFactoryDeploy(sdkGetContractFactory(loaded as T, boundRunner));
   }) as SolidcashEthers['getContractFactory'];
   const contractAt = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     addressOrCategory: string, runner?: ContractRunner) => {
     const loaded = resolveArtifact(artifactOrName);
-    return isSplitBundle(loaded)
-      ? new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner())).at(addressOrCategory)
-      : StatefulContract.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
+    if (isSplitBundle(loaded)) {
+      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner()))
+        .at(addressOrCategory);
+    }
+    const connected = StatefulContract.at(addressOrCategory, loaded as T, runner ?? defaultRunner());
+    registerDeployTargetChildren(connected as Registerable);
+    return connected;
   }) as SolidcashEthers['getContractAt'];
   const contractDeploy = (<T extends Artifact>(artifactOrName: T | SplitArtifactBundle | string,
     args: ConstructorArgument[] = [], runner?: ContractRunner, overrides?: DeployContractOptions) => {
     const loaded = resolveArtifact(artifactOrName);
-    return isSplitBundle(loaded)
-      ? new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner()))
-        .deploy(...args, ...(overrides ? [overrides] : []))
-      : sdkDeployContract(loaded as T, args, runner ?? defaultRunner(), overrides);
+    if (isSplitBundle(loaded)) {
+      return new HardhatSplitContractFactory(SplitContractBundle.from(loaded, runner ?? defaultRunner()))
+        .deploy(...args, ...(overrides ? [overrides] : []));
+    }
+    return (async () => {
+      const deployed = await sdkDeployContract(loaded as T, args, runner ?? defaultRunner(), overrides);
+      registerDeployTargetChildren(deployed as Registerable);
+      return deployed;
+    })();
   }) as SolidcashEthers['deployContract'];
+
+  // ethers-compatible block surface used by Hardhat-era helpers (MistSwap `test/utilities/time.ts`):
+  //   ethers.provider.getBlockNumber() / getBlock("latest") / send("evm_mine", ...)
+  // MockNetworkProvider already implements `send` for the common evm_* methods; layer the missing
+  // getBlock* shims without mutating the underlying NetworkProvider instance.
+  const ethersProvider = provider as NetworkProvider & {
+    getBlockNumber?: () => Promise<number>;
+    getBlock?: (tag?: string | number) => Promise<{ number: number; timestamp: number; hash?: string }>;
+    getBlockHeight: () => Promise<number>;
+    getBlockTime?: () => number;
+    getBlockHash?: (height: number) => Promise<string>;
+  };
+  if (typeof ethersProvider.getBlockNumber !== 'function') {
+    ethersProvider.getBlockNumber = async (): Promise<number> => ethersProvider.getBlockHeight();
+  }
+  if (typeof ethersProvider.getBlock !== 'function') {
+    ethersProvider.getBlock = async (
+      _tag: string | number = 'latest',
+    ): Promise<{ number: number; timestamp: number; hash?: string }> => {
+      const number = await ethersProvider.getBlockHeight();
+      const timestamp = typeof ethersProvider.getBlockTime === 'function'
+        ? ethersProvider.getBlockTime()
+        : Math.floor(Date.now() / 1000);
+      const hash = typeof ethersProvider.getBlockHash === 'function'
+        ? await ethersProvider.getBlockHash(number)
+        : undefined;
+      return { number, timestamp, hash };
+    };
+  }
 
   const ethers: SolidcashEthers = {
     ...ethersUtils,
-    provider,
+    provider: ethersProvider,
     getSigners,
     getSigner: async (index = 0, o = {}): Promise<Signer> => {
       const anyProvider = provider as unknown as { getSigner?: (i: number, x: object) => Promise<Signer> };

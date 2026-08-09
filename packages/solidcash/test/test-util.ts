@@ -478,3 +478,24 @@ export const densityReserve = (bytes = 256): Uint8Array => new Uint8Array(bytes)
 export async function expectOverOperationCostBudget(action: Promise<unknown>): Promise<void> {
   await expect(action).rejects.toThrow(/exceed the operation cost density limit|Could not derive the return value/);
 }
+
+/**
+ * Unwrap the ethers-v5 BigNumber objects `getState()` and view returns now hand back, recursively.
+ *
+ * `wrapNumericForEthers` wraps every bigint leaf so MistSwap's `.sub()/.lt()` chains work on
+ * mapping getters. That is a user-facing convenience, but it makes `expect(v).toBe(5n)` fail on a
+ * value that IS 5 - so a test comparing against plain bigints has to normalize first.
+ */
+export function plainNumerics<T>(value: T): T {
+  const v = value as unknown;
+  if (v && typeof v === 'object') {
+    const bn = v as { _isBigNumber?: boolean; _value?: unknown };
+    if (bn._isBigNumber === true && typeof bn._value === 'bigint') return bn._value as unknown as T;
+    if (v instanceof Uint8Array) return value;
+    if (Array.isArray(v)) return v.map(plainNumerics) as unknown as T;
+    const out: Record<string, unknown> = {};
+    for (const [k, inner] of Object.entries(v as Record<string, unknown>)) out[k] = plainNumerics(inner);
+    return out as unknown as T;
+  }
+  return value;
+}

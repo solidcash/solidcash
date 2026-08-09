@@ -1658,3 +1658,253 @@ stored value through all neighboring forms.
   predicted from one signer nonce sequence resolve after deployment; forged anchors/categories and physical facet
   addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
   runs unchanged on the BCH HRE.
+
+## Factory deploy of a stateful child alongside C2 mapping writes (2026-08-07)
+
+**STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes C2 mapping entries
+and instantiates a child with data NFTs:
+
+```
+Deploy function 'createPair' combines a typed stateful child with C2 mapping access.
+```
+
+Measured on MistSwap: this single refusal accounts for 25 of the suite's failures (SushiSwapSwapper 12,
+SimpleSLPOracle 8, Migrator 2, RebaseERC20, PairKashi setup), because `UniswapV2Factory.createPair` writes
+`getPair[token0][token1]` in both directions and deploys `UniswapV2Pair` (3 data NFTs).
+
+The refusal is well founded, not merely conservative. `computeBlockLayout` declares a trailing region only for
+`__message_bus1`; a direct route returns at `blockSize`, so everything past it is appended with no covenant-known
+boundary. `createPair` appends BOTH the two C2 entry INSERTS (an insert has no fixed slot - only an update does,
+so the insert plus its re-pointed predecessor land in the tail) AND the child's data NFTs. Their relative order
+is not authenticated, so a caller could permute them. Note the `deploy` slot itself IS fixed (offset 14 in that
+layout), so only the child's data NFTs are unanchored.
+
+**What it would take:** reserve the child's data NFTs as fixed block slots (a `deployDataNft` slot kind sized
+from `deployTargets[i].dataNftCount`) so the C2 insert tail starts at a covenant-known offset, then order the
+SDK's outputs to match and drop the guard. Note the sizing input is not available where the `deploy` slots are
+reserved today - that loop runs off the DEPLOY modifier and `countDeploySites(node.body)`, with the standing
+comment "deployTargets isn't populated yet at this stage" - so the child's `dataNftCount` has to be resolved
+from the `new C(..)` node's contract reference there, or the reservation moved to a later pass. A trailing-region declaration for the direct route is the other
+option and is separately refused above (X69: it breaks settled sends and needs a reservation class keyed on
+`contract.collections.length`).
+
+**Acceptance:** `UniswapV2Factory.createPair` deploys a pair and both `getPair` directions read back; permuting
+the child data-NFT outputs against the entry outputs fails validation; the MistSwap swapper/oracle/migrator
+suites reach contract behaviour instead of dying in `beforeEach`.
+
+## Cross-contract call into a callee that writes C2 mapping entries (2026-08-07)
+
+**STILL DEFERRED.** Calling a callee whose function writes C2 mapping entries fails before any transaction is
+built:
+
+```
+Incorrect number of arguments passed to function transferFrom. Expected 3 arguments (address,address,uint256) but got 4
+```
+
+Measured on MistSwap `SushiBar.enter` -> `SushiToken.transferFrom` (3 tests). This is the ordinary ERC-20
+`transferFrom` shape, so it is worth more than its test count.
+
+MECHANISM. `StatefulContract._createBuilder` (~9055) and the outState path (~10100) append the caller's
+category to the VISIBLE args when the callee's ABI function has `usesMsgSender`. `Contract.createUnlocker`
+(Contract.ts:391) accepts exactly `visibleInputs.length` or `inputs.length` and nothing between. That works
+only while `__internal__msgSenderCategory` is the callee's ONLY internal input. `SushiToken.transferFrom`
+declares 3 visible and 15 internal inputs (msgSenderCategory + `__internal__c2Batch{Slot,Proof,Next,PredOut}_0..2`
++ trailingCount + returnOutputIdx), so visible+1 = 4 matches neither arm.
+
+DO NOT just widen the guard. The extra internals are not padding: they carry the callee's entry co-spend plan
+(slot, predecessor proof offset, next key, predecessor output index) for `_balances[recipient]`,
+`_balances[sender]` and `_allowances[sender][msg.sender]`. Supplying zeros builds a transaction whose covenant
+reads the wrong entry witnesses; it would trade a loud error for a wrong write.
+
+A structured channel already exists but is reachable only for message-bus routes: `bCompilerInternalArgs` is
+populated at ~9204 and attached as `compilerRoute.internalArgs` at ~9447, gated on `bAbiFunc.sortedBatchInfo`.
+The MistSwap contracts compile without a message bus (`artifact.messageBus === undefined`), so they take the
+plain external-call path, which has no equivalent.
+
+**What it would take:** compute the callee's C2 batch plan for a plain external call - the same
+`planBatchUpsert`/predecessor resolution the direct path runs, against the callee's collections - and pass it
+as internal args alongside the category, then relax the arity guard to "visible args plus a fully specified
+internal vector".
+
+**Acceptance:** `SushiBar.enter` moves SUSHI via `transferFrom` and both `_balances` entries plus the
+`_allowances` entry read back; a deliberately wrong predecessor proof fails validation rather than writing;
+`test/SushiBar.test.ts` passes unmodified.
+
+## Event payloads larger than one 128-byte NFT commitment (2026-08-07)
+
+**STILL DEFERRED.** An event whose encoded arguments exceed the 128-byte token-commitment limit is rejected by
+the network, not by the compiler:
+
+```
+Transaction violates token validation: excessive token commitment length ... Excessive token commitment length: 129
+```
+
+Measured on MistSwap `Timelock.queueTransaction` (6 tests). Its event is
+`QueueTransaction(bytes32 txHash, address target, uint value, string signature, bytes data, uint eta)`, and the
+test passes `signature = "transferOwnership(address)"` (26 B) plus 32 B of `data`, which lands at 129 - one byte
+over.
+
+THE SCAFFOLDING IS HALF-PRESENT AND INCONSISTENT. `collectEmitStatements` already computes
+`chunkCount = maxSize > 128 ? ceil(maxSize / 128) : 1` and advances the AST node's `emitIndex` by `chunkCount`.
+Nothing else honours it:
+
+- `computeBlockLayout` reserves ONE `event` slot per `emitInfos` ENTRY, not per chunk, so the AST's emit indices
+  run past the reserved slots.
+- The renumber right after the pre-scan (`emitInfos.forEach((info, idx) => { info.emitIndex = idx; })`) rewrites
+  only the ARRAY entries, never the AST nodes, so the two views agree only while every chunkCount is 1.
+- `GenerateTargetTraversal` has no `chunkCount` reference at all: `emitEventCovenantVerification` verifies exactly
+  one output commitment at `event + emitIndex` and never splits a blob.
+
+Consequence: making the size estimate more accurate ACTIVATES the broken path. Raising the address width from 9
+to its real 36 bytes (correct, and needed for state packing) pushed one MistSwap event to chunkCount 2 and the
+compile died with `Block slot not found: event[3] while compiling 'withdrawAndHarvest'` in
+`mocks/ComplexRewarder.sol`. The address width is therefore split into two constants in `SymbolTableTraversal`
+- `ADDRESS_MAX_ENCODED_BYTES` (36, state packing) and `ADDRESS_EVENT_CHUNK_BYTES` (9, event chunking) - with the
+second pinned to the old value purely so this path stays dormant.
+
+Note the estimate cannot be made sound for `string` / unbounded `bytes` parameters anyway (both estimated at 9),
+so a static chunk count is a lower bound in general; a complete answer needs the SDK to size the event region
+from the actual argument values at build time, the way dynamic storage chunking already does
+(`chunkCountForLength` / `splitValueIntoChunks` in `packages/utils/src/state.ts`).
+
+**What it would take:** reserve `sum(chunkCount)` event slots, keep the AST emit indices and the emitInfos view
+in one numbering, split the blob across the reserved outputs in code generation, reassemble in the SDK's event
+decoder, and then let both address widths converge on 36.
+
+**Acceptance:** an event with >128 bytes of arguments emits N chunk outputs and round-trips through the SDK
+decoder; `ComplexRewarder.withdrawAndHarvest` compiles with the true address width; `test/Timelock.test.ts`
+queue/cancel/execute pass unmodified.
+
+## keccak256 inside an internal helper of a STATEFUL contract (2026-08-07) - RESOLVED
+
+**RESOLVED**, kept for the diagnosis and for the ruled-out list. A `keccak256` reached through an
+internal/private helper emitted its side-car read in the **stateless, count-relative** form even when the
+calling entry point was stateful and had a block layout:
+
+```
+OP_TXINPUTCOUNT  OP_1 OP_SUB  OP_INPUTBYTECODE        ; read the side-car
+OP_TXOUTPUTCOUNT OP_1 OP_SUB  OP_OUTPUTTOKENCOMMITMENT ; read the result
+```
+
+Measured on MistSwap's BentoBox constructor, which gates 62 tests (PairKashi 56, SushiMakerKashi 6).
+`_calculateDomainSeparator` is `private`, so its `keccak256` is emitted on the helper's own sub-traversal.
+
+WHY IT BREAKS. `emitKeccakComputeCall` picks its addressing in `fromEnd()`: the block-layout form
+(`emitBlockSlotIndex('keccakSideCar', i)`) when `fn.blockLayout` exists, the count-relative form otherwise. A
+helper compiled by the OP_DEFINE sub-traversal has no block layout, so it takes the count-relative branch - but
+its body is then inlined into a stateful block whose LAST input is the funder and whose LAST output is the
+event. The SDK, meanwhile, positions the side-car at the block-layout slot (`_deriveDeployCommitments` adds
+`keccakSlotCount` side-car inputs right after the data NFTs). So the covenant decodes the funder's unlocking
+script and compares it against the computed keccak argument, which can never match:
+
+```
+  1976a914830620a2d6ed15ada566e1088dc96a12d78fcec788ac    computed argument
+  001976a914830620a2d6ed15ada566e1088dc96a12d78fcec788ac  decoded from the wrong input
+```
+
+The failure surfaces only as `Failed to derive initial state commitments from constructor ... OP_VERIFY`.
+
+RULED OUT (measured, do not redo): the sparse derivation observer; shared-span outlining
+(`SOLIDCASH_NO_OUTLINE=1` fails identically); oracle-backed `block.*`; contract scale; and funding shape.
+
+TWO RELATED THINGS ARE ALREADY FIXED and are NOT sufficient on their own: `countLibraryCalls` now follows
+`resolvedFunction` so the entry point RESERVES the slot, and `Artifact.ts` pads `keccakPreimageParams` to the
+reserved slot count so the SDK SUPPLIES the side-car. Confirmed end to end after both - `BentoBoxMock`'s probe
+now builds
+
+```
+inputs=6 outputs=6 blockSize=6 slots=master,dataNft,dataNft,dataNft,keccakSideCar,event
+  [0] master  [1..3] dataNfts  [4] KECCAK SIDE-CAR  [5] funder
+```
+
+so the side-car sits at its layout slot, input 4 - and the covenant still reads
+`OP_TXINPUTCOUNT OP_1 OP_SUB` = input 5, the funder. The addressing is the only remaining piece.
+
+**HOW IT WAS FIXED.** A `keccakSideCarBasisByFunctionId`, modelled on the existing
+`outlinedDynamicReadBasisByFunctionId`: when every entry point reaching a layout-less helper reserves exactly
+ONE `keccakSideCar` slot at the SAME offset, that entry point becomes the helper's basis and the read becomes
+`masterInputIndex + offset`. Narrow on purpose - one slot, agreeing offsets, emission index 0 - so a body
+shared by entry points with differing offsets keeps the old fallback rather than baking a wrong constant.
+
+Two parts were not obvious and cost a debug cycle each:
+ - `entryPointsReaching` walks `node.functions` only, and a constructor is `node.constructorDef`, a separate
+   field. A helper reached only from a constructor therefore got no basis and the fix silently did nothing;
+   `keccakEntryPointsReaching` seeds from constructorDef/fallbackDef/receiveDef as well.
+ - `absoluteForward` selects `KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH` over the stateless one. It has to be
+   true whenever the basis is used, because the SDK deploys a STATEFUL side-car; otherwise the covenant reads
+   the right slot and then fails the integrity check instead of the bind (the error just moves).
+
+**THE GENERAL FIX: INLINE THE HELPER.** The basis above only covers callers that agree on a single slot, and
+MistSwap's BentoBox does not: `_calculateDomainSeparator` is reached from three entry points -
+
+| function | keccakSideCar slots (index -> offset) |
+|---|---|
+| `DOMAIN_SEPARATOR` | 0 -> 4 |
+| `__construct` | 0 -> 4 |
+| `setMasterContractApproval` | 0 -> 4, 1 -> 5, 2 -> 6 |
+
+The OFFSET agrees everywhere, so it is tempting to just drop the "exactly one slot" half of the guard - but
+that is UNSOUND. The emission index is counted PER TRAVERSAL, so the helper always starts at 0 while
+`setMasterContractApproval`'s own calls also start at 0; the helper would read a slot holding its caller's hash.
+
+The answer is not to teach the subroutine about the caller's frame but to remove the subroutine.
+`InlineReturningStateHelpers` already inlines a returning helper when it reads entries, touches scalar state,
+uses `msg.sender`, or makes a low-level/external call - each because the body needs the CALLER's frame. A
+keccak256 needs it for the same reason, so `containsKeccak(fn)` joins that predicate. Inlined, the call is
+emitted under the caller's traversal at the caller's ordinal, which is right for every caller regardless of how
+many keccaks each has.
+
+Measured: `repro-bento.mjs` prints `BENTO OK`; MistSwap contract sizes are unchanged despite the duplication
+(SushiToken 17,348, MasterChef 10,837, SushiRoll 11,526 - identical to the previous compile). On a
+size-constrained contract the duplication would be a real trade and would argue for threading the base index in
+as a frame argument instead, the way the parameterized outliner threads altstack depth.
+
+**Acceptance:** a stateful contract whose constructor calls a private `keccak256` helper deploys and reads the
+hash back; `examples/mistswap-native/repro-bento.mjs` deploys BentoBoxMock; `test/PairKashi.test.ts` and
+`test/SushiMakerKashi.test.ts` reach contract behaviour instead of dying in `beforeEach`.
+
+## MasterChef / MasterChefV2: message-bus preflight OP_VERIFY (2026-08-07)
+
+**NEWLY VISIBLE, NOT YET DIAGNOSED.** 24 MistSwap tests (MasterChef 6 of 8, MasterChefV2 18 of 18) fail with
+
+```
+messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.
+  at mapMessageBusVmFailure packages/solidcash/src/message-bus/preflight.ts:899
+```
+
+These two files had never reported a result before: their vitest workers died with `Worker exited unexpectedly`
+whenever the box was loaded, so ~24 tests were silently missing from every earlier count. They complete on an
+idle machine, and `poolOptions.forks.execArgv: ['--max-old-space-size=4096']` is now set in the project's
+`vitest.solidhat.config.ts`. **Treat any MistSwap total that omits these two files as incomplete.**
+
+MasterChef is 10,837 bytes and MasterChefV2 13,789, so both are split, and both take a synthesized message-bus
+route. Nothing beyond the preflight message has been established - no bisect, no trace. Start with
+`SOLIDCASH_COVENANT_TRACE=1` and the same instrumentation used for the constructor wall above.
+
+## keccak256 of a preimage larger than one side-car's block budget (2026-08-07)
+
+**PARTLY RESOLVED; the remaining half is deferred.** A keccak compute side-car funds three 64-byte blocks
+(~407 B) per input, so a larger preimage is refused:
+
+```
+keccak256 preimage too large (12509 B = 92 blocks); a single side-car input funds at most 3 keccak blocks
+(~407 B). Split the hash or use multiple side-cars.
+```
+
+RESOLVED for the case that mattered. The MistSwap instance (56 PairKashi / SushiSwapSwapper tests) was
+`UniswapV2Factory.pairCodeHash()` = `keccak256(type(UniswapV2Pair).creationCode)`, whose preimage the COMPILER
+already holds. That now folds to a constant in code generation, with `countLibraryCalls` skipping the same
+shape so no `keccakSideCar` slot is reserved for it. Note `FoldHashLiterals` could not do this: it runs
+pre-semantic, and `creationCode` only becomes bytes once the child has been compiled.
+
+STILL DEFERRED: a hash of RUNTIME data longer than ~407 bytes. The error names the intended design ("use
+multiple side-cars"), but a single logical hash spanning several side-car inputs is not implemented - the
+covenant would have to chain the keccak block state from one side-car's output commitment into the next
+input's, and the SDK would have to plan and fund that chain.
+
+**What it would take:** a chained side-car protocol (side-car i consumes the running state committed by i-1,
+the last commits the digest), plus SDK planning that splits the preimage on 64-byte block boundaries and sizes
+the co-spend set from the actual argument length.
+
+**Acceptance:** `keccak256(x)` for a 12 KB runtime `x` settles and reads back the same digest `keccak_256`
+computes off-chain; the refusal above still fires when the caller declines to fund the chain.

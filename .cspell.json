@@ -461,6 +461,10 @@
         "zapit",
         "zwets"
     ],
+    // Files git ignores are not part of the repository, so the gate must not fail on them. Without this the
+    // release spellcheck reported 18 issues from generated artifacts and a local scratch directory that a clean
+    // clone does not even contain - a red gate that says nothing about the release.
+    "useGitignore": true,
     "ignorePaths": [
         // Do not spellcheck NPM files
         "**/package*.json",

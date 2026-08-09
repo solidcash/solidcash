@@ -2,6 +2,7 @@
   "extends": "../../tsconfig.build.json",
   "compilerOptions": {
     "outDir": "./dist",
+    "rootDir": "./src",
     "types": [
       "vitest/globals"
     ]
@@ -12,4 +13,5 @@
   "exclude": [
     "test/fixture"
   ],
+  "references": [{ "path": "../utils/tsconfig.build.json" }]
 }

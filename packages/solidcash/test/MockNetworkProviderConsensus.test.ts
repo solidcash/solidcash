@@ -3,11 +3,10 @@ import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
 import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../src/index.js';
 
 describe('MockNetworkProvider consensus limits', () => {
-  // The size limits are relaxed; the operation-cost budget is REAL. That asymmetry is the point:
-  // the other fields bound how BIG a thing may be, which is visibly artificial when relaxed, while
-  // the operation-cost budget bounds how DENSE a script may be - and an over-budget contract is
-  // indistinguishable from a valid one in every artifact the SDK produces.
-  it('relaxes every size limit but keeps the operation-cost budget real', () => {
+  // Relaxed in every SIZE limit, REAL in the operation-cost budget. That asymmetry is deliberate: relaxing a
+  // size limit is visibly artificial, while relaxing the density budget hides on-chain-invalid contracts,
+  // because an over-budget script is indistinguishable from a valid one in every artifact the SDK produces.
+  it('uses relaxed size defaults but the REAL operation-cost budget', () => {
     const provider = new MockNetworkProvider();
     expect(provider.consensusLimits).toEqual({
       maximumInputBytes: 1_000_000,

@@ -7,7 +7,7 @@ import { Utxo, Network, VmTarget, TokenDetails } from '../interfaces.js';
 import NetworkProvider, { ConsensusLimits, NetworkPolicy } from './NetworkProvider.js';
 import { addressToLockScript, randomUtxo } from '../utils.js';
 import { DEFAULT_VM_TARGET } from '../libauth-template/utils.js';
-import { HDSigner, signersFromMnemonic } from '../HDSigner.js';
+import { BCH_ACCOUNT_BRANCH, HDSigner, signersFromMnemonic } from '../HDSigner.js';
 
 export interface TokenGenesisOutput {
   address: string;
@@ -242,11 +242,29 @@ export default class MockNetworkProvider implements NetworkProvider {
   // The default hardhat dev mnemonic (a valid BIP-39 phrase); its accounts are the ones getSigners funds.
   static readonly DEFAULT_MNEMONIC = 'test test test test test test test test test test test junk';
 
+  // Every isolated mock fixture uses this public Hardhat mnemonic. BIP-39's deliberately expensive
+  // PBKDF2 dominates short e2e tests when each fresh provider derives the same account again, so retain
+  // only these well-known test nodes for the module lifetime and cheaply bind them to each provider.
+  private static defaultSignerNodes: HDSigner['node'][] = [];
   private fundingNonce = 0x1000;
   private snapshotNonce = 0;
   private snapshotRestorers = new Map<string, SnapshotRestorer>();
   private signerCache = new Map<string, HDSigner>();
   private fundedSignerKeys = new Set<string>();
+  /**
+   * ethers-v5 `provider._network.chainId` surface used by MistSwap digests
+   * (`user.provider._network.chainId` in setMasterContractApproval).
+   */
+  readonly _network: { chainId: number; name: string } = { chainId: 1, name: 'chipnet' };
+
+  /**
+   * Hardhat/ethers internal block surface used by MistSwap permit deadlines:
+   * `(await alice.provider._internalBlockNumber).respTime + 10000`.
+   */
+  get _internalBlockNumber(): { respTime: number; blockNumber: number } {
+    const t = typeof this.getBlockTime === 'function' ? this.getBlockTime() : Math.floor(Date.now() / 1000);
+    return { respTime: Number(t), blockNumber: this.blockHeight };
+  }
 
   constructor(options?: MockNetworkProviderOverrides) {
     this.options = {
@@ -530,6 +548,9 @@ export default class MockNetworkProvider implements NetworkProvider {
     this.signerCache.clear();
     this.fundedSignerKeys.clear();
     this.fundingNonce = 0x1000;
+    // Hardhat starts near height 0 so MistSwap `advanceBlockTo(89)` works. Keep a
+    // small positive tip (1) rather than 0 for locktime edge cases.
+    this.blockHeight = 1;
     this.indexer.setChainTip(this.blockHeight, MOCK_DEFAULT_BLOCK_TIME);
   }
 
@@ -547,7 +568,18 @@ export default class MockNetworkProvider implements NetworkProvider {
     const key = this.signerKey(mnemonic, opts.path, index);
     let signer = this.signerCache.get(key);
     if (!signer) {
-      [signer] = signersFromMnemonic(mnemonic, this, { initialIndex: index, count: 1, path: opts.path });
+      if (mnemonic === MockNetworkProvider.DEFAULT_MNEMONIC && opts.path === undefined) {
+        if (MockNetworkProvider.defaultSignerNodes.length <= index) {
+          MockNetworkProvider.defaultSignerNodes = signersFromMnemonic(mnemonic, this, {
+            count: Math.max(20, index + 1),
+          }).map((derived) => derived.node);
+        }
+        signer = HDSigner._fromNode(
+          MockNetworkProvider.defaultSignerNodes[index], this, `${BCH_ACCOUNT_BRANCH}/${index}`, mnemonic,
+        );
+      } else {
+        [signer] = signersFromMnemonic(mnemonic, this, { initialIndex: index, count: 1, path: opts.path });
+      }
       this.signerCache.set(key, signer);
     }
     return signer;

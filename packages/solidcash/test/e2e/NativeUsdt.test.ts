@@ -11,7 +11,7 @@ import {
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
-  createTestProvider, setupStatefulUtxos, genesisFtContainer,
+  createTestProvider, setupStatefulUtxos, genesisFtContainer, plainNumerics,
 } from '../test-util.js';
 import {
   alicePriv, bobPriv, carolPriv, aliceAddress, bobAddress, bobPkh, carolAddress,
@@ -204,19 +204,21 @@ async function deployAll(opts?: { premint?: bigint; quarantineBlocks?: bigint })
 // Read state through the SDK's own StateReader rather than by parsing tx outputs:
 // the layout spans four data NFTs and a transaction only emits the ones it
 // touches, so output position does not map to nftIndex.
+// All four normalize through plainNumerics: getState() and the mapping getters now hand back
+// ethers-v5 BigNumber objects, so a bare `expect(v).toBe(5n)` fails on a value that IS 5.
 async function readState(d: Deployed): Promise<Record<string, unknown>> {
-  return (await d.master.getState()) as Record<string, unknown>;
+  return plainNumerics(await d.master.getState()) as Record<string, unknown>;
 }
 
 // Readers over the sorted-mapping entry UTXOs.
 export async function balanceOf(d: Deployed, addr: Uint8Array): Promise<bigint> {
   const v = await (d.master.state as Record<string, (k: Uint8Array) => Promise<unknown>>).balances(addr);
-  return (v ?? 0n) as bigint;
+  return plainNumerics(v ?? 0n) as bigint;
 }
 
 async function allowanceOf(d: Deployed, owner: Uint8Array, spender: Uint8Array): Promise<bigint> {
   const read = (d.master.state as Record<string, (a: Uint8Array, b: Uint8Array) => Promise<unknown>>).allowed;
-  return ((await read(owner, spender)) ?? 0n) as bigint;
+  return plainNumerics((await read(owner, spender)) ?? 0n) as bigint;
 }
 
 async function flagOf(d: Deployed, name: 'isBlackListed' | 'frozen', addr: Uint8Array): Promise<boolean> {

@@ -345,8 +345,13 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
     a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
     failing on chain.
-- [ ] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
+- [x] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
   network uses.
+  - **CLOSED via the second completion option, both halves landed.** The gate is
+    `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` and the explicit statement is this entry:
+    mocknet's sparse default carries NO derivation-path claim, and what IS claimed for the production path is
+    exactly what that file asserts. The first option was measured and rejected on two grounds recorded below
+    (the limit is conflated with script size; the faithful path costs 161 s on one file).
   - `relaxedConsensus` and `useSparseProbe` are both selected by
     `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, at six call sites across
     `StatefulTransactionBuilder.ts`, `StatefulContract.ts`, `upgrades.ts`, and `SplitContractBundle.ts`.
@@ -458,6 +463,47 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires the mocknet default to exercise the same derivation path as production, or an explicit
     documented statement that mocknet coverage carries no derivation-path claim and a gate that runs these
     shapes on the faithful path.
+  - **The first option is now measured and REJECTED; take the second.** Two sweeps at head, both reverted:
+    - Setting the mock's `maximumInputBytes` to the real 10,000 fails 8 tests in 5 files, and NONE are the
+      derivation shapes - `ChunkedArrays`, `X171`, `X167`, `NestedArrayFixedInner` and `SplitLayoutAgreementX162`
+      all pass, independently re-confirming `2b05b292`. But that knob is CONFLATED: `maximumInputBytes` also
+      feeds `maximumBytecodeLength` and `maximumStandardUnlockingBytecodeLength`, so four of the eight are
+      `X158OverLimitContractSpend`, a script-SIZE test, not derivation at all. The limit cannot be used to select
+      the derivation path without also tightening the script limit.
+    - Forcing the five derivation gates to their faithful branch while leaving every limit alone isolates it
+      properly. Only `X57ObserverMasking` fails by construction (it asserts an observer IS requested under
+      relaxed limits). But the cost is prohibitive: `NestedStructArrayWrite` alone takes 161 s against about
+      10 s on the sparse path, so a full faithful-path suite is not a viable default.
+  - The observer is NOT removable, which the "just use one algorithm" framing would miss. `createVirtualMachine.ts`
+    records that `vm.debug()` does not merely slow above roughly 100,014 states, it THROWS - libauth's
+    `proxyDebug` spreads the whole state array into `push` and exceeds V8's argument limit. Above ordinary
+    capacity the observer is the only usable instrument, so the gate is a real capability boundary that happens
+    to be keyed on a size proxy.
+  - A separate defect this surfaced, matching the remedy direction already stated above: on the faithful path a
+    density refusal raised INSIDE the probe is swallowed by its best-effort `try/catch`. Forcing that path,
+    `NestedStructArrayWrite`'s unreserved write logs `STB debug() best-effort error: ... exceed the operation
+    cost density limit ... Failing statement: jobs.push();` and then continues for 141 s instead of reporting it.
+    Mocknet does not show this because the sparse path skips the probe, so the shipped configuration gives
+    mocknet users a clean density error and live-network users a swallowed one.
+  - Consequence for the tests added with the density reserve: the "without a reserve is still refused" companion
+    rows assert a refusal that is PATH-DEPENDENT. They hold on the sparse path the mock takes; on the faithful
+    path the same refusal was swallowed by the probe. That is a property of the swallowing defect above, not of
+    the reserve. Fixed below, so both paths now report it.
+  - **BOTH HALVES NOW LANDED.**
+    - The swallowing is fixed. The probe's best-effort `try/catch` exists for a signature-shaped failure - the
+      signature is not final at probe time, so a `require(checkSig(...))` can fail there and still be fine in the
+      finished transaction - and that case still absorbs. A CONSENSUS-LIMIT refusal is the opposite: the final
+      transaction does at least as much work against a budget its own unlocking length buys, so it cannot pass by
+      continuing. An operation-cost density refusal now throws immediately, naming the cause and pointing at the
+      reserve, instead of grinding on from an unresolved shape. Measured on the shape that took 141 s: 1.5 s.
+    - `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` is the standing gate the second completion
+      option asks for. It builds a provider at the real `maximumInputBytes` of 10,000, asserts that this selects
+      the faithful branch AND that the default provider does not (so the split itself is pinned, not assumed),
+      then runs a dynamic chunked write and a whole-array assign through it, plus a fail-closed check that the
+      covenant still refuses a wrong read on that path. Four tests, deliberately small, because the reason the
+      suite does not simply run this way is the 161 s cost measured above.
+    - So mocknet coverage still carries no blanket derivation-path claim, and this file is the explicit statement
+      of what IS claimed for the production path.
 - [~] Replace reachable late code-generation failures such as missing stack variables or unavailable block
   layouts with correct compilation or stable diagnostics.
   - Transfer-frame loss, recursive inline struct encoding, missing block layout, oversized message-bus verifier,
@@ -647,7 +693,26 @@ it must not silently compile to incorrect covenant behavior.
 - [ ] Resolve contradictory or stale documentation, including short-circuit behavior and outdated corpus gap
   descriptions.
 - [ ] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
-- [ ] Ensure public website examples compile against the exact release packages.
+- [x] Ensure public website examples compile against the exact release packages.
+  - **Measured, and it was already healthy.** `yarn examples` only ever covered three hand-written files at the
+    repo root; the 252 fenced SolidCash blocks under `website/docs` - the first thing a new user copies - were
+    ungated. Compiling the 133 that DECLARE a contract, library or interface: 128 compile, 5 are skipped because
+    they import a file the docs do not ship, 0 fail. So the docs were not stale; they were simply unwatched.
+  - The TypeScript half is covered too, by the check that pays: every name the docs import from `solidcash`,
+    `solidc` or `@solidcash/utils` must still be exported. 33 names across 3 packages, all resolving. Full
+    type-checking of the 262 TS blocks was deliberately NOT attempted - most are fragments referencing variables
+    defined in the prose around them, so the failures would be about the harness rather than the docs, whereas an
+    import of a renamed or dropped name is what a reader hits immediately.
+  - Method note worth keeping: this must be `tsc`, not a runtime `name in module` check. The runtime version was
+    written first and is wrong - an interface has no runtime presence, so every type-only export reads as
+    missing. It reported `WcTransactionObject` as dropped from `solidcash` when `index.ts` re-exports it
+    perfectly well via `export * from './walletconnect-utils.js'`; `tsc` resolves it without complaint. The gate
+    carries a negative control in its own history: an invented name fails with TS2305, so it is not vacuous.
+  - Now gated by `yarn test:docs-snippets` (`scripts/release-docs-snippets.ts`), wired into CI between the
+    examples and package-smoke steps. The scope is deliberately narrow so the gate stays trustworthy: fragments
+    that never declared a contract are not compiled (they were never meant to stand alone, and failing them would
+    say nothing about the docs being correct), and import-bearing blocks are counted and skipped rather than
+    failed, so the number stays visible instead of being silently absorbed.
 
 ### Solidity corpus and differential testing
 
@@ -691,6 +756,33 @@ it must not silently compile to incorrect covenant behavior.
   - The gate proves named-fixture restoration and cold/warm/dependency-invalidated compilation, preserves the last
     valid artifact after a failed rebuild, and verifies `clean` removes artifacts and cache data.
 - [ ] Add a required BCHN regtest smoke suite for release candidates.
+- [-] **Gate run at head, 2026-08-08.** Every locally runnable release gate passes: `lint` (all packages),
+  `spellcheck` (0 issues), `examples`, `test:security-conformance` (15 files, 81 passed, 1 skipped),
+  `test:package-smoke` (6 packed packages), `test:generated-project-smoke`, `test:application-conformance`
+  (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). The BCHN regtest gate is
+  out of scope by maintainer direction and is the one gate not run.
+  - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
+    GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
+    scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
+    the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
+    true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
+    to 2,127 and takes 16 s.
+- [-] **Clean-clone run done, 2026-08-08, and it found two things the in-repo run could not.** The branch was
+  cloned to a fresh directory, installed with `--frozen-lockfile`, built, and gated. Install plus build takes
+  61 s and succeeds; `examples` and `test:docs-snippets` pass unchanged.
+  - `spellcheck` failed on 4 coined words, all written during this session and all in tracked files.
+    <!-- cspell:ignore truthily goldens unrun docscheck -->
+    They were `truthily`, `goldens`, `unrun` and `docscheck`. Reworded rather than added to the dictionary, so the
+    dictionary keeps meaning something. Honest note: the clean clone PROMPTED this catch but was not uniquely
+    able to find it - re-running spellcheck in the working tree shows the same 4. The lesson is to re-run the
+    gate after writing, not that the clone was required.
+  - `yarn test` failed on 6 `solidc` files, EVERY ONE a 30 s timeout and none an assertion, all 6 passing on a
+    warm re-run in the same clone. That first run is exactly what CI performs on every job: the yarn cache
+    restores `node_modules` but not vitest's transform cache, so CI pays the cold cost each time while a
+    developer re-running locally never sees it. `packages/solidc` had the tightest budget in the repo at 30 s
+    against solidcash's 120 s; it is now 60 s, which still fails a genuine hang. Not claimed: that CI is
+    observably flaky today - the clone also ran under load from concurrent sessions, and the honest statement is
+    that the margin was thin enough to disappear under load.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.

@@ -10,7 +10,7 @@ function attachEventArgsAccessors(values: Record<string, StateValue>): Record<st
   for (const k of Object.keys(values)) attachDecodedAccessors(values[k]);
   return values;
 }
-import { hexToBin, binsAreEqual, binToUtf8 } from '@bitauth/libauth';
+import { hexToBin, binsAreEqual, binToUtf8, cashAddressToLockingBytecode, binToHex } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 import NetworkProvider from '../network/NetworkProvider.js';
 
@@ -446,7 +446,30 @@ export async function readAnonymousEventsFromChain(
  */
 export function valuesEqual(a: StateValue, b: StateValue): boolean {
   if (a === b) return true;
-  if (typeof a !== typeof b) return false;
+
+  // Address fields: event NFT decoding yields locking-bytecode bytes (or 0x-hex of them); Hardhat suites pass
+  // CashAddress strings (`alice.address`). Compare after decoding the address to its locking bytecode.
+  const asLockingHex = (v: unknown): string | undefined => {
+    if (v instanceof Uint8Array) return binToHex(v);
+    if (typeof v === 'string' && /^0x[0-9a-fA-F]+$/i.test(v)) return v.slice(2).toLowerCase();
+    if (typeof v === 'string' && /^(bitcoincash|bchtest|bchreg):/i.test(v)) {
+      const decoded = cashAddressToLockingBytecode(v);
+      if (typeof decoded === 'string') return undefined;
+      return binToHex(decoded.bytecode);
+    }
+    return undefined;
+  };
+  const aLock = asLockingHex(a);
+  const bLock = asLockingHex(b);
+  if (aLock !== undefined && bLock !== undefined) return aLock === bLock;
+
+  if (typeof a !== typeof b) {
+    // bigint / number loose equality (event value 2666n vs 2666)
+    if ((typeof a === 'bigint' || typeof a === 'number') && (typeof b === 'bigint' || typeof b === 'number')) {
+      return BigInt(a as number | bigint) === BigInt(b as number | bigint);
+    }
+    return false;
+  }
 
   if (a instanceof Uint8Array && b instanceof Uint8Array) {
     return binsAreEqual(a, b);

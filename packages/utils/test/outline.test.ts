@@ -45,6 +45,12 @@ describe('cross-function bytecode outlining', () => {
     expect(result.savedBytes).toBe(0);
   });
 
+  it('honours caller-provided search bounds', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    expect(outlineSharedSpans(source, allocateId, 0).functions).toEqual([]);
+    expect(outlineSharedSpans(source, allocateId, 512, 0).functions).toEqual([]);
+  });
+
   it('keeps a conditional whole rather than stranding its OP_ELSE', () => {
     // The repeated run sits between OP_IF and OP_ELSE. A depth-only balance check would happily share
     // "<run> OP_ELSE <run>" - depth never moves - and the invoked body would abort with "OP_ELSE outside of a
@@ -102,5 +108,48 @@ describe('cross-function bytecode outlining', () => {
     }
     // Instructions before the shared span keep their position.
     expect(first.indexMap[0]).toBe(0);
+  });
+
+  it('does not retain one-invoke aliases after multi-round outlining', () => {
+    const repeatedBlock: Script = [...REPEATED, ...FILLER, ...REPEATED, ...FILLER];
+    const result = outlineSharedSpans([
+      body([...repeatedBlock, Op.OP_2DROP, ...repeatedBlock]),
+      body([...FILLER, ...repeatedBlock, Op.OP_NIP, ...repeatedBlock]),
+    ], allocateId);
+    const key = (id: Uint8Array): string => [...id].join(',');
+    const ids = new Set(result.functions.map((fn) => key(fn.id)));
+    for (const fn of result.functions) {
+      const isAlias = fn.script.length === 2 && fn.script[1] === Op.OP_INVOKE
+        && fn.script[0] instanceof Uint8Array
+        && ids.has(key(fn.script[0]));
+      expect(isAlias).toBe(false);
+    }
+  });
+
+  it('shares straight-line spans whose pushed constants differ', () => {
+    const operations: Script[] = [
+      [Op.OP_ADD, Op.OP_SWAP, Op.OP_SUB, Op.OP_OVER, Op.OP_BOOLAND, Op.OP_ROT, Op.OP_BOOLOR, Op.OP_TUCK],
+      [Op.OP_NUMEQUAL, Op.OP_NIP, Op.OP_LESSTHAN, Op.OP_DROP, Op.OP_SHA256, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+      [Op.OP_HASH160, Op.OP_OVER, Op.OP_GREATERTHAN, Op.OP_NIP, Op.OP_SHA1, Op.OP_SWAP, Op.OP_ADD, Op.OP_TUCK],
+      [Op.OP_HASH256, Op.OP_ROT, Op.OP_NUMNOTEQUAL, Op.OP_DROP, Op.OP_RIPEMD160, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+    ];
+    const parameterized = (offset: number): Script => operations.flatMap((segment, index) => [
+      Uint8Array.of(offset + index + 17), ...segment,
+    ]);
+    const result = outlineSharedSpans([
+      body(parameterized(0)),
+      body(parameterized(32)),
+    ], allocateId);
+
+    const shared = result.functions.find((fn) => fn.script.includes(Op.OP_TOALTSTACK));
+    expect(shared).toBeDefined();
+    const parameterCount = shared!.script.filter((element) => element === Op.OP_TOALTSTACK).length;
+    expect(parameterCount).toBeGreaterThan(0);
+    expect(shared!.script.filter((element) => element === Op.OP_FROMALTSTACK)).toHaveLength(parameterCount);
+    for (const rewritten of result.bodies) {
+      expect(rewritten.script.slice(0, parameterCount).every((element) => element instanceof Uint8Array)).toBe(true);
+      expect(rewritten.script.slice(-2)).toEqual([shared!.id, Op.OP_INVOKE]);
+      expect(rewritten.locationData).toHaveLength(rewritten.script.length);
+    }
   });
 });

@@ -151,9 +151,9 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    */
   const OVER_BUDGET_DEPTH = 24n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
-  // The relaxed budget must come from MOCK_RELAXED_OPERATION_COST, not from MOCK_CONSENSUS_LIMITS:
-  // the latter publishes the REAL 800 now, which would make this control identical to the subject
-  // and the A/B vacuous - both arms refusing for the same reason.
+  // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
+  // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair
+  // meaningless. This arm has to be genuinely relaxed for "differs in exactly one field" to hold.
   const RELAXED_BUDGET = MOCK_RELAXED_OPERATION_COST;
 
   /** Stage the recursive contract against one published operation-cost budget. */
@@ -229,7 +229,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     expect(refusal).toMatch(
       /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
     );
-    expect(refusal).toContain('Unsuccessful evaluation: completed with a non-truthy value');
+    // ATTRIBUTABLE, without pinning WHICH concrete cause fires: that depends on the published budget. At a
+    // relaxed budget the loop runs until the covenant completes with a non-truthy value; against the mock's real 800 per
+    // byte it trips density control first and the refusal carries a source-mapped location instead. Both are
+    // genuine VM refusals of the same unbounded shape, so require a concrete cause rather than one wording.
+    expect(refusal).toMatch(/Unsuccessful evaluation: completed with a non-truthy value|C\.scash:\d+/);
     expect(refusal).toContain('at input 0 in contract');
   });
 

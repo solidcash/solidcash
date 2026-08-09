@@ -138,6 +138,46 @@ describe('value-returning low-level-call helpers are inlined at direct call site
     expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
   });
 
+  it('inlines a multi-return wrapper which directly forwards an external call', () => {
+    const src = 'interface IVault { function deposit(uint a) external returns (uint, uint); }'
+      + ' contract C { uint n; function wrap(IVault v, uint a) internal returns (uint, uint) {'
+      + ' return v.deposit(a); } function f(IVault v, uint a) public {'
+      + ' (uint x, uint y) = wrap(v, a); this.n = x + y; require(this.n >= x); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+
+  it('lowers a recursive external-call helper and binds its loop-local returned target', () => {
+    const src = 'interface P { function swap(uint x) external; }'
+      + ' interface F { function pair(address a) external returns (P); }'
+      + ' contract C(F factory) { uint total;'
+      + ' function step(address a, uint n) internal returns (uint result) {'
+      + ' P p = factory.pair(a); p.swap(n);'
+      + ' if (n == 0) result = n; else result = step(a, n - 1); }'
+      + ' function run(address a, uint n) public {'
+      + ' total = step(a, n); require(true); } }';
+    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const run = artifact.abi.find((entry) => entry.name === 'run');
+    expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['pair', 'swap']);
+    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+  });
+
+  it('rewrites a cast receiver introduced by nested helpers inside a lowered tail loop', () => {
+    const src = 'interface T { function move(uint x) external; }'
+      + ' library Safe { function sendSafe(T token, uint x) internal { token.move(x); } }'
+      + ' contract C { uint total;'
+      + ' function swap(address token, uint x) private returns (uint out) {'
+      + ' Safe.sendSafe(T(token), x); out = x; }'
+      + ' function step(address token, uint n) private returns (uint result) {'
+      + ' uint out = swap(token, n);'
+      + ' if (n == 0) result = out; else result = step(token, n - 1); }'
+      + ' function run(address token, uint n) public {'
+      + ' total = step(token, n); require(true); } }';
+    const artifact = compileString(src, { solidityImportCompat: true, messageBus: false });
+    const run = artifact.abi.find((entry) => entry.name === 'run');
+    expect(run?.externalCalls?.map((call) => call.functionName)).toEqual(['move']);
+    expect(run?.inputs.some((input) => input.name.startsWith('__internal__loopTargets'))).toBe(true);
+  });
+
   // Overloaded chain call/2 -> call/3: name-keyed resolution can't tell them apart, so this exercises the
   // arity-keyed overload lookup + recursion stack, and the {value: value} option's param alpha-rename.
   it('resolves overloads in a chain (call/2 -> call/3 with a {value:} low-level call)', () => {
@@ -288,6 +328,25 @@ describe('redundant interface cast on a state-var external-call target', () => {
   });
 });
 
+describe('public state getter on a self-pinned contract target', () => {
+  it('treats a public mapping getter as a callable contract member', () => {
+    const artifact = compileString(
+      'interface ISwapper {} contract Master { mapping(ISwapper => bool) public swappers; }'
+      + ' contract C { Master public immutable masterContract;'
+      + ' constructor(Master _master) { masterContract = _master; }'
+      + ' function liquidate(ISwapper swapper) public {'
+      + ' require(masterContract.swappers(swapper), "invalid swapper"); } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.contractName).toBe('C');
+    expect(artifact.abi.find((entry) => entry.name === 'liquidate')?.externalCalls?.[0]).toMatchObject({
+      interfaceName: 'Master',
+      functionName: 'swappers',
+      addressStateVar: 'masterContract',
+    });
+  });
+});
+
 // An external-call address local must survive to the covenant epilogue. Reading the same handle another way in
 // the same function (`address(car).balance` alongside `car.method()`) must not OP_ROLL-consume it as a last use.
 describe('external-call address local survives a same-function balance read', () => {
@@ -435,6 +494,19 @@ describe('external call on a state-rooted access-chain target (ss[i].f.m(), ms[k
   const opts = { solidityImportCompat: true };
   // Each chain hoists to `IFoo x = <chain>; x.m()` - byte-identical to the manual hoist that uses the audited
   // interface-local dispatch (sound by reduction; every step is self-pinned state).
+
+  it('direct interface-mapping value: strategy[token].m()', () => {
+    const auto = compileString(
+      `${IF}contract C { mapping(uint => IFoo) strategy; function f(uint token) public returns (uint) { return strategy[token].m(); } }`, opts,
+    );
+    const manual = compileString(
+      `${IF}contract C { mapping(uint => IFoo) strategy; function f(uint token) public returns (uint) { IFoo x = strategy[token]; return x.m(); } }`, opts,
+    );
+    expect(auto.bytecode).toBe(manual.bytecode);
+    const f = auto.abi.find((entry) => entry.name === 'f')!;
+    expect(f.externalCalls?.[0]?.loopArrayVar).toBeUndefined();
+    expect(f.externalCalls?.[0]?.addressParam).toBe('__extaddr_strategy_token');
+  });
 
   it('struct-array element: ss[0].target.m()', () => {
     const auto = compileString(

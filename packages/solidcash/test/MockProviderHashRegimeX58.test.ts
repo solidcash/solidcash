@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../src/index.js';
+import { MockNetworkProvider, MOCK_RELAXED_OPERATION_COST } from '../src/index.js';
 import type { ConsensusLimits, NetworkPolicy } from '../src/network/NetworkProvider.js';
 
 /**
@@ -53,9 +53,9 @@ async function sendHashing(
   }
 }
 
-// This file is about which HASH regime mem-cash selects, so the operation-cost budget is relaxed
-// alongside the hash allowance. It is real by default now, and 200 OP_HASH256 exceeds it - which
-// would fail these rows for a reason that has nothing to do with the regime under test.
+// The operation-cost budget is relaxed alongside the hash allowance so this file varies ONE thing. The mock
+// default budget is the real 800 per byte, and a 200-iteration hash loop exceeds it - which would make these
+// rows fail for a reason that has nothing to do with the hash regime they exist to measure.
 const RELAXED = {
   hashDigestIterationsPerByte: 10_000_000,
   operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST,

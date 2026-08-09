@@ -34,6 +34,28 @@ contract SplitCounter() {
 // the 30s project default, but under full-suite parallel load whichever one loses the scheduling draw exceeds
 // it, so the file fails on a different test each run. Budget the whole describe rather than chase them singly.
 describe('large-contract state-local splitting', () => {
+  it('retains resolved logical self types when compiling renamed facets', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.7;
+      contract SelfTyped {
+        SelfTyped public immutable masterContract;
+        mapping(address => bool) public approved;
+        int public value;
+        constructor() { masterContract = this; }
+        function invoke(bytes memory data) internal {
+          (address callee, bytes memory payload) = abi.decode(data, (address, bytes));
+          (bool ok,) = callee.call(payload);
+          require(ok);
+        }
+        function set(int next, address who, bytes[] memory data) external {
+          require(masterContract.approved(who));
+          for (uint i = 0; i < data.length; i++) { invoke(data[i]); }
+          value = next;
+        }
+      }`, { solidityImportCompat: true, forceStateful: true, forceSplit: true });
+
+    expect(bundle.manifest.facets.length).toBeGreaterThan(0);
+  });
+
   it('preserves the ordinary compiler result when splitting is unnecessary', () => {
     const ordinary = compileString(SOURCE);
     const bundle = compileStringSplit(SOURCE);
@@ -72,6 +94,31 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.deploymentMode).toBe('immutable-one-hop');
   });
 
+  it('keeps synthesized public getters on the logical root instead of duplicating them into facets', () => {
+    const bundle = compileStringSplit(`pragma solidity ^0.8.20;
+      contract GetterSplit {
+        uint256 public value;
+        mapping(address => uint256) public balances;
+        function set(uint256 next) public { value = next; require(next >= 0); }
+      }`, { solidityImportCompat: true, messageBus: false, forceSplit: true });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(bundle.root.abi.map((fn) => fn.name)).toEqual(expect.arrayContaining(['value', 'balances']));
+    expect(facet.abi.map((fn) => fn.name)).not.toEqual(expect.arrayContaining(['value', 'balances']));
+    expect(bundle.manifest.routes.find((route) => route.function === 'value')?.target).toBe('root');
+    expect(bundle.manifest.routes.find((route) => route.function === 'balances')?.target).toBe('root');
+  });
+
+  it('does not expose a root-owned public view call closure as a facet selector', () => {
+    const bundle = compileStringSplit(`contract ViewClosure() {
+      int counter;
+      function read() public view returns (int) { return this.counter; }
+      function increment() public { this.counter = read() + 1; require(this.counter > 0); }
+    }`, { messageBus: true, forceSplit: true });
+    const facet = bundle.facets[bundle.manifest.facets[0].name];
+    expect(bundle.manifest.routes.find((route) => route.function === 'read')?.target).toBe('root');
+    expect(facet.abi.map((fn) => fn.name)).not.toContain('read');
+  });
+
   it('is deterministic', () => {
     const a = compileStringSplit(SOURCE, { forceSplit: true });
     const b = compileStringSplit(SOURCE, { forceSplit: true });
@@ -94,6 +141,39 @@ describe('large-contract state-local splitting', () => {
     expect(bundle.manifest.facets).toHaveLength(1);
     expect([...bundle.manifest.facets[0].functions].sort()).toEqual(['reset', 'set']);
     expect(bundle.facets[bundle.manifest.facets[0].name].abi.some((fn) => fn.name === 'helper')).toBe(false);
+  });
+
+  it('forwards the proxy master witness across calls between delegate facet entries', () => {
+    // Once the unsplit contract is too large, view entries move into facets too. `a` and `b` both call the
+    // view entry `owner` through their expanded modifier, so all three share a facet and `owner()` is an
+    // internal call to a delegate entry. Its compiler-owned proxy witness must propagate just like the
+    // return-output witness (FlexUSD's Ownable.onlyOwner shape).
+    const unrelated = Array.from({ length: 10 }, (_, i) =>
+      `function p${i}(uint v) public { x = x + v + ${i}; require(v >= 0); }`).join('');
+    const source = `contract C {
+      uint x; address private _owner;
+      modifier onlyOwner() { require(owner() == msg.sender); _; }
+      function owner() public view returns (address) { return _owner; }
+      function a(uint v) public onlyOwner { x = v; }
+      function b(uint v) public onlyOwner { x = v + 1; }
+      ${unrelated}
+    }`;
+    const unsplitBytes = asmToBytecode(compileString(source, { solidityImportCompat: true }).bytecode).length;
+    const bundle = compileStringSplit(source, {
+      solidityImportCompat: true, maxShardBytes: unsplitBytes - 1,
+    });
+    expect(bundle.manifest.facets.some((facet) =>
+      ['a', 'b', 'owner'].every((name) => facet.functions.includes(name)))).toBe(true);
+  });
+
+  it('does not require a return blob from an unconditionally reverting facet entry', () => {
+    const bundle = compileStringSplit(
+      'contract BrokenRewarder { uint touched;'
+      + ' function pending() public returns (uint[] memory amounts) { touched = 1; revert(); }'
+      + ' function notify() public { require(true); } }',
+      { solidityImportCompat: true, forceSplit: true },
+    );
+    expect(bundle.manifest.routes.find((route) => route.function === 'pending')?.target).not.toBe('root');
   });
 
   it('fails closed when a measured facet or root cannot fit', () => {
@@ -250,6 +330,53 @@ describe('large-contract state-local splitting', () => {
       expect(slots(divided.facets[info.name].stateLayout), `${info.name} layout`).toEqual(expected);
     }
   });
+
+  it('uses Solidity-compatible block oracle synthesis for split layout planning', () => {
+    const source = `pragma solidity ^0.8.7;
+      contract OracleOrder {
+        uint256 own;
+        function recordTime(uint256 v) public {
+          own = block.timestamp + v;
+          require(v >= 0, "n");
+        }
+        function recordHeight(uint256 v) public {
+          own = block.number + v;
+          require(v >= 0, "n");
+        }
+      }`;
+    const options = { solidityImportCompat: true, forceSplit: true, messageBus: false };
+    const slots = (layout: any): string[] => (layout?.variables ?? []).map((v: any) => v.name);
+    const baselineSlots = slots(compileString(source, options).stateLayout);
+    const bundle = compileStringSplit(source, options);
+
+    // Inheritance/root rewriting can visit these reads in a different order. Synthetic register placement is
+    // canonical, so the physical layout remains identical in the baseline, root, and every delegate facet.
+    expect(baselineSlots).toContain('__block_number');
+    expect(baselineSlots).toContain('__block_timestamp');
+    expect(baselineSlots.indexOf('__block_number')).toBeLessThan(baselineSlots.indexOf('__block_timestamp'));
+    expect(slots(bundle.root.stateLayout)).toEqual(baselineSlots);
+    for (const info of bundle.manifest.facets) {
+      expect(slots(bundle.facets[info.name].stateLayout), `${info.name} layout`).toEqual(baselineSlots);
+    }
+  });
+
+  it('admits a conditional value-transfer call in a message-bus handler', () => {
+    const artifact = compileString(`pragma solidity ^0.8.7;
+      contract ConditionalValue {
+        uint256 paid;
+        function pay(address to, uint256 amount, bool sendValue) public {
+          if (sendValue) {
+            (bool success,) = to.call{value: amount}("");
+            require(success, "send failed");
+          }
+          paid = amount;
+          require(amount >= 0, "n");
+        }
+      }`, { solidityImportCompat: true, messageBus: true });
+
+    expect(artifact.abi.some((entry: any) => entry.name === 'pay')).toBe(true);
+    expect(asmToBytecode(artifact.bytecode).length).toBeGreaterThan(0);
+  }, 300_000);
 
   /**
    * THE GUARD IS STILL ARMED, and it has to be checked separately now that no source reaches it: the repair

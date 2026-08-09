@@ -24,6 +24,37 @@ contract Factory(pubkey deployer) {
 }`;
 
 describe('deploy-then-call fold (compiler)', () => {
+  it('folds a constructor-owned factory guard before straight-line initialization', () => {
+    const artifact = compileString(`
+      contract Domain {
+        bytes32 domain;
+        constructor() { domain = sha256('domain'); }
+      }
+      contract Pair is Domain {
+        address factory;
+        address token0;
+        address token1;
+        constructor() { factory = msg.sender; }
+        function initialize(address a, address b) external {
+          require(msg.sender == factory);
+          token0 = a;
+          token1 = b;
+        }
+      }
+      contract Factory {
+        Pair pair;
+        function create(address a, address b) public {
+          Pair p = new Pair();
+          p.initialize(a, b);
+          this.pair = p;
+          require(true);
+        }
+      }
+    `, { solidityImportCompat: true, messageBus: false });
+    expect(artifact.contractName).toBe('Factory');
+    expect(artifact.abi.find((entry) => entry.name === 'create')?.externalCalls).toBeUndefined();
+  });
+
   it('infers the deploy modifier from new Child() (deploy keyword optional)', () => {
     // `make` has no `deploy` keyword; instantiating a stateful Child infers it.
     const src = `

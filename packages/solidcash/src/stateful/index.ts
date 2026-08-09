@@ -21,6 +21,7 @@ type StatefulContractCtor =
   };
 export const StatefulContract = StatefulContractClass as unknown as StatefulContractCtor;
 export type StatefulContract<T extends Artifact = Artifact> = ConnectedStatefulContractType<T>;
+export { clearSoftBentoTotals, takeSoftStateSnapshot, type SoftStateSnapshot } from './StatefulContract.js';
 
 export {
   StatefulTransactionBuilder,
@@ -94,6 +95,11 @@ export {
   encodeEntryCommitment, decodeEntryCommitment, headSentinelCommitment,
   type SortedEntry, type NonMembershipPlan, type MembershipPlan, type InsertPlan, type DeletePlan, type UpdatePlan,
 } from './SortedList.js';
+export {
+  registerDeployment, findDeploymentByName, findDeploymentByAddress, findDeploymentByLockingBytecode,
+  findDeploymentImplementing, clearDeployments, takeDeploymentRegistrySnapshot,
+  type RegisteredDeployment, type DeploymentRegistrySnapshot,
+} from './deployment-registry.js';
 export {
   getDataNftAddress,
   getMessageBusVerifierAddress,

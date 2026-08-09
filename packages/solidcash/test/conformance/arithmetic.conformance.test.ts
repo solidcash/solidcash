@@ -122,21 +122,25 @@ describe('arithmetic: checked over/underflow reverts on both sides', () => {
 // intermediates exceed the BCH VM operation-cost-density budget (a platform limit tied to tx size, worst-case
 // in a minimal tx - NOT a codegen bug). Literal-base `2 ** b` (cheap shift path) and the common `10 ** decimals`
 // case (small result) are covered above and pass. Square-and-multiply lowering would extend this range.
+// These two ASSERT the divergence the block title names, rather than the conformant result. They passed only
+// while MockNetworkProvider published a relaxed operation-cost budget; against the real 800 per byte the growing
+// intermediates exceed the density ceiling exactly as the comment above predicts, so a node would refuse them
+// too. Restore `assertConformant` here if square-and-multiply lowering lands and brings the cost down.
 describe('exp: runtime-base POW op-cost limit on large results (known platform divergence)', () => {
-  // These two ARE the divergence this block is named for, and they now assert it. They read as
-  // conformant only while the mock ran a relaxed operation-cost budget; against the real 800 the
-  // growing intermediates exceed the density limit, exactly as a node refuses them (measured:
-  // 139,249 against a 139,200 budget for 2 ** 200). PINS, not endorsements - square-and-multiply
-  // lowering would bring the cost down, at which point these FAIL and the positive assertion
-  // should come back rather than this one being loosened.
-  it('2 ** 200 (runtime base) exceeds the operation-cost budget', () => expectOverOperationCostBudget(
-    assertConformant(exprCase({
-      params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 200n],
-    })),
-  ));
-  it('2 ** 255 (runtime base) exceeds the operation-cost budget', () => expectOverOperationCostBudget(
-    assertConformant(exprCase({
-      params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, 255n],
-    })),
-  ));
+  // These two ARE the divergence this block is named for, and they now assert it. They read as conformant only
+  // while the mock ran a relaxed operation-cost budget; against the real 800 the growing intermediates exceed
+  // the density limit, exactly as a node refuses them (measured: 139,249 against a 139,200 budget for 2 ** 200).
+  // PINS, not endorsements - square-and-multiply lowering would bring the cost down, at which point these FAIL
+  // and the positive assertion should come back rather than this one being loosened.
+  //
+  // Asserted with expectOverOperationCostBudget rather than a bare rejects.toThrow(): the point is that the
+  // refusal is a DENSITY refusal, and a generic throw would keep passing if these started failing for an
+  // unrelated reason.
+  const overBudget = (exp: bigint) => async (): Promise<void> => {
+    await expectOverOperationCostBudget(assertConformant(exprCase({
+      params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, exp],
+    })));
+  };
+  it('2 ** 200 (runtime base) exceeds the real operation-cost budget', overBudget(200n));
+  it('2 ** 255 (runtime base) exceeds the real operation-cost budget', overBudget(255n));
 });

@@ -32,3 +32,28 @@ describe('encodeFunctionArgument: function pointer types', () => {
     expect(() => encodeFunctionArgument('double' as unknown as bigint, 'function(int)returns(int)')).toThrow();
   });
 });
+
+// Hardhat/MistSwap suites pass ethers-v5 BigNumber (or the testing-package shim) into constructor
+// args via getBigNumber(). Without coercion, encode throws "Found type 'object' where type 'uint256'".
+describe('encodeFunctionArgument: ethers BigNumber / numeric objects', () => {
+  it('coerces an object with toBigInt() (testing BigNumber shim)', () => {
+    const bn = { _value: 1_000_000_000_000_000_000n, toBigInt: () => 1_000_000_000_000_000_000n };
+    expect(encodeFunctionArgument(bn as unknown as bigint, 'uint256')).toEqual(
+      encodeInt(1_000_000_000_000_000_000n),
+    );
+  });
+
+  it('coerces an ethers-v5-shaped BigNumber ({_hex,_isBigNumber})', () => {
+    const bn = { _hex: '0x64', _isBigNumber: true, toString: () => '100' };
+    expect(encodeFunctionArgument(bn as unknown as bigint, 'uint256')).toEqual(encodeInt(100n));
+  });
+
+  it('coerces a BN.js-like object via toString(10)', () => {
+    const bn = { toString: (base?: number) => (base === 10 || base === undefined ? '42' : '2a') };
+    expect(encodeFunctionArgument(bn as unknown as bigint, 'int')).toEqual(encodeInt(42n));
+  });
+
+  it('still rejects a plain non-numeric object', () => {
+    expect(() => encodeFunctionArgument({ foo: 1 } as unknown as bigint, 'uint256')).toThrow(/object/);
+  });
+});

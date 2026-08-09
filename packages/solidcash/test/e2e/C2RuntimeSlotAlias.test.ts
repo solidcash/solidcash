@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { hexToBin } from '@bitauth/libauth';
 import { Contract, StatefulContract, Signer } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos, plainNumerics } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
 // =============================================================================
@@ -67,7 +67,7 @@ async function setup(owner: Uint8Array): Promise<Fixture> {
     await provider.addUtxo(signer.getAddress(), { txid: txid.repeat(32), vout: 0, satoshis: 500000n });
   }
   const read = async (k: Uint8Array): Promise<bigint> =>
-    ((await (sc.state as Record<string, (x: Uint8Array) => Promise<unknown>>).bal(k)) ?? 0n) as bigint;
+    plainNumerics((await (sc.state as Record<string, (x: Uint8Array) => Promise<unknown>>).bal(k)) ?? 0n) as bigint;
   return { sc, signer, read };
 }
 

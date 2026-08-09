@@ -1,4 +1,5 @@
 import { Node } from './AST.js';
+import { YulNode } from './YulAST.js';
 
 /**
  * Deep-clone an AST node: child Nodes (and Node arrays) recursively; Maps shallow-copied; class instances (types,
@@ -26,6 +27,15 @@ export function cloneNode<T extends Node>(node: T): T {
 
 function cloneValue(value: unknown): unknown {
   if (value instanceof Node) return cloneNode(value);
+  // AssemblyStatementNode owns a parallel Yul AST whose nodes do not inherit from the high-level Node class.
+  // Treat it as an AST subtree too: inheritance/helper cloning followed by an in-place Yul rename must not mutate
+  // the source contract's assembly (LowerMemoryModel otherwise renamed both copies but materialized a buffer in
+  // only one, leaving the other with an undefined __memb_* reference).
+  if (value instanceof YulNode) {
+    const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
+    for (const [key, child] of Object.entries(value)) clone[key] = cloneValue(child);
+    return clone;
+  }
   if (Array.isArray(value)) return value.map(cloneValue);
   if (value instanceof Map) return new Map(value);
   // Only plain objects (constructor === Object) are cloned; class instances (Type, Location) stay shared - they

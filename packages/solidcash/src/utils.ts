@@ -441,3 +441,87 @@ export const isFungibleTokenUtxo = (utxo: Utxo): boolean => (
 export const isNonTokenUtxo = (utxo: Utxo): boolean => utxo.token === undefined;
 
 export const delay = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * ethers-v5 BigNumber-compatible wrapper for bigint state/view returns.
+ * MistSwap kashipair uses `.sub()/.lt()/.gt()` on mapping getters (userBorrowPart, etc.).
+ */
+export interface EthersBigNumberish {
+  _isBigNumber: true;
+  _value: bigint;
+  _hex: string;
+  add(o: bigint | number | string | EthersBigNumberish): EthersBigNumberish;
+  sub(o: bigint | number | string | EthersBigNumberish): EthersBigNumberish;
+  mul(o: bigint | number | string | EthersBigNumberish): EthersBigNumberish;
+  div(o: bigint | number | string | EthersBigNumberish): EthersBigNumberish;
+  mod(o: bigint | number | string | EthersBigNumberish): EthersBigNumberish;
+  abs(): EthersBigNumberish;
+  eq(o: bigint | number | string | EthersBigNumberish): boolean;
+  lt(o: bigint | number | string | EthersBigNumberish): boolean;
+  lte(o: bigint | number | string | EthersBigNumberish): boolean;
+  gt(o: bigint | number | string | EthersBigNumberish): boolean;
+  gte(o: bigint | number | string | EthersBigNumberish): boolean;
+  isZero(): boolean;
+  toBigInt(): bigint;
+  toNumber(): number;
+  toString(): string;
+  toHexString(): string;
+  valueOf(): bigint;
+}
+
+function toBig(o: bigint | number | string | EthersBigNumberish): bigint {
+  if (typeof o === 'bigint') return o;
+  if (typeof o === 'number') return BigInt(o);
+  if (typeof o === 'string') return BigInt(o);
+  if (o && typeof o === 'object' && typeof (o as EthersBigNumberish)._value === 'bigint') {
+    return (o as EthersBigNumberish)._value;
+  }
+  return BigInt(String(o));
+}
+
+export function wrapEthersBN(value: bigint): EthersBigNumberish {
+  const self: EthersBigNumberish = {
+    _isBigNumber: true,
+    _value: value,
+    get _hex(): string {
+      const h = value < 0n ? (-value).toString(16) : value.toString(16);
+      return value < 0n ? `-0x${h}` : `0x${h}`;
+    },
+    add: (o) => wrapEthersBN(value + toBig(o)),
+    sub: (o) => wrapEthersBN(value - toBig(o)),
+    mul: (o) => wrapEthersBN(value * toBig(o)),
+    div: (o) => wrapEthersBN(value / toBig(o)),
+    mod: (o) => wrapEthersBN(value % toBig(o)),
+    abs: () => wrapEthersBN(value < 0n ? -value : value),
+    eq: (o) => value === toBig(o),
+    lt: (o) => value < toBig(o),
+    lte: (o) => value <= toBig(o),
+    gt: (o) => value > toBig(o),
+    gte: (o) => value >= toBig(o),
+    isZero: () => value === 0n,
+    toBigInt: () => value,
+    toNumber: () => Number(value),
+    toString: () => value.toString(),
+    toHexString: () => self._hex,
+    valueOf: () => value,
+  };
+  return self;
+}
+
+/** Wrap bigint leaves so ethers-v5-style method chains work on view/mapping returns. */
+export function wrapNumericForEthers(value: unknown): unknown {
+  if (typeof value === 'bigint') return wrapEthersBN(value);
+  if (Array.isArray(value)) return value.map(wrapNumericForEthers);
+  if (value && typeof value === 'object' && !(value instanceof Uint8Array)) {
+    const obj = value as Record<string, unknown>;
+    // Struct-like: wrap numeric fields in place for .amount / .base access
+    if (!('_isBigNumber' in obj)) {
+      const out: Record<string, unknown> = { ...obj };
+      for (const [k, v] of Object.entries(out)) {
+        if (typeof v === 'bigint') out[k] = wrapEthersBN(v);
+      }
+      return out;
+    }
+  }
+  return value;
+}

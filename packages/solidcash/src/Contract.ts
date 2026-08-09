@@ -420,8 +420,20 @@ export class Contract<
       };
 
       const structs = this.artifact.structs ?? this.artifact.stateLayout?.structs;
+      // Coerce ethers-v5 BigNumber / wrapEthersBN objects before encode (MistSwap removeCollateral share).
+      const coerceArg = (arg: unknown): unknown => {
+        if (arg && typeof arg === 'object' && !(arg instanceof Uint8Array) && !Array.isArray(arg)) {
+          const o = arg as { toBigInt?: () => bigint; _value?: unknown };
+          if (typeof o.toBigInt === 'function') {
+            try { const bi = o.toBigInt(); if (typeof bi === 'bigint') return bi; } catch { /* keep */ }
+          }
+          if (typeof o._value === 'bigint') return o._value;
+        }
+        if (Array.isArray(arg)) return arg.map(coerceArg);
+        return arg;
+      };
       const encodedArgs = args
-        .map((arg, i) => encodeFunctionArgument(arg, argInputs[i].type, structs));
+        .map((arg, i) => encodeFunctionArgument(coerceArg(arg) as never, argInputs[i].type, structs));
 
       const generateUnlockingBytecode = (
         { transaction, sourceOutputs, inputIndex }: GenerateUnlockingBytecodeOptions,

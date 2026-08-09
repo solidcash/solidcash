@@ -224,6 +224,10 @@ export function validateFunctionLowLevelCallShapes(fn: FunctionDefinitionNode): 
       );
     }
     if (context === 'conditional') {
+      // A value-only call is settled by the independently bound satoshi-transfer effect. Its EVM success tuple
+      // is true exactly when that required output exists, so it does not need an opaque callee row merely to
+      // model the recipient's fallback execution (BCH executes the recipient only when that output is spent).
+      if (admittedValue) continue;
       throw new LowLevelCallShapeError(
         node,
         `function '${fn.name}' issues a low-level '${callMode}' inside a branch. A callManifest row is either `

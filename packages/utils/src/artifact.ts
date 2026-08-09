@@ -116,6 +116,8 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
+  /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
+  | 'deployDataNft'
   | 'lowLevelCall'
   | 'trailing';
 
@@ -192,6 +194,8 @@ export interface AbiFunction {
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
+  /** This source batch entry is an SDK alias for the artifact's ordered local message-bus route. */
+  nativeSelfBatchDispatcher?: boolean;
   /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
   graphBlockhashOracle?: {
     inputBaseParameter: '__internal__blockhashInputIndex';
@@ -228,6 +232,9 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
+    // Redeem-script body (hex) Instantiation embeds for the child P2SH address. Prefer this over the
+    // standalone child artifact bytecode when present (referenced-compile can differ in size/content).
+    creationBytecode?: string;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
@@ -421,10 +428,18 @@ export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
+  /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
+  keyDecodeTupleIndex?: number;
+  keyDecodeTupleTypes?: readonly string[];
+  /** Keep only iterations where predicateArrayParam[i] equals this integer value. */
+  predicateArrayParam?: string;
+  predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  valueRuntimeLocal?: string;  // compiler-generated per-iteration value rebuilt from the authenticated old entry
+  valueRuntimeExpression?: boolean; // final value is computed on-chain per iteration and trace-derived by the SDK
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   mutationValueScalarParam?: string;

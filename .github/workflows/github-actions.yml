@@ -29,7 +29,9 @@ jobs:
           cache: yarn
 
       - name: Install dependencies
-        run: yarn --frozen-lockfile
+        # Workspace prepare/postinstall hooks build the monorepo, but the next step performs the authoritative
+        # project-reference build. Skip lifecycle scripts here to avoid compiling every package twice.
+        run: yarn --frozen-lockfile --ignore-scripts
 
       - name: Build packages and testing suite
         run: yarn build
@@ -58,6 +60,9 @@ jobs:
 
       - name: Run maintained examples
         run: yarn examples
+
+      - name: Compile the public docs snippets
+        run: yarn test:docs-snippets
 
       - name: Test packed release packages in a clean consumer
         run: yarn test:package-smoke

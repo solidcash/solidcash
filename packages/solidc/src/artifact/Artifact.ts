@@ -35,6 +35,27 @@ function abiTypeString(type: Type | undefined): string {
   return type.toString().replace(/address payable/g, 'address');
 }
 
+/**
+ * One `keccakPreimageParams` entry per RESERVED `keccakSideCar` slot.
+ *
+ * `computeBlockLayout` reserves a slot per counted keccak256 call, but code generation records a preimage param
+ * only for a call it emits under this function's own traversal. A call reached through an internal helper is
+ * emitted while `currentFunction` is the HELPER, so its param lands there and the entry point publishes none -
+ * and the SDK, which co-spends one side-car per published param, then supplies zero side-cars for a covenant
+ * that reads one. It reads whatever input sits at that index instead (measured on MistSwap's BentoBox
+ * constructor: the funder's unlocking script, compared against the computed keccak argument).
+ *
+ * Pad the published list to the reserved slot count with `null` - the SDK's "not a direct parameter" marker,
+ * which routes to its VM probe. A keccak-loop function reserves no fixed slots and is left alone.
+ */
+function keccakPreimageParamsFor(func: FunctionDefinitionNode): (string | null)[] {
+  const recorded = func.keccakPreimageParams ?? [];
+  if (func.keccakInLoop || !func.blockLayout) return recorded;
+  const reserved = func.blockLayout.slots.filter((slot) => slot.kind === 'keccakSideCar').length;
+  if (reserved <= recorded.length) return recorded;
+  return [...recorded, ...Array.from({ length: reserved - recorded.length }, () => null)];
+}
+
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
 const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
@@ -684,6 +705,7 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
+        ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {
@@ -768,8 +790,8 @@ function buildFunctionAbiMetadata(
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
     ...(func.keccakCompute && { keccakCompute: true }),
-    ...(func.keccakPreimageParams && func.keccakPreimageParams.length > 0
-      && { keccakPreimageParams: func.keccakPreimageParams }),
+    ...(keccakPreimageParamsFor(func).length > 0
+      && { keccakPreimageParams: keccakPreimageParamsFor(func) }),
     ...(func.keccakInLoop && { keccakInLoop: true }),
     ...(func.keccakLoopReads && { keccakLoopReads: true }),
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
@@ -977,6 +999,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
+    ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
     ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
@@ -1201,7 +1224,8 @@ export function generateArtifact(
           resultNft: true,
           // minInstances = the max keccak256 call count across functions (side-cars to deploy at creation);
           // unbounded flags a keccak-in-loop function whose runtime count exceeds that static minimum.
-          minInstances: Math.max(0, ...allFns.map((f) => f?.keccakPreimageParams?.length ?? 0)),
+          // Count the PUBLISHED params, so a call attributed to an inlined helper still provisions its side-car.
+          minInstances: Math.max(0, ...allFns.map((f) => (f ? keccakPreimageParamsFor(f).length : 0))),
           ...(allFns.some((f) => f?.keccakInLoop) && { unbounded: true }),
         };
       }

@@ -1,0 +1,91 @@
+export default {
+  contractName: 'Example',
+  constructorInputs: [],
+  abi: [
+    {
+      name: 'test',
+      selector: '78cae886',
+      inputs: [
+        {
+          name: 'value',
+          type: 'int256',
+        },
+      ],
+    },
+  ],
+  bytecode: 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL',
+  source: 'contract Example() {\n  function test(int value) {\n    console.log(value, "test");\n    require(value == 1, "Wrong value passed");\n  }\n}\n',
+  debug: {
+    bytecode: '76765102ff008d9301218001207f7701008875519c',
+    sourceMap: '2:16:2:25;;;;;;;;;;;;;;4:21:4:22;:4::46:1',
+    logs: [
+      {
+        ip: 14,
+        line: 3,
+        data: [
+          {
+            stackIndex: 0,
+            type: 'int256',
+            ip: 14,
+          },
+          'test',
+        ],
+      },
+    ],
+    requires: [
+      {
+        ip: 16,
+        line: 4,
+        message: 'Wrong value passed',
+      },
+    ],
+  },
+  fingerprint: '94e416504230dbd4ab77bfbe23a6518120a6575169e598e6ed4e864fa417f8e4',
+  compiler: {
+    name: 'solidc',
+    version: '0.13.1',
+    options: {
+      enforceFunctionParameterTypes: true,
+      enforceLocktimeGuard: true,
+      commitmentLimit: 128,
+      messageBus: false,
+    },
+  },
+  updatedAt: '2026-08-09T04:49:25.996Z',
+  invocationAnalysis: {
+    version: 1,
+    protocolVersions: [
+      1,
+    ],
+    functions: [
+      {
+        id: 0,
+        name: 'test',
+        arity: 1,
+        entryPoint: true,
+        selector: '78cae886',
+        calls: [],
+        closure: [
+          0,
+        ],
+        component: 0,
+        recursive: false,
+        reads: [],
+        writes: [],
+        effects: [],
+        unknown: false,
+        bounded: true,
+        maximumDirectInvocations: 0,
+      },
+    ],
+    components: [
+      {
+        id: 0,
+        functions: [
+          0,
+        ],
+        recursive: false,
+      },
+    ],
+  },
+} as const;

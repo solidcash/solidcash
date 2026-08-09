@@ -4,7 +4,7 @@ import {
   Contract, Signer, SplitContractBundle, StatefulContract,
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { createTestProvider, setupStatefulUtxos, plainNumerics } from '../test-util.js';
 import { alicePriv, aliceAddress } from '../fixture/vars.js';
 
 // =============================================================================
@@ -81,7 +81,7 @@ describe('auto-split facet: msg.sender', () => {
       { owner, a: 0n, b: 0n, c: 0n }, { saltContract: true });
     const sc = StatefulContract.withCategory(contract, categoryId);
     await sc.connect(signer).call.guarded().send();
-    expect((await sc.getState()).b).toBe(1n);
+    expect(plainNumerics(await sc.getState()).b).toBe(1n);
   });
 
   it('resolves inside a facet, without an explicit connect on the deployed bundle', async () => {
@@ -94,13 +94,13 @@ describe('auto-split facet: msg.sender', () => {
 
     const { deployed } = await deploySplit();
     await deployed.call.bump().send();
-    expect((await deployed.root.getState()).a).toBe(1n);
+    expect(plainNumerics(await deployed.root.getState()).a).toBe(1n);
     // Adding the sender check is the only difference, and it now settles too.
     await deployed.call.guarded().send();
-    expect((await deployed.root.getState()).b).toBe(1n);
+    expect(plainNumerics(await deployed.root.getState()).b).toBe(1n);
     // A tautology exercises resolution without any comparison outcome.
     await deployed.call.vacuous().send();
-    expect((await deployed.root.getState()).b).toBe(2n);
+    expect(plainNumerics(await deployed.root.getState()).b).toBe(2n);
   });
 });
 
@@ -108,8 +108,8 @@ describe('auto-split facet: events', () => {
   it('emits a zero-parameter event exactly once, like a parameterised one', async () => {
     const { deployed } = await deploySplit();
     await deployed.call.oneParamEvent().send();
-    expect((await deployed.root.getState()).c).toBe(1n);
+    expect(plainNumerics(await deployed.root.getState()).c).toBe(1n);
     await deployed.call.zeroParamEvent().send();
-    expect((await deployed.root.getState()).c, 'the zero-parameter emit settled').toBe(2n);
+    expect(plainNumerics(await deployed.root.getState()).c, 'the zero-parameter emit settled').toBe(2n);
   });
 });

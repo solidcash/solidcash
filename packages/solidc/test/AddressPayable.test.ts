@@ -5,6 +5,19 @@ const compile = (body: string): ReturnType<typeof compileString> =>
   compileString(`contract C { ${body} }`, { solidityImportCompat: true });
 
 describe('address payable Solidity parity', () => {
+  it('tracks the pre-0.8 payable global-address types per source pragma', () => {
+    expect(() => compileString('pragma solidity 0.6.12; contract C {'
+      + ' function f() public view returns (address payable) { return msg.sender; }'
+      + ' function g() public view returns (address payable) { return tx.origin; } }',
+    { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString('pragma solidity >=0.6.0 <0.8.0; contract C {'
+      + ' function f() public view returns (address payable) { return msg.sender; } }',
+    { solidityImportCompat: true })).not.toThrow();
+    expect(() => compileString('pragma solidity ^0.8.0; contract C {'
+      + ' function f() public view returns (address payable) { return msg.sender; } }',
+    { solidityImportCompat: true })).toThrow();
+  });
+
   it('allows payable to plain address, but requires an explicit conversion in the other direction', () => {
     expect(() => compile('function f(address payable p) public pure returns (address) { return p; }')).not.toThrow();
     expect(() => compile('function f(address p) public pure returns (address payable) { return p; }')).toThrow();

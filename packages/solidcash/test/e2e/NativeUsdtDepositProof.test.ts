@@ -202,13 +202,9 @@ describe('NativeUsdt / deposit delivery proof', () => {
         .send();
     } catch (error) { settled = false; reason = (error as Error).message; }
 
-    // NOTE (post-merge of solidcash_v0.13.1): this currently FAILS, and the failure is real but not
-    // a contract defect. `.send()` RESOLVES while the deposit silently no-ops - measured after the
-    // call, containerSeen/backedSupply/clock are all unchanged, so no FTs were credited and the
-    // destination check still holds. What regressed is the SDK reporting success for a transaction
-    // it did not apply; upstream's own e2e suite shows the same "promise resolved instead of
-    // rejecting" class in 5 other places. Left asserting the correct behaviour rather than
-    // weakened to match, so it goes green again when that is fixed.
+    // The MistSwap adapter once caught this real refusal solely because the function was named `deposit`,
+    // then returned a successful no-op receipt. Its recovery path is now scoped to the imported contract
+    // families it models, so an ordinary contract can never have a covenant failure swallowed by name.
     expect(settled, 'deposit neither applied nor threw - send() reported success for a no-op').toBe(false);
     // Refused at input 0 - the MASTER's own script. `deposit` is not delegated: a token
     // container is invisible from a facet, so the proof can only run here.

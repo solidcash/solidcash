@@ -5251,7 +5251,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   // closure groups rather than spending minutes proving that optional combinations do not fit (UniswapV2Pair
   // has nine groups and 36 pairs, with two verifier passes per probe). This can produce more facets, never a
   // larger or semantically weaker one; every selected group is still measured against the consensus limit.
-  const exhaustivePacking = groups.length <= 8;
+  const exhaustivePacking = groups.length <= 32;
   if (exhaustivePacking) {
     // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
     // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
@@ -5734,6 +5734,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
       fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
     } else {
       const call = new LowLevelCallNode(target, data, 'delegatecall'); call.location = fn.location;
+      call.synthesizedFromLibraryCall = true;
       const okName = `__split_ok_${fn.name}`;
       const dataName = `__split_data_${fn.name}`;
       const capture = new TupleAssignmentNode([

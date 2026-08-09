@@ -363,6 +363,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
     predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueRuntimeLocal?: string;
     valueRuntimeExpression?: boolean;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
@@ -2643,6 +2644,10 @@ export class LowLevelCallNode extends ExpressionNode {
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // Compiler-owned delegate expressions (currently returning split forwarders) use the authenticated
+  // cross-input return-event channel rather than the raw low-level `(true, emptyBytes)` result.
+  synthesizedFromLibraryCall = false;
+  librarySelectorDispatched = false;
 
   constructor(
     public targetExpression: ExpressionNode,  // for type-checking only, not emitted

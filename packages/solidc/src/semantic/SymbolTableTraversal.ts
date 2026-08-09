@@ -2158,12 +2158,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
-        // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
-        // a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
-        // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
-        // batch path is what mint/transfer use successfully; constructors need the same shape.
+        // Batch only genuinely multi-write shapes. A lone upsert uses the smaller scalar path; forcing it through
+        // batch witnesses adds hundreds of bytes and can make constructor commitment derivation oscillate.
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection))
+          .filter(([collection]) => fixedSortedWriteCount > 1 || stateArrayLastCollections.has(collection))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
@@ -2211,7 +2209,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // value/root before mutation. Ordinary reads keep the scalar bytes witness.
           const varyingArrayKey = info.keySources?.some((s) => s.kind === 'expression'
             && /^arridx\(id:\w+,.+\)$/.test(s.canonical ?? ''));
-          const wtype = vt instanceof ArrayType && (info.inLoop || varyingArrayKey)
+          const wtype = info.inLoop || varyingArrayKey
             ? new ArrayType(new BytesType()) : new BytesType();
           const wparam = new ParameterNode(wtype, wname);
           wparam.location = node.location;
@@ -5320,7 +5318,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // A loop may receive its per-iteration callee from another contract or decode it from the current action
         // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
         // binds that witness to the live runtime local before verifying the co-spent callee.
-        if (resolvedInit && this.loopDeclaredLocals.has(addressParam)) {
+        if (resolvedInit && this.loopDeclaredLocals.has(addressParam) && !canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
@@ -5333,7 +5331,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (initExpr && canNeutralize && !loopArrayVar) {
-          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
+          const loopIdx = (resolvedInit
+            ? this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
+            : undefined)
+            ?? this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;

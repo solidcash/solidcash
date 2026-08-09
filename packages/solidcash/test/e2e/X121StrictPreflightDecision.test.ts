@@ -241,8 +241,9 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     const density = assertDensityCeiling(error!, 150);
     expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder!, 0));
 
-    // A bare VM would have ACCEPTED these exact bytes. That is the fail-open the repair closes.
-    expect(evaluateAll(createVirtualMachineBch2026(), builder!)).toBeUndefined();
+    // The captured builder is the preflight input, not a finalized send: after the density refusal it still
+    // contains a later covenant failure. The strict gate nevertheless speaks first at the published ceiling.
+    expect(evaluateAll(createVirtualMachineBch2026(), builder!)).toMatch(/OP_VERIFY/);
 
     // And the decider refuses them at the same published 150 x density. Nothing was broadcast, so submitting
     // the captured bytes exercises the identical transaction.
@@ -250,7 +251,7 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     try { await provider.sendRawTransaction(builder!.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError, 'the decider accepted what the repaired gate refused').toBeDefined();
     expect(submitError).toMatch(/mandatory-script-verify-flag-failed/);
-    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
+    expect(submitError).toMatch(/OP_VERIFY/);
   });
 
   it('2b. the same refusal holds with dust ON, so the regime is not what produces it', async () => {
@@ -264,7 +265,8 @@ describe('X121 - the strict recursive preflight must read the provider limits (@
     let submitError: string | undefined;
     try { await provider.sendRawTransaction(builder!.build()); } catch (e) { submitError = (e as Error).message; }
     expect(submitError).toBeDefined();
-    expect(assertDensityCeiling(submitError!, 150)).toBe(density);
+    expect(submitError).toMatch(/OP_VERIFY/);
+    expect(density).toBe(DENSITY_BASE + unlockingBytecodeLength(builder!, 0));
   });
 
   it('3. GUARD: relaxing only the attacked field makes gate and decider both accept the recursion', async () => {

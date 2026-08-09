@@ -1,0 +1,26 @@
+pragma solidcash >=0.8.0;
+
+// Optional token behavior. This contract owns blacklist state and administration;
+// it has no dependency on ERC20 or BchNative. A concrete token decides which
+// behaviors consult the inherited `blacklisted` mapping through their own
+// concrete integration hooks.
+abstract contract BlackList {
+    mapping(address => bool) public blacklisted;
+
+    event Blacklisted(address indexed account);
+    event Unblacklisted(address indexed account);
+
+    function _blacklistAdmin() internal view returns (address);
+
+    function blacklist(address account) {
+        require(msg.sender == _blacklistAdmin());
+        this.blacklisted[account] = true;
+        emit Blacklisted(account);
+    }
+
+    function unblacklist(address account) {
+        require(msg.sender == _blacklistAdmin());
+        this.blacklisted[account] = false;
+        emit Unblacklisted(account);
+    }
+}

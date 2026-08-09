@@ -1,5 +1,7 @@
 pragma solidcash >=0.8.0;
 
+import { BchNative } from "../../contracts/BchNative.scash";
+
 // =============================================================================
 // NativeTetherToken, composed by INHERITANCE and partitioned by the built-in
 // splitter (compileFileSplit) - not by hand-rolled delegate-library facets.
@@ -13,11 +15,10 @@ pragma solidcash >=0.8.0;
 //   StandardToken is BasicToken       allowances, transferFrom, approve
 //   BlackList     is BasicToken       isBlackListed, destroyBlackFunds
 //   Freezable     is Ownable          (extension) reversible per-account freeze
-//   Backed        is Ownable          (extension) the FT reserve and withdraw
-//   Quarantined   is Backed           (extension) the admission boundary
-//   NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, Quarantined
+//   BchNative                         reusable FT reserve + quarantined wrap/unwrap
+//   NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, BchNative
 //
-// Ownable is reached along five paths, so this leans on C3 linearization to give
+// Ownable is reached along four paths, so this leans on C3 linearization to give
 // `owner` and `onlyOwner` exactly one definition in the flattened contract.
 //
 // Why this shape rather than the six-file facet split (nusdt*.scash):
@@ -167,74 +168,12 @@ abstract contract Freezable is Ownable {
     }
 }
 
-// Extension: the real CashTokens FT reserve behind the ledger.
-abstract contract Backed is Ownable {
-
-    // Pinned once by `setBacking` after genesis: the container address derives
-    // from this contract's own category ID, so it cannot be known at construction.
-    public bytes32 backingCategory;
-    public bool backingSet;
-    // Ledger's view of the FT reserve held in the backing token container.
-    public int containerSeen;
-    // Ledger balances + unclaimed pending deposits. Invariant: containerSeen >= backedSupply.
-    public int backedSupply;
-
-    event Withdrawal(address indexed from, int value);
-
-    // `containerSeen` is taken from the container's ACTUAL token amount rather
-    // than an owner-supplied number, so the owner cannot overstate the premint
-    // and `issue` can never release more than physically exists. One-shot.
-    function setBacking(bytes32 category) onlyOwner {
-        require(!this.backingSet);
-        this.backingSet = true;
-        this.backingCategory = category;
-        this.containerSeen = this.tokens[category].tokenAmount;
-    }
-}
-
-// Extension: the quarantined admission boundary.
-//
-// The clock is a CLTV-verified monotonic counter, not a block oracle.
-// `require(tx.time >= nowHeight)` makes consensus prove the real chain height is
-// at least `nowHeight`, and `nowHeight >= this.clock` forces it forward, so a
-// matured claim can never be accelerated. A stale clock only shortens the window.
-abstract contract Quarantined is Backed {
-
-    struct Pending {
-        int amount;
-        int unlockAt;
-    }
-
-    mapping(address => Pending) public pendingDeposits;
-    public int quarantineBlocks;
-    // Monotonic, CLTV-verified chain height.
-    public int clock;
-
-    event DepositQuarantined(address indexed to, int value, int unlockAt);
-    event DepositClaimed(address indexed to, int value);
-    event DepositCancelled(address indexed to, int value);
-    event QuarantineParams(int blocks);
-
-    // Permissionless: anybody may keep the quarantine timer honest.
-    function tick(int nowHeight) {
-        require(tx.time >= nowHeight);
-        require(nowHeight >= this.clock);
-        this.clock = nowHeight;
-    }
-
-    function setQuarantineBlocks(int blocks) onlyOwner {
-        require(blocks >= 0);
-        this.quarantineBlocks = blocks;
-        emit QuarantineParams(blocks);
-    }
-}
-
 // =============================================================================
 // The token. Everything below needs state from more than one base, which is why
 // it lives here rather than in one of them.
 // =============================================================================
 contract NativeTetherToken(address initialOwner)
-    is Pausable, StandardToken, BlackList, Freezable, Quarantined
+    is Pausable, StandardToken, BlackList, Freezable, BchNative
 {
 
     event Issue(int amount);
@@ -328,94 +267,30 @@ contract NativeTetherToken(address initialOwner)
         emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
     }
 
-    // ==== The quarantined boundary ====
+    // ==== BchNative integration ====
 
-    // Unwrap: burn ledger balance and hand out real bearer CashTokens. Policy
-    // still applies on the way out, which is what makes an exit-side veto
-    // possible at all. totalSupply is unchanged - the tokens still exist, they
-    // have merely left the tracked set.
-    function withdraw(bytes32 category, bytes20 to, int amount) whenNotPaused notDeprecated {
-        require(this.backingSet);
-        require(category == this.backingCategory);
-        address sender = msg.sender;
-        require(!this.isBlackListed[sender]);
-        require(!this.frozen[sender]);
-        require(amount > 0);
-        require(this.balances[sender] >= amount);
-        require(this.tokens[category].tokenAmount >= amount);
-
-        this.balances[sender] = this.balances[sender] - amount;
-        this.backedSupply = this.backedSupply - amount;
-        this.containerSeen = this.containerSeen - amount;
-        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), amount);
-        emit Withdrawal(sender, amount);
+    function _nativeAdmin() internal view override returns (address) { return this.owner; }
+    function _nativeCredit(address account, int amount) internal override {
+        this.balances[account] = this.balances[account] + amount;
     }
-
-    // Re-entry, step 2. Bearer FTs are sent to the container address first (step
-    // 1, which needs no contract call and so cannot be censored); this call then
-    // proves the container actually grew, by summing every category output of
-    // this transaction against the ledger's high-water mark. That sum is what
-    // makes the claimed amount unforgeable.
-    function deposit(bytes32 category, int nowHeight, int amount) whenNotPaused notDeprecated {
-        require(this.backingSet);
-        require(category == this.backingCategory);
-        require(amount > 0);
-        require(tx.time >= nowHeight);
-        require(nowHeight >= this.clock);
-        this.clock = nowHeight;
-
-        address claimant = msg.sender;
-        Pending current = this.pendingDeposits[claimant];
-        require(current.amount == 0);
-
-        int delivered = 0;
-        for (int i = 0; i < tx.outputs.length; i = i + 1) {
-            if (tx.outputs[i].tokenCategory == category) {
-                delivered = delivered + tx.outputs[i].tokenAmount;
-            }
-        }
-        require(delivered >= this.containerSeen + amount);
-
-        this.containerSeen = this.containerSeen + amount;
-        this.backedSupply = this.backedSupply + amount;
-
-        int unlockAt = nowHeight + this.quarantineBlocks;
-        this.pendingDeposits[claimant] = Pending({ amount: amount, unlockAt: unlockAt });
-        emit DepositQuarantined(claimant, amount, unlockAt);
+    function _nativeDebit(address account, int amount) internal override {
+        require(this.balances[account] >= amount);
+        this.balances[account] = this.balances[account] - amount;
     }
-
-    // Re-entry, step 3. Permissionless and consensus-gated: the CLTV compare
-    // cannot be accelerated. The issuer's only lever is to blacklist or freeze
-    // the claimant inside the window, which is checked here.
-    function claimDeposit() whenNotPaused notDeprecated {
-        address claimant = msg.sender;
-        Pending p = this.pendingDeposits[claimant];
-        require(p.amount > 0);
-        require(tx.time >= p.unlockAt);
-        require(!this.isBlackListed[claimant]);
-        require(!this.frozen[claimant]);
-
-        delete this.pendingDeposits[claimant];
-        this.balances[claimant] = this.balances[claimant] + p.amount;
-        emit DepositClaimed(claimant, p.amount);
+    function _nativeCanWrap(address account) internal view override returns (bool) {
+        return false;
     }
-
-    // A refused deposit is never confiscated: the depositor takes the FTs back
-    // out to bearer form. Available to a blacklisted or frozen claimant too -
-    // refusing admission must not mean seizing funds, or wrapping is a honeypot.
-    function cancelDeposit(bytes32 category, bytes20 to) notDeprecated {
-        require(this.backingSet);
-        require(category == this.backingCategory);
-        address claimant = msg.sender;
-        Pending p = this.pendingDeposits[claimant];
-        require(p.amount > 0);
-        require(this.tokens[category].tokenAmount >= p.amount);
-
-        delete this.pendingDeposits[claimant];
-        this.containerSeen = this.containerSeen - p.amount;
-        this.backedSupply = this.backedSupply - p.amount;
-        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), p.amount);
-        emit DepositCancelled(claimant, p.amount);
+    function _nativeCanDeposit(address account) internal view override returns (bool) {
+        return account == msg.sender && !this.paused && !this.deprecated;
+    }
+    function _nativeCanUnwrap(address account) internal view override returns (bool) {
+        return !this.paused && !this.deprecated && !this.isBlackListed[account] && !this.frozen[account];
+    }
+    function _nativeCanClaim(address account) internal view override returns (bool) {
+        return !this.paused && !this.deprecated && !this.isBlackListed[account] && !this.frozen[account];
+    }
+    function _nativeCanCancel(address account) internal view override returns (bool) {
+        return account == msg.sender && !this.deprecated;
     }
 
     // Open YOUR OWN account. Keyed on msg.sender, so it carries no address argument. A

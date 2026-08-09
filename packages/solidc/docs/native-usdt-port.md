@@ -356,35 +356,35 @@ its arguments, and every route through the bundle now settles.
 
 ## 5. The inheritance rebuild, and what the built-in splitter needed
 
-`nusdt_inherited.scash` is the same contract composed the way the deployed USDT composes itself - a hierarchy
-of contracts - and partitioned by `compileFileSplit` instead of by hand-written facets. Tests in
+`nusdt_inherited.scash` composes the token as a hierarchy and imports the reusable
+`packages/solidcash/contracts/BchNative.scash` wrap/unwrap base. It is partitioned by `compileFileSplit`
+instead of by hand-written facets. Tests in
 `packages/solidcash/test/e2e/NativeUsdtInherited.test.ts`.
 
 ```
 Ownable
 Pausable      is Ownable                BasicToken  is Ownable          StandardToken is BasicToken
-BlackList     is BasicToken             Freezable   is Ownable          Backed        is Ownable
-Quarantined   is Backed
-NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, Quarantined
+BlackList     is BasicToken             Freezable   is Ownable          BchNative
+NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, BchNative
 ```
 
-Ownable is reached along five paths, so this leans on C3 linearization. It holds: `owner`, `paused`,
+Ownable is reached along four paths, so this leans on C3 linearization. It holds: `owner`, `paused`,
 `totalSupply` and `balances` each get exactly one slot in the flattened layout (test-pinned).
 
 ### 5.1 It is strictly better as source, and smaller as bytecode
 
 | | hand-split facets | inheritance + auto-split |
 | --- | --- | --- |
-| files to write | 2 `.scash` + 1 doc-only `.inc` | **1** |
+| token-specific files to write | 2 `.scash` + 1 doc-only `.inc` | **1**, plus shared `BchNative.scash` |
 | state layout declared | twice, guarded by a parity test | **once** |
 | `pendingDeposits` | two parallel mappings (facets collided on `struct Pending`) | **the struct** |
 | forwarders | 13 named, parameter names must match the facet's | **none** |
 | scripts produced | **2**, hand-partitioned | 3, compiler-partitioned |
-| total bytecode | **15,927 B** | 15,995 B |
+| total bytecode | **15,927 B** | **15,762 B** |
 
-Shards: root 1,403 B, `Facet0` 9,987 B, `Facet1` 4,605 B. Note `Facet0` is **13 B** under the cap - the
-splitter packs to the limit, so this bundle is one small edit away from needing a re-plan. That is the
-compiler's job now rather than a hand-drawn line, but it is not slack.
+The unsplit inherited contract is 12,123 B. Its deployable shards are root 1,334 B, `Facet0` 5,237 B, and
+`Facet1` 9,191 B, leaving 809 B of artifact-script headroom below the per-input cap on the largest shard.
+The splitter also budgets constructor and call arguments when planning the actual spend.
 
 Two earlier conclusions in this document are superseded:
 

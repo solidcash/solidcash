@@ -17,7 +17,7 @@ import { createTestProvider } from '../test-util.js';
 // What this buys over nusdt*.scash (see docs/native-usdt-port.md s5):
 //   one declaration of the state layout instead of four copies; `struct Pending`
 //   back instead of two parallel mappings; no forwarders; 3 scripts totalling
-//   15,995 B instead of 4 totalling 18,671 B; and a partition the compiler
+//   15,762 B instead of 4 totalling 18,671 B; and a partition the compiler
 //   re-plans instead of a hand-drawn line that rots.
 //
 // Owner-gated routes settle here now: the two bugs that blocked them - msg.sender
@@ -45,8 +45,8 @@ beforeAll(() => {
 }, 900000);
 
 describe('NativeUsdtInherited / composition', () => {
-  // Ownable is reached along five paths (Pausable, BasicToken via StandardToken and
-  // BlackList, Freezable, Backed). C3 has to collapse those into one `owner`.
+  // Ownable is reached along four paths (Pausable, BasicToken via StandardToken and
+  // BlackList, and Freezable). C3 has to collapse those into one `owner`.
   it('C3 linearization gives the diamond base exactly one state slot', () => {
     const names = (flat.stateLayout?.variables ?? []).map((v) => v.name);
     expect(names.filter((n) => n === 'owner')).toHaveLength(1);

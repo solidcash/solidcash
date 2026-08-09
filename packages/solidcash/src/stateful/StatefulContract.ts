@@ -2190,26 +2190,34 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       );
     }
     let routeWitness = 0;
-    const routeArgs = capability.route.inputs.map((input): FunctionArgument => {
-      if (input.name === 'batchBlob') return blob;
+    const routeArgs: FunctionArgument[] = [];
+    for (const input of capability.route.inputs) {
+      if (input.name === 'batchBlob') {
+        routeArgs.push(blob);
+        continue;
+      }
       if (input.name.startsWith('__internal__')) {
         const value = internalRouteWitnesses[input.name];
-        if (value !== undefined) return value;
-        if (input.name === '__internal__activeVerifierIndex') return -1n;
+        if (value !== undefined) {
+          routeArgs.push(value);
+          continue;
+        }
+        if (input.name === '__internal__activeVerifierIndex') {
+          routeArgs.push(-1n);
+          continue;
+        }
         if (/^__internal__c2Batch/.test(input.name)) {
-          throw new Error(
-            `message-bus batch route cannot plan '${input.name}': no existing collection entry was found to `
-            + 'derive it from, so this call would insert a COLD entry. Cold-entry predecessor planning is not '
-            + 'yet supported on the batch route; seed the entry first, or route the insert through a path that '
-            + 'creates it.',
-          );
+          // Direct batch calls leave C2 topology witnesses to _createBuilder's authenticated sorted-list planner,
+          // just like an ordinary ABI call. Atomic graph composition supplies its already-finalized witnesses
+          // above because participant-relative proof/output indices depend on the global graph layout.
+          continue;
         }
         throw new Error(`message-bus batch route requires compiler-owned witness '${input.name}'`);
       }
       const value = routeWitnesses[routeWitness];
       routeWitness += 1;
-      return value;
-    });
+      routeArgs.push(value);
+    }
     const rowCount = blob.length > 6 ? blob[6] : 0;
     // Recover the reached selectors from the canonical blob so conditional token-transfer slots are derived only
     // for rows that actually execute such a handler. Leaving the inactive suffix as 1-token probe placeholders
@@ -9174,7 +9182,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // actual HEAD P' / NEW trailing slot rather than an LLC data NFT.
       const llcSlotCount = entryAbiFunction?.blockLayout?.slots
         .filter((s) => s.kind === 'lowLevelCall').length ?? 0;
-      let batchPredOutputBase = (entryAbiFunction?.blockLayout?.blockSize ?? 1)
+      // Message-bus routes publish a maximum blockSize with a conditionally materialized trailing region. C2
+      // predecessor rewrites occupy the first USED trailing slots, so their physical base is trailingBase, not
+      // the maximum block end. Ordinary ABI layouts have no trailingBase and continue to use blockSize.
+      let batchPredOutputBase = (entryAbiFunction?.blockLayout?.trailingBase
+        ?? entryAbiFunction?.blockLayout?.blockSize ?? 1)
         - llcSlotCount + preservedTrailingCount;
       if (returnEmitOutputIndex < 0
         && entryAbiFunction?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')) {

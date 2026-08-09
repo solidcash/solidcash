@@ -2249,7 +2249,9 @@ export default class TypeCheckTraversal extends AstTraversal {
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
-    const FORWARDABLE = new Set(['__internal__msgSenderCategory', '__internal__blockhashInputIndex']);
+    const FORWARDABLE = new Set([
+      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterIndex',
+    ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
       const callerParam = callerParams.get(p.name);
@@ -2609,7 +2611,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         } else {
           expectInt(node, node.expression.type);
           if (this.solidityImportCompat && node.expression.type instanceof IntType
-            && !node.expression.type.signed) {
+            && !node.expression.type.signed && !node.legacyWrappingNegation) {
             throw new TypeError(
               node,
               node.expression.type,
@@ -2726,7 +2728,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.MSG_SENDER:
       case NullaryOperator.TX_ORIGIN:
-        node.type = new AddressType();
+        node.type = new AddressType(node.legacyPayableAddress);
         return node;
       default:
         return node;

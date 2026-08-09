@@ -466,7 +466,7 @@ export default class AstBuilder
   }
 
   private usesLegacySolidityNow(): boolean {
-    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
+    return /pragma\s+solidity\s+(?:[<>=~^]+\s*)?0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
   }
 
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
@@ -4443,6 +4443,10 @@ export default class AstBuilder
   visitNullaryOp(ctx: NullaryOpContext): NullaryOpNode {
     const operator = ctx.getText() as NullaryOperator;
     const nullaryOp = new NullaryOpNode(operator);
+    if (this.solidityImportCompat && this.usesLegacySolidityNow()
+      && (operator === NullaryOperator.MSG_SENDER || operator === NullaryOperator.TX_ORIGIN)) {
+      nullaryOp.legacyPayableAddress = true;
+    }
     nullaryOp.location = Location.fromCtx(ctx);
     return nullaryOp;
   }
@@ -4473,6 +4477,8 @@ export default class AstBuilder
       return negated;
     }
     const unaryOp = new UnaryOpNode(operator, expression);
+    unaryOp.legacyWrappingNegation = this.solidityImportCompat
+      && this.usesLegacySolidityNow() && operator === UnaryOperator.NEGATE;
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
   }
@@ -7041,7 +7047,7 @@ export default class AstBuilder
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier()?.getText()
+    const methodName = ctx.anyIdentifier()?.getText()
       ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
@@ -8985,7 +8991,8 @@ export default class AstBuilder
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     const ctx = lhsCtx as MethodCallContext;
-    const method = ctx.Identifier()?.getText() ?? 'length';
+    const method = ctx.anyIdentifier()?.getText()
+      ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
     const callArgs = this.buildCallArguments(ctx.expressionList());

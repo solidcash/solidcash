@@ -43,7 +43,7 @@ import {
 import { BinaryOperator, UnaryOperator } from '../ast/Operator.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
-import { YulNode, YulPathNode, YulFunctionCallNode } from '../ast/YulAST.js';
+import { YulNode, YulPathNode, YulFunctionCallNode, YulAssignmentNode } from '../ast/YulAST.js';
 import { UnsupportedMemoryAliasingError } from '../Errors.js';
 import {
   YULMEM,
@@ -519,6 +519,19 @@ export default class LowerMemoryModel extends AstTraversal {
       if ((this.isHandledMemBytes(p.type) || this.isHandledMemString(p.type))
         && p.modifier.includes('memory') && this.paramUsedInAssembly(node.body, p.name)) {
         const memName = `__memb_${p.name}_${this.counter++}`;
+        // The buffer is the EVM memory object represented by this parameter. Assembly may mutate its pointer or
+        // contents, so subsequent high-level reads (notably `abi.decode(_returnData, (string))` after advancing
+        // `_returnData` by four bytes) must observe the buffer too. Keeping those reads on the original ABI value
+        // was semantically stale and could also make later inherited-body cleanup discard the buffer declaration,
+        // leaving the lowered assembly assignment with an undefined __memb_* target.
+        // When assembly REASSIGNS the parameter (the OZ `_getRevertMsg` shape: `_returnData := add(_returnData,
+        // 0x04)`), the buffer becomes the live memory object, so later high-level reads such as
+        // `abi.decode(_returnData, (string))` must observe it too. When assembly only READS the parameter, leave
+        // high-level uses on the original ABI value: renaming them makes the buffer a plain bytes operand and the
+        // Yul pointer arithmetic around it (`add(b, 0x60)`) then has no pointer to fold against.
+        if (this.paramAssignedInAssembly(node.body, p.name)) {
+          this.remapNames(node.body, new Map([[p.name, memName]]));
+        }
         this.eachDescendant(node.body, (n) => {
           if (n instanceof AssemblyStatementNode && n.yulBlock) {
             this.walkYul(n.yulBlock, (y) => {
@@ -529,6 +542,18 @@ export default class LowerMemoryModel extends AstTraversal {
         node.body.statements = [...this.deserializeBytesParam(p, memName, node.body), ...(node.body.statements ?? [])];
       }
     }
+  }
+
+  /** True when inline assembly assigns to `name`, making the lowered buffer the live memory object. */
+  private paramAssignedInAssembly(body: BlockNode, name: string): boolean {
+    let assigned = false;
+    this.eachDescendant(body, (n) => {
+      if (!(n instanceof AssemblyStatementNode) || !n.yulBlock) return;
+      this.walkYul(n.yulBlock, (child) => {
+        if (child instanceof YulAssignmentNode && child.paths.some((path) => path.base === name)) assigned = true;
+      });
+    });
+    return assigned;
   }
 
   private paramUsedInAssembly(body: BlockNode, name: string): boolean {
@@ -1063,6 +1088,26 @@ export default class LowerMemoryModel extends AstTraversal {
       }
       // `return b;` / `this.s = b;` on a memory bytes pointer -> serialize to the value-copy data slice
       // __yulmem[b+32 : b+32+b.length], so the pointer never crosses the export boundary.
+      if (stmt instanceof ReturnNode && (stmt.expressions?.length ?? 0) > 1) {
+        // Apply the same export-boundary conversion independently to every component of a multi-return. Solidity
+        // rewarder APIs commonly return `(IERC20[], uint256[])`; the uint array uses the pointer model while the
+        // address array remains value-copy, so handling only a sole return leaked the uint pointer as a scalar.
+        const prefix: StatementNode[] = [];
+        const expressions = stmt.expressions.map((expression) => {
+          if (!(expression instanceof IdentifierNode)) return expression;
+          if (this.memBytes.has(expression.name)) return this.serializeBytes(expression.name, stmt);
+          if (this.memArrays.has(expression.name)) {
+            const serialized = this.serializeArray(expression.name, this.memArrays.get(expression.name)!, stmt);
+            prefix.push(...serialized.stmts);
+            return this.at(new IdentifierNode(serialized.serName), stmt);
+          }
+          return expression;
+        });
+        if (prefix.length > 0 || expressions.some((expression, i) => expression !== stmt.expressions[i])) {
+          out.push(...prefix, this.visit(this.at(new ReturnNode(expressions), stmt)) as StatementNode);
+          continue;
+        }
+      }
       if (stmt instanceof ReturnNode && stmt.expressions?.length === 1
         && stmt.expressions[0] instanceof IdentifierNode && this.memBytes.has(stmt.expressions[0].name)) {
         out.push(this.at(new ReturnNode([this.serializeBytes(stmt.expressions[0].name, stmt)]), stmt));

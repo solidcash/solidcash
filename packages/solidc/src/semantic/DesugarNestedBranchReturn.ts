@@ -3,6 +3,7 @@ import {
   ReturnNode, RevertNode, VariableDefinitionNode, AssignNode, IdentifierNode, BoolLiteralNode,
   UnaryOpNode, SourceFileNode, ContractNode, ConsoleStatementNode, SwitchNode, TryCatchNode,
   MappingAccessNode, ArrayAccessNode,
+  FunctionCallNode, MethodCallNode, LowLevelCallNode, LowLevelCallStatementNode,
 } from '../ast/AST.js';
 import { PrimitiveType } from '@solidcash/utils';
 import { UnaryOperator } from '../ast/Operator.js';
@@ -51,9 +52,14 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
 
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
     if (!node.body || node.returnTypes.length === 0) return node;
-    // Entry points have the non-corrupting blob-stash return path; only internal/private raw returns break.
-    if (node.isEntryPoint) return node;
-    if (!this.needsFlagRewrite(node.body) && !this.needsReturningStateRewrite(node.body)) return node;
+    // Entry points normally have the non-corrupting blob-stash return path. A returning entry point which owns
+    // an external call is also eligible for internal source calls, however, and must be reduced to one tail
+    // return so InlineReturningStateHelpers can splice those internal calls into their caller. Its dispatched
+    // definition remains intact.
+    const covenantRewrite = this.needsReturningCovenantRewrite(node.body);
+    if (node.isEntryPoint && !covenantRewrite) return node;
+    if (!this.needsFlagRewrite(node.body) && !this.needsReturningStateRewrite(node.body)
+      && !covenantRewrite) return node;
 
     this.retCount = node.returnTypes.length;
     const decls: StatementNode[] = [new VariableDefinitionNode(PrimitiveType.BOOL, [], FLAG, new BoolLiteralNode(false))];
@@ -106,6 +112,32 @@ export default class DesugarNestedBranchReturn extends AstTraversal {
     };
     walk(body);
     return returns > 1 && touchesCollection;
+  }
+
+  // External/low-level calls inject BCH co-spend witness parameters only into dispatched entry frames. A
+  // multi-return helper containing one cannot remain behind OP_INVOKE when another function calls it internally;
+  // normalize its returns here so the returning-helper inliner can move the complete call graph into that caller.
+  private needsReturningCovenantRewrite(body: BlockNode): boolean {
+    let returns = 0;
+    let ownsCall = false;
+    const walk = (node: Node | undefined): void => {
+      if (!node) return;
+      if (node instanceof ReturnNode) returns += 1;
+      if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
+        || node instanceof LowLevelCallStatementNode) ownsCall = true;
+      if (node instanceof FunctionCallNode) {
+        const name = node.identifier.name;
+        if (name.includes('.') && !name.startsWith('super.')) ownsCall = true;
+      }
+      for (const key of Object.keys(node)) {
+        if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+        const value = (node as unknown as Record<string, unknown>)[key];
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(body);
+    return returns > 1 && ownsCall;
   }
 
   // Trigger: some branch arm contains a (non-loop) return but does not END on a terminal statement on

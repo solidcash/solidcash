@@ -24,10 +24,23 @@ describe('constructor visibility compatibility', () => {
   it('accepts the inverse legacy visibility combinations', () => {
     expect(cc('abstract contract C { constructor() internal {} }')).toBe('C');
     expect(cc('contract C { constructor() public {} }')).toBe('C');
+    expect(cc('pragma solidity 0.6.12; contract C { constructor() internal {} }')).toBe('C');
   });
 });
 
 describe('abstract contract instantiation eligibility', () => {
+  it('excludes legacy internal-constructor bases from multi-artifact output', () => {
+    const artifacts = compileStringMulti(`
+      pragma solidity 0.6.12;
+      contract Base {
+        event Initialized(int value);
+        constructor() internal { emit Initialized(1); }
+      }
+      contract Child is Base { function use() public { require(true); } }
+    `, { solidityImportCompat: true });
+    expect(Object.keys(artifacts)).toEqual(['Child']);
+  });
+
   it('rejects a forward reference instantiated before its abstract declaration', () => {
     expect(() => compileStringRaw(
       'contract B { A a; constructor() { a = new A(address(this)); } }'
@@ -415,11 +428,31 @@ describe('inherited modifier override and declaration namespace collisions', () 
     expect(cc('abstract contract A { function f() public mod returns (bool r) { return true; } modifier mod virtual; }'
       + ' contract C is A { modifier mod override { if (false) _; } }')).toBe('C');
   });
+  it('keeps modifier bindings distinct when one returning entry point is inlined into another', () => {
+    expect(cc('contract C { modifier ensure(uint deadline) { require(deadline > 0); _; }'
+      + ' function removeLiquidity(uint deadline) public ensure(deadline) returns (uint out) { return deadline; }'
+      + ' function removeLiquidityETH(uint deadline) public ensure(deadline) returns (uint out) {'
+      + ' return removeLiquidity(deadline); } }')).toBe('C');
+  });
   it('keeps same-name parent+child events when signatures differ (event overloading)', () => {
     expect(cc('contract A { event Deposit(); } contract B { event Deposit(address a); }'
       + ' contract C is A, B { event Deposit(address a, uint256 n);'
       + ' function d() external { emit Deposit(); emit Deposit(address(0)); emit Deposit(address(0), 1); require(true); } }'))
       .toBe('C');
+  });
+
+  it('deduplicates identical event declarations across inherited scopes', () => {
+    const artifacts = compileStringMulti(`
+      interface I { event PairCreated(address a, address b); }
+      contract A { event PairCreated(address a, address b); }
+      contract C is A, I {
+        event PairCreated(address a, address b);
+        function create() public { emit PairCreated(address(0), address(0)); require(true); }
+      }
+    `, { solidityImportCompat: true });
+    const events = artifacts.C.events ?? [];
+    expect(events).toHaveLength(1);
+    expect(events[0].name).toBe('PairCreated');
   });
   it('rejects same-name parent+child errors even when signatures differ', () => {
     expect(() => cc('contract A { error E(); } contract B is A { error E(uint256 n);'
@@ -446,6 +479,15 @@ describe('discarded qualified base-function references', () => {
       { solidityImportCompat: true },
     );
     expect(qualified.bytecode).toBe(direct.bytecode);
+  });
+  it('resolves a qualified inherited overload when the child has the same function name', () => {
+    const artifact = compileString(
+      'contract LibraryLock { bool initialized; function initialize() internal { initialized = true; } }'
+      + ' contract C is LibraryLock { function initialize(uint value) external {'
+      + ' require(!initialized && value > 0); LibraryLock.initialize(); } }',
+      { solidityImportCompat: true },
+    );
+    expect(artifact.contractName).toBe('C');
   });
   it('preserves every overload of an explicitly callable overridden base function', () => {
     const src = 'contract A { function f(uint a) public virtual {} function f(uint a,uint b) public virtual {} }'

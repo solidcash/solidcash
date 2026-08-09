@@ -675,6 +675,8 @@ describe('bounded integer state assignments and unsigned negation', () => {
     expect(() => cc('contract C { function f(uint256 x) public pure { -x; } }'))
       .toThrow(/Unary negation cannot be applied to unsigned type/);
     expect(cc('contract C { function f(int256 x) public pure returns (int256) { return -x; } }')).toBe('C');
+    expect(cc('pragma solidity 0.6.12; contract C {'
+      + ' function f(uint256 x) public pure returns (uint256) { return -x; } }')).toBe('C');
   });
 });
 
@@ -1129,8 +1131,8 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
   // literal (`m[k[i]] = true`) OR an int-kind INVARIANT PARAM (`m[k[i]] = v`): the SDK mints valueTail = encode(v) and
   // the covenant PICKs v + EQUALVERIFYs node.value == v (VM-proven in SortedInsertLoopValue). A PER-KEY value
   // (`m[k[i]] = vs[i]`) and an RMW (`+= v`) are instead handled by the per-iteration UPSERT loop (source-order 1:1
-  // co-spend/mint, update+insert - SortedUpsertLoop), NOT the range-splice. Only the loop var (`= i`, neither a param
-  // nor an array element) still falls to the clean SortedMappingCodegenPendingError.
+  // co-spend/mint, update+insert - SortedUpsertLoop), NOT the range-splice. The loop var (`= i`) is per-iteration
+  // too, so it takes the same upsert path.
   const mkBigint = (loop: string): string => 'contract C() { mapping(int => bigint) m;'
     + ` function f(int[] ks, int[] vs, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${loop} } }`;
   const boolLoop = 'contract C() { mapping(int => bool) m;'
@@ -1166,9 +1168,75 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info?.op).toBe('+');
     expect(info?.valueScalarParam).toBe('v');
   });
-  it('fails closed on a loop-var value (m[ks[i]] = i, not a param)', () => {
-    expect(() => silOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }'))
-      .toThrow(/C2 linked-list transition generator/);
+  it('normalizes checked using-for add/sub wrappers in a per-key nested-mapping RMW loop', () => {
+    const art = compileString('library M {'
+      + ' function add(uint a,uint b) internal pure returns(uint c){require((c=a+b)>=b,"overflow");}'
+      + ' function sub(uint a,uint b) internal pure returns(uint c){require((c=a-b)<=a,"underflow");}'
+      + '} contract C { using M for uint; mapping(address=>mapping(address=>uint)) balanceOf;'
+      + ' mapping(address=>address) masterContractOf; mapping(address=>mapping(address=>bool)) masterContractApproved;'
+      + ' modifier allowed(address from){if(from!=msg.sender&&from!=address(this)){address master=masterContractOf[msg.sender];'
+      + ' require(master!=address(0));require(masterContractApproved[master][from]);}_;}'
+      + ' function f(address token,address from,address[] tos,uint[] shares) public allowed(from) {'
+      + ' uint total; for(uint i=0;i<tos.length;i++){address to=tos[i];'
+      + ' balanceOf[token][to]=balanceOf[token][to].add(shares[i]); total=total.add(shares[i]);}'
+      + ' balanceOf[token][from]=balanceOf[token][from].sub(total); require(true); } }',
+    { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0];
+    expect(info).toMatchObject({ collection: 'balanceOf', fixedKeyParams: ['token'],
+      varyingArrayParam: 'tos', valueArrayParam: 'shares', op: '+' });
+  });
+  it('compiles a storage-library field RMW over loop-varying struct-mapping keys', () => {
+    const art = compileString('struct R { uint128 elastic; uint128 base; } library L {'
+      + ' function addElastic(R storage total,uint128 fee) internal returns(uint128 n){n=total.elastic=total.elastic+fee;}'
+      + '} contract C { using L for R; mapping(address=>R) totals;'
+      + ' function f(address[] tokens,uint128[] fees) public {'
+      + ' for(uint i=0;i<tokens.length;i++){address token=tokens[i];require(totals[token].addElastic(fees[i])>=0);}'
+      + ' require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    expect(art.abi.find((f) => f.name === 'f')?.sortedUpsertLoopInfo?.[0]).toMatchObject({
+      collection: 'totals', varyingArrayParam: 'tokens', op: 'set', valueRuntimeExpression: true,
+    });
+  });
+  it('traces an ABI-decoded key through an inlined external-call helper parameter', () => {
+    const art = compileString('library M { function add(uint a, uint b) internal pure returns (uint) { return a+b; } }'
+      + ' interface IV { function ping() external; } contract C { using M for uint; mapping(address => uint) m; IV v;'
+      + ' function addOne(address to, uint share) public { m[to] = m[to].add(share); v.ping(); require(true); }'
+      + ' function cook(uint[] actions, bytes[] datas) public { for (uint i=0; i<actions.length; i=i+1) {'
+      + ' if (actions[i] == 1) { (address to, uint share) = abi.decode(datas[i], (address,uint)); addOne(to,share); }'
+      + ' } require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('datas');
+    expect(info?.keyDecodeTupleIndex).toBe(0);
+    expect(info?.predicateArrayParam).toBe('actions');
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
+  it('tracks decoded keys and computed values through a returning external-call helper', () => {
+    const art = compileString('interface IV { function ping() external; } contract C {'
+      + ' mapping(address => uint) m; IV v; function addOne(address to, uint share) internal returns (uint fraction) {'
+      + ' fraction = share + 1; if (fraction < 2) { return 0; } m[to] = m[to] + fraction; v.ping(); }'
+      + ' function cook(uint[] actions, bytes[] datas) public { uint value1=0; for (uint i=0;i<actions.length;i=i+1) {'
+      + ' if(actions[i]==1) { (address to,uint share)=abi.decode(datas[i],(address,uint)); value1=addOne(to,share); }'
+      + ' } require(value1>=0); } }', { forceStateful: true, solidityImportCompat: true });
+    const info = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo?.[0];
+    expect(info?.varyingArrayParam).toBe('datas');
+    expect(info?.keyDecodeTupleIndex).toBe(0);
+    expect(info?.valueRuntimeExpression).toBe(true);
+  });
+  it('allocates independent C2 regions for multiple conditional collections in one runtime loop', () => {
+    const art = compileString('contract C { mapping(address=>uint) a; mapping(address=>uint) b;'
+      + ' function cook(uint[] actions,bytes[] datas) public { for(uint i=0;i<actions.length;i=i+1) {'
+      + ' if(actions[i]==1){(address k,uint v)=abi.decode(datas[i],(address,uint));a[k]=a[k]+v;}'
+      + ' else if(actions[i]==2){(address k,uint v)=abi.decode(datas[i],(address,uint));b[k]=b[k]+v;}'
+      + '} require(true); } }', { forceStateful: true, solidityImportCompat: true });
+    const infos = art.abi.find((f) => f.name === 'cook')?.sortedUpsertLoopInfo ?? [];
+    expect(infos.map((info) => info.collection)).toEqual(['a', 'b']);
+    expect(infos.map((info) => info.predicateEquals)).toEqual(['1', '2']);
+  });
+  it('routes a loop-var value (m[ks[i]] = i) through the per-iteration upsert loop', () => {
+    // The range-splice insert loop assigns ONE loop-invariant value to every new node, so this used to fail
+    // closed. The upsert loop mints each entry separately, which is the shape a per-iteration value needs.
+    // SortedUpsertLoop.test.ts VM-proves each key receives its own index (setIndex([3,9]) -> 3 = 0, 9 = 1).
+    expect(abiOf('for (int i = 0; i < ks.length; i++) { m[ks[i]] = i; }')?.sortedUpsertLoopInfo?.[0]?.op)
+      .toBe('set');
   });
 });
 
@@ -1178,7 +1246,7 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   // SynthesizeExternalAddressLocals now traces the receiver through casts + inliner-local aliases (and single-
   // assignment user locals) back to the self-pinned state chain and hoists it, so the covenant pins the co-spent
   // callee to that chain (__extaddr_ll_ source), NOT a caller input. A reassignable local is NOT traced (a caller
-  // could rebind it - the forgery extcall-target-pinning.md forbids), so it fails closed.
+  // could rebind it - the forgery extcall-target-pinning.md forbids): it must never acquire a state-chain source.
   const src = (mid: string): string => 'pragma solidcash >=0.8.0;'
     + ' interface IEcho { function ping(pubkey o, sig s); } struct Config { address token; }'
     + ' contract C() { Config config; int calls;'
@@ -1191,9 +1259,12 @@ describe('low-level .call target through inlined-local aliases traced to a self-
   it('sources a single-assignment user-local intermediary from the state chain (Marketplace token = IERC20(job.token))', () => {
     expect(extcallOf(src('IEcho token = IEcho(config.token);'))?.addressStateVar).toBe('ll_config_token');
   });
-  it('fails closed on a REASSIGNED local (a caller-rebindable target is never hoisted)', () => {
-    expect(() => compileString(src('IEcho token = IEcho(config.token); token = IEcho(attacker);'), {}))
-      .toThrow(/external call target address must be a constructor\/function parameter/);
+  it('never hoists a REASSIGNED local (a caller-rebindable target gets no state-chain source)', () => {
+    // The forgery this guards against is a target that CLAIMS a self-pinned state chain while the runtime value
+    // is caller-chosen. `token` ends up bound to the `attacker` PARAMETER, which is the ordinary permitted form
+    // (the identity check picks it off the stack), so compiling is fine - acquiring `ll_config_token` is not.
+    expect(extcallOf(src('IEcho token = IEcho(config.token); token = IEcho(attacker);'))?.addressStateVar)
+      .toBeUndefined();
   });
   it('sources a DIRECT address(config.token).call cast (no helper) from the state chain', () => {
     const direct = 'pragma solidcash >=0.8.0; struct Config { address token; } contract C() { Config config; bytes32 d;'

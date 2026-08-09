@@ -12,11 +12,12 @@ import {
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
   getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
-  AbiCoder, Interface, Signature, SigningKey, Mnemonic,
+  Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
   type BytesLike, type BigNumberish,
 } from 'ethers';
 import { getCreateAddress, getCreate2Address } from './ethers-shim.js';
+import { AbiCoder, defaultAbiCoder } from './cash-abi-coder.js';
 
 export {
   parseUnits, formatUnits, parseEther, formatEther,
@@ -24,8 +25,9 @@ export {
   toUtf8Bytes, toUtf8String, getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getBigInt, toBigInt, getNumber, toBeHex, toBeArray, toQuantity,
   getAddress, isAddress, solidityPacked, solidityPackedKeccak256,
-  AbiCoder, Interface, Signature, SigningKey, Mnemonic,
+  Interface, Signature, SigningKey, Mnemonic,
   ZeroAddress, ZeroHash, MaxUint256, MaxInt256, MinInt256, WeiPerEther, N, EtherSymbol, MessagePrefix,
+  AbiCoder, defaultAbiCoder,
 };
 export type { BytesLike, BigNumberish };
 
@@ -33,10 +35,6 @@ export type { BytesLike, BigNumberish };
 // override with the BCH shim (identity = category, salt maps to the CREATE2 segment). See ethers-shim.ts. Imported
 // (not `export ... from`) so the names bind locally for the v5 `utils` namespace below.
 export { getCreateAddress, getCreate2Address };
-
-/** ethers v6 `AbiCoder.defaultAbiCoder()` singleton, re-exported as a value for v5-style `defaultAbiCoder`. */
-export const defaultAbiCoder = AbiCoder.defaultAbiCoder();
-
 /** ethers v5 `ethers.constants.AddressZero` alias. */
 export const AddressZero = ZeroAddress;
 /** MistSwap/Sushi-style `ADDRESS_ZERO` constant (test-utilities helper). */
@@ -44,55 +42,17 @@ export const ADDRESS_ZERO = ZeroAddress;
 /** ethers v5 `ethers.constants.HashZero` alias. */
 export const HashZero = ZeroHash;
 
-/**
- * Minimal ethers-v5 `BigNumber` shim over native bigint (v6 removed BigNumber in favour of bigint). Lets ported
- * v5 suites keep `BigNumber.from(x).mul(y)` chains. SolidCash-native tests should just use bigint.
- */
-export class BigNumber {
-  readonly _value: bigint;
-
-  constructor(value: bigint) { this._value = value; }
-
-  static from(value: BigNumberish | BigNumber): BigNumber {
-    return new BigNumber(value instanceof BigNumber ? value._value : toBigInt(value as BigNumberish));
-  }
-
-  private static big(o: BigNumberish | BigNumber): bigint {
-    return o instanceof BigNumber ? o._value : toBigInt(o as BigNumberish);
-  }
-
-  add(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value + BigNumber.big(o)); }
-  sub(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value - BigNumber.big(o)); }
-  mul(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value * BigNumber.big(o)); }
-  div(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value / BigNumber.big(o)); }
-  mod(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value % BigNumber.big(o)); }
-  pow(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value ** BigNumber.big(o)); }
-
-  eq(o: BigNumberish | BigNumber): boolean { return this._value === BigNumber.big(o); }
-  lt(o: BigNumberish | BigNumber): boolean { return this._value < BigNumber.big(o); }
-  lte(o: BigNumberish | BigNumber): boolean { return this._value <= BigNumber.big(o); }
-  gt(o: BigNumberish | BigNumber): boolean { return this._value > BigNumber.big(o); }
-  gte(o: BigNumberish | BigNumber): boolean { return this._value >= BigNumber.big(o); }
-  isZero(): boolean { return this._value === 0n; }
-
-  toBigInt(): bigint { return this._value; }
-  toNumber(): number { return Number(this._value); }
-  toString(): string { return this._value.toString(); }
-  toHexString(): string { return toBeHex(this._value); }
-}
-
-/** Sushi/MistSwap-style `getBigNumber(amount, decimals=18)` = amount * 10^decimals, as a v5 BigNumber. */
-export function getBigNumber(amount: BigNumberish | BigNumber, decimals = 18): BigNumber {
-  const base = amount instanceof BigNumber ? amount._value : toBigInt(amount as BigNumberish);
-  return new BigNumber(base * 10n ** BigInt(decimals));
-}
+export { BigNumber, getBigNumber } from './ethers-bignumber.js';
+import { BigNumber } from './ethers-bignumber.js';
 
 /** ethers v5 `ethers.utils` namespace subset (forwards to v6 functions). */
 export const utils = {
   parseUnits, formatUnits, parseEther, formatEther, keccak256, sha256, ripemd160, id,
   toUtf8Bytes, toUtf8String, getBytes, arrayify: getBytes, hexlify, concat, zeroPadValue, zeroPadBytes,
   isHexString, isBytesLike, getAddress, isAddress, getCreate2Address, solidityPack: solidityPacked,
-  solidityKeccak256: solidityPackedKeccak256, defaultAbiCoder, computeAddress, id2: id,
+  // MistSwap utilities use `new ethers.utils.AbiCoder()` (v5); v6 exposes the class as `AbiCoder` and a
+  // singleton as `AbiCoder.defaultAbiCoder()` / our `defaultAbiCoder`.
+  solidityKeccak256: solidityPackedKeccak256, defaultAbiCoder, AbiCoder, computeAddress, id2: id,
 };
 
 /** ethers v5 `ethers.constants` namespace subset. */

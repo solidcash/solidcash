@@ -257,6 +257,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     // OP_INVOKE subroutine with covenant parameters that no call site can supply (benchmark verifier shape).
     for (const fn of [...node.functions, ...this.freeFns]) {
       if (this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn)) {
+        this.normalizeForwardedMultiReturn(fn);
         this.normalizeSimpleEarlyReturn(fn);
       }
     }
@@ -287,7 +288,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (!fn.graphEmissionHandler && !fn.collectionJournal
         && !this.inlinedFns.has(fn.name) && !valueReferenced.has(fn.name) && this.eligibleShape(fn)
         && (this.readsEntry(fn) || this.touchesScalarState(fn)
-          || this.containsMsgSender(fn)
+          || this.containsMsgSender(fn) || this.containsKeccak(fn)
           || this.transitivelyContainsLowLevelCall(fn) || this.transitivelyContainsExternalCall(fn))) {
         this.inlinedFns.add(fn.name);
         this.keepDefFns.add(fn.name);
@@ -344,7 +345,9 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     // Library free-functions are inlined here as storage-pointer value helpers, or (like OZ Address's
     // `functionCall`) as single-tail-return helpers containing a low-level call; other library functions keep
-    // their own (delegate) machinery.
+    // their own (delegate) machinery. Returning helpers making EXTERNAL calls (`getReserves` ->
+    // `IPair(..).getReserves()`) also inline: covenant params are threaded only at entry points, so keeping the
+    // helper as a subroutine would surface phantom params at its call site. This check is transitive.
     for (const fn of this.freeFns) {
       if (this.eligibleStoragePtr(fn)) this.inlinedFns.add(fn.name);
       else if (this.eligibleShape(fn) && this.transitivelyTouchesRawEvmStorage(fn)) {
@@ -422,6 +425,40 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     fn.body.statements = [...stmts.slice(0, -2), ret];
   }
 
+  // Solidity permits a multi-returning call to be forwarded as one return expression (`return target.f()`).
+  // Give that value one local per return slot so the ordinary multi-value helper inliner can splice wrappers
+  // which own an external call into the entry point. Otherwise eligibleShape sees one expression for N declared
+  // results and leaves the wrapper behind as an OP_INVOKE callee with unsupplied covenant parameters.
+  private normalizeForwardedMultiReturn(fn: FunctionDefinitionNode): void {
+    if (!fn.body || fn.returnTypes.length < 2) return;
+    const bodyStatements = fn.body.statements ?? [];
+    const stmts = this.effectiveStmts(bodyStatements);
+    const last = stmts[stmts.length - 1];
+    if (!(last instanceof ReturnNode) || last.expressions.length !== 1) return;
+    const serial = this.counter++;
+    const names = fn.returnTypes.map((_, i) => `${PREFIX}_forward_${serial}_${i}`);
+    const capture = new TupleAssignmentNode(
+      names.map((name, i) => ({ name, type: fn.returnTypes[i], existing: false })),
+      last.expressions[0],
+      true,
+    );
+    capture.location = last.location;
+    const returned = names.map((name) => {
+      const id = new IdentifierNode(name);
+      id.location = last.location;
+      return id;
+    });
+    const replacement = new ReturnNode(returned);
+    replacement.location = last.location;
+    if (stmts === bodyStatements) {
+      fn.body.statements = [...stmts.slice(0, -1), capture, replacement];
+    } else {
+      (bodyStatements[0] as UncheckedNode).block.statements = [
+        ...stmts.slice(0, -1), capture, replacement,
+      ];
+    }
+  }
+
   // The structural half of `eligible`: single-tail-return, no storage params (visibility-agnostic).
   private eligibleShape(fn: FunctionDefinitionNode): boolean {
     if (!fn.body || fn.returnTypes.length < 1) return false;
@@ -443,6 +480,24 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     if (!this.eligibleShape(fn)) return false;
     return this.readsEntry(fn) || this.touchesScalarState(fn) || this.containsLowLevelCall(fn)
       || this.containsMsgSender(fn) || this.transitivelyContainsExternalCall(fn);
+  }
+
+  /**
+   * A keccak256 co-spends a side-car at a BLOCK-LAYOUT slot of the calling entry point, and its slot index is
+   * the caller's emission ordinal. An OP_INVOKE subroutine has neither: it is compiled with no block layout (so
+   * the read falls back to the stateless count-relative form, which names the funder once inlined into a
+   * stateful block) and its own emission index restarts at 0, which is the caller's first slot, not the
+   * caller's slot for THIS call. Inline it so each caller emits the call against its own layout and ordinal.
+   *
+   * Measured on MistSwap's BentoBox, whose private `_calculateDomainSeparator` is reached from the constructor,
+   * `DOMAIN_SEPARATOR` and `setMasterContractApproval` - three callers with different keccak counts.
+   */
+  private containsKeccak(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    this.walk(fn.body, (node) => {
+      if (node instanceof FunctionCallNode && node.identifier.name === 'keccak256') found = true;
+    });
+    return found;
   }
 
   // msg.sender is backed by a synthetic entry-point witness/category parameter. A returning helper compiled as
@@ -812,6 +867,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       callee = this.pickOverloadByReturnArity(name, arity, 1, node.parameters as ExpressionNode[]) ?? callee;
     }
     if (callee) this.reorderNamedTail(node, callee);
+    // A helper reached only on the right side of Solidity's short-circuit `&&`/`||` cannot be hoisted before the
+    // statement: doing so would execute its external read even when the left side decides the result. A canonical
+    // expression helper (`T r; r = EXPR; return r`) can instead be beta-reduced IN PLACE, preserving the exact
+    // conditional evaluation point. BentoBox `_tokenBalanceOf(token).sub(..)` is this shape.
+    if (this.suppress && callee && this.inlinedFns.has(name)
+      && !this.stack.includes(inlineKey(name, arity)) && arity === callee.parameters.length
+      && callee.returnTypes.length === 1) {
+      const reduced = this.inlineConditionalExpression(callee, node.parameters as ExpressionNode[]);
+      if (reduced) return reduced;
+    }
     if (!this.suppress && callee && this.inlinedFns.has(name)
       && !this.stack.includes(inlineKey(name, arity))
       && arity === callee.parameters.length
@@ -827,6 +892,41 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return result;
     }
     return node;
+  }
+
+  /** Reduce a straight-line one-result helper to its return expression without emitting statement hoists. */
+  private inlineConditionalExpression(
+    callee: FunctionDefinitionNode, args: ExpressionNode[],
+  ): ExpressionNode | undefined {
+    // Identifier arguments are already evaluated values, so substituting one at several use sites neither
+    // duplicates effects nor changes order. More complex arguments stay on the ordinary hoist path/fail closed.
+    if (args.some((arg) => !(arg instanceof IdentifierNode))) return undefined;
+    const cloned = cloneNode(callee) as FunctionDefinitionNode;
+    substituteInFunction(cloned, new Map(callee.parameters.map((parameter, index) =>
+      [parameter.name, cloneNode(args[index]) as ExpressionNode])));
+    const stmts = this.effectiveStmts(cloned.body.statements ?? []);
+    const tail = stmts.at(-1);
+    if (!(tail instanceof ReturnNode) || tail.expressions.length !== 1) return undefined;
+    let expression = tail.expressions[0];
+    if (expression instanceof IdentifierNode) {
+      const target = expression.name;
+      const prefix = stmts.slice(0, -1);
+      const assignment = prefix.at(-1);
+      if (!(assignment instanceof AssignNode) || assignment.identifier.name !== target) return undefined;
+      // Only the named-return default declaration may precede the defining assignment. Any other statement can
+      // carry effects/control flow and therefore requires the normal statement-level inline.
+      if (!prefix.slice(0, -1).every((statement) =>
+        statement instanceof VariableDefinitionNode && statement.name === target)) return undefined;
+      expression = assignment.expression;
+    } else if (stmts.length !== 1) {
+      return undefined;
+    }
+    if (callee.inheritedFrom) tagModifierStateAccess([expression], callee.inheritedFrom);
+    const saved = this.stack;
+    this.stack = [...saved, inlineKey(callee.name, callee.parameters.length)];
+    const reduced = this.visit(expression) as ExpressionNode;
+    this.stack = saved;
+    return reduced;
   }
 
   // Multi-value helpers inline only where the whole call is a statement's value: `return f()` (forward the N

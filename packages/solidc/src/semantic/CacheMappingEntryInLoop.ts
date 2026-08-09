@@ -27,6 +27,7 @@ import {
   FieldAccessNode,
   FunctionCallNode,
   LiteralNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { NullaryOperator } from '../ast/Operator.js';
 import { MappingType, ArrayType, StructType, Type } from '@solidcash/utils';
@@ -271,7 +272,8 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
     for (const e of info.values()) {
       if (e.bad || !(e.inLoop || e.count >= 2 || e.readAfterWrite || this.structMappings.has(e.mapping))) continue;
       // key must be invariant across the function: an identifier must not be reassigned; nullary keys always are.
-      if (e.key.kind === 'id' && this.assignsName(body, e.key.name)) continue;
+      if (e.key.kind === 'id'
+        && (this.assignsName(body, e.key.name) || this.declaresNameInsideLoop(body, e.key.name))) continue;
       out.push({
         mapping: e.mapping, key: e.key,
         valueType: (this.arrayMappings.get(e.mapping) ?? this.scalarMappings.get(e.mapping)
@@ -280,6 +282,34 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
       });
     }
     return out;
+  }
+
+  /**
+   * A tuple/local declared inside the loop is a fresh per-iteration value even when no AssignNode reassigns it.
+   * Treating that identifier as invariant hoists `m[key]` before the loop, outside the declaration's lexical
+   * scope (Kashi cook's `(share, address to, ...) = abi.decode(datas[i], ...)` became a function-top
+   * `userCollateralShare[to]` read and failed as an undefined reference).
+   */
+  private declaresNameInsideLoop(root: Node, name: string): boolean {
+    let found = false;
+    const walk = (node: Node, inLoop: boolean): void => {
+      if (found) return;
+      const nowLoop = inLoop || node instanceof WhileNode || node instanceof DoWhileNode;
+      if (nowLoop && node instanceof VariableDefinitionNode && node.name === name) { found = true; return; }
+      if (nowLoop && node instanceof TupleAssignmentNode
+        && node.elements.some((element) => !element.skip && !element.existing && element.name === name)) {
+        found = true; return;
+      }
+      for (const key of Object.keys(node)) {
+        if (['location', 'resolvedFunction', 'functionReference', 'definition',
+          'collection', 'symbolTable', 'stateVariable'].includes(key)) continue;
+        const child = (node as unknown as Record<string, unknown>)[key];
+        if (child instanceof Node) walk(child, nowLoop);
+        else if (Array.isArray(child)) for (const item of child) if (item instanceof Node) walk(item, nowLoop);
+      }
+    };
+    walk(root, false);
+    return found;
   }
 
   private makeFlush(

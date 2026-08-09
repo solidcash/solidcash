@@ -26,8 +26,78 @@ import { addressToLockScript } from './utils.js';
 export interface StructArgument { [field: string]: ConstructorArgument }
 // A `bigint[]`/`boolean[]`/nested array argument for an array-typed parameter (`uint[]`, `int[][]`, `T[]`), a
 // struct object, or a primitive.
+// Also accepted at encode-time (not listed for TS ergonomics of call sites): ethers-v5 BigNumber /
+// @solidcash/testing BigNumber shim / BN.js objects — coerced via coerceNumericObject().
 export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
 export type FunctionArgument = ConstructorArgument | SignatureTemplate | SignatureTemplate[];
+
+/**
+ * Coerce ethers-v5 `BigNumber`, the testing-package BigNumber shim, BN.js, or any duck-typed numeric
+ * object into a bigint. Returns undefined when the value is not a recognised numeric object.
+ */
+function coerceNumericObject(value: object): bigint | undefined {
+  const v = value as {
+    toBigInt?: () => bigint;
+    _value?: unknown;
+    _isBigNumber?: boolean;
+    _hex?: string;
+    hex?: string;
+    type?: string;
+    toString?: (base?: number) => string;
+    valueOf?: () => unknown;
+  };
+  // Preferred: explicit bigint conversion (ethers v5 BigNumber.toBigInt, our shim).
+  if (typeof v.toBigInt === 'function') {
+    try {
+      const bi = v.toBigInt();
+      if (typeof bi === 'bigint') return bi;
+    } catch { /* fall through */ }
+  }
+  // Our testing BigNumber / wrapEthersBN stores the value on `_value`.
+  if (typeof v._value === 'bigint') return v._value;
+  if (typeof v._value === 'number' && Number.isFinite(v._value)) return BigInt(Math.trunc(v._value));
+  if (typeof v._value === 'string' && /^-?\d+$/.test(v._value)) return BigInt(v._value);
+  // Nested BN: `{ _value: { _value: 1n } }` / Proxy wrappers.
+  if (v._value && typeof v._value === 'object') {
+    const nested = coerceNumericObject(v._value as object);
+    if (nested !== undefined) return nested;
+  }
+  // ethers v5 shape: `{ _hex, _isBigNumber }`.
+  if ((v._isBigNumber === true || v.type === 'BigNumber') && typeof v._hex === 'string') {
+    try { return BigInt(v._hex); } catch { /* fall through */ }
+  }
+  if (typeof v.hex === 'string' && /^0x[0-9a-fA-F]+$/i.test(v.hex)) {
+    try { return BigInt(v.hex); } catch { /* fall through */ }
+  }
+  // valueOf → bigint/number
+  if (typeof v.valueOf === 'function') {
+    try {
+      const raw = v.valueOf();
+      if (typeof raw === 'bigint') return raw;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return BigInt(Math.trunc(raw));
+    } catch { /* fall through */ }
+  }
+  // BN.js / generic: decimal or 0x toString.
+  if (typeof v.toString === 'function') {
+    try {
+      const s = v.toString(10);
+      if (typeof s === 'string' && /^(?:-?\d+|0x[0-9a-fA-F]+)$/.test(s)) return BigInt(s);
+    } catch { /* fall through */ }
+  }
+  return undefined;
+}
+
+/** Recursively coerce BigNumber-like leaves inside arrays (uint256[], nested). */
+function coerceArrayElements(value: unknown): unknown {
+  if (!Array.isArray(value)) {
+    if (value && typeof value === 'object' && !(value instanceof Uint8Array)
+      && !(value instanceof SignatureTemplate)) {
+      return coerceNumericObject(value) ?? value;
+    }
+    return value;
+  }
+  return value.map((el) => coerceArrayElements(el));
+}
 
 export type EncodedConstructorArgument = Uint8Array;
 export type EncodedFunctionArgument = Uint8Array | SignatureTemplate | SignatureTemplate[];
@@ -79,11 +149,13 @@ export function encodeFunctionArgument(
     const parsed = parseType(typeStr);
     if (parsed instanceof ArrayType && parsed.elementType === PrimitiveType.SIG
       && isSignatureTemplateArray(argument)) return argument;
+    // Coerce BigNumber leaves inside uint*/int* arrays (MistSwap liquidate maxBorrowParts, etc.).
+    const coerced = coerceArrayElements(argument) as FunctionArgument[];
     // A CashAddress string inside an `address[]` (or nested) arg must become its locking bytecode BEFORE the
     // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
     // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript
     // everywhere the value is used, e.g. keyToSlot of an address[] mapping key).
-    return encodePushdataValue(convertAddressArg(argument, typeStr) as StateValue, typeStr, structs);
+    return encodePushdataValue(convertAddressArg(coerced, typeStr) as StateValue, typeStr, structs);
   }
   let type = parseType(typeStr);
   if (type === undefined) {
@@ -103,6 +175,20 @@ export function encodeFunctionArgument(
     // ethers-parity: accept a JS `number` for an integer arg by coercing a safe integer to bigint.
     if (typeof argument === 'number' && Number.isSafeInteger(argument)) {
       argument = BigInt(argument);
+    }
+    // ethers-parity: a decimal or 0x-prefixed NUMERIC STRING is a valid integer argument (`mint(addr, "100")`
+    // is idiomatic in Hardhat suites, where BigNumber accepted strings). Strict patterns only - any other
+    // string still fails the type check below rather than silently becoming a number.
+    if (typeof argument === 'string' && /^(?:-?\d+|0x[0-9a-fA-F]+)$/.test(argument)) {
+      argument = BigInt(argument);
+    }
+    // ethers-parity: v5 `BigNumber` / our testing shim / BN.js-style objects. MistSwap suites pass
+    // `getBigNumber(n, decimals)` (a BigNumber object) into constructor args and call sites; without
+    // this, encode throws `Found type 'object' where type 'uint256' was expected` at collection of
+    // every Kashi/Bento/Maker deploy that uses getBigNumber.
+    if (typeof argument === 'object' && argument !== null && !(argument instanceof Uint8Array)) {
+      const coerced = coerceNumericObject(argument);
+      if (coerced !== undefined) argument = coerced;
     }
     if (typeof argument !== 'bigint') {
       throw new TypeError(typeof argument, type);

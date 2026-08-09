@@ -72,6 +72,13 @@ export class SplitContract {
     return this;
   }
 
+  /**
+   * ethers v5 `.deployed()` alias (MistSwap uses it throughout): same promise as `waitForDeployment()`.
+   * ContractFactory attaches this on unsplit deploys; split bundles must expose it too or `await c.deployed()`
+   * throws `is not a function` after a successful HardhatSplitContractFactory.deploy.
+   */
+  deployed(): Promise<this> { return this.waitForDeployment(); }
+
   deploymentTransaction(): unknown { return this.deploymentTransactions.at(-1); }
 
   getFunction(name: string): (...args: FunctionArgument[]) => StatefulFunctionCall {

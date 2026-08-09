@@ -81,7 +81,7 @@ describe('Solidity keywords as Yul identifiers', () => {
 describe('pure function inline-assembly effects', () => {
   it('rejects environment, state, external-call, and creation instructions', () => {
     const effects = [
-      'chainid()', 'basefee()', 'blobbasefee()', 'blobhash(0)', 'prevrandao()', 'difficulty()',
+      'basefee()', 'blobbasefee()', 'blobhash(0)', 'prevrandao()', 'difficulty()',
       'selfbalance()', 'sload(0)', 'tload(0)', 'staticcall(0, 1, 2, 3, 4, 5)', 'create2(0, 1, 2, 3)',
     ];
     for (const effect of effects) {
@@ -90,6 +90,13 @@ describe('pure function inline-assembly effects', () => {
         { solidityImportCompat: true },
       )).toThrow(/declared pure.*reads state or the environment/);
     }
+  });
+
+  it('accepts chainid in pure assembly because it lowers to the selected network constant', () => {
+    expect(compileString(
+      'contract C { function f() public pure returns (uint id) { assembly { id := chainid() } } }',
+      { solidityImportCompat: true, chainId: 1 },
+    ).contractName).toBe('C');
   });
 
   it('accepts arithmetic and memory-only inline assembly in pure functions', () => {
@@ -609,6 +616,16 @@ describe('bytes-pointer advance in assembly (OZ/BoringCrypto _getRevertMsg)', ()
       + ' if (_returnData.length < 68) return "silent";'
       + ' assembly { _returnData := add(_returnData, 0x04) }'
       + ' return abi.decode(_returnData, (string)); } }', opts)).not.toThrow();
+  });
+  it('keeps inherited assembly bodies independent while materializing their bytes parameter', () => {
+    const helper = 'contract B {'
+      + ' function _getRevertMsg(bytes memory _returnData) internal pure returns (string memory) {'
+      + ' if (_returnData.length < 68) return "silent";'
+      + ' assembly { _returnData := add(_returnData, 0x04) }'
+      + ' return abi.decode(_returnData, (string)); } }';
+    expect(() => compileString(helper + ' contract C is B {'
+      + ' function f(bytes memory x) public pure returns (string memory) { return _getRevertMsg(x); } }', opts))
+      .not.toThrow();
   });
   it('leaves add(int, N) arithmetic untouched (only bytes vars slice)', () => {
     expect(() => compileString('pragma solidity ^0.8.0; contract C {'

@@ -324,6 +324,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     // create2 salt (`new C{salt}()`): the forwarded param name, a hex literal, or computed (non-trivial -
     // SDK needs an explicit childSalt). Lets the SDK build the child Contract with the salt the covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
+    // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
+    // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
+    creationBytecode?: string;
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
@@ -357,7 +360,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // valueScalarParam (a loop-INVARIANT param, e.g. `+= amount` fixed-amount airdrop), or valueConst (an int literal).
   sortedUpsertLoopInfo?: Array<{
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string;
+    keyDecodeTupleIndex?: number; keyDecodeTupleTypes?: string[];
+    predicateArrayParam?: string; predicateEquals?: string;
     valueArrayParam?: string; valueScalarParam?: string; valueConst?: string;
+    valueRuntimeExpression?: boolean;
     valueArrayOffset?: string;
     mutation?: 'push' | 'pop' | 'setAt';
     mutationValueArrayParam?: string; mutationValueScalarParam?: string; mutationValueConst?: string;
@@ -378,6 +384,10 @@ export class FunctionDefinitionNode extends Node implements Named {
   // block was lowered away). PruneUnreachableFreeFunctions uses it to drop DEAD assembly helpers whose EVM
   // primitives may not codegen on BCH, even after the assembly lowered to plain ops (e.g. OZ Math.mulDiv).
   hadInlineAssembly?: boolean;
+  // Parse-shape proof that a Solidity <0.8 compatibility helper implements exactly one checked bounded
+  // arithmetic operation (or narrowing cast). Split-facet codegen may replace the wrapper with the native
+  // SolidCash operation, whose bounds check has the same success/failure behavior.
+  nativeCheckedMath?: '+' | '-' | '*' | 'cast';
   // A helper proven at parse time to return a specific `this.method` external pointer. Consumers may preserve
   // the helper call's side effects while replacing pointer metadata reads with that method's declaration data.
   returnedSelfFunctionName?: string;
@@ -431,6 +441,9 @@ export class FunctionDefinitionNode extends Node implements Named {
     source?: 'argument' | 'msgSender';
     perRow?: boolean;
   }[];
+
+  /** Canonical Solidity `batch(bytes[],bool)` executed through BCH's ordered local message-bus journal. */
+  nativeSelfBatchDispatcher?: boolean;
 
   isFreeFunction: boolean = false;
   // True for a function declared inside a Solidity library, including the lowered primary-library contract
@@ -1368,6 +1381,10 @@ export class BinaryOpNode extends ExpressionNode {
 }
 
 export class UnaryOpNode extends ExpressionNode {
+  // Solidity before 0.8 permits unsigned negation and evaluates it modulo the
+  // destination width (e.g. `d & -d` in FullMath).
+  legacyWrappingNegation = false;
+
   constructor(
     public operator: UnaryOperator,
     public expression: ExpressionNode,
@@ -1381,9 +1398,16 @@ export class UnaryOpNode extends ExpressionNode {
 }
 
 export class NullaryOpNode extends ExpressionNode {
+  // Solidity before 0.8 typed msg.sender and tx.origin as address payable.
+  legacyPayableAddress = false;
+
   // Solidity permits msg.value in state-variable initializers even when the synthesized constructor is
   // nonpayable; preserve that source context after the initializer is lowered into a constructor assignment.
   fromStateInitializer: boolean = false;
+  // Retained when a Yul context builtin is lowered to its high-level equivalent.
+  // Solidity 0.6 admitted assembly chainid() inside pure functions even though a
+  // source-level block.chainid read is rejected by the compatibility checker.
+  fromInlineAssembly: boolean = false;
 
   constructor(
     public operator: NullaryOperator,
@@ -2171,6 +2195,9 @@ export interface ExternalCallSlot {
   // every element is co-spent + verified as a callee in a loop (the source `for` loop is left as harmless
   // iteration; the epilogue reads the array and loop-verifies callee[base+i].master.LBC == arr[i]).
   loopArrayVar?: string;
+  // Runtime-loop receiver held in a local rather than written directly as arr[i]. The array supplies iteration
+  // cardinality to the SDK; this expression supplies the live index while codegen identity-checks the local.
+  loopIndexExpression?: ExpressionNode;
   // Set alongside loopArrayVar when the target is an interface-typed FIELD of a struct-array element
   // (`structArr[i].field.m()`, e.g. MasterChef `poolInfo[i].lpToken.balanceOf(..)`): the epilogue decodes that
   // field from each packed struct element before the identity check (compiler-internal, not serialized). The

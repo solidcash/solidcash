@@ -15,6 +15,7 @@ import {
   WhileNode,
   DoWhileNode,
   CollectionIterationNode,
+  TupleAssignmentNode,
 } from '../ast/AST.js';
 import { AddressType } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -86,6 +87,28 @@ export default class CaptureBranchExternalCallTargets extends AstTraversal {
     this.inNestedBlock = true; // any block nested within this one is nested regardless
     const out: StatementNode[] = [];
     for (const stmt of node.statements ?? []) {
+      const scopedTupleAddress = stmt instanceof TupleAssignmentNode && stmt.elements.some((element) =>
+        element.name && !element.existing && element.type instanceof AddressType
+        && (nested || /^(__rh|__inl)/.test(element.name)));
+      if (stmt instanceof TupleAssignmentNode && scopedTupleAddress && this.loopDepth === 0) {
+        out.push(this.visit(stmt) as StatementNode);
+        for (const element of stmt.elements) {
+          if (!element.name || element.existing || !(element.type instanceof AddressType)
+            || (!nested && !/^(__rh|__inl)/.test(element.name))) continue;
+          const capName = `${PREFIX}${this.counter++}_${element.name}`;
+          const decl = new VariableDefinitionNode(
+            new AddressType(element.type.payable, element.type.interfaceName), [], capName, undefined,
+          );
+          decl.location = stmt.location;
+          this.topDecls.push(decl);
+          const read = new IdentifierNode(element.name); read.location = stmt.location;
+          const capId = new IdentifierNode(capName); capId.location = stmt.location;
+          const assign = new AssignNode(capId, read); assign.location = stmt.location;
+          out.push(assign);
+          this.renames.set(element.name, capName);
+        }
+        continue;
+      }
       const iface = this.captureInterfaceOf(stmt);
       if (iface && nested && this.loopDepth === 0) {
         const def = stmt as VariableDefinitionNode;
@@ -119,6 +142,18 @@ export default class CaptureBranchExternalCallTargets extends AstTraversal {
 
   visitCollectionIteration(node: CollectionIterationNode): Node {
     this.loopDepth += 1; const r = super.visitCollectionIteration(node); this.loopDepth -= 1; return r;
+  }
+
+  // Some earlier lowering passes have already materialized an
+  // ExternalFunctionCallNode, so rewriting only the parser-level dotted
+  // FunctionCall/MethodCall spellings misses its addressExpression. Rename
+  // every subsequent read of the captured SSA local in the nested scope. The
+  // synthesized `capture = original` assignment is appended after visiting
+  // the declaration and is therefore intentionally not traversed here.
+  visitIdentifier(node: IdentifierNode): Node {
+    const replacement = this.renames.get(node.name);
+    if (replacement) node.name = replacement;
+    return node;
   }
 
   // `u.method(..)` (no call options) is a dotted FunctionCall `u.method`; rewrite the receiver to the capture.

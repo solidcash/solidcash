@@ -22,18 +22,18 @@ import { generateArtifact, generateDeclarationArtifact } from './artifact/Artifa
 import {
   Ast, AssignNode, BinaryOpNode, BlockNode, BoolLiteralNode, ContractNode, ContractReferenceNode, EmitStatementNode,
   ExpressionNode, FieldAccessNode,
-  FunctionCallNode, FunctionDefinitionNode,
+  FunctionCallNode, FunctionDefinitionNode, InterfaceFunctionNode, InterfaceNode,
   ExternalFunctionCallNode, ExternalOutputStateAccessNode, FunctionModifier, HexLiteralNode, IdentifierNode,
   InstantiationNode,
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
-  LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
-  SourceFileNode, TransferStatementNode, TypeIntrospectionNode,
+  SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, StateVariableVisibility,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -47,6 +47,8 @@ import EnsureFinalRequireTraversal from './semantic/EnsureFinalRequireTraversal.
 import InjectLocktimeGuardTraversal from './semantic/InjectLocktimeGuardTraversal.js';
 import EarlyReturnTransformation from './semantic/EarlyReturnTransformation.js';
 import NamedReturnTransformation from './semantic/NamedReturnTransformation.js';
+import MarkLegacyCheckedMath from './semantic/MarkLegacyCheckedMath.js';
+import LowerTailRecursion from './semantic/LowerTailRecursion.js';
 import DesugarNestedBranchReturn from './semantic/DesugarNestedBranchReturn.js';
 import SynthesizeExternalAddressLocals from './semantic/SynthesizeExternalAddressLocals.js';
 import HoistBranchLocalExtcallTargets from './semantic/HoistBranchLocalExtcallTargets.js';
@@ -125,7 +127,8 @@ import {
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
 import {
-  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, walkInvocationAst,
+  analyseContractInvocations, analyseFunctionFootprint, collectNamedFunctionClosure, directCallNames,
+  walkInvocationAst,
 } from './analysis/InvocationAnalysis.js';
 import { BinaryOperator, NullaryOperator } from './ast/Operator.js';
 import { cloneNode } from './ast/clone.js';
@@ -1101,6 +1104,30 @@ function synthesizeMessageBusRoute(
     group.push(fn);
     byName.set(fn.name, group);
   }
+  // Message-bus graph rows must have a finite statically representable outgoing-edge expansion. A recursive
+  // helper closure that can make an external call has no such bound: even when each execution reaches only one
+  // eventual edge (SushiMaker `_convertStep`), the route cannot pre-publish how many recursive frames precede it.
+  // Refuse only the optional batch route; the ordinary source entry point remains available and is compiled with
+  // its direct covenant frame. Name-level resolution is deliberately conservative here, matching the closure
+  // analysis used throughout route admission before overload resolution.
+  const hasRecursiveClosure = (root: FunctionDefinitionNode): boolean => {
+    const visited = new Set<string>();
+    const active = new Set<string>();
+    const visit = (name: string): boolean => {
+      if (active.has(name)) return true;
+      if (visited.has(name)) return false;
+      visited.add(name);
+      active.add(name);
+      for (const candidate of byName.get(name) ?? []) {
+        for (const called of directCallNames(candidate)) {
+          if (byName.has(called) && visit(called)) return true;
+        }
+      }
+      active.delete(name);
+      return false;
+    };
+    return visit(root.name);
+  };
   const dynamicState = new Set(contract.stateVariables.filter((state) => state.isDynamic
     || state.type === PrimitiveType.STRING
     || (state.type instanceof BytesType && state.type.bound === undefined)).map((state) => state.name));
@@ -1214,6 +1241,19 @@ function synthesizeMessageBusRoute(
     node instanceof MethodCallNode
       && node.object instanceof IdentifierNode
       && ['abi', 'bytes', 'string'].includes(node.object.name);
+  let contractConsumesLowLevelReturn = false;
+  for (const candidate of contract.functions) {
+    walkInvocationAst(candidate.body, (node) => {
+      if (node instanceof LowLevelCallNode
+        || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)
+        || (node instanceof MethodCallNode
+          && ['call', 'staticcall', 'delegatecall'].includes(node.methodName))
+        || (node instanceof FunctionCallNode
+          && /\.(?:call|staticcall|delegatecall)$/.test(node.identifier.name))) {
+        contractConsumesLowLevelReturn = true;
+      }
+    });
+  }
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;
@@ -1311,7 +1351,8 @@ function synthesizeMessageBusRoute(
     // NullaryOp representation.
     if (fn.usesMsgSender) routeUsesMsgSender = true;
     fn.usesMsgValue = routeUsesMsgValue;
-    let reason: string | undefined;
+    let reason: string | undefined = statefulExternalCall && hasRecursiveClosure(fn)
+      ? 'external-recursion-unbounded' : undefined;
     const bodyStatements = fn.body.statements ?? [];
     // X187. A namespaced call on a contract-typed receiver is deliberately NOT counted here. Its target is a
     // synthesized `__extaddr_*` LOCAL of the handler, never a route parameter, so the wrapper-epilogue emission
@@ -1700,6 +1741,7 @@ function synthesizeMessageBusRoute(
         resource === `state:${name}` || resource === `collection:${name}`
         || resource.startsWith(`collection:${name}:`)));
     let hasTokenContainerEffect = false;
+    let consumesLowLevelReturn = false;
     let resizesDynamicArrayState = false;
     let writesArrayStructElement = false;
     const minimumResultBytes = fn.returnTypes.reduce<number>(
@@ -1712,6 +1754,23 @@ function synthesizeMessageBusRoute(
         // eslint-disable-next-line @typescript-eslint/no-loop-func
         walkInvocationAst(candidate.body, (node) => {
           if (node instanceof TokenContainerMethodStatementNode) hasTokenContainerEffect = true;
+          // LowLevelCallNode is an expression form: unlike LowLevelCallStatementNode, its tuple result is consumed.
+          // Some AST walkers expose the call directly without revisiting it through its TupleAssignmentNode parent.
+          if (node instanceof LowLevelCallNode
+            || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)) {
+            consumesLowLevelReturn = true;
+          }
+          if (node instanceof TupleAssignmentNode) {
+            const call = node.tuple;
+            if ((call instanceof MethodCallNode
+                && ['call', 'staticcall', 'delegatecall'].includes(call.methodName))
+              || (call instanceof FunctionCallNode
+                && /\.(?:call|staticcall|delegatecall)$/.test(call.identifier.name))
+              || call instanceof LowLevelCallNode
+              || (call instanceof ExternalFunctionCallNode && call.opaqueReturn)) {
+              consumesLowLevelReturn = true;
+            }
+          }
           if (node instanceof StateArrayAssignNode) {
             const state = contract.stateVariables.find((candidateState) => candidateState.name === node.name);
             if (state?.type instanceof ArrayType && state.type.elementType instanceof StructType) {
@@ -1756,6 +1815,16 @@ function synthesizeMessageBusRoute(
     const readsTokenContainer = footprint.reads.some((resource) => resource.startsWith('collection:tokens:'));
     if (!reason && hasTokenContainerEffect && !readsTokenContainer) {
       reason = 'token-container-effect-route-not-enabled';
+    }
+    // A low-level return is authenticated through the owning handler's external-return slot. If that handler
+    // itself returns a value or carries state/event/value effects, the current message-bus clone is inlined into
+    // the wrapper while its slot layout remains on the source handler; the relocated call would otherwise read an
+    // unauthenticated result.
+    if (!reason && (consumesLowLevelReturn || (fn.returnTypes.length > 0 && contractConsumesLowLevelReturn))
+      && (fn.returnTypes.length > 0
+        || footprint.writes.length > 0
+        || footprint.effects.some((effect) => effect !== 'external-call'))) {
+      reason = 'return-consuming-low-level-call-route-not-enabled';
     }
     // Atomic participants authenticate token-container resources and settlements directly in the
     // messageEnvelope callManifest. Slotless token effects remain refused later by the existing physical-layout guard.
@@ -2638,6 +2707,28 @@ function synthesizeMessageBusRoute(
   // an accident of which lowering happens to erase the call, not a property of the shape, so every external
   // handler that still reaches its own name gets a clone. Runs LAST: the loops above skip a handler that
   // already has a clone, and claiming one here first would suppress the dynamic-state and fixed-array clones.
+  // Synthesized public collection getters can disappear from a split facet after route planning (facets suppress
+  // unrelated public getters), while their direct collection-read body is still valid in the route owner's state
+  // context. Give every such getter an internal clone, just like external handlers, so generated source never
+  // depends on a public symbol that shard filtering may remove.
+  for (const sourceHandler of eligible) {
+    if (!(contract.collections.some((collection) => collection.name === sourceHandler.name)
+      || contract.stateVariables.some((state) =>
+        state.name === sourceHandler.name && state.type instanceof ArrayType))
+      || sourceHandler === resourceShapedHandler
+      || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
+      || fixedArrayHandlerInvokeNames.has(sourceHandler)) continue;
+    const handler = cloneNode(sourceHandler);
+    handler.name = `__message_bus_getter_${sourceHandler.name}`;
+    handler.modifiers = [FunctionModifier.INTERNAL];
+    handler.functionId = undefined;
+    handler.functionSelector = undefined;
+    handler.messageBusEligible = undefined;
+    handler.messageBusRejectionReason = undefined;
+    handler.messageBusKeyWitnesses = undefined;
+    siblingHandlerInvokeNames.set(sourceHandler, handler.name);
+    contract.functions.push(handler);
+  }
   for (const sourceHandler of eligible) {
     if (sourceHandler.visibility !== 'external' || sourceHandler === resourceShapedHandler
       || graphHandlerInvokeNames.has(sourceHandler) || siblingHandlerInvokeNames.has(sourceHandler)
@@ -2663,16 +2754,19 @@ function synthesizeMessageBusRoute(
         : (graphHandlerInvokeNames.get(fn) ?? siblingHandlerInvokeNames.get(fn)
         ?? fixedArrayHandlerInvokeNames.get(fn) ?? fn.name);
       const invoke = (args: string, selectedInvokeName = invokeName): string => {
+        const constantGetter = fn.parameters.length === 0
+          && contract.constantDefinitions.some((constant) => constant.name === fn.name);
         const scalarGetter = fn.parameters.length === 0
-          && contract.stateVariables.some((state) => state.name === fn.name)
+          && (constantGetter || contract.stateVariables.some((state) => state.name === fn.name))
           // A flattened public struct getter has its own compiler-generated projection body. `this.s` is the
           // whole struct value, while the getter ABI returns only its projected field shape; treating it like a
           // scalar getter assigns `S` to the first projected field type in the generated route.
           && !contract.flattenedPublicStructGetters.some((getter) => getter.name === fn.name);
         if (scalarGetter) {
-          if (!captureResults || fn.returnTypes.length === 0) return `this.${fn.name};`;
+          const getterExpression = constantGetter ? fn.name : `this.${fn.name}`;
+          if (!captureResults || fn.returnTypes.length === 0) return `${getterExpression};`;
           const name = `__message_bus_value_${rowIndex}_${handlerIndex}_0`;
-          return `${fn.returnTypes[0].toString()} ${name}; ${name} = this.${fn.name}; `
+          return `${fn.returnTypes[0].toString()} ${name}; ${name} = ${getterExpression}; `
             + `__message_bus_results = bytes.concat(__message_bus_results, abi.encode(${name}));`;
         }
         if (!captureResults || fn.returnTypes.length === 0) return `${selectedInvokeName}(${args});`;
@@ -4044,6 +4138,7 @@ function compileResolvedAst(
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
   // injected breaks are lowered; internal functions can't raw-return from inside a loop's balanced stack).
+  ast = ast.accept(new LowerTailRecursion()) as Ast;
   ast = ast.accept(new DesugarReturnInLoop()) as Ast;
 
   // Unroll a FIXED-BOUND for-loop that writes a mapping into N static writes (which the per-slot machinery already
@@ -4056,6 +4151,9 @@ function compileResolvedAst(
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);
+
+  // Prove legacy checked-math wrapper shapes before named-return desugaring changes their minimal source form.
+  if (mergedCompilerOptions.solidityImportCompat) ast = ast.accept(new MarkLegacyCheckedMath()) as Ast;
 
   // Named-return desugar (before semantic analysis): named returns become default-init locals.
   ast = ast.accept(new NamedReturnTransformation()) as Ast;
@@ -4535,9 +4633,9 @@ function compileResolvedAst(
     const verifierFunction = ast.contract.functions.find((fn) => fn.name === '__message_bus_verify_atomic');
     const functionNameById = new Map(ast.contract.functions
       .filter((fn) => fn.functionId !== undefined).map((fn) => [fn.functionId!, fn.name]));
-    // Compiler compact helpers occupy the reserved >= 0x80 range and are selected dynamically from IDs kept
-    // in the verifier frame, so they cannot be recovered by scanning only literal OP_INVOKE predecessors.
-    // User/handler functions occupy the lower range; include the verifier plus the compact-helper namespace.
+    // Compiler compact helpers are selected dynamically from IDs kept in the verifier frame, so they cannot be
+    // recovered by scanning only literal OP_INVOKE predecessors. Split facets compact that namespace into unused
+    // positive IDs as well as negatives; named contract functions remain the exact exclusion set.
     const verifierBytecodes = new Map([
       ...traversal.invokedFunctionBytecodes,
       ...traversal.outlinedSubroutineBytecodes,
@@ -4566,14 +4664,46 @@ function compileResolvedAst(
     collectDefinitions(optimisationResult.script);
     const messageBusEntryBody = traversal.entryPointBytecodes.get(MESSAGE_BUS_SELECTOR_HEX);
     if (messageBusEntryBody) collectDefinitions(bytecodeToScript(messageBusEntryBody));
-    // A helper is identified by having been allocated as one, not by its numeric range: helper ids are drawn
-    // from a single-byte pool as well as the descending one, and a single-byte value is indistinguishable from
-    // a small user function id. Missing one here strands its OP_DEFINE outside the verifier program, and the
-    // participant fails at run time with "OP_INVOKE an undefined function identifier".
-    const verifierFunctionIds = [...verifierBytecodes.keys()]
-      .filter((id) => id <= -12 || traversal.allocatedHelperIds.has(BigInt(id))
-        || id === verifierFunction?.functionId)
-      .sort((a, b) => a - b);
+    const decodeFunctionId = (encoded: ReturnType<typeof bytecodeToScript>[number]): number | undefined => {
+      if (encoded instanceof Uint8Array) {
+        try {
+          const decoded = decodeInt(encoded);
+          if (decoded >= BigInt(Number.MIN_SAFE_INTEGER) && decoded <= BigInt(Number.MAX_SAFE_INTEGER)) {
+            return Number(decoded);
+          }
+        } catch { return undefined; }
+      } else if (encoded === Op.OP_0) return 0;
+      else if (encoded >= Op.OP_1 && encoded <= Op.OP_16) return encoded - Op.OP_1 + 1;
+      return undefined;
+    };
+    // `outlinedSubroutineBytecodes` contains every shared outline in the whole contract. Most are unrelated to the
+    // atomic verifier; embedding all of them can make the verifier covenant exceed BCH's 10KB script limit. Begin
+    // with the verifier and the dynamically selected compact-helper namespace, then add only statically invoked
+    // outlines, transitively. OP_INVOKE hard-fails on an omitted definition, so this is an exact fail-closed closure.
+    // A helper is identified by having been ALLOCATED as one, not by its numeric range and not by lacking a
+    // name: helper ids are drawn from a single-byte pool as well as the descending one, and a single-byte value
+    // is indistinguishable from a small user function id. Missing one strands its OP_DEFINE outside the
+    // verifier program and the participant dies at run time with "OP_INVOKE an undefined function identifier".
+    const isHelperId = (id: number): boolean => id <= -12
+      || traversal.allocatedHelperIds.has(BigInt(id))
+      || id === verifierFunction?.functionId;
+    const requiredVerifierIds = new Set([...traversal.invokedFunctionBytecodes.keys()].filter(isHelperId));
+    if (verifierFunction?.functionId !== undefined) requiredVerifierIds.add(verifierFunction.functionId);
+    const pendingVerifierIds = [...requiredVerifierIds];
+    while (pendingVerifierIds.length > 0) {
+      const id = pendingVerifierIds.pop()!;
+      const bytecode = verifierBytecodes.get(id);
+      if (!bytecode) continue;
+      const script = bytecodeToScript(bytecode);
+      for (let i = 1; i < script.length; i++) {
+        if (script[i] !== Op.OP_INVOKE) continue;
+        const invokedId = decodeFunctionId(script[i - 1]);
+        if (invokedId === undefined || requiredVerifierIds.has(invokedId) || !verifierBytecodes.has(invokedId)) continue;
+        requiredVerifierIds.add(invokedId);
+        pendingVerifierIds.push(invokedId);
+      }
+    }
+    const verifierFunctionIds = [...requiredVerifierIds].sort((a, b) => a - b);
     const verifierFunctions = verifierFunctionIds.map((id) => ({
       id,
       name: functionNameById.get(id) ?? `__internal_${id}`,
@@ -4976,7 +5106,13 @@ export function compileStringMulti(code: string, compilerOptions: CompileOptions
   for (const contract of allContracts) {
     if (!contract || seen.has(contract.name)) continue;
     seen.add(contract.name);
-    if (contract.isAbstract) continue; // abstract contracts are not deployable - excluded, like solc
+    // Before Solidity 0.7, an `internal` constructor was the way to mark a contract abstract. The parser
+    // deliberately accepts that legacy spelling without rewriting `isAbstract` (single-contract compilation
+    // still needs the declaration for inheritance), but solc's multi-artifact output must not expose it as a
+    // deployable contract. In particular, compiling such a constructor as an entry point gives inherited
+    // constructor effects (events/state writes) no transaction block layout.
+    if (contract.isAbstract
+      || contract.constructorDef?.modifiers.includes(FunctionModifier.INTERNAL)) continue;
     // Re-parse + resolve fresh per contract (the per-contract pipeline mutates the AST); select it as primary.
     const artifact = compileWithExternalAdmissionFallback(
       code, mergedCompilerOptions, errorListener, contract.name,
@@ -5028,7 +5164,12 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     );
   }
 
-  const plans = (baseline.stateLayout ? functions.filter((fn) => isMovableSplitEntry(fn)) : []).map((fn) => ({
+  // Keep read-only selectors on the root for ordinary/forced splits. If the unsplit contract itself exceeds BCH
+  // consensus capacity, they must become delegate-return facets too; otherwise an oversized query surface can
+  // leave the forwarding root undeployable (BoringHelperV1).
+  const moveReadOnlyEntries = byteSize(baseline) > maxShardBytes;
+  const plans = (baseline.stateLayout
+    ? functions.filter((fn) => isMovableSplitEntry(fn, moveReadOnlyEntries)) : []).map((fn) => ({
     name: fn.name,
     closure: collectNamedFunctionClosure(fn, byName),
     footprint: analyseFunctionFootprint(fn, byName),
@@ -5047,12 +5188,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   // shared helpers and delegate covenant overhead. This avoids eagerly recompiling every pair on every round.
   let groups = hardClosureGroups(plans);
   const measuredBytes = new Map<string, number>();
+  const measuredArtifacts = new Map<string, Artifact>();
   const groupKey = (group: PlannedFunction[]): string => group.map((plan) => plan.name).sort().join(',');
   const measure = (group: PlannedFunction[]): number => {
     const key = groupKey(group);
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
-    const bytes = byteSize(compileFacet(code, merged, errorListener, group, 'ProbeFacet'));
+    const artifact = compileFacet(code, merged, errorListener, group, 'ProbeFacet');
+    const bytes = byteSize(artifact);
+    measuredArtifacts.set(key, artifact);
     measuredBytes.set(key, bytes);
     return bytes;
   };
@@ -5066,51 +5210,77 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups = groups.flatMap((group) => (
     group.length > 1 && measure(group) > maxShardBytes ? group.map((plan) => [plan]) : [group]
   ));
-  // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
-  // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
-  let mergedAffinity = true;
-  while (mergedAffinity) {
-    mergedAffinity = false;
-    const candidates: Array<{
-      affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
-    }> = [];
-    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
-      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
-      const affinity = stateAffinity(groups[i], groups[j]);
-      if (affinity > 0) candidates.push({
-        affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
-      });
-    }
-    candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
-    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
-    if (selected) {
-      groups[selected.left] = selected.plans;
-      groups.splice(selected.right, 1);
-      mergedAffinity = true;
-    }
+  // A singleton is an indivisible physical closure: every facet containing that entry must also contain this
+  // body and its internal callees. Test these before the quadratic affinity search. Besides producing the useful
+  // handler/closure diagnostic directly, this prevents a large contract with one impossible entry from spending
+  // minutes compiling every larger pair even though none can remove bytes from the required closure.
+  for (const group of [...groups].sort((a, b) => groupKey(a).localeCompare(groupKey(b)))) {
+    if (group.length !== 1) continue;
+    const measured = measure(group);
+    if (measured <= maxShardBytes) continue;
+    const handlers = group.map((plan) => plan.name);
+    const callChain = group.flatMap((plan) => [
+      plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name),
+    ]);
+    throw new SolidcDiagnosticError(
+      'SPLIT_CLOSURE_CAPACITY',
+      `Cannot split '${logicalName}': indivisible closure '${handlers.join(', ')}' is ${measured} bytes `
+        + `(limit ${maxShardBytes}).`,
+      { contractName: logicalName, facet: 'singleton', handlers, callChain, measured, limit: maxShardBytes },
+    );
   }
-
-  // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
-  // union first, while the cached real compilation remains the acceptance authority.
-  let packed = true;
-  while (packed) {
-    packed = false;
-    const candidates: Array<{
-      estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
-    }> = [];
-    for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
-      const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
-      candidates.push({
-        estimate: measure(groups[i]) + measure(groups[j]),
-        left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
-      });
+  // Pairwise best-fit is quadratic in physical compilations. Above this frontier, keep the already-valid hard
+  // closure groups rather than spending minutes proving that optional combinations do not fit (UniswapV2Pair
+  // has nine groups and 36 pairs, with two verifier passes per probe). This can produce more facets, never a
+  // larger or semantically weaker one; every selected group is still measured against the consensus limit.
+  const exhaustivePacking = groups.length <= 8;
+  if (exhaustivePacking) {
+    // Phase one preserves the v1 affinity behavior: exhaust useful state-local merges before considering unrelated
+    // functions. This bounds probing on large imported contracts because zero-affinity combinations are postponed.
+    let mergedAffinity = true;
+    while (mergedAffinity) {
+      mergedAffinity = false;
+      const candidates: Array<{
+        affinity: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+      }> = [];
+      for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+        const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+        const affinity = stateAffinity(groups[i], groups[j]);
+        if (affinity > 0) candidates.push({
+          affinity, left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+        });
+      }
+      candidates.sort((a, b) => b.affinity - a.affinity || a.key.localeCompare(b.key));
+      const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+      if (selected) {
+        groups[selected.left] = selected.plans;
+        groups.splice(selected.right, 1);
+        mergedAffinity = true;
+      }
     }
-    candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
-    const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
-    if (selected) {
-      groups[selected.left] = selected.plans;
-      groups.splice(selected.right, 1);
-      packed = true;
+
+    // Phase two reduces facet count. At this smaller frontier, deterministic best-fit tries the fullest estimated
+    // union first, while the cached real compilation remains the acceptance authority.
+    let packed = true;
+    while (packed) {
+      packed = false;
+      const candidates: Array<{
+        estimate: number; left: number; right: number; plans: PlannedFunction[]; key: string;
+      }> = [];
+      for (let i = 0; i < groups.length; i++) for (let j = i + 1; j < groups.length; j++) {
+        const candidatePlans = uniquePlans([...groups[i], ...groups[j]]);
+        candidates.push({
+          estimate: measure(groups[i]) + measure(groups[j]),
+          left: i, right: j, plans: candidatePlans, key: groupKey(candidatePlans),
+        });
+      }
+      candidates.sort((a, b) => b.estimate - a.estimate || a.key.localeCompare(b.key));
+      const selected = candidates.find((candidate) => measure(candidate.plans) <= maxShardBytes);
+      if (selected) {
+        groups[selected.left] = selected.plans;
+        groups.splice(selected.right, 1);
+        packed = true;
+      }
     }
   }
 
@@ -5119,16 +5289,20 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups.sort((a, b) => a.map((p) => p.name).join(',').localeCompare(b.map((p) => p.name).join(',')));
   groups.forEach((group, index) => {
     const name = `${logicalName}__Facet${index}`;
-    const artifact = compileFacet(code, merged, errorListener, group, name);
+    const measured = measuredArtifacts.get(groupKey(group));
+    const artifact = measured ? cloneArtifact(measured) : compileFacet(code, merged, errorListener, group, name);
+    // The synthetic facet name is metadata only (the branded bytecode and constructor shape are identical), so a
+    // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
+    artifact.contractName = name;
     if (byteSize(artifact) > maxShardBytes) {
-      const measured = byteSize(artifact);
+      const measuredBytes = byteSize(artifact);
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(
         'SPLIT_CLOSURE_CAPACITY',
-        `Cannot split '${logicalName}': facet '${name}' is ${measured} bytes `
+        `Cannot split '${logicalName}': facet '${name}' is ${measuredBytes} bytes `
           + `(limit ${maxShardBytes}); closure: ${handlers.join(', ')}.`,
-        { contractName: logicalName, facet: name, handlers, callChain, measured, limit: maxShardBytes },
+        { contractName: logicalName, facet: name, handlers, callChain, measured: measuredBytes, limit: maxShardBytes },
       );
     }
     facets[name] = artifact;
@@ -5149,8 +5323,15 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     fn.overrideBases = [];
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.OVERRIDE);
   }
+  // A split root's mutating entries are delegate forwarders. Message-bus admission already refuses delegate
+  // handlers (`atomic-delegate-context-unpreservable`), leaving only incidental root-owned getters on the hidden
+  // route; on UniswapV2Pair that unusable getter-only route inflated the otherwise valid forwarding root to
+  // 13,658 bytes. Keep every ordinary ABI selector and one-hop forwarder, but omit the root's incoming batch route.
+  // Facet bodies retain their normal external-call/message-bus lowering; this changes only the synthetic root.
+  const rootOptions = { ...merged, messageBus: false };
   const root = compileResolvedAst(
-    rootAst, code, merged, false, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(merged),
+    rootAst, code, rootOptions, false, true, true, true, true, true, undefined,
+    splitPreLowersFnPtrArrays(rootOptions),
   );
   if (byteSize(root) > maxShardBytes) {
     throw new SolidcDiagnosticError(
@@ -5275,9 +5456,10 @@ function unsplitBundle(root: Artifact, plans: PlannedFunction[]): SplitArtifactB
   };
 }
 
-function isMovableSplitEntry(fn: FunctionDefinitionNode): boolean {
+function isMovableSplitEntry(fn: FunctionDefinitionNode, includeReadOnly = false): boolean {
   return fn.isEntryPoint && !fn.name.startsWith('__') && !fn.isFallback && !fn.isReceive
-    && !fn.modifiers.includes(FunctionModifier.VIEW) && !fn.modifiers.includes(FunctionModifier.PURE)
+    && (includeReadOnly || (!fn.modifiers.includes(FunctionModifier.VIEW)
+      && !fn.modifiers.includes(FunctionModifier.PURE)))
     && !fn.modifiers.some((m) => LIFECYCLE_MODIFIERS.has(m));
 }
 
@@ -5372,16 +5554,39 @@ function prepareSplitAst(
   ast = ast.accept(new LowerStorageSlotPointers()) as Ast;
   // Sharding must happen after storage-shaping synthesis. Otherwise a block.* read moved into a facet injects
   // oracle registers only there, changing delegate offsets and leaving the root unable to materialize that state.
-  ast = ast.accept(new SynthesizeBlockOracle()) as Ast;
+  // Match the ordinary pipeline's Solidity-compat mode. In that mode block.timestamp is lowered directly to
+  // tx.locktime rather than allocated as an oracle register; using the native default here made split roots
+  // append __block_timestamp ahead of __block_number while their unsplit baseline did not.
+  ast = ast.accept(new SynthesizeBlockOracle(options.solidityImportCompat ?? false)) as Ast;
   return ast;
 }
 
 function compileFacet(code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
   plans: PlannedFunction[], facetName: string): Artifact {
-  const ast = prepareSplitAst(code, options, listener);
+  let ast = prepareSplitAst(code, options, listener);
   const keep = new Set(plans.flatMap((p) => [...p.closure]));
   const contract = ast.contract;
-  contract.name = facetName;
+  // Derive getter declarations on a clone so the getter pass cannot rewrite the retained handler bodies before
+  // the ordinary facet pipeline. These declarations exist only for self-typed external-call resolution.
+  const getterProbe = cloneNode(contract);
+  const sourceFunctionCount = getterProbe.functions.length;
+  const getterProbeAst = new SourceFileNode(getterProbe);
+  getterProbeAst.importedContracts = ast.importedContracts;
+  getterProbeAst.interfaceDefinitions = ast.interfaceDefinitions;
+  getterProbeAst.accept(new SynthesizePublicGetters(options.solidityImportCompat ?? false));
+  const getterDeclarations = getterProbe.functions.slice(sourceFunctionCount);
+  if (getterDeclarations.length > 0) {
+    ast.interfaceDefinitions.push(new InterfaceNode(contract.name, [], [], getterDeclarations.map((getter) =>
+      new InterfaceFunctionNode(
+        getter.name,
+        getter.parameters.map((parameter) => new ParameterNode(parameter.type, parameter.name)),
+        getter.returnTypes,
+        'view',
+      ))));
+  }
+  // Keep the logical name through semantic rebuilding. Solidity self-typed fields and calls such as
+  // `Pair masterContract; masterContract.swappers(x)` resolve against this name; the physical facet name is
+  // artifact metadata and is applied after compilation.
   contract.parameters = [new ParameterNode(new BytesType(32), '__brand')];
   contract.parameters[0].location = contract.location;
   contract.parameters[0].syntheticallyUsed = true;
@@ -5393,9 +5598,15 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   contract.implements = [];
   contract.parentInvocations = [];
   contract.functions = contract.functions.filter((fn) => keep.has(fn.name));
-  // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets are
-  // renamed synthetic contracts with no Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make
-  // the idempotent inheritance pass validate resolved source metadata against the synthetic facet and reject it.
+  // Public getters are synthesized later than split planning. Without suppressing them here, every facet silently
+  // regains every public state/collection/constant getter after its function set was filtered. Besides publishing
+  // unrelated selectors on every shard, those getters make each facet synthesize the full incoming message-bus
+  // route (UniswapV2Pair's one-entry `approve` facet measured 13,066 bytes for this reason). The logical root keeps
+  // all getters and their ABI routes; a facet contains only the entries assigned to it and their call closure.
+  contract.flattenedPublicStructGetters = [];
+  // `prepareSplitAst` has already flattened inheritance and resolved every explicit override list. Facets have no
+  // Solidity base list, so retaining e.g. OZ's `override(Nonces)` would make the idempotent inheritance pass reject
+  // already-resolved source metadata.
   for (const resolved of [contract, ...ast.importedContracts]) {
     for (const fn of resolved.functions) {
       fn.overrideBases = [];
@@ -5409,27 +5620,22 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
       FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.PUBLIC, FunctionModifier.DELEGATE);
-  } else if (isMovableSplitEntry(fn)) {
-    // A movable entry that is only KEPT here - it is routed to some other facet - is reachable in this facet
-    // solely through an internal call from one of `plans`. Emitting its entry-point arm as well would charge
-    // this facet for selector dispatch and parameter decoding it can never be entered through. Demote it to a
-    // plain internal helper; the body, and every modifier already expanded into it, is untouched.
+  } else if (fn.isEntryPoint) {
+    // Any entry that is only KEPT here - including a root-owned view such as UniswapV2Pair.getReserves - is
+    // reachable in this facet solely through an internal call from one of `plans`. Emitting its entry-point arm
+    // as well would charge this facet for selector dispatch, ABI decoding, and (for an otherwise delegate-only
+    // facet) an entire incoming message-bus route it can never enter. Demote it to a plain internal helper; the
+    // body, and every modifier already expanded into it, is untouched. The logical root retains its real selector.
     fn.modifiers = fn.modifiers.filter((m) => ![
       FunctionModifier.EXTERNAL, FunctionModifier.PUBLIC, FunctionModifier.DELEGATE,
     ].includes(m));
     fn.modifiers.push(FunctionModifier.INTERNAL);
   }
-  if (contract.functions.filter((fn) => fn.isEntryPoint).length < 2) {
-    const truth = new BoolLiteralNode(true); truth.location = contract.location;
-    const noopGuard = new RequireNode(truth); noopGuard.location = contract.location;
-    const body = new BlockNode([noopGuard]); body.location = contract.location;
-    const noop = new FunctionDefinitionNode('__split_noop', [], body); noop.location = contract.location;
-    noop.modifiers = [FunctionModifier.PUBLIC, FunctionModifier.DELEGATE]; contract.functions.push(noop);
-  }
   contract.isSplitFacet = true;
   const artifact = compileResolvedAst(
     ast, code, options, true, true, true, true, true, true, undefined, splitPreLowersFnPtrArrays(options),
   );
+  artifact.contractName = facetName;
   artifact.delegateOnly = true;
   return artifact;
 }
@@ -5458,15 +5664,50 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
     // forwarder therefore becomes an ordinary covenant entry, while the facet remains `delegate`: root -> facet
     // is one delegate hop, avoiding the unsupported proxy -> implementation -> facet nested-delegate topology.
     fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.DELEGATE);
+    fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW
+      && modifier !== FunctionModifier.PURE);
     for (const param of fn.parameters) param.syntheticallyUsed = true;
     const signature = computeFunctionSignature(fn.name, fn.parameters.map((p) => p.type.toString()));
     const target = new IdentifierNode(route.link); target.location = fn.location;
     const data = new HexLiteralNode(computeFunctionSelector(signature)); data.location = fn.location;
-    const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
-    call.synthesizedFromLibraryCall = true;
-    const truth = new BoolLiteralNode(true); truth.location = fn.location;
-    const guard = new RequireNode(truth); guard.location = fn.location;
-    fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
+    if (fn.returnTypes.length === 0) {
+      const call = new LowLevelCallStatementNode(target, data, 'delegatecall'); call.location = fn.location;
+      call.synthesizedFromLibraryCall = true;
+      const truth = new BoolLiteralNode(true); truth.location = fn.location;
+      const guard = new RequireNode(truth); guard.location = fn.location;
+      fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
+    } else {
+      const call = new LowLevelCallNode(target, data, 'delegatecall'); call.location = fn.location;
+      const okName = `__split_ok_${fn.name}`;
+      const dataName = `__split_data_${fn.name}`;
+      const capture = new TupleAssignmentNode([
+        { name: okName, type: PrimitiveType.BOOL, existing: false },
+        { name: dataName, type: new BytesType(), existing: false },
+      ], call, true);
+      capture.location = fn.location;
+      const ok = new IdentifierNode(okName); ok.location = fn.location;
+      const guard = new RequireNode(ok); guard.location = fn.location;
+      const bytes = new IdentifierNode(dataName); bytes.location = fn.location;
+      const decode = new AbiDecodeNode(bytes, fn.returnTypes); decode.location = fn.location;
+      let returnStatement: ReturnNode;
+      const statements: StatementNode[] = [capture, guard];
+      if (fn.returnTypes.length === 1) {
+        returnStatement = new ReturnNode([decode]); returnStatement.location = fn.location;
+      } else {
+        const names = fn.returnTypes.map((_, index) => `__split_ret_${fn.name}_${index}`);
+        const decoded = new TupleAssignmentNode(names.map((name, index) => ({
+          name, type: fn.returnTypes[index], existing: false,
+        })), decode, true);
+        decoded.location = fn.location;
+        statements.push(decoded);
+        const results = names.map((name) => {
+          const id = new IdentifierNode(name); id.location = fn.location; return id;
+        });
+        returnStatement = new ReturnNode(results); returnStatement.location = fn.location;
+      }
+      statements.push(returnStatement);
+      fn.body = new BlockNode(statements); fn.body.location = fn.location;
+    }
   }
 }
 
@@ -5812,10 +6053,21 @@ function topologicalSort(
   return sorted;
 }
 
-// Count SPDX tags only inside actual comments. A plain regex over the source would incorrectly reject a string
+// Collect SPDX tags only inside actual comments. A plain regex over the source would incorrectly inspect a string
 // literal containing `SPDX-License-Identifier:`; this scanner skips quoted strings and handles line/block comments.
-function countSpdxIdentifiersInComments(code: string): number {
-  let count = 0;
+function spdxIdentifiersInComments(code: string): string[] {
+  const identifiers: string[] = [];
+  const collect = (comment: string): void => {
+    const pattern = /SPDX-License-Identifier\s*:/g;
+    const matches = [...comment.matchAll(pattern)];
+    for (let index = 0; index < matches.length; index += 1) {
+      const start = matches[index].index! + matches[index][0].length;
+      const newline = comment.indexOf('\n', start);
+      const next = matches[index + 1]?.index ?? comment.length;
+      const end = Math.min(newline < 0 ? comment.length : newline, next);
+      identifiers.push(comment.slice(start, end).trim().replace(/\\n$/, '').trim());
+    }
+  };
   for (let i = 0; i < code.length;) {
     const ch = code[i];
     if (ch === '"' || ch === "'") {
@@ -5830,20 +6082,20 @@ function countSpdxIdentifiersInComments(code: string): number {
     if (ch === '/' && code[i + 1] === '/') {
       const end = code.indexOf('\n', i + 2);
       const comment = code.slice(i + 2, end < 0 ? code.length : end);
-      count += comment.match(/SPDX-License-Identifier\s*:/g)?.length ?? 0;
+      collect(comment);
       i = end < 0 ? code.length : end + 1;
       continue;
     }
     if (ch === '/' && code[i + 1] === '*') {
       const end = code.indexOf('*/', i + 2);
       const comment = code.slice(i + 2, end < 0 ? code.length : end);
-      count += comment.match(/SPDX-License-Identifier\s*:/g)?.length ?? 0;
+      collect(comment);
       i = end < 0 ? code.length : end + 2;
       continue;
     }
     i += 1;
   }
-  return count;
+  return identifiers;
 }
 
 // Solidity requires directional formatting controls to balance within each individual comment or string token.
@@ -5967,7 +6219,12 @@ export function parseCode(
   const diagnosticTrailer = code.search(/\n\/\/ ----/);
   const spdxSource = diagnosticTrailer >= 0 ? code.slice(0, diagnosticTrailer) : code;
   if (solidityImportCompat) validateUnicodeDirectionMarkers(spdxSource);
-  if (solidityImportCompat && countSpdxIdentifiersInComments(spdxSource) > 1) {
+  // Common Solidity flattener output retains one SPDX header per concatenated source and marks every boundary
+  // with `// File <path>`. MistSwap ships these generated `*Flat.sol` units directly. Keep the ordinary Solidity
+  // source-unit diagnostic, but admit this explicit flattened format without rewriting the user's checkout.
+  const flattenedSource = /^\s*\/\/\s*File\s+\S+/m.test(spdxSource);
+  const spdxIdentifiers = spdxIdentifiersInComments(spdxSource);
+  if (solidityImportCompat && !flattenedSource && new Set(spdxIdentifiers).size > 1) {
     throw new Error(
       'Multiple SPDX license identifiers found in source file. '
       + 'Use "AND" or "OR" to combine multiple licenses.',

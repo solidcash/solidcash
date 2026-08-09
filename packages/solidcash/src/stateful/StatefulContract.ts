@@ -9515,6 +9515,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // These collections have exact input/key topology but values computed only by the covenant. Their output
     // commitments are seeded as placeholders and learned by the normal VM probe instead of being pinned here.
     const runtimeSortedLoopCommitments = new Set<string>();
+    const runtimeLoopDerivedCounts = new Map<string, number>();
     const insertLoopPredecessors: UnlockableUtxo[] = [];
     for (const info of abiFunction?.sortedInsertLoopInfo ?? []) {
       const collection = (stateLayout.collections ?? []).find((c) => c.name === info.collection);
@@ -9702,8 +9703,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // minimal VM number.
       const commitValue = (nv: bigint | Uint8Array): Uint8Array =>
         nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
-      if (!Array.isArray(keysArr) || (perKey && !info.mutation && !Array.isArray(valsArr))) continue;
-      if (perKey && !info.mutation && (valsArr as unknown[]).length !== keysArr.length) {
+      if (!Array.isArray(keysArr)
+        || (perKey && !info.mutation && !info.valueRuntimeLocal && !Array.isArray(valsArr))) continue;
+      if (perKey && !info.mutation && !info.valueRuntimeLocal
+        && (valsArr as unknown[]).length !== keysArr.length) {
         throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
@@ -9940,6 +9943,57 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const wUnlocker = createEntryNftUnlocker(
         this.inner, overrides?.blockBase ?? 0, this.categoryId, info.collection,
       );
+      if (info.valueRuntimeLocal) {
+        const oldWitnesses: Uint8Array[] = [];
+        const runtimeInputs: UnlockableUtxo[] = [];
+        const runtimeSlots = new Set<string>();
+        const runtimeInputsSeen = new Set<string>();
+        for (let i = 0; i < keysArr.length; i++) {
+          const slot = keyToSlotMulti([...fixedBins, encKey(keysArr[i], varyType)]);
+          const slotHex = binToHex(slot);
+          if (runtimeSlots.has(slotHex)) {
+            throw new Error(`C2 runtime struct loop ${info.collection}: duplicate keys require a journaled `
+              + 'read-your-writes transition and cannot be co-spent twice');
+          }
+          runtimeSlots.add(slotHex);
+          const entry = list.find(slot);
+          if (!entry) throw new Error(`C2 runtime struct loop ${info.collection}: key ${i} has no existing entry`);
+          const uid = `${entry.utxo.txid}:${entry.utxo.vout}`;
+          if (runtimeInputsSeen.has(uid)) {
+            throw new Error(`C2 runtime struct loop ${info.collection}: key ${i}'s entry is already co-spent this tx`);
+          }
+          runtimeInputsSeen.add(uid);
+          runtimeInputs.push({ ...entry.utxo, unlocker: wUnlocker });
+          const tail = entry.value;
+          if (tail.length < 4) throw new Error(`C2 runtime struct value for ${info.collection} has an invalid tail`);
+          const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
+          let raw: Uint8Array;
+          if (len <= 60) raw = tail.slice(4, 4 + len);
+          else {
+            const root = tail.slice(4, 36);
+            const headData = tail.slice(36, 64);
+            const chunkAddr = getValueChunkAddress(this.inner, this.categoryId, info.collection, slot, root);
+            const chunks = (await this.inner.provider.getUtxos(chunkAddr))
+              .filter((u) => u.token?.category === this.categoryId
+                && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0)
+              .map((u) => parseValueChunkCommitment(u.token!.nft!.commitment))
+              .sort((a, b) => a.chunkIndex - b.chunkIndex);
+            raw = joinValueChunks(headData, chunks, len);
+            if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
+              throw new Error('C2 runtime struct value chunks do not match the authenticated root');
+            }
+            valueChunkGc.push({ collection: info.collection, slotHex, oldDigestHex: binToHex(root) });
+          }
+          oldWitnesses.push(raw);
+        }
+        const wi = abiFunction!.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
+        if (wi < 0) throw new Error(`C2 runtime struct loop ${info.collection}: missing old-value witness ABI input`);
+        finalArgs[wi] = oldWitnesses;
+        insertLoopPredecessors.push(...runtimeInputs);
+        runtimeLoopDerivedCounts.set(info.collection, keysArr.length);
+        if (collection.chunkableValue) computedValueChunkCollections.add(info.collection);
+        continue;
+      }
       // Commitments in CUMULATIVE OUTPUT order (matching the covenant's outCounter): an UPDATE contributes 1 (the
       // updated node), an INSERT contributes 2 (P' = the re-pointed predecessor, then NEW). One co-spent input per
       // recipient. cospent = co-spent UTXO ids for conflict detection (an entry / predecessor can be co-spent once).
@@ -13131,6 +13185,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const batch of abiFunction?.sortedBatchInfo ?? []) addLoopCollection(batch.collection);
     for (const name of entryLoopWrites) addLoopCollection(name);
     for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
+    for (const name of runtimeLoopDerivedCounts.keys()) addLoopCollection(name);
     for (const name of batchPredCommitments.keys()) addLoopCollection(name);
     // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
     // proxy's entryLoopWrites cannot advertise a scalar C2 INSERT. The insertion plan itself is authoritative.
@@ -13268,6 +13323,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const [collectionName, commitments] of batchPredCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
       builder.pinLoopEntry(collectionName);
+    }
+    for (const [collectionName, count] of runtimeLoopDerivedCounts) {
+      builder.setLoopEntryCommitments(collectionName, Array.from({ length: count }, () => '00'));
+      builder.requireLoopEntryCount(collectionName, count);
     }
 
     // P5b COMPUTED values: register the collections whose value chunks must be DERIVED from the trace (the covenant

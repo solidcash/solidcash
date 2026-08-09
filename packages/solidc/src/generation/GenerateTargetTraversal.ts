@@ -17884,6 +17884,54 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // The initializer of a SINGLE-ASSIGN local `name` within `node` (a `<name> = <expr>` VariableDefinition, never
   // reassigned by an AssignNode) - used to see through OZ _update's inline value binding (`__inlN_value = amounts[i]`).
   // Returns undefined if the name is defined 0 or >1 times, reassigned, or has no initializer (so it can't be trusted).
+  // Recognize the closed shape produced when an inlined storage-pointer helper reads a struct entry, rebuilds
+  // that same local through multiple field updates, then writes it back to the identical mapping key.
+  private isLoopStructRuntimeRmw(block: Node, write: MappingAssignNode, localName: string): boolean {
+    let read: MappingAccessNode | undefined;
+    const rebuilds: FunctionCallNode[] = [];
+    let reassigned = 0;
+    let invalidReassignment = false;
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName
+        && node.expression instanceof MappingAccessNode) read = node.expression;
+      if (node instanceof AssignNode && node.identifier.name === localName) {
+        if (!read && node.expression instanceof MappingAccessNode) read = node.expression;
+        else {
+          reassigned += 1;
+          if (node.expression instanceof FunctionCallNode) rebuilds.push(node.expression);
+          else invalidReassignment = true;
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
+          || key === 'collection') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(block);
+    const structName = (write.collection!.innermostValueType as StructType).name;
+    if (!read || reassigned < 2 || invalidReassignment || rebuilds.length !== reassigned || read.name !== write.name
+      || rebuilds.some((rebuild) => rebuild.identifier.name !== structName)) return false;
+    const sameExpression = (a: ExpressionNode, b: ExpressionNode): boolean => {
+      if (a.constructor !== b.constructor) return false;
+      if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+      if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
+      if (a instanceof ArrayAccessNode && b instanceof ArrayAccessNode) {
+        return sameExpression(a.array, b.array) && sameExpression(a.index, b.index);
+      }
+      if (a instanceof CastNode && b instanceof CastNode) return sameExpression(a.expression, b.expression);
+      return false;
+    };
+    if (read.keys.length !== write.keys.length
+      || !read.keys.every((key, i) => sameExpression(key, write.keys[i]))) return false;
+    return rebuilds.every((rebuild) => rebuild.parameters.some((parameter) => parameter instanceof FieldAccessNode
+      && parameter.expression instanceof IdentifierNode && parameter.expression.name === localName));
+  }
+
   private findSingleAssignLocalInit(node: Node, name: string): ExpressionNode | undefined {
     let init: ExpressionNode | undefined;
     let defs = 0;
@@ -17993,10 +18041,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       varyingArrayParam = decodedKeyRecipe.varyingArrayParam;
     }
     const isDelete = writeNode instanceof MappingDeleteNode;
-    let op: '+' | '-' | 'set' | 'delete';
+    let op: '+' | '-' | 'set' | 'delete' = 'set';
     let valueArrayParam: string | undefined;    // per-key vs[i]
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
+    let valueRuntimeLocal: string | undefined;  // rebuilt struct derived from this iteration's authenticated entry
     let valueArrayOffset: string | undefined;
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
@@ -18025,8 +18074,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       const expr = assign.expression;
+      if (expr instanceof IdentifierNode && collection.innermostValueType instanceof StructType
+        && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
+        op = 'set';
+        valueRuntimeLocal = expr.name;
+      }
       const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
-      op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      if (!valueRuntimeLocal) {
+        op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      }
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
       // Inlining OZ ERC20 `_update` binds its `value` param to a single-assign LOCAL (`__inlN_value = amounts[i]`),
       // so the write's per-key value is that local, not the array element directly. Resolve it to the underlying
@@ -18055,7 +18111,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
+    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined || !!valueRuntimeLocal;
     const valueRuntimeExpression = !isDelete && (
       (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
       || (!hasValue && writeNode.entrySlotIndex >= 0
@@ -18076,8 +18132,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }),
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
+        ...(valueRuntimeLocal && { valueRuntimeLocal }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
-        ...(valueArrayOffset !== undefined && { valueArrayOffset }), op });
+        ...(valueArrayOffset !== undefined && { valueArrayOffset }),
+        ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 

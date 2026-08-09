@@ -856,6 +856,9 @@ it must not silently compile to incorrect covenant behavior.
     a two-argument void delegate call could inherit the outputs of a same-name one-argument overload and append a
     spurious return NFT. The delegate/return regression group passes 89/89 and the SDK changed-test gate passes
     469 tests (6 skipped, 5 todo).
+  - Runtime struct read-modify-write loops now retain their compiler recognizer, per-iteration old-value witness,
+    and SDK trace-derived output reservation. The focused state transition passes end to end; the adjacent six-file
+    C2 loop matrix passes 15/15 and the compiler storage-collection suite passes 245/245.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

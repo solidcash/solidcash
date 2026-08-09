@@ -2216,7 +2216,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // value/root before mutation. Ordinary reads keep the scalar bytes witness.
           const varyingArrayKey = info.keySources?.some((s) => s.kind === 'expression'
             && /^arridx\(id:\w+,.+\)$/.test(s.canonical ?? ''));
-          const wtype = vt instanceof ArrayType && (info.inLoop || varyingArrayKey)
+          const wtype = info.inLoop || varyingArrayKey
             ? new ArrayType(new BytesType()) : new BytesType();
           const wparam = new ParameterNode(wtype, wname);
           wparam.location = node.location;

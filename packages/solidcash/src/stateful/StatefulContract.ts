@@ -11704,6 +11704,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     const delegateExternalGroupIndices = new Map<number, number[]>();
     const nestedDelegateProxyGroupByLowLevel = new Map<number, number>();
     let nestedFunderIndex = 0;
+    const lowLevelBlockFunderOutpoints = new Set<string>();
 
     if (lowLevelCalls && lowLevelCalls.length > 0) {
       // Hardhat-parity: OZ SafeERC20.safeTransferFrom becomes address(token).call(transferFrom data).
@@ -12378,7 +12379,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let syntheticFunderSeq = 0;
           const takeFunder = async (): Promise<UnlockableUtxo> => {
             const f = funderPool.shift();
-            if (f) return f;
+            if (f) {
+              lowLevelBlockFunderOutpoints.add(`${f.txid}:${f.vout}`);
+              return f;
+            }
             // Callee builder may omit returnEvent funders when not emitting a return, and may have no
             // signer of its own. Mint synthetic placeholders so the physical band stays layout-shaped.
             const syntheticOutpoint = 0xe0 + masterInputIndex * 0x100 + (syntheticFunderSeq++);
@@ -13165,6 +13169,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const consumedTxids = new Set(
             (sharedFunderAllocated ?? sharedFunderPool ?? []).map((f) => `${f.txid}:${f.vout}`),
           );
+          for (const outpoint of lowLevelBlockFunderOutpoints) consumedTxids.add(outpoint);
           // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
           // outpoint hash as a category. Prefer category-neutral sibling outputs for C2 absence witnesses.
           const orderPlain = (us: Utxo[]): Utxo[] => us

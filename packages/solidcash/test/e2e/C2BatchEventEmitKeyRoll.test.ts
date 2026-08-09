@@ -31,7 +31,14 @@ describe('C2 batch + emit key-param OP_ROLL', () => {
     const art = compileString(SRC, { forceStateful: true });
     const [alice, bob] = await getSigners(2, { provider, fundingUtxos: 5 });
     const token = await new ContractFactory(art, alice).deploy();
-    const tx = await token.approve(bob.getAddress(), 1000n).send();
+    const send = token.approve(bob.getAddress(), 1000n).send();
+    if (process.env.TESTS_USE_REGTEST) {
+      // This intentionally unsplit C2 regression compiles to a 1,201-byte redeem script. Mocknet raises its
+      // input limits to exercise the altstack snapshot behavior, but BCH cannot push a stack item over 520 bytes.
+      await expect(send).rejects.toThrow(/maximum stack item length.*520 bytes/i);
+      return;
+    }
+    const tx = await send;
     expect(tx.txid).toBeDefined();
   });
 });

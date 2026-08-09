@@ -585,6 +585,9 @@ it must not silently compile to incorrect covenant behavior.
     bytes. The test now retains its three successful mock behavior cases and, on BCHN, requires the exact 520-byte
     pre-broadcast refusal. Both modes pass 3/3. This is an explicit unsupported-density boundary, not evidence
     that the oversized unsplit fixtures execute on chain.
+  - Batch 13 exposed the same classification gap in `C2BatchEventEmitKeyRoll`: its focused snapshot regression
+    compiles to a 1,201-byte indivisible redeem script. It continues to prove successful settlement on mocknet,
+    while BCHN now must report the exact 520-byte stack-item limit before broadcast.
   - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
     pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
     failures are artifacts of a 29,424-UTXO wallet.

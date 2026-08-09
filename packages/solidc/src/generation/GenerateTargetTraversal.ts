@@ -14497,11 +14497,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.callMode === 'delegatecall') {
-      // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
-      // its own verification via _proxyMasterIndex. Push dummy success/returnData.
+      // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles its own verification via
+      // _proxyMasterIndex. A compiler-generated returning split root consumes the authenticated returnEvent blob;
+      // ordinary raw delegatecall retains the EVM-compatible dummy success/empty-data result.
       this.markDelegateEdgeReached(node);
       this.emit(Op.OP_1, locationData);           // [true]
-      this.emit(encodeInt(0n), locationData);      // [true, empty]
+      if (node.synthesizedSplitReturn) {
+        const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+        if (returnOutputIdx < 0) throw new Error('Split delegate return output index is missing from the stack');
+        this.emit(encodeInt(BigInt(returnOutputIdx + 1)), locationData);
+        this.emit(Op.OP_PICK, locationData);       // [true, returnOutputIdx]
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData); // [true, returnData]
+      } else {
+        this.emit(encodeInt(0n), locationData);    // [true, empty]
+      }
     } else {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
       // Stack: [remaining]

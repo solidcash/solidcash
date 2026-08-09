@@ -2643,6 +2643,9 @@ export class LowLevelCallNode extends ExpressionNode {
   callIndex: number = 0;  // assigned during pre-scan
   callOptions?: CallOptions;
   valueTransferIndex: number = -1;
+  // Synthetic split-root delegatecalls return through this entry's authenticated returnEvent output rather than
+  // the ordinary raw-call unlocking-bytecode remainder.
+  synthesizedSplitReturn = false;
 
   constructor(
     public targetExpression: ExpressionNode,  // for type-checking only, not emitted

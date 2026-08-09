@@ -821,6 +821,10 @@ it must not silently compile to incorrect covenant behavior.
     output block after the caller's full compiled block. Caller event/transfer funder slots therefore no longer
     make derivation execute the wrong input or write the callee state and event commitments one slot early.
     `EventAnonymousE2E` passes 43/43, with the adjacent external-call, sorted-write, and sender gates passing 25/25.
+  - Returning split roots now consume the facet's authenticated return-event commitment instead of the generic
+    raw-delegatecall placeholder `(true, bytes(0))`. The SDK materializes that internal channel even for a plain
+    send while keeping public `.emitReturn()` semantics distinct. `X1DelegateSlotAdjacency` passes 8/8, and the
+    formerly failing returning divided-union and large split-contract scenarios pass with their full files.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

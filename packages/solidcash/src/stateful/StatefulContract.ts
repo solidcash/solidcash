@@ -8587,7 +8587,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       .find((fn) => (fn?.outputs?.length ?? 0) > 0);
     const returnAbiFunction = (abiFunction?.outputs?.length ?? 0) > 0 ? abiFunction : delegatedReturnFunction;
     let returnEmitBlockOffset = -1;
-    if (overrides?.emitReturn && (returnAbiFunction?.outputs?.length ?? 0) > 0) {
+    // A returning delegatecall needs an authenticated return channel even when the public root call does not use
+    // `.emitReturn()`: the synthetic root unconditionally decodes the delegate result before returning it. Keep
+    // the root's own return witness disabled below unless emitReturn was requested, but materialize the internal
+    // implementation channel in either mode.
+    if ((overrides?.emitReturn || delegatedReturnFunction)
+      && (returnAbiFunction?.outputs?.length ?? 0) > 0) {
       const slot = returnAbiFunction?.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
       if (!slot) {
         throw new Error(`Function '${functionName}' has no returnEvent output slot; cannot emit its return value.`);
@@ -12459,6 +12464,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               if (input.name === '__internal__proxyMasterIndex') {
                 return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
               }
+              if (input.name === '__internal__returnOutputIdx') return BigInt(returnEmitOutputIndex);
               if (c2ByName.has(input.name)) return c2ByName.get(input.name) as FunctionArgument;
               if (valueByName.has(input.name)) return valueByName.get(input.name) as FunctionArgument;
               if (input.name === '__internal__msgSenderCategory') return llcMsgSenderCategory;

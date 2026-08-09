@@ -694,6 +694,9 @@ contract Mixed() {
     const setAbi = bundle.facets[setTarget!].abi.find((fn) => fn.name === 'set');
     expect(setAbi?.outputs).toEqual([{ type: 'int256' }]);
     expect(setAbi?.blockLayout?.slots.some((slot) => slot.kind === 'returnEvent')).toBe(true);
+    const rootSet = bundle.root.abi.find((fn) => fn.name === 'set');
+    const returnCommitmentOpcode = asmToBytecode('OP_OUTPUTTOKENCOMMITMENT')[0].toString(16).padStart(2, '0');
+    expect(bundle.root.functionBodies?.[rootSet!.selector!]).toContain(returnCommitmentOpcode);
   });
 
   it('covenants the complete genesis state layout even when the constructor leaves a field untouched', () => {

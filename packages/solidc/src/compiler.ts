@@ -5681,6 +5681,7 @@ function prepareSplitRoot(contract: ContractNode, routes: Map<string, { facet: s
       fn.body = new BlockNode([call, guard]); fn.body.location = fn.location;
     } else {
       const call = new LowLevelCallNode(target, data, 'delegatecall'); call.location = fn.location;
+      call.synthesizedSplitReturn = true;
       const okName = `__split_ok_${fn.name}`;
       const dataName = `__split_data_${fn.name}`;
       const capture = new TupleAssignmentNode([

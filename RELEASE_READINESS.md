@@ -793,7 +793,7 @@ it must not silently compile to incorrect covenant behavior.
   corrected two cold-entry regressions before going green: CommonJS `ethers` now follows the maintained
   CashAddress-aware shim expectation, and branded split facets compose against the root/proxy state block while
   retaining selector-prefixed delegate dispatch.
-- [ ] **Complete SDK e2e gate at the candidate head.** The initial fresh `yarn test:e2e` audit at `8ca79363f` ran
+- [x] **Complete SDK e2e gate at the candidate head.** The initial fresh `yarn test:e2e` audit at `8ca79363f` ran
   all 338 discovered files and found 98 failures across 45 files. After excluding fixed C2 writes from the batch
   path when the same collection also owns a runtime loop, the current worktree rerun finds 75 failures across
   39 files (2,592 passed, 23 skipped, 3 todo). `FullMultiTransfer` and `MultiTransferOzShape` are restored in all
@@ -863,7 +863,7 @@ it must not silently compile to incorrect covenant behavior.
   - Runtime struct read-modify-write loops now retain their compiler recognizer, per-iteration old-value witness,
     and SDK trace-derived output reservation. The focused state transition passes end to end; the adjacent six-file
     C2 loop matrix passes 15/15 and the compiler storage-collection suite passes 245/245.
-  - Computed loop dispatch again separates neutralizable interface locals from live runtime locals and discovers the
+  - Computed loop dispatch again separates interface locals eligible for neutralization from live runtime locals and discovers the
     loop index through the resolved initializer. Typed and stateful computed-dispatch suites pass 14/14, including
     view-return autoderivation; the adjacent compiler control-flow/external-call suites pass 246/246.
   - Plain `TransactionBuilder.send()` again enforces the fixed production finalized-byte ceiling even when a mock
@@ -877,7 +877,12 @@ it must not silently compile to incorrect covenant behavior.
   - The four MistSwap rows no longer read artifacts from a deleted sibling worktree. Five current-compiler artifacts
     are checked in as test fixtures and the adapter accepts environment-selected source/artifact roots for repeatable
     regeneration. The metadata row now passes; the three transaction rows expose real oversized-input/covenant
-    failures that were previously hidden behind ENOENT.
+    failures that were previously hidden behind a missing-file error.
+  - **Final candidate-head evidence:** `yarn test:e2e` at `a69557e42` passes all 334 executed files with 4
+    intentionally skipped files: 2,668 tests pass, 23 are skipped, and 3 are todo. The vendored MistSwap factory
+    and MasterChef paths pass with an explicit private-network oversized-input policy, while the production byte
+    gates remain covered by X131, X158, and X186. The subsequent repository-wide `yarn test` pass at `c7ec3fa8e`
+    confirms the exact recursive-preflight refusal across the non-e2e SDK and message-bus suites.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

@@ -490,6 +490,8 @@
         "examples/solidity-corpus/current.txt",
         "examples/solidity-corpus/progress.txt",
         "examples/solidity-corpus/err.txt",
+        // Generated release fixtures embed upstream source/debug text; spellcheck their maintained source instead.
+        "packages/solidcash/test/fixture/mistswap-artifacts/**",
         // Do not spellcheck vendor code
         "**/node_modules/**",
     ],

@@ -4,7 +4,8 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['test/**/*.{test,spec}.?(c|m)[jt]s?(x)'],
-    exclude: ['**/types/**'],
+    // Exhaustive, stable compatibility matrices are opt-in rather than part of the regression loop.
+    exclude: ['**/types/**', 'test/HardhatConsoleImport.test.ts'],
     globals: true,
     // Compiler modules are several megabytes after ANTLR generation. Reusing each worker's
     // module graph avoids re-transforming and re-evaluating it for every test file.

@@ -7332,7 +7332,20 @@ export default class AstBuilder
       .consoleParameter_list()
       .map((p) => this.visit(p) as ConsoleParameterNode);
 
-    const node = new ConsoleStatementNode(parameters);
+    const callText = ctx.getText().slice(0, ctx.getText().indexOf('('));
+    const method = callText.slice('console.'.length);
+    const hardhatTypedMethod = /^(?:logInt|logUint|logString|logBool|logAddress|logBytes(?:[1-9]|[12][0-9]|3[0-2])?)$/;
+    if (method !== 'log' && !hardhatTypedMethod.test(method)) {
+      throw new ParseError(`Unknown Hardhat console method 'console.${method}'`, Location.fromCtx(ctx));
+    }
+    if (method !== 'log' && parameters.length !== 1) {
+      throw new ParseError(
+        `Hardhat console method 'console.${method}' expects exactly one argument`,
+        Location.fromCtx(ctx),
+      );
+    }
+
+    const node = new ConsoleStatementNode(parameters, method);
     node.location = Location.fromCtx(ctx);
     return node;
   }

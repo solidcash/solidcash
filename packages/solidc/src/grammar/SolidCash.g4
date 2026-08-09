@@ -687,7 +687,7 @@ whileStatement
     ;
 
 consoleStatement
-    : 'console.log' consoleParameterList ';'
+    : 'console.log' Identifier? consoleParameterList ';'
     ;
 
 assemblyStatement

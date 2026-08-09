@@ -12455,6 +12455,39 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
+      // The delegate implementation's private probe above was built before its nested callees were placed in
+      // the parent transaction, so its external-call hidden witnesses still describe the probe-local layout.
+      // Rebuild that unlocker now that both the nested input bases and return-event outputs are absolute.
+      for (const [delegateGroupIndex, nestedIndices] of delegateExternalGroupIndices) {
+        const delegateGroup = lowLevelCallUtxoGroups[delegateGroupIndex];
+        const delegateFn = delegateGroup?.abiFunction;
+        if (!delegateGroup || !delegateFn || nestedIndices.length === 0) continue;
+        const oldParams = (delegateGroup.masterUtxo as Partial<UnlockableUtxo>).unlocker?.params ?? [];
+        let returnOrdinal = 0;
+        const rebuiltArgs: FunctionArgument[] = delegateFn.inputs.map((input, inputIndex) => {
+          if (!input.name.startsWith('__internal__')) return delegateGroup.functionArgs[inputIndex];
+          if (input.name === '__internal__externalCallInputBase') {
+            return BigInt(nestedMasterIndices[nestedIndices[0]]);
+          }
+          if (input.name.startsWith('__internal__externalReturnOutputIdx')) {
+            const returning = nestedIndices.filter((index) => allGroupEcSlots[index]?.hasReturnValues);
+            const groupIndex = returning[returnOrdinal++];
+            return BigInt(groupIndex === undefined ? -1 : (returnIndexForGroup.get(groupIndex) ?? -1));
+          }
+          if (input.name === '__internal__proxyMasterIndex') {
+            return BigInt(groupProxyMasterIndices[delegateGroupIndex] ?? 0);
+          }
+          return oldParams[inputIndex] ?? defaultInternalFunctionArg(input);
+        });
+        delegateGroup.masterUtxo = {
+          ...delegateGroup.masterUtxo,
+          unlocker: delegateGroup.externalContract.inner.unlock[delegateGroup.functionName]!(...rebuiltArgs),
+        } as UnlockableUtxo;
+        if (delegateGroup.blockInputs?.length) {
+          delegateGroup.blockInputs[0] = delegateGroup.masterUtxo as UnlockableUtxo;
+        }
+      }
+
 
     }
 

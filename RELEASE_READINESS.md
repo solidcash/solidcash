@@ -847,6 +847,10 @@ it must not silently compile to incorrect covenant behavior.
     failures include computed dispatch, runtime struct RMW metadata, byte/provider-limit expectation drift, one
     corpus behavior case, delegate overload routing, and four non-reproducible MistSwap diagnostics whose tests
     point at artifacts in a deleted sibling worktree.
+  - The next authoritative rerun at `753ed5f97` reports 10 failures across 7 files, with 2,658 passing, 23 skipped,
+    and 3 todo. Four are the deleted-worktree MistSwap artifact dependencies, four are the X121/X130 recursive
+    debug-diagnostic family, one is the corpus operation-cost boundary, and one was a stale exact source-map
+    assertion corrected immediately after the run.
   - The two X102 iteration-plus-batch failures were SDK output-base accounting, not covenant-depth failures. Batch
     planning counted preserved dynamic chunks but omitted preserved collection entries, so its predecessor-output
     witness pointed into the iteration band. Counting those authenticated entry UTXOs moves the witness from output

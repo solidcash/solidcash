@@ -5769,51 +5769,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return this._signer;
   }
 
-  /** The contract's ABI + layout artifact (ethers.js `contract.interface`). */
-  get interface(): TArtifact & {
-    encodeFunctionData: (name: string, values?: unknown[]) => string;
-  } {
-    const art = this.inner.artifact;
-    // ethers-compat: MistSwap kashipair tokenPermit uses token.interface.encodeFunctionData("permit", [...]).
-    return {
-      ...art,
-      encodeFunctionData: (name: string, values: unknown[] = []): string => {
-        const fn = art.abi.find((f) => f.name === name);
-        if (!fn?.selector) {
-          throw new Error(`No function selector for '${name}' on ${art.contractName}`);
-        }
-        const visible = (fn.inputs ?? []).filter((i) => !i.name.startsWith('__internal__'));
-        const parts: Uint8Array[] = [hexToBin(fn.selector)];
-        for (let i = 0; i < visible.length; i++) {
-          let encoded: unknown = values[i];
-          const typ = visible[i].type ?? '';
-          // ethers-v5 BigNumber / testing BN shim → bigint for uint/int encode
-          if (encoded && typeof encoded === 'object' && !(encoded instanceof Uint8Array)) {
-            const o = encoded as { _value?: unknown; toBigInt?: () => bigint; _isBigNumber?: boolean; _hex?: string };
-            if (typeof o._value === 'bigint') encoded = o._value;
-            else if (typeof o.toBigInt === 'function') {
-              try { encoded = o.toBigInt(); } catch { /* keep */ }
-            } else if (o._isBigNumber === true && typeof o._hex === 'string') {
-              try { encoded = BigInt(o._hex); } catch { /* keep */ }
-            }
-          }
-          // MistSwap short(): swap(..., minReturnedShare, "0") passes numeric strings
-          if (typeof encoded === 'string' && /^-?\d+$/.test(encoded)
-            && /^(u?int\d*|uint|int|bigint)$/.test(typ)) {
-            encoded = BigInt(encoded);
-          }
-          if (typeof encoded === 'string' && encoded.includes(':')) {
-            try { encoded = addressToLockScript(encoded); } catch { /* keep string */ }
-          }
-          parts.push(encodePushdataValue(encoded as never, typ, art.stateLayout?.structs));
-        }
-        const total = parts.reduce((n, p) => n + p.length, 0);
-        const out = new Uint8Array(total);
-        let off = 0;
-        for (const p of parts) { out.set(p, off); off += p.length; }
-        return `0x${binToHex(out)}`;
-      },
-    } as TArtifact & { encodeFunctionData: (name: string, values?: unknown[]) => string };
+  /** The exact ABI + layout artifact supplied to the contract (ethers.js `contract.interface`). */
+  get interface(): TArtifact {
+    return this.inner.artifact;
   }
 
   /** The contract's on-chain identifier - its p2sh address (ethers.js `contract.target`). */

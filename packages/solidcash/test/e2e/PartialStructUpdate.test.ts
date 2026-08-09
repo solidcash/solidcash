@@ -197,12 +197,18 @@ describe('Partial Struct Update', () => {
       // Data NFT output
       expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
 
-      // Entry NFT output - should exist with the user data
-      // Find the entry NFT: the last mutable NFT with matching category
-      const entryOutput = [...txOutputs].reverse().find(
-        (o) => o.token?.nft?.capability === 'mutable'
-          && o.token?.category === categoryId,
-      );
+      // Batch C2 inserts also recreate HEAD after the fixed target output, so identify the entry by its
+      // authenticated slot rather than assuming the last same-category mutable NFT is the target.
+      const expectedSlot = keyToSlot(alicePkh);
+      const entryOutput = txOutputs.find((o) => {
+        if (o.token?.nft?.capability !== 'mutable' || o.token.category !== categoryId
+          || !o.token.nft.commitment) return false;
+        try {
+          return decodeEntryCommitment(hexToBin(o.token.nft.commitment)).slot.every(
+            (byte, index) => byte === expectedSlot[index],
+          );
+        } catch { return false; }
+      });
       expect(entryOutput).toBeDefined();
 
       // Verify entry commitment contains correct struct data

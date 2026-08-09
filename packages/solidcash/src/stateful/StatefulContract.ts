@@ -883,12 +883,12 @@ function evalComputedKey(
    * the caller falls back to the VM probe: a mis-encoded preimage yields a wrong digest and therefore a wrong
    * C2 entry key, which corrupts state SILENTLY rather than failing.
    */
-  const abiEncodeOperandBody = (label: string): Uint8Array | undefined => {
-    const value = evalValue(label);
+  const abiEncodeOperandBody = (operandLabel: string): Uint8Array | undefined => {
+    const value = evalValue(operandLabel);
     if (value === undefined) return undefined;
     // Resolve the declared type when the operand names a parameter, so a cashaddr `address` is never mistaken
     // for a UTF-8 `string` (both arrive as JS strings).
-    const idMatch = label.match(/^id:(.+)$/);
+    const idMatch = operandLabel.match(/^id:(.+)$/);
     const declared = idMatch ? inputs.find((i) => i.name === idMatch[1])?.type ?? '' : '';
     // Integer operands reach here in several shapes: bigint, a decimal/hex STRING, or an ethers
     // BigNumber-like wrapper. The DECLARED type is the authority on numeric-ness, so normalize by it.
@@ -4720,6 +4720,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // indices (common on large multi-token MistSwap beforeEach: SushiMaker createSLP). Deploy the
       // pair child directly and soft-seed getPair / PairCreated so attach+mint can proceed.
       const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);
+      // eslint-disable-next-line max-len
       const softable = /invalid transaction UTXO index|invalid transaction output index|OP_VERIFY|Master UTXO|messageBus|state commitments|side-car|OP_SPLIT|C2 batch|could not be auto-derived/i
         .test(msg);
       if (!softable || deployFunctionName !== 'createPair') throw sendErr;
@@ -10593,7 +10594,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const amt: bigint | Uint8Array = info.valueRuntimeExpression ? 0n
           : perKeyRawbytes ? encodeValueTail((valsArr as unknown[])[i])
-          : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
+            : isRawbytesVal ? 0n : isDelete ? 0n : scalarAmt !== undefined ? scalarAmt : toBig((valsArr as unknown[])[i]);
         if (seenSlots.has(slotHex)) {
           // SCALAR `+=` / `-=` DUPLICATE: the grouping above made this adjacent to its first occurrence, which is the
           // pending (lastDeferred). Accumulate the scalar into that entry's commitment - the covenant's isDup does the
@@ -12812,11 +12813,6 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
       }
 
-      // Compute _callInputIndex values
-      const externalCallInputCount = externalCallUtxoGroups.reduce(
-        (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
-      );
-
       // Complete the nested callee unlockers now that every external group has a
       // stable absolute input position.
       const delegateInputCount = lowLevelCallUtxoGroups
@@ -13117,103 +13113,103 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         // Build the callee via its own _createBuilder so C2 batch / entry witnesses are computed for the
         // callee (ERC20.transferFrom needs balances+allowances entries), not reused from the caller's
         // entryBatchWitnesses. SafeERC20 low-level call: msg.sender inside the callee is THIS contract.
-        const callee = group.externalContract as StatefulContract;
-        const llcMsgSenderCategory = group.callMode === 'delegatecall'
-          ? new Uint8Array(32)
-          : hexToBin(this.categoryId).reverse();
-        try {
-          const calleeBuilder = await callee._createBuilder(
-            group.functionName,
-            group.functionArgs,
-            {
-              blockBase: masterInputIndex,
-              msgSenderCategory: llcMsgSenderCategory,
-              omitLocalFeeTail: true,
-            },
-          );
-          // `omitLocalFeeTail` temporarily brands the callee master with vout=0xffffffff so local atomic probes
-          // can bypass only their final outpoint binding. This nested builder never passes through
-          // StatefulFunctionCall.build(), so restore it here before its block is grafted into a broadcast tx.
-          calleeBuilder._restoreMessageBusProbeMasterOutpoint();
-          // StatefulTransactionBuilder keeps master/data/entry privately; read them for composition.
-          const priv = calleeBuilder as unknown as {
-            masterUtxo: UnlockableUtxo;
-            dataNftUtxos: UnlockableUtxo[];
-            entryNfts: EntryNftInfo[];
-            funderUtxos: UnlockableUtxo[];
-            blockLayout?: FunctionBlockLayout;
-          };
-          group.masterUtxo = priv.masterUtxo;
-          // Full callee band matching the callee's published block layout: scalar data NFTs, mapping
-          // entry co-spends (or funder placeholders for collapsed/shared C2 proofs), and funders for
-          // output-only event/returnEvent slots. Fee-only leftover funders are NOT included.
-          const scalarData = priv.dataNftUtxos;
-          const bFunc = callee.inner.artifact.abi.find((f) => f.name === group.functionName);
-          group.blockLayout = priv.blockLayout ?? bFunc?.blockLayout;
-          group.requiredDataNftIndices = scalarData.map((_, i) => i);
-          const funderPool = [...(priv.funderUtxos ?? [])];
-          let syntheticFunderSeq = 0;
-          const takeFunder = async (): Promise<UnlockableUtxo> => {
-            const f = funderPool.shift();
-            if (f) return f;
-            // Callee builder may omit returnEvent funders when not emitting a return, and may have no
-            // signer of its own. Mint synthetic placeholders so the physical band stays layout-shaped.
-            const syntheticOutpoint = 0xe0 + masterInputIndex * 0x100 + (syntheticFunderSeq++);
-            const dummy: Utxo = {
-              txid: '00'.repeat(28) + syntheticOutpoint.toString(16).padStart(8, '0'),
-              vout: 0,
-              satoshis: 3000n,
-            };
-            if ((this.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<void> }).addUtxo) {
-              await (this.inner.provider as unknown as { addUtxo: (a: string, u: Utxo) => Promise<void> })
-                .addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
-            }
-            return {
-              ...dummy,
-              unlocker: {
-                generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
-                generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+          const callee = group.externalContract as StatefulContract;
+          const llcMsgSenderCategory = group.callMode === 'delegatecall'
+            ? new Uint8Array(32)
+            : hexToBin(this.categoryId).reverse();
+          try {
+            const calleeBuilder = await callee._createBuilder(
+              group.functionName,
+              group.functionArgs,
+              {
+                blockBase: masterInputIndex,
+                msgSenderCategory: llcMsgSenderCategory,
+                omitLocalFeeTail: true,
               },
+            );
+            // `omitLocalFeeTail` temporarily brands the callee master with vout=0xffffffff so local atomic probes
+            // can bypass only their final outpoint binding. This nested builder never passes through
+            // StatefulFunctionCall.build(), so restore it here before its block is grafted into a broadcast tx.
+            calleeBuilder._restoreMessageBusProbeMasterOutpoint();
+            // StatefulTransactionBuilder keeps master/data/entry privately; read them for composition.
+            const priv = calleeBuilder as unknown as {
+              masterUtxo: UnlockableUtxo;
+              dataNftUtxos: UnlockableUtxo[];
+              entryNfts: EntryNftInfo[];
+              funderUtxos: UnlockableUtxo[];
+              blockLayout?: FunctionBlockLayout;
             };
-          };
-          if (group.blockLayout?.slots?.length) {
-            const blockInputs: UnlockableUtxo[] = [];
-            let dataIdx = 0;
-            for (const slot of group.blockLayout.slots) {
-              if (slot.kind === 'master') {
-                blockInputs.push(priv.masterUtxo);
-              } else if (slot.kind === 'dataNft') {
-                if (dataIdx >= scalarData.length) {
-                  throw new Error(`Low-level call '${group.functionName}' missing data NFT at layout offset ${slot.offset}`);
-                }
-                blockInputs.push(scalarData[dataIdx++]);
-              } else if (slot.kind === 'entry') {
-                const entry = (priv.entryNfts ?? []).find((e) => e.slotIndex === (slot.slotIndex ?? 0));
-                if (entry?.utxo) blockInputs.push(entry.utxo as UnlockableUtxo);
-                else blockInputs.push(await takeFunder());
-              } else if (slot.kind === 'event' || slot.kind === 'returnEvent'
-                || slot.kind === 'transfer' || slot.kind === 'tcTransfer' || slot.kind === 'deploy') {
-                blockInputs.push(await takeFunder());
+            group.masterUtxo = priv.masterUtxo;
+            // Full callee band matching the callee's published block layout: scalar data NFTs, mapping
+            // entry co-spends (or funder placeholders for collapsed/shared C2 proofs), and funders for
+            // output-only event/returnEvent slots. Fee-only leftover funders are NOT included.
+            const scalarData = priv.dataNftUtxos;
+            const bFunc = callee.inner.artifact.abi.find((f) => f.name === group.functionName);
+            group.blockLayout = priv.blockLayout ?? bFunc?.blockLayout;
+            group.requiredDataNftIndices = scalarData.map((_, i) => i);
+            const funderPool = [...(priv.funderUtxos ?? [])];
+            let syntheticFunderSeq = 0;
+            const takeFunder = async (): Promise<UnlockableUtxo> => {
+              const f = funderPool.shift();
+              if (f) return f;
+              // Callee builder may omit returnEvent funders when not emitting a return, and may have no
+              // signer of its own. Mint synthetic placeholders so the physical band stays layout-shaped.
+              const syntheticOutpoint = 0xe0 + masterInputIndex * 0x100 + (syntheticFunderSeq++);
+              const dummy: Utxo = {
+                txid: '00'.repeat(28) + syntheticOutpoint.toString(16).padStart(8, '0'),
+                vout: 0,
+                satoshis: 3000n,
+              };
+              if ((this.inner.provider as { addUtxo?: (a: string, u: Utxo) => Promise<void> }).addUtxo) {
+                await (this.inner.provider as unknown as { addUtxo: (a: string, u: Utxo) => Promise<void> })
+                  .addUtxo(binToHex(DUMMY_FUNDER_LOCKING_BYTECODE), dummy);
               }
+              return {
+                ...dummy,
+                unlocker: {
+                  generateLockingBytecode: () => DUMMY_FUNDER_LOCKING_BYTECODE,
+                  generateUnlockingBytecode: () => DUMMY_FUNDER_UNLOCKING_BYTECODE,
+                },
+              };
+            };
+            if (group.blockLayout?.slots?.length) {
+              const blockInputs: UnlockableUtxo[] = [];
+              let dataIdx = 0;
+              for (const slot of group.blockLayout.slots) {
+                if (slot.kind === 'master') {
+                  blockInputs.push(priv.masterUtxo);
+                } else if (slot.kind === 'dataNft') {
+                  if (dataIdx >= scalarData.length) {
+                    throw new Error(`Low-level call '${group.functionName}' missing data NFT at layout offset ${slot.offset}`);
+                  }
+                  blockInputs.push(scalarData[dataIdx++]);
+                } else if (slot.kind === 'entry') {
+                  const entry = (priv.entryNfts ?? []).find((e) => e.slotIndex === (slot.slotIndex ?? 0));
+                  if (entry?.utxo) blockInputs.push(entry.utxo as UnlockableUtxo);
+                  else blockInputs.push(await takeFunder());
+                } else if (slot.kind === 'event' || slot.kind === 'returnEvent'
+                || slot.kind === 'transfer' || slot.kind === 'tcTransfer' || slot.kind === 'deploy') {
+                  blockInputs.push(await takeFunder());
+                }
               // lowLevelCall / trailing / other nested kinds are not expected inside a transferFrom block
+              }
+              group.blockInputs = blockInputs;
+              // dataNftUtxos for LLC flatten: everything after master (placement packs master + dataNftUtxos).
+              group.dataNftUtxos = blockInputs.slice(1);
+            } else {
+              const entryInputs = (priv.entryNfts ?? [])
+                .filter((e) => e.utxo)
+                .map((e) => e.utxo as UnlockableUtxo);
+              group.dataNftUtxos = [...scalarData, ...entryInputs];
+              group.blockInputs = [priv.masterUtxo, ...group.dataNftUtxos];
             }
-            group.blockInputs = blockInputs;
-            // dataNftUtxos for LLC flatten: everything after master (placement packs master + dataNftUtxos).
-            group.dataNftUtxos = blockInputs.slice(1);
-          } else {
-            const entryInputs = (priv.entryNfts ?? [])
-              .filter((e) => e.utxo)
-              .map((e) => e.utxo as UnlockableUtxo);
-            group.dataNftUtxos = [...scalarData, ...entryInputs];
-            group.blockInputs = [priv.masterUtxo, ...group.dataNftUtxos];
-          }
-        } catch (cause) {
-          throw new Error(
-            `Failed to build low-level call unlocker for ${group.functionName}: `
+          } catch (cause) {
+            throw new Error(
+              `Failed to build low-level call unlocker for ${group.functionName}: `
             + (cause instanceof Error ? cause.message : String(cause)),
-            { cause },
-          );
-        }
+              { cause },
+            );
+          }
         }
 
         if (proxyExternalGroup === undefined) {
@@ -16398,8 +16394,8 @@ export class StatefulFunctionCall {
 
   constructor(
     builderPromiseOrFactory:
-      | Promise<StatefulTransactionBuilder>
-      | (() => Promise<StatefulTransactionBuilder>),
+    | Promise<StatefulTransactionBuilder>
+    | (() => Promise<StatefulTransactionBuilder>),
     parentContract?: StatefulContract,
     functionName?: string,
     functionArgs?: any[],
@@ -17363,7 +17359,6 @@ export class StatefulFunctionCall {
             && this.parentContract
             && /SushiMaker|Maker/i.test(this.parentContract.inner.artifact.contractName)
           ) {
-            const sc = this.parentContract;
             const newTxid = `f0${'00'.repeat(30)}${(Date.now() & 0xff).toString(16).padStart(2, '0')}`;
             const receipt = {
               inputs: [], outputs: [], version: 2, locktime: 0, txid: newTxid, hex: '',
@@ -17702,7 +17697,6 @@ export class StatefulFunctionCall {
       if (fn === 'init' && args.length >= 1) {
         const dummyAddr = String(args[0] ?? '');
         let bal = 0n;
-        const tryKeys = [dummyAddr, sc.address, sc.target].filter(Boolean).map(String);
         // Prefer dummy token soft balance for the caller (alice).
         for (const [k, v] of softErc20Balances) {
           const holderPart = k.slice(k.indexOf('|') + 1);
@@ -18294,6 +18288,7 @@ export class StatefulFunctionCall {
   /** Mock-only success receipt when covenant preflight still OP_VERIFYs a non-critical setup call. */
   private _softApplyNoopReceipt(err: unknown): TransactionDetails | undefined {
     const msg = err instanceof Error ? err.message : String(err);
+    // eslint-disable-next-line max-len
     if (!/OP_VERIFY|invalid transaction output index|invalid transaction UTXO index|OP_SPLIT|keccak256 preimage|side-car|Incorrect number of arguments|C2 batch|missing a target slot|Expected \d+ data NFT|Duplicate stateful input|could not be auto-derived|state commitments|Satoshi container UTXO not found|Master UTXO not found|encodePushdataValue|C2 upsert|cannot debit key|Invalid swapper|can't call|expected bigint|got object|Found type 'object'|where type 'uint|Value for type address|nullop:msg\.sender|External message-bus|excessive token commitment|commitment length|maximumNftCommitment|token validation|Transitive external call|connect-time externals|does not advertise a message-bus|message-bus route|messageBus|Invalid input txid|64-character hex string|Use \.setState\(\)|is not a function|unlock\[/i.test(msg)) {
       return undefined;
     }
@@ -18692,23 +18687,6 @@ export class StatefulFunctionCall {
       if (names.includes('balanceOf')) return 'balanceOf';
       if (names.includes('balances')) return 'balances';
       return 'balanceOf';
-    };
-    const softErc20Credit = (tokenSc: StatefulContract, holder: unknown, delta: bigint): void => {
-      const tkey = tokenSc._softContractKey();
-      const h = String(holder ?? '');
-      const mapName = softBalanceMapName(tokenSc);
-      const prev = StatefulContract._toSoftBigint(
-        tokenSc._getSoftMapping(mapName, [holder])
-        ?? softErc20Balances.get(`${tkey}|${h}`)
-        ?? 0n,
-      );
-      const next = prev + delta < 0n ? 0n : prev + delta;
-      tokenSc._setSoftMapping(mapName, [holder], next);
-      // Also mirror under balanceOf for callers that soft-read that name.
-      if (mapName !== 'balanceOf') tokenSc._setSoftMapping('balanceOf', [holder], next);
-      softErc20Balances.set(`${tkey}|${h}`, next);
-      softErc20Balances.set(softBentoKey(tokenSc.address, holder), next);
-      softErc20Balances.set(softBentoKey(tokenSc.target, holder), next);
     };
     const softErc20FuzzyDebit = (holder: unknown, amount: bigint): boolean => {
       const h = String(holder ?? '');
@@ -19160,7 +19138,7 @@ export class StatefulFunctionCall {
 
     // Timelock soft queue/cancel/execute (state overflows 128-byte NFT commitment on mock).
     if (/Timelock/i.test(sc.inner.artifact.contractName)) {
-      const txHashKey = (args: unknown[]): string => args.map((a) => {
+      const txHashKey = (values: unknown[]): string => values.map((a) => {
         if (a instanceof Uint8Array) return binToHex(a);
         return String(a ?? '');
       }).join('|');
@@ -20968,14 +20946,14 @@ export class StatefulFunctionCall {
             || holder === sc.target
             || (holder.length > 8 && String(bentoAddr).includes(holder.slice(-12)))
           );
-          for (const [k, v] of [...softErc20Balances.entries()]) {
+          for (const [k, balance] of [...softErc20Balances.entries()]) {
             const pref = k.split('|')[0] ?? '';
             const holder = k.slice(k.indexOf('|') + 1);
             if (!matchesToken(pref) || !matchesBento(holder)) continue;
-            softErc20Balances.set(k, v > amount ? v - amount : 0n);
+            softErc20Balances.set(k, balance > amount ? balance - amount : 0n);
           }
           let credited = false;
-          for (const [k, v] of [...softErc20Balances.entries()]) {
+          for (const [k] of [...softErc20Balances.entries()]) {
             const pref = k.split('|')[0] ?? '';
             if (!matchesToken(pref)) continue;
             const toKey = `${pref}|${String(to)}`;

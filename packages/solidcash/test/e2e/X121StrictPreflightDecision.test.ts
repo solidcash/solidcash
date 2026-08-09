@@ -160,10 +160,10 @@ type Recursor = Record<string, (...a: bigint[]) => {
 async function sendCapturingPreflightInput(
   sc: StatefulContract, argument: bigint,
 ): Promise<{
-  builder: TransactionBuilder | undefined;
-  error: string | undefined;
-  preflight: ((builder: TransactionBuilder) => void) | undefined;
-}> {
+    builder: TransactionBuilder | undefined;
+    error: string | undefined;
+    preflight: ((builder: TransactionBuilder) => void) | undefined;
+  }> {
   const proto = StatefulTransactionBuilder.prototype as unknown as Record<string, unknown>;
   const original = proto._strictRecursiveVmPreflight as (b: TransactionBuilder) => void;
   let builder: TransactionBuilder | undefined;

@@ -42,10 +42,10 @@ describe('BentoBox-shaped constructor', () => {
       });
     }
     const artifact = compileString(SRC, { forceStateful: true });
-    const ctor = artifact.abi.find(f => f.name==='__construct');
+    const ctor = artifact.abi.find(f => f.name === '__construct');
     console.log('layout', JSON.stringify(ctor?.blockLayout));
     console.log('keccak', ctor?.keccakCompute, ctor?.externalLibraryCalls);
-    console.log('bc', (artifact.bytecode?.length??0)/2);
+    console.log('bc', (artifact.bytecode?.length ?? 0) / 2);
     const factory = new ContractFactory(artifact, signer);
     const c = await factory.deploy(signer.getAddress());
     await c.deployed();

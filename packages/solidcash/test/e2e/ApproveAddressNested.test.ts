@@ -9,7 +9,9 @@ const limits = {
   maximumNftCommitmentBytes: 128,
 };
 
-async function run(label: string, src: string, deployArgs: any[] = [], call: (lp: any, bob: any) => Promise<void>) {
+async function run(
+  label: string, src: string, deployArgs: any[], call: (lp: any, bob: any) => Promise<void>,
+): Promise<void> {
   const provider = createTestProvider();
   (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };
   const art = compileString(src, { forceStateful: true });

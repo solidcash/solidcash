@@ -28,12 +28,13 @@ import {
   ArrayAccessNode, ArrayAssignNode, ArrayDeleteNode, ArrayPushNode, ArrayPopNode, CollectionIterationNode,
   StateArrayPushNode, StateArrayPopNode, StateArrayAssignNode,
   FunctionCallStatementNode,
-  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode, MappingFieldAssignNode,
+  LowLevelCallNode, LowLevelCallStatementNode, MappingAccessNode, MappingAssignNode, MappingDeleteNode,
+  MappingFieldAssignNode,
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
   TokenContainerMethodStatementNode,
-  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode, StateVariableVisibility,
+  AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
 import { GlobalFunction } from './ast/Globals.js';
@@ -1247,8 +1248,8 @@ function synthesizeMessageBusRoute(
     node instanceof MethodCallNode
       && node.object instanceof IdentifierNode
       && ['abi', 'bytes', 'string'].includes(node.object.name);
-  let contractConsumesLowLevelReturn = false;
-  for (const candidate of contract.functions) {
+  const contractConsumesLowLevelReturn = contract.functions.some((candidate) => {
+    let consumesLowLevelReturn = false;
     walkInvocationAst(candidate.body, (node) => {
       if (node instanceof LowLevelCallNode
         || (node instanceof ExternalFunctionCallNode && node.opaqueReturn)
@@ -1256,10 +1257,11 @@ function synthesizeMessageBusRoute(
           && ['call', 'staticcall', 'delegatecall'].includes(node.methodName))
         || (node instanceof FunctionCallNode
           && /\.(?:call|staticcall|delegatecall)$/.test(node.identifier.name))) {
-        contractConsumesLowLevelReturn = true;
+        consumesLowLevelReturn = true;
       }
     });
-  }
+    return consumesLowLevelReturn;
+  });
   for (const fn of functions) {
     const footprint = analyseFunctionFootprint(fn, byName);
     let routeSensitive = false;

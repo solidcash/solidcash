@@ -115,7 +115,11 @@ describe('create2 salt isolation (param vs computed vs +C2)', () => {
   let fundSeq = 0;
   async function mintFund(sats = 200_000n): Promise<Utxo> {
     fundSeq += 1;
-    const u: Utxo = { txid: binToHex(Uint8Array.from({ length: 32 }, (_, i) => (fundSeq + i) & 0xff)), vout: 0, satoshis: sats };
+    const u: Utxo = {
+      txid: binToHex(Uint8Array.from({ length: 32 }, (_, i) => (fundSeq + i) & 0xff)),
+      vout: 0,
+      satoshis: sats,
+    };
     await provider.addUtxo(p2pkh.address, u);
     return u;
   }

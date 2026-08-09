@@ -400,6 +400,7 @@ class Assertion {
     }
     return this;
   }
+
   gt(n: Numeric | object): this { return this.cmp('gt', n); }
   greaterThan(n: Numeric | object): this { return this.gt(n); }
   above(n: Numeric | object): this { return this.gt(n); }

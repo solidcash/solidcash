@@ -1,5 +1,5 @@
 import { Artifact, asmToBytecode } from '@solidcash/utils';
-import { binToHex, hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
+import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import { Contract } from '../Contract.js';
@@ -9,7 +9,7 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript, getNetworkPrefix, randomUtxo } from '../utils.js';
+import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
 import { registerDeployment } from './deployment-registry.js';
 

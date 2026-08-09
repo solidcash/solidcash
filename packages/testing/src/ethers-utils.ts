@@ -43,7 +43,6 @@ export const ADDRESS_ZERO = ZeroAddress;
 export const HashZero = ZeroHash;
 
 export { BigNumber, getBigNumber } from './ethers-bignumber.js';
-import { BigNumber } from './ethers-bignumber.js';
 
 /** ethers v5 `ethers.utils` namespace subset (forwards to v6 functions). */
 export const utils = {

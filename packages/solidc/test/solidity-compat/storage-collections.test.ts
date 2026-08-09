@@ -1140,7 +1140,6 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     + ' for (int i = 0; i < ks.length; i++) { m[ks[i]] = true; } } }';
   const abiOf = (loop: string): ReturnType<typeof compileString>['abi'][number] | undefined =>
     compileString(mkBigint(loop), { forceStateful: true }).abi.find((f) => f.name === 'f');
-  const silOf = (loop: string): string[] | undefined => abiOf(loop)?.sortedInsertLoops;
   it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { forceStateful: true })).not.toThrow();

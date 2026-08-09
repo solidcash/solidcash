@@ -70,8 +70,8 @@ contract X101Only() {
   }
 }`;
 
-// Output map for the collection shapes: master, state data NFT, C2 predecessor, then the chunk region.
-const OUT = { master: 0, dataNft: 1, predecessor: 2, chunk: 3 } as const;
+// Output map for collection shapes: master, state data NFT, then C2 mint outputs and the chunk region.
+const OUT = { master: 0, dataNft: 1, mintNew: 2, mintBatch: 3, mintChunk: 4, chunk: 3 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {
   const provider = createTestProvider();
@@ -112,17 +112,18 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
 }
 
 describe('X101 trailing chunk region with several dynamic vars', () => {
-  it('settles two single-chunk writes beside the entry mint, both chunks before the NEW node', async () => {
+  it('settles two single-chunk writes beside the entry mint', async () => {
     // Positive control on the VM: two dynamic vars share the trailing region, each gets its own chunk output at
-    // its own chunk address, and the minted NEW node follows both.
+    // its own chunk address after the fixed-batch NEW and batch nodes.
     const { outcome, broadcasts } = await attempt(MINT, 120, 120);
     expect(outcome).toBe('ACCEPTED');
     const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
-    expect(commitments[OUT.chunk].startsWith('004c78')).toBe(true); // tagA chunk 0: idx 0, 120 data bytes
-    expect(commitments[OUT.chunk + 1].startsWith('004c78')).toBe(true); // tagB chunk 0
-    expect(commitments[OUT.chunk].length).toBe(246);
-    expect(commitments[OUT.chunk + 1].length).toBe(246);
-    expect(commitments[OUT.chunk + 2].length).toBe(130); // NEW node: slot32 || next32 || value
+    expect(commitments[OUT.mintNew].length).toBe(130); // NEW node: slot32 || next32 || value
+    expect(commitments[OUT.mintBatch].length).toBe(128); // fixed-width batch node
+    expect(commitments[OUT.mintChunk].startsWith('004c78')).toBe(true); // tagA chunk 0: idx 0, 120 data bytes
+    expect(commitments[OUT.mintChunk + 1].startsWith('004c78')).toBe(true); // tagB chunk 0
+    expect(commitments[OUT.mintChunk].length).toBe(246);
+    expect(commitments[OUT.mintChunk + 1].length).toBe(246);
   }, 180_000);
 
   it('settles every two-var multi-chunk split beside an entry mint', async () => {
@@ -134,9 +135,10 @@ describe('X101 trailing chunk region with several dynamic vars', () => {
       expect(broadcasts).toHaveLength(1);
       const commitments = commitmentsOf(broadcasts[0]);
       const expectedChunks = Math.ceil(lenA / 120) + Math.ceil(lenB / 120);
-      expect(commitments.slice(OUT.chunk, OUT.chunk + expectedChunks))
+      expect(commitments[OUT.mintNew].length).toBe(130); // fixed-batch NEW node precedes its batch node
+      expect(commitments[OUT.mintBatch].length).toBe(128);
+      expect(commitments.slice(OUT.mintChunk, OUT.mintChunk + expectedChunks))
         .toHaveLength(expectedChunks);
-      expect(commitments[OUT.chunk + expectedChunks].length).toBe(130); // trailing NEW node
     }
   }, 180_000);
 

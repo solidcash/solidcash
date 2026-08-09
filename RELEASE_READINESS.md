@@ -841,6 +841,10 @@ it must not silently compile to incorrect covenant behavior.
     parameter, and a successful derivation probe retains the concrete continuation run it already authenticated.
     The large fixed-width array and struct regressions now pass, the compiler metadata guard passes 6/6, and the
     wider 19-file mapping/value-chunk matrix passes 43/43.
+  - The subsequent complete chain-free rerun reports 31 failures across 19 of 338 files, with 2,637 passing,
+    23 skipped, and 3 todo tests. The remaining failures include multi-variable/iteration trailing-region layout,
+    computed dispatch, byte-gate expectation drift, one corpus behavior case, and four non-reproducible MistSwap
+    diagnostics whose tests point at artifacts in a deleted sibling worktree.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     standalone single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert,

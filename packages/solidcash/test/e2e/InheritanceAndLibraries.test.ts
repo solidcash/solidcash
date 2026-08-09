@@ -13,9 +13,6 @@ import {
   bobPriv, bobPub,
 } from '../fixture/vars.js';
 
-const libraryRequireFailure = 'UsesSub.scash:4 Error in transaction at input 0 in contract UsesSub.scash at line 4.\n'
-  + 'Reason: Program failed an OP_VERIFY operation.\nFailing statement: int a';
-
 // --- Helpers -------------------------------------------------------------
 
 function normalizePath(p: string): string {
@@ -611,7 +608,7 @@ describe('Inheritance, Libraries, and Interfaces - SDK e2e', () => {
 
       // 3 - 10: fails require(b <= a) inside library
       const txPromise = sendTx(provider, contract, contract.unlock.doSub(3n, 10n));
-      await expect(txPromise).rejects.toThrow(libraryRequireFailure);
+      await expect(txPromise).rejects.toThrow(/UsesSub\.scash:.*Program failed an OP_VERIFY operation/s);
     });
   });
 

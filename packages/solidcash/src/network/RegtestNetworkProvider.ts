@@ -635,6 +635,7 @@ export default class RegtestNetworkProvider implements NetworkProvider {
       txid: u.txid,
       vout: u.vout,
       satoshis: BigInt(u.amount.toFixed(8).replace('.', '')),
+      confirmations: u.confirmations,
       token: u.tokenData ? {
         amount: BigInt(u.tokenData.amount),
         category: u.tokenData.category,

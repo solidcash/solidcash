@@ -40,6 +40,25 @@ describe('StatefulContract events facade (ethers queryFilter / filters / getEven
     expect(logs[0].txid).toBeDefined();
   });
 
+  it('queryFilter returns events oldest-first when the provider returns newest-first', async () => {
+    const { sc } = await deploy();
+    await sc.fire(1n, 2n, 100n).send();
+    await sc.fire(1n, 2n, 200n).send();
+
+    const provider = sc.provider;
+    const getUtxos = provider.getUtxos.bind(provider);
+    provider.getUtxos = async (address) => {
+      const chronological = await getUtxos(address);
+      return chronological.map((utxo, index) => ({
+        ...utxo,
+        confirmations: chronological.length - index,
+      })).reverse();
+    };
+
+    const logs = await sc.queryFilter('Transfer');
+    expect(logs.map((log) => log.args.amount)).toEqual([100n, 200n]);
+  });
+
   it('(await tx.wait()).events[i].args extracts this-tx events (ethers v5 receipt)', async () => {
     const { sc } = await deploy();
     const receipt = await (await sc.fire(1n, 2n, 100n).send()).wait!();

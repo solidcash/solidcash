@@ -30,6 +30,7 @@ export default class BitcoinRpcNetworkProvider implements NetworkProvider {
       vout: utxo.vout,
       // Parse from string to avoid floating-point precision loss with * 1e8
       satoshis: BigInt(utxo.amount.toFixed(8).replace('.', '')),
+      confirmations: utxo.confirmations,
     }));
 
     return utxos;

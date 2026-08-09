@@ -596,21 +596,19 @@ it must not silently compile to incorrect covenant behavior.
   - Failing batches on the dirty chain were 11, 13, 14, 16, 18, 19 and later 20-46. That run is superseded by the
     pristine-chain run below and should not be used to justify any test change, because its dust, fee and timeout
     failures are artifacts of a 29,424-UTXO wallet.
-- [ ] Investigate two further live-only failures, each reproduced alone on a freshly wiped chain.
-  - `Erc20LikeApplication.test.ts`, "decodes Transfer event arguments for mint and transfer": the decoded event
-    list omits the mint, whose `from` is the zero address, and leads with the transfer instead. Compare against
-    the known "identical data NFTs unorderable on a non-deterministic provider" issue.
-  - `MsgSenderCrossContractC2.test.ts`, "rejects an LBC-swapped caller": `expect(masterA).toBeDefined()` fails at
-    line 109, so a `getUtxos()` lookup for the caller's master NFT returns nothing straight after setup.
-  - Both were provisionally grouped with the shared-signer order dependence below. That grouping was WRONG: each
-    still fails alone on a pristine chain, so neither is a contamination artifact. Only `DeployThenCallFold`
-    belongs in that group, and it passes 13/13 alone on a pristine chain.
-  - CORRECTION after the full run at `cf6de29c`: `Erc20LikeApplication` PASSED there, so it is state-dependent
-    rather than deterministic and the "genuine live-only finding" label above was over-confident on the strength
-    of a single pristine-and-alone failure. `MsgSenderCrossContractC2` failed again and still stands.
-    Reproduce both across several chain states before treating either as settled.
-  - Neither reproduces on mocknet at any consensus limits, so both join the CREATE-anchor item as findings that
-    require a live node to observe.
+- [x] Investigate the two further live-only failures from the full BCHN matrix.
+  - `MsgSenderCrossContractC2.test.ts` passes 2/2 both immediately after a disposable-chain reset and again after
+    adding chain history, so the missing-master observation is not reproducible at the candidate revision.
+  - `Erc20LikeApplication.test.ts` exposed a real provider-ordering defect after chain history accumulated: BCHN
+    `listunspent` returned the newer transfer event before the older mint event. Event readers previously preserved
+    arbitrary provider UTXO order, despite `queryFilter` presenting an ethers-style event-history API.
+  - The SDK now carries optional block-height/confirmation metadata from Electrum, FullStack, Bitcoin RPC, and
+    regtest providers and stably sorts event records oldest-first when that metadata is available. Same-transaction
+    outputs are ordered by vout; providers without position metadata retain their existing stable order.
+  - A focused regression deliberately reverses the provider result and proves `queryFilter` still returns mint
+    before transfer. On the already dirtied BCHN v29 chain, all three `Erc20LikeApplication` cases then pass,
+    including the exact event assertion that failed before the fix; the maintained two-file application smoke
+    subsequently passes 9/9 on that same chain.
 - [x] Logical CREATE identity anchor: NOT a product defect. Two separate causes, both outside the compiler.
   - `RegtestNetworkProvider.getUtxos` gated its `listunspent` on the CashAddress token-support flag, so a
     non-token address returned no token UTXOs. `deriveLogicalCreateAddress` encodes a plain script address, and
@@ -1118,6 +1116,6 @@ Update this table whenever a release candidate is cut.
 | Generated-project smoke | **PASS** — clean project initialization/compile/test 1/1; cache lifecycle 1/1; stateless/stateful harness 21/21 | `yarn test:generated-project-smoke` | 2026-08-05 |
 | Solidity corpus | **PASS (retained baseline gate) / strictness deferred** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. `yarn test:corpus-baseline` pins the corpus revision, counts, unresolved-result floor, and reviewed failure buckets in CI. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-09 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
-| Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
+| Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows, including a repeat on an accumulated-history chain after chronological event ordering was fixed | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-09 |
 | Integrity conformance suite | **PASS** — deterministic fifteen-scenario gate passes 81/81 executed tests with one documented skip, covering every stable physical state backend plus external/delegate composition and lifecycle elements through real covenant execution | `yarn test:security-conformance` | 2026-08-09 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

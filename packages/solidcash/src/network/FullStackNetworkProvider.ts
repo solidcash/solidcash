@@ -25,6 +25,7 @@ export default class FullStackNetworkProvider implements NetworkProvider {
       txid: utxo.tx_hash,
       vout: utxo.tx_pos,
       satoshis: BigInt(utxo.value),
+      blockHeight: utxo.height,
     }));
 
     return utxos;

@@ -103,7 +103,7 @@ import {
 } from './StatefulTransactionBuilder.js';
 import {
   OnChainState, StateReader, type ParsedEvent, type EventFilter,
-  readEventsFiltered, readAnonymousEventsFromChain, valuesEqual, parseEventCommitment,
+  readEventsFiltered, readAnonymousEventsFromChain, valuesEqual, parseEventCommitment, compareChainPosition,
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
@@ -1295,6 +1295,8 @@ export interface EventLog {
   args: Record<string, StateValueType>;
   txid: string;
   vout: number;
+  blockHeight?: number;
+  confirmations?: number;
 }
 
 /** The bound filter produced by `contract.filters.EventName(...indexedArgs)` (ethers `DeferredTopicFilter`). */
@@ -6283,6 +6285,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       args: p.values as Record<string, StateValueType>,
       txid: p.txid,
       vout: p.vout,
+      blockHeight: p.blockHeight,
+      confirmations: p.confirmations,
     };
   }
 
@@ -6299,7 +6303,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         (this.inner.artifact.events ?? []).map(async (e) => (await this.queryEvents(e.signature))
           .map((p) => this._eventLog(p, e))),
       );
-      return perEvent.flat();
+      return perEvent.flat().sort(compareChainPosition);
     }
     let eventDef: EventDefinitionAbi;
     let filter: EventFilter | undefined;

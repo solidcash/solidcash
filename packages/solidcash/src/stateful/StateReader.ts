@@ -274,9 +274,28 @@ export interface ParsedEvent {
   values: Record<string, StateValue>;
   eventName?: string;
   eventSignature?: string;
+  blockHeight?: number;
+  confirmations?: number;
 }
 
 export type EventFilter = Record<string, StateValue>;
+
+/** Sort chain records oldest-first when a provider supplies chain-position metadata. */
+export function compareChainPosition(
+  a: Pick<Utxo, 'txid' | 'vout' | 'blockHeight' | 'confirmations'>,
+  b: Pick<Utxo, 'txid' | 'vout' | 'blockHeight' | 'confirmations'>,
+): number {
+  if (a.blockHeight !== undefined && b.blockHeight !== undefined
+    && a.blockHeight !== b.blockHeight) {
+    if (a.blockHeight === 0) return 1;
+    if (b.blockHeight === 0) return -1;
+    return a.blockHeight - b.blockHeight;
+  }
+  if (a.confirmations !== undefined && b.confirmations !== undefined
+    && a.confirmations !== b.confirmations) return b.confirmations - a.confirmations;
+  if (a.txid === b.txid) return a.vout - b.vout;
+  return 0;
+}
 
 /**
  * Parse event commitment data from a hex-encoded NFT commitment.
@@ -330,9 +349,12 @@ export async function readEventsFromChain(
       && utxo.token.nft
       && utxo.token.nft.commitment.length > 0
     ))
+    .sort(compareChainPosition)
     .map((utxo) => ({
       txid: utxo.txid,
       vout: utxo.vout,
+      blockHeight: utxo.blockHeight,
+      confirmations: utxo.confirmations,
       values: attachEventArgsAccessors(parseEventCommitment(utxo.token!.nft!.commitment, eventDef, structs)),
     }));
 }
@@ -417,7 +439,7 @@ export async function readAnonymousEventsFromChain(
     && utxo.token.category === categoryId
     && utxo.token.nft
     && utxo.token.nft.commitment.length > 0
-  ));
+  )).sort(compareChainPosition);
 
   for (const utxo of filtered) {
     for (const eventDef of anonymousEventDefs) {
@@ -427,6 +449,8 @@ export async function readAnonymousEventsFromChain(
         results.push({
           txid: utxo.txid,
           vout: utxo.vout,
+          blockHeight: utxo.blockHeight,
+          confirmations: utxo.confirmations,
           values,
           eventName: eventDef.name,
           eventSignature: eventDef.signature,

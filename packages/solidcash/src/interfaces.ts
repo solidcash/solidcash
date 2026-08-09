@@ -10,6 +10,10 @@ export interface Utxo {
   vout: number;
   satoshis: bigint;
   token?: TokenDetails;
+  /** Provider-supplied confirmation height, when available (0 means unconfirmed). */
+  blockHeight?: number;
+  /** Provider-supplied confirmation count, when available. */
+  confirmations?: number;
 }
 
 export interface UnlockableUtxo extends Utxo {

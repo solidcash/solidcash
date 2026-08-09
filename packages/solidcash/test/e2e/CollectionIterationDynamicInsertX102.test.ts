@@ -29,7 +29,7 @@ contract X102() {
   }
 }`;
 
-const c2Entries = (address: string, entries: Array<[Uint8Array, bigint]>): any[] => {
+const vmapEntries = (address: string, entries: Array<[Uint8Array, bigint]>): any[] => {
   const zero = slotValueToBytes(0n);
   const sorted = entries.map(([key, value]) => ({ slot: keyToSlot(key), value }))
     .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1);
@@ -60,14 +60,14 @@ const deploy = async (): Promise<{ provider: ReturnType<typeof createTestProvide
         token: { nft: { capability: 'minting', commitment: '' } } },
       { address: getDataNftAddress(salted, category), satoshis: 10_000n,
         token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-      ...c2Entries(getEntryNftAddress(salted, category, 'observed'), [[alicePkh, 2n]]),
-      ...c2Entries(getEntryNftAddress(salted, category, 'balances'), []),
+      ...vmapEntries(getEntryNftAddress(salted, category, 'observed'), [[alicePkh, 2n]]),
+      ...vmapEntries(getEntryNftAddress(salted, category, 'balances'), []),
     ];
   });
   return { provider, contract: StatefulContract.withCategory(inner, categoryId) };
 };
 
-describe('X102 collection-iteration depth at the C2 insert arm', () => {
+describe('X102 collection-iteration depth at the vmap insert arm', () => {
   it('settles an iteration plus a two-chunk write plus a new sorted entry', async () => {
     const { contract } = await deploy();
     const value = new Uint8Array(200).fill(0xab);

@@ -1,11 +1,12 @@
-# C2 mappings: authenticated sorted linked lists
+# Verified mappings (vmaps)
 
-This document is the normative specification for mapping storage in SolidCash. Every mapping uses C2. There is no
+This document is the normative specification for mapping storage in SolidCash. Every mapping is a verified mapping,
+or **vmap** for short. Vmaps use authenticated sorted linked lists. There is no
 compiler option selecting another mapping backend and no soundness fallback to the legacy, omission-prone entry
 model. An unsupported access shape must produce a compiler error rather than weaker bytecode.
 
-C2 preserves Solidity's observable rule that an unset key reads as its type's default while proving that the key
-is actually absent. It also makes mappings enumerable when the source requests iteration.
+A verified mapping preserves Solidity's observable rule that an unset key reads as its type's default while proving
+that the key is actually absent. It also makes mappings enumerable when the source requests iteration.
 
 ## 1. Threat model and security goal
 
@@ -20,7 +21,7 @@ is therefore unsound. A spender can omit an existing entry and make `m[k]` appea
 This breaks negative guards, replay maps, claim-once maps, read-modify-write, and any logic whose result differs
 between “absent” and “present with a non-default value.”
 
-C2 requires an authenticated proof for both possible results:
+A vmap requires an authenticated proof for both possible results:
 
 - Membership: spend the unique node whose `slot == H(key)`.
 - Non-membership: spend the unique predecessor whose link brackets `H(key)`.
@@ -384,7 +385,7 @@ metadata to select entries and construct outputs.
 There is no `sortedMappings` or `sortedMappingsAll` compiler option. Tests and integrations must not seed or expect
 the old key/value entry commitment format.
 
-Unsupported C2 shapes raise `SortedMappingCodegenPendingError`. This error is a safety boundary: code generation may
+Unsupported vmap shapes raise `SortedMappingCodegenPendingError`. This error is a safety boundary: code generation may
 not route the access through an omission-prone implementation.
 
 ## 10. Security invariants and failure behavior
@@ -408,14 +409,14 @@ incorrect mapping result to be accepted.
 
 ### 10.1 Implementation status and remaining fail-closed gaps
 
-The C2 omission vulnerability is fixed and the authenticated backend is mandatory. That security status is
+The vmap omission vulnerability is fixed and the authenticated backend is mandatory. That security status is
 different from complete Solidity-compatible support for every mapping program. As of 2026-07-24, these shapes remain
 intentionally fail-closed:
 
 - A varying-key runtime loop whose assigned value is computed directly from the induction variable or another
   unsupported loop-local expression, for example `m[ks[i]] = i`. Parameter, literal, and aligned value-array
   sources are supported.
-- Writes to multiple C2 collections within one runtime loop. The current covenant owns one collection address and
+- Writes to multiple vmap collections within one runtime loop. The current covenant owns one collection address and
   one trailing entry-output region.
 - Repeated keys in a varying-key array-mutation loop (`m[ks[i]].push`, `.pop`, or indexed assignment). Correct
   Solidity semantics require applying the mutations sequentially to one co-spent entry; the SDK rejects the
@@ -424,7 +425,7 @@ intentionally fail-closed:
   co-spend the same input. Array/composite cases and invariant-key loops have dedicated coalescing, but the general
   scalar straight-line case is not yet guaranteed to coalesce.
 - Cross-contract extensions not covered by the current caller/callee entry planner remain separately scoped. Basic
-  cross-contract C2 reads/writes and `msg.sender`-keyed calls have dedicated coverage; do not infer support for every
+  cross-contract vmap reads/writes and `msg.sender`-keyed calls have dedicated coverage; do not infer support for every
   loop, value type, sidecar, or composition shape.
 
 These are completeness/availability limitations, not fallback paths. The compiler or SDK rejects them before an
@@ -473,7 +474,7 @@ Important coverage includes:
 - malformed, cyclic, duplicated, and disconnected sorted lists.
 
 See `mapping-omission-security.md` for the original vulnerability and `mapping-soundness-research.md` for the design
-alternatives that led to C2. See `c2-codegen-optimization.md` for measured bytecode/runtime overhead and the ranked
+alternatives that led to vmap. See `vmap-codegen-optimization.md` for measured bytecode/runtime overhead and the ranked
 optimization plan.
 
 For runtime-loop values above 60 bytes, the output layout ends in

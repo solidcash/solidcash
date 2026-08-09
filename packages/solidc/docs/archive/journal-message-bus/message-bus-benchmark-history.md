@@ -32,7 +32,7 @@ Artifact invariance is pinned by existing tests:
 
 - `InvocationAnalysis.test.ts` proves invocation analysis does not change emitted bytecode.
 - `MessageBus.test.ts` proves a disabled experimental capability leaves artifacts byte-identical.
-- `MsgSenderCrossContractC2.test.ts` pins the direct route while the R5 corpus tests exercise the
+- `MsgSenderCrossContractVMap.test.ts` pins the direct route while the R5 corpus tests exercise the
   experimental route.
 - `AtomicMessageBusCapacity.test.ts` pins finalized atomic transaction and per-input BCH-2026 costs.
 

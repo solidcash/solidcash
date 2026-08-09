@@ -94,7 +94,7 @@ describe('Bare state access (implicit this., Solidity-compatible)', () => {
     expect(compileString(bare).bytecode).toBe(compileString(explicit).bytecode);
   });
 
-  it('accepts bare and this.-prefixed forms of a C2 mapping compound write', () => {
+  it('accepts bare and this.-prefixed forms of a vmap mapping compound write', () => {
     const bare = 'contract C() { mapping(int=>int) m; function f(int k, int v) { m[k] += v; } }';
     const explicit = 'contract C() { mapping(int=>int) m; function f(int k, int v) { this.m[k] = this.m[k] + v; } }';
     expect(compileString(bare).bytecode).not.toHaveLength(0);

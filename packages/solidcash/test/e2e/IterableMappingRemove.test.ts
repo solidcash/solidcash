@@ -124,13 +124,13 @@ describe('IterableMapping remove() - swap-remove with computed-key index update'
 
   it('rejects an alias transition without the authenticated alias sentinel', async () => {
     const sc = await seed3();
-    sc._setRawC2BatchWitness(3, { predOut: -1n });
+    sc._setRawVMapBatchWitness(3, { predOut: -1n });
     await expect(sc.remove(a3, alicePub, sig()).send()).rejects.toThrow(ALIAS_REFUSAL);
   });
 
   it('rejects the alias sentinel when the runtime keys do not alias', async () => {
     const sc = await seed3();
-    sc._setRawC2BatchWitness(3, { predOut: -2n });
+    sc._setRawVMapBatchWitness(3, { predOut: -2n });
     await expect(sc.remove(a1, alicePub, sig()).send()).rejects.toThrow(ALIAS_REFUSAL);
   });
 });

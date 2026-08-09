@@ -830,7 +830,7 @@ function buildFunctionAbiMetadata(
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
-      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
       entryLoopWrites: func.entryLoopWrites.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),

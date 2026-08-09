@@ -34,7 +34,7 @@ const factoryParamSalt = `
   }
 `;
 
-// B: computed salt via keccak(encodePacked(a,b)) - createPair shape without C2
+// B: computed salt via keccak(encodePacked(a,b)) - createPair shape without vmap
 const factoryComputedSalt = `
   import "./pair_child.scash";
   contract FactoryComputed(pubkey owner) {
@@ -52,9 +52,9 @@ const factoryComputedSalt = `
   }
 `;
 
-// C0: dual getPair C2 writes WITHOUT deploy (isolates multi-key batch)
-const factoryC2Only = `
-  contract FactoryC2Only(pubkey owner) {
+// C0: dual getPair vmap writes WITHOUT deploy (isolates multi-key batch)
+const factoryVMapOnly = `
+  contract FactoryVMapOnly(pubkey owner) {
     mapping(address => mapping(address => address)) public getPair;
     function setBoth(sig s, address tokenA, address tokenB, address pair) {
       require(checkSig(s, owner));
@@ -66,7 +66,7 @@ const factoryC2Only = `
   }
 `;
 
-// C: computed salt + dual getPair C2 writes
+// C: computed salt + dual getPair vmap writes
 const factoryFull = `
   import "./pair_child.scash";
   contract FactoryFull(pubkey owner) {
@@ -103,7 +103,7 @@ function compileFactory(src: string): { factory: any; child: any } {
   return { factory, child };
 }
 
-describe('create2 salt isolation (param vs computed vs +C2)', () => {
+describe('create2 salt isolation (param vs computed vs +vmap)', () => {
   const provider = createTestProvider();
   (provider as any).consensusLimits = {
     ...(provider as any).consensusLimits,
@@ -143,7 +143,7 @@ describe('create2 salt isolation (param vs computed vs +C2)', () => {
     expect(result.child.address).toBe(expected.address);
   }, 120_000);
 
-  it('B: computed keccak salt deploy succeeds (no C2)', async () => {
+  it('B: computed keccak salt deploy succeeds (no vmap)', async () => {
     mkdirSync(SCRATCH, { recursive: true });
     const { factory: factoryArt, child: childArt } = compileFactory(factoryComputedSalt);
     const cp = factoryArt.abi.find((f: any) => f.name === 'deployComputed');
@@ -185,11 +185,11 @@ describe('create2 salt isolation (param vs computed vs +C2)', () => {
     }
   }, 120_000);
 
-  it('C0: dual getPair C2 writes without deploy succeed via normal call path', async () => {
+  it('C0: dual getPair vmap writes without deploy succeed via normal call path', async () => {
     mkdirSync(SCRATCH, { recursive: true });
     // Single-file compile (no import)
     const { compileString } = await import('../direct-compile.js');
-    const art = compileString(factoryC2Only, { solidityImportCompat: true });
+    const art = compileString(factoryVMapOnly, { solidityImportCompat: true });
     const fundF = await mintFund(300_000n);
     const { contract: factory } = await StatefulContract.deploy(art, [alicePub], {
       provider, fundingUtxo: fundF, funder, changeAddress: p2pkh.address,
@@ -213,7 +213,7 @@ describe('create2 salt isolation (param vs computed vs +C2)', () => {
     }
   }, 120_000);
 
-  it('C: computed salt + dual getPair C2 succeeds', async () => {
+  it('C: computed salt + dual getPair vmap succeeds', async () => {
     mkdirSync(SCRATCH, { recursive: true });
     const { factory: factoryArt, child: childArt } = compileFactory(factoryFull);
     const cp = factoryArt.abi.find((f: any) => f.name === 'createPair');

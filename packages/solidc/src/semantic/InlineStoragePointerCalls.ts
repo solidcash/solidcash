@@ -141,7 +141,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     // MappingAssign, but an array element `arr[i]` is a StateArrayAssign - keep them apart so neither gets the
     // other's node (an array accessed as `arr[i]` parses to a MappingAccessNode too).
     this.mappingNames = new Set(node.collections.filter((c) => c.type instanceof MappingType).map((c) => c.name));
-    // C2 (sorted) collections: a WRITE to one co-spends the sorted-list entry slots (block layout), like a read,
+    // vmap (sorted) collections: a WRITE to one co-spends the sorted-list entry slots (block layout), like a read,
     // so a void helper writing a sorted mapping must also inline (a plain-entry-model write works as a subroutine).
     this.sortedCollectionNames = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     const allFns = [...node.functions, ...(node.fallbackDef ? [node.fallbackDef] : [])];
@@ -562,15 +562,15 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     return found;
   }
 
-  // A function DIRECTLY writes a sorted (C2) mapping entry: a MappingAssign/Field/Delete or single-key ArrayAssign
-  // on a sorted collection. A C2 write co-spends the sorted-list entry slots (block layout), which only an entry
+  // A function DIRECTLY writes a sorted (vmap) mapping entry: a MappingAssign/Field/Delete or single-key ArrayAssign
+  // on a sorted collection. A vmap write co-spends the sorted-list entry slots (block layout), which only an entry
   // point has, so a void helper doing it cannot be an OP_INVOKE subroutine (the plain-entry-model write is fine).
   private directlyWritesSortedEntry(fn: FunctionDefinitionNode): boolean {
     let found = false;
     this.walk(fn.body, (n) => {
       if (found) return;
       // A single-key mapping write `m[k] = v` is an ArrayAssignNode; nested / struct-field / delete forms are
-      // MappingAssign / MappingFieldAssign / MappingDelete. All co-spend the sorted entry when the collection is C2.
+      // MappingAssign / MappingFieldAssign / MappingDelete. All co-spend the sorted entry when the collection is vmap.
       if ((n instanceof ArrayAssignNode || n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
         || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name)) found = true;
     });

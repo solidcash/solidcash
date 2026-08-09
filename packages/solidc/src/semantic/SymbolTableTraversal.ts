@@ -1436,7 +1436,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
+    const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -2107,7 +2107,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
           const isPureWrite = ops.length === 1 && ops[0] === 'write';
-          // A SORTED (C2) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
+          // A SORTED (vmap) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
           // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region AFTER all
           // fixed slots (emitSortedUpsertLoopBody), so it may COEXIST with other fixed entry accesses (e.g. the cached
           // `bal[msg.sender] -= amounts[i]` debit in a full multiTransfer). The pure-write loop (emitLoopEntryWrite)
@@ -2143,7 +2143,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.entryAccesses = ordered;
         this.detectAliasConditionalWrites(node.body, ordered);
 
-        // Multiple fixed C2 writes in one function are verified as transaction-wide batches, grouped by collection.
+        // Multiple fixed vmap writes in one function are verified as transaction-wide batches, grouped by collection.
         // A group may contain one target when another collection is also written: using the same batch path keeps
         // shared key parameters live and gives every collection an independent exact-output-count proof.
         const batchByCollection = new Map<string, number[]>();
@@ -2159,7 +2159,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
         // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
-        // a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
+        // a lone vmap insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
         // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
         // batch path is what mint/transfer use successfully; constructors need the same shape.
         node.sortedBatchInfo = [...batchByCollection]
@@ -2171,10 +2171,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const batch of node.sortedBatchInfo) {
           for (const batchSlotIndex of batch.slotIndices) {
             for (const param of [
-              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${batchSlotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${batchSlotIndex}`),
-              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${batchSlotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__vmapBatchSlot_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchProof_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__vmapBatchNext_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchPredOut_${batchSlotIndex}`),
             ]) {
               param.location = node.location;
               node.parameters.push(param);
@@ -2186,7 +2186,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (node.sortedBatchInfo.length > 0) {
-          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__c2BatchTrailingCount');
+          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount');
           param.location = node.location;
           node.parameters.push(param);
           this.symbolTables[0].set(Symbol.variable(param));
@@ -2195,14 +2195,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(param);
         }
 
-        // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A
+        // Chunkable-value READ (unbounded bytes/string, vmap): inject witness param __internal__valueWitness_N. A
         // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
         // so the SDK supplies the value (from its persisted chunks) and a forged witness fails closed.
         for (const info of ordered) {
           if (!info.operations.includes('read')) continue;
           const coll = this.collectionMap.get(info.collection);
           const vt = coll?.innermostValueType;
-          // Only a SORTED (C2) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
+          // Only a SORTED (vmap) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
           if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
@@ -2247,7 +2247,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (sym) sym.references.push({ name: `__internal__collectionIterCount_${i}` } as IdentifierNode);
           this.pushToStack(countParam);
 
-          // SORTED (C2) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
+          // SORTED (vmap) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
           // supplies the keys and the covenant verifies keyToSlot(key)==slot per entry. Inject a bytes blob param
           // (fixed-width keys concatenated in chain order); only for sorted key-exposing iterations, so plain and
           // sorted-VALUES iteration ABIs are unchanged.
@@ -2794,7 +2794,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
         // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
-        // collides with the caller's trailing region (dynamic chunks, C2 batch preds). A runtime index
+        // collides with the caller's trailing region (dynamic chunks, vmap batch preds). A runtime index
         // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
         // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
         for (let i = 0; i < lowLevelCallCount; i++) {
@@ -4106,7 +4106,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
       // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
-      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it. A sorted (C2)
+      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it. A sorted (vmap)
       // element-index write `m[k][i]=v` is ALSO an RMW: it materializes the whole array to replace one element, so
       // it needs the read witness for a chunked value (the default entry model reads its own co-spent input in-place).
       const rmw = !!node.arrayPush || !!node.arrayPop || (!!node.arrayIndex && !!node.collection.sorted);
@@ -6658,7 +6658,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
       // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
-      // assignment, and the whole-body count below rules out subsequent reassignment. This gives C2 key metadata
+      // assignment, and the whole-body count below rules out subsequent reassignment. This gives vmap key metadata
       // the same canonical source as `T key = expr` without changing runtime evaluation of the local itself.
       if (n instanceof BlockNode) {
         const statements = n.statements ?? [];
@@ -7095,7 +7095,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const mapNode = new MappingAccessNode(flat.base.name, flat.keys);
       mapNode.location = node.location;
       // Carry the inlined-helper origin (tagModifierStateAccess tagged the base identifier) so the
-      // private-collection visibility check sees the defining contract for an inlined C2-read helper.
+      // private-collection visibility check sees the defining contract for an inlined vmap-read helper.
       mapNode.fromModifier = flat.base.fromModifier;
       return this.visit(mapNode);
     }
@@ -7182,7 +7182,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         : new MappingAssignNode(node.name, [node.index], node.value);
       stateNode.location = node.location;
       // Carry the inlined-helper origin so the private-collection visibility check sees the defining contract
-      // (an inlined C2-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
+      // (an inlined vmap-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
       if (stateNode instanceof MappingAssignNode) stateNode.fromModifier = node.fromModifier;
       return this.visit(stateNode);
     }
@@ -11736,9 +11736,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Deploy slots (deploy modifier functions have a genesis input per child deploy site).
     // After each deploy master, reserve a fixed `deployDataNft` slot per child data NFT so the
-    // C2 insert tail (and any other trailing outputs) starts at a covenant-known offset rather
+    // vmap insert tail (and any other trailing outputs) starts at a covenant-known offset rather
     // than sharing the first post-blockSize slot with the child's unanchored data NFTs
-    // (see docs/deferrals.md "Factory deploy of a stateful child alongside C2 mapping writes").
+    // (see docs/deferrals.md "Factory deploy of a stateful child alongside vmap mapping writes").
     // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
     // referenced contract (or deployedDataNftCount once the site has been visited).
     if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
@@ -11800,7 +11800,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
     // MEASURED at this commit and REFUSED. Three findings, in order of weight:
     //
-    // 1. A C2 mapping insert - the whole 381 category - has NO term here that can fire. Measured on
+    // 1. A vmap mapping insert - the whole 381 category - has NO term here that can fire. Measured on
     //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
     //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
     //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
@@ -11851,7 +11851,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Per-deploy-site child data-NFT counts, in source order. Used to reserve fixed `deployDataNft`
-   * layout slots after each deploy master so C2 insert tails no longer collide with child genesis
+   * layout slots after each deploy master so vmap insert tails no longer collide with child genesis
    * data NFTs. Always prefers the live referenced contract's packed state variables (oracle fields
    * included) over a stale Instantiation snapshot.
    */

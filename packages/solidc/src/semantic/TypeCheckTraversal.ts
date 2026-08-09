@@ -1286,17 +1286,17 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
 
-    // C2: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
+    // vmap: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
     // can OMIT the entry NFT, forcing the covenant to read the type default (false/0), so the guard passes - BCH
     // Script cannot force an existing entry UTXO to be co-spent. One-time-write / replay / blacklist / hasVoted
-    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT C2.
+    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT vmap.
     const guardedMapping = this.negativeGuardMapping(node.expression);
     if (guardedMapping) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
         + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
-        + '/ blacklist patterns (SECURITY-AUDIT C2). Prefer a positive guard, or commit an entry-set accumulator.',
+        + '/ blacklist patterns (SECURITY-AUDIT vmap). Prefer a positive guard, or commit an entry-set accumulator.',
       );
     }
 
@@ -1318,7 +1318,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  // C2 helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
+  // vmap helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
   // or the mirror image. Only direct mapping reads are flagged (the common one-time-write / replay / blacklist
   // idiom); compound conditions are left alone to avoid noise.
   private negativeGuardMapping(cond: ExpressionNode): string | undefined {
@@ -1336,8 +1336,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   private asMappingRead(expr: ExpressionNode): string | undefined {
-    // A sorted (C2 linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
-    // negative guard on it is safe - suppress the C2 warning for those collections.
+    // A sorted (vmap linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
+    // negative guard on it is safe - suppress the vmap warning for those collections.
     if (expr instanceof MappingAccessNode && !expr.collection?.sorted) return expr.name;
     return undefined;
   }

@@ -61,7 +61,7 @@ describe('enumerable mapping: iteration is gated behind the enumerable type', ()
   });
 });
 
-// A SORTED (C2) enumerable mapping iterates by trustless linkage completeness. Only VALUES mode is supported:
+// A SORTED (vmap) enumerable mapping iterates by trustless linkage completeness. Only VALUES mode is supported:
 // the entry commitment stores slot=H(key), not the raw key, so keys/entries cannot be recovered on-chain. Those
 // throw a clean codegen error rather than miscompile. See docs/evm-storage-parity.md + docs/deferrals.md.
 describe('sorted enumerable mapping: iteration mode support', () => {

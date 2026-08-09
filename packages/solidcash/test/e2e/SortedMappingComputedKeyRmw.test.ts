@@ -7,8 +7,8 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-// C2 read-modify-write with a COMPUTED / LOCAL key: `balances[pkh] = balances[pkh] + amt` where pkh is a local.
-// This is the common ERC pattern; it regressed under C2 because the value's read (RHS) is emitted before the write
+// vmap read-modify-write with a COMPUTED / LOCAL key: `balances[pkh] = balances[pkh] + amt` where pkh is a local.
+// This is the common ERC pattern; it regressed under vmap because the value's read (RHS) is emitted before the write
 // key-hash (LHS), so visitIdentifier's last-use ROLL consumed the key. The upsert now hashes the key first. This
 // verifies the fix is SOUND at runtime (the RMW reads the old value and writes old+amt), not just that it compiles.
 const SRC = `contract C() {
@@ -118,7 +118,7 @@ describe('sorted mapping RMW with a computed/local key', () => {
     expect(vmNumberToBigInt(e!.value)).toBe(15n);
   });
 
-  it('reads through a last-use local copy of a parameter with the correct C2 stack offset', async () => {
+  it('reads through a last-use local copy of a parameter with the correct vmap stack offset', async () => {
     const source = `contract C() {
       mapping(bytes20 => bigint) balances;
       bigint result;

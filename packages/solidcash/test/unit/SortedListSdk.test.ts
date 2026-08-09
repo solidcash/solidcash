@@ -8,7 +8,7 @@ import {
 } from '../../src/index.js';
 import type { Utxo } from '../../src/interfaces.js';
 
-// SDK part of the C2 sorted-linked-list mapping: the off-chain list manager (rebuild from chain, predecessor
+// SDK part of the vmap sorted-linked-list mapping: the off-chain list manager (rebuild from chain, predecessor
 // lookup, insert/delete/read co-spend plans). Verified two ways: (1) unit checks of slot hashing / codec /
 // planning; (2) end-to-end - the SDK's plans, fed into the VM-PROVEN covenants, produce transactions the VM
 // accepts (and a plan for a present/absent key is refused). Covenants proven in SortedMapping*.test.ts.

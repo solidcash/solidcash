@@ -5,7 +5,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// C2 diff-key INSERT loop `for(i<ks.length) w[ks[i]] = true`: one call co-spends the N bracketing predecessors and
+// vmap diff-key INSERT loop `for(i<ks.length) w[ks[i]] = true`: one call co-spends the N bracketing predecessors and
 // mints N new sorted-list nodes (the SDK derives the evolving list off-chain; the covenant pins each P'/NEW). Present
 // reads then find each key; an absent key is bracket-proven default (exclusion). Distinct sha256-scattered keys.
 const SRC = `contract C() {
@@ -15,7 +15,7 @@ const SRC = `contract C() {
   function chkAbsent(int k, pubkey pk, sig s) { require(checkSig(s, pk)); require(!w[k]); }
 }`;
 
-describe('C2 diff-key insert-in-loop (SDK progressive derivation)', () => {
+describe('vmap diff-key insert-in-loop (SDK progressive derivation)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

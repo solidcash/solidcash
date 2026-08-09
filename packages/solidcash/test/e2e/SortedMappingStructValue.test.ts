@@ -10,7 +10,7 @@ const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program
 
 // Struct-valued sorted mapping `mapping(int => P)`. A struct is an encoded blob (its on-stack representation), so
 // it is stored verbatim in the (last) value tail; a field read `pos[k].x` decodes that blob. Present -> the stored
-// struct, absent -> the zero struct. C2-sound as usual. (Non-encodable structs - mappings/recursive - fail closed.)
+// struct, absent -> the zero struct. vmap-sound as usual. (Non-encodable structs - mappings/recursive - fail closed.)
 const SRC = `contract C() {
   struct P { int x; int y; }
   mapping(int => P) pos;

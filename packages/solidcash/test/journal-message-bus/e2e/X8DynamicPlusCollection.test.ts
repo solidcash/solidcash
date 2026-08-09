@@ -14,7 +14,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  * whether it settles, silently miscompiles, or fails closed.
  *
  * Measured answer: it SETTLES, and every authenticated field of both journals rejects independently. The
- * dynamic writes are not dropped - the C2 insert's NEW node is placed after the chunk outputs the raw writes
+ * dynamic writes are not dropped - the vmap insert's NEW node is placed after the chunk outputs the raw writes
  * mint, and forging either chunk rejects.
  *
  * X102 closes the former multi-chunk boundary by making the trailing-offset depth call-site-dependent. The
@@ -80,7 +80,7 @@ contract X8InlineOnly() {
 }`;
 
 // Physical layout of the honest journal transaction, measured: block is [master, dataNft, entry], then the
-// trailing region holds one chunk per dynamic variable and finally the C2 insert's NEW node.
+// trailing region holds one chunk per dynamic variable and finally the vmap insert's NEW node.
 const OUT = { master: 0, dataNft: 1, predecessor: 2, chunkA: 3, chunkB: 4, entryNew: 5 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {
@@ -163,7 +163,7 @@ describe('X8 two chunk-backed dynamic writes beside a collection write', () => {
     await sc.checkBalance(alicePkh, 7n).send();
   }, 180_000);
 
-  it('settles a second call, taking the C2 update arm rather than the insert arm', async () => {
+  it('settles a second call, taking the vmap update arm rather than the insert arm', async () => {
     const { sc } = await deploy(JOURNAL_HANDLER);
     await sc.run(alicePkh, 7n, Uint8Array.from([0xaa, 0xbb]), Uint8Array.from([0xcc, 0xdd])).send();
     await sc.run(alicePkh, 5n, Uint8Array.from([0x11]), Uint8Array.from([0x22, 0x33])).send();
@@ -172,7 +172,7 @@ describe('X8 two chunk-backed dynamic writes beside a collection write', () => {
     await sc.checkBalance(alicePkh, 12n).send();
   }, 180_000);
 
-  it('places the C2 NEW node after both chunk outputs', async () => {
+  it('places the vmap NEW node after both chunk outputs', async () => {
     const { hex } = await honestCapture();
     const tx = decodeTransactionUnsafe(hexToBin(hex));
     const address = (index: number): string => binToHex(tx.outputs[index].lockingBytecode);
@@ -252,7 +252,7 @@ describe('X8 two chunk-backed dynamic writes beside a collection write', () => {
   }, 180_000);
 });
 
-describe('X8 multi-chunk composition beside a C2 entry mint', () => {
+describe('X8 multi-chunk composition beside a vmap entry mint', () => {
   const attempt = async (source: string, size: number): Promise<string> => {
     const { sc } = await deploy(source);
     return sc.run(alicePkh, 7n, new Uint8Array(size).fill(0xaa)).send()
@@ -262,15 +262,15 @@ describe('X8 multi-chunk composition beside a C2 entry mint', () => {
   // X102 closes the remaining covenant half X10 isolated.
   //
   // 1. Covenant, CLOSED. `emitAddDynamicOutputsBeforeEntries` used to PICK the written value at `trackedIndex + 1`,
-  //    but the C2 upsert's INSERT arm carries five untracked working values (key hash, entry address,
+  //    but the vmap upsert's INSERT arm carries five untracked working values (key hash, entry address,
   //    predecessor slot, next and value) between the tracked stack and the running output index - the same five
   //    the neighbouring returnEvent adjustment reaches past with `+ 6`. The PICK therefore measures a 32-byte
-  //    raw C2 field, so `(size + 119) / 120` is 1 for every dynamic value. That is right for values up to one
+  //    raw vmap field, so `(size + 119) / 120` is 1 for every dynamic value. That is right for values up to one
   //    120-byte chunk and wrong above it, which is exactly where this boundary sits. Re-measured under X10 with
   //    the depth at `+ 6`: the PICK then reaches the 200-byte value, OP_SIZE reads 200 and the covenant computes
   //    a chunk count of 2. X102 now passes that call-site depth rather than changing the shared helper's default.
   // 2. SDK, CLOSED by X10. The old failure was not "the region does not grow" - it grew to two outputs and
-  //    filled them wrong, broadcasting the C2 NEW node's commitment at outputs 3 AND 5 with a never-derived
+  //    filled them wrong, broadcasting the vmap NEW node's commitment at outputs 3 AND 5 with a never-derived
   //    '00' between them. Chunk commitments are now keyed by their output index, an underived region is
   //    refused by name before signing, and the region grows out of the probe-ordering cycle a trailing entry
   //    mint creates. Measured with both halves applied, 121 and 200 bytes SETTLE with two real chunks.

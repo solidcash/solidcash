@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 // Nested / composite-key sorted mapping `mapping(int => mapping(int => int))` (an ERC20-allowance shape). The slot
 // for `allow[a][b]` is sha256(sha256(a)++sha256(b)) high-bit-masked (keyToSlotMulti / covenant emitSortedKeyHash) -
 // each key hashed independently so the pair is unambiguous. Every op (read/upsert/RMW/delete) is the same sorted
-// linked-list op over that composite slot, C2-sound (absence still proven by the bracket).
+// linked-list op over that composite slot, vmap-sound (absence still proven by the bracket).
 const SRC = `contract C() {
   mapping(int => mapping(int => int)) allow;
   function approve(int a, int b, int v, pubkey pk, sig s) { require(checkSig(s, pk)); allow[a][b] = v; }

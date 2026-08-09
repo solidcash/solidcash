@@ -2313,7 +2313,7 @@ LOCAL-COPY write, not a misclassification). Found + fixed the actual bug:
 
 - **Preparatory parity work (score-neutral in this run)**: nested unchecked allocation of a named memory
   bytes/string return can now share a Yul memory buffer; constant byte tables are materialized into that buffer;
-  C2 mapping-entry interface fields are captured at the call site; and same-named chunked-value witnesses forward
+  vmap mapping-entry interface fields are captured at the call site; and same-named chunked-value witnesses forward
   through internal calls. These advances move `benchmarks/OptimizorClub.sol` from its early undefined named-return
   failure to a later block-layout limitation, with focused regressions and no corpus/negative regression.
 
@@ -3895,7 +3895,7 @@ unchanged at 906.
   The inference is limited to library helpers whose referenced flattened fields all exist in the caller layout,
   avoiding false aliases for ordinary internal struct-pointer helpers.
 - **Invariant literal-key array-entry caching**: repeated/looped mutations of a primitive array stored at a
-  literal mapping key (for example `data["abc"].items.push()`) are cached locally and flushed as one C2 update.
+  literal mapping key (for example `data["abc"].items.push()`) are cached locally and flushed as one vmap update.
   Struct-element arrays retain their specialized lowering and are deliberately excluded from this cache path.
 
 The focused suite is **785/785** and the full corpus finishes at **4691/4874**, 183 failed, with NEG-ACCEPTED

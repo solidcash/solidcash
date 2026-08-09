@@ -14,7 +14,7 @@ const NON_TRUTHY_INPUT_0 = new RegExp('^mandatory-script-verify-flag-failed '
   + 'Top stack item: ""\\.\\)$');
 
 const SINGLE = compileString('contract C { function f(bytes x, bytes32 e) public pure { require(keccak256(x) == e); } }');
-const MULTI = compileString(`contract C2 {
+const MULTI = compileString(`contract vmap {
   function f(bytes a, bytes b, bytes32 ea, bytes32 eb) public pure {
     require(keccak256(a) == ea);
     require(keccak256(b) == eb);

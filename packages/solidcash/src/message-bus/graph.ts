@@ -1016,7 +1016,7 @@ interface OwnerRow { localRow: number; function: string }
  * fail-closed diagnostic for older artifacts; it must not be cited as the consensus boundary.
  *
  * WHY THIS IS THE RIGHT SITE. The equivalent compile-time refusal was implemented and measured: it
- * false-refused the C2 capstone entirely, because `registerCredit`/`registerDebit` write `legs` and sit in the
+ * false-refused the vmap capstone entirely, because `registerCredit`/`registerDebit` write `legs` and sit in the
  * route CLOSURE even when no such row exists in the transaction. Route-closure membership is not
  * route-composition membership. Here the row set is concrete, so the writers considered are the ones the
  * transaction really contains.

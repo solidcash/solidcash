@@ -1,10 +1,10 @@
-# Mapping omission and negative guards (C2)
+# Mapping omission and negative guards (historical finding C2)
 
-> **Resolution (2026-07-22): fixed by mandatory C2.** The omission-prone entry model described below has been
+> **Resolution (2026-07-22): fixed by mandatory verified mappings (vmaps).** The omission-prone entry model described below has been
 > removed. Every mapping now uses the authenticated sorted-linked-list backend, and there is no compiler opt-out.
 > Reads prove either exact membership or adjacent non-membership; unsupported source shapes fail compilation.
 > This document is retained as the vulnerability analysis and design rationale. The normative current protocol is
-> [`sorted-mapping-c2.md`](sorted-mapping-c2.md).
+> [`verified-mappings.md`](verified-mappings.md).
 
 ## Historical vulnerability
 
@@ -63,7 +63,7 @@ from presence questions. Both are consistent - integrity-when-present is sound; 
 
 ## The sound solution
 
-**Why C2 is harder than C1.** C1 needed to prove a delegate is *present* - cheap (co-spend it, pin
+**Why fixing C2 is harder than fixing C1.** C1 needed to prove a delegate is *present* - cheap (co-spend it, pin
 `OP_UTXOBYTECODE`). C2's dangerous case proves a key is *absent* - a non-membership statement, which
 permissionlessly requires an authenticated set. There is no BCH shortcut, because consensus arbitrates
 spend-once and input-unspent, not inclusion, and Script cannot query the UTXO set.
@@ -88,7 +88,7 @@ Three cases, exhaustive:
    `mapping-soundness-research.md`.
 
 **Rollout.** The fix is the sound *mechanisms* (nullifier / authenticated set) - they make the bug not exist
-regardless of how the guard is phrased. The C2 diagnostic escalating from warning to a hard **error** is only a
+regardless of how the guard is phrased. The historical C2 diagnostic escalating from warning to a hard **error** is only a
 fail-closed **backstop for the shapes it recognizes** (`require(!m[k])` and friends): it is a syntactic filter
 over a semantic hole, dodgeable by `if (!m[k]) {...}`, a laundering local, or indirect data flow, so it is *not*
 a guarantee and is worth turning on only once a sound alternative exists to point authors at. Positive-guard
@@ -99,7 +99,7 @@ authenticated-data-structure piece); (3) the diagnostic-as-error backstop, once 
 ## Current status: shipped end to end
 
 The B2 sorted-linked-list authenticated set (case 3) is **implemented and proven end to end**
-(`sorted-mapping-c2.md`). Absence of `k` is witnessed by co-spending the bracketing predecessor `P` with
+(`verified-mappings.md`). Absence of `k` is witnessed by co-spending the bracketing predecessor `P` with
 `P.slot < k < P.nextKey`; there is **no default-on-absent branch to omit** - a missing/invalid witness reverts.
 The compiler, artifact metadata, SDK planning, transaction construction, hostile-provider validation, batching,
 iteration, computed values, compound values, and root-addressed large-value chunks are all integrated. Adversarial

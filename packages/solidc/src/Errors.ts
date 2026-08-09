@@ -746,10 +746,10 @@ export class EntryWriteInLoopError extends SolidCashError {
   }
 }
 
-/** A C2 mapping operation whose shape cannot be represented by the authenticated transition generator. */
+/** A vmap mapping operation whose shape cannot be represented by the authenticated transition generator. */
 export class SortedMappingCodegenPendingError extends SolidCashError {
   constructor(public node: Node, name: string, detail?: string) {
-    super(node, detail ?? (`The mapping operation on '${name}' cannot be represented by the C2 linked-list `
+    super(node, detail ?? (`The mapping operation on '${name}' cannot be represented by the vmap linked-list `
       + 'transition generator. Rewrite the operation into supported scalar or fixed-batch mapping updates.'));
   }
 }

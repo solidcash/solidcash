@@ -1,7 +1,7 @@
 import { sha256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 
-// Off-chain manager for a C2-sound sorted linked-list mapping (see docs/sorted-mapping-c2.md). Entries are entry
+// Off-chain manager for a vmap-sound sorted linked-list mapping (see docs/verified-mappings.md). Entries are entry
 // NFTs whose commitment is slot(32) ++ nextKey(32) [++ value]; they form a sorted singly-linked list. This class
 // rebuilds the list from the on-chain entry UTXOs and produces the co-spend PLANS the transaction builder needs:
 // non-membership (bracketing predecessor), membership (the entry), insert/delete (predecessor +/- node splices).
@@ -184,7 +184,7 @@ export class SortedList {
 
   /**
    * Plan simultaneous distinct-key upserts. All predecessor decisions are made against the ORIGINAL list, then
-   * links are rebuilt over the final union. This is the off-chain mirror for the fixed straight-line C2 batch
+   * links are rebuilt over the final union. This is the off-chain mirror for the fixed straight-line vmap batch
    * covenant: shared predecessors are consumed once, same-gap inserts become one ascending chain, and an updated
    * existing predecessor carries both its new value and its new first-successor link in one output.
    */
@@ -194,7 +194,7 @@ export class SortedList {
       const n = bytesToSlotValue(w.slot);
       if (n === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
       const key = n.toString();
-      if (bySlot.has(key)) throw new Error('C2 batch upsert contains a duplicate slot');
+      if (bySlot.has(key)) throw new Error('vmap batch upsert contains a duplicate slot');
       bySlot.set(key, w);
     }
     if (bySlot.size === 0) return { inputs: [], outputs: [] };

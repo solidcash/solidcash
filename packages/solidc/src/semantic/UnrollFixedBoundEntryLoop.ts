@@ -261,7 +261,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     }
 
     // A provably-EMPTY loop (0 iterations, e.g. `for(i < (new T[](0)).length)` after an inline binds an empty
-    // array arg) is DEAD CODE: drop it entirely. The body never runs, so anything in it (a C2 sorted-mapping
+    // array arg) is DEAD CODE: drop it entirely. The body never runs, so anything in it (a vmap sorted-mapping
     // write, an external call) is unreachable - sound regardless of body content or control flow.
     if (values.length === 0) return [];
 
@@ -308,7 +308,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
   // A compile-time-constant loop bound: an int literal, `fixedArray.length` (a declared ArrayType with a bound),
   // or `(new T[](N)).length` with N an int literal. The last only appears AFTER inlining substitutes a
   // `new T[](N)` literal for an array param (`_updateJobWhitelist(id, allowed, new address[](0))`); N==0 unrolls
-  // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a C2
+  // to ZERO iterations, eliminating a provably-dead loop whose body would otherwise reach codegen (e.g. a vmap
   // sorted mapping write over an empty array). This is why the pass is run a second time, post-inline.
   private evalBound(expr: Node): bigint | undefined {
     if (expr instanceof IntLiteralNode) return expr.value;
@@ -347,7 +347,7 @@ export default class UnrollFixedBoundEntryLoop extends AstTraversal {
     // A single-key mapping write `m[k]=v` is an ArrayAssignNode; a NESTED / multi-key write `m[a][b]=v` (EACC
     // whitelistWorkers), a struct-field write `m[k].f=v`, or a `delete m[k]` are Mapping{Assign,FieldAssign,
     // Delete}Node. All must count so a fixed-bound loop writing one gets unrolled (else it falls to the
-    // runtime-loop C2 path unnecessarily).
+    // runtime-loop vmap path unnecessarily).
     return this.anyNode(stmts, (n) => (
       (n instanceof ArrayAssignNode || n instanceof MappingAssignNode
         || n instanceof MappingFieldAssignNode || n instanceof MappingDeleteNode)

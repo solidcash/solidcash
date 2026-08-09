@@ -6,16 +6,16 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { BinaryOperator } from '../ast/Operator.js';
 import { ArrayType, IntType } from '@solidcash/utils';
 
-const PREFIX = '__internal__c2CounterPerm_';
+const PREFIX = '__internal__vmapCounterPerm_';
 
 /**
- * Lower the deliberately narrow, order-independent C2 counter loop
+ * Lower the deliberately narrow, order-independent vmap counter loop
  *   for (int i=0; i<n; i++) m[i] = f(i)
  * to execute logical indices through an SDK-supplied slot-order permutation. The physical loop counter and its
  * update remain untouched; only the single mapping write's index/value are rewritten to perm[i]. This lets the
- * active C2 upsert-loop covenant process hash slots in ascending order without reordering any other side effect.
+ * active vmap upsert-loop covenant process hash slots in ascending order without reordering any other side effect.
  */
-export default class LowerC2CounterLoops extends AstTraversal {
+export default class LowerVMapCounterLoops extends AstTraversal {
   private collections = new Set<string>();
   private serial = 0;
 

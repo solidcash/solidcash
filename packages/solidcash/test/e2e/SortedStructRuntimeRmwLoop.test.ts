@@ -5,7 +5,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-describe('C2 runtime struct read-modify-write loop', () => {
+describe('vmap runtime struct read-modify-write loop', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

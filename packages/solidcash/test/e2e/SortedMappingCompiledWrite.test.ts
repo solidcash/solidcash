@@ -14,7 +14,7 @@ const SRC = `contract C() {
   function claim(int k, pubkey pk, sig s) { require(checkSig(s, pk)); require(!claimed[k]); claimed[k] = true; }
 }`;
 
-describe('sorted mapping compiled write / claim-once (C2 end-to-end)', () => {
+describe('sorted mapping compiled write / claim-once (vmap end-to-end)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
-// A C2 (sorted) SCALAR mapping entry written more than once to the SAME (loop-invariant) key -
+// A vmap (sorted) SCALAR mapping entry written more than once to the SAME (loop-invariant) key -
 // `for(i) balance[owner] -= amts[i]` - is now cached by CacheMappingEntryInLoop: read balance[owner] ONCE into a
 // local, apply every subtraction to the local, flush ONE upsert. This VM-verifies the cached loop stores the exact
 // accumulated value (100 - 10 - 20 - 30 = 40), and adversarially that a wrong value reverts - so the cache is sound.
@@ -22,7 +22,7 @@ const SRC = `contract C() {
   function chkval(int owner, int expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.balance[owner] == expected); }
 }`;
 
-describe('C2 scalar same-key cache-in-loop is sound (accumulates then one upsert)', () => {
+describe('vmap scalar same-key cache-in-loop is sound (accumulates then one upsert)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   let n = 0x2b00;

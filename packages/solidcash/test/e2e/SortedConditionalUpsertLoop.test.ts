@@ -5,7 +5,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-describe('conditional C2 runtime-expression upsert loop', () => {
+describe('conditional vmap runtime-expression upsert loop', () => {
   it('derives predicated values for a no-op, update, and insert', async () => {
     const provider = createTestProvider();
     const sig = new SignatureTemplate(alicePriv);

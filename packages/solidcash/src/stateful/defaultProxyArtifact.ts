@@ -9,7 +9,7 @@
 // NO MANUAL BYTECODE ADJUSTMENT (X50). This file is now a verbatim compile of DEFAULT_PROXY_SOURCE. It used to
 // carry a hand-edited relaxation of the own-category mutable NFT conservation, from strict `in == out`
 // (OP_0 OP_NUMEQUALVERIFY) to `out >= in` (OP_0 OP_LESSTHANOREQUAL OP_VERIFY), so that a delegate could MINT
-// new mutable NFTs of the proxy category and thereby INSERT a C2 mapping key. Dropped for three measured
+// new mutable NFTs of the proxy category and thereby INSERT a vmap mapping key. Dropped for three measured
 // reasons:
 //   1. It was applied to `bytecode` only. `debug.bytecode` and `fingerprint` still described the unedited
 //      compile, so the artifact's own fields disagreed: a 159-byte script the SDK loads, a 158-byte debug
@@ -20,7 +20,7 @@
 //   3. Regenerating also publishes `lowLevelCalls[].target`, which X37 added and the delegate class gate (X43)
 //      requires; without it the shipped proxy was refused as 'unpublished-target-provenance'.
 //
-// CONSEQUENCE, stated rather than hidden: a `delegate` function that INSERTS a new C2 mapping key is refused by
+// CONSEQUENCE, stated rather than hidden: a `delegate` function that INSERTS a new vmap mapping key is refused by
 // this proxy at its own input - an insert mints one entry node, which is exactly the +1 the conservation
 // forbids. Updating an existing key still settles. See docs/upgrades.md "Regenerating".
 import { Artifact } from '@solidcash/utils';

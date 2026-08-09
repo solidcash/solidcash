@@ -4,7 +4,7 @@ import path from 'node:path';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const cases = [
-  ['C2 batch witness tampering', 'test/e2e/C2BatchAdversarial.test.ts'],
+  ['vmap batch witness tampering', 'test/e2e/VMapBatchAdversarial.test.ts'],
   ['dynamic-loop entry tampering', 'test/e2e/DynamicLoopEntryAdversarial.test.ts'],
   ['external-call target substitution', 'test/e2e/ExtcallTargetPinning.test.ts'],
   ['cross-contract unsupported subcases', 'test/e2e/CrossContractSubcaseSoundness.test.ts'],

@@ -16,7 +16,7 @@ import { estimate } from './message-bus-estimator-f2.js';
  * THE THREE THINGS THAT DECIDED THE DESIGN, each of which is a measurement someone already paid for.
  *
  *  1. A DIFFERENT LIMIT BINDS FIRST FOR ALMOST EVERY SHAPE (F1). C1 and A13 bind on the 10,000-byte per-input
- *     script limit, C2 on operation-cost density, C3 on the 100,000-byte relay ceiling, the N=2 sweep on
+ *     script limit, vmap on operation-cost density, C3 on the 100,000-byte relay ceiling, the N=2 sweep on
  *     per-input SigChecks. A gate that checks one number would be wrong about four of the seven. Every rule
  *     below is therefore checked independently and every violated rule is reported, not just the first.
  *
@@ -134,7 +134,7 @@ export const PRODUCTION_ENVELOPE_RULES: readonly EnvelopeRule[] = Object.freeze(
    * `standard-output-template` STOOD HERE AND IS GONE, because X64 measured it and it does not exist.
    *
    * It was the one rule of twelve labelled UNMEASURED_CONSERVATIVE, and it was not idle: eighteen e2e
-   * fixtures build an output to a bare `OP_1` script, and at the 1,000-satoshi spelling (C2, the E1 result
+   * fixtures build an output to a bare `OP_1` script, and at the 1,000-satoshi spelling (vmap, the E1 result
    * graph) dust does not apply, so this rule alone decided whether those shapes were in the envelope.
    *
    * MEASURED against `mainnet/bitcoin-cash-node:v29.0.0`, both on the shared regtest node and on a throwaway
@@ -168,7 +168,7 @@ export const PRODUCTION_ENVELOPE_RULES: readonly EnvelopeRule[] = Object.freeze(
     scope: 'input',
     cost: 'vm',
     evidence: 'LIBAUTH_PINNED',
-    reason: 'Operation cost may not exceed 800 per density byte. This is what binds C2 and the N=4/N=8 sweep '
+    reason: 'Operation cost may not exceed 800 per density byte. This is what binds vmap and the N=4/N=8 sweep '
       + 'first. Priced with the standard hash cost of 192 per iteration, which is the more expensive of the '
       + 'two regimes and therefore the one a relayed transaction is judged by.',
   },

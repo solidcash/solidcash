@@ -201,7 +201,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   lowLevelCallInputBase?: number;
   batchEntriesBeforeDynamicChunks?: boolean;
   iterationEntryInputs?: UnlockableUtxo[];
-  // C2 diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
+  // vmap diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
   // outputs (unlike iterationEntryInputs) - they are MODIFIED to P' which is emitted via loopEntryVars. Kept separate
   // so they are not counted in the loop-entry output base.
   insertLoopPredecessorInputs?: UnlockableUtxo[];
@@ -291,7 +291,7 @@ export class StatefulTransactionBuilder {
   string, Map<string, StateValue>
   > = new Map(); // categoryId -> (varName -> value)
 
-  // Cross-contract callee (B) C2 sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
+  // Cross-contract callee (B) vmap sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
   // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
   private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
@@ -618,7 +618,7 @@ export class StatefulTransactionBuilder {
       const result = positioned.filter((x): x is UnlockableUtxo => x !== undefined);
 
       // When the function publishes no fixed lowLevelCall layout slot (runtime __internal__callInputIndex),
-      // the multi-UTXO callee band must sit AFTER the caller's trailing resources (dynamic chunks, C2 batch
+      // the multi-UTXO callee band must sit AFTER the caller's trailing resources (dynamic chunks, vmap batch
       // preds). Expanding LLC before trailing collides with the caller's blockSize-relative UTXOBYTECODE pins.
       const hasFixedLlcSlot = this.blockLayout?.slots.some((s) => s.kind === 'lowLevelCall') ?? false;
       const remainingLlc = [...lowLevelCallInputs.slice(llcIdx), ...this.lowLevelCallRawInputs];
@@ -795,7 +795,7 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  /** B's C2 sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
+  /** B's vmap sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
   setExternalCallEntryOutput(categoryId: string, blockSlot: number, commitmentHex: string): this {
     let m = this.externalCallEntryOutputs.get(categoryId);
     if (!m) { m = new Map(); this.externalCallEntryOutputs.set(categoryId, m); }
@@ -1009,7 +1009,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * P5b: buffer an unpinned same-category value-chunk output (a LONG sorted-mapping value's persisted chunk).
-   * Unlike addOutput, this permits the contract's own category: value chunks are 0x01 mutable NFTs the C2 write
+   * Unlike addOutput, this permits the contract's own category: value chunks are 0x01 mutable NFTs the vmap write
    * covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 skipped for entry access).
    * They are materialized trailing (after dynamic chunks / loop entries) with their commitment fixed, so the
    * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
@@ -1936,7 +1936,7 @@ export class StatefulTransactionBuilder {
             continue;
           }
 
-          // C2 sorted-entry slot for a cross-contract callee WRITE (docs/deferrals.md #1): mint B's updated entry
+          // vmap sorted-entry slot for a cross-contract callee WRITE (docs/deferrals.md #1): mint B's updated entry
           // (UPDATE) or its re-pointed predecessor P' (INSERT) with the commitment derived from B's VM trace. A
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
@@ -2094,7 +2094,7 @@ export class StatefulTransactionBuilder {
         if (entry.slotIndex < fillThreshold) {
           // Position-holding placeholder: neutral OP_TRUE, outside the collection address namespace. The covenant
           // existence-gates this absent slot away, so it is never verified; using the entry address here would
-          // incorrectly increase C2's exact collection-output cardinality.
+          // incorrectly increase vmap's exact collection-output cardinality.
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         }
         continue;
@@ -3205,7 +3205,7 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // The debug probe can discover commitments and output counts for dynamic C2 inserts/chunks. Rebuild before
+    // The debug probe can discover commitments and output counts for dynamic vmap inserts/chunks. Rebuild before
     // measuring and funding so the fee calculation sees the converged covenant shape rather than the smaller
     // pre-probe transaction. Otherwise a newly learned entry output is added only by the final build, leaving its
     // dust value unfunded (for example: 2400 sats in, 3600 sats out for the first mapping insertion).

@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 // `for(i) m[ks[i]] = a`. The covenant routes through the upsert loop; the value is stored as the inline chunkable
 // tail (len4 ++ value, size<=60 asserted - chunked-in-loop fails closed). The SDK mirrors the tail. Present reads
 // verify each key got `a`; an absent read is bracket-proven default.
-describe('C2 array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
+describe('vmap array/bytes-VALUE insert loop for(i) m[ks[i]] = a', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

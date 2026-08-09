@@ -9,7 +9,7 @@ const SOURCE = `contract C {
   function batch(int a, int b) external { m[a] = 11; m[b] = 22; require(true); }
 }`;
 
-describe('C2 atomic batch adversarial soundness', () => {
+describe('vmap atomic batch adversarial soundness', () => {
   const deploy = async (): Promise<StatefulContract> => {
     const provider = createTestProvider();
     const artifact = compile(SOURCE, { forceStateful: true });
@@ -22,17 +22,17 @@ describe('C2 atomic batch adversarial soundness', () => {
 
   it('rejects forged proof, successor, and predecessor-output witnesses', async () => {
     const wrongProof = await deploy();
-    wrongProof._setRawC2BatchWitness(0, { proof: 2n }); // points at the other logical/funder block slot
+    wrongProof._setRawVMapBatchWitness(0, { proof: 2n }); // points at the other logical/funder block slot
     await expect(wrongProof.getFunction('batch')(1n, 2n).send())
       .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongNext = await deploy();
-    wrongNext._setRawC2BatchWitness(1, { next: new Uint8Array(32) });
+    wrongNext._setRawVMapBatchWitness(1, { next: new Uint8Array(32) });
     await expect(wrongNext.getFunction('batch')(1n, 2n).send())
       .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
 
     const wrongPredOut = await deploy();
-    wrongPredOut._setRawC2BatchWitness(0, { predOut: 1n }); // collides with a target output
+    wrongPredOut._setRawVMapBatchWitness(0, { predOut: 1n }); // collides with a target output
     await expect(wrongPredOut.getFunction('batch')(1n, 2n).send())
       .rejects.toThrow(/^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/);
   });
@@ -85,7 +85,7 @@ describe('C2 atomic batch adversarial soundness', () => {
     const refusals: string[] = [];
 
     // The first auxiliary input is the shared HEAD predecessor for this two-key INSERT. Its presence and position
-    // anchor the whole C2 splice; removing, duplicating, or moving it across the master boundary must fail.
+    // anchor the whole vmap splice; removing, duplicating, or moving it across the master boundary must fail.
     refusals.push(await rejectMutation((tx) => {
       tx.inputs.splice(entryInputIndex, 1);
       let removedValue = headUtxo!.satoshis;
@@ -136,7 +136,7 @@ describe('C2 atomic batch adversarial soundness', () => {
       tx.outputs[entryIndices[0]].lockingBytecode = hexToBin('51');
     }));
 
-    // Exact address cardinality: a duplicate C2 node is an orphan/fork even if otherwise byte-identical.
+    // Exact address cardinality: a duplicate vmap node is an orphan/fork even if otherwise byte-identical.
     refusals.push(await rejectMutation((tx) => {
       const o = tx.outputs[entryIndices[2]];
       tx.outputs.push({ ...o, lockingBytecode: o.lockingBytecode.slice(),

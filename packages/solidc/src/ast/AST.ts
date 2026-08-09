@@ -265,7 +265,7 @@ export interface EntryAccessInfo {
   // Message-bus runtime alias canonicalization: this conditional slot is inactive when its complete key equals
   // any earlier slot listed here; the handler invocation uses that earlier slot's journal cache instead.
   runtimeAliasPriorSlots?: number[];
-  // A sorted (C2) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
+  // A sorted (vmap) mapping WRITE of an unbounded bytes/string value from a direct function parameter. The entry
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
   valueParam?: string;
@@ -345,7 +345,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); recorded during codegen. SDK derives the N
   // (key,value) pairs from the VM trace and creates N trailing entry NFT outputs (emitLoopEntryWrite).
   entryLoopWrites?: string[];
-  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); recorded during codegen. SDK
+  // Sorted (vmap) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); recorded during codegen. SDK
   // co-spends N bracketing predecessors + emits N (P', NEW) pairs from the evolving list (emitSortedInsertLoopBody).
   sortedInsertLoops?: string[];
   // Per-loop key/value derivation metadata (fixed key params + varying key array param + value) for the SDK.
@@ -353,7 +353,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     collection: string; fixedKeyParams: string[]; varyingArrayParam: string; valueParam?: string; valueBool?: boolean;
   }>;
 
-  // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+  // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
   // co-spends each k[i]'s existing entry (SortedList.find) at input[master+blockSize+i] and mints its updated
   // commitment (value = oldValue op v, v for 'set', or the type default for 'delete') at output[master+blockSize+i].
   // op is '+', '-', 'set', or 'delete'. The per-iteration value v is one of: valueArrayParam (per-key vs[i]),
@@ -372,7 +372,7 @@ export class FunctionDefinitionNode extends Node implements Named {
     op: '+' | '-' | 'set' | 'delete';
   }>;
 
-  // Fixed straight-line C2 writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
+  // Fixed straight-line vmap writes grouped into one atomic list transition. Slot indices refer to entryAccesses.
   sortedBatchInfo?: Array<{ collection: string; slotIndices: number[] }>;
   // Function parameters whose value feeds blockhash(n); recorded during codegen. SDK reads the arg to resolve
   // addr(n) and co-spend the (n->hash) oracle UTXO as a trailing input (mirrors dynamicReads auto-injection).
@@ -418,7 +418,7 @@ export class FunctionDefinitionNode extends Node implements Named {
   // Release 3: helper was lowered to a value-threaded collection journal.
   collectionJournal?: boolean;
   /** Compiler-owned batch clone: journal it through the wrapper's shared entry pool even when it touches a
-   * single entry, so sibling handlers over the same entry resolve to one pending value and one C2 slot. */
+   * single entry, so sibling handlers over the same entry resolve to one pending value and one vmap slot. */
   forceCollectionJournalPool?: boolean;
   // Compiler-only message-bus batch physical route; dispatched on the reserved selector but
   // omitted from the source ABI.
@@ -633,7 +633,7 @@ export class StateAssignNode extends StatementNode {
 
 export class CollectionNode extends Node implements Named {
   immutable: boolean = false;
-  // C2 sorted-linked-list backend: mapping entries form a sorted list keyed by H(key), so non-existence is
+  // vmap sorted-linked-list backend: mapping entries form a sorted list keyed by H(key), so non-existence is
   // authenticated by co-spending the bracketing predecessor. This is mandatory for every mapping.
   sorted: boolean = false;
   // `enumerable mapping(...)`: the mapping may be iterated (`for..of`/`for..in`). A plain `mapping` is NOT

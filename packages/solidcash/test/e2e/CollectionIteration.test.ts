@@ -13,7 +13,7 @@ import {
 } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-const c2Entries = (address: string, entries: Array<[Uint8Array, bigint]>): any[] => {
+const vmapEntries = (address: string, entries: Array<[Uint8Array, bigint]>): any[] => {
   const zero = slotValueToBytes(0n);
   const sorted = entries.map(([key, value]) => ({ slot: keyToSlot(key), value }))
     .sort((a, b) => bytesToSlotValue(a.slot) < bytesToSlotValue(b.slot) ? -1 : 1);
@@ -154,7 +154,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          ...c2Entries(getEntryNftAddress(salted, cat, 'balances'), []),
+          ...vmapEntries(getEntryNftAddress(salted, cat, 'balances'), []),
         ];
       });
 
@@ -180,7 +180,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
+          ...vmapEntries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
@@ -208,7 +208,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
+          ...vmapEntries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
@@ -236,7 +236,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
+          ...vmapEntries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
         ];
       });
 
@@ -264,7 +264,7 @@ describe('Collection Iteration', () => {
             token: { nft: { capability: 'minting', commitment: '' } } },
           { address: getDataNftAddress(salted, cat), satoshis: 10000n,
             token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-          ...c2Entries(entryAddress, [[alicePkh, 50n]]),
+          ...vmapEntries(entryAddress, [[alicePkh, 50n]]),
           // Invalid: non-mutable NFT (should be filtered)
           { address: entryAddress, satoshis: 10000n,
             token: { nft: { capability: 'none', commitment: 'deadbeef' } } },
@@ -333,7 +333,7 @@ describe('Collection iteration + dynamic storage (W4)', () => {
           token: { nft: { capability: 'minting', commitment: '' } } },
         { address: getDataNftAddress(salted, cat), satoshis: 10000n,
           token: { nft: { capability: 'mutable', commitment: commitments[0] } } },
-        ...c2Entries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
+        ...vmapEntries(entryAddress, [[alicePkh, 100n], [bobPkh, 200n]]),
       ];
     });
     const sc = StatefulContract.withCategory(contract, categoryId);

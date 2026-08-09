@@ -850,7 +850,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *     `StoragePointerReturningFn` dies on an OP_VERIFY in message-bus preflight, and two recursion-budget
    *     rows stop being refused for density and start failing their concrete preflight instead.
    *   - Deferring int-encode, master-self-pres or token-container blows the scalar-journal byte budget, and
-   *     the profitable-looking set together blows three C2 sharing budgets - all on contracts written inline
+   *     the profitable-looking set together blows three vmap sharing budgets - all on contracts written inline
    *     in tests, which the corpus does not contain.
    *
    * A structural helper is a different case and IS deferred: see `capturedSubroutineIsProfitable`.
@@ -1047,7 +1047,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   // State-related tracking
   private stateVariables: StateVariableNode[] = [];
   private collectionCount: number = 0;
-  private sortedCollections: Set<string> = new Set(); // C2 sorted (linked-list) collection names
+  private sortedCollections: Set<string> = new Set(); // vmap sorted (linked-list) collection names
   private sortedEntryAddressIds: Map<string, bigint> = new Map(); // collection hash hex -> contract-local helper id
   private sortedWrittenCollections: Set<string> = new Set(); // sorted collections written in the current function
   private dataNftCount: number = 0;
@@ -1072,7 +1072,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private entrySlots: EntryAccessInfo[] = [];
   private pendingEntryWrites: Map<number, { keyStackName: string; valueStackName: string }> = new Map();
   private pendingEntryDeletes: Set<number> = new Set();
-  // Straight-line repeated RMWs of one chunkable C2 value are accumulated locally and covenant-pinned once at the
+  // Straight-line repeated RMWs of one chunkable vmap value are accumulated locally and covenant-pinned once at the
   // last write. Pinning each intermediate value to the same fixed output is unsatisfiable (and reads stale input).
   private sortedCompositeWritesRemaining: Map<number, number> = new Map();
   private sortedCompositeValueCache: Map<number, string> = new Map();
@@ -1188,7 +1188,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedInsertLoopExpectedName: string = '(sorted_insert_expected)'; // range-splice: next chain node's slot
   private sortedInsertLoopActive: boolean = false;  // a sorted diff-key insert loop's addr + counter are on the stack
   private sortedInsertLoopCollection: string | null = null; // the sorted collection the active insert loop writes
-  // Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit, EXISTING recipients): each iteration
+  // Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit, EXISTING recipients): each iteration
   // co-spends k[i]'s OWN entry at input[master+blockSize+counter], verifies its slot == keyToSlot(k[i]), and mints the
   // updated entry at output[master+blockSize+counter] = slot|next|(oldValue OP v[i]). 1:1 co-spend/mint, no permutation
   // (source order = counter order), supply conserved via the shared v[] param.
@@ -1204,14 +1204,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertLoopRepointName: string = '(sorted_upsert_repoint)';
   private sortedUpsertMergeDebitSlot: number = -1; // the debit entry's FIXED block slot index (-1 = no merge possible)
   private sortedUpsertPendingRepoint: boolean = false; // a merge-capable upsert loop left a re-point register on the stack
-  // Runtime-alias routes preserve their C2 topology witnesses on the altstack across OP_INVOKE handler calls.
+  // Runtime-alias routes preserve their vmap topology witnesses on the altstack across OP_INVOKE handler calls.
   // They are restored lazily at the first wrapper-level collection flush, before any deep witness lookup.
   // The name list is frozen at preflight so restore pops the exact same count/order even when a later final-use
   // OP_ROLL removes a key param from the tracked stack (e.g. `emit Approval(owner, spender, amount)` after
   // `_allowances[msg.sender][spender] = amount`). Re-filtering keyParams at restore desyncs the altstack and
   // scrambles Slot/Proof/Next/PredOut (predOut then fails as a non-minimal / out-of-range UTXO index).
-  private c2WitnessSnapshotsRestored: boolean = false;
-  private c2WitnessSnapshotNames: string[] | null = null;
+  private vmapWitnessSnapshotsRestored: boolean = false;
+  private vmapWitnessSnapshotNames: string[] | null = null;
   // CASE (b) PENDING-DEFER: a new recipient whose bracketing predecessor is ANOTHER credited recipient (not the debit).
   // Each UPDATE iteration co-spends its entry but DEFERS the mint into these registers; the NEXT iteration flushes them,
   // re-pointing the pending entry to the current key iff it lands in the pending's gap (proving it a new node right
@@ -1220,7 +1220,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private sortedUpsertPendValName: string = '(pu_val)';   // deferred entry new value
   private sortedUpsertPendNextName: string = '(pu_next)'; // deferred entry nextKey (empty b'' = +inf)
   private sortedUpsertPendActive: boolean = false;        // the pending-defer registers are live on the stack
-  // A runtime dispatcher loop can touch several conditional C2 collections. Positions in the shared trailing
+  // A runtime dispatcher loop can touch several conditional vmap collections. Positions in the shared trailing
   // region advance globally in source order, while each collection keeps independent authenticated counts and
   // topology registers.
   private sortedUpsertInputBaseName = '(sorted_upsert_input_base)';
@@ -1825,7 +1825,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     for (const id of this.freeFunctionIds) this.compactHelperIds.used.add(id);
     this.compactHelperIds.cheap = GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
       .filter((id) => !this.compactHelperIds.used.has(id));
-    // C2 sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
+    // vmap sorted collections: a WRITE slot on one is handled inline (predecessor -> P' + minted NEW), so the
     // standard read-only preservation / satoshi epilogue must skip it (its output is not the co-spent input).
     this.sortedCollections = new Set(node.collections.filter((c) => c.sorted).map((c) => c.name));
     this.sortedEntryAddressIds = new Map(node.collections.filter((c) => c.sorted).map((c) => [
@@ -2568,7 +2568,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //   - it carries its DYNAMIC slots too, since X146.
     // X146 CORRECTS THE RECORDED EXPLANATION OF WHY IT DID NOT. This comment used to say that journalling a
     // dynamic slot's header while its elements still come from the chunk loop "mixes two sources for one
-    // array". That is not the mechanism, and the instruction that failed says so: the honest C2 cycle aborted
+    // array". That is not the mechanism, and the instruction that failed says so: the honest vmap cycle aborted
     // at input 0 on the `OP_EQUALVERIFY` of check (a), "input bytecode == chunk address", in
     // `emitDynamicReadLoop`. `legs`' header and elements are ONE atomic threaded value and never disagreed.
     // What broke is an OFFSET BASIS. The trailing chunk index comes from the PER-FUNCTION `dynamicReads`,
@@ -2639,7 +2639,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //
     // The two sets are separate on purpose. Holding a scalar context is not a licence to journal a chunk-backed
     // slot: a pure reader that starts loading a dynamic header from the journal while its elements still come
-    // from the chunk loop is the exact failure the X111 note above records, and it breaks C2 at input 0. A
+    // from the chunk loop is the exact failure the X111 note above records, and it breaks vmap at input 0. A
     // caller is promoted to the dynamic set only when the callee it must serve keeps a dynamic slot itself, in
     // which case the caller's slot map already contains that slot through the fixpoint above.
     const holdsContext = (id: number): boolean =>
@@ -4266,8 +4266,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.pushToStack(GRAPH_EVENT_SITE);
     }
 
-    this.c2WitnessSnapshotsRestored = false;
-    this.c2WitnessSnapshotNames = null;
+    this.vmapWitnessSnapshotsRestored = false;
+    this.vmapWitnessSnapshotNames = null;
     this.emitRuntimeAliasWitnessPreflight(node);
 
     // Allocate the complete semantic transfer frame before visiting control flow. Branch/loop-local allocation
@@ -4300,7 +4300,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     node.body = this.visit(node.body) as BlockNode;
 
     // After Instantiation visits, deployTargets carries the true child dataNftCount (including oracle
-    // fields packed after semantic Instantiation). Expand deployDataNft layout slots so C2 tails and
+    // fields packed after semantic Instantiation). Expand deployDataNft layout slots so vmap tails and
     // child genesis data NFTs no longer share the first post-blockSize index.
     this.expandDeployDataNftLayout(node);
 
@@ -5863,10 +5863,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
-    // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (each iteration
+    // vmap diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (each iteration
     // co-spends the bracketing predecessor + mints one NEW node). Takes precedence over the default entry-mint loop.
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
-    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
+    // vmap per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
     const sortedUpsertContexts = !loopHasSortedInsert
       ? this.emitSortedUpsertLoopSetups(node.block, locationData) : [];
     const loopHasSortedUpsert = sortedUpsertContexts.length > 0;
@@ -6030,9 +6030,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.inlineDeployActive = true;
     }
 
-    // C2 diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (takes precedence).
+    // vmap diff-key insert loop: precompute the sorted entry NFT address + counter BEFORE OP_BEGIN (takes precedence).
     const loopHasSortedInsert = this.emitSortedInsertLoopSetup(node.block, locationData);
-    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
+    // vmap per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit): co-spend k[i]'s entry + mint updated.
     const sortedUpsertContexts = !loopHasSortedInsert
       ? this.emitSortedUpsertLoopSetups(node.block, locationData) : [];
     const loopHasSortedUpsert = sortedUpsertContexts.length > 0;
@@ -6333,7 +6333,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return node;
   }
 
-  // Trustless iteration over a SORTED (enumerable / C2) mapping by LINKAGE completeness. The SDK co-spends the
+  // Trustless iteration over a SORTED (enumerable / vmap) mapping by LINKAGE completeness. The SDK co-spends the
   // HEAD sentinel (slot 0) then the entries in ascending slot order; the covenant co-spends HEAD and walks the
   // nextKey chain to the tail (nextKey == 0), verifying per entry that (a) its input bytecode is the collection's
   // entry address (a real entry - no substitution) and (b) its slot == the previous nextKey (contiguity - a
@@ -6577,7 +6577,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
   }
 
-  /** Add outputs emitted before scalar C2 NEW nodes: preserved iteration/read chunks and newly-written chunks. */
+  /** Add outputs emitted before scalar vmap NEW nodes: preserved iteration/read chunks and newly-written chunks. */
   private emitAddDynamicOutputsBeforeEntries(
     locationData: SingleLocationData, callsiteDepth = 0,
   ): void {
@@ -6587,7 +6587,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (written.has(name)) continue;
       const sv = this.stateVariables.find((v) => v.name === name && v.isDynamic);
       if (!sv) continue;
-      this.emitReadDynamicLen(sv, '(c2_foreign_len)', locationData);
+      this.emitReadDynamicLen(sv, '(vmap_foreign_len)', locationData);
       this.emit(encodeInt(119n), locationData); this.emit(Op.OP_ADD, locationData);
       this.emit(encodeInt(120n), locationData); this.emit(Op.OP_DIV, locationData);
       this.popFromStack();
@@ -13319,12 +13319,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Read an existing C2 collection entry from the owner's finalized output set.
+   * Read an existing vmap collection entry from the owner's finalized output set.
    *
    * This path deliberately scans outputs rather than accepting an SDK-authored index. It authenticates the
    * owner-derived collection covenant, category/capability, the complete composite key hash, and uniqueness of
    * the matching entry. An absent entry currently fails closed; authenticated predecessor/default semantics are
-   * added separately because absence requires a preserved bracketing C2 output, not merely failure to find a row.
+   * added separately because absence requires a preserved bracketing vmap output, not merely failure to find a row.
    */
   private emitExternalCollectionOutStateRead(
     node: ExternalMappingAccessNode, loc: SingleLocationData,
@@ -13333,7 +13333,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitExternalOutStateOutputIndex(info.externalOutStateSlotIndex!, undefined, loc);
     this.pushToStack('(external_out_collection_master)');
 
-    // H(k0) or H(H(k0)||H(k1)..), masked to the positive 255-bit C2 slot domain.
+    // H(k0) or H(H(k0)||H(k1)..), masked to the positive 255-bit vmap slot domain.
     for (let index = 0; index < node.keys.length; index++) {
       node.keys[index] = this.visit(node.keys[index]);
       this.emit(Op.OP_SHA256, loc);
@@ -13407,7 +13407,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_PICK, loc);
     this.emit(Op.OP_EQUALVERIFY, loc);
 
-    // C2 commitment = slot32 || next32 || raw value.
+    // vmap commitment = slot32 || next32 || raw value.
     this.emit(Op.OP_DUP, loc);
     this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, loc);
     this.emit(encodeInt(32n), loc);
@@ -14470,7 +14470,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Real stack: [..., data]  (1 untracked)
 
     // Get call input index (1 untracked push). Prefer the runtime witness when present so a multi-UTXO
-    // callee band can sit after the caller's trailing resources (dynamic chunks / C2 batch preds).
+    // callee band can sit after the caller's trailing resources (dynamic chunks / vmap batch preds).
     // Fall back to the fixed block-layout slot only for legacy artifacts that still publish one.
     //
     // `data` sits untracked on the real stack (1 deep), so OP_PICK depth is trackedIndex + 1.
@@ -14709,7 +14709,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     return null;
   }
 
-  // A C2 mapping value that can exceed the 60 B inline tail: any variable-width blob - unbounded `bytes`/`string`,
+  // A vmap mapping value that can exceed the 60 B inline tail: any variable-width blob - unbounded `bytes`/`string`,
   // struct, dynamic array (isChunkableValueType). Stored as len(4B) ++ [ inline value if <=60 B | sha256(value) ];
   // a long value persists in per-slot chunk NFTs and a read verifies a witness against the hash. Fixed-width
   // (int/bool/bytesN) and small-variable (address) values never chunk (always within the 128 B commitment).
@@ -14753,7 +14753,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * The C2 non-membership bracket: given stack [.., slot32, nextKey32] (nextKey on top) and the key hash Hk32 at
+   * The vmap non-membership bracket: given stack [.., slot32, nextKey32] (nextKey on top) and the key hash Hk32 at
    * depth 2 (below slot32), verify slot < H(k) < nextKey (nextKey 0 = +infinity). Leaves the stack unchanged. This
    * is the proven absent-witness fragment (SortedMappingRead.test.ts) shared by the bool and value-typed reads.
    */
@@ -14828,13 +14828,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Sorted-set (C2 linked-list) mapping read `m[k]`. Co-spends ONE entry at the entry block-layout slot - the SDK
+   * Sorted-set (vmap linked-list) mapping read `m[k]`. Co-spends ONE entry at the entry block-layout slot - the SDK
    * provides the exact entry if k is present, else the bracketing predecessor. Pins the co-spent input's bytecode
    * to the collection's entry P2SH (a real entry of this collection), reads its commitment slot(32)||nextKey(32)
    * [||value], computes slot = sha256(k) with the last byte's high bit cleared, and returns: for a set
    * (mapping(K=>bool)) the real membership bit; for a value mapping (mapping(K=>int)) the value tail if present or
    * the type default if absent. Absence is proven by the bracket slot < H(k) < nextKey (nextKey 0 = +inf); there is
-   * no default-on-absent branch, so omitting the entry (input bytecode won't match) reverts - closes C2.
+   * no default-on-absent branch, so omitting the entry (input bytecode won't match) reverts - closes vmap.
    */
   private emitSortedSetRead(node: MappingAccessNode): Node {
     const loc = { location: node.location, positionHint: PositionHint.START };
@@ -14923,11 +14923,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
 
-    // A sorted (C2 linked-list) mapping read `m[k]`: co-spend one entry (exact if present, else the predecessor)
+    // A sorted (vmap linked-list) mapping read `m[k]`: co-spend one entry (exact if present, else the predecessor)
     // and return the real value (set -> membership bit; value mapping -> the value tail if present, else the type
     // default proven-absent via the bracket). No default-on-absent branch -> the omission attack is closed.
     if (node.collection?.sorted) {
-      // Whole value read, or (for a chunkable array value) element read: materialize the array via the C2 read,
+      // Whole value read, or (for a chunkable array value) element read: materialize the array via the vmap read,
       // then extract element [i]. emitSortedSetRead already co-spends the proving entry and reassembles chunks.
       this.emitSortedSetRead(node);
       if (node.arrayIndex) {
@@ -15057,7 +15057,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   /**
    * Extract element [arrayIndex] from an array blob already tracked as '(value)' on top of the stack (length prefix
    * ++ packed/pushdata elements). Consumes the blob, leaves the decoded element tracked as '(value)'. Shared by the
-   * default entry-model read and the sorted C2 read (which materializes the whole array via emitSortedSetRead first).
+   * default entry-model read and the sorted vmap read (which materializes the whole array via emitSortedSetRead first).
    */
   private emitArrayElementExtract(node: MappingAccessNode, loc: SingleLocationData): void {
     const arrType = node.collection!.innermostValueType as ArrayType;
@@ -15160,7 +15160,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Sorted (C2) value mapping WRITE `m[k] = v` for `mapping(K => int)` - an UPSERT. Co-spends ONE entry at the
+   * Sorted (vmap) value mapping WRITE `m[k] = v` for `mapping(K => int)` - an UPSERT. Co-spends ONE entry at the
    * entry slot: the exact k-entry if present (SDK planUpdate), else the bracketing predecessor (planInsert). The
    * covenant reads its commitment slot(32)||nextKey(32)||value and branches on slot == H(k):
    *   present -> UPDATE: pin the entry output = slot||nextKey||v (link preserved, value set to the RHS).
@@ -15321,11 +15321,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const loc = { location: node.location, positionHint: PositionHint.END };
     const collection = node.collection!;
     const slotIndex = node.entrySlotIndex;
-    if (!this.c2WitnessSnapshotsRestored
+    if (!this.vmapWitnessSnapshotsRestored
       && (this.currentFunction.sortedBatchInfo ?? []).some((batch) =>
         batch.slotIndices.some((slot) =>
           (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0))) {
-      this.restoreC2WitnessSnapshots(this.currentFunction, loc);
+      this.restoreVMapWitnessSnapshots(this.currentFunction, loc);
     }
     const collectionHash = computeCollectionHash(this.entrySlots[slotIndex].collectionSignature);
     const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
@@ -15357,12 +15357,12 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // must be a true no-op (including not evaluating its value); the owner delete remains independently proven.
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex(
-        this.c2WitnessName(`__internal__c2BatchSlot_${slotIndex}`),
+        this.vmapWitnessName(`__internal__vmapBatchSlot_${slotIndex}`),
       ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       this.emit(Op.OP_DUP, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex(
-        this.c2WitnessName(`__internal__c2BatchSlot_${aliasOwner}`),
+        this.vmapWitnessName(`__internal__vmapBatchSlot_${aliasOwner}`),
       ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_IF, loc); this.emit(Op.OP_DROP, loc);
@@ -15409,8 +15409,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (inBatch) {
       // Bind the SDK-planned full-width slot witness to the actual runtime key hash.
       this.emit(Op.OP_DUP, loc);
-      const slotWitness = `__internal__c2BatchSlot_${slotIndex}`;
-      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(slotWitness)) + 2)), loc);
+      const slotWitness = `__internal__vmapBatchSlot_${slotIndex}`;
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.vmapWitnessName(slotWitness)) + 2)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emit(Op.OP_EQUALVERIFY, loc);
 
@@ -15435,8 +15435,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc);
         this.emit(encodeInt(5n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
         this.emit(encodeInt(1n), loc); this.emit(Op.OP_PICK, loc);
-        const plannedNext = `__internal__c2BatchNext_${slotIndex}`;
-        this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(plannedNext)) + 6)), loc);
+        const plannedNext = `__internal__vmapBatchNext_${slotIndex}`;
+        this.emit(encodeInt(BigInt(this.getStackIndex(this.vmapWitnessName(plannedNext)) + 6)), loc);
         this.emit(Op.OP_PICK, loc);
         this.emit(Op.OP_EQUALVERIFY, loc);
       }
@@ -15458,8 +15458,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Proof fields are used again by the function-level transition verifier; this write only pins its target node
       // at the logical fixed output: H(k) || plannedNext || computedValue.
       this.emit(Op.OP_2DROP, loc); this.emit(Op.OP_DROP, loc); // [v,H,addr]
-      const nextWitness = `__internal__c2BatchNext_${slotIndex}`;
-      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(nextWitness)) + 2)), loc);
+      const nextWitness = `__internal__vmapBatchNext_${slotIndex}`;
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.vmapWitnessName(nextWitness)) + 2)), loc);
       this.emit(Op.OP_PICK, loc);
       this.emitEntryOutputIndex(slotIndex, loc, 4);
       this.emitVerifySortedValueOutput(loc, 2, 3, 1, 4);
@@ -15489,7 +15489,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       && !info.operations.includes('write') && !info.operations.includes('delete'));
     const extraCollectionOutputs = BigInt(sameCollectionOthers.length);
     // X11. The `delegate` exclusion here was recorded as guarding an unreachable shape. It is reachable: a
-    // delegated C2 write settles, and with the pin off NOTHING bounded the collection's output cardinality on
+    // delegated vmap write settles, and with the pin off NOTHING bounded the collection's output cardinality on
     // that route - the only thing left was the PROXY's own-category mutable NFT conservation, and the shipped
     // default upgrades proxy carries the RELAXED form (outputs >= inputs). MEASURED LIVE: one extra own-category
     // mutable NFT appended at the collection's entry address beside a genuine delegated write was ACCEPTED, and
@@ -15567,14 +15567,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (hasReturnEventSlot) {
       const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
       if (returnOutputIdx >= 0) {
-        // Five raw C2 working fields (H, original address, predecessor slot/next/value) sit above the tracked
+        // Five raw vmap working fields (H, original address, predecessor slot/next/value) sit above the tracked
         // function stack, plus the running output index itself.
         this.emit(encodeInt(BigInt(returnOutputIdx + 6)), loc); this.emit(Op.OP_PICK, loc);
         this.emit(encodeInt(0n), loc); this.emit(Op.OP_LESSTHAN, loc);
         this.emit(Op.OP_SUB, loc);
       }
     }
-    // X102. Five untracked C2 fields remain above the tracked frame here. Both the iteration-count terms and
+    // X102. Five untracked vmap fields remain above the tracked frame here. Both the iteration-count terms and
     // dynamic values are call-site-relative; the other callers have only the running partial and keep depth 0.
     if (!this.currentFunctionIsDelegate) this.emitAddDynamicOutputsBeforeEntries(loc, 5);
     this.emitVerifySortedValueOutput(loc, 1, 6, 3, 7);                  // NEW = Hk32 || coNext32 || v
@@ -15594,11 +15594,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingAssign(node: MappingAssignNode): Node {
     this.emitGraphStaticDirty(node);
-    // A C2 (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
+    // A vmap (sorted linked-list) mapping write inside a DYNAMIC runtime loop (`for(i<n) m[k[i]]=v`) is a per-iteration
     // sorted INSERT: each iteration co-spends the bracketing predecessor and mints one NEW node (emitSortedInsertLoop
     // Body), the SDK derives the evolving list. Fixed-bound loops are unrolled before codegen and reach here at
     // plainLoopDepth 0. If the insert-loop was set up (value write, single varying key), emit it; else fail closed
-    // (array element write / unsupported shape) - never degrade a C2 write to the omittable default-on-absent model.
+    // (array element write / unsupported shape) - never degrade a vmap write to the omittable default-on-absent model.
     if (node.collection?.sorted && this.plainLoopDepth > 0) {
       if (this.sortedInsertLoopActive && this.sortedInsertLoopCollection === node.collection.name
         && !node.arrayIndex && !node.arrayPush && !node.arrayPop
@@ -15615,7 +15615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
       throw new SortedMappingCodegenPendingError(node, node.collection.name);
     }
-    // Sorted (C2 linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
+    // Sorted (vmap linked-list) mapping write `m[k] = v` (or nested `m[a][b] = v`): never the omittable entry-model
     // write. Always an UPSERT (update the value if the key is present, else insert) - this is how `m[k]=false` /
     // `delete m[k]` NULLIFY a bool set (write the empty/false value tail) rather than physically removing the node,
     // matching Solidity's `delete` == assign-default. No array ops; value must be a supported sorted kind
@@ -15630,7 +15630,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     if (node.collection?.sorted && (node.arrayIndex || node.arrayPush || node.arrayPop)
       && this.isChunkableValue(node.collection.innermostValueType)) {
-      // Sorted C2 array write (`m[k][i]=v` / `m[k].push(v)` / `m[k].pop()`): RMW the whole array value through the
+      // Sorted vmap array write (`m[k][i]=v` / `m[k].push(v)` / `m[k].pop()`): RMW the whole array value through the
       // chunk-aware upsert, mirroring the struct field-write path. emitMappingArrayElementAssign in sortedRmw mode
       // materializes the current array (Phase 1), applies element/push/pop surgery (Phase 2), and leaves the modified
       // blob for emitSortedValueUpsert to chunk/store (Phase 3). push/pop CHANGE the element count, so the value can
@@ -15737,7 +15737,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   private replaceSortedCompositeCache(slotIndex: number, node: Node): void {
     this.discardSortedCompositeCache(slotIndex, node);
-    const name = `(__c2_composite_${slotIndex})`;
+    const name = `(__vmap_composite_${slotIndex})`;
     this.stack[0] = name;
     this.sortedCompositeValueCache.set(slotIndex, name);
   }
@@ -15782,7 +15782,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let untrackedCount = 1;
 
     if (sortedRmw) {
-      // Sorted C2 RMW: materialize the current array value (reassembling chunks if chunked),
+      // Sorted vmap RMW: materialize the current array value (reassembling chunks if chunked),
       // then fall through to the shared Phase 2 surgery. Phase 3 leaves the blob for the upsert.
       this.emitSortedSetRead(node as unknown as MappingAccessNode);
       this.popFromStack();
@@ -16113,7 +16113,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.popFromStack();                  // 3 -> 2
   }
 
-  // A SORTED (C2) chunkable struct field write, routed as a whole-value RMW: read the current struct (materialized
+  // A SORTED (vmap) chunkable struct field write, routed as a whole-value RMW: read the current struct (materialized
   // via emitSortedSetRead, chunking-transparent), replace the field, re-store via emitSortedValueUpsert (re-chunk +
   // pin). Co-spends the entry once, like a scalar RMW `m[k] = m[k] + v`.
   private emitSortedStructFieldWrite(node: MappingFieldAssignNode): Node {
@@ -16171,8 +16171,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (this.plainLoopDepth > 0 && node.entrySlotIndex >= 0) {
       throw new EntryWriteInLoopError(node, node.collection?.name ?? node.name);
     }
-    // A SORTED (C2) chunkable struct field write `m[k].f = v` is a whole-value RMW: the default-model path below
-    // reads the key||value commitment (wrong for the slot||next||value C2 entry) and the chunkable len4 tail, so
+    // A SORTED (vmap) chunkable struct field write `m[k].f = v` is a whole-value RMW: the default-model path below
+    // reads the key||value commitment (wrong for the slot||next||value vmap entry) and the chunkable len4 tail, so
     // route it through the chunk-aware ops - read the whole struct (materialized), replace field f, re-store
     // (re-chunk + pin). Reuses emitSortedSetRead + emitSortedValueUpsert like a scalar RMW, co-spending once.
     if (node.collection?.sorted && this.isChunkableValue(node.collection.innermostValueType)) {
@@ -16485,14 +16485,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   visitMappingDelete(node: MappingDeleteNode): Node {
     this.emitGraphStaticDirty(node);
-    // A sorted (C2) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
+    // A sorted (vmap) mapping `delete m[k]` == assign the type default (Solidity semantics: delete is an assignment,
     // never a physical removal - libsolidity storageSetToZero). Route it through the upsert with value = default:
     // present -> update to 0/false/empty (nullify, node stays), absent -> insert the default. Works for bool sets
     // (delete claimed[k] writes the empty/false tail) and value mappings alike, single- or composite-key.
     if (node.collection?.sorted) {
       const slotIndex = node.entrySlotIndex;
       if (this.condDeleteSlots.has(slotIndex)) {
-        // Conditional C2 delete: the preallocated key register contains the complete input commitment so the
+        // Conditional vmap delete: the preallocated key register contains the complete input commitment so the
         // untaken path preserves it exactly. On the taken path authenticate H(key) against input.slot, retain
         // input.slot||input.next as the commitment prefix, and replace only the value tail with the type default.
         // This must run before the ordinary sorted upsert path: emitting both mechanisms for one slot corrupts
@@ -16536,9 +16536,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.updateSortedUpsertLoopContext(upsertContext);
         return emitted;
       }
-      // A C2 `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
+      // A vmap `delete m[k]` in a DYNAMIC loop is a per-iteration sorted delete of an EVOLVING list - the same deep
       // case visitMappingAssign fails closed on. emitSortedValueUpsert co-spends the entry at a FIXED block slot, so
-      // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a C2 hole).
+      // running it in a loop would pin only ONE iteration's delete and leave the rest un-covenanted (a vmap hole).
       // Fail closed (fixed-bound loops are unrolled to plainLoopDepth 0 before codegen and still work).
       if (this.plainLoopDepth > 0) {
         throw new SortedMappingCodegenPendingError(node, node.collection.name);
@@ -16588,7 +16588,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Verify an atomic fixed-write C2 transition using only stack-neutral, freshly-introspected fields. Keeping no
+   * Verify an atomic fixed-write vmap transition using only stack-neutral, freshly-introspected fields. Keeping no
    * parsed commitment fields across checks avoids coupling this verifier to the body's tracked-stack lifetime.
    */
   private emitGuardedSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
@@ -16597,7 +16597,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       (layout) => layout.kind === 'entry' && layout.slotIndex === slot && layout.conditional,
     )) ? node.blockLayout?.slots.find((layout) => layout.kind === 'entry' && layout.softDelete) : undefined;
     const loc = { location: node.location, positionHint: PositionHint.END } as SingleLocationData;
-    this.restoreC2WitnessSnapshots(node, loc);
+    this.restoreVMapWitnessSnapshots(node, loc);
     const runtimeAliasSlots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices)
       .filter((slot) => (this.entrySlots[slot]?.runtimeAliasPriorSlots?.length ?? 0) > 0);
     if (runtimeAliasSlots.length > 0) {
@@ -16606,7 +16606,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // divergence, then remove the bottom item before normal covenant settlement. This is deliberately not a
       // permissive "clean whatever remains" operation: both arms assert their exact expected depth first.
       runtimeAliasSlots.forEach((slot, index) => {
-        const name = this.c2WitnessName(`__internal__c2BatchPredOut_${slot}`);
+        const name = this.vmapWitnessName(`__internal__vmapBatchPredOut_${slot}`);
         this.emit(encodeInt(BigInt(this.getStackIndex(name) + (index === 0 ? 0 : 1))), loc);
         this.emit(Op.OP_PICK, loc); this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
         if (index > 0) this.emit(Op.OP_BOOLOR, loc);
@@ -16626,7 +16626,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(encodeInt(64n), loc); this.emit(Op.OP_GREATERTHANOREQUAL, loc); this.emit(Op.OP_IF, loc);
       this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc);
       this.emit(encodeInt(BigInt(this.getStackIndex(
-        this.c2WitnessName(`__internal__c2BatchSlot_${guard.slotIndex}`),
+        this.vmapWitnessName(`__internal__vmapBatchSlot_${guard.slotIndex}`),
       ) + 1)), loc);
       this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUAL, loc);
       this.emit(Op.OP_ELSE, loc); this.emit(Op.OP_DROP, loc); this.emit(Op.OP_0, loc); this.emit(Op.OP_ENDIF, loc);
@@ -16635,10 +16635,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitSortedBatchTransitionVerification(node);
     if (guard?.slotIndex !== undefined) this.emit(Op.OP_ENDIF, loc);
     const snapshots = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__c2_snapshot___internal__c2BatchSlot_${slot}`,
-      `__c2_snapshot___internal__c2BatchProof_${slot}`,
-      `__c2_snapshot___internal__c2BatchNext_${slot}`,
-      `__c2_snapshot___internal__c2BatchPredOut_${slot}`,
+      `__vmap_snapshot___internal__vmapBatchSlot_${slot}`,
+      `__vmap_snapshot___internal__vmapBatchProof_${slot}`,
+      `__vmap_snapshot___internal__vmapBatchNext_${slot}`,
+      `__vmap_snapshot___internal__vmapBatchPredOut_${slot}`,
     ]));
     for (const name of snapshots.reverse()) {
       const depth = this.getStackIndex(name, true);
@@ -16671,76 +16671,76 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           .filter((prior) => batch.slotIndices.includes(prior));
         if (priors.length === 0) continue;
         for (let i = 0; i < priors.length; i++) {
-          copy(`__internal__c2BatchSlot_${slot}`); this.emit(Op.OP_TOALTSTACK, loc);
-          copy(`__internal__c2BatchSlot_${priors[i]}`); this.emit(Op.OP_FROMALTSTACK, loc);
+          copy(`__internal__vmapBatchSlot_${slot}`); this.emit(Op.OP_TOALTSTACK, loc);
+          copy(`__internal__vmapBatchSlot_${priors[i]}`); this.emit(Op.OP_FROMALTSTACK, loc);
           this.emit(Op.OP_EQUAL, loc);
           if (i === 0) this.emit(Op.OP_TOALTSTACK, loc);
           else {
             this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_BOOLOR, loc); this.emit(Op.OP_TOALTSTACK, loc);
           }
         }
-        copy(`__internal__c2BatchPredOut_${slot}`);
+        copy(`__internal__vmapBatchPredOut_${slot}`);
         this.emit(encodeInt(-2n), loc); this.emit(Op.OP_NUMEQUAL, loc);
         this.emit(Op.OP_FROMALTSTACK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
       }
     }
     // Keep an untouched copy of every topology witness above the mutable handler frame. Internal handler calls
-    // may legally reorder the original parameter cells while preserving stack depth; all post-body C2 work reads
+    // may legally reorder the original parameter cells while preserving stack depth; all post-body vmap work reads
     // these snapshots instead. Freeze the name list here - restore MUST pop the same sequence.
     const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__internal__c2BatchSlot_${slot}`,
-      `__internal__c2BatchProof_${slot}`,
-      `__internal__c2BatchNext_${slot}`,
-      `__internal__c2BatchPredOut_${slot}`,
+      `__internal__vmapBatchSlot_${slot}`,
+      `__internal__vmapBatchProof_${slot}`,
+      `__internal__vmapBatchNext_${slot}`,
+      `__internal__vmapBatchPredOut_${slot}`,
     ]));
     const names = [
       ...topologyNames,
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
     ];
-    this.c2WitnessSnapshotNames = names;
+    this.vmapWitnessSnapshotNames = names;
     for (const name of names) {
       copy(name);
       this.emit(Op.OP_TOALTSTACK, loc);
     }
   }
 
-  private restoreC2WitnessSnapshots(node: FunctionDefinitionNode, loc: SingleLocationData): void {
-    if (this.c2WitnessSnapshotsRestored) return;
+  private restoreVMapWitnessSnapshots(node: FunctionDefinitionNode, loc: SingleLocationData): void {
+    if (this.vmapWitnessSnapshotsRestored) return;
     const topologyNames = (node.sortedBatchInfo ?? []).flatMap((batch) => batch.slotIndices.flatMap((slot) => [
-      `__internal__c2BatchSlot_${slot}`,
-      `__internal__c2BatchProof_${slot}`,
-      `__internal__c2BatchNext_${slot}`,
-      `__internal__c2BatchPredOut_${slot}`,
+      `__internal__vmapBatchSlot_${slot}`,
+      `__internal__vmapBatchProof_${slot}`,
+      `__internal__vmapBatchNext_${slot}`,
+      `__internal__vmapBatchPredOut_${slot}`,
     ]));
     // Prefer the frozen preflight list. Recomputing keyParams here is unsafe: a final-use OP_ROLL in the body
     // (emit args, later statements) removes those names from the tracked stack, so a re-filter would pop fewer
     // altstack items than preflight pushed and scramble every subsequent topology witness.
-    const names = this.c2WitnessSnapshotNames ?? [
+    const names = this.vmapWitnessSnapshotNames ?? [
       ...topologyNames,
       ...[...new Set((node.entryAccesses ?? []).flatMap((entry) => entry.keyParams))]
         .filter((candidate) => this.getStackIndex(candidate, true) >= 0),
     ];
     for (const name of names.reverse()) {
       this.emit(Op.OP_FROMALTSTACK, loc);
-      this.pushToStack(topologyNames.includes(name) ? `__c2_snapshot_${name}` : name);
+      this.pushToStack(topologyNames.includes(name) ? `__vmap_snapshot_${name}` : name);
     }
-    this.c2WitnessSnapshotsRestored = true;
+    this.vmapWitnessSnapshotsRestored = true;
   }
 
-  private c2WitnessName(name: string): string {
-    const snapshot = `__c2_snapshot_${name}`;
+  private vmapWitnessName(name: string): string {
+    const snapshot = `__vmap_snapshot_${name}`;
     return this.getStackIndex(snapshot, true) >= 0 ? snapshot : name;
   }
 
   private emitSortedBatchTransitionVerification(node: FunctionDefinitionNode): void {
     const loc = { location: node.location, positionHint: PositionHint.START };
     const arg = (name: string, extra = 0): void => {
-      this.emit(encodeInt(BigInt(this.getStackIndex(this.c2WitnessName(name)) + extra)), loc);
+      this.emit(encodeInt(BigInt(this.getStackIndex(this.vmapWitnessName(name)) + extra)), loc);
       this.emit(Op.OP_PICK, loc);
     };
     const proofIndex = (slot: number, extra = 0): void => {
-      arg(`__internal__c2BatchProof_${slot}`, extra);
+      arg(`__internal__vmapBatchProof_${slot}`, extra);
       this.emitMasterInputIndex(loc);
       this.emit(Op.OP_ADD, loc);
     };
@@ -16791,13 +16791,13 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const fixedField = (field: 'slot' | 'next'): void => commitmentField(() => {
           this.emitBlockSlotIndex('entry', aliasOwner, loc); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc);
         }, field);
-        fixedField('slot'); arg(`__internal__c2BatchSlot_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
-        fixedField('next'); arg(`__internal__c2BatchNext_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
-        arg(`__internal__c2BatchPredOut_${aliasOwner}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+        fixedField('slot'); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
+        fixedField('next'); arg(`__internal__vmapBatchNext_${aliasOwner}`, 1); bin(Op.OP_EQUALVERIFY);
+        arg(`__internal__vmapBatchPredOut_${aliasOwner}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
         // SDK sentinel iff runtime keys alias.
-        arg(`__internal__c2BatchSlot_${aliasWrite}`); arg(`__internal__c2BatchSlot_${aliasOwner}`, 1);
+        arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
         bin(Op.OP_EQUAL);
-        arg(`__internal__c2BatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
+        arg(`__internal__vmapBatchPredOut_${aliasWrite}`, 1); this.emit(encodeInt(-2n), loc);
         bin(Op.OP_NUMEQUAL); bin(Op.OP_EQUALVERIFY);
       } else if (targets.length === 1) {
         const slot = targets[0];
@@ -16805,31 +16805,31 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           commitmentField(() => { proofIndex(slot, extra); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); }, field);
         };
         // One logical target has no intra-batch topology: its final next must equal the authenticated old next.
-        directProofField('next'); arg(`__internal__c2BatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
-        directProofField('slot'); arg(`__internal__c2BatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
+        directProofField('next'); arg(`__internal__vmapBatchNext_${slot}`, 1); bin(Op.OP_EQUALVERIFY);
+        directProofField('slot'); arg(`__internal__vmapBatchSlot_${slot}`, 1); bin(Op.OP_EQUAL);
         bin(Op.OP_IF);
         // UPDATE: no separate predecessor output is permitted.
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_1NEGATE); bin(Op.OP_NUMEQUALVERIFY);
         bin(Op.OP_ELSE);
         // INSERT: recreate the exact proof predecessor as proof.slot || target || proof.value.
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_0);
         bin(Op.OP_GREATERTHANOREQUAL); bin(Op.OP_VERIFY); bin(Op.OP_DROP);
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP); bin(Op.OP_OUTPUTBYTECODE);
         proofIndex(slot, 2); bin(Op.OP_UTXOBYTECODE); bin(Op.OP_EQUALVERIFY); bin(Op.OP_DROP);
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCATEGORY);
         bin(Op.OP_DUP); this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_NIP);
         this.emit(new Uint8Array([1]), loc); bin(Op.OP_EQUALVERIFY);
         this.emitVerifyCatBaseEqMaster(loc);
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
-        directProofField('slot', 1); arg(`__internal__c2BatchSlot_${slot}`, 2); bin(Op.OP_CAT);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_OUTPUTTOKENCOMMITMENT);
+        directProofField('slot', 1); arg(`__internal__vmapBatchSlot_${slot}`, 2); bin(Op.OP_CAT);
         directProofField('value', 2); bin(Op.OP_CAT); bin(Op.OP_EQUALVERIFY);
         bin(Op.OP_ENDIF);
       } else {
       // Pack slot||plannedNext pairs while the main stack is clean, then keep the blob at the bottom of this
       // batch's altstack frame. Reverse pushes make OP_CAT materialize declaration order.
         for (const slot of [...targets].reverse()) {
-          arg(`__internal__c2BatchNext_${slot}`); bin(Op.OP_TOALTSTACK);
-          arg(`__internal__c2BatchSlot_${slot}`); bin(Op.OP_TOALTSTACK);
+          arg(`__internal__vmapBatchNext_${slot}`); bin(Op.OP_TOALTSTACK);
+          arg(`__internal__vmapBatchSlot_${slot}`); bin(Op.OP_TOALTSTACK);
         }
         for (let i = 0; i < targets.length * 2; i++) {
           bin(Op.OP_FROMALTSTACK);
@@ -16856,9 +16856,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         for (const slot of targets) {
         // Runtime aliases have no proof input or target output. Their sentinel/hash equivalence was authenticated
         // above; all remaining topology checks operate on the canonical first occurrence.
-          arg(`__internal__c2BatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
+          arg(`__internal__vmapBatchPredOut_${slot}`); this.emit(encodeInt(-2n), loc);
           bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
-          arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
+          arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_TOALTSTACK);
           proofIndex(slot); this.emit(Op.OP_UTXOTOKENCOMMITMENT, loc); bin(Op.OP_TOALTSTACK);
 
           // plannedNext is either oldNext or one of this batch's target slots.
@@ -16885,7 +16885,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           // Every target lying in this original proof gap is at or after plannedNext (so none can be skipped).
           for (const other of targets) {
             if (other === slot) continue;
-            arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+            arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
             bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
             batchField(slot, 'slot'); bin(Op.OP_BIN2NUM); batchField(other, 'slot'); bin(Op.OP_BIN2NUM);
             bin(Op.OP_LESSTHAN); // h < other
@@ -16936,7 +16936,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           }
           bin(Op.OP_VERIFY);
           for (const other of targets) {
-            arg(`__internal__c2BatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
+            arg(`__internal__vmapBatchPredOut_${other}`); this.emit(encodeInt(-2n), loc);
             bin(Op.OP_NUMEQUAL); bin(Op.OP_NOTIF);
             proofField(slot, 'slot'); bin(Op.OP_BIN2NUM);
             batchField(other, 'slot'); bin(Op.OP_BIN2NUM); bin(Op.OP_LESSTHAN);
@@ -16962,26 +16962,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
       // Exact collection-address output cardinality: every target is one node; each distinct nonnegative predOut
       // is one recreated non-target predecessor. Read-only accesses to this collection are preserved separately.
-      const expected = `(__c2_batch_expected_${batch.collection})`;
+      const expected = `(__vmap_batch_expected_${batch.collection})`;
       if (aliasWrite !== undefined && aliasOwner !== undefined) {
-        arg(`__internal__c2BatchSlot_${aliasWrite}`); arg(`__internal__c2BatchSlot_${aliasOwner}`, 1);
+        arg(`__internal__vmapBatchSlot_${aliasWrite}`); arg(`__internal__vmapBatchSlot_${aliasOwner}`, 1);
         bin(Op.OP_EQUAL); bin(Op.OP_IF); this.emit(encodeInt(BigInt(targets.length - 1)), loc);
         bin(Op.OP_ELSE); this.emit(encodeInt(BigInt(targets.length)), loc); bin(Op.OP_ENDIF);
       } else {
         this.emit(encodeInt(BigInt(targets.length)), loc);
         for (const slot of runtimeAliases) {
-          arg(`__internal__c2BatchPredOut_${slot}`, 1);
+          arg(`__internal__vmapBatchPredOut_${slot}`, 1);
           this.emit(encodeInt(-2n), loc); bin(Op.OP_NUMEQUAL); bin(Op.OP_SUB);
         }
       }
       this.pushToStack(expected);
       for (let i = 0; i < targets.length; i++) {
         const slot = targets[i];
-        arg(`__internal__c2BatchPredOut_${slot}`); bin(Op.OP_DUP);
+        arg(`__internal__vmapBatchPredOut_${slot}`); bin(Op.OP_DUP);
         bin(Op.OP_0); bin(Op.OP_GREATERTHANOREQUAL); // [pout, include]
         for (let j = 0; j < i; j++) {
           bin(Op.OP_OVER);
-          arg(`__internal__c2BatchPredOut_${targets[j]}`, 3);
+          arg(`__internal__vmapBatchPredOut_${targets[j]}`, 3);
           bin(Op.OP_EQUAL); bin(Op.OP_NOT); bin(Op.OP_BOOLAND);
         }
         bin(Op.OP_SWAP); bin(Op.OP_DROP); // include
@@ -16997,7 +16997,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         this.emitReplace(this.getStackIndex(expected) + 1, node);
       }
 
-      const addr = `(__c2_batch_addr_${batch.collection})`;
+      const addr = `(__vmap_batch_addr_${batch.collection})`;
       this.emitMasterInputIndex(loc); bin(Op.OP_UTXOTOKENCATEGORY);
       this.emit(encodeInt(32n), loc); bin(Op.OP_SPLIT); bin(Op.OP_DROP);
       this.pushToStack(addr);
@@ -17029,7 +17029,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const entry = this.entrySlots[slotIndex];
     const loopContext = entry?.inLoop ? this.sortedUpsertLoopContexts.get(entry.collection) : undefined;
     if (loopContext) {
-      // A varying-key C2 RMW first reads the same entry/predecessor that its loop body later updates. It lives in
+      // A varying-key vmap RMW first reads the same entry/predecessor that its loop body later updates. It lives in
       // the runtime trailing region, not a fixed `entry[N]` block slot. The counter is incremented only after the
       // write, so every read during this iteration addresses the exact co-spend consumed by the transition body.
       const blockSize = this.currentFunction.blockLayout?.blockSize ?? 1;
@@ -17045,8 +17045,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       return;
     }
     if (this.currentFunction.sortedBatchInfo?.some((b) => b.slotIndices.includes(slotIndex))) {
-      const name = `__internal__c2BatchProof_${slotIndex}`;
-      const depth = this.getStackIndex(this.c2WitnessName(name), true);
+      const name = `__internal__vmapBatchProof_${slotIndex}`;
+      const depth = this.getStackIndex(this.vmapWitnessName(name), true);
       if (depth >= 0) {
         this.emitMasterInputIndex(locationData);
         this.emit(encodeInt(BigInt(depth + extraStackOffset + 1)), locationData);
@@ -17491,7 +17491,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.entryLoopActive = false;
   }
 
-  /** The sorted (C2) value-write MappingAssign inside a loop body (`for(i<n) m[k[i]]=v`), or null. */
+  /** The sorted (vmap) value-write MappingAssign inside a loop body (`for(i<n) m[k[i]]=v`), or null. */
   private findSortedInsertLoopWrite(node: Node): MappingAssignNode | null {
     let found: MappingAssignNode | null = null;
     const seen = new WeakSet<object>(); // resolved-reference fields (.collection, symbols) can form cycles post-inline
@@ -17523,7 +17523,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Set up a C2 (sorted linked-list) diff-key INSERT loop `for(i<n) m[k[i]]=v`: push the loop-invariant entry NFT
+   * Set up a vmap (sorted linked-list) diff-key INSERT loop `for(i<n) m[k[i]]=v`: push the loop-invariant entry NFT
    * P2SH32 address + a runtime counter (inserts-done-so-far = 0) BEFORE OP_BEGIN so both persist across iterations.
    * Each iteration co-spends the bracketing predecessor and mints one NEW node; the SDK derives the evolving list.
    * Returns false when the loop has no sorted value-write, or when an outer loop already set one up.
@@ -17638,7 +17638,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * One iteration of a C2 diff-key INSERT loop. Modeled on emitSortedValueUpsert's INSERT branch (identical working-
+   * One iteration of a vmap diff-key INSERT loop. Modeled on emitSortedValueUpsert's INSERT branch (identical working-
    * area layout [v, Hk, addr, coSlot, coNext, coValue], so the same emitVerifySortedValueOutput depth args hold), but
    * co-spends the predecessor at input[master+blockSize+counter] and emits P' at output[..+2*counter] / NEW at
    * output[..+2*counter+1]. INSERT-ONLY: the bracket coSlot<Hk<coNext fails closed if the key is already present.
@@ -17760,7 +17760,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.sortedInsertLoopCollection = null;
   }
 
-  // Detect a per-iteration C2 UPDATE loop write `for(i) m[k[i]] += v[i]` (or `-= v[i]`): a MappingAssignNode on a
+  // Detect a per-iteration vmap UPDATE loop write `for(i) m[k[i]] += v[i]` (or `-= v[i]`): a MappingAssignNode on a
   // sorted int mapping whose expression is a self-read RMW (BinaryOp with left = a read of the SAME m[k], op
   // PLUS/MINUS). By GTT an INVARIANT-key RMW loop is already lifted out by CacheMappingEntryInLoop, so a sorted RMW
   // loop write that reaches here has a VARYING key (k[i]) - each iteration co-spends k[i]'s OWN existing entry.
@@ -17924,7 +17924,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Set up a per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients):
+   * Set up a per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients):
    * push the loop-invariant entry NFT P2SH32 address + a runtime counter (updates-done = 0) BEFORE OP_BEGIN. Each
    * iteration co-spends k[i]'s OWN entry at input[master+blockSize+counter] and mints the updated entry at
    * output[master+blockSize+counter]. Records the varying key array + value array so the SDK co-spends each existing
@@ -18023,7 +18023,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       // Solidity <0.8 projects conventionally express checked mapping RMWs through SafeMath/BoringMath:
       // `m[k] = m[k].add(v)`. The resolved using-for call already carries its receiver as argument 0. SolidCash's
       // bounded integer operators are checked, so a PURE two-argument library add/sub is equivalent at this
-      // transition boundary (including failure on overflow/underflow) and can use the native C2 RMW generator.
+      // transition boundary (including failure on overflow/underflow) and can use the native vmap RMW generator.
       // Keep this deliberately narrow: arbitrary helpers, non-library calls, and other operators remain unsupported.
       const wrapped = assign.expression;
       if (wrapped instanceof FunctionCallNode
@@ -18342,7 +18342,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * One iteration of a per-iteration C2 UPSERT loop `for(i) m[k[i]] += v[i]`. Co-spend ONE input at
+   * One iteration of a per-iteration vmap UPSERT loop `for(i) m[k[i]] += v[i]`. Co-spend ONE input at
    * input[master+blockSize+iterCounter] (k[i]'s entry for an UPDATE, or its bracketing predecessor for an INSERT of a
    * NEW recipient), read [coSlot|coNext|coValue], and branch on coSlot == keyToSlot(k[i]):
    *   UPDATE (present): DEFER - stash coSlot|coNext|newValue in the pending registers (mint next iter / teardown).
@@ -18574,7 +18574,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Tear down a per-iteration C2 UPSERT loop after OP_UNTIL: pin the entry-INPUT count == iterCounter + nFixed (one
+   * Tear down a per-iteration vmap UPSERT loop after OP_UNTIL: pin the entry-INPUT count == iterCounter + nFixed (one
    * co-spend per recipient + the fixed debit) and the entry-OUTPUT count == outCounter + nFixed (updates mint 1,
    * inserts mint 2), so there are no orphan / extra entries. Then drop [outCounter, iterCounter, addr].
    */
@@ -19227,7 +19227,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       this.emitAddCollectionIterCounts(loc); // collection-iter entry outputs precede chunk outputs (W4)
-      const batchCountIdx = this.getStackIndex('__internal__c2BatchTrailingCount', true);
+      const batchCountIdx = this.getStackIndex('__internal__vmapBatchTrailingCount', true);
       if (batchCountIdx >= 0) {
         this.emit(encodeInt(BigInt(batchCountIdx + 1)), loc);
         this.emit(Op.OP_PICK, loc); this.emit(Op.OP_ADD, loc);
@@ -19615,7 +19615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   /**
-   * Untracked-stack variant of emitVerifyChunkUtxoCount for the single-write C2 upsert, whose working area is a
+   * Untracked-stack variant of emitVerifyChunkUtxoCount for the single-write vmap upsert, whose working area is a
    * run of raw values the stack tracker does not name. Expects the expected count on top and the collection entry
    * address `addrDepth` items below it; both operands are consumed, leaving the working area unchanged.
    */

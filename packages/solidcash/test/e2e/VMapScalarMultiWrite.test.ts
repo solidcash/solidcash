@@ -7,7 +7,7 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// SOUNDNESS: two STRAIGHT-LINE writes to the SAME C2 scalar entry in one call (`m[k]+=a; m[k]+=b`) each route to
+// SOUNDNESS: two STRAIGHT-LINE writes to the SAME vmap scalar entry in one call (`m[k]+=a; m[k]+=b`) each route to
 // their own emitSortedValueUpsert, which co-spends the entry NFT + emits one output. A second upsert needs a second
 // co-spend of the same (already-spent) input, so the covenant OP_VERIFYs must fail (revert) - NEVER silently store a
 // partial value. (The ARRAY-valued same-entry case is coalesced by CacheMappingEntryInLoop; the scalar case is not,
@@ -23,7 +23,7 @@ const SRC = `contract C() {
   function chkval(bytes20 k, bigint expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.m[k] == expected); }
 }`;
 
-describe('C2 consecutive same-entry scalar RMW (must fail closed, never partial-store)', () => {
+describe('vmap consecutive same-entry scalar RMW (must fail closed, never partial-store)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   let n = 0x1a00;

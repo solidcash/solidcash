@@ -288,7 +288,7 @@ export interface AbiFunction {
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];
-  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
+  // Sorted (vmap) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
   // predecessors and emits N (P', NEW) commitment pairs, deriving the evolving sorted list per iteration.
   sortedInsertLoops?: readonly string[];
   // Per-loop derivation metadata for the above: the fixed leading key params, the varying key array param (its
@@ -296,7 +296,7 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
+  /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
@@ -403,7 +403,7 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
-  /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
+  /** True when this mapping uses the vmap sorted-linked-list backend (SDK drives it via SortedList). */
   sorted?: boolean;
   /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
    * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */
@@ -421,7 +421,7 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
-// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+// Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
@@ -470,7 +470,7 @@ export interface EntryAccessAbi {
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
-  // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
+  // A sorted (vmap) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
 }

@@ -10,9 +10,9 @@ import {
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
 /**
- * X11 - a `delegate` function performing a C2 sorted-linked-list mapping write.
+ * X11 - a `delegate` function performing a vmap sorted-linked-list mapping write.
  *
- * The class was recorded as having no settling instance. That is stale: a delegated C2 write settles. What had
+ * The class was recorded as having no settling instance. That is stale: a delegated vmap write settles. What had
  * no settling instance is this shape - a delegated write against a proxy that owns NO data NFTs of its own -
  * and the split between UPDATE and INSERT below is the finding.
  *
@@ -35,7 +35,7 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
  *    `... OP_0 OP_LESSTHANOREQUAL OP_VERIFY` - the RELAXED conservation (outputs >= inputs) - where a fresh
  *    compile of its own source ends `... OP_0 OP_NUMEQUALVERIFY` (159 bytes checked in against 173 fresh). X50
  *    regenerated that file, so the shipped proxy conserves too and the delegated INSERT is refused there as
- *    well (UpgradesDeployProxy.test.ts, 'refuses a delegated C2 mapping INSERT at the proxy').
+ *    well (UpgradesDeployProxy.test.ts, 'refuses a delegated vmap mapping INSERT at the proxy').
  */
 const LIB = `pragma solidcash >=0.8.0;
 library MapLib {
@@ -131,7 +131,7 @@ function expectRejectedAt(outcome: string, inputIndex: number): void {
   }
 }
 
-describe('X11: delegate C2 sorted mapping write', () => {
+describe('X11: delegate vmap sorted mapping write', () => {
   /**
    * GUARD NEGATIVE CONTROL. The forwarder really does publish no entry accesses and the implementation really
    * does, so a green result below can only come from routing the impl's - not from the proxy having had them

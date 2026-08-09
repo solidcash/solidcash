@@ -851,7 +851,7 @@ export function isDynamicStorageType(type: Type): boolean {
 }
 
 /**
- * A P5b CHUNKABLE C2 mapping value: a variable-width blob that chunks off-commitment when it exceeds the ~60 B
+ * A P5b CHUNKABLE vmap mapping value: a variable-width blob that chunks off-commitment when it exceeds the ~60 B
  * inline tail (stored as len ++ sha256, the value in per-slot chunk NFTs). Covers unbounded `bytes`/`string`,
  * `struct`, and any array `T[]` / `T[N]` - any value whose blob can exceed the 128 B commitment. A small value
  * (int, bool, bytesN, a short array/struct) stays inline in the tail; the runtime `size > 60` guard picks inline

@@ -252,7 +252,7 @@ directly (the symbol table pops the lone `arrayIndex`). Two or more array indice
 
 Handles nested mapping keys (the first `keyCount` indices are keys, the rest are array dimensions) and reads in
 any expression position (per-statement hoist, save/restored across nested blocks). No new covenant code - it
-reduces to the whole-value C2 RW + the existing local nested-array desugar. VM roundtrip: solidcash
+reduces to the whole-value vmap RW + the existing local nested-array desugar. VM roundtrip: solidcash
 `MappingArray2dWrite.test.ts`.
 
 ## Maintenance notes

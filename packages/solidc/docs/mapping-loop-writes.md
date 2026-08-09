@@ -1,6 +1,6 @@
 # Mapping writes in loops
 
-Writing a C2 mapping inside a loop (`for (uint i = 0; i < n; i++) m[k[i]] = v[i];`) is supported through fixed
+Writing a vmap mapping inside a loop (`for (uint i = 0; i < n; i++) m[k[i]] = v[i];`) is supported through fixed
 unrolling, invariant-key caching, and the runtime sorted-upsert covenant. The old unsorted `key || value` entry
 model described in early design notes is gone; every persisted node is `slot[32] || nextSlot[32] || valueTail`.
 
@@ -37,10 +37,10 @@ runtime-variable output count, exactly like `dynamicChunkVars`.
 ## Soundness rules
 
 The following bullets describe the original unsorted loop-mint path and are retained as historical threat-model
-context. Mandatory C2 now routes varying-key writes through the sorted-upsert machinery; invariant keys are cached
+context. Mandatory vmap now routes varying-key writes through the sorted-upsert machinery; invariant keys are cached
 and flushed once. Authenticated reverse-suffix chunk outputs support both invariant and per-key values above 60
 bytes. Current restrictions include multi-collection interleaving, unsupported loop-local value expressions,
-duplicate keys in array-mutation loops, and the composition cases listed in `sorted-mapping-c2.md` §10.1.
+duplicate keys in array-mutation loops, and the composition cases listed in `verified-mappings.md` §10.1.
 
 The write is sound only when each iteration writes a **distinct** entry. The compiler enforces the checkable part
 of that and fails closed (`EntryWriteInLoopError`) otherwise:
@@ -59,7 +59,7 @@ of that and fails closed (`EntryWriteInLoopError`) otherwise:
   old whole-array witness per effective key. Duplicate mutation keys are rejected because they require sequential
   folding over one co-spent entry.
 
-## Historical RMW blocker and C2 resolution
+## Historical RMW blocker and vmap resolution
 
 `for (i<n) m[k[i]] += v[i]` (ERC1155 `_batchMint`/`_batchBurn`/`_batchTransfer`) needs to read the OLD value of
 `m[k[i]]` each iteration, add, and write the sum. This splits by whether the key already exists:
@@ -67,10 +67,10 @@ of that and fails closed (`EntryWriteInLoopError`) otherwise:
 - **Existing keys (sound, but partial).** Force-co-spend each key's entry NFT at `input[blockSize + counter]` and
   pin its decoded key `== k[i]` (exactly the dynamic-storage chunk read's `chunkIndex == i` pin), read old from
   its commitment, write `old + v[i]` to `output[blockSize + counter]`, and pin both the input and output entry
-  counts to N. Because the covenant *requires* the entry at that slot, it cannot be omitted - no C2. This is sound
+  counts to N. Because the covenant *requires* the entry at that slot, it cannot be omitted - no vmap. This is sound
   but only covers keys that already exist.
 - **New keys (unsound).** A first-time `+=` (e.g. `_batchMint` to a fresh account) has no entry to co-spend, so
-  the read must fall back to the type default (0). That default-on-absent read is exactly the C2 omission attack
+  the read must fall back to the type default (0). That default-on-absent read is exactly the vmap omission attack
   (`mapping-omission-security.md`): a spender omits an existing entry, the covenant reads 0, and writes `v[i]`
   instead of `old + v[i]` - **resetting a token balance**. For a batch balance update this is a fund-safety
   hazard, not just self-denial.
@@ -79,13 +79,13 @@ So the *useful* case (mint to new accounts) is unsound, and the *sound* case (al
 `_batchMint`. RMW therefore stays `EntryWriteInLoopError` (fail-closed) rather than shipping a caveated covenant.
 The sound existing-keys-only variant is a clean future addition (reuse `emitDynamicReadLoop` for the input read
 and `emitVerifyChunkUtxoCount(isOutput=false)` for the input-count pin), gated to reject any not-yet-existing key.
-Closing the new-key case needs the C2 fix itself: an entry-set accumulator (count / merkle / nullifier root)
+Closing the new-key case needs the vmap fix itself: an entry-set accumulator (count / merkle / nullifier root)
 committed in the master, so an existing entry cannot be omitted.
 
-**Resolution:** mandatory C2 closes the omission hazard because every old-value read is membership- or exclusion-
+**Resolution:** mandatory vmap closes the omission hazard because every old-value read is membership- or exclusion-
 proven. The runtime sorted-upsert loop now implements existing updates, absent inserts, same-gap chains, and
 delete-to-default. The same-key case is coalesced by `CacheMappingEntryInLoop`; canonical counter keys are lowered
-by `LowerC2CounterLoops` to full-width slot order.
+by `LowerVMapCounterLoops` to full-width slot order.
 
 ### Current operational limits
 
@@ -93,7 +93,7 @@ by `LowerC2CounterLoops` to full-width slot order.
   keys in varying-key array-mutation loops are rejected until sequential mutation folding is implemented.
 - Derivation and covenant verification scale with the number of effective keys and value chunks. Practical
   transaction-size, fee, and VM-operation limits are reached before the commitment format's theoretical bounds.
-- The authoritative fail-closed feature list is `sorted-mapping-c2.md` §10.1.
+- The authoritative fail-closed feature list is `verified-mappings.md` §10.1.
 
 ## Verified
 

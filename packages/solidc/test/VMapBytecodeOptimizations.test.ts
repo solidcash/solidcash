@@ -15,7 +15,7 @@ const compactHelperDefinitions = (asm: string): string[] => (
   )].map((match) => match[1])
 );
 
-describe('general C2 bytecode sharing', () => {
+describe('general vmap bytecode sharing', () => {
   it('keeps depth-sensitive sorted-output authentication inline', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=true; require(true); } }',
@@ -25,7 +25,7 @@ describe('general C2 bytecode sharing', () => {
     expect(asm).not.toContain('8a OP_DEFINE');
     // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes), then
     // again to 1990 when a SINGLE fixed sorted write moved onto the batch path (SymbolTableTraversal). That is
-    // a correctness change, not drift: the old `> 1` gate left a lone C2 insert - ERC20Mock's constructor
+    // a correctness change, not drift: the old `> 1` gate left a lone vmap insert - ERC20Mock's constructor
     // `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and fails
     // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
     // which returns this contract to its old size. Measured 1952; the ceiling keeps catching further growth.

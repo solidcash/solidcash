@@ -11,7 +11,7 @@ import { createTestProvider } from '../test-util.js';
 // chunkable tail (len4 ++ value, size<=60 asserted - chunked-in-loop fails closed). The covenant visits vs[i] per
 // iteration; the SDK encodes each key's own tail. Present reads verify each key got ITS value (independence);
 // a duplicate key is last-wins.
-describe('C2 per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
+describe('vmap per-key array/bytes-VALUE loop for(i) m[ks[i]] = vs[i]', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

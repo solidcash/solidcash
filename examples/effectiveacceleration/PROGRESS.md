@@ -88,7 +88,7 @@ const UnicrowContractAddress = getCreateAddress({ from: deployer.address, nonce 
    and still needs (3) for `owner()==.address` to actually pass.
 3. **Full pkh-based EVM identity under evmCompat**: `msg.sender` emits the 20-byte pkh, `.address`=`0x`+pkh,
    `address` type = 20-byte pkh end to end. Properly unblocks the fixture's identity model; BIG codegen change
-   (msg.sender currently emits a lockscript; touches external calls, funding, C2 keys). Multi-session.
+   (msg.sender currently emits a lockscript; touches external calls, funding, vmap keys). Multi-session.
 
 ## BREAKTHROUGH (2026-07-19): deployContractsFixture COMPLETES; all 66 tests reach their bodies
 The fixture went from "throws at `deployer.getNonce()` (test line 53)" to fully deploying all 6 contracts +
@@ -138,7 +138,7 @@ add register/job functions.
 ## 2026-07-20 - deeper probing: the address model bottoms out at msg.sender mechanics
 - **`msg.sender` as a stored/compared value fails at the covenant level even in a DIRECT call** (`this.owner =
   msg.sender` reverts at the `msg.sender` statement, `O.scash:1`, both `address` and `bytes` typed). msg.sender is
-  wired for C2 mapping KEYS (`bal[msg.sender]` in transfer fns), not for being stored/returned. The SDK defaults
+  wired for vmap mapping KEYS (`bal[msg.sender]` in transfer fns), not for being stored/returned. The SDK defaults
   `_msgSenderCategory` to 32 zeros (-> the tx.origin branch), but the tx.origin resolution reverts for a plain
   signer call. Root is in `emitMsgSender`/`emitTxOrigin` (GTT) + the msg.sender provisioning (StatefulContract.ts)
   = the user's active WIP. So `owner()==deployer.address` (and every admin/registry/job path keyed by the caller)
@@ -238,19 +238,19 @@ stubs. Three compiler/harness portbacks landed (commits on solidcash_v0.13.1):
   (full Unicrow escrow suite + FakeToken/ERC20 + TreasurySplit + MockSablier + all interfaces). Real Unicrow ctor
   arity matches the fixture's `Unicrow.deploy(claim, arbitrator, dispute, gov, fee)`; real FakeToken ctor = (name, symbol).
 - **empty-array-loop elimination (2c060e0c):** fixed a compiler regression where `_updateJobWhitelist(id, allowed,
-  new address[](0))` failed "sorted mapping whitelistWorkers not yet compiled" - the empty inlined loop's C2 write
+  new address[](0))` failed "sorted mapping whitelistWorkers not yet compiled" - the empty inlined loop's vmap write
   corrupted a shared entry slot. Now the dead 0-iteration loop is dropped post-inline (sound). All 4 Marketplace
   advance past it.
 
 **Cross-compile bench = 10/15** (real `.sol`, opts `{solidityImportCompat:true, ecrecover:'p2pkh'}`). The 5 fails are
-DEEP compiler regressions in the C2/block-layout codegen (NOT harness gaps), both in the compiler owner's active lane:
+DEEP compiler regressions in the vmap/block-layout codegen (NOT harness gaps), both in the compiler owner's active lane:
 1. **Marketplace V1/V2/V3 + DataV1 = `Block slot not found: entry[0]`** in `publishJobPost` (`jobs.push()` struct-array
    + storage-ptr field writes + many external calls + an event; the epilogue expects an entry slot the block layout
    didn't allocate). A separate regression, revealed once whitelistWorkers was fixed; not minimally reproducible.
-2. **EACCToken = `_balances`** C2 sorted mapping (multitransfer RMW-in-loop).
+2. **EACCToken = `_balances`** vmap sorted mapping (multitransfer RMW-in-loop).
 
 So the drop-in harness + real cross-compilation pipeline are proven for the 17 compiling files; the marketplace.test.ts
-fixture stays blocked on the real MarketplaceV1 compiling (still needs the entry[0] + _balances C2 fixes). The
+fixture stays blocked on the real MarketplaceV1 compiling (still needs the entry[0] + _balances vmap fixes). The
 `contracts-scash/` stubs remain as the fallback for the test until then (kept, per "do not delete the shims").
 
 ## 2026-07-20 (cont) - RECONCILED to 14/15: all 4 Marketplace cross-compile
@@ -260,7 +260,7 @@ the same `{solidityImportCompat:true}`). Peeled the Marketplace whitelistWorkers
 detects nested/multi-key mapping writes (the key fix), mutatedNames excludes only length-changing ops (push/pop/
 delete, not element writes - so `new address[](1); a[0]=w;` folds), and the GTT branch mapping-write pre-allocation
 skips inLoop slots (fixes "Block slot not found: entry[0]" in publishJobPost). **All 4 Marketplace (V1/V2/V3/DataV1)
-now cross-compile; bench 14/15, only EACCToken `_balances` (multitransfer C2 RMW-loop) remains.** solidc 2210 green.
+now cross-compile; bench 14/15, only EACCToken `_balances` (multitransfer vmap RMW-loop) remains.** solidc 2210 green.
 `node tasks/compile-real.mjs` now emits real Marketplace artifacts too, so the marketplace.test.ts fixture can begin
 moving off the MarketplaceV1/DataV1 stubs (runtime deploy of the real Marketplace is the next validation step; the
 deep msg.sender/events-in-delegatecall runtime walls from earlier this session still apply to a real deploy).
@@ -268,7 +268,7 @@ deep msg.sender/events-in-delegatecall runtime walls from earlier this session s
 ## 2026-07-20 (cont2) - EACCToken DONE: bench 15/15, THE ENTIRE EACC SUITE cross-compiles
 User: "do the EACCToken." Its `multitransfer` (`for(i) _transfer(msg.sender, recipients[i], amounts[i])` -> OZ v5
 `_update`) failed `_balances` "sorted mapping not yet compiled". Root cause (BDBG-traced): the credit's per-key value
-is a single-assign LOCAL after inlining (`int v = amounts[i]; _balances[to] += v`), so the C2 upsert setup saw
+is a single-assign LOCAL after inlining (`int v = amounts[i]; _balances[to] += v`), so the vmap upsert setup saw
 hasValue=false and bailed. Fix (commit eab5811d): the setup now sees through a single-assign value local
 (findSingleAssignLocalInit) to `amounts[i]`, so the multiTransfer credit + msg.sender debit + branches all compile.
 VM-PROVEN sound (MultiTransferOzShape.test.ts: the exact OZ shape - value-local credit + read-into-local debit -
@@ -313,10 +313,10 @@ sequence: (1) "unlocking bytecode exceeds maximum: 10000 bytes" (`consensus.maxi
 is PUSHED as a stack item, `maximumStackItemLength`). Both are BCH consensus/relay limits (10 KB) that the real OZ
 Unicrow (and the bigger Marketplace) exceed - a FUNDAMENTAL constraint for deploying large ported contracts on BCH,
 NOT a harness/SDK bug. A drop-in TEST env can raise the LOCAL probe VM's limits to validate the covenant logic, but
-the derive path is the user's active C2 WIP (memory ea_deploy_wall "do NOT touch"), so that belongs to them. Reverted
+the derive path is the user's active vmap WIP (memory ea_deploy_wall "do NOT touch"), so that belongs to them. Reverted
 paths.artifacts to the stub `artifacts/` (the debugging setup); artifacts-real/ is kept for when large-contract
 deploy lands. **So: cross-compilation is 15/15 (real Solidity -> BCH); the runtime deploy of the LARGE real contracts
-is gated on BCH's 10 KB script/stack limit + the user's C2 derive WIP.**
+is gated on BCH's 10 KB script/stack limit + the user's vmap derive WIP.**
 
 ## 2026-07-22 - sharded-artifact integration resumed against upstream sources
 The harness now points directly at `/Code/effectiveacceleration.ai/contract/contracts` and `artifacts-real`; no

@@ -5,7 +5,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// C2 diff-key INSERT loop with a LOOP-INVARIANT non-bool VALUE `for(i) bal[ks[i]] = v` (v a param, same for every
+// vmap diff-key INSERT loop with a LOOP-INVARIANT non-bool VALUE `for(i) bal[ks[i]] = v` (v a param, same for every
 // key). The range-splice mints the sorted chain P' -> k1 -> .. -> kN -> P.oldNext with EACH node's value = v; the
 // covenant body now PICKs v and EQUALVERIFYs node.value == v (was pinned to 0x01, which only ever matched v==1).
 // SOUNDNESS: every inserted key must read back EXACTLY v (not empty, not the old 0x01 pin), and a wrong expected
@@ -16,7 +16,7 @@ const SRC = `contract C() {
   function chk(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(bal[k] == exp); }
 }`;
 
-describe('C2 insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is sound', () => {
+describe('vmap insert-in-loop with a loop-invariant VALUE (bal[ks[i]] = v) is sound', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

@@ -288,7 +288,7 @@ ethers.js ... so that we do not reimplement everything"); only the v5-compat pie
   output type, and applies `attachDecodedAccessors` - so `(await sc.getPt().staticCall()).toObject()` works and the
   read does not consume state. StatefulContract._deriveReturnValue + StatefulFunctionCall.staticCall; proven in
   StaticCall.test.ts. VALIDATED: scalar/struct returns, call ARGS (getJob(id)/balanceOf(addr)), and a struct read
-  from a real-deployed C2 mapping (the exact EA getJob shape) - all with a working `.toObject()`, and reads do not
+  from a real-deployed vmap mapping (the exact EA getJob shape) - all with a working `.toObject()`, and reads do not
   consume state. REMAINING: multi-value (tuple) returns fail closed with a clear message (their packed return-event
   encoding needs the viewReturn convention); a plain `await sc.fn()` still SENDS - staticCall() is the explicit
   read, mirroring ethers. THREE forms shipped: bare `await sc.getX(...)` (auto-read, ethers-verbatim), v6

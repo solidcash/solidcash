@@ -683,11 +683,11 @@ describe('synthesizes __extaddr for IFoo(<param-rooted field>).method() (caller-
 // `arbitratorFee` and the field `a.arbitratorFee` collide; the catch-all rename corrupted `a.arbitratorFee` ->
 // `a.__rh0_arbitratorFee` -> "Struct has no field __rh0_arbitratorFee". Fixed by skipping FieldAccessNode.name.
 
-describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
-  // `_approve/3` calls `_approve/4` (which writes the C2 `_allowances`). InlineStoragePointerCalls resolved callees
+describe('vmap-default: OVERLOADED internal vmap-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
+  // `_approve/3` calls `_approve/4` (which writes the vmap `_allowances`). InlineStoragePointerCalls resolved callees
   // and its recursion guard by NAME only, so the arity-4 call inside `_approve/3` was never inlined yet `_approve`
   // was dropped by name -> "Undefined reference to symbol _approve". Overload-aware (name, arity) resolution fixes it.
-  it('compiles the overloaded _approve chain that writes a nested C2 mapping', () => {
+  it('compiles the overloaded _approve chain that writes a nested vmap mapping', () => {
     const src = 'pragma solidity ^0.8.20; contract Base {'
       + ' mapping(address => mapping(address => uint256)) private _allowances;'
       + ' function _approve(address o, address s, uint256 v, bool e) internal { _allowances[o][s] = v; }'

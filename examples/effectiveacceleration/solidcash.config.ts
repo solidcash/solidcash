@@ -31,7 +31,7 @@ export default defineConfig({
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.
     // Mocknet's relaxed limits remove the former need to selectively switch
-    // large mappings to the C2 trailing-output protocol.
+    // large mappings to the vmap trailing-output protocol.
     sortedMappingsAll: false,
     sortedMappings: ['EACCToken._balances', 'whitelistWorkers'],
   },

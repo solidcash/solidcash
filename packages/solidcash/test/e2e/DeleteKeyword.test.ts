@@ -499,7 +499,7 @@ describe('Delete Keyword', () => {
 
   // --- delete mapping entry output structure (e2e) --------------------------
 
-  describe('delete mapping entry resets its C2 value', () => {
+  describe('delete mapping entry resets its vmap value', () => {
     const MAPPING_DELETE_CONTRACT = `
       pragma solidcash >=0.8.0;
 
@@ -569,7 +569,7 @@ describe('Delete Keyword', () => {
       expect(tx.txid).toBeDefined();
 
       const txOutputs = getTxOutputs(tx);
-      // C2 keeps a structural HEAD sentinel alongside the logical entry.
+      // vmap keeps a structural HEAD sentinel alongside the logical entry.
       const entryOutputs = txOutputs.filter(
         (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
       );
@@ -587,7 +587,7 @@ describe('Delete Keyword', () => {
 
       const txOutputs = getTxOutputs(tx);
 
-      // C2 removes the logical node and preserves the structural HEAD sentinel.
+      // vmap removes the logical node and preserves the structural HEAD sentinel.
       const mutableNfts = txOutputs.filter(
         (o) => o.token?.nft?.capability === 'mutable' && o.token?.category === categoryId,
       );

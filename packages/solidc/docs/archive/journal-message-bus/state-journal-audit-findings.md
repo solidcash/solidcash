@@ -157,7 +157,7 @@ State: `SRC=100, to1=0, to2=0`. Call `drainTwice(to1, to2, 30, 30)`:
 - **Result (VM-accepted): `SRC=70, to1=30, to2=30` - total supply 100 -> 130. 30 tokens minted from
   nothing.** Correct sequential semantics is `SRC=40` (100-30-30).
 
-The C2 backend authenticates the sender entry as one legitimate `100 -> 70` transition; nothing
+The vmap backend authenticates the sender entry as one legitimate `100 -> 70` transition; nothing
 signals a second debit was required. The overspend guard is also bypassed (the second `require(bal >=
 amount)` reads the stale pre-image). The literal trigger is used for a clean repro; **`msg.sender` is
 the real-world trigger** and is handled identically (both are non-`IdentifierNode`), which is the
@@ -329,7 +329,7 @@ Audited since the fork: `LowerCollectionJournalHelpers.ts` (full), `LowerDynamic
 (full), `InvocationAnalysis.ts` (full), the scalar/dynamic/collection journal codegen in
 `GenerateTargetTraversal.ts`, `InlineStoragePointerCalls.ts`, `InlineReturningStateHelpers.ts`,
 `CacheMappingEntryInLoop.ts`, the `SymbolTableTraversal.ts` journal/layout deltas, `StatefulContract.ts`
-derivation, and `StatefulTransactionBuilder.ts`. The pre-existing C2 sorted-mapping machinery was
+derivation, and `StatefulTransactionBuilder.ts`. The pre-existing vmap sorted-mapping machinery was
 taken as a VM-proven given except where a new path depends on it (verified: full-commitment output
 equality). Two soundness holes reproduced on `BCH_2026_05`; two robustness bugs reproduced as
 compile/VM rejections.

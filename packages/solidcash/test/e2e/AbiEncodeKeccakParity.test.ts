@@ -8,13 +8,13 @@ import { addressToLockScript } from '../../src/utils.js';
 /**
  * GATE for computing a keccak256 preimage OFF-CHAIN instead of recovering it from a VM probe.
  *
- * Timelock's `queuedTransactions[keccak256(abi.encode(...))] = true` makes the C2 entry KEY the keccak output,
+ * Timelock's `queuedTransactions[keccak256(abi.encode(...))] = true` makes the vmap entry KEY the keccak output,
  * so the side-car probe cannot co-spend an entry whose identity it exists to compute. The way out is for the
  * SDK to build the preimage itself - but only if its `abi.encode` matches the compiler's BYTE FOR BYTE. A
  * mismatch yields a wrong digest, hence a wrong entry key, and NOTHING fails loudly: the write lands under a
  * bogus key and later reads simply miss.
  *
- * A constructor is used deliberately: it has no C2 entry, so the existing side-car path works and the digest
+ * A constructor is used deliberately: it has no vmap entry, so the existing side-car path works and the digest
  * is readable. That isolates the ENCODING question from the circularity that blocks Timelock.
  */
 const SRC = `pragma solidcash >=0.8.0;

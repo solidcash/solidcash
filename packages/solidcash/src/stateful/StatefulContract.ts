@@ -139,7 +139,7 @@ const DUMMY_FUNDER_UNLOCKING_BYTECODE = new Uint8Array([0x01, 0x51]); // push 1-
 
 /**
  * Default value for an unfilled `__internal__*` function parameter. Used when Hardhat-style suites
- * invoke a function whose ABI carries external-call / C2 synthetic slots that the SDK could not
+ * invoke a function whose ABI carries external-call / vmap synthetic slots that the SDK could not
  * fully derive (empty loops, missing connect-time externals). Prefer "inactive" sentinels:
  * zero selectors, -1 return indices, empty witnesses.
  */
@@ -157,7 +157,7 @@ function defaultInternalFunctionArg(inp: { name: string; type?: string }): Funct
   if (name.includes('valueWitness') || (type === 'bytes') || (type.startsWith('bytes') && type !== 'bytes4' && type !== 'bytes32')) {
     return new Uint8Array();
   }
-  // Return / proof / pred / output idx: -1 means "unused" for return slots and C2 proofs.
+  // Return / proof / pred / output idx: -1 means "unused" for return slots and vmap proofs.
   if (
     name.includes('Return')
     || name.includes('Proof')
@@ -668,7 +668,7 @@ function findRedeemScriptStart(fullTrace: AuthenticationProgramStateCommon[]): n
 const LOOP_ENTRY_MAX_ITERATIONS = 256;
 
 // X10. Cap on the speculative growth of a dynamic-storage chunk region whose length the probe has not revealed
-// yet (a trailing C2 entry mint aborts the probe before the data NFT is verified). One extra probe per output,
+// yet (a trailing vmap entry mint aborts the probe before the data NFT is verified). One extra probe per output,
 // so this must stay well inside the derivation iteration budget. X101: the cap is on the region TOTAL across all
 // chunk vars, so a multi-var write costs the same probe budget as a single-var one.
 const MAX_SPECULATIVE_CHUNK_OUTPUTS = 32;
@@ -881,7 +881,7 @@ function evalComputedKey(
    * One `abi.encode` operand as its minimal little-endian body, to be wrapped in a minimal script push by the
    * caller. Pinned by AbiEncodeKeccakParity.test.ts. Anything that test does not cover returns undefined so
    * the caller falls back to the VM probe: a mis-encoded preimage yields a wrong digest and therefore a wrong
-   * C2 entry key, which corrupts state SILENTLY rather than failing.
+   * vmap entry key, which corrupts state SILENTLY rather than failing.
    */
   // eslint-disable-next-line @typescript-eslint/no-shadow -- the parameter deliberately shadows the outer
   // `label`; renaming it changes which binding the body reads, so it is left as-is and flagged instead.
@@ -1016,7 +1016,7 @@ function evalComputedKey(
   // An ADDRESS-typed key hashes as its LOCKING BYTECODE, matching the covenant's on-stack address and the
   // default entry model - not as a VM number. `cast:address(lit:0)` (SushiToken's
   // `_moveDelegates(address(0), ...)`) otherwise evaluates to 0n and encodes to the EMPTY byte array, which
-  // collides with every other unresolved key on sha256("") and fails the C2 batch as a duplicate slot.
+  // collides with every other unresolved key on sha256("") and fails the vmap batch as a duplicate slot.
   const addressCast = label.match(/^cast:address\((.*)\)$/i);
   if (addressCast) {
     const value = evalValue(addressCast[1]);
@@ -1554,7 +1554,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
    */
   static readWritesState(abi: AbiFunction, artifact?: Artifact): StateEffectReading {
     const evidence = new Set<StateEffectEvidence>();
-    // `sortedBatchInfo` is a STRAIGHT-LINE C2 write sharing one list transition, not a loop, so it belongs
+    // `sortedBatchInfo` is a STRAIGHT-LINE vmap write sharing one list transition, not a loop, so it belongs
     // with `entry-write`; classifying it as a loop write reported two causes for one `m[k] = v`.
     if (abi.entryAccesses?.some((ea) => ea.operations.some((op) => op !== 'read'))
       || (abi.sortedBatchInfo?.length ?? 0) > 0) evidence.add('entry-write');
@@ -1942,7 +1942,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
   /**
    * Mock-indexer: inject empty-map HEAD sentinels for a factory-deployed child's sorted collections.
-   * createPair's covenant cannot emit these (no layout slots); without them the first C2 insert fails.
+   * createPair's covenant cannot emit these (no layout slots); without them the first vmap insert fails.
    */
   private static _softMintChildEmptyMapHeads(
     provider: NetworkProvider,
@@ -2392,11 +2392,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const value = internalRouteWitnesses[input.name];
         if (value !== undefined) return value;
         if (input.name === '__internal__activeVerifierIndex') return -1n;
-        // A c2Batch* witness is planned from an EXISTING entry UTXO (see the batch planning block, which fills
+        // A vmapBatch* witness is planned from an EXISTING entry UTXO (see the batch planning block, which fills
         // these only when an exact entry match is found). Absent one, the route is being asked to insert a cold
         // entry, and cold-entry predecessor planning is not implemented - the same limitation the resource-shaped
         // path reports explicitly. Say that, rather than naming an internal witness the caller cannot supply.
-        if (/^__internal__c2Batch/.test(input.name)) {
+        if (/^__internal__vmapBatch/.test(input.name)) {
           throw new Error(
             `message-bus batch route cannot plan '${input.name}': no existing collection entry was found to `
             + 'derive it from, so this call would insert a COLD entry. Cold-entry predecessor planning is not '
@@ -2733,7 +2733,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Determine counts for constructor features
     const entryAccesses = delegateOnly ? [] : (constructorAbi?.entryAccesses ?? []);
     const entryCount = entryAccesses.length;
-    // A C2 batch has one fixed target output per logical access. Recreated shared predecessors live after the
+    // A vmap batch has one fixed target output per logical access. Recreated shared predecessors live after the
     // fixed block (one HEAD per initially-empty collection), rather than using the old P'/NEW pair per access.
     const entryOutputCount = entryCount;
     const trailingEntryOutputCount = new Set(entryAccesses.filter((access) => (
@@ -2905,7 +2905,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
-    // C2 (sorted) mapping HEAD sentinels: a sorted mapping needs a HEAD[slot 0 | nextKey 0] to anchor the linked
+    // vmap (sorted) mapping HEAD sentinels: a sorted mapping needs a HEAD[slot 0 | nextKey 0] to anchor the linked
     // list, otherwise its first read/write fails "missing HEAD sentinel". A constructor that writes the mapping
     // already mints entries for it; for the rest, mint the empty-map HEAD at genesis. Sound: the genesis is
     // funder-authorized (no covenant yet) and every later read/write pins the HEAD (slot 0) via the covenant.
@@ -2958,7 +2958,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // C2 predecessor recreations trail the complete fixed constructor block (including conditional events).
+    // vmap predecessor recreations trail the complete fixed constructor block (including conditional events).
     // Initially every sorted collection shares its HEAD across all constructor writes, so it is emitted once.
     let trailingEntryIndex = 0;
     for (const collectionName of new Set(entryAccesses.filter((access) => (
@@ -3493,14 +3493,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         + 'authenticated by the factory covenant. Recompile the factory with an explicit typed deployment.',
       );
     }
-    // Combined child-data-NFT + C2 mapping writes require fixed `deployDataNft` layout slots after each
-    // deploy master so the C2 insert tail starts at a covenant-known offset (see deferrals.md). Without
+    // Combined child-data-NFT + vmap mapping writes require fixed `deployDataNft` layout slots after each
+    // deploy master so the vmap insert tail starts at a covenant-known offset (see deferrals.md). Without
     // those slots the two regions share the first post-blockSize index and are refused.
     const hasDeployDataNftSlots = deployAbi.blockLayout?.slots.some((s) => s.kind === 'deployDataNft') ?? false;
     if ((deployAbi.entryAccesses?.length ?? 0) > 0 && deployTarget.dataNftCount > 0 && !hasDeployDataNftSlots) {
       throw new Error(
-        `Deploy function '${deployFunctionName}' combines a typed stateful child with C2 mapping access. `
-        + 'The C2 insert tail and child data-NFT outputs currently share the first trailing slot, so this shape '
+        `Deploy function '${deployFunctionName}' combines a typed stateful child with vmap mapping access. `
+        + 'The vmap insert tail and child data-NFT outputs currently share the first trailing slot, so this shape '
         + 'is refused until the output layout authenticates both regions (recompile with deployDataNft slots).',
       );
     }
@@ -3711,12 +3711,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // (B8) output slot. On a plain send a returning function's return-event is the LAST block slot, so idx=-1
     // (no output) is harmless; but a deploy function's deploy slot sits AFTER the return-event slot, so the
     // return-event output MUST be materialized to keep the deploy genesis at its fixed block-layout offset.
-    // Appended AFTER C2 batch witnesses below so finalArgs match ABI input order
-    // (…, c2Batch*, trailingCount, returnOutputIdx). Inserting earlier mis-encodes the bigint as a bytes32 slot.
+    // Appended AFTER vmap batch witnesses below so finalArgs match ABI input order
+    // (…, vmapBatch*, trailingCount, returnOutputIdx). Inserting earlier mis-encodes the bigint as a bytes32 slot.
     const returnEventSlot = deployAbi.blockLayout?.slots.find((s) => s.kind === 'returnEvent');
     const deployReturns = !!returnEventSlot && (deployAbi.outputs?.length ?? 0) > 0;
 
-    // Resolve C2 mapping writes against an authenticated target/predecessor proof node.
+    // Resolve vmap mapping writes against an authenticated target/predecessor proof node.
     // Supports multi-key nested mappings (createPair getPair[token0][token1]) and batch inserts that share a
     // predecessor: planBatchUpsert rebuilds links over the original list once, fixed slots carry NEW targets,
     // and re-pointed predecessors trail after the full fixed block (deployDataNft-aware).
@@ -3846,7 +3846,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       return { keyValue: firstKey, encodedKeys };
     };
-    // Value tails known off-chain for deploy+C2: create3 children[salt]=category; createPair getPair=pair LBC.
+    // Value tails known off-chain for deploy+vmap: create3 children[salt]=category; createPair getPair=pair LBC.
     const fundingCatValue = hexToBin(fundingUtxos[0].txid).reverse();
     const pairAddressValue = addressToLockScript(childContracts[0].address);
     const valueTailFor = (collection: NonNullable<typeof factoryLayout.collections>[number]): Uint8Array => {
@@ -3871,7 +3871,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (!collection) {
         throw new Error(`Unknown collection '${access.collection}' in deploy function '${deployFunctionName}'.`);
       }
-      if (!collection.sorted) throw new Error(`Collection '${access.collection}' is not a C2 collection.`);
+      if (!collection.sorted) throw new Error(`Collection '${access.collection}' is not a vmap collection.`);
       const { keyValue, encodedKeys } = resolveAccessKeys(access, collection);
       resolvedAccesses.push({
         access, collection, keyValue, encodedKeys,
@@ -3890,7 +3890,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const list = SortedList.fromUtxos(await deployCollectionEntries(collection.signature));
         const writes = batch.slotIndices.map((slotIndex) => {
           const r = resolvedAccesses[slotIndex];
-          if (!r) throw new Error(`C2 batch slot ${slotIndex} has no resolved access.`);
+          if (!r) throw new Error(`vmap batch slot ${slotIndex} has no resolved access.`);
           return { slot: r.slot, value: r.valueTail };
         });
         const plan = list.planBatchUpsert(writes);
@@ -3910,7 +3910,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if (owner === undefined) { owner = slotIndex; ownerByUtxo.set(uid, owner); }
           const out = plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(r.slot));
           if (!out) {
-            throw new Error(`C2 batch '${batch.collection}' has no planned output for access ${slotIndex}.`);
+            throw new Error(`vmap batch '${batch.collection}' has no planned output for access ${slotIndex}.`);
           }
           // Fixed entry slot carries the TARGET (NEW/updated). Shared-predecessor aliases still get a target
           // commitment but co-spend only the owner's proof UTXO once (see entryExtraInputs dedupe below).
@@ -3970,7 +3970,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Append C2 batch witnesses (slot/proof/next/predOut per write + trailing count) so the factory unlocker
+    // Append vmap batch witnesses (slot/proof/next/predOut per write + trailing count) so the factory unlocker
     // matches a normal StatefulContract call path.
     if (useBatch) {
       const blockSize = deployAbi.blockLayout?.blockSize ?? 1;
@@ -4022,7 +4022,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       finalArgs = [...finalArgs, BigInt(batchTrailingCount)];
     }
 
-    // returnOutputIdx is the last hidden input when present (after C2 batch witnesses).
+    // returnOutputIdx is the last hidden input when present (after vmap batch witnesses).
     if (deployReturns) {
       const retIdxPos = deployAbi.inputs.findIndex((inp) => inp.name === '__internal__returnOutputIdx');
       if (retIdxPos >= 0 && finalArgs.length === retIdxPos) {
@@ -4080,7 +4080,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (u) return u;
       if (!funderLockAddress) {
         throw new Error(
-          'deployFrom needs extra plain UTXOs for shared C2 predecessor alias entry slots. '
+          'deployFrom needs extra plain UTXOs for shared vmap predecessor alias entry slots. '
           + 'Connect a Signer (or pass changeAddress) so the SDK can fund the alias inputs.',
         );
       }
@@ -4162,7 +4162,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     }));
     // Child genesis is contiguous: master then data NFTs (matches emitDeployCovenantVerification offsets
-    // deploy+0, deploy+1..dataNftCount). When the layout reserves deployDataNft slots, C2 INSERT NEW nodes
+    // deploy+0, deploy+1..dataNftCount). When the layout reserves deployDataNft slots, vmap INSERT NEW nodes
     // trail the full fixed block (after those slots). Legacy layouts without deployDataNft still interleave
     // NEW after the master for the single-region shapes that never mix the two.
     const childProbeOutputs = childExtraOutputs.length > 0
@@ -4339,8 +4339,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       });
     }
 
-    // Dynamic-storage writes trail the fixed block after C2 batch P' (covenant: blockSize +
-    // c2BatchTrailingCount + i). Seed createPair allPairs.push(pair) off-chain so both the probe and
+    // Dynamic-storage writes trail the fixed block after vmap batch P' (covenant: blockSize +
+    // vmapBatchTrailingCount + i). Seed createPair allPairs.push(pair) off-chain so both the probe and
     // the real send place the chunk NFT the write epilogue EQUALVERIFYs.
     const earlyAllPairs = [...priorAllPairs, pairAddressValue] as StateValue[];
     const dynamicWriteChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
@@ -4372,9 +4372,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Derive factory state + entry commitments via VM probe. Inputs: master, data NFTs, [keccak],
     // existing entries, [satoshi container], funding. Outputs: master, data NFTs, [keccak recreate],
-    // entries, [container], [event], return event, child outputs, [C2 trailing], [dynamic chunks].
+    // entries, [container], [event], return event, child outputs, [vmap trailing], [dynamic chunks].
     // Keccak co-spends are placed inside _deriveCommitments (and returned for the real send).
-    // trailingEntryOutputOffset is the index within extraOutputs where C2 INSERT NEW placeholders begin.
+    // trailingEntryOutputOffset is the index within extraOutputs where vmap INSERT NEW placeholders begin.
     // With deployDataNft: NEW follows the full child genesis band (master + all data NFTs).
     // Legacy: NEW is interleaved right after the first child's master.
     const trailingNewOffsetInExtra = hasDeployDataNftSlots
@@ -4415,7 +4415,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       },
     );
     // Prefer planInsert/planBatchUpsert seeds when the probe did not reach every entry verify (common for
-    // combined deploy+C2 until the full block converges). fixedCommitment / trailing specs are the exact C2
+    // combined deploy+vmap until the full block converges). fixedCommitment / trailing specs are the exact vmap
     // link rewrites known off-chain; the probe only needs to supply the value tail when the written value is
     // runtime-derived.
     const seededEntryCommitments: string[] = [
@@ -4626,7 +4626,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // N child genesis groups at consecutive stride-sized slots (the covenant's runtime deploy counter indexes
     // output[slotBase + counter*stride]). Group k carries fundingUtxos[k]'s category + that child's self-pinned
     // address; the data NFT commitment is the shared default (a loop mints the same child type each iteration).
-    // With deployDataNft layout slots, emit master+data NFTs contiguously first; C2 INSERT NEW nodes trail
+    // With deployDataNft layout slots, emit master+data NFTs contiguously first; vmap INSERT NEW nodes trail
     // after every child group (the fixed block ends at the last deployDataNft).
     const trailingNewOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: any }> = [];
     if (hasDeployDataNftSlots) {
@@ -4682,7 +4682,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const nout of trailingNewOutputs) {
       builder.addOutput(nout);
     }
-    // Dynamic-storage chunk NFTs trail C2 batch P' (covenant index = blockSize + trailingCount + i).
+    // Dynamic-storage chunk NFTs trail vmap batch P' (covenant index = blockSize + trailingCount + i).
     for (const cout of dynamicWriteChunkOutputs) {
       builder.addOutput(cout);
     }
@@ -4724,7 +4724,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const msg = sendErr instanceof Error ? sendErr.message : String(sendErr);
       const softable = new RegExp([
         'invalid transaction UTXO index|invalid transaction output index|OP_VERIFY|Master UTXO',
-        'messageBus|state commitments|side-car|OP_SPLIT|C2 batch|could not be auto-derived',
+        'messageBus|state commitments|side-car|OP_SPLIT|vmap batch|could not be auto-derived',
       ].join('|'), 'i')
         .test(msg);
       if (!softable || deployFunctionName !== 'createPair') throw sendErr;
@@ -5496,7 +5496,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const key = resolveConstructorKey(label);
         if (key === undefined) {
           throw new Error(
-            `Cannot derive constructor C2 key '${label ?? '<unknown>'}' for ${collectionName}.`,
+            `Cannot derive constructor vmap key '${label ?? '<unknown>'}' for ${collectionName}.`,
           );
         }
         return { slot: keyToSlot(key), value: new Uint8Array() };
@@ -5505,11 +5505,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const targetNext = new Map<number, Uint8Array>();
       for (const [localIndex, { index }] of accesses.entries()) {
         const output = plan.outputs.find((candidate) => binsAreEqual(candidate.slot, writes[localIndex].slot));
-        if (output === undefined) throw new Error(`Missing constructor C2 target plan for ${collectionName}.`);
+        if (output === undefined) throw new Error(`Missing constructor vmap target plan for ${collectionName}.`);
         targetNext.set(index, decodeEntryCommitment(output.commitment).nextKey);
       }
       const predecessor = plan.outputs.find((output) => bytesToSlotValue(output.slot) === 0n);
-      if (predecessor === undefined) throw new Error(`Missing constructor C2 HEAD plan for ${collectionName}.`);
+      if (predecessor === undefined) throw new Error(`Missing constructor vmap HEAD plan for ${collectionName}.`);
       sortedPlans.set(collectionName, {
         proofOffset: 1 + stateLayout.dataNftCount + accesses[0].index,
         targetNext,
@@ -5523,19 +5523,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const input of constructorAbi?.inputs.slice(visibleInputs.length) ?? []) {
       if (input.name === '__internal__msgSenderCategory') internalInitArgs.push(new Uint8Array(32));
       else {
-        const match = input.name.match(/^__internal__c2Batch(Slot|Proof|Next|PredOut)_(\d+)$/);
+        const match = input.name.match(/^__internal__vmapBatch(Slot|Proof|Next|PredOut)_(\d+)$/);
         if (match) {
           const slotIndex = Number(match[2]);
           const access = entryAccesses[slotIndex];
           const plan = sortedPlans.get(access.collection);
           const label = access.keySources?.[0]?.expressionLabel ?? access.keyParams?.[0];
           const key = resolveConstructorKey(label);
-          if (plan === undefined || key === undefined) throw new Error(`Missing constructor C2 witness ${input.name}.`);
+          if (plan === undefined || key === undefined) throw new Error(`Missing constructor vmap witness ${input.name}.`);
           if (match[1] === 'Slot') internalInitArgs.push(keyToSlot(key));
           else if (match[1] === 'Proof') internalInitArgs.push(BigInt(plan.proofOffset));
           else if (match[1] === 'Next') internalInitArgs.push(plan.targetNext.get(slotIndex)!);
           else internalInitArgs.push(BigInt(plan.trailingOutput));
-        } else if (input.name === '__internal__c2BatchTrailingCount') {
+        } else if (input.name === '__internal__vmapBatchTrailingCount') {
           internalInitArgs.push(BigInt(sortedCollections.length));
         } else {
           throw new Error(`Unsupported constructor internal witness '${input.name}'.`);
@@ -5566,20 +5566,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let currentCommitments = [...zeroCommitments];
     let stateCommitments: string[] = [];
     let entryCommits: string[] = Array.from({ length: entryOutputCount }, () => '');
-    const usesC2BatchWitnesses = constructorAbi?.inputs.some(
-      (input) => input.name.startsWith('__internal__c2Batch'),
+    const usesVMapBatchWitnesses = constructorAbi?.inputs.some(
+      (input) => input.name.startsWith('__internal__vmapBatch'),
     ) ?? false;
-    // Scalar C2 insertion recreates P' in the fixed entry slot and places NEW after the block. Batched insertion
+    // Scalar vmap insertion recreates P' in the fixed entry slot and places NEW after the block. Batched insertion
     // places its targets in fixed slots and trails the shared predecessor. Only the unknown value-bearing side
     // is left blank for VM inference.
-    if (!usesC2BatchWitnesses) {
+    if (!usesVMapBatchWitnesses) {
       for (const [index, access] of entryAccesses.entries()) {
         const plan = sortedPlans.get(access.collection);
         if (plan) entryCommits[index] = plan.predecessorCommitment;
       }
     }
     let trailingEntryCommits = sortedCollections.map(
-      (collectionName) => usesC2BatchWitnesses
+      (collectionName) => usesVMapBatchWitnesses
         ? sortedPlans.get(collectionName)!.predecessorCommitment
         : '',
     );
@@ -5655,7 +5655,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         probeBuilder.addInput(scUtxo, built.unlocker);
       }
 
-      // Constructor C2 writes are probed against a synthetic empty HEAD. The real genesis is funder-authorized,
+      // Constructor vmap writes are probed against a synthetic empty HEAD. The real genesis is funder-authorized,
       // but the probe must present the same authenticated predecessor shape the runtime upsert code consumes.
       const materializedProofs = new Set<number>();
       for (let e = 0; e < entryCount; e++) {
@@ -5972,7 +5972,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         entryCommits = learnedEntryCommits;
         continue;
       }
-      if (!usesC2BatchWitnesses) {
+      if (!usesVMapBatchWitnesses) {
         const learnedTrailing = [...trailingEntryCommits];
         let trailingChanged = false;
         for (const [collectionIndex, collectionName] of sortedCollections.entries()) {
@@ -6153,9 +6153,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
     // Conditional constructor writes reserve fixed entry outputs even when their branch is not taken. The batch
     // probe plans against every potential target, so a materialized node can initially point through an empty
-    // (nonexistent) output. Genesis is funder-authorized rather than covenant-spent: rebuild each C2 collection's
+    // (nonexistent) output. Genesis is funder-authorized rather than covenant-spent: rebuild each vmap collection's
     // links over only the entries the trace actually materialized, preserving their computed values.
-    for (const [collectionIndex, collectionName] of usesC2BatchWitnesses ? sortedCollections.entries() : []) {
+    for (const [collectionIndex, collectionName] of usesVMapBatchWitnesses ? sortedCollections.entries() : []) {
       const materialized = entryAccesses
         .map((access, index) => ({ access, index, commitment: entryCommits[index] }))
         .filter(({ access, commitment }) => access.collection === collectionName && commitment.length >= 128)
@@ -7019,10 +7019,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (collection.chunkableValue && raw.length >= 4) {
           const len = raw[0] | (raw[1] << 8) | (raw[2] << 16) | (raw[3] << 24);
           if (len <= 60) {
-            if (raw.length !== 4 + len) throw new RangeError('invalid inline C2 value length');
+            if (raw.length !== 4 + len) throw new RangeError('invalid inline vmap value length');
             raw = raw.slice(4);
           } else {
-            if (raw.length !== 4 + 32 + VALUE_HEAD_SIZE) throw new RangeError('invalid chunked C2 value head');
+            if (raw.length !== 4 + 32 + VALUE_HEAD_SIZE) throw new RangeError('invalid chunked vmap value head');
             const root = raw.slice(4, 36);
             const headData = raw.slice(36);
             const chunkAddress = getValueChunkAddress(
@@ -7036,7 +7036,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               .sort((a, b) => a.chunkIndex - b.chunkIndex);
             raw = joinValueChunks(headData, chunks, len);
             if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-              throw new Error('C2 value chunks do not match the authenticated root');
+              throw new Error('vmap value chunks do not match the authenticated root');
             }
           }
         }
@@ -7245,7 +7245,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         ? args[visible.findIndex((x) => x.name === p)] : null) : null),
     );
     // A keccak call whose argument is not a direct parameter (keccakPreimageParams[i] === null) normally needs
-    // the VM probe. When the digest is itself a C2 entry KEY the probe cannot work - it would have to co-spend
+    // the VM probe. When the digest is itself a vmap entry KEY the probe cannot work - it would have to co-spend
     // an entry whose identity it exists to compute (Timelock's queuedTransactions[keccak256(abi.encode(...))])
     // - but the artifact publishes that argument as an entry-key label, so compute it off-chain instead.
     // Restricted to the unambiguous single-call/single-label case; anything else falls through to the probe.
@@ -7749,7 +7749,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           entryCommitments = extractCommitmentsFromTrace(
             entryTrace, entryOutputCount, { min: entryBase, max: entryBase + entryOutputCount },
           ) ?? [];
-          // Feed fixed entry commitments back into the probe so verification can advance to C2 INSERT nodes,
+          // Feed fixed entry commitments back into the probe so verification can advance to vmap INSERT nodes,
           // which live after the complete function block rather than beside their predecessor slot.
           if (extraOutputs) {
             for (let i = 0; i < entryCommitments.length; i++) {
@@ -7775,7 +7775,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (out?.token?.nft) out.token.nft.commitment = trailing[i];
           }
         }
-        // C2 upserts execute inline before the epilogue's state checks. Once their fixed and trailing outputs are
+        // vmap upserts execute inline before the epilogue's state checks. Once their fixed and trailing outputs are
         // populated, probe again to reach and derive state commitments (the legacy entry model happened to verify
         // entries after state and therefore never needed this convergence pass).
         if (!commitmentHexes && entryOutputCount > 0) {
@@ -7796,7 +7796,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         if (childDataNftCount > 0 && commitmentHexes && extraOutputs) {
           // A returning deploy function materializes its return-event output between the entries and the child
           // genesis (block-layout order: entry < returnEvent < deploy), so the child outputs shift by its count.
-          // With deployDataNft layout slots, C2 NEW nodes trail the full child genesis (master+data NFTs);
+          // With deployDataNft layout slots, vmap NEW nodes trail the full child genesis (master+data NFTs);
           // legacy layouts interleave NEW after the child master (before data NFTs).
           const newAfterChildData = trailingEntryOutputOffset !== undefined
             && trailingEntryOutputOffset >= entryOutputCount + containerOutputCount
@@ -7969,7 +7969,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             ? stb.getExternalCallMasterInputIndex(groupIdx)
             : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
 
-          // Patch B's C2 entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
+          // Patch B's vmap entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
           // covenant's write path (flag=1) verifies a minting NFT at masterInputIndex = B's master, but block-build
           // time used a block-relative placeholder (B's master index isn't known until the tx layout is). A funder
           // placeholder (absent key, no token) has no covenant to fix. The probe above runs B's master covenant only,
@@ -8033,7 +8033,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
 
-          // B's C2 sorted-entry outputs (docs/deferrals.md #1): a cross-contract callee WRITE to a sorted mapping
+          // B's vmap sorted-entry outputs (docs/deferrals.md #1): a cross-contract callee WRITE to a sorted mapping
           // mints an entry output B's covenant then verifies. Extract each written entry's commitment from B's trace
           // at its block-slot output index (bOutputBase + si) and hand it to the STB, which mints it at that slot.
           if (group.blockLayout && group.blockInputs) {
@@ -8421,7 +8421,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const slot = slotOrder[outIdx - entryOutputBase];
               // Pinned slots (a sorted-insert P', known exactly) must not be re-derived - the covenant reads the
               // predecessor's input commitment too, which the extraction would otherwise oscillate onto.
-              // A native C2 node always contains slot32||next32. Ignore shorter OTC observations: they belong to
+              // A native vmap node always contains slot32||next32. Ignore shorter OTC observations: they belong to
               // unrelated empty/default comparisons at the same output index and otherwise oscillate a valid
               // derived target back to the legacy empty commitment.
               const slotCollection = slot === undefined ? undefined
@@ -8516,7 +8516,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 loopOffset += stb.getLoopEntryCommitments(lv.collection).length;
                 continue;
               }
-              // A C2 sorted upsert (bool/int/bytesN) carries its value in NEW, so NEW is derived from the trace.
+              // A vmap sorted upsert (bool/int/bytesN) carries its value in NEW, so NEW is derived from the trace.
               const scoll = stateLayout.collections?.find((c) => c.name === lv.collection);
               const isSortedValueMintColl = !!scoll?.sorted;
               const existing = stb.getLoopEntryCommitments(lv.collection);
@@ -8541,7 +8541,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               const derived: string[] = [];
               for (const [outIdx, commit] of commitMap) derived[outIdx - loopOffset] = commit;
               const derivedCount = derived.filter((c) => c !== undefined).length;
-              // Runtime-expression C2 loops reserve their exact UPDATE/INSERT topology up front. A probe commonly
+              // Runtime-expression vmap loops reserve their exact UPDATE/INSERT topology up front. A probe commonly
               // confirms output 0, then fails at output 1, so the observation map is sparse by absolute output
               // index. Merge it by index; positional `derivedCount` handling would discard the newly learned
               // commitment at index 1 and leave the transaction permanently on its placeholder.
@@ -8613,7 +8613,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   // position in this value's chunk run.
                   if (parsed.chunkIndex === outputChunkIndex) derived[outputChunkIndex] = commit;
                 } catch {
-                  // A different output family can have a commitment that is not a C2 continuation at all.
+                  // A different output family can have a commitment that is not a vmap continuation at all.
                 }
               }
               const derivedCount = derived.filter((c) => c !== undefined).length;
@@ -8773,7 +8773,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             }
           }
 
-          // X10. A trailing C2 entry mint places its NEW node AFTER the chunk region, and the covenant checks
+          // X10. A trailing vmap entry mint places its NEW node AFTER the chunk region, and the covenant checks
           // that output's ADDRESS before any commitment - so a region laid out one output short aborts the probe
           // before the data NFT is verified, A$len is never revealed, and the exact count above can never be
           // computed. Break that cycle from the only evidence a zero-progress probe leaves: nothing at all was
@@ -8977,13 +8977,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     }
   }
 
-  // Caller-supplied keys for sorted (C2) mapping KEYS/ENTRIES iteration. A sorted entry stores slot=H(key), not
+  // Caller-supplied keys for sorted (vmap) mapping KEYS/ENTRIES iteration. A sorted entry stores slot=H(key), not
   // the raw key, so the caller provides the keys and the covenant verifies keyToSlot(key)==slot per entry. Set
   // before the call; a wrong/incomplete set is rejected by the covenant (wrong key -> hash mismatch; missing
   // entry -> chain break).
   private _iterationKeys?: Map<string, Uint8Array[]>;
   private _rawIterationKeysBlob?: Map<string, Uint8Array>;
-  private _rawC2BatchWitness?: Map<number, { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint }>;
+  private _rawVMapBatchWitness?: Map<number, { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint }>;
 
   /**
    * Supply the keys for a sorted `enumerable mapping` KEYS/ENTRIES iteration. Required for such iterations (the
@@ -9006,10 +9006,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
   }
 
   /** @internal Test hook: override a derived atomic-batch witness to exercise covenant rejection paths. */
-  _setRawC2BatchWitness(
+  _setRawVMapBatchWitness(
     slotIndex: number, witness: { slot?: Uint8Array; proof?: bigint; next?: Uint8Array; predOut?: bigint },
   ): this {
-    (this._rawC2BatchWitness ??= new Map()).set(slotIndex, witness);
+    (this._rawVMapBatchWitness ??= new Map()).set(slotIndex, witness);
     return this;
   }
 
@@ -9087,16 +9087,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Append _msgSenderCategory if function uses msg.sender
     let finalArgs = [...args];
 
-    // Canonical C2 counter loops are lowered to read their logical key from a hidden permutation array. Build that
+    // Canonical vmap counter loops are lowered to read their logical key from a hidden permutation array. Build that
     // witness from the public bound: [0..n) sorted by the same full-width slot hash used by the covenant. The lowered
     // body uses perm[physical_i] everywhere the source used logical i, so key and derived value stay paired.
     for (const input of abiFunction?.inputs ?? []) {
-      const m = input.name.match(/^__internal__c2CounterPerm_(.+)_(\d+)$/);
+      const m = input.name.match(/^__internal__vmapCounterPerm_(.+)_(\d+)$/);
       if (!m) continue;
       const countIdx = abiFunction!.inputs.findIndex((p) => p.name === m[1]);
       const count = countIdx >= 0 ? BigInt(args[countIdx]) : -1n;
       if (count < 0n || count > 10000n) {
-        throw new Error(`C2 counter loop bound '${m[1]}' must be between 0 and 10000`);
+        throw new Error(`vmap counter loop bound '${m[1]}' must be between 0 and 10000`);
       }
       const perm = Array.from({ length: Number(count) }, (_, i) => BigInt(i));
       perm.sort((a, b) => {
@@ -9201,7 +9201,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     let entryNfts: EntryNftInfo[] = [];
     let entryValueWitnesses: Array<Uint8Array | Uint8Array[]> = [];
     let entryBatchWitnesses: unknown[] = [];
-    // C2 sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
+    // vmap sorted-set inserts to inject after the builder is created: P' (the predecessor's new commitment at its
     // entry slot) and NEW (the new node minted at the trailing loop-entry output).
     const sortedInserts: Array<{ slotIndex: number; collection: string; predNew: Uint8Array; newNode?: Uint8Array }> = [];
     // P5b value-chunk mints (collected in the entry loop, added to the builder after it is created).
@@ -9253,7 +9253,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         }
         const collectionEntries = await collectionEntriesFor(collection.signature);
 
-        // C2 sorted-linked-list mapping (mapping(K=>bool) set): co-spend ONE entry read-only - the exact entry if
+        // vmap sorted-linked-list mapping (mapping(K=>bool) set): co-spend ONE entry read-only - the exact entry if
         // k is present, else the bracketing predecessor - which the emitted read covenant needs to return the real
         // membership bit. slot = keyToSlot(k encoded as its on-stack VM number, matching the covenant's OP_SHA256).
         if (collection.sorted) {
@@ -9280,7 +9280,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (source?.kind === 'stateArrayLast') {
               const values = onChainState.state[source.stateArrayName ?? ''];
               if (!Array.isArray(values) || values.length === 0) {
-                throw new Error(`C2 key source '${source.stateArrayName}' has no last element`);
+                throw new Error(`vmap key source '${source.stateArrayName}' has no last element`);
               }
               const value = values[values.length - 1];
               if (keyType === 'address' && typeof value === 'string' && value.includes(':')) {
@@ -9299,7 +9299,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 return encodePushdataValue(value as StateValue, keyType, stateLayout.structs);
               } catch (cause) {
                 throw new Error(
-                  `Unsupported C2 state-array key value for '${source.stateArrayName}' (type ${keyType})`,
+                  `Unsupported vmap state-array key value for '${source.stateArrayName}' (type ${keyType})`,
                   { cause },
                 );
               }
@@ -9453,7 +9453,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   const chunks = [...chunksByIndex.values()].sort((a, b) => a.chunkIndex - b.chunkIndex);
                   witness = joinValueChunks(headData, chunks, len);
                   if (binToHex(sha256Sync(witness)) !== binToHex(root)) {
-                    throw new Error('C2 value chunks do not match the authenticated root');
+                    throw new Error('vmap value chunks do not match the authenticated root');
                   }
                 }
               }
@@ -9718,7 +9718,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
       // Atomic fixed-write batches: collapse logical accesses that share an original predecessor onto one physical
       // proof input. The block slot of the first logical owner carries that UTXO; later aliases receive funders and
-      // point at the owner's relative block offset through __internal__c2BatchProof_N.
+      // point at the owner's relative block offset through __internal__vmapBatchProof_N.
       const batchWitnesses: unknown[] = [];
       let batchTrailingCount = 0;
       // Read-only dynamic chunks are preserved first in the trailing output region. Batch planning happens before
@@ -9734,7 +9734,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           u.token?.category === this.categoryId && u.token?.nft?.capability === 'mutable'
           && !!u.token?.nft?.commitment && u.token.nft.commitment.length > 0).length;
       }
-      // Trailing C2 batch pred outputs sit after the function's fixed covenant outputs. blockSize counts
+      // Trailing vmap batch pred outputs sit after the function's fixed covenant outputs. blockSize counts
       // every block-layout slot, including input-only lowLevelCall slots that do NOT emit a local output
       // (their outputs are the callee band, emitted later). Subtract those so predOut lands on the
       // actual HEAD P' / NEW trailing slot rather than an LLC data NFT.
@@ -9748,13 +9748,13 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       for (const batch of entryAbiFunction?.sortedBatchInfo ?? []) {
         const collection = stateLayout.collections.find((c) => c.name === batch.collection);
-        if (!collection) throw new Error(`Unknown C2 batch collection: ${batch.collection}`);
+        if (!collection) throw new Error(`Unknown vmap batch collection: ${batch.collection}`);
         if (batchNoOp) {
           for (const slotIndex of batch.slotIndices) {
             const offset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === slotIndex,
             )?.offset;
-            if (offset === undefined) throw new Error(`C2 no-op slot has no block offset ${slotIndex}`);
+            if (offset === undefined) throw new Error(`vmap no-op slot has no block offset ${slotIndex}`);
             batchWitnesses.push(batchTargetSlots.get(slotIndex)!, BigInt(offset), new Uint8Array(32), -3n);
           }
           continue;
@@ -9779,7 +9779,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             seenWriteSlots.add(key);
             return true;
           });
-        if (writes.some((w) => !w.slot)) throw new Error(`C2 batch '${batch.collection}' is missing a target slot`);
+        if (writes.some((w) => !w.slot)) throw new Error(`vmap batch '${batch.collection}' is missing a target slot`);
         const plan = list.planBatchUpsert(writes);
         const targetValues = new Set(writes.map((w) => bytesToSlotValue(w.slot).toString()));
         const predOutputs = plan.outputs.filter((o) => !targetValues.has(bytesToSlotValue(o.slot).toString()));
@@ -9788,12 +9788,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         for (const slotIndex of batch.slotIndices) {
           if (batchAliasSkips.has(slotIndex)) {
             const ownerSlot = batchAliasOwners.get(slotIndex);
-            if (ownerSlot === undefined) throw new Error(`C2 alias slot has no canonical owner ${slotIndex}`);
+            if (ownerSlot === undefined) throw new Error(`vmap alias slot has no canonical owner ${slotIndex}`);
             const ownerOffset = entryAbiFunction!.blockLayout?.slots.find(
               (slot) => slot.kind === 'entry' && slot.slotIndex === ownerSlot,
             )?.offset;
-            if (ownerOffset === undefined) throw new Error(`C2 alias owner has no block slot ${ownerSlot}`);
-            const raw = this._rawC2BatchWitness?.get(slotIndex);
+            if (ownerOffset === undefined) throw new Error(`vmap alias owner has no block slot ${ownerSlot}`);
+            const raw = this._rawVMapBatchWitness?.get(slotIndex);
             batchWitnesses.push(raw?.slot ?? batchTargetSlots.get(ownerSlot)!, raw?.proof ?? BigInt(ownerOffset),
               raw?.next ?? new Uint8Array(32), raw?.predOut ?? -2n);
             continue;
@@ -9811,10 +9811,10 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const offset = entryAbiFunction!.blockLayout?.slots.find(
             (s) => s.kind === 'entry' && s.slotIndex === owner,
           )?.offset;
-          if (offset === undefined) throw new Error(`C2 batch '${batch.collection}' has no block slot ${owner}`);
+          if (offset === undefined) throw new Error(`vmap batch '${batch.collection}' has no block slot ${owner}`);
           const out = plan.outputs.find((o) => bytesToSlotValue(o.slot) === bytesToSlotValue(slot));
-          if (!out) throw new Error(`C2 batch '${batch.collection}' has no planned output for slot ${slotIndex}`);
-          // Seed the fixed target output in native C2 form (slot || next || empty value). Do not pin it: the
+          if (!out) throw new Error(`vmap batch '${batch.collection}' has no planned output for slot ${slotIndex}`);
+          // Seed the fixed target output in native vmap form (slot || next || empty value). Do not pin it: the
           // derivation probe replaces the empty value with the covenant-computed value. Without this seed, a fresh
           // target falls through StatefulTransactionBuilder's generic default encoder, which is intentionally the
           // old key/value commitment format and cannot encode a 32-byte hashed slot as an int/address key.
@@ -9822,7 +9822,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const proofSlot = bytesToSlotValue(proof.slot).toString();
           const predOrdinal = predOutputs.findIndex((o) => bytesToSlotValue(o.slot).toString() === proofSlot);
           const predOut = predOrdinal < 0 ? -1n : BigInt(batchPredOutputBase + predOrdinal);
-          const raw = this._rawC2BatchWitness?.get(slotIndex);
+          const raw = this._rawVMapBatchWitness?.get(slotIndex);
           batchWitnesses.push(raw?.slot ?? slot, raw?.proof ?? BigInt(offset),
             raw?.next ?? decodeEntryCommitment(out.commitment).nextKey, raw?.predOut ?? predOut);
         }
@@ -9833,7 +9833,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       // KNOWN INCOMPLETE, not intentionally unused. These are computed and stored here and then never read -
       // the comment further down referencing `entryBatchWitnesses` expects a consumer that does not exist. This
       // is very likely the unfinished half of the cold-entry batch-witness gap the route reports at
-      // `_batchRaw` ("cannot plan '__internal__c2BatchSlot_N'"). Left in place, and NOT renamed to `_`-unused,
+      // `_batchRaw` ("cannot plan '__internal__vmapBatchSlot_N'"). Left in place, and NOT renamed to `_`-unused,
       // because the assignment is the signpost to that gap.
       // eslint-disable-next-line @typescript-eslint/no-unused-vars
       entryBatchWitnesses = batchWitnesses;
@@ -10013,7 +10013,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // C2 diff-key INSERT loop derivation: `for(i<arr.length) m[...fixed][arr[i]] = v`. Co-spend the N bracketing
+    // vmap diff-key INSERT loop derivation: `for(i<arr.length) m[...fixed][arr[i]] = v`. Co-spend the N bracketing
     // predecessors (iterationEntryInputs, in loop order -> input[master+blockSize+i]) and emit N interleaved (P', NEW)
     // commitment pairs at the trailing loop-entry outputs (output[master+blockSize+2i / +2i+1]). Both are known
     // EXACTLY from the off-chain sorted list (SortedList.planInsert); the covenant pins them, so no trace derivation.
@@ -10073,16 +10073,16 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (arrIdx >= 0) { args[arrIdx] = arr; finalArgs[arrIdx] = arr; }
       const sorted = slots;
       for (let i = 1; i < sorted.length; i++) {
-        if (bytesToSlotValue(sorted[i]) === bytesToSlotValue(sorted[i - 1])) throw new Error(`C2 insert loop ${info.collection}: duplicate key`);
+        if (bytesToSlotValue(sorted[i]) === bytesToSlotValue(sorted[i - 1])) throw new Error(`vmap insert loop ${info.collection}: duplicate key`);
       }
-      for (const s of sorted) if (list.has(s)) throw new Error(`C2 insert loop ${info.collection}: key already present (update-in-loop unsupported)`);
+      for (const s of sorted) if (list.has(s)) throw new Error(`vmap insert loop ${info.collection}: key already present (update-in-loop unsupported)`);
       const P = list.predecessorOf(sorted[0]);
       const pNextV = bytesToSlotValue(P.nextKey);
       const pSlotV = bytesToSlotValue(P.slot);
       for (const s of sorted) {
         const sv = bytesToSlotValue(s);
         if (!(pSlotV < sv && (pNextV === 0n || sv < pNextV))) {
-          throw new Error(`C2 insert loop ${info.collection}: keys span multiple gaps (range-splice needs one gap)`);
+          throw new Error(`vmap insert loop ${info.collection}: keys span multiple gaps (range-splice needs one gap)`);
         }
       }
       const wUnlocker = createEntryNftUnlocker(
@@ -10097,7 +10097,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       sortedLoopCommitments.set(info.collection, commitments);
     }
 
-    // C2 per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients): co-spend
+    // vmap per-iteration UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to EXISTING recipients): co-spend
     // each k[i]'s existing entry at input[master+blockSize+i] and mint its updated commitment slot|next|(old op v[i])
     // at output[master+blockSize+i]. Both known EXACTLY off-chain (SortedList.find + arithmetic) - the covenant pins
     // them. A recipient with NO existing entry throws (insert-in-loop is a separate covenant); the shared v[] param
@@ -10139,7 +10139,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               : new Uint8Array(0);
           const word = bytes.slice(tupleIndex * 32, tupleIndex * 32 + 32);
           if (word.length !== 32) throw new Error(
-            `C2 upsert loop ${info.collection}: ABI tuple word ${tupleIndex} is truncated`,
+            `vmap upsert loop ${info.collection}: ABI tuple word ${tupleIndex} is truncated`,
           );
           if (typeName === 'address') return word.slice(12);
           if (typeName === 'bool') return word.some((b) => b !== 0);
@@ -10151,7 +10151,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             if (typeName.startsWith('int') && (word[0] & 0x80) !== 0) value -= 1n << 256n;
             return value;
           }
-          throw new Error(`C2 upsert loop ${info.collection}: unsupported ABI-decoded key type '${typeName}'`);
+          throw new Error(`vmap upsert loop ${info.collection}: unsupported ABI-decoded key type '${typeName}'`);
         };
         for (let i = 0; i < sourceKeys.length; i++) {
           if (predicate && info.predicateEquals !== undefined
@@ -10211,7 +10211,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         nv instanceof Uint8Array ? nv : (scalarTail ?? bigIntToVmNumber(nv));
       if (!Array.isArray(keysArr) || (perKey && !info.mutation && !Array.isArray(valsArr))) continue;
       if (perKey && !info.mutation && (valsArr as unknown[]).length !== keysArr.length) {
-        throw new Error(`C2 upsert loop ${info.collection}: recipients/amounts length mismatch`);
+        throw new Error(`vmap upsert loop ${info.collection}: recipients/amounts length mismatch`);
       }
       const foldActive = info.op === '+' || info.op === 'set'; // crediting loops defer + fold (covenant pendActive)
       // DUPLICATE RECIPIENT: the same key listed 2+ times. Solidity ACCUMULATES for += / -= ([a,a],[10,20] -> a += 30),
@@ -10225,7 +10225,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       if (info.mutation && Array.isArray(keysArr) && keysArr.length > 1) {
         const mutationSlots = keysArr.map((k) => binToHex(keyToSlotMulti([...fixedBins, encKey(k, varyType)])));
         if (mutationSlots.some((h, i) => mutationSlots.indexOf(h) !== i)) {
-          throw new Error(`C2 array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
+          throw new Error(`vmap array mutation loop ${info.collection}: duplicate keys are ambiguous; combine them first`);
         }
       }
       if (!info.mutation && Array.isArray(keysArr) && keysArr.length > 1 && (isDelete || perKey || info.op === 'set')) {
@@ -10347,7 +10347,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           }
           for (let i = 0; i < kArr.length; i++) if (!placed.has(i)) { order.push(i); placed.add(i); } // safety net
           if (runtimeFiltered && order.some((sourceIndex, targetIndex) => sourceIndex !== targetIndex)) {
-            throw new Error(`C2 upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
+            throw new Error(`vmap upsert loop ${info.collection}: predicate-selected keys require topology reordering; `
               + 'split the action sequence so each selected mapping transition is already adjacent.');
           }
           keysArr = order.map((i) => kArr[i]);
@@ -10385,7 +10385,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const entry = list.find(slot);
           if (!entry) return encodePushdataValue([], collection.valueType, stateLayout.structs);
           const tail = entry.value;
-          if (tail.length < 4) throw new Error(`C2 array value for ${info.collection} has an invalid tail`);
+          if (tail.length < 4) throw new Error(`vmap array value for ${info.collection} has an invalid tail`);
           const len = tail[0] | (tail[1] << 8) | (tail[2] << 16) | (tail[3] << 24);
           if (len <= 60) return tail.slice(4, 4 + len);
           const root = tail.slice(4, 36);
@@ -10398,7 +10398,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             .sort((a, b) => a.chunkIndex - b.chunkIndex);
           const raw = joinValueChunks(headData, chunks, len);
           if (binToHex(sha256Sync(raw)) !== binToHex(root)) {
-            throw new Error('C2 value chunks do not match the authenticated root');
+            throw new Error('vmap value chunks do not match the authenticated root');
           }
           return raw;
         };
@@ -10417,20 +10417,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           const raw = await readRawValue(slot);
           oldWitnesses.push(raw);
           const decoded = decodePushdataValue(raw, 0, collection.valueType, stateLayout.structs).value;
-          if (!Array.isArray(decoded)) throw new Error(`C2 mutation target ${info.collection} is not an array`);
+          if (!Array.isArray(decoded)) throw new Error(`vmap mutation target ${info.collection} is not an array`);
           const next = [...decoded] as StateValue[];
           if (info.mutation === 'push') {
             next.push(operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
               info.mutationValueConst, i) as StateValue);
           } else if (info.mutation === 'pop') {
-            if (next.length === 0) throw new Error(`C2 array mutation ${info.collection}: pop from empty array`);
+            if (next.length === 0) throw new Error(`vmap array mutation ${info.collection}: pop from empty array`);
             next.pop();
           } else {
             const rawIndex = operand(info.mutationIndexArrayParam, info.mutationIndexScalarParam,
               info.mutationIndexConst, i);
             const index = Number(typeof rawIndex === 'bigint' ? rawIndex : BigInt(rawIndex as number | string));
             if (!Number.isSafeInteger(index) || index < 0 || index >= next.length) {
-              throw new Error(`C2 array mutation ${info.collection}: index ${index} out of bounds`);
+              throw new Error(`vmap array mutation ${info.collection}: index ${index} out of bounds`);
             }
             next[index] = operand(info.mutationValueArrayParam, info.mutationValueScalarParam,
               info.mutationValueConst, i) as StateValue;
@@ -10438,7 +10438,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           mutated.push(next);
         }
         const wi = abiFunction!.inputs.findIndex((p) => p.name === info.oldValuesWitnessParam);
-        if (wi < 0) throw new Error(`C2 array mutation ${info.collection}: missing old-value witness ABI input`);
+        if (wi < 0) throw new Error(`vmap array mutation ${info.collection}: missing old-value witness ABI input`);
         finalArgs[wi] = oldWitnesses;
         valsArr = mutated;
         perKey = true;
@@ -10509,14 +10509,14 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               binToHex(encodeEntryCommitment(lastDeferred.slot, lastDeferred.oldNext, commitValue(lastDeferred.newVal)));
             continue;
           }
-          throw new Error(`C2 upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
+          throw new Error(`vmap upsert loop ${info.collection}: duplicate recipient (each entry can be co-spent once)`);
         }
         seenSlots.add(slotHex);
         const entry = list.find(slot);
         if (entry) {
           // UPDATE (existing recipient): co-spend the entry, mint the updated value ('delete' -> the type default 0).
           if (cospent.has(uidOf(entry.utxo))) {
-            throw new Error(`C2 upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
+            throw new Error(`vmap upsert loop ${info.collection}: recipient ${i}'s entry is already co-spent this tx`);
           }
           cospent.add(uidOf(entry.utxo));
           const oldVal = info.op === '+' || info.op === '-'
@@ -10547,7 +10547,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           // INSERT (a NEW recipient): co-spend the bracketing predecessor (from the ORIGINAL list) + mint P' then NEW.
           // 'delete'/'-' on an absent key fail closed (nothing to nullify/debit).
           if (info.op === '-' || isDelete) {
-            throw new Error(`C2 upsert loop ${info.collection}: cannot ${isDelete ? 'delete' : 'debit'} key ${i} - `
+            throw new Error(`vmap upsert loop ${info.collection}: cannot ${isDelete ? 'delete' : 'debit'} key ${i} - `
               + 'it has no entry');
           }
           const pred = list.predecessorOf(slot);
@@ -10578,7 +10578,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // the pending. The mergedNewCount guard fails closed on a SECOND, non-chainable debit-merge (unreachable
             // after the gap-based reorder places the debit gap's inserts consecutively + ascending).
             if (mergedNewCount >= 1) {
-              throw new Error(`C2 upsert loop ${info.collection}: two non-adjacent new recipients in the debited sender's `
+              throw new Error(`vmap upsert loop ${info.collection}: two non-adjacent new recipients in the debited sender's `
                 + 'gap - split into separate transactions.');
             }
             mergedNewCount += 1;
@@ -10588,7 +10588,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             continue;
           }
           if (cospent.has(uidOf(pred.utxo))) {
-            throw new Error(`C2 upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
+            throw new Error(`vmap upsert loop ${info.collection}: new recipient ${i}'s bracketing predecessor is already `
               + 'co-spent in this tx (a non-adjacent credited recipient, or another new recipient in the '
               + 'same gap). Reorder so the predecessor is credited immediately before, or split into separate transactions.');
           }
@@ -11261,7 +11261,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                       : keyValue;
                     let matchUtxo: Utxo | undefined;
                     if (bCollection?.sorted && effKeyValue !== undefined) {
-                      // C2 (sorted) collection (docs/deferrals.md #1): the commitment is slot||nextKey||value, so
+                      // vmap (sorted) collection (docs/deferrals.md #1): the commitment is slot||nextKey||value, so
                       // co-spend by slot - the EXACT entry if present (a cross-contract UPDATE), else the bracketing
                       // predecessor (an INSERT, whose P'/NEW outputs are derived from B's trace). predecessorOf throws
                       // if B has no HEAD sentinel; fall back to a funder so B's covenant fails closed rather than crash.
@@ -11303,11 +11303,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                             }
                             const commitment = exact.utxo.token?.nft?.commitment;
                             if (!commitment) throw new Error(`External message-bus batch entry slot ${routeSlot} has no commitment`);
-                            bCompilerInternalArgs[`__internal__c2BatchSlot_${routeSlot}`] = bSlot;
-                            bCompilerInternalArgs[`__internal__c2BatchProof_${routeSlot}`] = BigInt(blockOffset);
-                            bCompilerInternalArgs[`__internal__c2BatchNext_${routeSlot}`] =
+                            bCompilerInternalArgs[`__internal__vmapBatchSlot_${routeSlot}`] = bSlot;
+                            bCompilerInternalArgs[`__internal__vmapBatchProof_${routeSlot}`] = BigInt(blockOffset);
+                            bCompilerInternalArgs[`__internal__vmapBatchNext_${routeSlot}`] =
                               decodeEntryCommitment(hexToBin(commitment)).nextKey;
-                            bCompilerInternalArgs[`__internal__c2BatchPredOut_${routeSlot}`] = -1n;
+                            bCompilerInternalArgs[`__internal__vmapBatchPredOut_${routeSlot}`] = -1n;
                           }
                         }
                       } catch { matchUtxo = undefined; }
@@ -11548,7 +11548,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               ...((bAbiFunc?.sortedBatchInfo?.length ?? 0) > 0 && {
                 internalArgs: {
                   ...bCompilerInternalArgs,
-                  __internal__c2BatchTrailingCount: 0n,
+                  __internal__vmapBatchTrailingCount: 0n,
                 },
               }),
             },
@@ -12867,7 +12867,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
       const hasDelegatecallGroup = lowLevelCallUtxoGroups.some((g) => g.callMode === 'delegatecall');
       // Ordinary address.call uses a runtime __internal__callInputIndex and sits AFTER the caller's
-      // trailing resources (dynamic chunks, C2 batch preds). Multi-UTXO callees (SafeERC20.transferFrom)
+      // trailing resources (dynamic chunks, vmap batch preds). Multi-UTXO callees (SafeERC20.transferFrom)
       // expand contiguously from that base so they no longer steal blockSize+i from the caller's pins.
       const llcLayoutOffset = abiFunction?.blockLayout?.slots
         .find((s) => s.kind === 'lowLevelCall')?.offset;
@@ -12910,7 +12910,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ),
         }));
 
-        // Build the callee via its own _createBuilder so C2 batch / entry witnesses are computed for the
+        // Build the callee via its own _createBuilder so vmap batch / entry witnesses are computed for the
         // callee (ERC20.transferFrom needs balances+allowances entries), not reused from the caller's
         // entryBatchWitnesses. SafeERC20 low-level call: msg.sender inside the callee is THIS contract.
         const callee = group.externalContract as StatefulContract;
@@ -12937,7 +12937,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           };
           group.masterUtxo = priv.masterUtxo;
           // Full callee band matching the callee's published block layout: scalar data NFTs, mapping
-          // entry co-spends (or funder placeholders for collapsed/shared C2 proofs), and funders for
+          // entry co-spends (or funder placeholders for collapsed/shared vmap proofs), and funders for
           // output-only event/returnEvent slots. Fee-only leftover funders are NOT included.
           const scalarData = priv.dataNftUtxos;
           const bFunc = callee.inner.artifact.abi.find((f) => f.name === group.functionName);
@@ -13180,7 +13180,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // Hardhat-parity pad: when external/C2 synthetic params could not be fully derived
+    // Hardhat-parity pad: when external/vmap synthetic params could not be fully derived
     // (no connect-time externals, empty poolInfo loop, unresolved expression argSources),
     // fill remaining `__internal__*` ABI slots with safe defaults so empty-path calls
     // (e.g. MasterChef.add on a fresh farm) still build an unlocker. Non-empty paths that
@@ -13457,7 +13457,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`): N new entry NFTs at the collection's
     // entry covenant address (N derived from the VM trace). Mirrors dynamicChunkVars (variable trailing outputs).
     const entryLoopWrites = abiFunction?.entryLoopWrites ?? [];
-    // Trailing C2 output indices are part of the covenant ABI. Fixed batches are assigned bases in
+    // Trailing vmap output indices are part of the covenant ABI. Fixed batches are assigned bases in
     // sortedBatchInfo order (first-access order), which can differ from state-layout declaration order. Preserve
     // that order here or two collections written out of declaration order receive each other's locking bytecode.
     const orderedLoopCollections: string[] = [];
@@ -13469,7 +13469,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     for (const name of sortedLoopCommitments.keys()) addLoopCollection(name);
     for (const name of batchPredCommitments.keys()) addLoopCollection(name);
     // Delegate entry metadata is grafted from the implementation after the proxy ABI has been selected, so the
-    // proxy's entryLoopWrites cannot advertise a scalar C2 INSERT. The insertion plan itself is authoritative.
+    // proxy's entryLoopWrites cannot advertise a scalar vmap INSERT. The insertion plan itself is authoritative.
     for (const ins of sortedInserts) addLoopCollection(ins.collection);
     const loopEntryVars = orderedLoopCollections.map((name) => ({
       collection: name,
@@ -13562,7 +13562,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       builder.setEntryRawCommitment(slotIndex, commitment);
     }
 
-    // C2 sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new
+    // vmap sorted-set insert: place P' (the predecessor's rewritten commitment at its entry slot) and NEW (the new
     // node minted at the trailing loop-entry output). Both are known exactly from the off-chain list - no VM-trace
     // derivation needed - so set them directly; the covenant pins them, so the probe/send converge.
     for (const ins of sortedInserts) {
@@ -13582,7 +13582,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         builder.requireLoopEntryCount(ins.collection, 1);
       }
     }
-    // Break the first-probe ordering cycle when a scalar C2 INSERT follows newly-written dynamic state chunks:
+    // Break the first-probe ordering cycle when a scalar vmap INSERT follows newly-written dynamic state chunks:
     // reserve one chunk candidate so NEW is placed after the dynamic region and the VM can reach both commitment
     // checks. Derivation replaces it with the exact count/commitments (or removes it for an empty final value).
     if (sortedInserts.length > 0) {
@@ -13591,7 +13591,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       }
     }
 
-    // C2 diff-key INSERT loop: the 2N interleaved [P'_0, NEW_0, P'_1, NEW_1, ...] trailing outputs are known exactly
+    // vmap diff-key INSERT loop: the 2N interleaved [P'_0, NEW_0, P'_1, NEW_1, ...] trailing outputs are known exactly
     // from the off-chain list; inject + pin them so the auto-derivation skips this collection (nothing to trace).
     for (const [collectionName, commitments] of sortedLoopCommitments) {
       builder.setLoopEntryCommitments(collectionName, commitments);
@@ -13735,7 +13735,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             (sharedFunderAllocated ?? sharedFunderPool ?? []).map((f) => `${f.txid}:${f.vout}`),
           );
           // A token-free vout 0 is still a potential CashTokens genesis input, so introspection exposes its
-          // outpoint hash as a category. Prefer category-neutral sibling outputs for C2 absence witnesses.
+          // outpoint hash as a category. Prefer category-neutral sibling outputs for vmap absence witnesses.
           const orderPlain = (us: Utxo[]): Utxo[] => us
             .filter((u) => !u.token && !consumedTxids.has(`${u.txid}:${u.vout}`))
             .sort((a, b) => Number(a.vout === 0) - Number(b.vout === 0));
@@ -13916,7 +13916,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     // Kill-switch: SC_DISABLE_GETTER_SKIP=1 forces the full probe (escape hatch for the covenant-path change).
     // Read via globalThis - this is a browser+node library, so `process` is not typed/present in the prod build.
     const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
-    // A sorted (C2) mapping read REQUIRES co-spending the bracketing entry (no skippable default-on-absent), so
+    // A sorted (vmap) mapping read REQUIRES co-spending the bracketing entry (no skippable default-on-absent), so
     // it must not be getter-skipped even though the function writes nothing.
     const readsSortedMapping = (abiFunction?.entryAccesses ?? [])
       .some((ea) => stateLayout.collections?.find((c) => c.name === ea.collection)?.sorted);
@@ -15950,7 +15950,7 @@ export class BoringFactoryDeployCall {
       contract: clone,
     });
 
-    // Best-effort masterContractOf[clone] = master via C2 if the factory exposes that collection.
+    // Best-effort masterContractOf[clone] = master via vmap if the factory exposes that collection.
     // Failures here leave clone usable for view calls (name/symbol); approval paths may need a follow-up.
     try {
       await this.writeMasterContractOf(clone);
@@ -15983,7 +15983,7 @@ export class BoringFactoryDeployCall {
 
   private async writeMasterContractOf(clone: ConnectedStatefulContract): Promise<void> {
     // Prefer a dedicated setter if the artifact exposes one; otherwise skip.
-    // Full C2 upsert of masterContractOf is done by the original deploy body — replaying it would
+    // Full vmap upsert of masterContractOf is done by the original deploy body — replaying it would
     // re-run create2 address math that does not match a full clone. Mapping is optional for views.
     void clone;
     void this.factory;
@@ -16745,7 +16745,7 @@ export class StatefulFunctionCall {
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       let stb: StatefulTransactionBuilder | undefined;
       try {
-        // Soft business reject before spending on builder construction (C2 debit, encode BN, …).
+        // Soft business reject before spending on builder construction (vmap debit, encode BN, …).
         const earlyReject = this.parentContract ? this._kashiSoftFailCode() : undefined;
         if (earlyReject) throw new Error(earlyReject);
         stb = await this._applyOverrides();
@@ -18034,7 +18034,7 @@ export class StatefulFunctionCall {
   private _softApplyNoopReceipt(err: unknown): TransactionDetails | undefined {
     const msg = err instanceof Error ? err.message : String(err);
     // eslint-disable-next-line max-len -- one long alternation; splitting it broke the literal
-    if (!/OP_VERIFY|invalid transaction output index|invalid transaction UTXO index|OP_SPLIT|keccak256 preimage|side-car|Incorrect number of arguments|C2 batch|missing a target slot|Expected \d+ data NFT|Duplicate stateful input|could not be auto-derived|state commitments|Satoshi container UTXO not found|Master UTXO not found|encodePushdataValue|C2 upsert|cannot debit key|Invalid swapper|can't call|expected bigint|got object|Found type 'object'|where type 'uint|Value for type address|nullop:msg\.sender|External message-bus|excessive token commitment|commitment length|maximumNftCommitment|token validation|Transitive external call|connect-time externals|does not advertise a message-bus|message-bus route|messageBus|Invalid input txid|64-character hex string|Use \.setState\(\)|is not a function|unlock\[/i.test(msg)) {
+    if (!/OP_VERIFY|invalid transaction output index|invalid transaction UTXO index|OP_SPLIT|keccak256 preimage|side-car|Incorrect number of arguments|vmap batch|missing a target slot|Expected \d+ data NFT|Duplicate stateful input|could not be auto-derived|state commitments|Satoshi container UTXO not found|Master UTXO not found|encodePushdataValue|vmap upsert|cannot debit key|Invalid swapper|can't call|expected bigint|got object|Found type 'object'|where type 'uint|Value for type address|nullop:msg\.sender|External message-bus|excessive token commitment|commitment length|maximumNftCommitment|token validation|Transitive external call|connect-time externals|does not advertise a message-bus|message-bus route|messageBus|Invalid input txid|64-character hex string|Use \.setState\(\)|is not a function|unlock\[/i.test(msg)) {
       return undefined;
     }
     // eslint-disable-next-line @typescript-eslint/no-unused-vars -- see above
@@ -21660,7 +21660,7 @@ export class StatefulFunctionCall {
     // X10. A dynamic-storage chunk region that is not FULLY derived must never be broadcast. '00' is the seed
     // placeholder, never a real chunk commitment (a chunk carries an index opcode, a push opcode and >= 1 data
     // byte), so a '00' left in the region means the covenant never verified that output. Building it anyway
-    // mints a garbage chunk NFT no later chunked read can parse, and - when a C2 entry mint shares the trailing
+    // mints a garbage chunk NFT no later chunked read can parse, and - when a vmap entry mint shares the trailing
     // region - the covenant's NEW-node check lands inside the chunk window, so the mint's commitment is written
     // at a chunk index as well and the region carries it twice. Refuse by name instead of assembling it.
     for (const dv of builder.getDynamicChunkVars()) {

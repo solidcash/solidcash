@@ -16,7 +16,7 @@ import { createTestProvider } from '../test-util.js';
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 
-async function setupC2(
+async function setupVMap(
   provider: TestProvider, contract: Contract, stateLayout: StateLayout,
   initialState: Record<string, any>,
 ): Promise<{ categoryId: string }> {
@@ -76,7 +76,7 @@ describe('Conditional chained struct-entry write (chainInPlace)', () => {
   const runAdjust = async (bump: boolean): Promise<{ balance: bigint; count: bigint }> => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupC2(
+    const { categoryId } = await setupVMap(
       provider, contract, stateLayout, {},
     );
     const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
@@ -127,7 +127,7 @@ contract C() { struct Acc { bigint balance; bigint count; } mapping(bytes20 => A
     const sl = artifact.stateLayout!;
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });
-    const { categoryId } = await setupC2(provider, contract, sl, {});
+    const { categoryId } = await setupVMap(provider, contract, sl, {});
     const sc: ConnectedStatefulContract = StatefulContract.withCategory(contract, categoryId);
     const callSig = new SignatureTemplate(alicePriv);
     await sc.seed(alicePkh, alicePub, callSig).send();

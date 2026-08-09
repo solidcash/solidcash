@@ -16,7 +16,7 @@ export function compileBch(source: string, evmCompat = false): BchArtifact {
   const key = evmCompat ? `evm::${source}` : source;
   let artifact = cache.get(key);
   if (artifact === undefined) {
-    // Conformance compares against the default entry model (the cases seed that shape); opt out of the C2 default.
+    // Conformance compares against the default entry model (the cases seed that shape); opt out of the vmap default.
     artifact = compileString(source, evmCompat ? { evmCompat: true } : {});
     cache.set(key, artifact);
   }

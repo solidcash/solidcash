@@ -17,7 +17,7 @@ import { createTestProvider, expectScriptRejection, setupStatefulUtxos } from '.
  * `packages/solidc/test/MixedJournalBoundaryReviewB11.test.ts`.
  *
  * This file answers the part that matters: IS THE ADMITTED FORM SOUND. It is. The same handler writes a
- * chunk-backed unbounded `string` and a C2 collection entry, and both legs are physically present and
+ * chunk-backed unbounded `string` and a vmap collection entry, and both legs are physically present and
  * independently authenticated - forging either one, dropping the chunk, or minting a second chunk at the
  * dynamic address all reject at input 0, while the unmutated derivation broadcasts.
  *
@@ -96,7 +96,7 @@ describe('S2 bare-spelling admitted form: unbounded write plus a collection writ
     await sc.checkBalance(alicePkh, 7n).send();
   }, 180_000);
 
-  it('carries both legs physically: a chunk output beside the C2 insert node', async () => {
+  it('carries both legs physically: a chunk output beside the vmap insert node', async () => {
     const { hex } = await honestCapture();
     const tx = decodeTransactionUnsafe(hexToBin(hex));
     // '0002' is the chunk header for a 2-byte value; '6869' is "hi".

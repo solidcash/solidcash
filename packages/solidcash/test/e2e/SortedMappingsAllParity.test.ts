@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
-// C2 default mode backs every mapping with the authenticated linked-list model, so
+// vmap default mode backs every mapping with the authenticated linked-list model, so
 // reads are unforgeable (exclusion-proven on absent) = Solidity storage parity, WITHOUT naming each mapping.
 // End-to-end: deploy (HEAD auto-minted) -> write -> present read -> absent read (proven default, not omittable).
 const SRC = `contract C() {
@@ -18,7 +18,7 @@ const SRC = `contract C() {
   function check(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(balances[k] == exp); }
 }`;
 
-describe('C2 default mode (every mapping is C2)', () => {
+describe('vmap default mode (every mapping is vmap)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -30,7 +30,7 @@ describe('C2 default mode (every mapping is C2)', () => {
 
   it('a plain mapping deploys + reads/writes with exclusion proofs', async () => {
     const art = compileString(SRC, { forceStateful: true });
-    expect(art.stateLayout?.collections?.find((c) => c.name === 'balances')?.sorted).toBe(true); // C2 without naming it
+    expect(art.stateLayout?.collections?.find((c) => c.name === 'balances')?.sorted).toBe(true); // vmap without naming it
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);
@@ -53,8 +53,8 @@ describe('C2 default mode (every mapping is C2)', () => {
     await expect(contract.check(3n, 7n, alicePub, sig).send()).rejects.toThrow(verifyFailure);
   });
 
-  it('a C2 mapping WRITE via an internal (subroutine-candidate) helper compiles + round-trips', async () => {
-    // `balances[k] = v` inside an internal `_set` used to fail "Block layout not available" (a C2 write needs the
+  it('a vmap mapping WRITE via an internal (subroutine-candidate) helper compiles + round-trips', async () => {
+    // `balances[k] = v` inside an internal `_set` used to fail "Block layout not available" (a vmap write needs the
     // entry-slot block layout only an entry point has). InlineStoragePointerCalls now inlines a helper that
     // directly OR transitively writes a sorted mapping into its entry-point caller - the OZ _mint/_approve shape.
     const src = `contract C() {
@@ -78,7 +78,7 @@ describe('C2 default mode (every mapping is C2)', () => {
     expect((await contract.check(7n, 42n, alicePub, sig).send()).txid).toBeDefined(); // read back the persisted value
   });
 
-  it('a NESTED C2 mapping with a computed key (allow[hash160(pk)][b]) writes + reads (multi-key expression key)', async () => {
+  it('a NESTED vmap mapping with a computed key (allow[hash160(pk)][b]) writes + reads (multi-key expression key)', async () => {
     // `allow[hash160(pk)][b]` is a nested (composite-key) sorted mapping whose FIRST key is an EXPRESSION
     // (hash160(pk)), not a bare param - the covenant emitSortedKeyHash now tracks the accumulator so an expression
     // key past the first hashes correctly; the SDK auto-derives the computed key (evalComputedKey). This is the

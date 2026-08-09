@@ -6,8 +6,8 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress 
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// P5a: a sorted (C2) mapping with an UNBOUNDED `bytes` / `string` VALUE <= 60 B, stored INLINE in the entry
-// commitment tail as len(4 B LE) ++ value (<= 128 B total, real-chain-valid). C2's exclusion proofs extend to
+// P5a: a sorted (vmap) mapping with an UNBOUNDED `bytes` / `string` VALUE <= 60 B, stored INLINE in the entry
+// commitment tail as len(4 B LE) ++ value (<= 128 B total, real-chain-valid). vmap's exclusion proofs extend to
 // bytes/string values - closing the value-type gap for the common short-string case. A value > 60 B stores
 // len ++ sha256(value) and persists the full value in chunks (P5b, see SortedMappingLongValue.test.ts).
 

@@ -6,9 +6,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // A struct with a mapping field `struct S { mapping(int=>bool) seen; int[] keys; }` is decomposed into per-field
-// collections: m__seen (a nested C2 mapping keyed [k][j]) and m__keys (a C2 array). This is the Solidity
-// IterableMapping / EnumerableSet shape, and every field is independently C2 (unforgeable exclusion-proof reads).
-describe('sorted struct-with-mapping-field mapping (field-decomposed C2, IterableMapping shape)', () => {
+// collections: m__seen (a nested vmap mapping keyed [k][j]) and m__keys (a vmap array). This is the Solidity
+// IterableMapping / EnumerableSet shape, and every field is independently vmap (unforgeable exclusion-proof reads).
+describe('sorted struct-with-mapping-field mapping (field-decomposed vmap, IterableMapping shape)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
@@ -30,7 +30,7 @@ describe('sorted struct-with-mapping-field mapping (field-decomposed C2, Iterabl
     return { contract, fund };
   };
 
-  it('nested mapping field + array field both work as independent C2 sub-collections', async () => {
+  it('nested mapping field + array field both work as independent vmap sub-collections', async () => {
     const SRC = `contract C() {
       struct S { mapping(int => bool) seen; int[] keys; }
       mapping(int => S) m;

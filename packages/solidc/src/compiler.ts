@@ -94,7 +94,7 @@ import { validateLowLevelCallShapes } from './semantic/LowLevelCallShapes.js';
 import {
   PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
-import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
+import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -1663,7 +1663,7 @@ function synthesizeMessageBusRoute(
           resourceShapedHandler ??= fn;
           // Witnesses are named by the physical entry they address - collection, key position, and whether the
           // entry is shared by every row or row-local - never by the handler or its parameter names. Two
-          // handlers that touch the same entry then resolve to the same route input and the same C2 slot. Naming
+          // handlers that touch the same entry then resolve to the same route input and the same vmap slot. Naming
           // them per function is what made a second handler allocate a duplicate slot for one entry NFT.
           for (const [collectionName, alternatives] of directKeys) {
             const collection = collectionByName.get(collectionName)!;
@@ -2002,7 +2002,7 @@ function synthesizeMessageBusRoute(
     const resultMode = survivors.some((fn) => fn.returnTypes.length > 0);
     let valueEffectMode = survivors.some((fn) =>
       eligibleFootprint(fn).effects.includes('value') || carriesRawValueOption(fn));
-    // A nested collection needs one fixed C2 entry slot per row: the composite key is only resolvable against a
+    // A nested collection needs one fixed vmap entry slot per row: the composite key is only resolvable against a
     // statically known row, so the dynamic `for row < rowCount` parser cannot represent it and code generation
     // fails closed with SortedMappingCodegenPendingError. Unrolling the rows keeps ERC-20 `approve` and every
     // other multi-key handler batchable.
@@ -2284,7 +2284,7 @@ function synthesizeMessageBusRoute(
   // The collection journal identifies a pending value by the key EXPRESSION at the call site. That is fine while
   // one parameter keys one entry, but ERC-20 `transferFrom` keys `allowances[from][spender]` and
   // `balances[from]` from the same `from`, and one parameter cannot carry two different canonical witness
-  // names - so two handlers over one of those entries produced two journal locals and two C2 slots for one
+  // names - so two handlers over one of those entries produced two journal locals and two vmap slots for one
   // entry NFT. Instead of inferring identity, each batch clone takes one synthetic parameter per physical
   // entry key, named after that entry's canonical route input, and its mapping keys are rewritten to those
   // parameters. The key expression at every call site is then the entry's identity by construction, whatever
@@ -2464,7 +2464,7 @@ function synthesizeMessageBusRoute(
   // When a resource-shaped handler shares the route with others, every handler must reach its entries through
   // the same journal path. The resource-shaped one is invoked as an internal clone whose accesses the collection
   // journal hoists into wrapper caches; a sibling invoked as its public self bypasses that and allocates its own
-  // C2 slot for an entry the clone already owns. Cloning the siblings too puts them in one shared pool.
+  // vmap slot for an entry the clone already owns. Cloning the siblings too puts them in one shared pool.
   if (resourceShapedHandler && eligible.length > 1) {
     for (const sourceHandler of eligible) {
       if (sourceHandler === resourceShapedHandler || graphTailHandlers.has(sourceHandler)) continue;
@@ -2485,7 +2485,7 @@ function synthesizeMessageBusRoute(
   // `delete m[k]` is only settleable through the value-threaded journal, which rewrites it to a write of the
   // collection's default. That lowering only applies to internal handlers, so a delete-bearing handler is cloned
   // even when nothing else on the route needs a clone; otherwise code generation reaches the raw delete and the
-  // C2 backend fails closed on a shape the journal can in fact represent.
+  // vmap backend fails closed on a shape the journal can in fact represent.
   for (const sourceHandler of eligible) {
     if (sourceHandler === resourceShapedHandler
       || graphTailHandlers.has(sourceHandler)
@@ -3926,7 +3926,7 @@ function compileResolvedAst(
   // declarations that carry them. This mirrors solc's declaration type checking and keeps lowerings simpler.
   ast = ast.accept(new ValidateDataLocations(mergedCompilerOptions.solidityImportCompat ?? false)) as Ast;
 
-  // Every mapping uses the authenticated C2 backend. There is no omission-prone legacy mapping fallback.
+  // Every mapping uses the authenticated vmap backend. There is no omission-prone legacy mapping fallback.
   for (const col of ast.contract.collections) {
     if (col.type instanceof MappingType) col.sorted = true;
   }
@@ -4149,8 +4149,8 @@ function compileResolvedAst(
   // expansion (so raw break/continue still gate it out) + SymbolTableTraversal (so the static writes get slots).
   ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
-  // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  ast = ast.accept(new LowerC2CounterLoops()) as Ast;
+  // Canonical dynamic vmap `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
+  ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);
@@ -4172,7 +4172,7 @@ function compileResolvedAst(
   // Postfix `lvalue++`/`lvalue--` used as an expression -> read + a hoisted increment (before semantic analysis).
   ast = ast.accept(new DesugarPostfixExpressions()) as Ast;
 
-  // Coalesce consecutive whole-field writes to the same C2 mapping entry (`m[k].a=x; m[k].b=y`) into one entry
+  // Coalesce consecutive whole-field writes to the same vmap mapping entry (`m[k].a=x; m[k].b=y`) into one entry
   // read + one whole-struct write, replacing N sorted-mapping upserts with one.
   ast = ast.accept(new CoalesceMappingEntryFieldWrites()) as Ast;
 
@@ -4288,7 +4288,7 @@ function compileResolvedAst(
 
   // Re-run the fixed-bound unroll AFTER inlining: a `new T[](N)` literal substituted for an array param at an
   // inline site (`_updateJobWhitelist(id, allowed, new address[](0))`) now makes the loop bound compile-time
-  // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a C2
+  // constant. N==0 unrolls to zero iterations, eliminating the provably-dead loop before its body (e.g. a vmap
   // sorted-mapping write over the empty array) reaches the entry-slot pre-scan / codegen. The first pass (before
   // inlining) can't see the literal, and everything it could unroll it already did, so this pass only fires on
   // these post-inline new-array-bound loops.
@@ -4300,7 +4300,7 @@ function compileResolvedAst(
   // A dynamic (chunk-backed) array written inside a loop can't use the once-per-function pending-value write
   // model; cache it in a local, mutate the local in the loop, flush back once.
   ast = ast.accept(new CacheDynamicArrayInLoop()) as Ast;
-  // A C2 (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
+  // A vmap (sorted) mapping ARRAY value written in a loop `for(..) m[k][j]=v` is cached the same way: read m[k] once,
   // mutate the local array in the runtime loop, flush `m[k] = local` as one upsert (never unroll the loop).
   ast = ast.accept(new CacheMappingEntryInLoop()) as Ast;
 
@@ -4349,7 +4349,7 @@ function compileResolvedAst(
 
   // Storage-lowering passes can synthesize mappings after the source collections were normalized above
   // (notably assembly sstore/sload and ERC-7201 storage pointers). Keep the backend invariant global: every
-  // mapping, including compiler-generated mappings, uses authenticated C2 storage.
+  // mapping, including compiler-generated mappings, uses authenticated vmap storage.
   for (const col of ast.contract.collections) {
     if (col.type instanceof MappingType) col.sorted = true;
   }

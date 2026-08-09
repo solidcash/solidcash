@@ -12462,7 +12462,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         const delegateGroup = lowLevelCallUtxoGroups[delegateGroupIndex];
         const delegateFn = delegateGroup?.abiFunction;
         if (!delegateGroup || !delegateFn || nestedIndices.length === 0) continue;
-        const oldParams = (delegateGroup.masterUtxo as Partial<UnlockableUtxo>).unlocker?.params ?? [];
+        const oldUnlocker = (delegateGroup.masterUtxo as Partial<UnlockableUtxo>).unlocker as
+          | (Unlocker & { params?: FunctionArgument[] }) | undefined;
+        const oldParams = oldUnlocker?.params ?? [];
         let returnOrdinal = 0;
         const rebuiltArgs: FunctionArgument[] = delegateFn.inputs.map((input, inputIndex) => {
           if (!input.name.startsWith('__internal__')) return delegateGroup.functionArgs[inputIndex];

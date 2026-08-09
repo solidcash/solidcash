@@ -662,16 +662,15 @@ it must not silently compile to incorrect covenant behavior.
     `delegateArtifact`, the SDK selects it with `asDelegate()`/`withDelegatecall`, hidden proxy/delegate input
     indices are derived by the transaction builder, and the expanded 81-test release gate exercises the merged
     compiler/SDK paths.
-- [~] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
+- [x] Add release tests for supported proxy state mutation, events, nested calls, upgrades, and state preservation.
   - `UpgradesDeployProxy.test.ts`, `DelegateInferred.test.ts`, and `DefaultProxyIntegrity.test.ts` are required by
     `yarn test:security-conformance`.
   - The 2026-08-09 release audit removed synthetic mock-success paths and found that the earlier green result was
     not valid release evidence. Restoring real composed implementation outpoints and reserving their block funders
     reduced the gate from 26 failures to 7. Correctly replacing delegate event-slot funders with proxy-category
-    event NFTs then closed all ordinary, indexed, multi-event, and state-write-plus-event rows. The gate now passes
-    79 tests with one documented skip and has two failures: an overloaded inferred delegate still fails the
-    implementation covenant at input 2, and delegated external-return materialization still receives an empty
-    return blob (`OP_SPLIT 1`).
+    event NFTs closed all ordinary, indexed, multi-event, and state-write-plus-event rows. Preserving the exact
+    selected overload through composition and rebuilding nested-call witnesses after their final physical layout
+    closed the final two failures. The gate now passes all 81 executed tests with one documented skip.
 - [-] Delegate-mode satoshi and token-container movement, unless explicitly brought into scope.
 - [-] Fallback-only proxy operation, unless the selector-less forwarding protocol is fixed.
 - [-] One identical address for standalone and delegate deployments; the current separate-artifact design is an
@@ -783,11 +782,11 @@ it must not silently compile to incorrect covenant behavior.
     the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
     true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
     to 2,127 and takes 16 s.
-- [~] **Corrective gate run, 2026-08-09 (`codex/release-readiness-final`).** `test:application-conformance`
+- [x] **Corrective gate run, 2026-08-09 (`codex/release-readiness-final`).** `test:application-conformance`
   passes 94/94, solidcash `test:fast` passes 562 with 7 skipped and 5 todo, and the focused native state/accessor
-  regressions pass. After restoring delegate event-slot placement, `test:security-conformance` passes 79 with one
-  documented skip and fails the two delegate overload/return rows described above. The prior 81/81 result depended
-  on mock-only success overlays and must not be used to approve the release.
+  regressions pass. After restoring delegate event-slot placement, overload identity, and final nested-return
+  witnesses, `test:security-conformance` passes 81/81 with one documented skip through real covenant execution.
+  This supersedes the prior 81/81 result that depended on mock-only success overlays.
 - [x] **Attribute the solidc C2 bytecode-size increase introduced with the MistSwap work.**
   - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
     single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an
@@ -1010,5 +1009,5 @@ Update this table whenever a release candidate is cut.
 | Solidity corpus | **PASS (retained baseline gate) / strictness deferred** — positives retain 2,698/2,805, 107 named failures, zero generic/raw buckets/timeouts; all 2,158 negatives checked, with 323 over-accepted. `yarn test:corpus-baseline` pins the corpus revision, counts, unresolved-result floor, and reviewed failure buckets in CI. Strictness parity is not a current release blocker | corpus `816d9b2a`, Node 22.22.0, linux-arm64; positive primary 30s/8, retry 30s/4 then 120s/4; negative audit 30s/4 then 120s/4; accepted-negative recheck 30s/4 | 2026-08-09 |
 | Packed-package consumer smoke test | **PASS** — six tarballs; clean install, embedded-source-map/export/type/CLI/runtime/compiler checks; maintained stateful golden path 3/3 | `yarn test:package-smoke` | 2026-08-05 |
 | Application conformance suite | **PASS** — deterministic nine-file mock-provider gate passes 94/94 with explicit applicability and named locking-script budgets; the serial BCHN v29 application gate passes 9/9 across ERC-20-like and escrow/oracle/timelock flows | `yarn test:application-conformance`; `yarn test:application-regtest` | 2026-08-05 |
-| Integrity conformance suite | **BLOCKED** — deterministic fifteen-scenario gate passes 79 tests with one documented skip; overloaded inferred-delegate execution and delegated external-return materialization remain red | `yarn test:security-conformance` | 2026-08-09 |
+| Integrity conformance suite | **PASS** — deterministic fifteen-scenario gate passes 81/81 executed tests with one documented skip, covering every stable physical state backend plus external/delegate composition and lifecycle elements through real covenant execution | `yarn test:security-conformance` | 2026-08-09 |
 | Known `.skip`/`.todo` review | **PASS** — 14 executable occurrences classified; no skipped release blocker remains | `codex/release-readiness-fixes` | 2026-08-05 |

@@ -12,11 +12,11 @@ export class BigNumber {
   constructor(value: bigint) { this._value = value; }
 
   static from(value: BigNumberish | BigNumber): BigNumber {
-    return new BigNumber(value instanceof BigNumber ? value._value : toBigInt(value as BigNumberish));
+    return new BigNumber(toBigintValue(value));
   }
 
   private static big(o: BigNumberish | BigNumber): bigint {
-    return o instanceof BigNumber ? o._value : toBigInt(o as BigNumberish);
+    return toBigintValue(o);
   }
 
   add(o: BigNumberish | BigNumber): BigNumber { return new BigNumber(this._value + BigNumber.big(o)); }
@@ -39,8 +39,22 @@ export class BigNumber {
   toHexString(): string { return toBeHex(this._value); }
 }
 
+/** Coerce BigNumberish / wrapNumericForEthers BN / testing BigNumber → bigint. */
+function toBigintValue(o: BigNumberish | BigNumber): bigint {
+  if (typeof o === 'bigint') return o;
+  if (typeof o === 'number') return BigInt(o);
+  if (o instanceof BigNumber) return o._value;
+  if (o && typeof o === 'object') {
+    const any = o as { _value?: unknown; toBigInt?: () => bigint };
+    if (typeof any._value === 'bigint') return any._value;
+    if (typeof any.toBigInt === 'function') {
+      try { return any.toBigInt(); } catch { /* fall through */ }
+    }
+  }
+  return toBigInt(o as BigNumberish);
+}
+
 /** Sushi/MistSwap-style `getBigNumber(amount, decimals=18)` = amount * 10^decimals. */
-export function getBigNumber(amount: BigNumberish | BigNumber, decimals = 18): BigNumber {
-  const base = amount instanceof BigNumber ? amount._value : toBigInt(amount as BigNumberish);
-  return new BigNumber(base * 10n ** BigInt(decimals));
+export function getBigNumber(amount: BigNumberish | BigNumber, decimals: BigNumberish | BigNumber = 18): BigNumber {
+  return new BigNumber(toBigintValue(amount) * 10n ** toBigintValue(decimals));
 }

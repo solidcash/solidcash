@@ -27,10 +27,13 @@ describe('cjsHardhatRequirePlugin', () => {
     expect(out!.code).not.toContain('require("hardhat")');
   });
 
-  it('does not rewrite require("ethers") (leave upstream v5 installs alone)', () => {
+  it('rewrites require("ethers") through the CashAddress-aware compatibility shim', () => {
     const src = 'const { BigNumber } = require("ethers")\n';
     const out = transform(src, '/proj/test/utilities/index.ts');
-    expect(out).toBeNull();
+    expect(out).not.toBeNull();
+    expect(out!.code).toContain('from "@solidcash/testing/ethers-shim"');
+    expect(out!.code).toContain('const { BigNumber } = __solidcashHardhat0');
+    expect(out!.code).not.toContain('require("ethers")');
   });
 
   it('does not rewrite inside the real hardhat package', () => {

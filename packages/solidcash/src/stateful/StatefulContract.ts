@@ -12364,6 +12364,41 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           ? new Uint8Array(32)
           : hexToBin(this.categoryId).reverse();
         try {
+          // Compiler-split facets are branded, delegate-only libraries: they own a master NFT but deliberately
+          // have no data/entry NFTs of their own. Their state block is the root/proxy block already planned above
+          // (including entryBatchWitnesses), so asking the facet to getFullState() can only fail. Encode the facet
+          // master directly from the parent-derived witnesses and keep its physical band master-only.
+          if (group.callMode === 'delegatecall' && callee.inner.artifact.brandedLibrary) {
+            const facetFn = group.abiFunction
+              ?? (callee.inner.artifact.abi as readonly AbiFunction[])
+                .find((candidate) => candidate.name === group.functionName);
+            if (!facetFn) throw new Error(`Branded facet function '${group.functionName}' is missing from its ABI`);
+            const c2Inputs = facetFn.inputs.filter((input) => input.name.startsWith('__internal__c2Batch'));
+            const c2ByName = new Map(c2Inputs.map((input, index) => [input.name, entryBatchWitnesses[index]]));
+            const valueInputs = facetFn.inputs.filter((input) => input.name.startsWith('__internal__valueWitness_'));
+            const valueByName = new Map(valueInputs.map((input, index) => [input.name, entryValueWitnesses[index]]));
+            let visibleIndex = 0;
+            const facetArgs = facetFn.inputs.map((input): FunctionArgument => {
+              if (!input.name.startsWith('__internal__')) return group.functionArgs[visibleIndex++];
+              if (input.name === '__internal__proxyMasterIndex') {
+                return BigInt(groupProxyMasterIndices[groupLocalIdx] ?? 0);
+              }
+              if (c2ByName.has(input.name)) return c2ByName.get(input.name) as FunctionArgument;
+              if (valueByName.has(input.name)) return valueByName.get(input.name) as FunctionArgument;
+              if (input.name === '__internal__msgSenderCategory') return llcMsgSenderCategory;
+              return defaultInternalFunctionArg(input);
+            });
+            group.masterUtxo = {
+              ...group.masterUtxo,
+              unlocker: callee.inner.unlock[group.functionName]!(...facetArgs),
+            } as UnlockableUtxo;
+            group.blockLayout = facetFn.blockLayout;
+            group.requiredDataNftIndices = [];
+            group.dataNftUtxos = [];
+            group.blockInputs = [group.masterUtxo as UnlockableUtxo];
+            currentBase += 1;
+            continue;
+          }
           const calleeBuilder = await callee._createBuilder(
             group.functionName,
             group.functionArgs,

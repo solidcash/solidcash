@@ -5174,6 +5174,9 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   const merged = normalizeCompilerOptions(artifactOptions);
   merged.__messageBusExplicitlyDisabled = artifactOptions.messageBus === false;
   const baseline = compileString(code, { ...artifactOptions, errorListener });
+  // Split preparation is source-wide and independent of physical placement. Keep one template and clone it for
+  // each candidate compilation; reparsing imports and re-expanding inheritance/modifiers for
+  // every packing probe made split compilation scale with (candidate count * front-end cost).
   const probe = prepareSplitAst(code, merged, errorListener);
   const logicalName = probe.contract.name;
   const functions = probe.contract.functions;
@@ -5217,7 +5220,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     const key = groupKey(group);
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
-    const artifact = compileFacet(code, merged, errorListener, group, 'ProbeFacet');
+    const artifact = compileFacet(probe, code, merged, group, 'ProbeFacet');
     const bytes = byteSize(artifact);
     measuredArtifacts.set(key, artifact);
     measuredBytes.set(key, bytes);
@@ -5313,7 +5316,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
   groups.forEach((group, index) => {
     const name = `${logicalName}__Facet${index}`;
     const measured = measuredArtifacts.get(groupKey(group));
-    const artifact = measured ? cloneArtifact(measured) : compileFacet(code, merged, errorListener, group, name);
+    const artifact = measured ? cloneArtifact(measured) : compileFacet(probe, code, merged, group, name);
     // The synthetic facet name is metadata only (the branded bytecode and constructor shape are identical), so a
     // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
     artifact.contractName = name;
@@ -5332,7 +5335,9 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     facetRecords.push({ name, link: `__facetAddr_${index}`, plans: group, artifact });
   });
 
-  const rootAst = prepareSplitAst(code, merged, errorListener);
+  // Candidate compilation is complete, so the prepared template can become the root directly rather than paying
+  // for one final full-contract clone. Every facet was compiled from an isolated clone and restored the template.
+  const rootAst = probe;
   const routeByName = new Map<string, { facet: string; link: string }>();
   for (const facet of facetRecords) for (const plan of facet.plans) {
     routeByName.set(plan.name, { facet: facet.name, link: facet.link });
@@ -5584,10 +5589,25 @@ function prepareSplitAst(
   return ast;
 }
 
-function compileFacet(code: string, options: CompilerOptions, listener: SolidCashErrorListener | undefined,
+function compileFacet(prepared: Ast, code: string, options: CompilerOptions,
   plans: PlannedFunction[], facetName: string): Artifact {
-  let ast = prepareSplitAst(code, options, listener);
   const keep = new Set(plans.flatMap((p) => [...p.closure]));
+  // Clone only the physical closure this facet can retain. Cloning the complete logical function surface and
+  // filtering afterward made every packing probe copy all omitted bodies, which is especially costly for the
+  // large imported contracts that need splitting in the first place. The template projection is synchronous and
+  // restored before any compiler pass sees it; every returned node still belongs exclusively to this candidate.
+  const preparedContract = prepared.contract;
+  const completeFunctions = preparedContract.functions;
+  const completeConstructor = preparedContract.constructorDef;
+  let ast: Ast;
+  try {
+    preparedContract.functions = completeFunctions.filter((fn) => keep.has(fn.name));
+    preparedContract.constructorDef = undefined;
+    ast = cloneNode(prepared);
+  } finally {
+    preparedContract.functions = completeFunctions;
+    preparedContract.constructorDef = completeConstructor;
+  }
   const contract = ast.contract;
   // Derive getter declarations on a clone so the getter pass cannot rewrite the retained handler bodies before
   // the ordinary facet pipeline. These declarations exist only for self-typed external-call resolution.
@@ -5620,7 +5640,6 @@ function compileFacet(code: string, options: CompilerOptions, listener: SolidCas
   // the logical contract's Solidity interfaces. The root retains the complete logical ABI.
   contract.implements = [];
   contract.parentInvocations = [];
-  contract.functions = contract.functions.filter((fn) => keep.has(fn.name));
   // Public getters are synthesized later than split planning. Without suppressing them here, every facet silently
   // regains every public state/collection/constant getter after its function set was filtered. Besides publishing
   // unrelated selectors on every shard, those getters make each facet synthesize the full incoming message-bus

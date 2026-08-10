@@ -37,13 +37,13 @@ describe('deploy resolves promise-valued arguments (ethers parity)', () => {
     const artifact = compileString(SRC, { forceStateful: true });
     const hash = Promise.resolve(`0x${'ab'.repeat(32)}`);
     const contract = await new ContractFactory(artifact, await fundedSigner()).deploy(hash as any);
-    expect((contract as any).address).toMatch(/^bchtest:/);
+    expect((contract as any).address).toMatch(/^(?:bchtest|bchreg):/);
   }, 180000);
 
   it('still accepts the already-resolved value', async () => {
     const artifact = compileString(SRC, { forceStateful: true });
     const contract = await new ContractFactory(artifact, await fundedSigner())
       .deploy(`0x${'ab'.repeat(32)}`);
-    expect((contract as any).address).toMatch(/^bchtest:/);
+    expect((contract as any).address).toMatch(/^(?:bchtest|bchreg):/);
   }, 180000);
 });

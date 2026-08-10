@@ -103,7 +103,10 @@ function compileFactory(src: string): { factory: any; child: any } {
   return { factory, child };
 }
 
-describe('create2 salt isolation (param vs computed vs +C2)', () => {
+// This is a mock-only diagnostic: it deliberately installs synthetic outpoints, relaxes mock input-size limits,
+// and writes intermediate layouts to /tmp. Those premises do not exist on BCHN (where the synthetic covenant
+// setup fails independently of the CREATE2 behavior under inspection).
+describe.skipIf(Boolean(process.env.TESTS_USE_REGTEST))('create2 salt isolation (param vs computed vs +C2)', () => {
   const provider = createTestProvider();
   (provider as any).consensusLimits = {
     ...(provider as any).consensusLimits,

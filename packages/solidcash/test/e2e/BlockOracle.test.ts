@@ -776,8 +776,12 @@ describe('blockhash keeper sweep', () => {
     const provider = createTestProvider();
     const { n: height } = await allocHeight(provider, 256); // mine headroom so n+256 <= tip
     const n = BigInt(height);
-    const { cat, addrN } = await seedOracleNft(provider, n, hexToBin('ab'.repeat(32)), { satoshis: 2000n });
-    expect(await provider.getUtxosForLockingBytecode(addrN)).toHaveLength(1);
+    const { cat, addrN, utxo } = await seedOracleNft(provider, n, hexToBin('ab'.repeat(32)), { satoshis: 2000n });
+    // A previous failed wipe can leave another valid pair at the same branded address on persistent providers.
+    // The keeper intentionally sweeps every pair there; prove this fixture's freshly seeded output is included.
+    expect(await provider.getUtxosForLockingBytecode(addrN)).toContainEqual(expect.objectContaining({
+      txid: utxo.txid, vout: utxo.vout,
+    }));
 
     const txid = await sweepUpdater(provider, cat).sweepBlockhashPair(n);
     expect(txid).toMatch(/^[0-9a-f]{64}$/);

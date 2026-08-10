@@ -30,7 +30,8 @@ async function run(a: Uint8Array, b: Uint8Array) {
   const utxos = await c.getUtxos();
   return new TransactionBuilder({ provider })
     .addInput(utxos[0], c.unlock.cmp(a, b))
-    .addOutput({ to: c.address, amount: 99000n })
+    // The redeem script makes this probe larger than 1 KB, so leave enough for BCHN's 1 sat/byte relay floor.
+    .addOutput({ to: c.address, amount: 95000n })
     .send();
 }
 

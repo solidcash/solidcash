@@ -63,13 +63,13 @@ describe('constructor keccak256 through an internal helper', () => {
 
     const contract = await new ContractFactory(artifact, await fundedSigner())
       .deploy(new Uint8Array([1, 2, 3]));
-    expect((contract as any).address).toMatch(/^bchtest:/);
+    expect((contract as any).address).toMatch(/^(?:bchtest|bchreg):/);
   }, 180000);
 
   it('still deploys when the keccak256 is written directly in the constructor', async () => {
     const artifact = compileString(DIRECT_KECCAK, { forceStateful: true });
     const contract = await new ContractFactory(artifact, await fundedSigner())
       .deploy(new Uint8Array([1, 2, 3]));
-    expect((contract as any).address).toMatch(/^bchtest:/);
+    expect((contract as any).address).toMatch(/^(?:bchtest|bchreg):/);
   }, 180000);
 });

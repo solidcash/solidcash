@@ -63,7 +63,9 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     // deploy-modifier function to a thenable DeployFunctionCall. Its funding UTXO txid becomes the child
     // category, so the child address derives forward.
     const signer = new Signer(alicePriv, provider);
-    const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 50000n };
+    // Keep this above the signer's conservative deployFrom reserve (master + data NFT + fee/buffer), otherwise
+    // auto-selection correctly skips it and the assertion below compares against a coin that was never chosen.
+    const fundingUtxo: Utxo = { txid: 'fb2d'.repeat(16), vout: 0, satoshis: 100000n };
     await provider.addUtxo(signer.getAddress(), fundingUtxo);
 
     const signed = factory.registerChild(childArtifact).connect(signer);

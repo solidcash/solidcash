@@ -122,7 +122,9 @@ export default class RegtestNetworkProvider implements NetworkProvider {
     for (const addr of addresses) {
       utxos.push(...await this.getUtxos(addr));
     }
-    return utxos;
+    // Token-aware and ordinary CashAddresses encode the same locking bytecode. BCHN's wallet therefore returns
+    // the same outpoint for both queries; expose a UTXO set, not a duplicated concatenation of those two views.
+    return [...new Map(utxos.map((utxo) => [`${utxo.txid}:${utxo.vout}`, utxo])).values()];
   }
 
   async getBlockHeight(): Promise<number> {

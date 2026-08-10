@@ -4674,9 +4674,9 @@ function compileResolvedAst(
       }
       if ((routeClone || fn.messageBusEligible)
         && fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
-          fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
-            const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
-              routeEntry.collection === entry.collection
+        fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
+          const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
+            routeEntry.collection === entry.collection
               && routeEntry.keyParams.length === entry.keyParams.length);
             // A handler's mapping keys are rewritten to compiler-owned ENTRY KEYS named after the route input
             // that supplies them (ENTRY_KEY_PREFIX + routeInput), so when one collection has several route
@@ -4687,47 +4687,47 @@ function compileResolvedAst(
             // aliases of the same physical family (see runtimeAliasPriorSlots below), and the canonical one is
             // the lowest slot. Distinct key SHAPES keep distinct bases - `..._users_sender_0` never collapses
             // into `..._users_0`, so a msg.sender-keyed slot can never absorb a parameter-keyed access.
-            const keyBase = (key: string): string => {
-              const bare = key.startsWith('id:') ? key.slice(3) : key;
-              const unwrapped = bare.startsWith('__message_bus_ek_')
-                ? bare.slice('__message_bus_ek_'.length) : bare;
-              return unwrapped.replace(/_r\d+$/, '');
-            };
-            const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
-              .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
+          const keyBase = (key: string): string => {
+            const bare = key.startsWith('id:') ? key.slice(3) : key;
+            const unwrapped = bare.startsWith('__message_bus_ek_')
+              ? bare.slice('__message_bus_ek_'.length) : bare;
+            return unwrapped.replace(/_r\d+$/, '');
+          };
+          const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
+            .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
             // Ordinary eligible handlers retain their source parameter names (`jobId_`, `address_`) while the
             // route owns compiler-generated key names. The eligibility pass already records the authoritative
             // source-argument -> route-input binding; use it to disambiguate same-shaped accesses before the
             // weaker spelling/shape fallback used by generated clones.
-            const witnessKeys = entry.keySources?.map((source) => {
-              if (source.kind === 'msgSender') return fn.messageBusKeyWitnesses
-                ?.find((binding) => binding.source === 'msgSender')?.routeInput;
-              if (source.kind !== 'param') return undefined;
-              const inputIndex = fn.parameters.findIndex((parameter) => parameter.name === source.paramName);
-              return fn.messageBusKeyWitnesses
-                ?.find((binding) => binding.inputIndex === inputIndex)?.routeInput;
-            });
-            const byWitness = witnessKeys?.every((key) => key !== undefined)
-              ? byShape.filter((routeEntry) => routeEntry.keyParams
-                .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
-              : [];
-            const named = byWitness.length > 0 ? byWitness : byKeyName;
-            const canonical = named.length > 1
-              ? [named.reduce((lowest, candidate) =>
-                (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
-              : named;
-            const candidates = canonical.length === 1 ? canonical : byShape;
-            if (candidates.length !== 1) {
-              throw new Error(
-                `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `
-                + `to its physical route entry slot (${JSON.stringify({ entry, candidates })})`,
-              );
-            }
-            const physical = candidates[0];
-            physical.operations = [...new Set([...physical.operations, ...entry.operations])];
-            handlerManagedEntrySlots.add(physical.slotIndex);
-            return physical.slotIndex;
+          const witnessKeys = entry.keySources?.map((source) => {
+            if (source.kind === 'msgSender') return fn.messageBusKeyWitnesses
+              ?.find((binding) => binding.source === 'msgSender')?.routeInput;
+            if (source.kind !== 'param') return undefined;
+            const inputIndex = fn.parameters.findIndex((parameter) => parameter.name === source.paramName);
+            return fn.messageBusKeyWitnesses
+              ?.find((binding) => binding.inputIndex === inputIndex)?.routeInput;
           });
+          const byWitness = witnessKeys?.every((key) => key !== undefined)
+            ? byShape.filter((routeEntry) => routeEntry.keyParams
+              .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
+            : [];
+          const named = byWitness.length > 0 ? byWitness : byKeyName;
+          const canonical = named.length > 1
+            ? [named.reduce((lowest, candidate) =>
+              (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
+            : named;
+          const candidates = canonical.length === 1 ? canonical : byShape;
+          if (candidates.length !== 1) {
+            throw new Error(
+              `Message-bus handler '${fn.name}' cannot uniquely map collection '${entry.collection}' `
+                + `to its physical route entry slot (${JSON.stringify({ entry, candidates })})`,
+            );
+          }
+          const physical = candidates[0];
+          physical.operations = [...new Set([...physical.operations, ...entry.operations])];
+          handlerManagedEntrySlots.add(physical.slotIndex);
+          return physical.slotIndex;
+        });
       }
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];
@@ -4759,6 +4759,8 @@ function compileResolvedAst(
     // both the same compiler-owned row key. Reading or writing through the later slot would require co-spending
     // the same C2 node (or cold-key predecessor) twice. Point statically identical journal accesses at the
     // canonical earlier physical slot; genuinely runtime-dependent aliases retain their own slot and sentinel.
+    // This callback executes synchronously for the current function; it does not escape the loop iteration.
+    // eslint-disable-next-line @typescript-eslint/no-loop-func
     walkInvocationAst(fn.body, (node) => {
       if (!(node instanceof MappingAccessNode) && !(node instanceof MappingAssignNode)) return;
       const entry = fn.entryAccesses?.[node.entrySlotIndex];

@@ -2315,8 +2315,8 @@ export default class SymbolTableTraversal extends AstTraversal {
             }
             const identity = slot.addressSource ? `source:${JSON.stringify(slot.addressSource)}`
               : slot.addressParam ? `param:${slot.addressParam}`
-              : slot.addressStateVar ? `state:${slot.addressStateVar}`
-                : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
+                : slot.addressStateVar ? `state:${slot.addressStateVar}`
+                  : slot.addressLiteral ? `literal:${slot.addressLiteral}` : '';
             if (identity !== '') {
               const ownerKey = identity;
               const allGroup = allByTarget.get(ownerKey) ?? [];
@@ -2375,48 +2375,48 @@ export default class SymbolTableTraversal extends AstTraversal {
                 group.flatMap((slot) => slot.requiredDataNftIndices),
               )].sort((a, b) => a - b);
               representative.batchInvocations = group.map((slot, logicalIndex) => {
-              slot.batchRepresentative = representative;
-              slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
-              const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)
+                slot.batchRepresentative = representative;
+                slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
+                const selector = slot.compileTimeSelector ?? inferredSelectors.get(slot)
                 ?? slot.rawSelector!;
-              slot.compileTimeSelector = selector;
-              const iface = this.interfaceMap.get(slot.interfaceName);
-              const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
-                .find((fn) => fn.name === slot.functionName);
-              const rawIface = slot.rawInterfaceName
-                ? this.interfaceMap.get(slot.rawInterfaceName) : undefined;
-              const rawFuncFromInterface = rawIface && this.getAllInterfaceFunctions(rawIface)
-                .find((fn) => fn.name === slot.rawFunctionName);
-              // Late helper outlining can preserve a decoded abi.encodeCall selector and arguments while losing
-              // the payload node's interface tag. Do not fall back to the low-level call's opaque `bytes` return
-              // in that case: resolve the actual method by its already-authenticated selector. This is safe across
-              // duplicate interface declarations because an identical selector/signature has identical ABI types.
-              const rawFunc = rawFuncFromInterface ?? (slot.rawFunctionName
-                ? [...this.interfaceMap.values()].flatMap((candidate) => this.getAllInterfaceFunctions(candidate))
-                  .find((fn) => fn.name === slot.rawFunctionName && binToHex(computeFunctionSelector(
-                    computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString())),
-                  )) === binToHex(selector))
-                : undefined);
-              return {
-                selector,
-                parameters: slot.rawParameters ?? slot.sourceCallNode!.parameters,
-                parameterTypes: slot.rawParameterTypes
+                slot.compileTimeSelector = selector;
+                const iface = this.interfaceMap.get(slot.interfaceName);
+                const ifaceFunc = iface && this.getAllInterfaceFunctions(iface)
+                  .find((fn) => fn.name === slot.functionName);
+                const rawIface = slot.rawInterfaceName
+                  ? this.interfaceMap.get(slot.rawInterfaceName) : undefined;
+                const rawFuncFromInterface = rawIface && this.getAllInterfaceFunctions(rawIface)
+                  .find((fn) => fn.name === slot.rawFunctionName);
+                // Late helper outlining can preserve a decoded abi.encodeCall selector and arguments while losing
+                // the payload node's interface tag. Do not fall back to the low-level call's opaque `bytes` return
+                // in that case: resolve the actual method by its already-authenticated selector. This is safe across
+                // duplicate interface declarations because an identical selector/signature has identical ABI types.
+                const rawFunc = rawFuncFromInterface ?? (slot.rawFunctionName
+                  ? [...this.interfaceMap.values()].flatMap((candidate) => this.getAllInterfaceFunctions(candidate))
+                    .find((fn) => fn.name === slot.rawFunctionName && binToHex(computeFunctionSelector(
+                      computeFunctionSignature(fn.name, fn.parameters.map((parameter) => parameter.type.toString())),
+                    )) === binToHex(selector))
+                  : undefined);
+                return {
+                  selector,
+                  parameters: slot.rawParameters ?? slot.sourceCallNode!.parameters,
+                  parameterTypes: slot.rawParameterTypes
                   ?? ifaceFunc?.parameters.map((parameter) => parameter.type)
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
-                logicalIndex,
-                argSources: slot.rawArgSources ?? slot.argSources,
-                sourceCallNode: slot.sourceCallNode,
-                ...((slot.optional
+                  logicalIndex,
+                  argSources: slot.rawArgSources ?? slot.argSources,
+                  sourceCallNode: slot.sourceCallNode,
+                  ...((slot.optional
                   && (slot.rawArgSources ?? slot.argSources ?? []).every((source) => [
                     'forward', 'constructorArg', 'literal', 'msgSender', 'selfAddress',
                   ].includes(source.kind))) && {
-                  eager: true,
-                }),
-                ...(slot.opaqueReturn && { opaqueReturn: true }),
-                ...((rawFunc?.returnTypes ?? slot.returnTypes) && {
-                  returnTypes: rawFunc?.returnTypes ?? slot.returnTypes,
-                }),
-              };
+                    eager: true,
+                  }),
+                  ...(slot.opaqueReturn && { opaqueReturn: true }),
+                  ...((rawFunc?.returnTypes ?? slot.returnTypes) && {
+                    returnTypes: rawFunc?.returnTypes ?? slot.returnTypes,
+                  }),
+                };
               });
               representative.compileTimeSelector = Uint8Array.from([0x53, 0x43, 0x42, 0x31]);
               representative.needsSelectorVerification = true;

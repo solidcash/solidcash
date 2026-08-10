@@ -1,3 +1,4 @@
+/* eslint-disable @typescript-eslint/no-loop-func */
 import {
   StateLayout,
   EntryAccessAbi,
@@ -270,6 +271,7 @@ export class StatefulTransactionBuilder {
   private stateUpdates: Map<
   string, StateValue
   > = new Map();
+
   // Exact data-NFT commitments learned from covenant traces. Parsing and rebuilding a commitment can lose
   // compiler-only dynamic length registers, so auto-derivation retains the authenticated bytes verbatim.
   private stateRawCommitments: Map<number, string> = new Map();
@@ -366,6 +368,7 @@ export class StatefulTransactionBuilder {
   private derivedChunkOutputs = new Map<number, {
     commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
   }>();
+
   private lateValueChunkOutputs: Array<{ to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }> = [];
   // P5b (computed values): collections whose value chunks are DERIVED from the trace (the SDK has no value param to
   // build them). The covenant pins them, so their commitments come from auto-derivation like dynamicChunkVars.
@@ -1674,7 +1677,7 @@ export class StatefulTransactionBuilder {
         .filter(({ input }) => !('unlocker' in input) || input.unlocker === undefined);
       if (missingUnlockers.length > 0) {
         console.error('stateful-inputs-missing-unlockers', missingUnlockers.map(({ input, index }) => {
-          const same = (candidate: Utxo | undefined) => candidate?.txid === input.txid
+          const same = (candidate: Utxo | undefined): boolean => candidate?.txid === input.txid
             && candidate.vout === input.vout;
           const roles: string[] = [];
           this.externalCallUtxoGroups.forEach((group, groupIndex) => {

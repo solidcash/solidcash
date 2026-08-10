@@ -65,7 +65,6 @@ import {
   ECRECOVER_COMPUTE_A_SHARED_LOCK,
   ECRECOVER_COMPUTE_B_SHARED_LOCK,
   isChunkableValueType,
-  MAX_MESSAGE_BUS_BLOB_BYTES,
   outlineSharedSpans,
 } from '@solidcash/utils';
 import {
@@ -17839,8 +17838,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         const offset = this.getBlockSlotOffset('entry', slotIndex);
         if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
         return;
-      }
-      else this.emit(Op.OP_INPUTINDEX, locationData);
+      } else this.emit(Op.OP_INPUTINDEX, locationData);
       const offset = this.getBlockSlotOffset('entry', slotIndex);
       if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
     } else this.emitBlockSlotIndex('entry', slotIndex, locationData);
@@ -17878,8 +17876,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           });
         }
         if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }
-      }
-      else {
+      } else {
         this.emit(Op.OP_INPUTINDEX, locationData);
         const offset = this.getBlockSlotOffset('entry', slotIndex);
         if (offset > 0) { this.emit(encodeInt(BigInt(offset)), locationData); this.emit(Op.OP_ADD, locationData); }

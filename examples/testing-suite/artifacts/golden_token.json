@@ -185,7 +185,7 @@
       "messageBus": false
     }
   },
-  "updatedAt": "2026-08-10T14:14:47.160Z",
+  "updatedAt": "2026-08-10T14:26:37.222Z",
   "invocationAnalysis": {
     "version": 1,
     "protocolVersions": [
@@ -511,7 +511,7 @@
         "messageBus": true
       }
     },
-    "updatedAt": "2026-08-10T14:14:47.281Z",
+    "updatedAt": "2026-08-10T14:26:37.360Z",
     "delegateProxyStateOutputCountPinned": true,
     "invocationAnalysis": {
       "version": 1,

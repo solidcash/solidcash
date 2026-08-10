@@ -1,3 +1,4 @@
+/* eslint-disable max-len, @typescript-eslint/no-loop-func, @typescript-eslint/no-shadow */
 import {
   Artifact,
   ArtifactMap,
@@ -24,7 +25,6 @@ import {
   VALUE_CHUNK_SIZE,
   VALUE_CHUNK_INDEX_SIZE,
   VALUE_CHUNK_MAX_COUNT,
-  joinChunks,
   joinValueChunks,
   DYNAMIC_CHUNK_SIZE,
   computeEventNameHash,
@@ -103,7 +103,7 @@ import {
 } from './StateReader.js';
 import {
   getDataNftAddress, getEntryNftAddress, getEventNftAddress, getAnonymousEventNftAddress,
-  getDynamicChunkAddress, getValueChunkAddress, getValueChunkLockingBytecode,
+  getDynamicChunkAddress, getValueChunkAddress,
   getDataNftLockingBytecode, getEntryNftLockingBytecode,
   getTokenContainerAddress, getSatoshiContainerAddress, getContractState,
   createDataNftUnlocker, createDestroyDataNftUnlocker,
@@ -6487,9 +6487,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             // from the already-final low-level implementation position.
             ? stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex) + 1
             : builtMasterIdx >= 0 ? builtMasterIdx
-            : group.delegateCallGroupIndex === undefined
-              ? stb.getExternalCallMasterInputIndex(groupIdx)
-              : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
+              : group.delegateCallGroupIndex === undefined
+                ? stb.getExternalCallMasterInputIndex(groupIdx)
+                : stb.getLowLevelCallMasterInputIndex(group.delegateCallGroupIndex);
 
           // Patch B's C2 entry co-spend unlockers with B's REAL master input index (docs/deferrals.md #1). The entry
           // covenant's write path (flag=1) verifies a minting NFT at masterInputIndex = B's master, but block-build
@@ -11649,7 +11649,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   ]) : undefined;
                 const proxyStateAccessor = proxyCallee && proxyStateNames?.has(nested.functionName)
                   ? (proxyCallee.proxy.state as unknown as Record<
-                    string, (...values: FunctionArgument[]) => Promise<StateValue>
+                  string, (...values: FunctionArgument[]) => Promise<StateValue>
                   >)[nested.functionName]
                   : undefined;
                 const value = proxyStateAccessor
@@ -12018,169 +12018,169 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                     childBlockInputs.push(await takeFunder());
                   }
                 }
-              const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
-              // A fixed message-bus route executes each compiled batch journal even when the selected rows do
-              // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
-              // they still require the real key hash and an authenticated proof rather than all-zero C2 fields.
-              const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
-              const allBatchSlots = new Set((selectedFn?.sortedBatchInfo ?? [])
-                .flatMap((batch) => batch.slotIndices));
-              if ((selectedFn?.sortedBatchInfo?.length ?? 0) > 0) {
+                const insertBase = selectedLayout.trailingBase ?? selectedLayout.blockSize;
+                // A fixed message-bus route executes each compiled batch journal even when the selected rows do
+                // not mutate that collection. Those inactive journals preserve their canonical zero-key entry;
+                // they still require the real key hash and an authenticated proof rather than all-zero C2 fields.
+                const activeSortedBatches = selectedFn?.sortedBatchInfo ?? [];
+                const allBatchSlots = new Set((selectedFn?.sortedBatchInfo ?? [])
+                  .flatMap((batch) => batch.slotIndices));
+                if ((selectedFn?.sortedBatchInfo?.length ?? 0) > 0) {
                 // Batch-owned inserts are represented by the batch plan. Generic route-handler inserts retain
                 // the leading trailing slots expected by their ordinary single-entry covenants.
-                for (let index = childPlannedEntryInserts.length - 1; index >= 0; index--) {
-                  const routeSlot = selectedLayout.slots[childPlannedEntryInserts[index].blockSlot]?.slotIndex;
-                  if (routeSlot !== undefined && allBatchSlots.has(routeSlot)) {
-                    childPlannedEntryInserts.splice(index, 1);
+                  for (let index = childPlannedEntryInserts.length - 1; index >= 0; index--) {
+                    const routeSlot = selectedLayout.slots[childPlannedEntryInserts[index].blockSlot]?.slotIndex;
+                    if (routeSlot !== undefined && allBatchSlots.has(routeSlot)) {
+                      childPlannedEntryInserts.splice(index, 1);
+                    }
                   }
                 }
-              }
-              const batchInsertBase = insertBase + childPlannedEntryInserts.length;
-              let childBatchTrailingCount = 0;
-              for (const batch of activeSortedBatches) {
-                const list = childBatchLists.get(batch.collection);
-                if (!list) throw new Error(`Nested C2 batch '${batch.collection}' has no sorted-list snapshot`);
-                const canonicalSlots: number[] = [];
-                const canonicalByTarget = new Map<string, number>();
-                const aliasOwner = new Map<number, number>();
-                for (const slotIndex of batch.slotIndices) {
-                  const target = childBatchTargets.get(slotIndex);
-                  if (!target) throw new Error(`Nested C2 batch '${batch.collection}' is missing slot ${slotIndex}`);
-                  const targetHex = binToHex(target);
-                  const owner = canonicalByTarget.get(targetHex);
-                  if (owner === undefined) {
-                    canonicalByTarget.set(targetHex, slotIndex);
-                    canonicalSlots.push(slotIndex);
+                const batchInsertBase = insertBase + childPlannedEntryInserts.length;
+                let childBatchTrailingCount = 0;
+                for (const batch of activeSortedBatches) {
+                  const list = childBatchLists.get(batch.collection);
+                  if (!list) throw new Error(`Nested C2 batch '${batch.collection}' has no sorted-list snapshot`);
+                  const canonicalSlots: number[] = [];
+                  const canonicalByTarget = new Map<string, number>();
+                  const aliasOwner = new Map<number, number>();
+                  for (const slotIndex of batch.slotIndices) {
+                    const target = childBatchTargets.get(slotIndex);
+                    if (!target) throw new Error(`Nested C2 batch '${batch.collection}' is missing slot ${slotIndex}`);
+                    const targetHex = binToHex(target);
+                    const owner = canonicalByTarget.get(targetHex);
+                    if (owner === undefined) {
+                      canonicalByTarget.set(targetHex, slotIndex);
+                      canonicalSlots.push(slotIndex);
+                    } else {
+                      aliasOwner.set(slotIndex, owner);
+                    }
+                  }
+                  const writes = canonicalSlots.map((slotIndex) => ({
+                    slot: childBatchTargets.get(slotIndex)!, value: new Uint8Array(),
+                  }));
+                  const plan = list.planBatchUpsert(writes);
+                  const targets = new Set(writes.map((write) => bytesToSlotValue(write.slot).toString()));
+                  const predecessorOutputs = plan.outputs.filter(
+                    (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
+                  );
+                  const entryLockingBytecode = createEntryNftUnlocker(
+                    proxyCallee?.implementation.inner ?? callee.inner,
+                    0, callee.categoryId, batch.collection,
+                  ).generateLockingBytecode();
+                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                    ?.SOLIDC_DEBUG_INPUTS === '1') {
+                    console.error('nested-batch-plan', {
+                      collection: batch.collection,
+                      slotIndices: batch.slotIndices,
+                      insertBase,
+                      childBatchTrailingCount,
+                      predecessorCount: predecessorOutputs.length,
+                      entryLockingBytecode: binToHex(entryLockingBytecode),
+                    });
+                  }
+                  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+                    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+                    console.error('nested-batch-entry-lock', {
+                      collection: batch.collection,
+                      selected: binToHex(entryLockingBytecode),
+                      proxy: binToHex(createEntryNftUnlocker(
+                        callee.inner, 0, callee.categoryId, batch.collection,
+                      ).generateLockingBytecode()),
+                      implementation: proxyCallee ? binToHex(createEntryNftUnlocker(
+                        proxyCallee.implementation.inner, 0, callee.categoryId, batch.collection,
+                      ).generateLockingBytecode()) : undefined,
+                    });
+                  }
+                  predecessorOutputs.forEach((output, ordinal) => {
+                    childBatchPredecessorOutputs.push({
+                      outputBlockSlot: batchInsertBase + childBatchTrailingCount + ordinal,
+                      lockingBytecode: entryLockingBytecode,
+                      commitment: binToHex(output.commitment),
+                    });
+                  });
+                  const proofOwnerByOutpoint = new Map<string, number>();
+                  for (const slotIndex of batch.slotIndices) {
+                    const alias = aliasOwner.get(slotIndex);
+                    if (alias !== undefined) {
+                      const ownerOffset = selectedLayout.slots.find((candidate) =>
+                        candidate.kind === 'entry' && candidate.slotIndex === alias)?.offset;
+                      if (ownerOffset === undefined) throw new Error(`Nested C2 alias owner has no block slot ${alias}`);
+                      childCompilerInternalArgs[`__internal__c2BatchSlot_${slotIndex}`] =
+                      childBatchTargets.get(alias)!;
+                      childCompilerInternalArgs[`__internal__c2BatchProof_${slotIndex}`] = BigInt(ownerOffset);
+                      childCompilerInternalArgs[`__internal__c2BatchNext_${slotIndex}`] = new Uint8Array(32);
+                      childCompilerInternalArgs[`__internal__c2BatchPredOut_${slotIndex}`] = -2n;
+                      continue;
+                    }
+                    const target = childBatchTargets.get(slotIndex)!;
+                    const proof = list.find(target) ?? list.predecessorOf(target);
+                    const outpoint = `${proof.utxo.txid}:${proof.utxo.vout}`;
+                    let proofOwner = proofOwnerByOutpoint.get(outpoint);
+                    if (proofOwner === undefined) {
+                      proofOwner = slotIndex;
+                      proofOwnerByOutpoint.set(outpoint, slotIndex);
+                    } else {
+                      const duplicateOffset = selectedLayout.slots.find((candidate) =>
+                        candidate.kind === 'entry' && candidate.slotIndex === slotIndex)?.offset;
+                      if (duplicateOffset !== undefined) childBlockInputs[duplicateOffset] = await takeFunder();
+                    }
+                    const proofOffset = selectedLayout.slots.find((candidate) =>
+                      candidate.kind === 'entry' && candidate.slotIndex === proofOwner)?.offset;
+                    if (proofOffset === undefined) throw new Error(`Nested C2 proof owner has no block slot ${proofOwner}`);
+                    const output = plan.outputs.find(
+                      (candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(target),
+                    );
+                    if (!output) throw new Error(`Nested C2 batch '${batch.collection}' has no target output`);
+                    const predecessorOrdinal = predecessorOutputs.findIndex((candidate) =>
+                      bytesToSlotValue(candidate.slot) === bytesToSlotValue(proof.slot));
+                    childCompilerInternalArgs[`__internal__c2BatchSlot_${slotIndex}`] = target;
+                    childCompilerInternalArgs[`__internal__c2BatchProof_${slotIndex}`] = BigInt(proofOffset);
+                    childCompilerInternalArgs[`__internal__c2BatchNext_${slotIndex}`] =
+                    decodeEntryCommitment(output.commitment).nextKey;
+                    childCompilerInternalArgs[`__internal__c2BatchPredOut_${slotIndex}`] = predecessorOrdinal < 0
+                      ? -1n : BigInt(batchInsertBase + childBatchTrailingCount + predecessorOrdinal);
+                  }
+                  childBatchTrailingCount += predecessorOutputs.length;
+                }
+                if ((selectedFn?.sortedBatchInfo?.length ?? 0) > 0) {
+                  childCompilerInternalArgs.__internal__c2BatchTrailingCount = BigInt(childBatchTrailingCount);
+                }
+                const childEntryOwnerByOutpoint = new Map<string, number>();
+                for (const layoutSlot of selectedLayout.slots) {
+                  if (layoutSlot.kind !== 'entry') continue;
+                  const input = childBlockInputs[layoutSlot.offset];
+                  if (!input?.token?.nft) continue;
+                  const outpoint = `${input.txid}:${input.vout}`;
+                  if (childEntryOwnerByOutpoint.has(outpoint)) {
+                    childBlockInputs[layoutSlot.offset] = await takeFunder();
                   } else {
-                    aliasOwner.set(slotIndex, owner);
+                    childEntryOwnerByOutpoint.set(outpoint, layoutSlot.offset);
                   }
                 }
-                const writes = canonicalSlots.map((slotIndex) => ({
-                  slot: childBatchTargets.get(slotIndex)!, value: new Uint8Array(),
-                }));
-                const plan = list.planBatchUpsert(writes);
-                const targets = new Set(writes.map((write) => bytesToSlotValue(write.slot).toString()));
-                const predecessorOutputs = plan.outputs.filter(
-                  (output) => !targets.has(bytesToSlotValue(output.slot).toString()),
-                );
-                const entryLockingBytecode = createEntryNftUnlocker(
-                  proxyCallee?.implementation.inner ?? callee.inner,
-                  0, callee.categoryId, batch.collection,
-                ).generateLockingBytecode();
                 if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
                   ?.SOLIDC_DEBUG_INPUTS === '1') {
-                  console.error('nested-batch-plan', {
-                    collection: batch.collection,
-                    slotIndices: batch.slotIndices,
-                    insertBase,
-                    childBatchTrailingCount,
-                    predecessorCount: predecessorOutputs.length,
-                    entryLockingBytecode: binToHex(entryLockingBytecode),
-                  });
+                  console.error('entry-slots-final', selectedLayout.slots
+                    .filter((layoutSlot) => layoutSlot.kind === 'entry')
+                    .map((layoutSlot) => ({
+                      slotIndex: layoutSlot.slotIndex,
+                      offset: layoutSlot.offset,
+                      collection: selectedFn?.entryAccesses?.[layoutSlot.slotIndex ?? -1]?.collection,
+                      outpoint: childBlockInputs![layoutSlot.offset]
+                        ? `${childBlockInputs![layoutSlot.offset].txid}:${childBlockInputs![layoutSlot.offset].vout}`
+                        : 'NONE',
+                    })));
                 }
-                if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                  ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
-                  console.error('nested-batch-entry-lock', {
-                    collection: batch.collection,
-                    selected: binToHex(entryLockingBytecode),
-                    proxy: binToHex(createEntryNftUnlocker(
-                      callee.inner, 0, callee.categoryId, batch.collection,
-                    ).generateLockingBytecode()),
-                    implementation: proxyCallee ? binToHex(createEntryNftUnlocker(
-                      proxyCallee.implementation.inner, 0, callee.categoryId, batch.collection,
-                    ).generateLockingBytecode()) : undefined,
-                  });
-                }
-                predecessorOutputs.forEach((output, ordinal) => {
-                  childBatchPredecessorOutputs.push({
-                    outputBlockSlot: batchInsertBase + childBatchTrailingCount + ordinal,
-                    lockingBytecode: entryLockingBytecode,
-                    commitment: binToHex(output.commitment),
-                  });
-                });
-                const proofOwnerByOutpoint = new Map<string, number>();
-                for (const slotIndex of batch.slotIndices) {
-                  const alias = aliasOwner.get(slotIndex);
-                  if (alias !== undefined) {
-                    const ownerOffset = selectedLayout.slots.find((candidate) =>
-                      candidate.kind === 'entry' && candidate.slotIndex === alias)?.offset;
-                    if (ownerOffset === undefined) throw new Error(`Nested C2 alias owner has no block slot ${alias}`);
-                    childCompilerInternalArgs[`__internal__c2BatchSlot_${slotIndex}`] =
-                      childBatchTargets.get(alias)!;
-                    childCompilerInternalArgs[`__internal__c2BatchProof_${slotIndex}`] = BigInt(ownerOffset);
-                    childCompilerInternalArgs[`__internal__c2BatchNext_${slotIndex}`] = new Uint8Array(32);
-                    childCompilerInternalArgs[`__internal__c2BatchPredOut_${slotIndex}`] = -2n;
-                    continue;
-                  }
-                  const target = childBatchTargets.get(slotIndex)!;
-                  const proof = list.find(target) ?? list.predecessorOf(target);
-                  const outpoint = `${proof.utxo.txid}:${proof.utxo.vout}`;
-                  let proofOwner = proofOwnerByOutpoint.get(outpoint);
-                  if (proofOwner === undefined) {
-                    proofOwner = slotIndex;
-                    proofOwnerByOutpoint.set(outpoint, slotIndex);
-                  } else {
-                    const duplicateOffset = selectedLayout.slots.find((candidate) =>
-                      candidate.kind === 'entry' && candidate.slotIndex === slotIndex)?.offset;
-                    if (duplicateOffset !== undefined) childBlockInputs[duplicateOffset] = await takeFunder();
-                  }
-                  const proofOffset = selectedLayout.slots.find((candidate) =>
-                    candidate.kind === 'entry' && candidate.slotIndex === proofOwner)?.offset;
-                  if (proofOffset === undefined) throw new Error(`Nested C2 proof owner has no block slot ${proofOwner}`);
-                  const output = plan.outputs.find(
-                    (candidate) => bytesToSlotValue(candidate.slot) === bytesToSlotValue(target),
-                  );
-                  if (!output) throw new Error(`Nested C2 batch '${batch.collection}' has no target output`);
-                  const predecessorOrdinal = predecessorOutputs.findIndex((candidate) =>
-                    bytesToSlotValue(candidate.slot) === bytesToSlotValue(proof.slot));
-                  childCompilerInternalArgs[`__internal__c2BatchSlot_${slotIndex}`] = target;
-                  childCompilerInternalArgs[`__internal__c2BatchProof_${slotIndex}`] = BigInt(proofOffset);
-                  childCompilerInternalArgs[`__internal__c2BatchNext_${slotIndex}`] =
-                    decodeEntryCommitment(output.commitment).nextKey;
-                  childCompilerInternalArgs[`__internal__c2BatchPredOut_${slotIndex}`] = predecessorOrdinal < 0
-                    ? -1n : BigInt(batchInsertBase + childBatchTrailingCount + predecessorOrdinal);
-                }
-                childBatchTrailingCount += predecessorOutputs.length;
-              }
-              if ((selectedFn?.sortedBatchInfo?.length ?? 0) > 0) {
-                childCompilerInternalArgs.__internal__c2BatchTrailingCount = BigInt(childBatchTrailingCount);
-              }
-              const childEntryOwnerByOutpoint = new Map<string, number>();
-              for (const layoutSlot of selectedLayout.slots) {
-                if (layoutSlot.kind !== 'entry') continue;
-                const input = childBlockInputs[layoutSlot.offset];
-                if (!input?.token?.nft) continue;
-                const outpoint = `${input.txid}:${input.vout}`;
-                if (childEntryOwnerByOutpoint.has(outpoint)) {
-                  childBlockInputs[layoutSlot.offset] = await takeFunder();
-                } else {
-                  childEntryOwnerByOutpoint.set(outpoint, layoutSlot.offset);
-                }
-              }
-              if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-                ?.SOLIDC_DEBUG_INPUTS === '1') {
-                console.error('entry-slots-final', selectedLayout.slots
-                  .filter((layoutSlot) => layoutSlot.kind === 'entry')
-                  .map((layoutSlot) => ({
-                    slotIndex: layoutSlot.slotIndex,
-                    offset: layoutSlot.offset,
-                    collection: selectedFn?.entryAccesses?.[layoutSlot.slotIndex ?? -1]?.collection,
-                    outpoint: childBlockInputs![layoutSlot.offset]
-                      ? `${childBlockInputs![layoutSlot.offset].txid}:${childBlockInputs![layoutSlot.offset].vout}`
-                      : 'NONE',
-                  })));
-              }
-              for (const [insertIndex, planned] of childPlannedEntryInserts.entries()) {
-                const outputBlockSlot = insertBase + insertIndex;
-                if (outputBlockSlot >= selectedLayout.blockSize
+                for (const [insertIndex, planned] of childPlannedEntryInserts.entries()) {
+                  const outputBlockSlot = insertBase + insertIndex;
+                  if (outputBlockSlot >= selectedLayout.blockSize
                   || selectedLayout.slots[outputBlockSlot]?.kind !== 'trailing') {
-                  throw new Error(
-                    `Nested call ${nested.interfaceName}.${nested.functionName} exceeds its reserved `
+                    throw new Error(
+                      `Nested call ${nested.interfaceName}.${nested.functionName} exceeds its reserved `
                     + 'entry-insert trailing capacity',
-                  );
+                    );
+                  }
+                  planned.outputBlockSlot = outputBlockSlot;
                 }
-                planned.outputBlockSlot = outputBlockSlot;
-              }
               }
               if (sharedGroupIndex >= 0 && childWritesState) {
                 const primary = externalCallUtxoGroups[sharedGroupIndex];

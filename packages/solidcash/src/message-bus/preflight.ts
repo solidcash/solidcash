@@ -1,3 +1,4 @@
+/* eslint-disable max-len */
 import {
   binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
@@ -880,8 +881,8 @@ const evaluateEveryInput = (
           unlockerCategory: (builder.inputs[inputIndex] as unknown as {
             unlocker?: { contract?: { category?: Uint8Array } };
           }).unlocker?.contract?.category === undefined ? undefined : binToHex((builder.inputs[inputIndex] as unknown as {
-            unlocker: { contract: { category: Uint8Array } };
-          }).unlocker.contract.category),
+              unlocker: { contract: { category: Uint8Array } };
+            }).unlocker.contract.category),
           unlockerContract: (builder.inputs[inputIndex] as unknown as {
             unlocker?: { contract?: { artifact?: { contractName?: string; fingerprint?: string } } };
           }).unlocker?.contract?.artifact?.contractName,
@@ -991,9 +992,7 @@ const evaluateEveryInput = (
         for (let at = 0; at < bytecode.length && pushes.length < 80;) {
           const opcode = bytecode[at];
           let width = 0; let length = 0;
-          if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
-          else if (opcode === 76 && at + 1 < bytecode.length) { width = 2; length = bytecode[at + 1]; }
-          else if (opcode === 77 && at + 2 < bytecode.length) {
+          if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; } else if (opcode === 76 && at + 1 < bytecode.length) { width = 2; length = bytecode[at + 1]; } else if (opcode === 77 && at + 2 < bytecode.length) {
             width = 3; length = bytecode[at + 1] | (bytecode[at + 2] << 8);
           } else break;
           if (at + width + length > bytecode.length) break;
@@ -1014,10 +1013,7 @@ const evaluateEveryInput = (
           for (let at = 0; at < code.length && frames.length < 80;) {
             const opcode = code[at];
             let width = 0; let length = 0;
-            if (opcode === 0) { width = 1; length = 0; }
-            else if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
-            else if (opcode === 76 && at + 1 < code.length) { width = 2; length = code[at + 1]; }
-            else if (opcode === 77 && at + 2 < code.length) {
+            if (opcode === 0) { width = 1; length = 0; } else if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; } else if (opcode === 76 && at + 1 < code.length) { width = 2; length = code[at + 1]; } else if (opcode === 77 && at + 2 < code.length) {
               width = 3; length = code[at + 1] | (code[at + 2] << 8);
             } else break;
             if (at + width + length > code.length) break;

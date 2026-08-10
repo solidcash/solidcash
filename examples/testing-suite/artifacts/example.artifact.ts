@@ -13,20 +13,20 @@ export default {
       ],
     },
   ],
-  bytecode: 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL',
+  bytecode: 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_1 OP_NUMEQUAL',
   source: 'contract Example() {\n  function test(int value) {\n    console.log(value, "test");\n    require(value == 1, "Wrong value passed");\n  }\n}\n',
   debug: {
-    bytecode: '76765102ff008d9301218001207f7701008875519c',
-    sourceMap: '2:16:2:25;;;;;;;;;;;;;;4:21:4:22;:4::46:1',
+    bytecode: '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa16975519c',
+    sourceMap: '2:16:2:25;;;;;;;;;;4:21:4:22;:4::46:1',
     logs: [
       {
-        ip: 14,
+        ip: 10,
         line: 3,
         data: [
           {
             stackIndex: 0,
             type: 'int256',
-            ip: 14,
+            ip: 10,
           },
           'test',
         ],
@@ -34,26 +34,24 @@ export default {
     ],
     requires: [
       {
-        ip: 16,
+        ip: 12,
         line: 4,
         message: 'Wrong value passed',
       },
     ],
   },
-  fingerprint: '94e416504230dbd4ab77bfbe23a6518120a6575169e598e6ed4e864fa417f8e4',
+  fingerprint: 'cc889908d163cb6aefaf4a3e5a19c86dc78f8a18333aca7638817541fe692b5d',
   compiler: {
     name: 'solidc',
     version: '0.13.1',
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
-      enforceFinalRequire: true,
-      allowUnsafeOperations: false,
       commitmentLimit: 128,
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-10T13:58:35.859Z',
+  updatedAt: '2026-08-10T14:14:46.976Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

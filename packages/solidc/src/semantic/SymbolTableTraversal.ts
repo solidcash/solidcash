@@ -2213,7 +2213,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           // value/root before mutation. Ordinary reads keep the scalar bytes witness.
           const varyingArrayKey = info.keySources?.some((s) => s.kind === 'expression'
             && /^arridx\(id:\w+,.+\)$/.test(s.canonical ?? ''));
-          const wtype = vt instanceof ArrayType && (info.inLoop || varyingArrayKey)
+          const wtype = info.inLoop || varyingArrayKey
             ? new ArrayType(new BytesType()) : new BytesType();
           const wparam = new ParameterNode(wtype, wname);
           wparam.location = node.location;
@@ -4419,6 +4419,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private isOwnCategoryKey(key: IdentifierNode): boolean {
+    const definition = key.definition?.definition;
+    return definition instanceof VariableDefinitionNode
+      && definition.expression instanceof StateAccessNode
+      && definition.expression.name === 'category'
+      && !definition.expression.stateVariable;
+  }
+
   private collectTokenContainerAccesses(node: Node, map: Map<string, TokenContainerAccessInfo>): void {
     if (node instanceof FieldAccessNode && node.expression instanceof MappingAccessNode
         && node.expression.isTokenContainerAccess) {
@@ -4429,7 +4437,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4443,7 +4451,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4461,7 +4469,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           else if (op === 'transferNft') existing.transferNftCount++;
         } else {
           map.set(slotKey, {
-            keyParam: keyExpr.name, operations: [op], slotIndex: -1,
+            keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: [op], slotIndex: -1,
             transferCount: op === 'transfer' ? 1 : 0,
             transferNftCount: op === 'transferNft' ? 1 : 0,
           });
@@ -5327,7 +5335,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // A loop may receive its per-iteration callee from another contract or decode it from the current action
         // payload. The local cannot survive to the epilogue, so give it a per-iteration witness; inline dispatch
         // binds that witness to the live runtime local before verifying the co-spent callee.
-        if (resolvedInit && this.loopDeclaredLocals.has(addressParam)) {
+        if (resolvedInit && this.loopDeclaredLocals.has(addressParam) && !canNeutralize) {
           const loopIdx = this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
@@ -5340,7 +5348,10 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (initExpr && canNeutralize && !loopArrayVar) {
-          const loopIdx = this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
+          const loopIdx = (resolvedInit
+            ? this.findLoopIndexInComputedTarget(resolvedInit, this.currentFunction?.body)
+            : undefined)
+            ?? this.findLoopIndexInComputedTarget(node.addressExpression, this.currentFunction?.body)
             ?? this.findTailLoopOrdinalForLocal(this.currentFunction?.body, addressParam);
           if (loopIdx) {
             const witnessName = `__internal__loopTargets${this.loopTargetsCounter}`;
@@ -8413,7 +8424,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Validate key is a function parameter
       for (const key of node.keys) {
         if (!(key instanceof IdentifierNode)
-          || !this.currentFunction.parameters.some((p) => p.name === (key as IdentifierNode).name)) {
+          || (!this.currentFunction.parameters.some((p) => p.name === key.name)
+            && !this.isOwnCategoryKey(key))) {
           throw new TokenContainerKeyMustBeParameterError(node);
         }
       }
@@ -8535,7 +8547,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Validate key is a function parameter
     const keyExpr = node.tokenContainerKeyExpression;
     if (!(keyExpr instanceof IdentifierNode)
-      || !this.currentFunction.parameters.some((p) => p.name === keyExpr.name)) {
+      || (!this.currentFunction.parameters.some((p) => p.name === keyExpr.name)
+        && !this.isOwnCategoryKey(keyExpr))) {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 
@@ -8822,6 +8835,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     // this.outState is a built-in property, not a state variable
     if (node.name === 'outState') {
+      return node;
+    }
+    // this.category is a compiler-derived introspection property.
+    if (node.name === 'category' && !this.stateVariableMap.has('category')) {
       return node;
     }
     // this.balance is a built-in property when no state variable named 'balance' exists

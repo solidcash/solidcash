@@ -66,7 +66,7 @@ contract TetherToken() {
     mapping(bytes20 user => bool listed) public isBlackListed;
     public string name;
     public string symbol;
-    public int decimals;
+    public uint8 decimals;
     public bool deprecated;
 
     // ---- Modifiers ----
@@ -95,7 +95,7 @@ contract TetherToken() {
     // ---- Constructor ----
     constructor(
         int initialSupply, string tokenName, string tokenSymbol,
-        int tokenDecimals, bytes20 ownerPkh
+        uint8 tokenDecimals, bytes20 ownerPkh
     ) {
         this.totalSupply = initialSupply;
         this.name = tokenName;

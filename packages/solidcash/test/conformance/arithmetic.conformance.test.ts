@@ -2,6 +2,7 @@
 // plus checked over/underflow that must revert on both sides. Reference vs solc + @ethereumjs/evm.
 import { describe, it } from 'vitest';
 import { assertConformant, assertReverts, exprCase, revertCase } from './harness.js';
+import { expectOverOperationCostBudget } from '../test-util.js';
 
 const maxU = (bits: number): bigint => (1n << BigInt(bits)) - 1n;
 const maxI = (bits: number): bigint => (1n << BigInt(bits - 1)) - 1n;
@@ -126,10 +127,19 @@ describe('arithmetic: checked over/underflow reverts on both sides', () => {
 // intermediates exceed the density ceiling exactly as the comment above predicts, so a node would refuse them
 // too. Restore `assertConformant` here if square-and-multiply lowering lands and brings the cost down.
 describe('exp: runtime-base POW op-cost limit on large results (known platform divergence)', () => {
+  // These two ARE the divergence this block is named for, and they now assert it. They read as conformant only
+  // while the mock ran a relaxed operation-cost budget; against the real 800 the growing intermediates exceed
+  // the density limit, exactly as a node refuses them (measured: 139,249 against a 139,200 budget for 2 ** 200).
+  // PINS, not endorsements - square-and-multiply lowering would bring the cost down, at which point these FAIL
+  // and the positive assertion should come back rather than this one being loosened.
+  //
+  // Asserted with expectOverOperationCostBudget rather than a bare rejects.toThrow(): the point is that the
+  // refusal is a DENSITY refusal, and a generic throw would keep passing if these started failing for an
+  // unrelated reason.
   const overBudget = (exp: bigint) => async (): Promise<void> => {
-    await expect(assertConformant(exprCase({
+    await expectOverOperationCostBudget(assertConformant(exprCase({
       params: 'uint a, uint b', retType: 'uint', expr: 'a ** b', args: [2n, exp],
-    }))).rejects.toThrow();
+    })));
   };
   it('2 ** 200 (runtime base) exceeds the real operation-cost budget', overBudget(200n));
   it('2 ** 255 (runtime base) exceeds the real operation-cost budget', overBudget(255n));

@@ -1,0 +1,55 @@
+pragma solidcash >=0.8.0;
+
+// CashTokens-backed wrap/unwrap extension for ledger tokens.
+//
+// The sibling ERC20 implementation owns balances and policy. A concrete token
+// implements the hooks below, then composes both bases:
+//
+//   contract MyToken(address admin) is ERC20, BchNative { ... }
+//   contract RegulatedToken(address admin) is ERC20, BchNative, BlackList { ... }
+//
+// BchNative owns only the immediate BCH-native reserve boundary, so it can be
+// reused without assuming a particular ERC20 allowance, pause, blacklist, or
+// compliance model. Inherit BchNativeQuarantine separately for delayed
+// admission, pending state, and block-oracle timing.
+abstract contract BchNative {
+
+    // Integration hooks supplied by the concrete token. Policy hooks return
+    // false to refuse the operation; cancellation is separate so a rejected
+    // admission can always remain recoverable if the token chooses.
+    function _nativeCredit(address account, uint256 amount) internal virtual;
+    function _nativeDebit(address account, uint256 amount) internal virtual;
+    // Event hooks are no-ops in the minimal extension.
+    function _nativeEmitWithdrawal(address _from, int _value) internal virtual { }
+    function _nativeEmitWrapped(address _to, int _value) internal virtual { }
+    function _nativeCanWrap(address account) internal view virtual returns (bool) { return true; }
+    function _nativeCanUnwrap(address account) internal view virtual returns (bool) { return true; }
+
+    // Direct wrap: prove the reserve grew, then credit the sibling ledger.
+    function wrap(int amount) {
+        bytes32 category = this.category;
+        require(amount > 0);
+        address claimant = msg.sender;
+        require(_nativeCanWrap(claimant));
+        int reserveBefore = this.tokens[category].tokenAmount;
+        int reserveAfter = this.outState.tokens[category].tokenAmount;
+        require(reserveAfter >= reserveBefore + amount);
+
+        _nativeCredit(claimant, uint256(amount));
+        _nativeEmitWrapped(claimant, amount);
+    }
+
+    // Unwrap ledger units into bearer CashTokens.
+    function withdraw(address to, int amount) {
+        bytes32 category = this.category;
+        address sender = msg.sender;
+        require(_nativeCanUnwrap(sender));
+        require(amount > 0);
+        require(this.tokens[category].tokenAmount >= amount);
+
+        _nativeDebit(sender, uint256(amount));
+        this.tokens[category].transfer(to, amount);
+        _nativeEmitWithdrawal(sender, amount);
+    }
+
+}

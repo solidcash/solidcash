@@ -1,0 +1,153 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { ERC20Metadata } from "../../contracts/ERC20Metadata.scash";
+import { BchNativeEvents } from "../../contracts/BchNativeEvents.scash";
+import { BchNativeAdmin } from "../../contracts/BchNativeAdmin.scash";
+import { BlackList } from "../../contracts/BlackList.scash";
+
+// USDT policy rebuilt around OpenZeppelin ERC20 v5.6.1. ERC20 remains the sole
+// owner of balances, total supply, approvals, allowance spending, infinite
+// allowances, Transfer/Approval events, and ERC-6093 errors.
+abstract contract Ownable {
+    public address owner;
+
+    modifier onlyOwner() {
+        require(msg.sender == this.owner);
+        _;
+    }
+
+    function transferOwnership(address newOwner) onlyOwner {
+        require(newOwner != this.owner);
+        this.owner = newOwner;
+    }
+}
+
+abstract contract Pausable is Ownable {
+    public bool paused;
+
+    event Pause();
+    event Unpause();
+
+    function pause() onlyOwner {
+        require(!this.paused);
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause() onlyOwner {
+        require(this.paused);
+        this.paused = false;
+        emit Unpause();
+    }
+}
+
+contract NativeTetherToken(address initialOwner, string tokenName, string tokenSymbol)
+    is ERC20, ERC20Metadata(tokenName, tokenSymbol), Pausable, BlackList, BchNativeEvents, BchNativeAdmin
+{
+    public uint8 tokenDecimals;
+    public int backedSupply;
+
+    event Issue(uint256 amount);
+    event Redeem(uint256 amount);
+    event DestroyedBlackFunds(address indexed account, uint256 balance);
+
+    constructor(uint8 decimals_, uint32 quarantine) {
+        this.owner = initialOwner;
+        this.paused = false;
+        this.tokenDecimals = decimals_;
+        _nativeInitialize(quarantine);
+    }
+
+    function decimals() public view override returns (uint8) {
+        return this.tokenDecimals;
+    }
+
+    // OZ v5's single customization point. Pausing and blacklisting are policy
+    // layered around ERC20; the ledger and allowance implementation stay OZ.
+    function _update(address from, address to, uint256 value) internal override {
+        require(!this.paused);
+        if (from != address(0)) {
+            require(!this.blacklisted[from]);
+        }
+        if (to != address(0)) {
+            require(!this.blacklisted[to]);
+        }
+        _updateLedger(from, to, value);
+    }
+
+    // Preminted CashTokens cap ledger issuance. Nothing can mint the native FT
+    // category after genesis, so ERC20 issuance must stay within that reserve.
+    function issue(uint256 amount) onlyOwner {
+        require(amount > 0);
+        int nativeAmount = int(amount);
+        bytes32 category = this.category;
+        require(this.tokens[category].tokenAmount >= this.backedSupply + nativeAmount);
+        this.backedSupply = this.backedSupply + nativeAmount;
+        _mint(this.owner, amount);
+        emit Issue(amount);
+    }
+
+    function redeem(uint256 amount) onlyOwner {
+        require(amount > 0);
+        int nativeAmount = int(amount);
+        _burn(this.owner, amount);
+        this.backedSupply = this.backedSupply - nativeAmount;
+        emit Redeem(amount);
+    }
+
+    function destroyBlackFunds(address account) onlyOwner {
+        require(this.blacklisted[account]);
+        uint256 dirtyFunds = balanceOf(account);
+        _burn(account, dirtyFunds);
+        this.backedSupply = this.backedSupply - int(dirtyFunds);
+        emit DestroyedBlackFunds(account, dirtyFunds);
+    }
+
+    function _blacklistAdmin() internal view override returns (address) {
+        return this.owner;
+    }
+
+    function _nativeAdmin() internal view override returns (address) {
+        return this.owner;
+    }
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.backedSupply = this.backedSupply + int(amount);
+        _update(address(0), account, amount);
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _update(account, address(0), amount);
+        this.backedSupply = this.backedSupply - int(amount);
+    }
+
+    function _nativeReserveAdded(int amount) internal override {
+        this.backedSupply = this.backedSupply + amount;
+    }
+
+    function _nativeReserveRemoved(int amount) internal override {
+        this.backedSupply = this.backedSupply - amount;
+    }
+
+    // USDT admits native funds through quarantine rather than immediate wrap.
+    function _nativeCanWrap(address account) internal view override returns (bool) {
+        return false;
+    }
+
+    function _nativeCanDeposit(address account) internal view override returns (bool) {
+        return account == msg.sender && !this.paused && !this.blacklisted[account];
+    }
+
+    function _nativeCanUnwrap(address account) internal view override returns (bool) {
+        return !this.paused && !this.blacklisted[account];
+    }
+
+    function _nativeCanClaim(address account) internal view override returns (bool) {
+        return !this.paused && !this.blacklisted[account];
+    }
+
+    function _nativeCanCancel(address account) internal view override returns (bool) {
+        return account == msg.sender;
+    }
+}

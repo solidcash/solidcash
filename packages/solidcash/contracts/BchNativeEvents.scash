@@ -1,0 +1,39 @@
+pragma solidcash >=0.8.0;
+
+import { BchNativeQuarantine } from "./BchNativeQuarantine.scash";
+
+// Optional native lifecycle event behavior. Keeping this separate lets a
+// minimal `ERC20, BchNative` composition spend its byte budget only on the
+// reserve covenant; regulated/indexed deployments can inherit this contract.
+abstract contract BchNativeEvents is BchNativeQuarantine {
+    event Withdrawal(address indexed from, int value);
+    event Wrapped(address indexed to, int value);
+    event DepositQuarantined(address indexed to, int value, uint32 unlockAt);
+    event DepositClaimed(address indexed to, int value);
+    event DepositCancelled(address indexed to, int value);
+    event QuarantineParams(uint32 blocks);
+
+    function _nativeEmitWithdrawal(address from, int value) internal override {
+        emit Withdrawal(from, value);
+    }
+
+    function _nativeEmitWrapped(address to, int value) internal override {
+        emit Wrapped(to, value);
+    }
+
+    function _nativeEmitDepositQuarantined(address to, int value, uint32 unlockAt) internal override {
+        emit DepositQuarantined(to, value, unlockAt);
+    }
+
+    function _nativeEmitDepositClaimed(address to, int value) internal override {
+        emit DepositClaimed(to, value);
+    }
+
+    function _nativeEmitDepositCancelled(address to, int value) internal override {
+        emit DepositCancelled(to, value);
+    }
+
+    function _nativeEmitQuarantineParams(uint32 blocks) internal override {
+        emit QuarantineParams(blocks);
+    }
+}

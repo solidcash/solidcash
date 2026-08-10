@@ -4961,7 +4961,7 @@ export default class AstBuilder
     if (name.startsWith('__internal__')) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
     }
-    // A state var may shadow a solidcash introspection built-in (age/tokens/categoryId/activeInputIndex/
+    // A state var may shadow a solidcash introspection built-in (age/tokens/category/categoryId/activeInputIndex/
     // activeBytecode) - the state var wins in scope (Solidity-like); naming one after a built-in just makes that
     // built-in inaccessible in the contract. (Default; was gated behind solidityImportCompat.)
 

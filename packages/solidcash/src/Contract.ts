@@ -99,10 +99,12 @@ export class Contract<
     // Populate the 'unlock' object with the contract's functions
     // (with a special case for single function, which has no "function selector") - EXCEPT a single DELEGATE
     // function on a proxy impl keeps its selector, mirroring the compiler dispatch, so a proxy delegatecall (which
-    // verifies the impl calldata begins with the selector) matches. Libraries are excluded (selector-less path).
+    // verifies the impl calldata begins with the selector) matches. Ordinary libraries are selector-less, but
+    // split facets are branded library-shaped artifacts whose delegate dispatcher deliberately retains it.
     this.unlock = {};
     const soleFn = artifact.abi.length === 1 ? artifact.abi[0] : undefined;
-    const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate') && !artifact.isLibrary;
+    const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
+      && (!artifact.isLibrary || artifact.delegateOnly === true);
     if (soleFn && !soleFnIsProxyImpl) {
       // @ts-ignore TODO: see if we can use generics to make TypeScript happy
       this.unlock[soleFn.name] = this.createUnlocker(soleFn);

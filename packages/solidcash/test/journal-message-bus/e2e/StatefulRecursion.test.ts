@@ -204,16 +204,24 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
 
   /**
    * The sibling row, and its refusal is a DIFFERENT one - correctly so. A structurally unbounded recursion
-   * cannot complete, so it fails the evaluation itself rather than a budget, at any budget. That was left
-   * unstated while this row also matched only the wrapper; it is pinned here so the two rows cannot silently
-   * converge on the same refusal again.
+   * cannot complete, so it fails the evaluation itself rather than a budget. It is pinned here so the two
+   * rows cannot silently converge on the same refusal again - and that is not hypothetical: against the real
+   * operation-cost budget the density limit fires FIRST and this row did converge, which is why it now stages
+   * a relaxed budget so the structural refusal is what it observes.
    */
   it('rejects structurally unbounded recursion before returning a transaction builder', async () => {
     const artifact = compileString(UNBOUNDED, { forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'recurse')?.recursiveStateHandler).toBe(true);
-    const contract = new Contract(artifact, [], { provider });
+    // Staged at the RELAXED budget on purpose. The subject here is the structural refusal - an
+    // unbounded recursion cannot complete - and against the real 800 the density limit fires first,
+    // which would collapse this row onto the budget row above and prove nothing about structure.
+    // Removing the budget as a confound is what keeps the two refusals distinguishable.
+    const staged = new MockNetworkProvider({
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST },
+    });
+    const contract = new Contract(artifact, [], { provider: staged });
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+      staged, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
     const refusal = await sc.recurse().build().then(() => undefined, (error: Error) => error.message);

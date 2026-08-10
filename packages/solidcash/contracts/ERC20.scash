@@ -1,0 +1,106 @@
+pragma solidcash >=0.8.0;
+
+// SolidCash-native port of OpenZeppelin Contracts ERC20 v5.6.1.
+// The UTXO ABI does not return a bool from state transitions, but ledger,
+// allowance, infinite-allowance, update, mint, burn, event, and error semantics
+// follow OZ's current ERC20 implementation.
+abstract contract ERC20 {
+    mapping(address account => uint256) internal _balances;
+    mapping(address account => mapping(address spender => uint256)) internal _allowances;
+
+    internal uint256 _totalSupply;
+    event Transfer(address indexed from, address indexed to, uint256 value);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+
+    error ERC20InsufficientBalance(address sender, uint256 balance, uint256 needed);
+    error ERC20InvalidSender(address sender);
+    error ERC20InvalidReceiver(address receiver);
+    error ERC20InsufficientAllowance(address spender, uint256 allowance, uint256 needed);
+    error ERC20InvalidApprover(address approver);
+    error ERC20InvalidSpender(address spender);
+
+    function totalSupply() public view returns (uint256) { return this._totalSupply; }
+    function balanceOf(address account) public view returns (uint256) { return this._balances[account]; }
+    function allowance(address tokenOwner, address spender) public view returns (uint256) {
+        return this._allowances[tokenOwner][spender];
+    }
+
+    function transfer(address to, uint256 value) {
+        // Direct-call sender is intrinsically nonzero; _transfer retains the
+        // arbitrary-from check required by transferFrom and derived callers.
+        require(to != address(0));
+        _update(msg.sender, to, value);
+    }
+
+    function approve(address spender, uint256 value) {
+        // The owner is msg.sender and therefore cannot be address(0); retain
+        // full arbitrary-owner validation in the reusable _approve hook.
+        require(spender != address(0));
+        this._allowances[msg.sender][spender] = value;
+        emit Approval(msg.sender, spender, value);
+    }
+
+    function transferFrom(address from, address to, uint256 value) {
+        _spendAllowance(from, msg.sender, value);
+        _transfer(from, to, value);
+    }
+
+    function _transfer(address from, address to, uint256 value) internal {
+        require(from != address(0));
+        require(to != address(0));
+        _update(from, to, value);
+    }
+
+    // OZ v5's sole customization point for transfers, minting, and burning.
+    function _update(address from, address to, uint256 value) internal virtual {
+        _updateLedger(from, to, value);
+    }
+
+    // Non-virtual ledger body lets derived SolidCash policies extend `_update`
+    // without duplicating OZ state transitions across split facets.
+    function _updateLedger(address from, address to, uint256 value) internal {
+        if (from == address(0)) {
+            this._totalSupply = this._totalSupply + value;
+        } else {
+            uint256 fromBalance = this._balances[from];
+            require(fromBalance >= value);
+            this._balances[from] = fromBalance - value;
+        }
+
+        if (to == address(0)) {
+            this._totalSupply = this._totalSupply - value;
+        } else {
+            this._balances[to] = this._balances[to] + value;
+        }
+
+        emit Transfer(from, to, value);
+    }
+
+    function _mint(address account, uint256 value) internal {
+        require(account != address(0));
+        _update(address(0), account, value);
+    }
+
+    function _burn(address account, uint256 value) internal {
+        require(account != address(0));
+        _update(account, address(0), value);
+    }
+
+    function _approve(address tokenOwner, address spender, uint256 value) internal {
+        require(tokenOwner != address(0));
+        require(spender != address(0));
+        this._allowances[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    function _spendAllowance(address tokenOwner, address spender, uint256 value) internal {
+        uint256 currentAllowance = this._allowances[tokenOwner][spender];
+        bool infinite = currentAllowance == type(uint256).max;
+        require(infinite || currentAllowance >= value);
+        // A UTXO mapping entry must always be explicitly carried forward. OZ
+        // preserves the infinite sentinel and suppresses Approval while
+        // transferFrom spends a finite allowance.
+        if (!infinite) currentAllowance = currentAllowance - value;
+        this._allowances[tokenOwner][spender] = currentAllowance;
+    }
+}

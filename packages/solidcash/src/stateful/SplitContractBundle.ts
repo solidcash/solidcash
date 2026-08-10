@@ -99,6 +99,11 @@ export class SplitContract {
       for (const emitted of fn?.emits ?? []) {
         const event = facet.inner.artifact.events?.find((item) => item.signature === emitted.eventSignature);
         if (!event) continue;
+        // The point of this loop is to supply argument VALUES the builder cannot derive on its own. A
+        // zero-parameter event has none, and the builder already lays its marker output out from the facet's
+        // published `emits`; adding a manual one on top emits it twice and the covenant refuses the extra
+        // output. `values.every()` is vacuously true on an empty list, which is how this slipped through.
+        if (event.parameters.length === 0) continue;
         const values = event.parameters.map((parameter) => {
           if (byName.has(parameter.name)) return byName.get(parameter.name)!;
           if (parameter.type === 'address' && runner instanceof Signer) return addressToLockScript(runner.getAddress());

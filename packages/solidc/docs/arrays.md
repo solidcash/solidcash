@@ -90,8 +90,9 @@ stored inline.
 - **Operations:** the full dense API - index read/write, `push`, `pop`, `.length`, `delete` (splice), and
   `for (T v of this.a)` (desugared in `AstBuilder` to an index loop over a once-cached local, since it is a
   state variable, not a collection - shared with the chunk-packed form).
-- **Size:** **bounded by the commitment limit** (128 B default, `commitmentLimit`, `compiler.ts:28`). The
-  count plus every element must fit in that ~120 B; encoding throws past it (`utils/state.ts:857`).
+- **Size:** **bounded by the commitment limit** (128 B default, `commitmentLimit` in `compiler.ts`). The
+  count plus every element must fit in that ~120 B; encoding throws past it (see `buildPushdataCommitment`
+  in `utils/state.ts`).
 - **Use when:** a small, dense array you push/pop and read `.length` on (addresses, a short list).
 
 ## 4. State, chunk-packed array - SHIPPED (default for unbounded fixed-width `T[]`)

@@ -776,6 +776,7 @@ function buildFunctionAbiMetadata(
     ...(func.tokenContainerAccesses && func.tokenContainerAccesses.length > 0 && {
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
+        ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
         operations: da.operations,
         ...(da.transferCount > 1 && { transferCount: da.transferCount }),
         ...(da.transferNftCount > 1 && { transferNftCount: da.transferNftCount }),

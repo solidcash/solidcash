@@ -4,8 +4,10 @@ import {
   explicitlyCastable,
   fixedWidthBytes,
   isFixedWidthType,
+  isChunkableValueType,
   parseType,
   PrimitiveType,
+  StructType,
   TupleType,
 } from '../src/index.js';
 
@@ -32,6 +34,25 @@ describe('type utilities', () => {
       expect(isFixedWidthType('bytes')).toBe(false); // unbounded
       expect(isFixedWidthType('string')).toBe(false);
       expect(() => fixedWidthBytes('string')).toThrow();
+    });
+  });
+
+  describe('isChunkableValueType', () => {
+    it('keeps small fixed-width structs inline and chunks structs that can exceed the C2 tail', () => {
+      const small = new StructType('Small', [
+        { name: 'amount', type: parseType('uint64')! },
+        { name: 'height', type: parseType('uint32')! },
+      ]);
+      const tooWide = new StructType('TooWide', [
+        { name: 'a', type: new BytesType(32) },
+        { name: 'b', type: new BytesType(32) },
+      ]);
+      const dynamic = new StructType('Dynamic', [{ name: 'text', type: PrimitiveType.STRING }]);
+
+      expect(fixedWidthBytes(small)).toBe(14);
+      expect(isChunkableValueType(small)).toBe(false);
+      expect(isChunkableValueType(tooWide)).toBe(true);
+      expect(isChunkableValueType(dynamic)).toBe(true);
     });
   });
 

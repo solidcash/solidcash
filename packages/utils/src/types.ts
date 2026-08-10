@@ -853,14 +853,20 @@ export function isDynamicStorageType(type: Type): boolean {
 /**
  * A P5b CHUNKABLE vmap mapping value: a variable-width blob that chunks off-commitment when it exceeds the ~60 B
  * inline tail (stored as len ++ sha256, the value in per-slot chunk NFTs). Covers unbounded `bytes`/`string`,
- * `struct`, and any array `T[]` / `T[N]` - any value whose blob can exceed the 128 B commitment. A small value
- * (int, bool, bytesN, a short array/struct) stays inline in the tail; the runtime `size > 60` guard picks inline
+ * variable-width or >60-byte `struct`, and any array `T[]` / `T[N]` - values whose blobs can exceed the 128 B
+ * commitment. A small value (int, bool, bytesN, a short fixed-width struct) stays inline in the tail; the runtime
+ * `size > 60` guard picks inline
  * vs chunked. This is the SINGLE source of truth for the compiler covenant, the SDK gates, and the artifact flag.
  */
 export function isChunkableValueType(type: Type): boolean {
   if (type === PrimitiveType.STRING || type.toString() === 'string') return true;
   if (type instanceof BytesType && type.bound === undefined) return true;
-  if (type instanceof StructType) return true;
+  if (type instanceof StructType) {
+    // A statically packed struct that fits the inline C2 value tail can never
+    // require chunk witnesses. Treating it as dynamically chunkable adds a
+    // length/hash branch to every read and write for no reachable value.
+    return !isFixedWidthType(type) || fixedWidthBytes(type) > 60;
+  }
   if (type instanceof ArrayType) return true;
   return false;
 }

@@ -916,6 +916,11 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitStateAccess(node: StateAccessNode): Node {
+    // this.category - own CashToken category in display-order bytes.
+    if (node.name === 'category' && !node.stateVariable) {
+      node.type = new BytesType(32);
+      return node;
+    }
     // this.balance - special built-in (when no state variable named 'balance'), returns int
     if (node.name === 'balance' && !node.stateVariable) {
       node.type = PrimitiveType.BIGINT;

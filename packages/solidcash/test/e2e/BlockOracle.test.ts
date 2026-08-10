@@ -419,7 +419,7 @@ describe('blobhash / blockhash', () => {
     const base = compileString('contract A(){ function f(int e){ require(block.basefee == e); } }');
     const blob = compileString('contract B(){ function f(int e){ require(block.blobbasefee == e); } }');
     expect(blob.bytecode).toEqual(base.bytecode);
-    expect(blob.stateLayout!.variables.map((v) => v.name)).toEqual(['__block_totalFees', '__block_size', '__blockOracleOwner']);
+    expect(blob.stateLayout!.variables.map((v) => v.name)).toEqual(['__block_size', '__block_totalFees', '__blockOracleOwner']);
   });
 
   // block.gaslimit + gasleft() are fixed shims (1000000): BCH has no gas metering. A constant (not 0/revert)

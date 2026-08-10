@@ -1,0 +1,70 @@
+pragma solidcash >=0.8.0;
+
+import { BchNative } from "./BchNative.scash";
+
+// Optional delayed-admission behavior. Only contracts inheriting this layer
+// carry pending-deposit state or activate the standard block.number oracle.
+abstract contract BchNativeQuarantine is BchNative {
+    struct Pending {
+        uint32 unlockAt;
+        int amount;
+    }
+
+    mapping(address => Pending) public pendingDeposits;
+
+    function _nativeReserveAdded(int _amount) internal virtual { }
+    function _nativeReserveRemoved(int _amount) internal virtual { }
+    function _nativeEmitDepositQuarantined(address _to, int _value, uint32 _unlockAt) internal virtual { }
+    function _nativeEmitDepositClaimed(address _to, int _value) internal virtual { }
+    function _nativeEmitDepositCancelled(address _to, int _value) internal virtual { }
+    function _nativeEmitQuarantineParams(uint32 _blocks) internal virtual { }
+    function _nativeCanDeposit(address account) internal view virtual returns (bool) { return true; }
+    function _nativeCanClaim(address account) internal view virtual returns (bool) { return true; }
+    function _nativeCanCancel(address account) internal view virtual returns (bool) { return true; }
+    function _nativeQuarantineBlocks() internal view virtual returns (uint32) { return 0; }
+
+    function deposit(int amount) {
+        bytes32 category = this.category;
+        require(amount > 0);
+
+        address claimant = msg.sender;
+        require(_nativeCanDeposit(claimant));
+        require(this.pendingDeposits[claimant].amount == 0);
+
+        int reserveBefore = this.tokens[category].tokenAmount;
+        int reserveAfter = this.outState.tokens[category].tokenAmount;
+        require(reserveAfter >= reserveBefore + amount);
+
+        _nativeReserveAdded(amount);
+        uint32 unlockAt = block.number + _nativeQuarantineBlocks();
+        this.pendingDeposits[claimant] = Pending({ amount: amount, unlockAt: unlockAt });
+        _nativeEmitDepositQuarantined(claimant, amount, unlockAt);
+    }
+
+    function claimDeposit() {
+        address claimant = msg.sender;
+        require(_nativeCanClaim(claimant));
+        Pending pending = this.pendingDeposits[claimant];
+        int pendingAmount = pending.amount;
+        require(pendingAmount > 0);
+        require(block.number >= pending.unlockAt);
+
+        delete this.pendingDeposits[claimant];
+        _nativeCredit(claimant, uint256(pendingAmount));
+        _nativeEmitDepositClaimed(claimant, pendingAmount);
+    }
+
+    function cancelDeposit(address to) {
+        bytes32 category = this.category;
+        address claimant = msg.sender;
+        require(_nativeCanCancel(claimant));
+        int pendingAmount = this.pendingDeposits[claimant].amount;
+        require(pendingAmount > 0);
+        require(this.tokens[category].tokenAmount >= pendingAmount);
+
+        delete this.pendingDeposits[claimant];
+        _nativeReserveRemoved(pendingAmount);
+        this.tokens[category].transfer(to, pendingAmount);
+        _nativeEmitDepositCancelled(claimant, pendingAmount);
+    }
+}

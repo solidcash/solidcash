@@ -556,6 +556,11 @@ function standardPushdataFrame(data: Uint8Array): Uint8Array {
 function toPlainStateValue(v: StateValue): StateValue {
   if (Array.isArray(v)) return v.map(toPlainStateValue);
   if (v !== null && typeof v === 'object' && !(v instanceof Uint8Array)) {
+    // An ethers-v5 BigNumber wrapper is not plain data. `toObject()`/`toArray()` are the escape hatch
+    // that hands a caller ordinary values back, so unwrap to the bigint rather than deep-copying the
+    // wrapper's own fields (which would yield { _isBigNumber, _value, _hex } and lose the methods).
+    const bn = v as unknown as { _isBigNumber?: boolean; _value?: unknown };
+    if (bn._isBigNumber === true && typeof bn._value === 'bigint') return bn._value as StateValue;
     const out: StateRecord = {};
     for (const k of Object.keys(v)) out[k] = toPlainStateValue((v as StateRecord)[k]);
     return out;

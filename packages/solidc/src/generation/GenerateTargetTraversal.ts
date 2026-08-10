@@ -1293,6 +1293,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractIsBrandedLibrary: boolean = false;
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
+  private currentContractHasMessageBus: boolean = false;
   private currentContractEmitsEvent: boolean = false;
 
   /** X12. This contract is a split FACET: `delegateOnly`, so its own data NFTs are never materialized. */
@@ -1782,6 +1783,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
+    this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
     this.currentContractEmitsEvent = node.emitsEvent;
     this.currentContractIsSplitFacet = node.isSplitFacet;
     this.contractParameters = node.parameters;
@@ -2355,7 +2357,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (visited.has(node)) return ids;
     visited.add(node);
     if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
-      ids.add(node.resolvedFunction.functionId);
+      const statements = node.resolvedFunction.body?.statements;
+      const emptyBody = statements?.length === 0;
+      const noOpBody = statements?.length === 1 && statements[0] instanceof RequireNode
+        && statements[0].expression instanceof BoolLiteralNode && statements[0].expression.value;
+      const returned = statements?.length === 1 && statements[0] instanceof ReturnNode
+        ? statements[0].expressions[0] : undefined;
+      const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
+        || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
+        || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
+        || argument instanceof StringLiteralNode;
+      // `visitUserFunctionCall` folds this exact shape, so it has no physical OP_INVOKE edge and must not keep
+      // an otherwise-dead OP_DEFINE body alive in the reachability closure.
+      const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
+        || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
+        || returned instanceof StringLiteralNode
+        || (returned instanceof IdentifierNode
+          && !node.resolvedFunction.parameters.some((parameter) => parameter.name === returned.name));
+      if (!((emptyBody || noOpBody || foldableReturn) && node.parameters.every(inertArgument))) {
+        ids.add(node.resolvedFunction.functionId);
+      }
     }
     // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
     // so its internal subroutine must be OP_DEFINE'd too.
@@ -3614,6 +3635,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
+    if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
       // instruction pointer against these, and a pointer reported from inside a shared body would not match.
@@ -3645,15 +3667,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
     const entryPool = this.snapshotCompactHelperIds();
     for (const width of new Set(widths)) {
-      this.restoreCompactHelperIds(entryPool);
-      const attempt = outlineSharedSpans(
-        bodies.map((body) => ({ ...body, script: [...body.script], locationData: [...body.locationData] })),
-        () => encodeInt(this.allocateCompactHelperId()),
-        () => width,
-      );
-      if (result === undefined || attempt.savedBytes > result.savedBytes) {
-        result = attempt;
-        winningPool = this.snapshotCompactHelperIds();
+      const strategies = this.currentContractHasMessageBus
+        ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
+        : [
+          ['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original'],
+          ['savings', 11, 1024, 'original'], ['density', 11, 1024, 'original'],
+          ['savings', 10, 1024, 'original'], ['density', 10, 1024, 'original'],
+          // Seven-element spans recover compact repeated state-covenant fragments (notably ERC20 mapping
+          // transitions) that cannot grow into the ten-element candidates above. The whole-script winner gate
+          // keeps this probe inert on contracts where those marginal candidates fragment a better outline.
+          ['savings', 7, 1024, 'original'], ['density', 7, 1024, 'original'],
+          ['savings', 10, 512, 'original'], ['density', 10, 512, 'original'],
+          ['savings', 10, 512, 'shortest'], ['density', 10, 512, 'shortest'],
+        ] as const;
+      for (const [ranking, minimumWindowElements, candidateGroupsPerRound, bodyOrder] of strategies) {
+        this.restoreCompactHelperIds(entryPool);
+        const order = bodies.map((_body, index) => index);
+        if (bodyOrder === 'shortest') order.sort((left, right) =>
+          bodies[left].script.length - bodies[right].script.length);
+        const orderedAttempt = outlineSharedSpans(
+          order.map((index) => {
+            const body = bodies[index];
+            return { ...body, script: [...body.script], locationData: [...body.locationData] };
+          }),
+          () => encodeInt(this.allocateCompactHelperId()),
+          () => width,
+          ranking,
+          minimumWindowElements,
+          candidateGroupsPerRound,
+        );
+        const normalizedBodies = new Array(orderedAttempt.bodies.length);
+        order.forEach((originalIndex, orderedIndex) => {
+          normalizedBodies[originalIndex] = orderedAttempt.bodies[orderedIndex];
+        });
+        const attempt = { ...orderedAttempt, bodies: normalizedBodies };
+        if (result === undefined || attempt.savedBytes > result.savedBytes) {
+          result = attempt;
+          winningPool = this.snapshotCompactHelperIds();
+        }
       }
     }
     this.restoreCompactHelperIds(winningPool!);
@@ -3741,6 +3792,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);
     }
+  }
+
+  /**
+   * Invocation analysis conservatively reserves every internal function id before bodies are generated, and
+   * structural probes allocate helpers that the real pass can later inline away. At the final outlining stage,
+   * the emitted OP_DEFINE stream is authoritative: unused one-byte ids and allocated compact ids can be safely
+   * recycled for outlined spans.
+   */
+  private releaseUnusedSingleByteIdsForOutlining(): void {
+    const defined = new Set<bigint>();
+    for (let i = 1; i < this.output.length; i += 1) {
+      if (this.output[i] === Op.OP_DEFINE && this.output[i - 1] instanceof Uint8Array) {
+        try {
+          defined.add(decodeInt(this.output[i - 1] as Uint8Array));
+        } catch {
+          // Four-byte ABI selectors are identifiers too, but not minimally encoded VM numbers and never overlap
+          // the one-byte script-number pool considered below.
+        }
+      }
+    }
+    for (const record of this.definedBodyRecords) {
+      if (record.functionId !== undefined) defined.add(BigInt(record.functionId));
+      if (record.compilerHelperId !== undefined) defined.add(BigInt(record.compilerHelperId));
+    }
+    const protectedIds = (id: bigint): boolean => this.freeFunctionIds.includes(id)
+      || GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.includes(id);
+    const recycled = [...this.compactHelperIds.allocated]
+      .filter((id) => !defined.has(id) && !protectedIds(id));
+    for (const id of recycled) {
+      this.compactHelperIds.used.delete(id);
+      this.compactHelperIds.allocated.delete(id);
+    }
+    for (const id of GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS) {
+      if (defined.has(id) || this.freeFunctionIds.includes(id)
+        || GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.includes(id)) continue;
+      this.compactHelperIds.used.delete(id);
+      this.compactHelperIds.allocated.delete(id);
+    }
+    this.compactHelperIds.cheap = [...new Set([
+      ...GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
+        .filter((id) => !this.compactHelperIds.used.has(id)),
+      ...recycled,
+    ])].sort((left, right) => encodeDataPush(encodeInt(left)).length - encodeDataPush(encodeInt(right)).length);
   }
 
   /**
@@ -7799,6 +7893,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * pull the selector from the bottom.
    */
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
+    // Fold a side-effect-free internal function that returns one boolean literal. Policy extension hooks often
+    // default to `return true`/`return false`; compiling those as separately defined OP_INVOKE bodies costs a
+    // definition plus a call at every check, even though their result is known after inheritance expansion.
+    // Restrict argument elision to identifiers/literals: more complex expressions must still be evaluated for
+    // their own observable effects, even when the callee ignores them.
+    const soleStatement = targetFunc.body?.statements?.length === 1
+      ? targetFunc.body.statements[0] : undefined;
+    const emptyBody = targetFunc.body?.statements?.length === 0;
+    const noOpBody = soleStatement instanceof RequireNode
+      && soleStatement.expression instanceof BoolLiteralNode && soleStatement.expression.value;
+    const returned = soleStatement instanceof ReturnNode && soleStatement.expressions.length === 1
+      ? soleStatement.expressions[0] : undefined;
+    const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
+      || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
+      || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
+      || argument instanceof StringLiteralNode;
+    const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
+      || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
+      || returned instanceof StringLiteralNode
+      || (returned instanceof IdentifierNode
+        && !targetFunc.parameters.some((parameter) => parameter.name === returned.name));
+    if ((emptyBody || noOpBody || (returned && foldableReturn)) && node.parameters.every(inertArgument)) {
+      if (returned) this.visit(returned);
+      return node;
+    }
+
     // X91. Refuse a forwarded synthetic witness the caller cannot supply BEFORE anything is emitted - ahead of
     // the journal-context picks, the hidden-context pushes and the argument loop - so no partially lowered call
     // is left behind. Checked against this caller's stack rather than against the callee's effect list: the
@@ -13150,6 +13270,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    // this.category - master category without the NFT capability byte, converted
+    // from native serialization order to Solidity/display-order bytes32.
+    if (node.name === 'category' && !node.stateVariable) {
+      this.emitMasterInputIndex(locationData);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_REVERSEBYTES, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // this.balance - get own category, derive satoshi container lbc, loop over inputs
     if (node.name === 'balance' && !node.stateVariable) {
       // Get own category (32 bytes, strip capability flag)
@@ -14588,11 +14721,39 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
 
     if (node.callMode === 'delegatecall') {
-      // Delegatecall: proxy doesn't verify delegate's calldata - the delegate handles
-      // its own verification via _proxyMasterIndex. Push dummy success/returnData.
-      this.markDelegateEdgeReached(node);
-      this.emit(Op.OP_1, locationData);           // [true]
-      this.emit(encodeInt(0n), locationData);      // [true, empty]
+      if (node.synthesizedFromLibraryCall && this.currentFunction.pinsDelegateCoSpend) {
+        // A returning split forwarder needs a cross-input return channel: unlike an EVM delegatecall, two BCH
+        // inputs do not share a stack. Pin the implementation exactly like the statement form, then read the
+        // implementation-authenticated return-event commitment. The SDK always materializes this channel for
+        // a returning split delegate, even when the caller does not request the value in its receipt.
+        this.visit(node.targetExpression);
+        this.emitDelegateInputIndex(node, locationData);
+        this.emit(Op.OP_UTXOBYTECODE, locationData);
+        this.emit(Op.OP_EQUALVERIFY, locationData);
+        this.popFromStack();
+
+        const singleFunctionLibrary = !node.librarySelectorDispatched;
+        if (!singleFunctionLibrary) {
+          this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
+          this.emit(Op.OP_DROP, locationData);
+        }
+        this.markDelegateEdgeReached(node);
+        const returnOutputIdx = this.getStackIndex('__internal__returnOutputIdx', true);
+        if (returnOutputIdx < 0) {
+          throw new Error(`Returning split forwarder '${this.currentFunction.name}' has no return-output witness`);
+        }
+        this.emit(encodeInt(BigInt(returnOutputIdx)), locationData);
+        this.emit(Op.OP_PICK, locationData);
+        this.emit(Op.OP_OUTPUTTOKENCOMMITMENT, locationData);
+        this.emit(Op.OP_1, locationData);
+        this.emit(Op.OP_SWAP, locationData);
+      } else {
+        // An explicit low-level delegatecall has no cross-input return channel. Preserve its established
+        // `(true, emptyBytes)` result; the co-spent implementation independently authenticates proxy state.
+        this.markDelegateEdgeReached(node);
+        this.emit(Op.OP_1, locationData);
+        this.emit(encodeInt(0n), locationData);
+      }
     } else {
       this.emitLowLevelCallVerification(node.data, node.callIndex, locationData);
       // Stack: [remaining]
@@ -14672,7 +14833,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    *  - a hand-written delegatecall picks the `__internal__delegateInputIndex` witness.
    * Leaves exactly one untracked value on the real stack.
    */
-  private emitDelegateInputIndex(node: LowLevelCallStatementNode, locationData: SingleLocationData): void {
+  private emitDelegateInputIndex(
+    node: LowLevelCallNode | LowLevelCallStatementNode, locationData: SingleLocationData,
+  ): void {
     if (this.currentFunction.graphEmissionHandler) {
       const nftCount = this.currentFunction.requiredNftIndices?.length
         ?? new Set(this.stateVariables.map((state) => state.nftIndex ?? 0)).size;
@@ -14774,7 +14937,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // A vmap mapping value that can exceed the 60 B inline tail: any variable-width blob - unbounded `bytes`/`string`,
-  // struct, dynamic array (isChunkableValueType). Stored as len(4B) ++ [ inline value if <=60 B | sha256(value) ];
+  // variable/large struct, dynamic array (isChunkableValueType). Stored as
+  // len(4B) ++ [ inline value if <=60 B | sha256(value) ];
   // a long value persists in per-slot chunk NFTs and a read verifies a witness against the hash. Fixed-width
   // (int/bool/bytesN) and small-variable (address) values never chunk (always within the 128 B commitment).
   private isChunkableValue(vt: Type): boolean {
@@ -14799,7 +14963,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
 
   // Entry tail (top) -> materialized value. Short: inline. Long: caller supplies the value as witness arg
   // __internal__valueWitness_N and the covenant verifies sha256(witness)==stored hash (forged witness fails).
-  private emitChunkableValueRead(loc: SingleLocationData, slotIndex: number): void {
+  private emitChunkableValueRead(
+    loc: SingleLocationData, slotIndex: number, accessNode?: MappingAccessNode,
+  ): void {
     this.emit(encodeInt(4n), loc); this.emit(Op.OP_SPLIT, loc); // [len4, rest]
     this.emit(Op.OP_SWAP, loc); this.emit(Op.OP_BIN2NUM, loc); // [rest, len]
     this.emit(Op.OP_DUP, loc); this.emit(encodeInt(60n), loc); this.emit(Op.OP_GREATERTHAN, loc); // [rest, len, long]
@@ -14807,7 +14973,29 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_DROP, loc); // [root32 || headData28]
     this.emit(encodeInt(32n), loc); this.emit(Op.OP_SPLIT, loc); this.emit(Op.OP_DROP, loc); // [root]
     const w = `__internal__valueWitness_${slotIndex}`;
-    this.emit(encodeInt(BigInt(this.getStackIndex(w) + 1)), loc); this.emit(Op.OP_PICK, loc); // +1: hash untracked
+    if (this.sortedUpsertLoopActive && this.entrySlots[slotIndex]?.inLoop && accessNode) {
+      let varyingKey = accessNode.keys.find((key) => key instanceof ArrayAccessNode) as ArrayAccessNode | undefined;
+      if (!varyingKey) {
+        for (const key of accessNode.keys) {
+          if (!(key instanceof IdentifierNode)) continue;
+          const initializer = this.findSingleAssignLocalInit(this.currentFunction.body, key.name);
+          if (initializer instanceof ArrayAccessNode) { varyingKey = initializer; break; }
+        }
+      }
+      if (!varyingKey) throw new SortedMappingCodegenPendingError(accessNode, accessNode.collection!.name);
+      const witnessId = new IdentifierNode(w);
+      witnessId.type = new ArrayType(new BytesType());
+      witnessId.location = accessNode.location;
+      const witnessAt = new ArrayAccessNode(witnessId, cloneNode(varyingKey.index) as ExpressionNode);
+      witnessAt.type = new BytesType();
+      witnessAt.location = accessNode.location;
+      this.pushToStack('(__value_root)');
+      this.visit(witnessAt);
+      this.removeFromStack(this.getStackIndex('(__value_root)'));
+      this.popFromStack();
+    } else {
+      this.emit(encodeInt(BigInt(this.getStackIndex(w) + 1)), loc); this.emit(Op.OP_PICK, loc);
+    }
     this.emit(Op.OP_DUP, loc); this.emit(Op.OP_SHA256, loc);
     this.emit(encodeInt(2n), loc); this.emit(Op.OP_PICK, loc); this.emit(Op.OP_EQUALVERIFY, loc);
     this.emit(Op.OP_NIP, loc); // [witness]
@@ -14957,7 +15145,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emit(Op.OP_IF, loc);
     this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); this.emit(Op.OP_NIP, loc); // -> [value | tail]
     if (valueKind === 'int') this.emit(Op.OP_BIN2NUM, loc);     // normalize the int/bool tail (bytesN kept verbatim)
-    else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex);
+    else if (this.isChunkableValue(valueType)) this.emitChunkableValueRead(loc, slotIndex, node);
     this.emit(Op.OP_ELSE, loc);
     this.emit(Op.OP_DROP, loc);                                 // drop value -> [Hk32, slot32, nextKey32]
     this.emitSortedAbsenceBracket(loc);                         // verifies slot < H(k) < nextKey
@@ -17963,6 +18151,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     };
   }
 
+  // InlineReturningStateHelpers lowers `m[k].field += delta` through a storage pointer to an authenticated read,
+  // one or more struct rebuilds, and a final `m[k] = local`. Recognize only that closed shape so the loop can use
+  // the live rebuilt struct as its SET value without accepting an unrelated local as trusted state.
+  private isLoopStructRuntimeRmw(block: Node, write: MappingAssignNode, localName: string): boolean {
+    let read: MappingAccessNode | undefined;
+    const rebuilds: FunctionCallNode[] = [];
+    let reassigned = 0;
+    let invalidReassignment = false;
+    const seen = new Set<Node>();
+    const walk = (node: Node): void => {
+      if (seen.has(node)) return;
+      seen.add(node);
+      if (node instanceof VariableDefinitionNode && node.name === localName
+        && node.expression instanceof MappingAccessNode) read = node.expression;
+      if (node instanceof AssignNode && node.identifier.name === localName) {
+        if (!read && node.expression instanceof MappingAccessNode) read = node.expression;
+        else {
+          reassigned += 1;
+          if (node.expression instanceof FunctionCallNode) rebuilds.push(node.expression);
+          else invalidReassignment = true;
+        }
+      }
+      for (const [key, value] of Object.entries(node)) {
+        if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
+          || key === 'collection') continue;
+        if (value instanceof Node) walk(value);
+        else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+      }
+    };
+    walk(block);
+    const structName = (write.collection!.innermostValueType as StructType).name;
+    // A single-field storage-library update already uses the generic runtime-expression route. Reserve this explicit
+    // witness/local path for a composed struct rebuild (two or more field transitions), where that generic lowering
+    // cannot represent the intermediate local without re-reading the entry.
+    if (!read || reassigned < 2 || invalidReassignment || rebuilds.length !== reassigned || read.name !== write.name
+      || rebuilds.some((rebuild) => rebuild.identifier.name !== structName)) return false;
+    const sameExpression = (a: ExpressionNode, b: ExpressionNode): boolean => {
+      if (a.constructor !== b.constructor) return false;
+      if (a instanceof IdentifierNode && b instanceof IdentifierNode) return a.name === b.name;
+      if (a instanceof IntLiteralNode && b instanceof IntLiteralNode) return a.value === b.value;
+      if (a instanceof ArrayAccessNode && b instanceof ArrayAccessNode) {
+        return sameExpression(a.array, b.array) && sameExpression(a.index, b.index);
+      }
+      if (a instanceof CastNode && b instanceof CastNode) return sameExpression(a.expression, b.expression);
+      return false;
+    };
+    if (read.keys.length !== write.keys.length
+      || !read.keys.every((key, i) => sameExpression(key, write.keys[i]))) return false;
+    return rebuilds.every((rebuild) => rebuild.parameters.some((parameter) => parameter instanceof FieldAccessNode
+      && parameter.expression instanceof IdentifierNode && parameter.expression.name === localName));
+  }
+
   // The initializer of a SINGLE-ASSIGN local `name` within `node` (a `<name> = <expr>` VariableDefinition, never
   // reassigned by an AssignNode) - used to see through OZ _update's inline value binding (`__inlN_value = amounts[i]`).
   // Returns undefined if the name is defined 0 or >1 times, reassigned, or has no initializer (so it can't be trusted).
@@ -18075,10 +18315,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       varyingArrayParam = decodedKeyRecipe.varyingArrayParam;
     }
     const isDelete = writeNode instanceof MappingDeleteNode;
-    let op: '+' | '-' | 'set' | 'delete';
+    let op: '+' | '-' | 'set' | 'delete' = 'set';
     let valueArrayParam: string | undefined;    // per-key vs[i]
     let valueScalarParam: string | undefined;   // loop-invariant param (e.g. `+= amount` fixed-amount airdrop)
     let valueConst: string | undefined;         // loop-invariant int literal (e.g. `+= 100`)
+    let valueRuntimeLocal: string | undefined;  // rebuilt struct derived from this iteration's authenticated entry
     let valueArrayOffset: string | undefined;
     if (isDelete) {
       op = 'delete'; // nullify to the type default; no per-key value array
@@ -18107,8 +18348,15 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }
       }
       const expr = assign.expression;
+      if (expr instanceof IdentifierNode && collection.innermostValueType instanceof StructType
+        && this.isLoopStructRuntimeRmw(block, assign, expr.name)) {
+        op = 'set';
+        valueRuntimeLocal = expr.name;
+      }
       const isRmw = expr instanceof BinaryOpNode && expr.left instanceof MappingAccessNode;
-      op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      if (!valueRuntimeLocal) {
+        op = !isRmw ? 'set' : (expr as BinaryOpNode).operator === BinaryOperator.MINUS ? '-' : '+';
+      }
       let valueRight = isRmw ? (expr as BinaryOpNode).right : expr; // per-key value = RHS (RMW) or the whole assign
       // Inlining OZ ERC20 `_update` binds its `value` param to a single-assign LOCAL (`__inlN_value = amounts[i]`),
       // so the write's per-key value is that local, not the array element directly. Resolve it to the underlying
@@ -18137,7 +18385,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       }
     }
     // 'delete' has no value; every other op needs exactly one value source. All need the varying key array.
-    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined;
+    const hasValue = !!valueArrayParam || !!valueScalarParam || valueConst !== undefined || !!valueRuntimeLocal;
     const valueRuntimeExpression = !isDelete && (
       (!!decodedKeyRecipe && (!hasValue || decodedKeyRecipe.predicateEquals !== undefined))
       || (!hasValue && writeNode.entrySlotIndex >= 0
@@ -18158,8 +18406,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         }),
         ...(valueArrayParam && { valueArrayParam }), ...(valueScalarParam && { valueScalarParam }),
         ...(valueConst !== undefined && { valueConst }),
+        ...(valueRuntimeLocal && { valueRuntimeLocal }),
         ...(valueRuntimeExpression && { valueRuntimeExpression: true }),
-        ...(valueArrayOffset !== undefined && { valueArrayOffset }), op });
+        ...(valueArrayOffset !== undefined && { valueArrayOffset }),
+        ...(valueRuntimeLocal && { oldValuesWitnessParam: `__internal__valueWitness_${slotIndex}` }), op });
     }
     this.sortedWrittenCollections.add(collection.name);
 

@@ -57,6 +57,20 @@ describe('cross-function bytecode outlining', () => {
     expect(outlineSharedSpans(source, allocateId, () => 1_000).functions).toEqual([]);
   });
 
+  it('allows the compiler to probe a narrower minimum without changing the conservative default', () => {
+    const eleven = REPEATED.slice(0, 11);
+    const source = [body([...eleven, ...FILLER]), body([...FILLER, ...eleven])];
+    expect(outlineSharedSpans(source, allocateId, () => 1).functions).toEqual([]);
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 11).functions).toHaveLength(1);
+  });
+
+  it('allows a bounded candidate-group probe without changing the default', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const bounded = outlineSharedSpans(source, allocateId, () => 1, 'savings', 12, 1);
+    expect(bounded.functions.length).toBeGreaterThan(0);
+    expect(bounded.savedBytes).toBeGreaterThan(0);
+  });
+
   it('keeps a conditional whole rather than stranding its OP_ELSE', () => {
     // The repeated run sits between OP_IF and OP_ELSE. A depth-only balance check would happily share
     // "<run> OP_ELSE <run>" - depth never moves - and the invoked body would abort with "OP_ELSE outside of a

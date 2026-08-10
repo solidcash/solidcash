@@ -16,9 +16,12 @@ export interface CompilerOptions {
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
-  // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an
-  // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
+  // (FinalRequireStatementError). Defaults to true because such a path is unconditionally spendable;
+  // explicitly set false only when that behavior is intentional.
   enforceFinalRequire?: boolean;
+  // Permit compiler-detected caller-controlled delegatecall/selfdestruct authority. Defaults to false; this
+  // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
+  allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
   // EVM byte-parity mode for the abi.* family (temporary gate; to be dropped once parity is green). Under
   // evmCompat, abi.encode/encodePacked emit EVM-faithful bytes: 32-byte big-endian two's-complement words.
@@ -84,6 +87,7 @@ export interface EmitAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
+  keySource?: 'param' | 'own';
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
@@ -288,7 +292,7 @@ export interface AbiFunction {
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];
-  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
+  // Sorted (vmap) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
   // predecessors and emits N (P', NEW) commitment pairs, deriving the evolving sorted list per iteration.
   sortedInsertLoops?: readonly string[];
   // Per-loop derivation metadata for the above: the fixed leading key params, the varying key array param (its
@@ -296,7 +300,7 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
+  /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
@@ -306,7 +310,7 @@ export interface AbiFunction {
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses
   externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count
-  // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars and fills results.
+  // keccak256 uses the compute-and-commit side-car; send() batches up to three straight-line calls per side-car.
   keccakCompute?: boolean;
   keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
   // computes each R + co-spends per call)
@@ -334,12 +338,19 @@ export interface FunctionDebugInformation {
   logs: readonly LogEntry[];
 }
 
+/** Debug metadata for bytecode entered through OP_INVOKE, keyed by its script-number identifier. */
+export interface InvokeDebugInformation extends FunctionDebugInformation {
+  bytecode: string;
+  name?: string;
+}
+
 export interface DebugInformation {
   bytecode: string; // unlike `bytecode` property above, this is a hex-encoded binary string
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements
   functionDebug?: Record<string, FunctionDebugInformation>; // per-function debug info keyed by selector hex
+  invokeDebug?: Record<string, InvokeDebugInformation>; // nested OP_INVOKE bodies keyed by function id
 }
 
 export interface LogEntry {
@@ -403,7 +414,7 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
-  /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
+  /** True when this is a verified mapping (vmap): its sorted links authenticate present and absent keys. */
   sorted?: boolean;
   /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
    * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */
@@ -421,7 +432,7 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
-// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+// Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
@@ -470,7 +481,7 @@ export interface EntryAccessAbi {
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
-  // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
+  // A sorted (vmap) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
 }
@@ -643,10 +654,9 @@ export interface ExternalLibraryAbi {
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
   code?: string;      // hex blob; present for user-supplied libraries
-  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
-  // its NFT commitment (the contract reads it), rather than the contract running the blob
-  minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
-  // count across the contract's functions (each function co-spends its own per-call side-cars)
+  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns 1-3 hashes in
+  // its own mutable NFT commitment (the contract reads 32-byte slices); no separate result/data NFTs are emitted
+  minInstances?: number; // minimum side-car instances to deploy: ceil(max straight-line keccak call count / 3)
   unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
   // real need is the loop's runtime count, so provision extra side-cars
 }

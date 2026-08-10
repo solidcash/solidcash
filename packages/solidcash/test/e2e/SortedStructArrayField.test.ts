@@ -6,9 +6,9 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 // A struct with a dynamic-array field `struct S { int a; int[] d; }` is decomposed into per-field mappings (m__a,
-// m__d), each C2-backed by default. So field access (m[k].a), inner-array element read/write (m[k].d[i]) and inner
-// push all route to independent C2 sub-mappings - each unforgeable + chunk-aware. This locks that end-to-end.
-describe('sorted struct-with-array-field mapping (field-decomposed C2)', () => {
+// m__d), each vmap-backed by default. So field access (m[k].a), inner-array element read/write (m[k].d[i]) and inner
+// push all route to independent vmap sub-mappings - each unforgeable + chunk-aware. This locks that end-to-end.
+describe('sorted struct-with-array-field mapping (field-decomposed vmap)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
@@ -30,7 +30,7 @@ describe('sorted struct-with-array-field mapping (field-decomposed C2)', () => {
     return { contract, fund };
   };
 
-  it('scalar field + inner-array push/read are independent C2 sub-mappings', async () => {
+  it('scalar field + inner-array push/read are independent vmap sub-mappings', async () => {
     const SRC = `contract C() {
       struct S { int a; int[] d; }
       mapping(int => S) m;
@@ -40,7 +40,7 @@ describe('sorted struct-with-array-field mapping (field-decomposed C2)', () => {
       function checkAt(int k, int i, int e, pubkey pk, sig s) { require(checkSig(s, pk)); require(m[k].d[i] == e); }
     }`;
     const art = compileString(SRC);
-    // decomposed into per-field C2 sub-mappings
+    // decomposed into per-field vmap sub-mappings
     const cols = art.stateLayout?.collections ?? [];
     expect(cols.find((c) => c.name === 'm__a')?.sorted).toBe(true);
     expect(cols.find((c) => c.name === 'm__d')?.sorted).toBe(true);

@@ -42,6 +42,16 @@ export default class SignatureTemplate {
       throw new Error(`Invalid hash type base value: 0x${baseHashType.toString(16).padStart(2, '0')}`);
     }
 
+    const allowedHashTypeBits = 0x1f | HashType.SIGHASH_UTXOS | HashType.SIGHASH_ANYONECANPAY;
+    const unknownBits = hashtype & ~allowedHashTypeBits;
+    if (unknownBits !== 0) {
+      throw new Error(`Invalid hash type flags: unknown bits 0x${unknownBits.toString(16).padStart(2, '0')}`);
+    }
+    if ((hashtype & HashType.SIGHASH_UTXOS) !== 0
+      && (hashtype & HashType.SIGHASH_ANYONECANPAY) !== 0) {
+      throw new Error('Invalid hash type flags: SIGHASH_UTXOS and SIGHASH_ANYONECANPAY cannot be combined');
+    }
+
     // L5: SIGHASH_NONE/SINGLE (and the ANYONECANPAY flag) do not commit to all outputs and/or all inputs, so the
     // counterparty or a bot can malleate the transaction (redirect outputs, add/remove inputs). The default
     // (SIGHASH_ALL | SIGHASH_UTXOS) is safe; warn on the opt-in unsafe modes so they aren't selected by accident.

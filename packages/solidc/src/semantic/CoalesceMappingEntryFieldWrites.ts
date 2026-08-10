@@ -28,13 +28,13 @@ import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
 /**
- * Coalesce consecutive whole-field writes to the SAME struct-valued C2 mapping entry into one entry read + one
+ * Coalesce consecutive whole-field writes to the SAME struct-valued vmap mapping entry into one entry read + one
  * whole-struct write:
  *
  *   escrows[id].split = a; escrows[id].consensus = b; escrows[id].claimed = 1;
  *     -> S __mefw = escrows[id]; escrows[id] = Escrow(__mefw.f0, .., a, b, .., 1, ..);
  *
- * Each `m[k].f = v` on a sorted (C2) mapping is a full entry read-modify-upsert; the C2 path does NOT chain
+ * Each `m[k].f = v` on a sorted (vmap) mapping is a full entry read-modify-upsert; the vmap path does NOT chain
  * consecutive field writes (the default backend does, via pendingEntryWrites), so N field writes = N whole upserts.
  * Reading once and writing the finished struct back once replaces that with 1 read + 1 upsert. Emits only a
  * VariableDefinitionNode + a whole-struct MappingAssignNode (both lowered by every pipeline). See

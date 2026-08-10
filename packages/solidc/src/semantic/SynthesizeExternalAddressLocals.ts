@@ -353,7 +353,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       node.object.location = loc;
     } else if (cachedField && !ADDRESS_METHODS.has(node.methodName)
       && this.isInterfaceMethod(cachedField.iface, node.methodName)) {
-      // C2's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
+      // vmap's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
       // its current interface field immediately before the call rather than tracing back to the initial state
       // read. The external-call covenant then pins the co-spent target to exactly that runtime field value.
       const localName = `${PREFIX}cache${this.transitiveCounter}_${cachedField.iface}`;
@@ -561,7 +561,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   private localStructFieldTarget(obj: ExpressionNode): { iface: string } | undefined {
     if (!(obj instanceof FieldAccessNode) || !(obj.expression instanceof IdentifierNode)) return undefined;
     const localName = obj.expression.name;
-    if (!localName.startsWith('__c2cache_') && !this.singleAssignLocals.has(localName)) return undefined;
+    if (!localName.startsWith('__vmapcache_') && !this.singleAssignLocals.has(localName)) return undefined;
     const init = this.localInits.get(localName);
     const structType = this.localStructTypes.get(localName)
       ?? (init ? this.resolveChainType(init) : undefined);

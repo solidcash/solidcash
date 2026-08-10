@@ -16,7 +16,7 @@ import { MockNetworkProvider, RegtestNetworkProvider } from '../../src/index.js'
 
 type TestProvider = MockNetworkProvider | RegtestNetworkProvider;
 const ZERO = new Uint8Array(32);
-const c2Entry = (slot: Uint8Array, value: bigint): string =>
+const vmapEntry = (slot: Uint8Array, value: bigint): string =>
   binToHex(encodeEntryCommitment(slot, ZERO, bigIntToVmNumber(value)));
 
 // One entry NFT to genesis under the contract's real category.
@@ -112,7 +112,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
       // Add an entry NFT for alice with balance 100
       const slot = keyToSlot(alicePkh);
-      const entryCommitment = c2Entry(slot, 100n);
+      const entryCommitment = vmapEntry(slot, 100n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: 'balances', commitment: entryCommitment }],
@@ -132,8 +132,8 @@ describe('Mapping Enumeration (getEntries)', () => {
       // Add two entry NFTs
       const aliceSlot = keyToSlot(alicePkh);
       const bobSlot = keyToSlot(bobPkh);
-      const entry1 = c2Entry(aliceSlot, 100n);
-      const entry2 = c2Entry(bobSlot, 200n);
+      const entry1 = vmapEntry(aliceSlot, 100n);
+      const entry2 = vmapEntry(bobSlot, 200n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 2n },
         [
@@ -160,7 +160,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
       // One valid entry NFT + a non-mutable NFT (skipped), both under the real category.
       const slot = keyToSlot(alicePkh);
-      const entry = c2Entry(slot, 50n);
+      const entry = vmapEntry(slot, 50n);
       const { categoryId, saltedContract } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [
@@ -189,7 +189,7 @@ describe('Mapping Enumeration (getEntries)', () => {
       const contract = new Contract(artifact, [], { provider });
 
       const collection = stateLayout.collections!.find((c) => c.name === 'balances')!;
-      const entry = c2Entry(keyToSlot(alicePkh), 42n);
+      const entry = vmapEntry(keyToSlot(alicePkh), 42n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: collection.signature, commitment: entry }],
@@ -223,7 +223,7 @@ describe('Mapping Enumeration (getEntries)', () => {
 
       // Create multi-key entry: allowances[alice][bob] = 500
       const slot = keyToSlotMulti([alicePkh, bobPkh]);
-      const entryCommitment = c2Entry(slot, 500n);
+      const entryCommitment = vmapEntry(slot, 500n);
       const { categoryId } = await setupWithEntries(
         provider, contract, stateLayout, { counter: 1n },
         [{ collection: 'allowances', commitment: entryCommitment }],

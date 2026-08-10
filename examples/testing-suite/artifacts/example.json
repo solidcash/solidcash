@@ -47,11 +47,13 @@
     "options": {
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,
+      "enforceFinalRequire": true,
+      "allowUnsafeOperations": false,
       "commitmentLimit": 128,
       "messageBus": false
     }
   },
-  "updatedAt": "2026-08-09T09:54:01.241Z",
+  "updatedAt": "2026-08-10T13:36:27.020Z",
   "invocationAnalysis": {
     "version": 1,
     "protocolVersions": [

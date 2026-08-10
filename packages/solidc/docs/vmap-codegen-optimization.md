@@ -1,9 +1,9 @@
-# C2 codegen optimization research
+# vmap codegen optimization research
 
 Status: research and implementation guidance. The normative storage and security specification is
-`sorted-mapping-c2.md`.
+`verified-mappings.md`.
 
-This note evaluates how to reduce C2 contract bytecode, runtime covenant work, and transaction size without
+This note evaluates how to reduce vmap contract bytecode, runtime covenant work, and transaction size without
 weakening exclusion proofs or shortening the 32-byte `slot` and `nextSlot` links.
 
 ## Baseline measurements
@@ -14,20 +14,20 @@ selector-dispatch and unrelated application differences.
 | Case | Optimized contract bytecode |
 |---|---:|
 | Stateful scalar read | 352 B |
-| C2 scalar read | 479 B |
+| vmap scalar read | 479 B |
 | Stateful scalar write | 354 B |
-| C2 scalar write | 526 B |
-| C2 scalar read-modify-write | 764 B |
-| C2 nested-key read | 561 B |
+| vmap scalar write | 526 B |
+| vmap scalar read-modify-write | 764 B |
+| vmap nested-key read | 561 B |
 | Dynamic state-bytes write | 626 B |
-| C2 chunk-capable bytes write | 729 B |
-| C2 bytes read | 428 B |
+| vmap chunk-capable bytes write | 729 B |
+| vmap bytes read | 428 B |
 
 Approximate premiums in these examples:
 
-- C2 scalar read: 127 bytes over a scalar state read.
-- C2 scalar write: 172 bytes over a scalar state write.
-- C2 chunk-capable bytes write: 103 bytes over a dynamic state-bytes write.
+- vmap scalar read: 127 bytes over a scalar state read.
+- vmap scalar write: 172 bytes over a scalar state write.
+- vmap chunk-capable bytes write: 103 bytes over a dynamic state-bytes write.
 - RMW is disproportionately large because it contains both authenticated read and upsert machinery.
 
 The common stateful master/value-preservation scaffold remains a large part of every contract. These figures should
@@ -37,11 +37,11 @@ Cross-function sharing is currently limited:
 
 | Contract shape | Optimized bytecode |
 |---|---:|
-| One C2 read function | 479 B |
-| Two equivalent C2 read functions | 948 B |
-| One C2 write function | 526 B |
-| Two equivalent C2 write functions | 1,024 B |
-| One C2 chunk-capable write | 729 B |
+| One vmap read function | 479 B |
+| Two equivalent vmap read functions | 948 B |
+| One vmap write function | 526 B |
+| Two equivalent vmap write functions | 1,024 B |
+| One vmap chunk-capable write | 729 B |
 | Two equivalent chunk-capable writes | 1,430 B |
 
 The nearly linear growth makes collection-address and output-verifier sharing worthwhile.
@@ -85,7 +85,7 @@ The redeem script is also revealed in every entry input, so its size directly af
 
 ### Repeated read/upsert work
 
-A C2 RMW commonly computes the same `H(key)` and collection entry address once for the read and again for the write.
+A vmap RMW commonly computes the same `H(key)` and collection entry address once for the read and again for the write.
 Struct-field and mapping-array mutations follow the same materialize-modify-upsert pattern.
 
 ### Repeated sorted-output verification
@@ -233,8 +233,8 @@ A prototype equivalent covenant is 75 bytes rather than 142 bytes:
 
 Estimated whole-contract reduction before other caching:
 
-- simple C2 read: about 61 bytes, roughly 13%;
-- simple C2 write: about 61 bytes, roughly 12%;
+- simple vmap read: about 61 bytes, roughly 13%;
+- simple vmap write: about 61 bytes, roughly 12%;
 - RMW with two current derivations: up to about 122 bytes, roughly 16%;
 - additional transaction saving: 67 bytes for every revealed entry/chunk redeem script.
 
@@ -298,7 +298,7 @@ introducing a narrower-link collision bound or runtime truncation logic.
 **Implementation status (2026-07-22): shipped.** The accepted implementation adds fixed-batch metadata to the AST
 and artifact, plans a deduplicated original-list proof in the SDK, and emits an authenticated final-union verifier.
 It covers shared predecessors, adjacent insert chains, mixed updates/inserts, exact collection-output cardinality,
-conditional no-op paths, and computed-key swap-remove aliasing. `C2BatchMetadata`, `C2BatchAdversarial`, and
+conditional no-op paths, and computed-key swap-remove aliasing. `VMapBatchMetadata`, `VMapBatchAdversarial`, and
 `IterableMappingRemove` contain the metadata, topology-mutation, and alias-sentinel regression coverage. The design
 notes below explain the failure mode that required batching and the constraints used by the implementation; future-
 tense statements describe the original implementation plan, not an open soundness gap.
@@ -312,7 +312,7 @@ The compact, sound implementation is a function-exit batch transition:
 
 1. Cache every invariant-key scalar entry used by the function once. Preserve source-order reads and writes against
    the locals, including read-after-write dependencies such as `m[a] = 5; m[b] = m[a]`.
-2. Flush distinct dirty entries as one C2 batch. The SDK sorts absent slots within each original gap and groups
+2. Flush distinct dirty entries as one vmap batch. The SDK sorts absent slots within each original gap and groups
    present updates separately.
 3. Co-spend each present node and each untouched bracketing predecessor exactly once.
 4. For a gap containing new slots `k1 < ... < kn`, verify and emit exactly

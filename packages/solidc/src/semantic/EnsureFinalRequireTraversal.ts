@@ -34,17 +34,23 @@ import {
   StateArrayAssignNode,
   StateArrayDeleteNode,
   SelfdestructStatementNode,
-  IdentifierNode,
   BlockNode,
+  FunctionCallNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
-import { hasAuthorizingSignatureGuard } from './SymbolTableTraversal.js';
-import { EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError } from '../Errors.js';
+import { hasAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
+import {
+  EmptyFunctionError, FinalRequireStatementError, MissingReturnError, ReturnInExternalFunctionError,
+  UnauthenticatedSelfdestructError,
+} from '../Errors.js';
 
 export default class EnsureFinalRequireTraversal extends AstTraversal {
   private isStatefulContract: boolean = false;
 
-  constructor(private enforceFinalRequire: boolean = false) {
+  constructor(
+    private enforceFinalRequire: boolean = true,
+    private allowUnsafeOperations: boolean = false,
+  ) {
     super();
   }
 
@@ -101,9 +107,9 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       throw new EmptyFunctionError(node);
     }
 
-    // The selfdestruct value pins protect HOW MUCH reaches the destination, not WHO it is. Warn if the
-    // destination is caller-controlled and the function isn't authenticated (see helper).
-    warnUnauthenticatedSelfdestruct(node);
+    // The selfdestruct value pins protect HOW MUCH reaches the destination, not WHO it is. Reject a
+    // caller-controlled destination unless the function is authenticated (see helper).
+    checkUnauthenticatedSelfdestruct(node, this.allowUnsafeOperations);
 
     const visibility = node.visibility;
     const hasReturnTypes = node.returnTypes.length > 0;
@@ -159,8 +165,8 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
 }
 
 // A path with no verification (no require/assert/revert/timeop) and no state change compiles as
-// unconditionally-spendable (codegen ends it with OP_1). By default this is a warning; with the
-// enforceFinalRequire option it is a hard error, so a build can forbid always-spendable paths (e.g. in CI).
+// unconditionally-spendable (codegen ends it with OP_1). This is a hard error by default; callers must
+// explicitly disable enforceFinalRequire to permit it, in which case the compiler still emits a warning.
 function warnOrThrowUnverified(node: Node, strict: boolean): void {
   if (strict) throw new FinalRequireStatementError(node);
   const line = node.location?.start?.line;
@@ -168,41 +174,27 @@ function warnOrThrowUnverified(node: Node, strict: boolean): void {
     + 'and changes no state; it compiles as an unconditionally-spendable path. Add a require() to constrain it.');
 }
 
-// Finds whether a subtree references any of the given names (used to detect a caller-controlled selfdestruct
-// destination: an identifier matching a function parameter). Other expression nodes recurse via the base.
-class NameReferenceFinder extends AstTraversal {
-  found = false;
-
-  constructor(private names: Set<string>) { super(); }
-
-  visitIdentifier(node: IdentifierNode): Node {
-    if (this.names.has(node.name)) this.found = true;
-    return node;
-  }
-}
-
 // selfdestruct(addr) value-pins the freed balance to outputs[0] == addr, but addr is whatever the covenant
 // reads. If addr is caller-controlled (a function parameter) AND the function has no signature check, ANY
 // caller can pass their own address and take the balance. The two safe forms - authenticate the function, or
-// take the destination from contract state / a constant - are not flagged. Warning only; the author may
-// have a non-signature authorization. See docs/selfdestruct.md (Security considerations).
+// take the destination from contract state / a constant - are admitted. Caller-controlled unauthenticated
+// destinations are rejected by default; the explicit unsafe compiler option retains a warning-only escape.
 //
 // SEC-16: "has a signature check" is not the question - a signature check authenticates only the holder of the
 // KEY it checks, so `require(checkSig(s, pk))` with a caller-supplied `pk` authorizes nobody and must not
 // silence this. Reuse SEC-12's hasAuthorizingSignatureGuard, which credits a guard only when the key is one
 // the caller cannot choose (constructor input, state variable, literal, contract const).
-function warnUnauthenticatedSelfdestruct(node: FunctionDefinitionNode): void {
+function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUnsafe: boolean): void {
   const selfdestructs = (node.body.statements ?? [])
     .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
   if (selfdestructs.length === 0) return;
 
-  if (hasAuthorizingSignatureGuard(node)) return; // authenticated against a key the caller cannot choose
+  if (hasAuthorizingSignatureGuard(node, 'selfdestruct')) return;
 
-  const paramNames = new Set(node.parameters.map((p) => p.name));
   for (const sd of selfdestructs) {
-    const destFinder = new NameReferenceFinder(paramNames);
-    destFinder.visit(sd.recipient);
-    if (!destFinder.found) continue; // destination is from state / a constant - safe
+    if (!keyIsCallerChosen(sd.recipient, node)) continue; // destination is from state / a constant - safe
+
+    if (!allowUnsafe) throw new UnauthenticatedSelfdestructError(sd, node.name);
 
     const line = sd.location?.start?.line;
     console.log(`Warning: selfdestruct in '${node.name}'${line ? ` at line ${line}` : ''} sends the freed `
@@ -467,34 +459,65 @@ function findFirstReturn(statements: StatementNode[] = []): ReturnNode | undefin
   return undefined;
 }
 
-export function containsStatefulOperation(statements: StatementNode[] = []): boolean {
+const STATEFUL_CALL_WALK_SKIP = new Set([
+  'location', 'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+  'referencedContract', 'stateVariable', 'collection',
+]);
+
+/** Follow resolved internal/self calls so an entry point is not mistaken for an unverified no-op when its
+ * state covenant is supplied by a helper. Cross-reference fields are skipped to keep the AST walk finite. */
+function containsStatefulCall(
+  node: Node, seenFunctions: Set<FunctionDefinitionNode>, seenNodes: Set<Node> = new Set(),
+): boolean {
+  if (seenNodes.has(node)) return false;
+  seenNodes.add(node);
+  if (node instanceof FunctionCallNode && node.resolvedFunction && !seenFunctions.has(node.resolvedFunction)) {
+    seenFunctions.add(node.resolvedFunction);
+    if (containsStatefulOperation(node.resolvedFunction.body?.statements, seenFunctions)) return true;
+  }
+  for (const [key, value] of Object.entries(node)) {
+    if (STATEFUL_CALL_WALK_SKIP.has(key)) continue;
+    if (value instanceof Node && containsStatefulCall(value, seenFunctions, seenNodes)) return true;
+    if (Array.isArray(value)) {
+      for (const child of value) {
+        if (child instanceof Node && containsStatefulCall(child, seenFunctions, seenNodes)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+export function containsStatefulOperation(
+  statements: StatementNode[] = [], seenFunctions: Set<FunctionDefinitionNode> = new Set(),
+): boolean {
   for (const s of statements) {
     if (isStatefulOp(s)) return true;
-    if (s instanceof BlockNode && containsStatefulOperation(s.statements)) return true;
+    if (containsStatefulCall(s, seenFunctions)) return true;
+    if (s instanceof BlockNode && containsStatefulOperation(s.statements, seenFunctions)) return true;
     if (s instanceof BranchNode) {
-      if (containsStatefulOperation(s.ifBlock.statements)) return true;
-      if (s.elseBlock && containsStatefulOperation(s.elseBlock.statements)) return true;
+      if (containsStatefulOperation(s.ifBlock.statements, seenFunctions)) return true;
+      if (s.elseBlock && containsStatefulOperation(s.elseBlock.statements, seenFunctions)) return true;
     }
     if (s instanceof TryCatchNode) {
-      if (containsStatefulOperation(s.tryBlock.statements)) return true;
+      if (containsStatefulOperation(s.tryBlock.statements, seenFunctions)) return true;
       for (const clause of s.catchClauses) {
-        if (containsStatefulOperation(clause.block.statements)) return true;
+        if (containsStatefulOperation(clause.block.statements, seenFunctions)) return true;
       }
     }
     if (s instanceof DoWhileNode || s instanceof WhileNode) {
-      if (containsStatefulOperation(s.block.statements)) return true;
+      if (containsStatefulOperation(s.block.statements, seenFunctions)) return true;
     }
     if (s instanceof CollectionIterationNode) {
-      if (containsStatefulOperation(s.body.statements)) return true;
+      if (containsStatefulOperation(s.body.statements, seenFunctions)) return true;
     }
     if (s instanceof UncheckedNode) {
-      if (containsStatefulOperation(s.block.statements)) return true;
+      if (containsStatefulOperation(s.block.statements, seenFunctions)) return true;
     }
     if (s instanceof SwitchNode) {
       for (const c of s.cases) {
-        if (containsStatefulOperation(c.body.statements)) return true;
+        if (containsStatefulOperation(c.body.statements, seenFunctions)) return true;
       }
-      if (s.defaultCase && containsStatefulOperation(s.defaultCase.statements)) return true;
+      if (s.defaultCase && containsStatefulOperation(s.defaultCase.statements, seenFunctions)) return true;
     }
   }
   return false;

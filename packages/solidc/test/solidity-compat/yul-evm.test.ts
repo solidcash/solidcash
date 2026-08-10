@@ -488,7 +488,7 @@ describe('low-level call with mapping-entry operands (block-layout slot allocati
   it('allocates entry slots for a .call{value:} with entry operands (default entry model)', () => {
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
-  it('same under C2-default (the -1 slot no longer trips the sorted read)', () => {
+  it('same under vmap-default (the -1 slot no longer trips the sorted read)', () => {
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
   it('resolves the collection behind a same-named synthesized public getter', () => {

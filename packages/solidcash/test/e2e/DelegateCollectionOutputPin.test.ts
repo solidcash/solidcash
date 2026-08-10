@@ -22,7 +22,7 @@ import { SignatureTemplate } from '../../src/index.js';
  * authenticate as genuine. `delegate` functions were excluded from that pin, recorded as guarding an
  * unreachable shape.
  *
- * The shape is reachable: a delegated C2 write settles. With the pin off, the only thing bounding the
+ * The shape is reachable: a delegated vmap write settles. With the pin off, the only thing bounding the
  * collection's output cardinality on that route was the PROXY's own-category mutable NFT conservation - and the
  * shipped `defaultProxyArtifact` carried the RELAXED form of it (`OP_0 OP_LESSTHANOREQUAL OP_VERIFY`, outputs
  * >= inputs) rather than the strict `OP_0 OP_NUMEQUALVERIFY` the compiler emits. So on the default upgrades
@@ -171,7 +171,7 @@ describe('X11 follow-on: collection output-count pin inside a delegate', () => {
   }, 300_000);
 
   /**
-   * GUARD NEGATIVE CONTROL. The identical append against an ORDINARY (non-delegate) C2 write was ALREADY
+   * GUARD NEGATIVE CONTROL. The identical append against an ORDINARY (non-delegate) vmap write was ALREADY
    * refused - that pin has been there. If this change had done nothing and some unrelated check were doing the
    * work above, this row would be indistinguishable from it; it is here so the delegate row is credited to the
    * delegate pin and not to the pre-existing one.

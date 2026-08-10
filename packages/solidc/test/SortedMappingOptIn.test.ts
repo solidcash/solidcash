@@ -4,11 +4,11 @@ const compileString = (
   s: string, o: Record<string, unknown> = {},
 ): ReturnType<typeof _csRawSolidc> => _csRawSolidc(s, { sortedMappingsAll: false, ...o } as any);
 
-// The C2 sorted-linked-list mapping opt-in (CompilerOptions.sortedMappings). The covenant + SDK (SortedList) are
+// The vmap sorted-linked-list mapping opt-in (CompilerOptions.sortedMappings). The covenant + SDK (SortedList) are
 // proven and shipped; the source-level codegen is pending, so the compiler marks the collection sorted (metadata
 // for the SDK) but FAILS CLOSED on a source-level access - it never silently compiles to the omittable entry
-// model, which would reintroduce C2. See docs/sorted-mapping-c2.md.
-describe('sorted mapping opt-in (C2)', () => {
+// model, which would reintroduce vmap. See docs/verified-mappings.md.
+describe('sorted mapping opt-in (vmap)', () => {
   const SET = 'contract C() { mapping(int => bool) claimed;';
   const assertSortedCompile = (source: string, mapping: string): ReturnType<typeof compileString> => {
     const artifact = compileString(source, { sortedMappings: [mapping], forceStateful: true });
@@ -25,7 +25,7 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(art.stateLayout?.mappings?.find((c) => c.name === 'claimed')?.sorted).toBe(true);
   });
 
-  it('marks every mapping sorted under the mandatory C2 model', () => {
+  it('marks every mapping sorted under the mandatory vmap model', () => {
     const art = compileString(
       'contract C() { mapping(int => bool) a; mapping(int => bool) b; function f() { require(true); } }',
       { sortedMappings: ['a'], forceStateful: true },
@@ -34,13 +34,13 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(art.stateLayout?.collections?.find((c) => c.name === 'b')?.sorted).toBe(true);
   });
 
-  it('compiles a source-level read of a sorted mapping (emits the C2 read covenant)', () => {
+  it('compiles a source-level read of a sorted mapping (emits the vmap read covenant)', () => {
     // The read codegen is implemented + VM-verified (SortedMappingCompiledRead.test.ts); it emits the proven
     // membership/bracket covenant instead of the omittable entry-model read.
     assertSortedCompile(`${SET} function f(int k) { require(!claimed[k]); } }`, 'claimed');
   });
 
-  it('compiles a source-level WRITE of a sorted set (emits the C2 insert covenant)', () => {
+  it('compiles a source-level WRITE of a sorted set (emits the vmap insert covenant)', () => {
     // The write codegen is implemented + VM-verified (SortedMappingCompiledWrite.test.ts); `claimed[k]=true`
     // emits the proven sorted-list insert (bracket + splice), not the omittable entry-model write.
     assertSortedCompile(`${SET} function f(int k) { claimed[k] = true; } }`, 'claimed');
@@ -109,7 +109,7 @@ describe('sorted mapping opt-in (C2)', () => {
     expect(assigned.abi.find((fn) => fn.name === 'g')?.entryAccesses?.length).toBeGreaterThan(0);
   });
 
-  it('without a named opt-in, the mandatory C2 model still marks and binds the mapping', () => {
+  it('without a named opt-in, the mandatory vmap model still marks and binds the mapping', () => {
     const artifact = compileString(`${SET} function f(int k) { claimed[k] = true; } }`, { forceStateful: true });
     expect(artifact.debug.bytecode).not.toBe('');
     expect(artifact.stateLayout?.collections?.find((row) => row.name === 'claimed')?.sorted).toBe(true);
@@ -142,10 +142,10 @@ describe('sorted mapping local-key metadata', () => {
   });
 });
 
-// A sorted (C2) mapping keyed by msg.sender / tx.origin compiles and records a `msgSender` keySource: on BCH a direct
+// A sorted (vmap) mapping keyed by msg.sender / tx.origin compiles and records a `msgSender` keySource: on BCH a direct
 // call's msg.sender = tx.origin = the first native P2PKH input, so the SDK computes slot = keyToSlot(the sender's
 // P2PKH lockscript) and forces the signer's native P2PKH funder. End-to-end VM proof (write/update/read + cross-sender
-// isolation) is in solidcash MsgSenderC2.test.ts. Here we assert the compile side: it compiles + tags the keySource.
+// isolation) is in solidcash MsgSenderVMap.test.ts. Here we assert the compile side: it compiles + tags the keySource.
 describe('sorted mapping keyed by msg.sender / tx.origin compiles (msgSender keySource)', () => {
   const M = 'contract C() { mapping(address => int) bal;';
   const opt = { sortedMappings: ['bal'], forceStateful: true };

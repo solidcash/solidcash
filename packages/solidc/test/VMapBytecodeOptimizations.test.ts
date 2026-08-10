@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { bytecodeToAsm, bytecodeToScript, sourceMapToLocationData } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // These tests inspect the physical route's helper allocation and byte budget.
@@ -15,7 +15,7 @@ const compactHelperDefinitions = (asm: string): string[] => (
   )].map((match) => match[1])
 );
 
-describe('general C2 bytecode sharing', () => {
+describe('general vmap bytecode sharing', () => {
   it('keeps depth-sensitive sorted-output authentication inline', () => {
     const artifact = compileString(
       'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=true; require(true); } }',
@@ -25,7 +25,7 @@ describe('general C2 bytecode sharing', () => {
     expect(asm).not.toContain('8a OP_DEFINE');
     // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes), then
     // again to 1990 when a SINGLE fixed sorted write moved onto the batch path (SymbolTableTraversal). That is
-    // a correctness change, not drift: the old `> 1` gate left a lone C2 insert - ERC20Mock's constructor
+    // a correctness change, not drift: the old `> 1` gate left a lone vmap insert - ERC20Mock's constructor
     // `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and fails
     // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
     // which returns this contract to its old size. Measured 1952; the ceiling keeps catching further growth.
@@ -86,6 +86,15 @@ describe('general C2 bytecode sharing', () => {
     const helperIds = compactHelperDefinitions(asm);
     expect(helperIds.length).toBeGreaterThanOrEqual(4);
     expect(new Set(helperIds).size).toBe(helperIds.length);
+    const invokeDebug = (artifact.debug as typeof artifact.debug & {
+      invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
+    }).invokeDebug ?? {};
+    const helperDebug = Object.values(invokeDebug)
+      .filter((debug) => debug.name?.startsWith('compiler helper') || debug.name?.startsWith('outlined source span'));
+    expect(helperDebug.length).toBeGreaterThanOrEqual(1);
+    for (const debug of helperDebug) {
+      expect(sourceMapToLocationData(debug.sourceMap)).toHaveLength(bytecodeToScript(hexToBin(debug.bytecode)).length);
+    }
     expect(artifact.bytecode.length / 2).toBeLessThan(3800);
   });
 

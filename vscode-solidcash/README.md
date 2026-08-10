@@ -35,6 +35,8 @@ Hovering a token shows a short description with a link to the matching page on
   entry
 - member operations (`.lockingBytecode`, `.nftCommitment`, `.transferNft`, `.delegatecall`,
   `.entries`, ...), ABI helpers, value and time units
+- verified mappings (vmaps), including authenticated absence reads, `enumerable` iteration, and Solidity-compatible
+  `delete` semantics
 - Bitcoin Script opcodes inside `assembly { ... }` blocks
 
 Hovering your own declarations shows the declaration line, what it is, where it lives, and the doc

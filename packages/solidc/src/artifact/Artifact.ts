@@ -36,7 +36,7 @@ function abiTypeString(type: Type | undefined): string {
 }
 
 /**
- * One `keccakPreimageParams` entry per RESERVED `keccakSideCar` slot.
+ * One `keccakPreimageParams` entry per keccak call (up to three calls share each reserved side-car slot).
  *
  * `computeBlockLayout` reserves a slot per counted keccak256 call, but code generation records a preimage param
  * only for a call it emits under this function's own traversal. A call reached through an internal helper is
@@ -45,15 +45,15 @@ function abiTypeString(type: Type | undefined): string {
  * that reads one. It reads whatever input sits at that index instead (measured on MistSwap's BentoBox
  * constructor: the funder's unlocking script, compared against the computed keccak argument).
  *
- * Pad the published list to the reserved slot count with `null` - the SDK's "not a direct parameter" marker,
+ * Pad the published list to the transitive call count with `null` - the SDK's "not a direct parameter" marker,
  * which routes to its VM probe. A keccak-loop function reserves no fixed slots and is left alone.
  */
 function keccakPreimageParamsFor(func: FunctionDefinitionNode): (string | null)[] {
   const recorded = func.keccakPreimageParams ?? [];
   if (func.keccakInLoop || !func.blockLayout) return recorded;
-  const reserved = func.blockLayout.slots.filter((slot) => slot.kind === 'keccakSideCar').length;
-  if (reserved <= recorded.length) return recorded;
-  return [...recorded, ...Array.from({ length: reserved - recorded.length }, () => null)];
+  const calls = Number(func.libraryCallCounts?.get('keccak256') ?? 0n);
+  if (calls <= recorded.length) return recorded;
+  return [...recorded, ...Array.from({ length: calls - recorded.length }, () => null)];
 }
 
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
@@ -776,6 +776,7 @@ function buildFunctionAbiMetadata(
     ...(func.tokenContainerAccesses && func.tokenContainerAccesses.length > 0 && {
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
+        ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
         operations: da.operations,
         ...(da.transferCount > 1 && { transferCount: da.transferCount }),
         ...(da.transferNftCount > 1 && { transferNftCount: da.transferNftCount }),
@@ -830,7 +831,7 @@ function buildFunctionAbiMetadata(
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
-      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
       entryLoopWrites: func.entryLoopWrites.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
@@ -1222,10 +1223,14 @@ export function generateArtifact(
           branded: stateLayout !== undefined,
           abi: lib.abi,
           resultNft: true,
-          // minInstances = the max keccak256 call count across functions (side-cars to deploy at creation);
+          // One mutable side-car carries up to three ordered results in its own NFT commitment.
           // unbounded flags a keccak-in-loop function whose runtime count exceeds that static minimum.
           // Count the PUBLISHED params, so a call attributed to an inlined helper still provisions its side-car.
-          minInstances: Math.max(0, ...allFns.map((f) => (f ? keccakPreimageParamsFor(f).length : 0))),
+          minInstances: Math.max(0, ...allFns.map((f) => {
+            if (!f) return 0;
+            const calls = keccakPreimageParamsFor(f).length;
+            return f.keccakInLoop ? calls : Math.ceil(calls / 3);
+          })),
           ...(allFns.some((f) => f?.keccakInLoop) && { unbounded: true }),
         };
       }
@@ -1269,6 +1274,8 @@ export function generateArtifact(
       options: {
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
+        enforceFinalRequire: compilerOptions.enforceFinalRequire,
+        allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
       },

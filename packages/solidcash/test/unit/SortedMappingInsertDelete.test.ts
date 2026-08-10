@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 
-// C2 write soundness: inserting/deleting a key in the sorted linked list must produce exactly the correct splice.
+// vmap write soundness: inserting/deleting a key in the sorted linked list must produce exactly the correct splice.
 // Entries here are value-less (key -> presence, the claim-once / blacklist shape): commitment = slot(32) ++
 // nextKey(32). Insert k into gap (P, S=P.next): consume P, emit P'[Ps|k] and NEW[k|S]. Delete k: consume P[Ps|k]
 // and k[k|S], emit P'[Ps|S]. The covenant forces every field, so an attacker cannot skip a node, corrupt the

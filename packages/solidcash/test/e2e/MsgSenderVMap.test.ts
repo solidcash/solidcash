@@ -11,7 +11,7 @@ import { createTestProvider } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
-// A msg.sender-keyed C2 (sorted) mapping - the ERC20 `_balances[msg.sender]` shape. On BCH msg.sender (direct call) =
+// A msg.sender-keyed vmap (sorted) mapping - the ERC20 `_balances[msg.sender]` shape. On BCH msg.sender (direct call) =
 // tx.origin = the first native P2PKH input's lockscript (emitTxOrigin). The SDK: (1) records a `msgSender` keySource,
 // (2) computes slot = keyToSlot(the connected Signer's P2PKH lockscript), (3) forces the signer's native P2PKH funder
 // input so emitTxOrigin resolves to it. Sound: a wrong SDK slot fails the on-chain slot==keyToSlot(msg.sender) check;
@@ -22,7 +22,7 @@ const SRC = `contract C() {
   function chk(int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[msg.sender] == exp); }
 }`;
 
-describe('msg.sender-keyed C2 end-to-end (native P2PKH sender = tx.origin)', () => {
+describe('msg.sender-keyed vmap end-to-end (native P2PKH sender = tx.origin)', () => {
   const provider = createTestProvider();
   const aliceSig = new SignatureTemplate(alicePriv);
   const bobSig = new SignatureTemplate(bobPriv);
@@ -82,9 +82,9 @@ describe('msg.sender-keyed C2 end-to-end (native P2PKH sender = tx.origin)', () 
 
 // The multitransfer DEBIT half: `for(i) bal[msg.sender] -= amts[i]`. A same-(msg.sender)-key scalar RMW in a loop -
 // CacheMappingEntryInLoop reads bal[msg.sender] ONCE into a local, applies every subtraction, flushes ONE upsert
-// (its flush is a single msg.sender C2 write, proven above). Without caching each iteration would be its own upsert
+// (its flush is a single msg.sender vmap write, proven above). Without caching each iteration would be its own upsert
 // and double-spend the entry NFT. VM-proven exact + a wrong value reverts.
-describe('msg.sender-keyed C2 RMW in a loop (multitransfer debit)', () => {
+describe('msg.sender-keyed vmap RMW in a loop (multitransfer debit)', () => {
   const provider = createTestProvider();
   const aliceSig = new SignatureTemplate(alicePriv);
   const alice = new Signer(alicePriv, provider);
@@ -122,7 +122,7 @@ describe('msg.sender-keyed C2 RMW in a loop (multitransfer debit)', () => {
 });
 
 // tx.origin resolves the same way (the first native P2PKH input) for a direct call.
-describe('tx.origin-keyed C2 end-to-end', () => {
+describe('tx.origin-keyed vmap end-to-end', () => {
   const provider = createTestProvider();
   const aliceSig = new SignatureTemplate(alicePriv);
   const alice = new Signer(alicePriv, provider);

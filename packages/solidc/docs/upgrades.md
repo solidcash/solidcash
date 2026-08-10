@@ -129,10 +129,10 @@ The default proxy conserves the count of its own-category **mutable** NFTs (`in 
 NFTs and any collection entry nodes, and it is what stops an un-touched proxy data NFT being destroyed - or a
 second one being minted - on a path where the forwarder skips its own state covenant.
 
-The consequence is a boundary, not a bug: a `delegate` function that **inserts a new key** into a C2 mapping is
+The consequence is a boundary, not a bug: a `delegate` function that **inserts a new key** into a vmap mapping is
 refused by the proxy. An insert mints one new entry node, so the mutable count rises by one. An **update** of an
 existing key rewrites a node instead of minting one, so it leaves the count alone and settles - measured on an
-equivalent conserving proxy in `packages/solidcash/test/e2e/DelegateSortedC2Write.test.ts`, which also pins the
+equivalent conserving proxy in `packages/solidcash/test/e2e/DelegateVerifiedMappingWrite.test.ts`, which also pins the
 insert refusal to the proxy's input rather than the delegate's.
 
 The proxy is layout-independent - it never reads its own state fields, which is the whole reason one bytecode

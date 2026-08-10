@@ -746,10 +746,10 @@ export class EntryWriteInLoopError extends SolidCashError {
   }
 }
 
-/** A C2 mapping operation whose shape cannot be represented by the authenticated transition generator. */
+/** A verified-mapping operation whose shape cannot be represented by the authenticated transition generator. */
 export class SortedMappingCodegenPendingError extends SolidCashError {
   constructor(public node: Node, name: string, detail?: string) {
-    super(node, detail ?? (`The mapping operation on '${name}' cannot be represented by the C2 linked-list `
+    super(node, detail ?? (`The verified-mapping operation on '${name}' cannot be represented by the vmap linked-list `
       + 'transition generator. Rewrite the operation into supported scalar or fixed-batch mapping updates.'));
   }
 }
@@ -1120,6 +1120,33 @@ export class DelegatecallSelfMutationError extends SolidCashError {
       + 'function must not mutate its own state: it skips its state-covenant authorization and defers ALL state '
       + 'writes to the co-spent delegate, so a self-write here would be unauthorized. Move the write into the '
       + 'delegate. See packages/solidc/docs/delegatecall-security.md.');
+  }
+}
+
+export class UntrustedDelegatecallTargetError extends SolidCashError {
+  constructor(node: Node, funcName: string, target: string) {
+    super(node, `Function '${funcName}' delegates to ${target}, whose identity is controlled by the caller. `
+      + 'A hostile implementation can rewrite this contract state because delegatecall defers state authority to '
+      + 'the co-spent implementation. Bind the target unconditionally to a constructor argument or stored state, '
+      + 'or authenticate the caller against a key they do not choose. Set allowUnsafeOperations only if arbitrary '
+      + 'caller-selected implementation authority is intentional. See packages/solidc/docs/delegatecall-security.md.');
+  }
+}
+
+export class UnauthenticatedSelfdestructError extends SolidCashError {
+  constructor(node: Node, funcName: string) {
+    super(node, `Function '${funcName}' sends selfdestruct funds to a caller-controlled destination without `
+      + 'authorization against a key the caller does not choose. Any caller can redirect the contract balance to '
+      + 'themselves. Use a constructor/state/constant destination, add genuine authorization, or set '
+      + 'allowUnsafeOperations only if permissionless caller-directed destruction is intentional. '
+      + 'See packages/solidc/docs/selfdestruct.md.');
+  }
+}
+
+export class NestedSelfdestructError extends SolidCashError {
+  constructor(node: Node, funcName: string) {
+    super(node, `Function '${funcName}' places selfdestruct inside conditional or nested control flow. `
+      + 'Contract destruction must be a direct function-body statement so lifecycle handling is unambiguous.');
   }
 }
 

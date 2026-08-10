@@ -292,8 +292,9 @@ const GROUPS = [
       ],
       enumerable: [
         'enumerable mapping(address => int) balances;',
-        'Keeps mapping keys iterable, enabling `for (address k in this.balances)` and '
-        + '`this.balances.entries`.',
+        'Enables source-level iteration over a verified mapping (vmap), including '
+        + '`for (address k in this.balances)` and `this.balances.entries`. Plain mappings use the same '
+        + 'authenticated storage but cannot be iterated.',
         `${STATEFUL}#mapping-iteration`,
       ],
       deploy: [
@@ -380,7 +381,8 @@ const GROUPS = [
       ],
       delete: [
         'delete this.balances[key];\ndelete localVar;',
-        'Removes a mapping entry or resets a variable to its type default.',
+        'Assigns the target its type default. For a verified mapping this may leave an authenticated node '
+        + 'holding `0`, `false`, or empty; it does not mean the entry NFT is physically removed.',
         `${STATEFUL}#deleting-entries`,
       ],
       unchecked: [
@@ -538,9 +540,10 @@ const GROUPS = [
       ],
       mapping: [
         'mapping(address => int) balances;\nmapping(address owner => int balance) balances;',
-        'Key-value state collection stored across state UTXOs. Keys may be named, values may be mappings '
-        + 'or arrays, and `enumerable` makes the keys iterable.',
-        `${STATEFUL}#mappings`,
+        'Verified mapping (vmap): a key-value state collection whose linked entry NFTs authenticate both '
+        + 'present and absent keys. Unset keys safely read as their type default. Keys may be named, values '
+        + 'may be mappings or arrays, and `enumerable` enables source-level iteration.',
+        `${STATEFUL}#verified-mappings`,
       ],
       this: [
         'this.stateVar\nthis.transfer(lockingBytecode, amount)\nthis.tokens[category]',

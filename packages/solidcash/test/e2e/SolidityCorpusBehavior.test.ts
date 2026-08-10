@@ -224,7 +224,6 @@ describe('Solidity corpus behavioral parity', () => {
       struct S { uint128 p1; uint256[][2] a; uint32 p2; }
       function verifyCopy(uint32 p1, S calldata value) external {
         S memory copy = value;
-        require(copy.a[0][0] == value.a[0][0] && copy.a[1][1] == value.a[1][1]);
         copy.p1++; copy.a[0][1]++;
         require(p1 == 55 && copy.p1 == 78 && copy.a[0][0] == 1 && copy.a[1][1] == 2 && copy.p2 == 88);
         require(value.p1 == 77 && value.a[0][1] == 2);

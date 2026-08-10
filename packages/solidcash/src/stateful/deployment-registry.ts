@@ -55,10 +55,26 @@ export function findDeploymentByAddress(
   provider: NetworkProvider, address: string,
 ): RegisteredDeployment | undefined {
   const current = deployments.get(provider) ?? [];
+  const addr = String(address ?? '');
   for (let index = current.length - 1; index >= 0; index--) {
-    if (current[index].address === address) return current[index];
+    if (current[index].address === addr) return current[index];
+  }
+  // Fuzzy: cashaddr prefix variants / trailing payload match (MistSwap MasterChef lp.address forms).
+  if (addr.length > 12) {
+    const tail = addr.slice(-20);
+    for (let index = current.length - 1; index >= 0; index--) {
+      const a = current[index].address ?? '';
+      if (a.endsWith(tail) || addr.endsWith(a.slice(-20)) || a.includes(tail) || addr.includes(a.slice(-20))) {
+        return current[index];
+      }
+    }
   }
   return undefined;
+}
+
+/** All deployments for a provider (most recent last). */
+export function listDeployments(provider: NetworkProvider): readonly RegisteredDeployment[] {
+  return deployments.get(provider) ?? [];
 }
 
 export function findDeploymentByLockingBytecode(

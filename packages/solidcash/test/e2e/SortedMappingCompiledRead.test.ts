@@ -10,13 +10,13 @@ const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program
 
 // End-to-end: a COMPILED sorted-set mapping. `require(!claimed[k])` compiles to the sorted read covenant; the SDK
 // co-spends the exact entry if k is present, else the bracketing predecessor. So the guard passes for an absent
-// key and reverts for a present (claimed) key - and there is no default-on-absent branch to omit (C2 closed).
+// key and reverts for a present (claimed) key - and there is no default-on-absent branch to omit (vmap closed).
 const SRC = `contract C() {
   mapping(int => bool) claimed;
   function check(int k, pubkey pk, sig s) { require(checkSig(s, pk)); require(!claimed[k]); }
 }`;
 
-describe('sorted mapping compiled read (C2 end-to-end)', () => {
+describe('sorted mapping compiled read (vmap end-to-end)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

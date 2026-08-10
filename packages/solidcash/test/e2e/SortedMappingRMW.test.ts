@@ -6,7 +6,7 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// Read-modify-write on a C2 sorted value mapping - the ORIGINAL C2-blocked pattern (a `+=` on `mapping(K=>int)`
+// Read-modify-write on a vmap sorted value mapping - the ORIGINAL vmap-blocked pattern (a `+=` on `mapping(K=>int)`
 // could be reset by omitting the entry, since the covenant read the type default). With the sorted backend the
 // read and write co-spend the SAME entry (the exact entry if present, else the bracketing predecessor), so a
 // present-key `bal[k]+=v` is an UPDATE (old value read from the co-spent entry) and an absent-key `bal[k]+=v` is
@@ -17,7 +17,7 @@ const SRC = `contract C() {
   function sub(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); bal[k] -= v; }
 }`;
 
-describe('sorted value mapping read-modify-write (C2 unblocked)', () => {
+describe('sorted value mapping read-modify-write (vmap unblocked)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

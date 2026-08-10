@@ -2,7 +2,7 @@
 
 Status: DESIGN (brainstorm). No implementation yet.
 
-## Session handoff (last updated 2026-07-25)
+## Session handoff (last updated 2026-08-07)
 
 Read-this-first for a cold start. This doc is the full reasoning; below is the decision state and where to
 resume. Companion memory: `native_erc20_design.md` (dense per-turn log). Nothing is implemented - it is all
@@ -63,27 +63,32 @@ masterless ownership-preservation rule; Reserve storage and untouchability; Self
 polarity (registered P2PKH = Model B, maturity, floor, closed graph); Soundness assessment; Allowances;
 Re-centering on user custody (registry model = Model B pole); Phasing; Open decisions.
 
-**Codebase anchors** (re-verified 2026-07-25; SYMBOL names are the durable handle - line numbers drift, so
-grep the symbol first):
+**Codebase anchors** (re-verified 2026-08-07 against `solidcash_v0.13.1`; SYMBOL names are the durable handle -
+line numbers drift, so grep the symbol first. Every line number below moved between 2026-07-25 and 2026-08-07;
+none of the underlying facts did):
 
-- `buildEntryNftCovenantScript` - `packages/utils/src/state.ts:1425`. Write path (flag=1, `state.ts:1430`) is
+- `buildEntryNftCovenantScript` - `packages/utils/src/state.ts:1427`. Write path (flag=1, `state.ts:1432`) is
   master-gated ONLY: it verifies the minting NFT at `masterInputIndex` and places no output constraint. All the
   self-preservation / commitment / `outAmount >= inAmount` / exact-satoshi guards live in the read path
-  (`OP_ELSE`, `state.ts:1446-1494`). This is why master-authorized FT DECREASES on entries are already legal =>
+  (`OP_ELSE`, `state.ts:1448-1492`). This is why master-authorized FT DECREASES on entries are already legal =>
   Model A needs no covenant change.
-- `buildTokenContainerCovenantScript` - `state.ts:1783`. Master path (`state.ts:1790`) = pure auth; merge path
+- `buildTokenContainerCovenantScript` - `state.ts:1785`. Master path (`state.ts:1793`) = pure auth; merge path
   (`state.ts:1801`) = consolidate-only (`lbc` / `value >=` / `amount >=` / category) + the anti-double-merge
-  single-input loop (`state.ts:1827-1852`).
-- `emitTokenContainerPreservation` - `GenerateTargetTraversal.ts:20294`; dispatched at `GTT:2402`, alongside
-  `emitTokenContainerIdentityVerification` (`GTT:2396`) and `emitTokenContainerTransferCovenantVerification`
-  (`GTT:2399`) - all three gated `!this.functionHasDelegatecall`.
-- `emitMsgSender` dual-path - `GTT:18899` (zero category => `emitTxOrigin`, else
-  `emitMsgSenderMintingVerification` at `GTT:18981`). `emitTxOrigin` - `GTT:18660` (scans the first
+  single-input loop (`state.ts:1828-1845`).
+- `emitTokenContainerPreservation` - `GenerateTargetTraversal.ts:24067`; dispatched at `GTT:3902`, alongside
+  `emitTokenContainerIdentityVerification` (`GTT:3896`) and `emitTokenContainerTransferCovenantVerification`
+  (`GTT:3899`) - all three still gated `!this.functionHasDelegatecall`.
+- `emitMsgSender` dual-path - `GTT:22638` (zero category => `emitTxOrigin`, else
+  `emitMsgSenderMintingVerification` at `GTT:22752`). `emitTxOrigin` - `GTT:22389` (scans the first
   NON-token-bearing P2PKH input).
-- `.sequenceNumber` in grammar - `SolidCash.g4:701` (`UnaryIntrospectionOp`), token `SolidCash.g4:993`.
-- SDK tx `version: 2` - `TransactionBuilder.ts:774`.
-- Entries minted `amount: 0n` today - `packages/solidcash/src/stateful/StatefulContract.ts:1468-1538` (deploy
-  path; ~225 `amount:` sites across `src/stateful/`, so the P1 SDK change is broad but mechanical).
+- `.sequenceNumber` in grammar - `SolidCash.g4:934` (`UnaryIntrospectionOp`), `g4:1021`, token `g4:1286`.
+- SDK tx `version: 2` - `TransactionBuilder.ts:1046`.
+- Entries minted `amount: 0n` today - `packages/solidcash/src/stateful/StatefulContract.ts:2047-2120` (deploy
+  path; ~255 `amount:` sites across `src/stateful/`, so the P1 SDK change is broad but mechanical).
+- **New, and relevant to Phase P4**: a sorted-mapping write executed through a `delegatecall` proxy can UPDATE
+  an existing key but cannot INSERT a new one - the proxy conserves its own-category mutable NFT count and an
+  insert mints a node. Measured in `packages/solidcash/test/e2e/DelegateMappingProbe.test.ts`; see
+  `native-usdt-port.md` s3. Any facet-split realization of this design must create keys from the master.
 - `ERC20.sol` already compiles virtually: NOT in-tree. It is the SBE bench corpus at
   `/Code/solidity-by-example/contracts/src/app/erc20/` - a sibling checkout pinned in
   `examples/solidity-by-example/SBE_SOURCE.md` (`_bench/` is generated and empty in a fresh tree).

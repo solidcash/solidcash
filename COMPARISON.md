@@ -3,7 +3,7 @@
 > Historical snapshot: this assessment records the project near the original `future`-branch expansion and its
 > percentage is not a continuously tested release metric. Counts, gaps, and individual semantics have continued to
 > change. For current behavior, prefer compiler/SDK tests, `FEATURES.md`, `packages/solidc/docs/platform-differences.md`,
-> and `packages/solidc/docs/deferrals.md`. In particular, `int`/`uint`, short-circuiting, C2 mapping defaults,
+> and `packages/solidc/docs/deferrals.md`. In particular, `int`/`uint`, short-circuiting, verified-mapping defaults,
 > block-property oracles, ABI compatibility modes, Keccak, and ecrecover have advanced since this snapshot.
 
 ## Baseline: What Existed at the `next` Branch Split Point

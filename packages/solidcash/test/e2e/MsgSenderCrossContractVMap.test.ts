@@ -8,7 +8,7 @@ import { keyToSlot, getEntryNftAddress, SortedList } from '../../src/index.js';
 import { alicePub, alicePriv } from '../fixture/vars.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-// Boundary #1: a C2 (sorted) mapping keyed by msg.sender, written by the callee of a CROSS-CONTRACT call. Contract A
+// Boundary #1: a vmap (sorted) mapping keyed by msg.sender, written by the callee of a CROSS-CONTRACT call. Contract A
 // calls Bank.deposit(); inside Bank, msg.sender = A (the caller contract), not an EOA. The covenant resolves it via
 // the co-spent caller's minting NFT (emitMsgSenderMintingVerification -> caller LBC); the SDK must key the entry by
 // keyToSlot(A's locking bytecode) and co-spend A's master as the msg.sender proof.
@@ -41,8 +41,8 @@ contract Caller(bytes bankAddr, bytes marker) {
 }`;
 
 // Cross-contract dispatch must derive the callee's sorted-entry predecessor/target and key msg.sender by the
-// caller's category-pinned locking bytecode. The assertion decodes the resulting C2 entry from the provider.
-describe('cross-contract msg.sender-keyed C2 mapping (callee bal[msg.sender], caller = contract A)', () => {
+// caller's category-pinned locking bytecode. The assertion decodes the resulting vmap entry from the provider.
+describe('cross-contract msg.sender-keyed vmap mapping (callee bal[msg.sender], caller = contract A)', () => {
   it('A calls Bank.deposit(); Bank.bal[A] == amt (msg.sender = caller contract)', async () => {
     const provider = createTestProvider();
     const artBank = compileString(BANK, { forceStateful: true });

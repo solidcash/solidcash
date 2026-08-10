@@ -1931,6 +1931,11 @@
   dependencies:
     "@types/node" ">= 8"
 
+"@openzeppelin/contracts@5.0.2":
+  version "5.0.2"
+  resolved "https://registry.npmjs.org/@openzeppelin/contracts/-/contracts-5.0.2.tgz#b1d03075e49290d06570b2fd42154d76c2a5d210"
+  integrity sha512-ytPc6eLGcHHnapAZ9S+5qsdomhjo6QBHTDRRBFfTxXIpsicMhVPouPgmUPebZZZGX7vt9USA+Z+0M0dSVtSUEA==
+
 "@psf/bch-js@^6.8.0":
   version "6.8.0"
   resolved "https://registry.yarnpkg.com/@psf/bch-js/-/bch-js-6.8.0.tgz#c7b4c77a52c82795df4f249c78ad11d55ffc6af4"
@@ -9742,15 +9747,10 @@ write-pkg@^3.1.0:
     sort-keys "^2.0.0"
     write-json-file "^2.2.0"
 
-ws@8.21.0:
+ws@8.21.0, ws@^8.13.0:
   version "8.21.0"
   resolved "https://registry.npmjs.org/ws/-/ws-8.21.0.tgz#012e413fc07429945121b0c153158c4343086951"
   integrity sha512-Vsp28b7DRcimFQvrqu2Wek3z1iYxDCWqHYB8Qsnk/S4RfaCQzPGPyBNuVjJV3cd6UiKtUtp6sNM77gWvzcCH+g==
-
-ws@^8.13.0:
-  version "8.18.1"
-  resolved "https://registry.yarnpkg.com/ws/-/ws-8.18.1.tgz#ea131d3784e1dfdff91adb0a4a116b127515e3cb"
-  integrity sha512-RKW2aJZMXeMxVpnZ6bck+RswznaxmzdULiBr6KY7XkTnW8uvt0iT9H5DkHUChXrc+uurzwa0rVI16n/Xzjdz1w==
 
 xdg-basedir@^5.1.0:
   version "5.1.0"

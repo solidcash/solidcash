@@ -1,0 +1,23 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../ERC20.scash";
+import { BchNative } from "../BchNative.scash";
+
+// The ledger, allowance machinery, infinite-allowance behavior, supply
+// accounting, events, and ERC-6093 errors come directly from OZ ERC20 v5.6.1.
+contract MinimalNativeToken()
+    is ERC20, BchNative
+{
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this._totalSupply = this._totalSupply + amount;
+        this._balances[account] = this._balances[account] + amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        require(this._balances[account] >= amount);
+        this._balances[account] = this._balances[account] - amount;
+        this._totalSupply = this._totalSupply - amount;
+        emit Transfer(account, address(0), amount);
+    }
+}

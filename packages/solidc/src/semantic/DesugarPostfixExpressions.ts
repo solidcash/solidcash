@@ -291,13 +291,13 @@ export default class DesugarPostfixExpressions extends AstTraversal {
     const reRead = base !== undefined && this.currentStmt !== undefined
       && countBaseRefs(this.currentStmt, base) > 1;
     if (this.inReturn || reRead) {
-      // C2-SOUND read-old-temp for a MAPPING element in a plain `return m[k]++` (the OZ Nonces/EIP-2612 pattern):
-      // the reconstruction below hoists the write then RE-READS `m[k]` as `m[k] -/+ 1`, but a C2 sorted mapping
+      // vmap-SOUND read-old-temp for a MAPPING element in a plain `return m[k]++` (the OZ Nonces/EIP-2612 pattern):
+      // the reconstruction below hoists the write then RE-READS `m[k]` as `m[k] -/+ 1`, but a vmap sorted mapping
       // entry NFT is co-spent by the write and cannot be read again in the same tx - so when such a value helper
       // inlines into an entry point the re-read OP_VERIFY-fails. Instead lower like the SOUND assignment form
-      // `n = m[k]++` (which the C2 codegen handles): read the old value into `__pfN`, then the ordinary RMW
+      // `n = m[k]++` (which the vmap codegen handles): read the old value into `__pfN`, then the ordinary RMW
       // `m[k] = m[k] +/- 1` (whose read coalesces with the entry's single co-spend), and return `__pfN`. Only the
-      // clean return case (`inReturn && !reRead`); mapping elements are the only C2 entries (state vars / locals are
+      // clean return case (`inReturn && !reRead`); mapping elements are the only vmap entries (state vars / locals are
       // register/data-NFT), so those keep the cheaper reconstruction.
       if (this.inReturn && !reRead && node.expression instanceof MappingAccessNode
         && this.currentStmt !== undefined && base !== undefined && !baseIsWritten(this.currentStmt, base)) {

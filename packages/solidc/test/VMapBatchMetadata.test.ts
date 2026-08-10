@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from './direct-compile.js';
 
-describe('C2 fixed-write batch metadata', () => {
+describe('vmap fixed-write batch metadata', () => {
   it('groups distinct fixed writes to one collection by final entry slot', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;
@@ -15,11 +15,11 @@ describe('C2 fixed-write batch metadata', () => {
     expect(fn?.sortedBatchInfo).toEqual([{ collection: 'm', slotIndices: [0, 1] }]);
   });
 
-  // A single fixed upsert IS batched now, deliberately. The old `> 1` gate left a lone C2 insert - ERC20Mock's
+  // A single fixed upsert IS batched now, deliberately. The old `> 1` gate left a lone vmap insert - ERC20Mock's
   // constructor `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and
   // fails constructor derivation with OP_EQUALVERIFY against an empty key. The batch path is the shape mint and
   // transfer already use successfully, so constructors take it too. See SymbolTableTraversal.
-  it('marks a single fixed upsert as a batch, so a lone C2 insert can derive', () => {
+  it('marks a single fixed upsert as a batch, so a lone vmap insert can derive', () => {
     const artifact = compileString(`contract C {
       mapping(int => int) m;
       function f(int k, int v) external { m[k] = v; require(true); }

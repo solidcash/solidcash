@@ -1,6 +1,6 @@
 # Skipped-test follow-up
 
-Revisit the unconditional skips below. They remain outside the July 2026 C2
+Revisit the unconditional skips below. They remain outside the July 2026 vmap
 mapping/test repair because each covers a separate unsupported or incomplete
 path:
 

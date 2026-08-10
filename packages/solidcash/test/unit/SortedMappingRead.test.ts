@@ -7,7 +7,7 @@ import { Op } from '@solidcash/utils';
 // entry - the exact entry if present, else the predecessor - and return the REAL membership bit soundly:
 //   slot == H(k)                -> present -> 1 (true)
 //   slot < H(k) < nextKey       -> absent  -> 0 (false)
-//   (no co-spent entry / neither holds) -> revert  (no default-on-absent branch to omit -> closes C2)
+//   (no co-spent entry / neither holds) -> revert  (no default-on-absent branch to omit -> closes vmap)
 // So one covenant answers require(m[k]) AND require(!m[k]) without guard classification, and neither bit can be
 // forged: present needs the k-entry (authenticated), absent needs a real bracketing predecessor.
 
@@ -73,7 +73,7 @@ function read(hk: number, entryCommit: Uint8Array, expectedBit: 0 | 1, category 
 }
 
 // State: HEAD[0|10] -> A[10|50] -> B[50|90] -> C[90|0]
-describe('sorted-set read covenant (membership-or-non-membership, C2)', () => {
+describe('sorted-set read covenant (membership-or-non-membership, vmap)', () => {
   it('present key -> co-spend its entry (slot==H(k)) -> bit is 1 (true)', () => {
     expect(read(50, commit(50, 90), 1)).toBe('OK'); // B, slot==50
     expect(read(50, commit(50, 90), 0)).toBe('REVERT'); // the bit is really 1, not 0

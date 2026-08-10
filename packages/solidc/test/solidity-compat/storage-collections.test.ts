@@ -1123,8 +1123,8 @@ describe('contract reads through plain-address state struct fields', () => {
   });
 });
 
-describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dynamic diff-key insert loop', () => {
-  // A C2 write inside a DYNAMIC loop is a per-iteration sorted-linked-list INSERT (co-spend the bracketing
+describe('vmap (sorted) mapping write in a runtime loop: fixed-bound unrolls, dynamic diff-key insert loop', () => {
+  // A vmap write inside a DYNAMIC loop is a per-iteration sorted-linked-list INSERT (co-spend the bracketing
   // predecessor, mint one NEW node; the SDK derives the evolving list). Fixed-bound loops are unrolled to static
   // writes before codegen (each a full emitSortedValueUpsert that verifies the ACTUAL value). The DYNAMIC range-splice
   // body (emitSortedInsertLoopBody) assigns every new node the SAME LOOP-INVARIANT value, so it supports a bool
@@ -1142,11 +1142,11 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     compileString(mkBigint(loop), { forceStateful: true }).abi.find((f) => f.name === 'f');
   // eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept as a ready probe for sortedInsertLoops
   const silOf = (loop: string): string[] | undefined => abiOf(loop)?.sortedInsertLoops;
-  it('unrolls a fixed-bound C2 loop (static upserts handle the actual value)', () => {
+  it('unrolls a fixed-bound vmap loop (static upserts handle the actual value)', () => {
     expect(() => compileString(mkBigint('for (int i = 0; i < 3; i++) { m[ks[i]] = v; }'),
       { forceStateful: true })).not.toThrow();
   });
-  it('compiles a dynamic bool-value C2 set loop via the upsert loop (op=set, multi-gap + update)', () => {
+  it('compiles a dynamic bool-value vmap set loop via the upsert loop (op=set, multi-gap + update)', () => {
     // bool `= true`/`= false` now routes to the upsert loop (bool = int 1/0) - gains multi-gap + update, not just the
     // one-gap range-splice.
     const art = compileString(boolLoop, { forceStateful: true });
@@ -1222,7 +1222,7 @@ describe('C2 (sorted) mapping write in a runtime loop: fixed-bound unrolls, dyna
     expect(info?.keyDecodeTupleIndex).toBe(0);
     expect(info?.valueRuntimeExpression).toBe(true);
   });
-  it('allocates independent C2 regions for multiple conditional collections in one runtime loop', () => {
+  it('allocates independent vmap regions for multiple conditional collections in one runtime loop', () => {
     const art = compileString('contract C { mapping(address=>uint) a; mapping(address=>uint) b;'
       + ' function cook(uint[] actions,bytes[] datas) public { for(uint i=0;i<actions.length;i=i+1) {'
       + ' if(actions[i]==1){(address k,uint v)=abi.decode(datas[i],(address,uint));a[k]=a[k]+v;}'
@@ -1324,10 +1324,10 @@ describe('typed per-iteration external dispatch over a param array (IFoo(targets
 describe('a loop over a compile-time-empty new-array is eliminated (post-inline dead loop)', () => {
   // `_updateJobWhitelist(id, allowed, new address[](0))` (EACC Marketplace publishJobPost): after inlining, the
   // `disallowed` loop iterates over `new address[](0)` = 0 times. A second UnrollFixedBoundEntryLoop pass (post-
-  // inline) folds the constant bound and drops the dead loop, so its C2 sorted-mapping write never reaches codegen
+  // inline) folds the constant bound and drops the dead loop, so its vmap sorted-mapping write never reaches codegen
   // (was: SortedMappingCodegenPendingError 'whitelistWorkers'). Sound: the body provably never runs.
   const ok = (src: string): string => compileString(src, { solidityImportCompat: true }).contractName;
-  it('compiles an internal C2 mapping-write loop called with new T[](0)', () => {
+  it('compiles an internal vmap mapping-write loop called with new T[](0)', () => {
     expect(ok('contract C { mapping(uint256 => mapping(address => bool)) w;'
       + ' function upd(uint256 id, address[] memory a, address[] memory d) internal {'
       + ' for (uint256 i = 0; i < a.length; i++) { w[id][a[i]] = true; }'
@@ -1338,13 +1338,13 @@ describe('a loop over a compile-time-empty new-array is eliminated (post-inline 
   });
   it('does NOT fold a loop over a PUSHED new-array (soundness: length changed, fail-closed not dropped)', () => {
     // `a.push(..)` changes the length, so `new address[](0)` is no longer provably empty (mutatedNames excludes a).
-    // The loop must NOT be dropped - it stays and fails closed on the still-unsupported dynamic C2 write. Proves
+    // The loop must NOT be dropped - it stays and fails closed on the still-unsupported dynamic vmap write. Proves
     // the length fold never silently removes a loop whose array could be non-empty. (An element write `a[i]=v`
     // keeps the length, so it stays foldable - covered by the EACC `new address[](1); a[0]=w;` path above.)
     expect(() => compileString('contract C { mapping(address => bool) w;'
       + ' function f() public { address[] memory a = new address[](0); a.push(address(0));'
       + ' for (uint256 i = 0; i < a.length; i++) { w[a[i]] = true; } require(true); } }',
-    { solidityImportCompat: true })).toThrow(/C2 linked-list transition generator|only available.*storage/);
+    { solidityImportCompat: true })).toThrow(/vmap linked-list transition generator|only available.*storage/);
   });
 });
 

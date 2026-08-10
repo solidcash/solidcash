@@ -14,7 +14,7 @@ Bitcoin Cash doesn't have EVM-style storage slots. Instead, SolidCash uses **Cas
 
 - Each contract gets a **master NFT** (minting capability) that identifies it
 - **Data NFTs** store state variable values in their commitments (128 bytes each)
-- **Entry NFTs** store mapping key-value pairs (one NFT per key)
+- **Entry NFTs** form verified mappings (vmaps), proving both present and absent keys
 - **Event NFTs** record emitted events permanently
 
 Every state-modifying transaction consumes these NFTs as inputs and produces updated versions as outputs. The contract bytecode verifies that the output commitments match the expected new state - this is the covenant.
@@ -65,7 +65,7 @@ contract SimpleToken(pubkey admin) {
 Key design decisions:
 - **`pubkey admin`** - constructor parameter for access control
 - **`totalSupply`** - data NFT state variable
-- **`balances`** - mapping backed by entry NFTs
+- **`balances`** - verified mapping backed by authenticated, linked entry NFTs
 - **`Transfer`** event - persistent on-chain event log
 - **`onlyAdmin`** modifier - reusable auth check
 - **`migrate`** - upgrade modifier for future versioning

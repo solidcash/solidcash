@@ -115,6 +115,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  SelfdestructStatementNode,
   UncheckedNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -154,6 +155,7 @@ import {
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
   DelegatecallSelfMutationError,
+  UntrustedDelegatecallTargetError,
   InternalCallToExternalError,
   LibrarySelfExternalCallError,
   NamedArgumentError,
@@ -1436,7 +1438,7 @@ export default class SymbolTableTraversal extends AstTraversal {
   }
 
   visitParameter(node: ParameterNode): Node {
-    const compilerOwnedParameter = node.name.startsWith('__internal__c2CounterPerm_')
+    const compilerOwnedParameter = node.name.startsWith('__internal__vmapCounterPerm_')
       || [
         '__internal__msgData',
         '__internal__msgSig',
@@ -2107,7 +2109,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (!loopWritten.has(sk)) continue;
           const ops = info.operations;
           const isPureWrite = ops.length === 1 && ops[0] === 'write';
-          // A SORTED (C2) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
+          // A SORTED (vmap) RMW loop write `for(i) m[k[i]] += v[i]` is the per-iteration UPDATE loop (multitransfer
           // credit): also excluded from the fixed block - its co-spend + mint sit in the trailing region AFTER all
           // fixed slots (emitSortedUpsertLoopBody), so it may COEXIST with other fixed entry accesses (e.g. the cached
           // `bal[msg.sender] -= amounts[i]` debit in a full multiTransfer). The pure-write loop (emitLoopEntryWrite)
@@ -2143,7 +2145,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         node.entryAccesses = ordered;
         this.detectAliasConditionalWrites(node.body, ordered);
 
-        // Multiple fixed C2 writes in one function are verified as transaction-wide batches, grouped by collection.
+        // Multiple fixed vmap writes in one function are verified as transaction-wide batches, grouped by collection.
         // A group may contain one target when another collection is also written: using the same batch path keeps
         // shared key parameters live and gives every collection an independent exact-output-count proof.
         const batchByCollection = new Map<string, number[]>();
@@ -2158,17 +2160,12 @@ export default class SymbolTableTraversal extends AstTraversal {
         const fixedSortedWriteCount = [...batchByCollection.values()].reduce((n, slots) => n + slots.length, 0);
         const stateArrayLastCollections = new Set(ordered.filter((info) =>
           info.keySources?.some((source) => source.kind === 'stateArrayLast')).map((info) => info.collection));
-        // Include every standalone fixed sorted write in the batch path, including a single write. The old `> 1`
-        // gate left a lone C2 insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path,
-        // which has no batch witnesses and fails constructor derivation against an empty key. Do not batch a
-        // collection that is also written by a runtime loop: its fixed write (e.g. multiTransfer's sender debit)
-        // and loop-owned trailing region share one collection output count, while the scalar path already composes
-        // those two regions correctly.
-        const loopWrittenCollections = new Set(ordered.filter((info) => info.inLoop).map((info) => info.collection));
+        // Include EVERY fixed sorted write in the batch path, including a single write. The old `> 1` gate left
+        // a lone vmap insert (ERC20Mock's constructor `_balances[msg.sender] = supply`) on the scalar path, which
+        // has no batch witnesses and fails constructor derivation with OP_EQUALVERIFY against an empty key. The
+        // batch path is what mint/transfer use successfully; constructors need the same shape.
         node.sortedBatchInfo = [...batchByCollection]
-          .filter(([collection]) => !node.modifiers.includes(FunctionModifier.DELEGATE)
-            && !loopWrittenCollections.has(collection)
-            && (fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection)))
+          .filter(([collection]) => fixedSortedWriteCount >= 1 || stateArrayLastCollections.has(collection))
           .map(([collection, slotIndices]) => ({ collection, slotIndices }));
 
         // Batch witnesses are compiler-only and covenant-bound: full computed slot, absolute proof-input index,
@@ -2176,10 +2173,10 @@ export default class SymbolTableTraversal extends AstTraversal {
         for (const batch of node.sortedBatchInfo) {
           for (const batchSlotIndex of batch.slotIndices) {
             for (const param of [
-              new ParameterNode(new BytesType(32), `__internal__c2BatchSlot_${batchSlotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchProof_${batchSlotIndex}`),
-              new ParameterNode(new BytesType(32), `__internal__c2BatchNext_${batchSlotIndex}`),
-              new ParameterNode(PrimitiveType.BIGINT, `__internal__c2BatchPredOut_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__vmapBatchSlot_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchProof_${batchSlotIndex}`),
+              new ParameterNode(new BytesType(32), `__internal__vmapBatchNext_${batchSlotIndex}`),
+              new ParameterNode(PrimitiveType.BIGINT, `__internal__vmapBatchPredOut_${batchSlotIndex}`),
             ]) {
               param.location = node.location;
               node.parameters.push(param);
@@ -2191,7 +2188,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           }
         }
         if (node.sortedBatchInfo.length > 0) {
-          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__c2BatchTrailingCount');
+          const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__vmapBatchTrailingCount');
           param.location = node.location;
           node.parameters.push(param);
           this.symbolTables[0].set(Symbol.variable(param));
@@ -2200,14 +2197,14 @@ export default class SymbolTableTraversal extends AstTraversal {
           this.pushToStack(param);
         }
 
-        // Chunkable-value READ (unbounded bytes/string, C2): inject witness param __internal__valueWitness_N. A
+        // Chunkable-value READ (unbounded bytes/string, vmap): inject witness param __internal__valueWitness_N. A
         // long value is stored as its sha256 hash; the covenant materializes it by verifying sha256(witness)==hash,
         // so the SDK supplies the value (from its persisted chunks) and a forged witness fails closed.
         for (const info of ordered) {
           if (!info.operations.includes('read')) continue;
           const coll = this.collectionMap.get(info.collection);
           const vt = coll?.innermostValueType;
-          // Only a SORTED (C2) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
+          // Only a SORTED (vmap) chunkable-value read uses the witness path (emitChunkableValueRead); a non-sorted
           // (opt-out) bytes/string mapping reads its value tail verbatim and must NOT get a spurious witness param.
           if (!coll?.sorted || !vt || !isChunkableValueType(vt)) continue;
           const wname = `__internal__valueWitness_${info.slotIndex}`;
@@ -2252,7 +2249,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           if (sym) sym.references.push({ name: `__internal__collectionIterCount_${i}` } as IdentifierNode);
           this.pushToStack(countParam);
 
-          // SORTED (C2) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
+          // SORTED (vmap) KEYS/ENTRIES iteration: the entry stores slot=H(key), not the raw key, so the caller
           // supplies the keys and the covenant verifies keyToSlot(key)==slot per entry. Inject a bytes blob param
           // (fixed-width keys concatenated in chain order); only for sorted key-exposing iterations, so plain and
           // sorted-VALUES iteration ABIs are unchanged.
@@ -2799,7 +2796,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         // Inject _callInputIndex for every non-delegatecall low-level call.
         // Stateful contracts previously pinned the callee to a fixed block-layout slot, but a multi-UTXO
         // callee (SafeERC20.transferFrom with balances/allowances entries) expands past that slot and
-        // collides with the caller's trailing region (dynamic chunks, C2 batch preds). A runtime index
+        // collides with the caller's trailing region (dynamic chunks, vmap batch preds). A runtime index
         // lets the SDK place the full callee band AFTER trailing resources, matching externalCallInputBase.
         // Skip delegatecall (proxy uses its own delegate-input witness / block slot).
         for (let i = 0; i < lowLevelCallCount; i++) {
@@ -2916,13 +2913,15 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // C1/piece-6: the co-spend covenant pins the delegate input to the address the CALLER supplied, which proves
     // nothing about identity when that address is an unguarded function parameter - an unrelated spender then
-    // co-spends an implementation they wrote and rewrites this contract's state. Warn precisely: fire only when
-    // the target resolves to a parameter of this entry point AND nothing in the body constrains it (no signature
-    // guard against a key the caller does not choose - SEC-12 - and no require() mentioning it). A parameter
-    // pinned by `require(impl == this.implementation)` is the legitimate upgradeable-proxy shape and must keep
-    // compiling, which is why this warns rather than rejects.
+    // co-spends an implementation they wrote and rewrites this contract's state. Reject caller-derived targets
+    // unless genuine authorization protects the choice or an unconditional equality binds the target to trusted
+    // constructor/state identity. A length/shape check is not an identity binding. The explicit unsafe compiler
+    // option retains warning-only behavior for migration and adversarial tests.
     const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
     if (callerSuppliedImpl) {
+      if (!this.compilerOptions.allowUnsafeOperations) {
+        throw new UntrustedDelegatecallTargetError(node, node.name, callerSuppliedImpl);
+      }
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against '${callerSuppliedImpl}', an `
@@ -2937,11 +2936,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
     // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
-    // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
+    // proxy state arbitrarily. Reject unless the function is pinned (a covenant impl, where the co-spend is forced
     // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
     // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
     if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
       && !hasAuthorizingSignatureGuard(node)) {
+      if (!this.compilerOptions.allowUnsafeOperations) {
+        throw new UntrustedDelegatecallTargetError(node, node.name, 'an unpinned non-covenant implementation');
+      }
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
@@ -4111,7 +4113,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const slotKey = `${node.collection.name}:${keyParams.join(':')}`;
       const existing = map.get(slotKey);
       // `map[k].push(v)` / `.pop()` are read-modify-writes of the entry's array: the SDK must CO-SPEND the existing
-      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it. A sorted (C2)
+      // entry (read its current array) before appending/dropping - a bare 'write' would overwrite it. A sorted (vmap)
       // element-index write `m[k][i]=v` is ALSO an RMW: it materializes the whole array to replace one element, so
       // it needs the read witness for a chunked value (the default entry model reads its own co-spent input in-place).
       const rmw = !!node.arrayPush || !!node.arrayPop || (!!node.arrayIndex && !!node.collection.sorted);
@@ -4123,13 +4125,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Only a WHOLE-value direct-param assign (`m[k] = p`) records the source param. An element/push/pop write's
       // expression is the element, not the whole array value (that value is computed by the RMW -> derived from trace).
       const wholeValueWrite = !node.arrayIndex && !node.arrayPush && !node.arrayPop;
-      const expressionType = this.getExpressionType(node.expression);
-      const valueIdentifier = node.expression instanceof IdentifierNode ? node.expression : undefined;
-      const directValueParam = valueIdentifier !== undefined
-        && this.currentFunction?.parameters.some((parameter) => parameter.name === valueIdentifier.name)
-        && expressionType?.toString() === vt.toString();
-      const valueParam = wholeValueWrite && chunkableValue && directValueParam
-        ? valueIdentifier.name : undefined;
+      const valueParam = wholeValueWrite && chunkableValue && node.expression instanceof IdentifierNode
+        ? node.expression.name : undefined;
       if (existing) {
         if (!existing.operations.includes('write')) existing.operations.push('write');
         if (rmw && !existing.operations.includes('read')) existing.operations.push('read');
@@ -4422,6 +4419,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private isOwnCategoryKey(key: IdentifierNode): boolean {
+    const definition = key.definition?.definition;
+    return definition instanceof VariableDefinitionNode
+      && definition.expression instanceof StateAccessNode
+      && definition.expression.name === 'category'
+      && !definition.expression.stateVariable;
+  }
+
   private collectTokenContainerAccesses(node: Node, map: Map<string, TokenContainerAccessInfo>): void {
     if (node instanceof FieldAccessNode && node.expression instanceof MappingAccessNode
         && node.expression.isTokenContainerAccess) {
@@ -4432,7 +4437,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4446,7 +4451,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4464,7 +4469,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           else if (op === 'transferNft') existing.transferNftCount++;
         } else {
           map.set(slotKey, {
-            keyParam: keyExpr.name, operations: [op], slotIndex: -1,
+            keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: [op], slotIndex: -1,
             transferCount: op === 'transfer' ? 1 : 0,
             transferNftCount: op === 'transferNft' ? 1 : 0,
           });
@@ -6394,13 +6399,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * C1/piece-6: does this entry point's delegatecall target resolve to one of ITS OWN parameters with nothing in
-   * the body constraining it? Returns the parameter name, or undefined. A constructor argument is excluded (the
-   * contract's p2sh32 commits to it), as is any parameter reached by a signature guard or named in a require().
+   * the body binding it to trusted identity? Returns a description, or undefined. A constructor argument is
+   * excluded (the contract's p2sh32 commits to it), as is a caller-authorized or trusted-equality-bound target.
    */
   private delegatecallTargetsUnguardedParameter(node: FunctionDefinitionNode): string | undefined {
     if (!this.hasExplicitDelegatecall(node.body)) return undefined;
     const call = this.findDelegatecallNode(node.body);
     if (!call) return undefined;
+    const originalTarget = call.targetExpression;
     // Resolve through `address m = impl;` aliases to the underlying identifier.
     let target: ExpressionNode | undefined = call.targetExpression;
     const seenNames = new Set<string>();
@@ -6411,44 +6417,42 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!init) break;
       let next: ExpressionNode = init;
       while (next instanceof CastNode) next = next.expression;
-      if (!(next instanceof IdentifierNode)) return undefined; // a computed/literal target, not a bare parameter
+      if (!(next instanceof IdentifierNode)) break;
       target = next;
     }
-    if (!(target instanceof IdentifierNode)) return undefined;
-    const name = target.name;
-    if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
-    if (hasAuthorizingSignatureGuard(node)) return undefined;
-    if (this.requireMentionsIdentifier(node.body, name)) return undefined;
-    return name;
+    if (hasAuthorizingSignatureGuard(node, 'delegatecall')) return undefined;
+    if (!keyIsCallerChosen(originalTarget, node)) return undefined;
+    if (target instanceof IdentifierNode
+      && node.parameters.some((parameter) => parameter.name === target.name)) {
+      if (this.parameterBoundToTrustedIdentity(node, target.name)) return undefined;
+      return target.name;
+    }
+    return 'a computed target derived from caller-supplied data';
   }
 
-  /** Is `name` referenced by any require() in this body? That is the constraint that authorizes a parameter. */
-  private requireMentionsIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
-    if (!node || seen.has(node)) return false;
-    seen.add(node);
-    if (node instanceof RequireNode && this.referencesIdentifier(node.expression, name)) return true;
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) {
-        if (this.requireMentionsIdentifier(value, name, seen)) return true;
-      } else if (Array.isArray(value)) {
-        for (const e of value) if (e instanceof Node && this.requireMentionsIdentifier(e, name, seen)) return true;
+  /** Only an unconditional equality to a value the caller cannot choose pins implementation identity. */
+  private parameterBoundToTrustedIdentity(fn: FunctionDefinitionNode, name: string): boolean {
+    const binds = (expr: ExpressionNode): boolean => {
+      if (expr instanceof BinaryOpNode && expr.operator === BinaryOperator.AND) {
+        return binds(expr.left) || binds(expr.right);
       }
-    }
-    return false;
-  }
-
-  private referencesIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
-    if (!node || seen.has(node)) return false;
-    seen.add(node);
-    if (node instanceof IdentifierNode && node.name === name) return true;
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) {
-        if (this.referencesIdentifier(value, name, seen)) return true;
-      } else if (Array.isArray(value)) {
-        for (const e of value) if (e instanceof Node && this.referencesIdentifier(e, name, seen)) return true;
+      if (!(expr instanceof BinaryOpNode) || expr.operator !== BinaryOperator.EQ) return false;
+      let left = expr.left;
+      let right = expr.right;
+      while (left instanceof CastNode) left = left.expression;
+      while (right instanceof CastNode) right = right.expression;
+      if (left instanceof IdentifierNode && left.name === name) return !keyIsCallerChosen(right, fn);
+      if (right instanceof IdentifierNode && right.name === name) return !keyIsCallerChosen(left, fn);
+      return false;
+    };
+    const scan = (block: BlockNode | undefined): boolean => {
+      for (const statement of block?.statements ?? []) {
+        if (statement instanceof RequireNode && binds(statement.expression)) return true;
+        if (statement instanceof UncheckedNode && scan(statement.block)) return true;
       }
-    }
-    return false;
+      return false;
+    };
+    return scan(fn.body);
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {
@@ -6671,7 +6675,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       // Solidity commonly separates a declaration from its first assignment. Treat only the mechanically safe
       // straight-line `T key; key = expr;` pair as an initializer: adjacency rules out a conditional/loop-only
-      // assignment, and the whole-body count below rules out subsequent reassignment. This gives C2 key metadata
+      // assignment, and the whole-body count below rules out subsequent reassignment. This gives vmap key metadata
       // the same canonical source as `T key = expr` without changing runtime evaluation of the local itself.
       if (n instanceof BlockNode) {
         const statements = n.statements ?? [];
@@ -7108,7 +7112,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       const mapNode = new MappingAccessNode(flat.base.name, flat.keys);
       mapNode.location = node.location;
       // Carry the inlined-helper origin (tagModifierStateAccess tagged the base identifier) so the
-      // private-collection visibility check sees the defining contract for an inlined C2-read helper.
+      // private-collection visibility check sees the defining contract for an inlined vmap-read helper.
       mapNode.fromModifier = flat.base.fromModifier;
       return this.visit(mapNode);
     }
@@ -7195,7 +7199,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         : new MappingAssignNode(node.name, [node.index], node.value);
       stateNode.location = node.location;
       // Carry the inlined-helper origin so the private-collection visibility check sees the defining contract
-      // (an inlined C2-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
+      // (an inlined vmap-write helper's `m[k]=v` was tagged in tagModifierStateAccess before this rewrite).
       if (stateNode instanceof MappingAssignNode) stateNode.fromModifier = node.fromModifier;
       return this.visit(stateNode);
     }
@@ -8420,7 +8424,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Validate key is a function parameter
       for (const key of node.keys) {
         if (!(key instanceof IdentifierNode)
-          || !this.currentFunction.parameters.some((p) => p.name === (key as IdentifierNode).name)) {
+          || (!this.currentFunction.parameters.some((p) => p.name === key.name)
+            && !this.isOwnCategoryKey(key))) {
           throw new TokenContainerKeyMustBeParameterError(node);
         }
       }
@@ -8542,7 +8547,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Validate key is a function parameter
     const keyExpr = node.tokenContainerKeyExpression;
     if (!(keyExpr instanceof IdentifierNode)
-      || !this.currentFunction.parameters.some((p) => p.name === keyExpr.name)) {
+      || (!this.currentFunction.parameters.some((p) => p.name === keyExpr.name)
+        && !this.isOwnCategoryKey(keyExpr))) {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 
@@ -8829,6 +8835,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     // this.outState is a built-in property, not a state variable
     if (node.name === 'outState') {
+      return node;
+    }
+    // this.category is a compiler-derived introspection property.
+    if (node.name === 'category' && !this.stateVariableMap.has('category')) {
       return node;
     }
     // this.balance is a built-in property when no state variable named 'balance' exists
@@ -11636,7 +11646,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // runtime-variable number of side-cars from the TRAILING region [blockSize, ..) instead (keccakInLoop), so
     // it allocates no fixed slots here.
     if (node.keccakCompute && !node.keccakInLoop) {
-      const kSlots = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+      const kCalls = Number(node.libraryCallCounts?.get(GlobalFunction.KECCAK256) ?? 1n);
+      const kSlots = Math.ceil(kCalls / 3);
       for (let i = 0; i < kSlots; i++) slots.push({ kind: 'keccakSideCar', offset: offset++, slotIndex: i });
     }
 
@@ -11748,9 +11759,9 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Deploy slots (deploy modifier functions have a genesis input per child deploy site).
     // After each deploy master, reserve a fixed `deployDataNft` slot per child data NFT so the
-    // C2 insert tail (and any other trailing outputs) starts at a covenant-known offset rather
+    // vmap insert tail (and any other trailing outputs) starts at a covenant-known offset rather
     // than sharing the first post-blockSize slot with the child's unanchored data NFTs
-    // (see docs/deferrals.md "Factory deploy of a stateful child alongside C2 mapping writes").
+    // (see docs/deferrals.md "Factory deploy of a stateful child alongside vmap mapping writes").
     // deployTargets is not yet populated here; resolve counts from each InstantiationNode's
     // referenced contract (or deployedDataNftCount once the site has been visited).
     if (node.modifiers.includes(FunctionModifier.DEPLOY)) {
@@ -11812,7 +11823,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // could describe its 680 `unbalanced transaction` / 381 `token outside every participant block` rejections.
     // MEASURED at this commit and REFUSED. Three findings, in order of weight:
     //
-    // 1. A C2 mapping insert - the whole 381 category - has NO term here that can fire. Measured on
+    // 1. A vmap mapping insert - the whole 381 category - has NO term here that can fire. Measured on
     //    `mapping(int => int) m; function put(..) { m[k] = v; }`: `stateVars=0, dynamicNames=0, collections=1`.
     //    Every term above is about dynamic state VARIABLES, loops, keccak or ecrecover, and a mapping is a
     //    CollectionNode. So that half is not a relaxation of this predicate at all; it needs a NEW reservation
@@ -11863,7 +11874,7 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * Per-deploy-site child data-NFT counts, in source order. Used to reserve fixed `deployDataNft`
-   * layout slots after each deploy master so C2 insert tails no longer collide with child genesis
+   * layout slots after each deploy master so vmap insert tails no longer collide with child genesis
    * data NFTs. Always prefers the live referenced contract's packed state variables (oracle fields
    * included) over a stale Instantiation snapshot.
    */
@@ -12052,25 +12063,6 @@ function isCompileTimeExpression(
 const SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
   checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
 };
-
-function collectSignatureGuardKeys(
-  node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
-): void {
-  if (!node || seen.has(node)) return;
-  seen.add(node);
-  if (node instanceof FunctionCallNode) {
-    const keyArg = SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
-    if (keyArg !== undefined) {
-      const key = node.parameters[keyArg];
-      if (key) out.push(key);
-    }
-  }
-  for (const v of Object.values(node)) {
-    if (v instanceof Node) { collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
-      for (const e of v) if (e instanceof Node) collectSignatureGuardKeys(e, out, seen);
-    }
-  }
-}
 
 /**
  * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
@@ -12335,10 +12327,67 @@ function isHashOf(expr: ExpressionNode | undefined, name: string, fn: FunctionDe
 }
 
 /** Does this function carry a signature check against a key the caller does not choose? */
-export function hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
-  const keys: ExpressionNode[] = [];
-  collectSignatureGuardKeys(fn.body, keys);
-  return keys.some((key) => !keyIsCallerChosen(key, fn));
+interface AuthorizationControlSite { block: BlockNode; index: number }
+
+type GuardedOperation = 'delegatecall' | 'selfdestruct';
+
+/**
+ * Prove that every protected operation is dominated on its exact control-flow path by a require whose truth
+ * entails a signature check against authority the caller cannot choose. A discarded check, a check under `||`,
+ * a check in a sibling/optional branch, and a check after the operation all fail closed.
+ */
+export function hasAuthorizingSignatureGuard(
+  fn: FunctionDefinitionNode, operation: GuardedOperation = 'delegatecall',
+): boolean {
+  const guards: AuthorizationControlSite[][] = [];
+  const operations: AuthorizationControlSite[][] = [];
+
+  const requiredTrustedCheck = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode) {
+      const keyArg = SIGNATURE_GUARD_KEY_ARG[expression.identifier.name];
+      const key = keyArg === undefined ? undefined : expression.parameters[keyArg];
+      return key !== undefined && !keyIsCallerChosen(key, fn);
+    }
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (requiredTrustedCheck(expression.left) || requiredTrustedCheck(expression.right));
+  };
+
+  const seen = new Set<Node>();
+  const walk = (node: Node | undefined, path: AuthorizationControlSite[]): void => {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof RequireNode && requiredTrustedCheck(node.expression)) guards.push(path);
+    if (operation === 'delegatecall'
+      && (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+      && node.callMode === 'delegatecall') operations.push(path);
+    if (operation === 'selfdestruct' && node instanceof SelfdestructStatementNode) operations.push(path);
+    if (node instanceof BlockNode) {
+      for (const [index, statement] of (node.statements ?? []).entries()) {
+        walk(statement, [...path, { block: node, index }]);
+      }
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'symbolTable' || key === 'location' || key === 'type') continue;
+      if (value instanceof Node) walk(value, path);
+      else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) walk(child, path);
+    }
+  };
+  walk(fn.body, []);
+
+  const dominates = (guard: AuthorizationControlSite[], target: AuthorizationControlSite[]): boolean => {
+    const guardSite = guard[guard.length - 1];
+    if (!guardSite) return false;
+    const targetLevel = target.findIndex((site) => site.block === guardSite.block);
+    if (targetLevel < 0 || guard.length - 1 !== targetLevel) return false;
+    return guard.slice(0, -1).every((site, index) => target[index]?.block === site.block
+      && target[index]?.index === site.index)
+      && guardSite.index < target[targetLevel].index;
+  };
+
+  return operations.length > 0
+    && operations.every((target) => guards.some((guard) => dominates(guard, target)));
 }
 
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,

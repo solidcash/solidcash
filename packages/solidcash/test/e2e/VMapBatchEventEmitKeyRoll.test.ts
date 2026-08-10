@@ -3,7 +3,7 @@ import { compileString } from '../direct-compile.js';
 import { ContractFactory } from '../../src/index.js';
 import { createTestProvider, getSigners } from '../test-util.js';
 
-// Regression: C2 batch topology witnesses are snapshotted to the altstack at function start. An emit that
+// Regression: vmap batch topology witnesses are snapshotted to the altstack at function start. An emit that
 // final-use OP_ROLLs a mapping key param off the tracked stack must not cause restore to re-filter a shorter
 // name list and scramble Slot/Proof/Next/PredOut (ERC20.approve shape: nested allowances + Approval event).
 const SRC = `
@@ -24,7 +24,7 @@ const limits = {
   maximumNftCommitmentBytes: 128,
 };
 
-describe('C2 batch + emit key-param OP_ROLL', () => {
+describe('vmap batch + emit key-param OP_ROLL', () => {
   it('nested mapping write then emit with shared key params settles', async () => {
     const provider = createTestProvider();
     (provider as any).consensusLimits = { ...(provider as any).consensusLimits, ...limits };

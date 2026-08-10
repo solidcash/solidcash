@@ -1,11 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 
-// C2 (sorted) array WRITE shapes that are not yet implemented must fail CLOSED at compile - never crash with an
+// vmap (sorted) array WRITE shapes that are not yet implemented must fail CLOSED at compile - never crash with an
 // internal error, and never silently degrade to the omittable default-on-absent entry model. The supported shapes
 // (single element write, push/pop, whole assign, conditional, nested mapping+array) are covered elsewhere
 // (SortedMappingArrayElementWrite). This locks the fail-close boundary.
-describe('sorted C2 array writes: fail-close boundary', () => {
+describe('sorted vmap array writes: fail-close boundary', () => {
   const K = (body: string, val = 'int=>int[]'): string =>
     `contract C() { mapping(${val}) m;
       function f(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); ${body} } }`;

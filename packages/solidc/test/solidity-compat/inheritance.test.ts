@@ -572,8 +572,8 @@ describe('using-for reverse overrides the native bytes reverse member', () => {
   });
 });
 
-describe('C2-default: an inherited method accessing its OWN contract private mapping (FakeToken ERC20 _update)', () => {
-  // Under C2-default `_balances` is a sorted collection, so a C2-write helper (`_upd`) is inlined into its entry
+describe('vmap-default: an inherited method accessing its OWN contract private mapping (FakeToken ERC20 _update)', () => {
+  // Under vmap-default `_balances` is a sorted collection, so a vmap-write helper (`_upd`) is inlined into its entry
   // caller (InlineStoragePointerCalls). The inlined `_balances[a]=v` then lives in the caller's context, whose
   // inheritedFrom differs from `_balances`'s - the private-collection check wrongly rejected it. tagModifierStateAccess
   // now tags the inlined collection access with its defining contract; the check consults `node.fromModifier` (like
@@ -583,7 +583,7 @@ describe('C2-default: an inherited method accessing its OWN contract private map
     + ' contract Base { mapping(address => uint256) private _balances;'
     + '   function _upd(address a, uint256 v) internal { uint256 cur = _balances[a]; _balances[a] = cur + v; } }'
     + ` contract Derived is Base { ${deriveBody} }`;
-  it('compiles read+write of a base private mapping through an inherited helper (C2-default)', () => {
+  it('compiles read+write of a base private mapping through an inherited helper (vmap-default)', () => {
     expect(() => compileString(base('function mint(address a, uint256 v) public { _upd(a, v); }'),
       { solidityImportCompat: true })).not.toThrow();
   });
@@ -649,7 +649,7 @@ describe('inherited `using L for T` resolves in a derived contract (OZ ERC20 Saf
     expect(() => compileString(src, { importResolver: resolver, rootFileId: '/main.sol', solidityImportCompat: true }))
       .not.toThrow();
   };
-  it('derived call to inherited _mint (private scalar + C2 mapping via SafeMath) compiles', () => {
+  it('derived call to inherited _mint (private scalar + vmap mapping via SafeMath) compiles', () => {
     ok('import {ERC20Base} from "./B.sol"; contract C is ERC20Base {'
       + ' function mint(address a, uint256 amt) public { _mint(a, amt); } }');
   });

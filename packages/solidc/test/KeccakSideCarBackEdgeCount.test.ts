@@ -82,7 +82,7 @@ describe('keccak256 side-car slots count only the function that emits them', () 
     expect(sideCarSlots(artifact, '__construct')).toBe(1);
   });
 
-  it('a function that really emits three calls still reserves three slots', () => {
+  it('a function that emits three calls reserves one batched slot and publishes all preimages', () => {
     const artifact = compileString(`
       contract Child {
         bytes32 a;
@@ -91,20 +91,19 @@ describe('keccak256 side-car slots count only the function that emits them', () 
         function h(bytes x) public { this.a = keccak256(x); this.b = keccak256(x); this.c = keccak256(x); }
       }`);
     expect(artifact.contractName).toBe('Child');
-    expect(sideCarSlots(artifact, 'h')).toBe(3);
-    expect(sideCarSlots(artifact, 'h')).toBe(preimageParams(artifact, 'h'));
+    expect(sideCarSlots(artifact, 'h')).toBe(1);
+    expect(preimageParams(artifact, 'h')).toBe(3);
   });
 });
 
 /**
- * The published preimage list is the SDK's side-car count: it co-spends one per entry, so it must never be
- * shorter than the reserved slots.
+ * The published preimage list remains one entry per call; the SDK groups those entries three per physical slot.
  *
  * A keccak-containing helper is now INLINED into its callers (InlineReturningStateHelpers), so the call is
  * emitted under the caller's own traversal and its param is attributed there by name. The padding in
  * `Artifact.ts` remains the backstop for any shape that still emits under a different traversal.
  */
-describe('keccakPreimageParams has one entry per reserved side-car slot', () => {
+describe('keccakPreimageParams retains every call across batched side-car slots', () => {
   const HELPER_KECCAK = `pragma solidcash >=0.8.0;
     contract C() {
       bytes32 h;

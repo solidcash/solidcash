@@ -137,7 +137,7 @@ export default class IfConvertConditionalEntryOp extends AstTraversal {
 
   // Returns the replacement statements if the branch is a convertible conditional entry op, else undefined.
   private tryConvertBranch(node: BranchNode): StatementNode[] | undefined {
-    // A C2 write whose key varies in a runtime loop has its own counter-indexed conditional output protocol.
+    // A vmap write whose key varies in a runtime loop has its own counter-indexed conditional output protocol.
     // Preserve the branch: predicating it into `cond ? value : old` would force an ordinary fixed-slot read for
     // the not-taken arm, but this entry deliberately has no fixed block slot.
     if (this.loopDepth > 0 && (node.ifBlock.statements ?? []).some((s) => {

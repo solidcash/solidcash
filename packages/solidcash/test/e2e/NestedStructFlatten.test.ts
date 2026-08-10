@@ -49,8 +49,8 @@ const DEPTH3 = `pragma solidity ^0.8.0;
 contract Depth3 {
     struct A { uint v; mapping(uint => uint) m; }
     struct B { A a; uint w; }
-    struct C2 { B b; mapping(uint => uint) top; }
-    C2 c;
+    struct vmap { B b; mapping(uint => uint) top; }
+    vmap c;
     function wr() public {
         c.b.a.v = 5;
         c.b.w = 6;

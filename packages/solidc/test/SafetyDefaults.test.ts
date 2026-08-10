@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { compileString as compileStringRaw } from '../src/index.js';
 import { compileString } from './direct-compile.js';
 import * as Errors from '../src/Errors.js';
 
@@ -6,8 +7,8 @@ import * as Errors from '../src/Errors.js';
 // See packages/solidc/docs/solidity-import-compat.md ("SolidCash defaults" section).
 
 // Spending paths that perform no require()/verification and change no state compile to an
-// unconditionally-spendable script. By default this is a warning; enforceFinalRequire makes it a hard error.
-describe('FinalRequire: warning by default, error under enforceFinalRequire', () => {
+// unconditionally-spendable script. This is rejected by default; the unsafe opt-out retains a warning.
+describe('FinalRequire: error by default, warning only under explicit opt-out', () => {
   const unverifiedPaths: [string, string][] = [
     ['do-while with no require', 'contract Loopy() { function doLoop() { int i = 0;'
       + ' do { i = i + 1; } while (i < tx.inputs.length); } }'],
@@ -22,19 +23,22 @@ describe('FinalRequire: warning by default, error under enforceFinalRequire', ()
       + ' if (checkSig(s, pk)) { string x = "Hello"; } } }'],
   ];
 
-  it.each(unverifiedPaths)('compiles by default (warning): %s', (_label, src) => {
+  it.each(unverifiedPaths)('throws FinalRequireStatementError by default: %s', (_label, src) => {
+    expect(() => compileStringRaw(src, { messageBus: false })).toThrow(Errors.FinalRequireStatementError);
+  });
+
+  it.each(unverifiedPaths)('compiles only with enforceFinalRequire false (warning): %s', (_label, src) => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
-    expect(compileString(src).contractName).toBeTruthy();
+    expect(compileStringRaw(src, { messageBus: false, enforceFinalRequire: false }).contractName).toBeTruthy();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('unconditionally-spendable'));
     warn.mockRestore();
   });
 
-  it.each(unverifiedPaths)('throws FinalRequireStatementError under enforceFinalRequire: %s', (_label, src) => {
-    expect(() => compileString(src, { enforceFinalRequire: true })).toThrow(Errors.FinalRequireStatementError);
-  });
-
-  it('emits the unconditionally-spendable warning by default', () => {
+  it('emits the unconditionally-spendable warning under the explicit opt-out', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
-    compileString('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }');
+    compileStringRaw('contract C() { function f(int i) pure { if (i <= 100) { revert("x"); } } }', {
+      messageBus: false, enforceFinalRequire: false,
+    });
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('unconditionally-spendable'));
     warn.mockRestore();
   });
@@ -42,6 +46,118 @@ describe('FinalRequire: warning by default, error under enforceFinalRequire', ()
   it('allows a non-final require to gate the path (require not last)', () => {
     const a = compileString('contract C() { mapping(int=>int) m; function f(int k) { require(k > 0); delete m[k]; } }');
     expect(a.contractName).toBe('C');
+  });
+});
+
+describe('Caller-controlled destructive authority is rejected by default', () => {
+  it('rejects a directly caller-selected delegate implementation', () => {
+    expect(() => compileStringRaw(`contract P() { bigint counter;
+      function up(bytes input, address impl) external {
+        impl.delegatecall(input); require(input.length > 0);
+      } }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+  });
+
+  it('does not mistake a length check for an implementation identity binding', () => {
+    expect(() => compileStringRaw(`contract P() { bigint counter;
+      function up(bytes input, bytes target) external {
+        require(target.length == 35); address impl = address(target);
+        impl.delegatecall(input); require(input.length > 0);
+      } }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+  });
+
+  it('allows an unconditional equality binding to stored implementation identity', () => {
+    expect(compileStringRaw(`contract P(address trusted) { bigint counter;
+      function up(bytes input, address impl) external {
+        require(impl == trusted); impl.delegatecall(input); require(input.length > 0);
+      } }`, { messageBus: false }).contractName).toBe('P');
+  });
+
+  it('rejects permissionless selfdestruct to a caller-selected recipient', () => {
+    expect(() => compileStringRaw(`contract C() { int n;
+      function kill(address to) { require(true); selfdestruct(to); }
+    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+  });
+
+  it('follows aliases and casts to a caller-selected selfdestruct recipient', () => {
+    expect(() => compileStringRaw(`contract C() { int n;
+      function kill(bytes target) { address to = address(target); require(true); selfdestruct(to); }
+    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+  });
+
+  it('allows selfdestruct to a recipient fixed in state', () => {
+    expect(compileStringRaw(`contract C() { address beneficiary; int n;
+      function kill() { require(true); selfdestruct(this.beneficiary); }
+    }`, { messageBus: false }).contractName).toBe('C');
+  });
+
+  it('retains a loud, explicit migration escape hatch', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    expect(compileStringRaw(`contract C() { int n;
+      function kill(address to) { require(true); selfdestruct(to); }
+    }`, { messageBus: false, allowUnsafeOperations: true }).contractName).toBe('C');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('caller-supplied address'));
+    warn.mockRestore();
+  });
+
+  it.each([
+    ['discarded', 'checkSig(s, owner); impl.delegatecall(input); require(input.length > 0);'],
+    ['conditional', 'if (ok) { require(checkSig(s, owner)); } impl.delegatecall(input); require(input.length > 0);'],
+    ['after', 'impl.delegatecall(input); require(checkSig(s, owner));'],
+  ])('does not accept a %s signature check before caller-selected delegation', (_label, body) => {
+    expect(() => compileStringRaw(`contract P(pubkey owner) { bigint counter;
+      function up(bytes input, address impl, sig s, bool ok) external { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+  });
+
+  it.each([
+    ['discarded', 'checkSig(s, owner); selfdestruct(to);'],
+    ['conditional', 'if (ok) { require(checkSig(s, owner)); } selfdestruct(to);'],
+    ['after', 'selfdestruct(to); require(checkSig(s, owner));'],
+  ])('does not accept a %s signature check for caller-directed destruction', (_label, body) => {
+    expect(() => compileStringRaw(`contract C(pubkey owner) { int n;
+      function kill(address to, sig s, bool ok) { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+  });
+
+  it('allows a required trusted signature that dominates the operation', () => {
+    expect(compileStringRaw(`contract C(pubkey owner) { int n;
+      function kill(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); }
+    }`, { messageBus: false }).contractName).toBe('C');
+  });
+
+  it.each([
+    'if (ok) { selfdestruct(to); } require(ok);',
+    'unchecked { selfdestruct(to); } require(ok);',
+    'while (ok) { selfdestruct(to); ok = false; } require(!ok);',
+  ])('rejects nested selfdestruct lifecycle placement: %s', (body) => {
+    expect(() => compileStringRaw(`contract C { int n;
+      function kill(address to, bool ok) { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+  });
+
+  it('infers selfdestruct lifecycle semantics after modifier expansion', () => {
+    const artifact = compileStringRaw(`contract C(pubkey owner) { int n;
+      modifier destroys(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); _; }
+      function kill(address to, sig s) destroys(to, s) { require(true); }
+    }`, { messageBus: false });
+    expect(artifact.abi.find((entry) => entry.name === 'kill')?.modifiers).toContain('selfdestruct');
+  });
+
+  it('rejects conditional selfdestruct introduced by a modifier', () => {
+    expect(() => compileStringRaw(`contract C { int n;
+      modifier destroys(address to) { if (true) { selfdestruct(to); } _; }
+      function kill(address to) destroys(to) { require(true); }
+    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+  });
+
+  it('records disabled checks in compiler metadata', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const artifact = compileStringRaw(`contract C { int n;
+      function kill(address to) { require(true); selfdestruct(to); }
+    }`, { messageBus: false, allowUnsafeOperations: true, enforceFinalRequire: false });
+    expect(artifact.compiler?.options?.allowUnsafeOperations).toBe(true);
+    expect(artifact.compiler?.options?.enforceFinalRequire).toBe(false);
+    warn.mockRestore();
   });
 });
 

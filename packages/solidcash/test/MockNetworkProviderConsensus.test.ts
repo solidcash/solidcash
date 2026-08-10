@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
-import { MOCK_CONSENSUS_LIMITS, MockNetworkProvider } from '../src/index.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST, MockNetworkProvider } from '../src/index.js';
 
 describe('MockNetworkProvider consensus limits', () => {
   // Relaxed in every SIZE limit, REAL in the operation-cost budget. That asymmetry is deliberate: relaxing a
@@ -16,6 +16,8 @@ describe('MockNetworkProvider consensus limits', () => {
       operationCostBudgetPerByte: 800,
       hashDigestIterationsPerByte: 10_000_000,
     });
+    // Pin the asymmetry itself, so relaxing the budget again cannot pass unnoticed.
+    expect(provider.consensusLimits.operationCostBudgetPerByte).not.toBe(MOCK_RELAXED_OPERATION_COST);
     expect(provider.consensusLimits).not.toBe(MOCK_CONSENSUS_LIMITS);
     expect(provider.policy).toEqual({ enforceDust: false });
   });

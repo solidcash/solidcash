@@ -511,16 +511,21 @@ export function wrapEthersBN(value: bigint): EthersBigNumberish {
 /** Wrap bigint leaves so ethers-v5-style method chains work on view/mapping returns. */
 export function wrapNumericForEthers(value: unknown): unknown {
   if (typeof value === 'bigint') return wrapEthersBN(value);
-  if (Array.isArray(value)) return value.map(wrapNumericForEthers);
+  // Arrays and structs are rewritten IN PLACE rather than copied. `attachDecodedAccessors` has already
+  // attached `.toObject()` / `.toArray()` as NON-ENUMERABLE properties, and both a spread and `.map()`
+  // silently drop those - the two features landed together and cancelled each other out, surfacing as
+  // "pt.toObject is not a function" on a value that decoded fine.
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) value[i] = wrapNumericForEthers(value[i]);
+    return value;
+  }
   if (value && typeof value === 'object' && !(value instanceof Uint8Array)) {
     const obj = value as Record<string, unknown>;
-    // Struct-like: wrap numeric fields in place for .amount / .base access
     if (!('_isBigNumber' in obj)) {
-      const out: Record<string, unknown> = { ...obj };
-      for (const [k, v] of Object.entries(out)) {
-        if (typeof v === 'bigint') out[k] = wrapEthersBN(v);
+      for (const k of Object.keys(obj)) {
+        if (typeof obj[k] === 'bigint') obj[k] = wrapEthersBN(obj[k] as bigint);
       }
-      return out;
+      return obj;
     }
   }
   return value;

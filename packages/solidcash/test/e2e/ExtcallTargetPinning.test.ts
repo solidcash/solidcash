@@ -49,8 +49,8 @@ describe('sound external-call target pinning', () => {
       .withExternalCall(counterSc, 'increment', [alicePub, sig()])
       .send();
     expect(tx.txid).toBeDefined();
-    expect((await readerSc.getState()).bumps).toBe(1n);
-    expect((await counterSc.getState()).counter).toBe(6n);
+    expect(BigInt((await readerSc.getState()).bumps.toString())).toBe(1n);
+    expect(BigInt((await counterSc.getState()).counter.toString())).toBe(6n);
   });
 
   it('NEGATIVE: co-spending a different contract than the one in state is rejected (target substitution)', async () => {
@@ -89,7 +89,8 @@ describe('sound external-call target pinning', () => {
   it('P2: an address-literal target compiles and records addressLiteral in the ABI (un-satisfiable pin)', () => {
     const art = compileString(
       'interface IFoo { function x() external; } '
-      + 'contract C { function g() external { IFoo(0x1234567890123456789012345678901234567890).x(); } }',
+      + 'contract C { function g() external { '
+      + 'IFoo(0x1234567890123456789012345678901234567890).x(); require(true); } }',
       { solidityImportCompat: true, forceStateful: true },
     );
     const g = art.abi.find((f) => f.name === 'g')!;

@@ -33,7 +33,7 @@ async function run(
   console.log('OK', label);
 }
 
-describe('approve after C2 snapshot fix', () => {
+describe('approve after vmap snapshot fix', () => {
   it('nested int + event', async () => {
     await run('nested int + event', `
       contract T() {

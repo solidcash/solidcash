@@ -32,7 +32,7 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 - `import` (wildcard / namespace / selective); inline `assembly { OP_... }`; `console.log` (debug-only)
 
 **Stateful contracts (covenants)**
-- State variables, mappings, and dynamic arrays as on-chain state. Supported mapping value shapes use the C2
+- State variables, verified mappings (vmaps), and dynamic arrays as on-chain state. Supported mapping value shapes use the vmap
   sorted/exclusion-proof backend by default; state also uses data, entry, value-chunk, token-container, and
   satoshi-container UTXOs.
 - `event`/`error` with `emit`/`revert`
@@ -61,7 +61,7 @@ A high-level, Solidity-flavored language for Bitcoin Cash smart contracts. Compi
 - **`solidc` compiler** - ANTLR4 (`SolidCash.g4`) -> AST -> ordered compatibility/core lowering -> symbols/types/
   layouts -> safety passes -> codegen -> optimizer compatibility check -> artifact
 - **Compiler options** - canonical list in `packages/utils/src/artifact.ts`; includes enforcement, import/EVM
-  compatibility, commitment/layout, C2 mappings, external libraries, chain/oracle, library-branding, and recovery modes
+  compatibility, commitment/layout, verified mappings, external libraries, chain/oracle, library-branding, and recovery modes
 - **Artifact** - bytecode, ABI, `debug` (source map, requires, logs, per-function debug), `functionBodies` (OP_INVOKE dispatch), `fingerprint`, `stateLayout`
 - **Security** - auto-injected `tx.locktime` malleability guard; stateful contracts restricted to `p2sh32`
 - **`@solidcash/testing`** - Hardhat-style framework: accounts, config, environment, contract factory, compile helpers, CLI

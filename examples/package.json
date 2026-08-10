@@ -12,9 +12,11 @@
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",
-    "@types/node": "^22.17.0",
     "solidc": "^0.13.0",
-    "solidcash": "^0.13.0",
+    "solidcash": "^0.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.17.0",
     "eslint": "^8.56.0",
     "typescript": "^5.9.2"
   }

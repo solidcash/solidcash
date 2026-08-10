@@ -13,7 +13,7 @@ import { alicePkh } from '../fixture/vars.js';
  *
  * The pin used to be emitted only when a collection owned exactly ONE entry slot in the function. A slot is
  * created by a READ as well as by a write, while the batch route is entered on the count of WRITES, so
- * `m[a] = m[b] + 1` had two slots, one write, no batch verifier and no pin - and both C2 arms then accepted a
+ * `m[a] = m[b] + 1` had two slots, one write, no batch verifier and no pin - and both vmap arms then accepted a
  * fabricated node for a key the handler never wrote. `S1ReviewMultiSlotForgery.test.ts` owns that two-slot
  * regression; this file covers the shapes that file does not: three slots, a read of the SAME key as the write,
  * a still-suppressed loop shape, and the delegate condition.
@@ -185,12 +185,12 @@ describe('S1 collection-address cardinality across multi-slot shapes', () => {
 
 /**
  * The fifth suppressing condition is `!this.currentFunctionIsDelegate`. Worker A reported it as untested rather
- * than cleared, so it is measured here instead of reasoned about: on this baseline a C2 sorted mapping write
+ * than cleared, so it is measured here instead of reasoned about: on this baseline a vmap sorted mapping write
  * inside a `delegate` function has no settling instance at all, so there is no honest transaction to attack.
- * The scalar control uses the same proxy shape and settles, so the failure is the C2 write and not the harness.
+ * The scalar control uses the same proxy shape and settles, so the failure is the vmap write and not the harness.
  */
-// The scalar control is the exact pair `Delegatecall.test.ts` already settles; the C2 pair adds one mapping and
-// one delegate function to it, so the only difference between the two runs is the C2 write itself.
+// The scalar control is the exact pair `Delegatecall.test.ts` already settles; the vmap pair adds one mapping and
+// one delegate function to it, so the only difference between the two runs is the vmap write itself.
 const DELEGATE_SCALAR_IMPL = `pragma solidcash >=0.8.0;
 contract DelegateImpl() {
     bigint counter;
@@ -207,7 +207,7 @@ contract DelegatecallProxy() {
         require(input.length > 0);
     }
 }`;
-const DELEGATE_C2_IMPL = `pragma solidcash >=0.8.0;
+const DELEGATE_VMAP_IMPL = `pragma solidcash >=0.8.0;
 contract DelegateImpl() {
     bigint counter;
     mapping(bytes20 => bigint) balances;
@@ -217,7 +217,7 @@ contract DelegateImpl() {
     }
     function authorize(pubkey pk, sig s) unsafe { require(checkSig(s, pk)); }
 }`;
-const DELEGATE_C2_PROXY = `pragma solidcash >=0.8.0;
+const DELEGATE_VMAP_PROXY = `pragma solidcash >=0.8.0;
 contract DelegatecallProxy() {
     bigint counter;
     mapping(bytes20 => bigint) balances;
@@ -254,11 +254,11 @@ async function runDelegate(
 }
 
 describe('S1 cardinality: the delegate suppressing condition, measured', () => {
-  it('has no settling instance: a C2 write inside a delegate function fails at the proxy', async () => {
-    // Recorded, not endorsed. When delegate C2 writes are enabled, the pin's delegate exclusion must be
+  it('has no settling instance: a vmap write inside a delegate function fails at the proxy', async () => {
+    // Recorded, not endorsed. When delegate vmap writes are enabled, the pin's delegate exclusion must be
     // revisited before this shape is admitted - it is currently guarding an unreachable shape.
     const outcome = await runDelegate(
-      DELEGATE_C2_IMPL, DELEGATE_C2_PROXY, 'credit', [alicePkh, 7n], { counter: 0n },
+      DELEGATE_VMAP_IMPL, DELEGATE_VMAP_PROXY, 'credit', [alicePkh, 7n], { counter: 0n },
     );
     expect(outcome).toBe(
       'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.',

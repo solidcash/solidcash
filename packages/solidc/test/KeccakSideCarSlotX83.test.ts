@@ -194,10 +194,10 @@ describe('X83: the three shapes that compiled must still compile', () => {
     expect(entry.keccakPreimageParams).toEqual(['a', 'a']);
   });
 
-  it('CONTROL on the index numbering: two straight-line calls reserve slots [0, 1] in emission order', () => {
+  it('CONTROL on batching: two straight-line calls share slot 0 and retain emission order', () => {
     const entry = entryOf(TWO_STRAIGHT);
     expect(entry.keccakInLoop).toBeFalsy();
-    expect(sideCarSlots(entry)).toEqual([0, 1]);
+    expect(sideCarSlots(entry)).toEqual([0]);
     // Emission order, not declaration order of the state variables: `a` is hashed first.
     expect(entry.keccakPreimageParams).toEqual(['a', 'b']);
   });

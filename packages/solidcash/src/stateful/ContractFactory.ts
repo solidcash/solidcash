@@ -205,7 +205,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const ctorCount = this.artifact.constructorInputs.length;
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
-    // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, C2 slot/proof
+    // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, vmap slot/proof
     // operands) are SDK-filled, so counting them made `expected` too large and the trailing-overrides check
     // below never matched: the overrides object was then taken as a constructor argument and forwarded to
     // __construct, which failed with an off-by-one argument count.
@@ -301,13 +301,17 @@ export class ContractFactory<T extends Artifact = Artifact> {
 
     const contract = result.contract as DeployedContract<T>;
     if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
-    // Bind the deploying Signer as both the logical-nonce source AND the call funder. Without `_signer`,
-    // a post-deploy call that reads msg.sender / tx.origin (Ownable.onlyOwner, ERC20.approve, mint, ...)
-    // falls back to P2SH32 OP_TRUE dummy funders, so emitTxOrigin sees no native P2PKH input and the
-    // covenant OP_VERIFYs an empty origin (MistSwap SushiToken mint/approve/renounceOwnership).
+    // ethers parity: `factory.deploy()` returns a contract CONNECTED to the factory's signer, so a call on it
+    // needs no explicit `.connect(signer)`. Without `_signer` the builder computed `neededFunders` correctly and
+    // then skipped provisioning them, because that whole block is gated on a signer being present. Nothing
+    // errored: the transaction was simply built without the sender's native P2PKH input (it falls back to P2SH32
+    // OP_TRUE dummy funders), so any covenant reading msg.sender / tx.origin - emitTxOrigin scans for exactly
+    // that input - OP_VERIFYs an empty origin. It bit SplitContractBundle hardest, whose `deployed.call.f()`
+    // never connects explicitly (SplitFacetMsgSender.test.ts), and every MistSwap SushiToken
+    // mint/approve/renounceOwnership route.
     if (signer) {
-      (contract as StatefulContract)._logicalNonceSigner = signer;
       (contract as StatefulContract)._signer = signer;
+      (contract as StatefulContract)._logicalNonceSigner = signer;
     }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;

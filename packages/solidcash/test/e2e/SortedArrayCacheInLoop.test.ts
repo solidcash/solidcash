@@ -5,11 +5,11 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// A C2 array entry written more than once in one call (`for(..) m[k][j]=v` / `m[k].push(v)`, read-after-write
+// A vmap array entry written more than once in one call (`for(..) m[k][j]=v` / `m[k].push(v)`, read-after-write
 // `m[k][j]=m[k][j-1]+1`, or consecutive `m[k][0]=x; m[k][2]=z`) is a RUNTIME cache-in-loop desugar: read m[k] once,
 // mutate a LOCAL array (all reads+writes redirected), flush `m[k]=local` as ONE upsert - never unrolled (byte-limit
 // safe). Reads redirect to the local, so read-after-write reads the value being built.
-describe('sorted C2 array loop write (runtime cache-in-loop)', () => {
+describe('sorted vmap array loop write (runtime cache-in-loop)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
@@ -80,7 +80,7 @@ describe('sorted C2 array loop write (runtime cache-in-loop)', () => {
   });
 });
 
-describe('sorted C2 array CONSECUTIVE straight-line writes (function-scoped cache)', () => {
+describe('sorted vmap array CONSECUTIVE straight-line writes (function-scoped cache)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   it('m[k][0]=x; m[k][2]=z; (two straight-line element writes) coalesce to one upsert', async () => {

@@ -5,9 +5,9 @@ roughly what they'd take, but not shipped because the value/risk/effort did not 
 the "we looked, here's why not yet, here's the trigger to revisit" list, distinct from unknown/unscoped gaps.
 
 Entries are chronological research notes and may describe intermediate states that were later superseded. In
-particular, all references to `sortedMappings`, `sortedMappingsAll`, a non-C2/default entry backend, unpinned value
-chunks, or pending C2 compiler/SDK plumbing predate the completed 2026-07-22 C2 merge. Current mapping behavior is
-defined only by [`sorted-mapping-c2.md`](sorted-mapping-c2.md); every mapping is C2 and unsupported shapes fail
+particular, all references to `sortedMappings`, `sortedMappingsAll`, a non-vmap/default entry backend, unpinned value
+chunks, or pending vmap compiler/SDK plumbing predate the completed 2026-07-22 vmap merge. Current mapping behavior is
+defined only by [`verified-mappings.md`](verified-mappings.md); every mapping is vmap and unsupported shapes fail
 closed. Do not use historical opt-out instructions from this log.
 
 Related: `examples/solidity-corpus/ATTENTION.md` (autonomous-grind decisions + soundness caveats),
@@ -70,12 +70,12 @@ into if/else (`EarlyReturnTransformation` had no `UncheckedNode` case + skipped 
 `visitBranch` desynced the fall-through stack (this ALSO silently miscompiled the contract-method form). (2)
 `Math.mulDiv` (dead, fully-lowerable assembly) escaped `PruneUnreachableFreeFunctions`' post-lowering assembly check;
 `LowerInlineAssembly` now stamps `hadInlineAssembly` before lowering so the prune drops it. See the codegen deferrals
-below (§6) - the REMAINING EACCToken walls are both soundness-critical C2 features (still 1/15):
+below (§6) - the REMAINING EACCToken walls are both soundness-critical vmap features (still 1/15):
 
-**`_useNonce` (value-returning C2-writer inline) - RESOLVED 2026-07-19 (commit `aedd13ca`).** OZ `Nonces._useNonce`
-`unchecked { return _nonces[owner]++; }` (EIP-2612 permit) is a value-returning internal helper doing a C2 mapping RMW;
+**`_useNonce` (value-returning vmap-writer inline) - RESOLVED 2026-07-19 (commit `aedd13ca`).** OZ `Nonces._useNonce`
+`unchecked { return _nonces[owner]++; }` (EIP-2612 permit) is a value-returning internal helper doing a vmap mapping RMW;
 it co-spends the sorted entry slots (block layout) so it must inline into its entry caller. The first attempt was
-VM-proven UNSOUND (the `3be9a3eb` `return m[k]++` reconstruction is POSTVAL-MINUS-1, `m[k]=m[k]+1; return m[k]-1`, a C2
+VM-proven UNSOUND (the `3be9a3eb` `return m[k]++` reconstruction is POSTVAL-MINUS-1, `m[k]=m[k]+1; return m[k]-1`, a vmap
 read-AFTER-write of the same co-spent entry -> OP_VERIFY fail). FIXED, three parts, each VM-adversarial-verified
 (`NonceRmwInline.test.ts`): (1) `DesugarPostfixExpressions` lowers a mapping return-postfix to READ-OLD-TEMP
 (`__pf=m[k]; m[k]=m[k]+1; return __pf`) where the RMW read COALESCES with the single co-spend (reduces to the sound
@@ -94,15 +94,15 @@ REVERT at runtime (or, with multitransfer's 2nd same-key write, crash `__entry_k
 `expression instanceof BoolLiteralNode` -> non-bool falls to the clean `SortedMappingCodegenPendingError`. Sound
 (fail-closed earlier; VM-proven a non-bool insert loop reverts - `SortedInsertLoopNonBool`).
 
-**`multitransfer` (C2 two-write + diff-key RMW-in-loop) - two pieces, one PARTLY SHIPPED, one deep.** `for (i)
-_transfer(msg.sender, recipients[i], amounts[i])` inlines to TWO C2 writes per iteration: `_balances[from]` (SAME key =
+**`multitransfer` (vmap two-write + diff-key RMW-in-loop) - two pieces, one PARTLY SHIPPED, one deep.** `for (i)
+_transfer(msg.sender, recipients[i], amounts[i])` inlines to TWO vmap writes per iteration: `_balances[from]` (SAME key =
 msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still a clean fail-close.
 
-- **(a) SAME-KEY scalar RMW-in-loop - IDENTIFIER key SHIPPED (2026-07-19, `2f780468`, `C2ScalarCacheInLoop`).**
-  `CacheMappingEntryInLoop` now caches a scalar C2 entry written to the same INVARIANT identifier key more than once /
+- **(a) SAME-KEY scalar RMW-in-loop - IDENTIFIER key SHIPPED (2026-07-19, `2f780468`, `VMapScalarCacheInLoop`).**
+  `CacheMappingEntryInLoop` now caches a scalar vmap entry written to the same INVARIANT identifier key more than once /
   in a loop: `for(i) balance[owner] -= amts[i]` reads `balance[owner]` once -> mutates a local -> one upsert (was a
   double-spend revert). VM-proven exact (100-10-20-30 = 40, wrong value reverts). Also makes straight-line `m[k]+=a;
-  m[k]+=b` coalesce. **SINGLE `msg.sender` / `tx.origin`-keyed C2 = RESOLVED 2026-07-19 (`110e4e43`, MsgSenderC2.test.ts,
+  m[k]+=b` coalesce. **SINGLE `msg.sender` / `tx.origin`-keyed vmap = RESOLVED 2026-07-19 (`110e4e43`, MsgSenderVMap.test.ts,
   VM-proven).** On BCH a direct call's msg.sender = tx.origin = the first native P2PKH input's lockscript
   (`emitTxOrigin`). Shipped: (1) a `msgSender` keySource kind (`classifyKeySource` detects a NullaryOp MSG_SENDER/
   TX_ORIGIN key), carried through `KeySourceInfo`/`KeySourceAbi` (+`senderOp`) into the artifact; (2) SDK computes slot =
@@ -115,7 +115,7 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   (`assertSortedKeyDrivable`, `bfbd652b`) is REMOVED - the case is supported. Needs a connected Signer (else a clear
   error). Cross-contract msg.sender (non-zero `_msgSenderCategory` = a caller contract, not a P2PKH) is out of scope
   (reverts, fail-closed). **multitransfer's DEBIT half `for(i) bal[msg.sender] -= amts[i]` = RESOLVED 2026-07-19
-  (`12dafc89`, MsgSenderC2):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
+  (`12dafc89`, MsgSenderVMap):** `CacheMappingEntryInLoop` now accepts an INVARIANT nullary key (a `KeyKind` = id |
   nullary), so the msg.sender RMW-in-loop reads bal[msg.sender] once -> accumulates -> ONE flush (the flush is the
   proven single msg.sender write). VM-proven: `bal[msg.sender]=100` then `debitMany([10,20,30]) = 40` exactly, `chk(60)`
   reverts. So multitransfer's DEBIT works; only the CREDIT (b) remains.
@@ -218,7 +218,7 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   now (`6ca4cea8`: pending-defer activated for op `-`, its insert path gated off - a debit can't create an entry).
   VM-proven (FullMultiTransfer [bob,carol,bob] -> bob += 40; SortedUpsertLoop per-key 3 += 30 / new 5 = 30, scalar
   3 += 100 / new 9 = 100 / non-adjacent [3,7,3] grouped / const set idempotent / scalar -= [3,7,3]-30 -> 3=40,7=170).
-  **The C2 ERC-20 multiTransfer surface is COMPLETE end-to-end** (every same-gap shape, order-independent, +
+  **The vmap ERC-20 multiTransfer surface is COMPLETE end-to-end** (every same-gap shape, order-independent, +
   self-transfer, + duplicate incl. scalar). The only residual is N per tx bounded by transaction size - and that bound
   is GENEROUS (thousands of entries per tx), so it is a practical non-issue; pagination across txs covers larger still.
 
@@ -246,16 +246,16 @@ msg.sender) + `_balances[to] += amt` (DIFFERENT key each iter). Full form still 
   Only the loop var `= i` (not a param/array) and `= <default>`/delete truly fail closed. A reassigned param or
   non-param local mints a mismatching/empty tail and reverts (sound).
 
-**C2 SURVEY 2026-07-19 (`scratchpad/c2probe.mjs` + VM; superseded in part by the 2026-07-22 merge audit).** The
+**vmap SURVEY 2026-07-19 (`scratchpad/vmap-probe.mjs` + VM; superseded in part by the 2026-07-22 merge audit).** The
 surveyed shapes are SOUND (fail-closed where incomplete). It did not cover two distinct straight-line absent-key
 writes sharing one predecessor: fixed upserts independently select the same input and trailing NEW output. That shape
 is sound only because transaction construction rejects the duplicate input, but is not complete. The required batch
-transition is specified in `c2-codegen-optimization.md` under "Straight-line multi-key writes".
+transition is specified in `vmap-codegen-optimization.md` under "Straight-line multi-key writes".
 COMPLETE+SOUND: single-key read/write/RMW/delete (all value types incl chunked long bytes/string), nested/composite/
 address keys, expr-key nested (`m[hash160(pk)][b]=v`), value-returning RMW helper, bool insert loop, LOOP-INVARIANT
 int-param value insert loop (`for(i) m[ks[i]] = v`, `SortedInsertLoopValue`), SAME-identifier-key scalar RMW-in-loop
 (`for(i) balance[owner] -= amts[i]`, `2f780468`), SINGLE `msg.sender`/`tx.origin`-keyed read/write/update
-(`110e4e43`, MsgSenderC2 - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
+(`110e4e43`, MsgSenderVMap - msgSender keySource + signer P2PKH slot + forced sender funder; cross-sender-isolated),
 `msg.sender`/`tx.origin` scalar RMW-IN-LOOP (`for(i) bal[msg.sender] -= amts[i]` = multitransfer debit, `12dafc89`),
 DIFF-KEY per-iteration credit loop `for(i) bal[recipients[i]] += amts[i]` - both UPDATE (existing) AND INSERT (new
 recipient, `125cb014`) - int/bytes20/address keys, + the FULL ERC-20 multiTransfer (debit+credit in one tx, `090f4e35`)
@@ -274,12 +274,12 @@ multiTransfer entry above. The `= <param>` wart is RESOLVED too (`d08584f2`): it
 (update+insert), keeping same-gap chaining. STILL FAIL-CLOSED (sound, not complete): scalar `-=` duplicate (no
 pending-defer), cross-contract msg.sender, 2D `m[k][i][j]`, function-pointer values.
 
-**One real HOLE found + FIXED (commit `af6e894a`): C2 `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
+**One real HOLE found + FIXED (commit `af6e894a`): vmap `delete m[k]` in a DYNAMIC loop.** `visitMappingDelete`'s sorted
 branch routed to `emitSortedValueUpsert` (a FIXED-slot co-spend) with NO `plainLoopDepth` guard (unlike
 `visitMappingAssign`), so `for(i) delete w[ks[i]]` compiled to a single-slot delete in a loop - the covenant pinned
 only ONE iteration and left the rest UN-covenanted (an exclusion-proof hole). Now fails closed at `plainLoopDepth > 0`.
 VM-verified sound (no fix needed): consecutive same-entry scalar RMW `m[k]+=a; m[k]+=b` fail-closes (double-spend
-revert), never a partial store (`C2ScalarMultiWrite`). CLARITY nit RESOLVED 2026-07-19 (`92a13237`): 2D `m[k][i][j]`
+revert), never a partial store (`VMapScalarMultiWrite`). CLARITY nit RESOLVED 2026-07-19 (`92a13237`): 2D `m[k][i][j]`
 on `mapping(K => T[][])` (read AND write) now fails closed with a clean `MultiDimArrayValueAccessError` instead of the
 confusing `Found type '...' where type 'undefined'` (the excess-key guard `keys.length > allKeyTypes.length` - already
 used by the write - now also guards the read, both throwing the dedicated error; single-level `m[k][i]` still compiles).
@@ -525,18 +525,18 @@ the syntax layer), or the corpus grows enough that maintaining two source templa
 
 ---
 
-## Sorted-mapping enumeration + C2-default: the four followups after VALUES linkage — 2026-07-16
+## Sorted-mapping enumeration + vmap-default: the four followups after VALUES linkage — 2026-07-16
 
-VALUES-mode trustless iteration over a sorted (C2) `enumerable mapping` SHIPPED (commits 07cd085a SDK, 42eaed88
+VALUES-mode trustless iteration over a sorted (vmap) `enumerable mapping` SHIPPED (commits 07cd085a SDK, 42eaed88
 codegen, tests SortedMappingIteration.test.ts; the covenant co-spends the HEAD sentinel and walks the nextKey
 chain to the tail, so omission/truncation revert at the VM). Its three named "next steps" plus the value-width
 gap were assessed and DEFERRED - each for a concrete, grounded reason, not for lack of time.
 
 ### 1. KEYS / ENTRIES iteration over a SORTED mapping - RESOLVED for fixed-width keys (2026-07-16, commit 7b911613)
 
-**What.** `for (k in this.m)` / `for (k, v of this.m.entries)` when `m` is a sorted (C2) enumerable mapping.
+**What.** `for (k in this.m)` / `for (k, v of this.m.entries)` when `m` is a sorted (vmap) enumerable mapping.
 
-**Resolution.** Shipped via option (a), the witness-key protocol - ADDITIVELY (no change to the byte-verified C2
+**Resolution.** Shipped via option (a), the witness-key protocol - ADDITIVELY (no change to the byte-verified vmap
 read/write/delete core): the caller supplies the keys (`setIterationKeys`), the SDK orders them to the ascending
 chain and injects them as a concatenated fixed-width blob (a conditionally-injected `__internal__collectionIterKeys_N`
 param, sorted-KEYS/ENTRIES only so other ABIs are untouched), and the linkage covenant per entry splits keyWidth
@@ -550,49 +550,49 @@ single key type iterates (composite/nested keys are still out - no single preima
 properties: keys come out in H(key) (hash) order, and the caller must know all keys (owner-driven enumeration;
 the raw key is not on-chain). DEFERRAL #1 FULLY RESOLVED.
 
-### 2. C2 sorted backend as the DEFAULT for plain `mapping` - SHIPPED (2026-07-17, commit 79d00698)
+### 2. vmap sorted backend as the DEFAULT for plain `mapping` - SHIPPED (2026-07-17, commit 79d00698)
 
-**DONE.** Every mapping whose value type C2 can store is C2-backed BY DEFAULT (exclusion-proof / unforgeable
+**DONE.** Every mapping whose value type vmap can store is vmap-backed BY DEFAULT (exclusion-proof / unforgeable
 reads = Solidity storage parity) - no flag. Opt out per contract with `{ sortedMappingsAll: false }` (then
-`sortedMappings` names specific mappings to keep C2). A mapping whose value C2 cannot store (an array) falls back
+`sortedMappings` names specific mappings to keep vmap). A mapping whose value vmap cannot store (an array) falls back
 to the default entry model via a value-type guard in compiler.ts, so unsupported shapes keep compiling. The
-prior C2 feature work (computed-key auto-derivation, deploy-time HEAD init, value types, iteration keys, RMW)
+prior vmap feature work (computed-key auto-derivation, deploy-time HEAD init, value types, iteration keys, RMW)
 made the flip safe. The migration: the ~104 tests that seed/assert the default entry model opt out via a
 one-line per-file compileString shim (a behavioral no-op). Result: solidc 2054 green, solidcash 2944 green (lone
-failure = pre-existing BCH_2023_05 vmTarget, no mappings). C2-as-default is DONE end to end.
+failure = pre-existing BCH_2023_05 vmTarget, no mappings). vmap-as-default is DONE end to end.
 
 **Follow-ups (not blocking).** (a) The ~104 opt-out'd legacy tests exercise the DEFAULT ENTRY MODEL; over time
-migrate the representative ones to C2 seeding so the new default is directly tested (SortedMappingsAllParity +
-the SortedMapping* suite already cover the C2 path). (b) P5b (item 3) for array/long-value mappings, which
+migrate the representative ones to vmap seeding so the new default is directly tested (SortedMappingsAllParity +
+the SortedMapping* suite already cover the vmap path). (b) P5b (item 3) for array/long-value mappings, which
 currently fall back to the default model (no parity yet). (c) A future major version could remove the default
 entry model + `sortedMappingsAll: false` entirely once nothing needs it.
 
-**Why deferred - GAUGED 2026-07-16.** Temporarily defaulting all mappings to C2 measured the blast radius:
-COMPILE level only 1/75 StructsMappings breaks (C2 compiles fine, different bytecode); E2E level ~half of the
-plain-mapping tests break, for a MIX of reasons - (a) seeding: tests seed the default entry model, so the C2
-covenant hits "missing HEAD sentinel" (mechanical migration); (b) real C2 CODEGEN/SDK gaps the flip surfaced.
+**Why deferred - GAUGED 2026-07-16.** Temporarily defaulting all mappings to vmap measured the blast radius:
+COMPILE level only 1/75 StructsMappings breaks (vmap compiles fine, different bytecode); E2E level ~half of the
+plain-mapping tests break, for a MIX of reasons - (a) seeding: tests seed the default entry model, so the vmap
+covenant hits "missing HEAD sentinel" (mechanical migration); (b) real vmap CODEGEN/SDK gaps the flip surfaced.
 So the flip is a staged migration, not a one-line default change.
 
-**Progress (gaps closed 2026-07-16/17).** Several surfaced gaps now fixed, moving C2 toward feature-complete:
+**Progress (gaps closed 2026-07-16/17).** Several surfaced gaps now fixed, moving vmap toward feature-complete:
 computed/local-key RMW `balances[pkh]=balances[pkh]+x` COMPILES (368efcfe: upsert hashes the key before the
 value so the last-use ROLL does not eat the key) and now AUTO-DERIVES with NO withEntryKey (2ac3941e + ae3fb3bf):
 the artifact carries each computed key's canonical (`call:hash160(id:pk)`) as expressionLabel - for a direct key
 directly, for a LOCAL `pkh=hash160(pk)` by inlining the local's initializer canonical - and the SDK's
 evalComputedKey evaluates it (hash160/sha256/ripemd160/hash256 + casts) so its co-spend agrees with the
 covenant's on-chain hash. Matches Solidity's auto-resolution. Value-type coverage also widened (P5a, item 3). So
-the "computed key" C2 gap is CLOSED for the common hash-of-arg shapes (a reassigned local / non-hash op falls
+the "computed key" vmap gap is CLOSED for the common hash-of-arg shapes (a reassigned local / non-hash op falls
 back fail-closed, resolvable with withEntryKey).
 
-**DEPLOY-time HEAD init DONE (8f40abc3).** The genesis tx now mints HEAD[slot 0 | nextKey 0] for each C2 mapping
-the constructor did not populate, so a freshly deployed (unseeded) C2 contract's first read/write works - no
-"missing HEAD". Funder-authorized genesis; later reads/writes pin the HEAD via the covenant. So a real C2-default
+**DEPLOY-time HEAD init DONE (8f40abc3).** The genesis tx now mints HEAD[slot 0 | nextKey 0] for each vmap mapping
+the constructor did not populate, so a freshly deployed (unseeded) vmap contract's first read/write works - no
+"missing HEAD". Funder-authorized genesis; later reads/writes pin the HEAD via the covenant. So a real vmap-default
 CONTRACT is now deployable + usable end-to-end.
 
 **What it'd take (remaining).** (1) P5b (chunked values) for unbounded string/bytes mappings > 64 B (or a
-fail-closed carve-out). (2) The FLIP itself + test-suite migration: flip the default to C2, and the ~half of e2e
-tests that SEED default-model entries need C2 seeding (HEAD + sorted entries) - either per-test or via a C2-aware
+fail-closed carve-out). (2) The FLIP itself + test-suite migration: flip the default to vmap, and the ~half of e2e
+tests that SEED default-model entries need vmap seeding (HEAD + sorted entries) - either per-test or via a vmap-aware
 seed helper; an opt-out `plainMappings` option would let the flip land with legacy tests opting out while the
-default is C2. (3) Sweep for further per-shape C2 gaps (the gauge only sampled). The feature gaps are largely
+default is vmap. (3) Sweep for further per-shape vmap gaps (the gauge only sampled). The feature gaps are largely
 closed now (computed keys, deploy init, value types, iteration keys, RMW) - the remaining work is the coordinated
 flip + seeding migration, best done as a dedicated pass.
 
@@ -605,14 +605,14 @@ closed shrinks the eventual flip.
 entry commitment tail as `len(4 B LE) ++ value` (<= 128 B total, real-chain-valid), so a `mapping(K => bytes|string)`
 gets the same exclusion proofs as int/bytesN values. Closes the common short-string/bytes case (symbols, URIs, names).
 
-**P5b DONE (2026-07-17).** The HARD REQUIREMENT ("c2 must be default, even for data longer than ~64B") is met:
-`mapping(K => bytes|string)` is C2 by default for values of ANY practical length. A value > 60 B stores
+**P5b DONE (2026-07-17).** The HARD REQUIREMENT ("vmaps must be the default, even for data longer than ~64B") is met:
+`mapping(K => bytes|string)` is vmap by default for values of ANY practical length. A value > 60 B stores
 `len(4 B LE) ++ sha256(value)` (100 B commitment, fits the 128 B token-commitment limit) and the full value
 persists off-commitment in per-(collection, slot, digest) chunk NFTs. A read reassembles the chunks into a witness
 and the covenant verifies `sha256(witness) == storedHash` - a forged/tampered/missing witness fails the read CLOSED
 (never a wrong value). Design E (SDK-minted, covenant-UNPINNED chunks): the covenant stores only the hash, so no
 chunk co-spend loop and no OP_TXOUTPUTCOUNT coupling is needed - the value chunks are extra trailing 0x01 mutable
-outputs the C2 write covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 conservation
+outputs the vmap write covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 conservation
 is skipped for entry-access functions). The 10,000 B VM stack-element limit caps an on-chain-READ value (the witness
 must be hashed on-stack) - the same ceiling any storage mechanism faces, since a value the contract compares must be
 loaded whole; not a chunk-design limit.
@@ -661,7 +661,7 @@ LongValue.test.ts "overwrite GC" (v1's 3 chunks gone, only v2's 3 remain).
 **GENERAL large-value (STRUCT + ARRAY) chunking - SHIPPED (2026-07-17).** The digest+chunk mechanism is now
 BLOB-AGNOSTIC: `isChunkableValueType` (utils, the single source of truth) = unbounded bytes/string OR struct OR
 dynamic array `T[]`. Any such value chunks off-commitment when > 60 B, so a `mapping(K => struct)` /
-`mapping(K => T[])` is C2 by default (real-chain-valid) regardless of size. address/bytesN/int stay verbatim (always
+`mapping(K => T[])` is vmap by default (real-chain-valid) regardless of size. address/bytesN/int stay verbatim (always
 within 128 B). Delivered along the CLEAN DESIGN below:
 - Reads: `m[k]` / field-read `m[k].f` / element-read `m[k][i]` all go through emitSortedSetRead (materialize via the
   witness, chunking-transparent) then the existing struct/array decode (emitArrayElementExtract for `[i]`). Added
@@ -688,8 +688,8 @@ verification, but a value that resolves INLINE pins no chunks (emitSortedValueCh
 survived and got minted, and a later chunked read of the same slot then failed to parse it. FIX (StatefulContract, in
 the post-convergence cleanup): drop any unresolved `'00'` from the FINAL value-chunk commitments - a real chunk
 commitment is always long (slot++digest++i++data), never the 1-byte `'00'`, so this cleans inline results without
-touching chunked ones. The compiler.ts `pushPopMappings` opt-out was REMOVED (array mappings with push/pop are C2
-again). Test: SortedMappingArrayElementWrite "push/pop under C2" (INSERT empty->[v], inline->chunked, chunked->chunked,
+touching chunked ones. The compiler.ts `pushPopMappings` opt-out was REMOVED (array mappings with push/pop are vmap
+again). Test: SortedMappingArrayElementWrite "push/pop under vmap" (INSERT empty->[v], inline->chunked, chunked->chunked,
 pop chunked->inline, all with element reads). The legacy DEFAULT-model push/pop suites (MappingArrayPush, NoArg/This
 Prefix/IndexedFieldArrayPush) opt out via `sortedMappingsAll:false` to keep asserting the entry-model byte format.
 
@@ -727,36 +727,36 @@ this prevents, so it ships only when those fail closed.
 **Revisit if.** A real contract must enumerate/aggregate a mapping whose entry count exceeds one tx's input
 budget (the USDT-scale case that motivated the enumerable/plain split originally).
 
-### 5. C2 value-shape coverage + the default entry model (2026-07-17)
+### 5. vmap value-shape coverage + the default entry model (2026-07-17)
 
-**C2-by-DEFAULT covers every value shape except function pointers.** `mapping(K => V)` is C2-backed by default for V
+**vmap-by-DEFAULT covers every value shape except function pointers.** `mapping(K => V)` is vmap-backed by default for V
 in: int/bigint/bool, bytesN, unbounded bytes/string, address, enum, struct, and arrays (dynamic `T[]` + fixed `T[N]`,
-chunk-aware). A struct with a mapping/array field is field-decomposed into per-field C2 collections.
+chunk-aware). A struct with a mapping/array field is field-decomposed into per-field vmap collections.
 
-**Why ARRAYS are C2-by-default (the parity argument, revisited 2026-07-18).** Briefly considered making arrays opt-in
+**Why ARRAYS are vmap-by-default (the parity argument, revisited 2026-07-18).** Briefly considered making arrays opt-in
 (the exclusion proof only helps array length/presence guards - an absent-key ELEMENT read reverts on the empty-array
 bounds check, not a forgeable value - so the omission surface looked narrow). REVERSED on EVM-parity grounds: the EVM
 makes EVERY storage read unforgeable (the trie commits an array's length slot to 0), so a ported
 `require(orders[user].length == 0)` / presence guard relies on that; leaving arrays on the entry model makes exactly
 that guard omission-forgeable = a silent porter footgun. Plus EVM arrays are unbounded while the entry model caps a
-value at the 128 B commitment. So on both parity dimensions (unforgeable length/presence + no size cap) C2 is the
-faithful choice; the per-read C2 overhead is the parity tax the EVM itself pays via the trie. Uniformity wins: every
+value at the 128 B commitment. So on both parity dimensions (unforgeable length/presence + no size cap) vmap is the
+faithful choice; the per-read vmap overhead is the parity tax the EVM itself pays via the trie. Uniformity wins: every
 mapping read unforgeable, so a porter never has to reason about which reads are safe.
 
-**Only function pointers have NO C2 path.** fn-ptr values go through heavy lowering (LowerBlobFunctionPointers,
-LowerForeignFunctionPointer*) that may transform the mapping before the C2 opt-in, and are rare - deferred.
-Revert-safe: add `FunctionType` to c2StorableValue (needs the import) + sortedValueKind, then test the fn-ptr suite.
+**Only function pointers have NO vmap path.** fn-ptr values go through heavy lowering (LowerBlobFunctionPointers,
+LowerForeignFunctionPointer*) that may transform the mapping before the vmap opt-in, and are rare - deferred.
+Revert-safe: add `FunctionType` to vmapStorableValue (needs the import) + sortedValueKind, then test the fn-ptr suite.
 
-**Default entry-model DELETION** (still gated): (1) fn-ptr values -> C2; (2) migrate the ~110 `sortedMappingsAll:false`
-opt-out'd tests to C2 seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
+**Default entry-model DELETION** (still gated): (1) fn-ptr values -> vmap; (2) migrate the ~110 `sortedMappingsAll:false`
+opt-out'd tests to vmap seeding; (3) delete the entry-model codegen path + the `sortedMappingsAll` / `sortedMappings`
 options. Large mechanical change; do it as a dedicated pass.
 
-### 6. C2-default no-guards: the two deep source-shape blockers (2026-07-18)
+### 6. vmap-default no-guards: the two deep source-shape blockers (2026-07-18)
 
-After the nested/multi-key C2 codegen fix (commit c5c1d5c8) all 4 Unicrow + 11/12 corpus sorted-mapping files
-compile under C2-default. Two source shapes still block a full no-guards flip (both surfaced by EACC Marketplace):
+After the nested/multi-key vmap codegen fix (commit c5c1d5c8) all 4 Unicrow + 11/12 corpus sorted-mapping files
+compile under vmap-default. Two source shapes still block a full no-guards flip (both surfaced by EACC Marketplace):
 
-**(a) A C2 (sorted) mapping write inside a DYNAMIC loop.** `for (uint i; i < xs.length; i++) w[id][xs[i]] = true`
+**(a) A vmap (sorted) mapping write inside a DYNAMIC loop.** `for (uint i; i < xs.length; i++) w[id][xs[i]] = true`
 (Marketplace `whitelistWorkers`). A FIXED-bound loop already works - `UnrollFixedBoundEntryLoop` unrolls it to static
 writes before codegen. The dynamic case previously crashed deep at "Block slot not found: entry[0]" (the write routes
 to `emitSortedValueUpsert`, which needs a fixed entry slot); `visitMappingAssign` now FAILS CLOSED with
@@ -793,7 +793,7 @@ Cross-cutting for any of (1)-(4): a batch-lowering compiler pass (sibling of `Ca
 on `emitSortedValueUpsert`; SDK progressive-trace derivation extended to the sorted structure (co-spend set = entries +
 brackets); the exclusion proof must SURVIVE the batch (reject forged / omitted / misordered / duplicated entries -
 adversarial tests per case); and a per-tx cap on N (large N needs the paginated design, section 4). Soundness-critical:
-a bug reopens the C2 exclusion-proof hole. Revisit for full no-guards; recommended order = (1) then (2), defer (3).
+a bug reopens the vmap exclusion-proof hole. Revisit for full no-guards; recommended order = (1) then (2), defer (3).
 
 **STATUS 2026-07-18: the CODEGEN for the scattered per-iteration insert (item 3) SHIPPED (commit 9c977e14).**
 `emitSortedInsertLoopSetup/Body/Teardown` (GTT) replaces the GTT:10633 fail-close: per iteration compute H(k) for the
@@ -814,9 +814,9 @@ P'->k1->..->kN->P.oldNext. The source-order/slot-order tension is SIDESTEPPED (n
 carries `expected_slot` through the loop and iterates the SORTED OUTPUT chain, not the source-order xs - setup verifies
 P'=P.slot|s1|P.value & expected=P'.next; body reads chain node output[base+1+counter], verifies slot==expected_slot &
 slot<next & value==v & bytecode==addr, sets expected=next; teardown verifies expected==P.oldNext & outcount==counter+1 &
-incount==1. C2-sound WITHOUT a permutation check for positive-membership maps (whitelistWorkers reads
+incount==1. vmap-sound WITHOUT a permutation check for positive-membership maps (whitelistWorkers reads
 `job.whitelist==false || w[jobId][sender]` = absence self-denies only): the covenant just needs the minted chain to be a
-VALID sorted list; WHICH keys (==xs) is job-creator data enforced by the SDK, not a C2 property. VM-verified
+VALID sorted list; WHICH keys (==xs) is job-creator data enforced by the SDK, not a vmap property. VM-verified
 (SortedInsertLoop.test.ts, 4 green): N=1 fresh+populated; N>1 into fresh one call; **NESTED 2-key w[jobId][ks[i]]=true
 (the exact whitelistWorkers shape) N>1 fresh** (composite slot keyToSlotMulti SDK-side, covenant key-agnostic);
 distinct-gap works-or-fails-closed. RESOLVED (`8368019b`): EVERY loop-invariant sorted-set write now routes to the
@@ -845,19 +845,19 @@ it fails closed; proven end to end (SafeErc20ChainTargetPinning.test.ts: correct
 REJECTED, adversarial reassigned-local fails closed). The distinct `memory-COPY struct field` DIRECT case (section
 above) is still deferred - my trace stops at a FieldAccess on a struct-copy local (no whole-struct-copy provenance).
 
-**(c) MULTIPLE writes to the SAME C2 entry in one call (coalescing) - RESOLVED 2026-07-18 (`CacheMappingEntryInLoop`).**
-Surfaced probing C2 ARRAY writes. A single element write `m[k][i]=v` / `push` / `pop` / whole assign works, but two
+**(c) MULTIPLE writes to the SAME vmap entry in one call (coalescing) - RESOLVED 2026-07-18 (`CacheMappingEntryInLoop`).**
+Surfaced probing vmap ARRAY writes. A single element write `m[k][i]=v` / `push` / `pop` / whole assign works, but two
 STRAIGHT-LINE writes to the same entry (`m[k][0]=x; m[k][2]=z`, or a loop `for(j<3) m[k][j]=v`) did NOT: each routes to
 its own `emitSortedValueUpsert`, which CO-SPENDS the entry NFT + emits one output entry, so a second upsert needs a
 second co-spend of the same (now already-spent) input and a second output - the covenant OP_VERIFYs fail (runtime
 revert, fail-closed, not silent). The DEFAULT entry model handles this via `pendingEntryWrites` read-after-write
-chaining; the C2 analog is COALESCING: read the entry ONCE, apply all the surgeries in memory, emit ONE output.
+chaining; the vmap analog is COALESCING: read the entry ONCE, apply all the surgeries in memory, emit ONE output.
 
 **SHIPPED as a RUNTIME cache-in-loop desugar, NOT unrolling** (user steer "all ops should be runtime; unrolling eats the
 byte-limit + has side effects"). `CacheMappingEntryInLoop` (sibling of `CacheDynamicArrayInLoop`, wired right after it in
 compiler.ts, both compile paths) does read-once/mutate-local/write-once for a keyed MAPPING ENTRY `m[k]`:
-`for(..) m[k][j]=v` -> `T[] __c2cache_N = m[k]; for(..) __c2cache_N[j]=v; m[k] = __c2cache_N;` - the loop stays a RUNTIME
-loop over the LOCAL array (one covenant body, no byte blowup, fixed OR dynamic bound), and the C2 write is a SINGLE
+`for(..) m[k][j]=v` -> `T[] __vmapcache_N = m[k]; for(..) __vmapcache_N[j]=v; m[k] = __vmapcache_N;` - the loop stays a RUNTIME
+loop over the LOCAL array (one covenant body, no byte blowup, fixed OR dynamic bound), and the vmap write is a SINGLE
 upsert that already works. FUNCTION-scoped so it also coalesces the straight-line consecutive case
 (`m[k][0]=x; m[k][2]=z`) and conditional writes. An entry is cached when it is written via array ops (element/push/pop)
 inside a loop OR >=2 times, its key is a simple identifier NOT reassigned in the function (loop-invariant), and there is
@@ -873,7 +873,7 @@ STILL fail-closed (sound, not silent): a DIFFERENT-key insert loop `for(i) m[k[i
 covenant, framing (a)); a MULTI-DIMENSIONAL array element write `m[k][i][j]` on `mapping(K => T[][])` (clean
 `UnsupportedTypeError` - it used to CRASH when the excess index was type-checked as a phantom key at
 `allKeyTypes[i] == undefined`; guarded in `TypeCheckTraversal.visitMappingAssign` by `node.keys.length > allKeyTypes.length`);
-and function-pointer element values (no C2 path). Note the existing default-model `UnrollFixedBoundEntryLoop`
+and function-pointer element values (no vmap path). Note the existing default-model `UnrollFixedBoundEntryLoop`
 (whole-entry fixed loops, ArrayAssignNode form) still unrolls - unifying it onto the cache-in-loop model would remove the
 unroll, but it is wired + tested (CorpusGapFixes), a separate change.
 
@@ -965,7 +965,7 @@ chunked-in-loop). Original analysis retained below.
 
 ### Original analysis
 
-**What.** When contract A calls B via `withExternalCall` and B's called function WRITES a C2 (sorted) mapping -
+**What.** When contract A calls B via `withExternalCall` and B's called function WRITES a vmap (sorted) mapping -
 `B.deposit()` doing `this.bal[k] = v` or `this.bal[msg.sender] = v` - the transaction fails on the VM (verified:
 input 2 OP_OUTPUTTOKENCOMMITMENT verify for a normal key `bal[k]=v`; empty-stack for the msg.sender variant).
 Single-contract sorted-mapping writes work; a CROSS-CONTRACT callee's sorted write does not.
@@ -980,7 +980,7 @@ blocked on this LARGER missing feature - it is NOT a msg.sender-resolution tweak
 **What it'd take (mechanism fully mapped 2026-07-20).** Three SDK sites, no compiler change for the UPDATE case (B's
 block layout, compiled normally, already reserves the entry slot):
 1. ENTRY INPUT co-spend (`StatefulContract.ts` ~6363, the `case 'entry'` in the external block builder): today it
-   key-matches via `parseEntryCommitment` (the DEFAULT key||value shape) - WRONG for a C2 entry (slot||next||value).
+   key-matches via `parseEntryCommitment` (the DEFAULT key||value shape) - WRONG for a vmap entry (slot||next||value).
    For `bCollection.sorted`, build `SortedList.fromUtxos(bEntryUtxos)` and co-spend `list.find(keyToSlot(key))` (UPDATE)
    or `list.predecessorOf(...)` (INSERT).
 2. ENTRY OUTPUT derivation: the group derivation (~4254-4294) runs B's VM + `extractCommitmentsFromTrace` over B's
@@ -991,7 +991,7 @@ block layout, compiled normally, already reserves the entry slot):
    region like the single-contract insert - needs the extraction + STB output to place a 2nd output per insert.
 THEN the msg.sender variant: set B's `_msgSenderCategory` = A's category + key by `keyToSlot(A's locking bytecode)`
 (the covenant already resolves a contract msg.sender via emitMsgSenderMintingVerification -> caller LBC; A's minting
-master is already co-spent). Repro (skipped): `solidcash/test/e2e/MsgSenderCrossContractC2.test.ts`. NOTE: these files
+master is already co-spent). Repro (skipped): `solidcash/test/e2e/MsgSenderCrossContractVMap.test.ts`. NOTE: these files
 (StatefulContract/StatefulTransactionBuilder/GTT) were under heavy concurrent edit on 2026-07-20; land this when they
 are quiescent to avoid two-writer tangling in the delicate cross-contract dispatch.
 
@@ -1296,15 +1296,15 @@ stateless/stateful autoderivation + RETURNING-loop (increment 1) units are all V
 (`TypedComputedLoopDispatch.test.ts` / `StatefulComputedLoopDispatch.test.ts`); the next sub-step is part 3
 (collect-phase multi-use grouping) then part 1 (the shared read+write co-spend).
 
-## C2-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
+## vmap-sorted mapping WRITE inside a delegate (proxy) function - DEFERRED 2026-07-20
 
 **What.** `users[msg.sender] = v` (or any sorted-mapping write) inside a `delegate` function, called through
-`upgrades.deployProxy`, fails closed when the mapping is C2-SORTED (the default). The NON-sorted case SHIPPED
+`upgrades.deployProxy`, fails closed when the mapping is vmap-SORTED (the default). The NON-sorted case SHIPPED
 (commit 78dc1b60): entry NFT minted in the proxy block at proxyMaster+offset, key/value/state trace-derived, and the
 default proxy's mutable conservation relaxed `in==out` -> `out>=in` so the new (mutable) entry NFT can be minted.
 Opt into the working path with `compileString(src, { sortedMappingsAll: false })`.
 
-**Why deferred (C2 trailing-node output collision, not tractability).** A C2 sorted insert produces TWO outputs: the
+**Why deferred (vmap trailing-node output collision, not tractability).** A vmap sorted insert produces TWO outputs: the
 block-slot `entry` (offset in the block layout) holds the rewritten PREDECESSOR P', and the NEW node rides a TRAILING
 output at `masterInputIndex + blockSize`. The delegate mechanism (delegateEventSlots + effectiveBlockLayout + the
 low-level-call master-index shift) reserves the block-slot entry only. For the proxy, `masterInputIndex(0) + blockSize`
@@ -1323,7 +1323,7 @@ the STB input/output ASSEMBLY:
    impl. But the STB input/output order (_buildInputs ~425) appends lowLevelCall inputs FIRST, then iterationEntry
    inputs - so a normal loopEntry sits AFTER the impl, colliding. The delegate path must special-case the ordering:
    loopEntry NEW-node before the lowLevelCall region, and getLowLevelCallMasterInputIndex/delegatePos must count it.
-So it needs: a DERIVED sorted-insert path (placeholder NEW node whose value the Phase-2 probe fills, like the non-C2
+So it needs: a DERIVED sorted-insert path (placeholder NEW node whose value the Phase-2 probe fills, like the non-vmap
 entry does) + the loopEntry mint emitted BEFORE the impl + the index accounting. The msg.sender-key, proxy-conservation
 (`out>=in`), P'-at-block-slot, and value-derivation pieces are already solved (non-sorted proves them).
 
@@ -1341,11 +1341,11 @@ lowLevelCall region for the delegate (gated - non-delegate order unchanged), so 
 FUNDER ALIGNMENT: give the NEW node a funder INPUT at its output index so impl-master input==output stays aligned (else
 emitDelegateSelfPreservation needs an output shift); (7) index accounting: getLowLevelCallMasterInputIndex/delegatePos
 + getLoopEntryOutputBase must count the NEW node so the impl shifts and the covenant's masterIndex+blockSize resolves.
-This shares the trailing-NEW-node + derived-value + reorder machinery with the user's ACTIVE cross-contract C2 WIP
+This shares the trailing-NEW-node + derived-value + reorder machinery with the user's ACTIVE cross-contract vmap WIP
 (externalCallEntryInserts) - extend that to the delegatecall path rather than duplicating. Self-contained test: a
 MapImpl with a default sorted mapping through deployProxy (the EA .scash contracts are still stubs).
 
-**Revisit if.** A port needs a DEFAULT (C2-sorted) mapping written from inside a delegate - the EA `registerUser`
+**Revisit if.** A port needs a DEFAULT (vmap-sorted) mapping written from inside a delegate - the EA `registerUser`
 admin pattern (`users[msg.sender] = User(...)`), or any OZ-style upgradeable contract whose initializer/methods write
 a mapping. Detail + re-entry points in memory events_in_delegate_gap.md.
 
@@ -1360,11 +1360,11 @@ settlement authority per slot) for shared-slot composition. Full design + VM evi
 `docs/buffered-state-and-message-bus-research.md`.
 
 **Why deferred.** Explicitly a FUTURE direction, not scheduled. Large, multi-phase, and P3 (the bus)
-carries C2-comparable soundness weight. The common case (pure-function recursion/loops) already works;
-the near-term pain is covered by the existing bespoke C2 / entry-write-in-loop paths.
+carries vmap-comparable soundness weight. The common case (pure-function recursion/loops) already works;
+the near-term pain is covered by the existing bespoke vmap / entry-write-in-loop paths.
 
 **What it'd take.** P1 scalar journal (fixes the recursive state-writer compile-fail), P2 mapping/
-collection writes buffered with flush delegating to existing C2, P3 the message bus. See the doc.
+collection writes buffered with flush delegating to existing vmap, P3 the message bus. See the doc.
 
 **Revisit if.** Recursive/looping state helpers or generic cross-contract shared-slot writes become a
 recurring blocker that the per-pattern codegen can no longer absorb. Detail in memory
@@ -1387,7 +1387,7 @@ different, shorter decomposition (ECDSA k varies), which the SDK does automatica
 via the same probe (`goodRecovery`-style skip). Fixing it properly is a large covenant change.
 
 **What it'd take.** A 3-covenant split (A verifies the GLV table + ladders to C1, a NEW middle covenant
-M ladders C1->C2 and commits C2, B ladders C2->Q): each does ~L/3 steps => ~5.3M op-cost with huge
+M ladders C1->vmap and commits vmap, B ladders vmap->Q): each does ~L/3 steps => ~5.3M op-cost with huge
 budget margin => the window never closes. Needs a new "middle" covenant generator in `ecrecover-poc/`,
 regeneration + soundness re-verification, a 3rd baked shared lock, and stride-4 loop indexing (A,M,B,+K
 for evm). Triples... (well, +50%s) the side-car count per recovery, which also pushes harder on the
@@ -1447,7 +1447,7 @@ deferral above (a cheaper ladder would help both).
   imported-only). Must reuse the EXISTING nested-lvalue mapping-element-field writer to stay byte-sound - a hand-rolled
   key/offset encode risks a silent miscompile.
 - **Revisit if:** BentoBox/Kashi/BoringRebase port is prioritized, OR the corpus shows `L.f(m[k])` storage-ptr frequency.
-  NOTE overlaps the C2/storage machinery under active churn - coordinate before landing.
+  NOTE overlaps the vmap/storage machinery under active churn - coordinate before landing.
 
 ## STORAGE-POINTER library fn on a mapping/array/state-var element - VEIN COMPLETE 2026-07-21
 - **STATUS: SHIPPED + VM-proven end to end** across four commits (5f2b28f3 void, e5ab012c returning, a4727002 bare):
@@ -1572,7 +1572,7 @@ inline vs direct ASM at that point - the direct form is the correct reference. T
 single-exit multi-return feature.
 
 ### CORRECTED root cause (2026-07-21, exhaustive debugging pass) - it's a COPY-LOCAL-KEY sorted-mapping read, NOT the inline
-The "return-ternary inline miscompile" above was MISDIAGNOSED. The real bug: reading a SORTED (C2) mapping with a key
+The "return-ternary inline miscompile" above was MISDIAGNOSED. The real bug: reading a SORTED (vmap) mapping with a key
 that is a single-assign LOCAL COPY of a param (`address aa = u; b = m[aa]`) miscompiles - and the multi-return inline
 just PRODUCES that shape (it value-copies params into locals, `__rh0_a = user`). Isolated with direct source (no inline):
 `aa = u; m[aa]` fails, `m[u]` (param key) works; not ternary/this./name-collision specific (all ruled out via VM tests).
@@ -1589,7 +1589,7 @@ just PRODUCES that shape (it value-copies params into locals, `__rh0_a = user`).
   modifier_double_invocation - the expression/canonical path correctly SDK-derives those keys, and a broad reclassify
   breaks them - and (b) fail-closes ("variable does not exist") when the param is dead after the copy. Not shippable.
 - **The real fix** is deeper: the entry-read's key liveness must count the metadata-based key use so the param stays on
-  the stack until the read (or copy-propagate the key to the param AND keep it live). A C2-codegen/liveness change.
+  the stack until the read (or copy-propagate the key to the param AND keep it live). A vmap-codegen/liveness change.
 - **Revisit if:** the multi-return-inline (single-exit) feature is prioritized (it depends on this), or a corpus audit
   finds `local = param; sortedMapping[local]` in real code (the silent-miscompile trigger).
 
@@ -1613,7 +1613,7 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
   at a stable base offset; a local key's tracked offset is wrong there. The DUP the param path emits (`OP_DUP
   OP_SHA256`) reflects a correct offset; the local path emits nothing/rolls the wrong item.
 - **The real fix** needs the entry-read to use a CORRECT stack offset for a local key (reconcile the tracker), or to
-  capture the key value into the entry-read working area BEFORE the layout is set up. A focused C2-codegen change.
+  capture the key value into the entry-read working area BEFORE the layout is set up. A focused vmap-codegen change.
 
 ### RESOLVED (verified 2026-08-04) - sorted key hashing tracks its working stack
 
@@ -1621,7 +1621,7 @@ entry-read visiting a LAST-USE key local. Three fixes attempted, all reverted:
 resolve offsets against the real working stack rather than the stale pre-layout view. The exact former trigger
 (`bytes20 localUser = user; this.result = this.balances[localUser];`, with `localUser` dead after the read) now passes
 through the SDK and BCH VM with the expected stored value. The regression is
-`SortedMappingComputedKeyRmw.test.ts` (“reads through a last-use local copy of a parameter with the correct C2 stack
+`SortedMappingComputedKeyRmw.test.ts` (“reads through a last-use local copy of a parameter with the correct vmap stack
 offset”). The earlier failed approaches above remain useful historical context, not active release deferrals.
 
 The 2026-08-05 neighboring-shape audit also covered direct parameters, computed locals, live locals, and returning
@@ -1659,13 +1659,13 @@ stored value through all neighboring forms.
   addresses fail; snapshots preserve sequencing; and `examples/effectiveacceleration/test/marketplace.test.ts`
   runs unchanged on the BCH HRE.
 
-## Factory deploy of a stateful child alongside C2 mapping writes (2026-08-07)
+## Factory deploy of a stateful child alongside vmap mapping writes (2026-08-07)
 
-**STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes C2 mapping entries
+**STILL DEFERRED.** `StatefulContract.deployFrom` refuses a deploy function that both writes vmap mapping entries
 and instantiates a child with data NFTs:
 
 ```
-Deploy function 'createPair' combines a typed stateful child with C2 mapping access.
+Deploy function 'createPair' combines a typed stateful child with vmap mapping access.
 ```
 
 Measured on MistSwap: this single refusal accounts for 25 of the suite's failures (SushiSwapSwapper 12,
@@ -1674,13 +1674,13 @@ SimpleSLPOracle 8, Migrator 2, RebaseERC20, PairKashi setup), because `UniswapV2
 
 The refusal is well founded, not merely conservative. `computeBlockLayout` declares a trailing region only for
 `__message_bus1`; a direct route returns at `blockSize`, so everything past it is appended with no covenant-known
-boundary. `createPair` appends BOTH the two C2 entry INSERTS (an insert has no fixed slot - only an update does,
+boundary. `createPair` appends BOTH the two vmap entry INSERTS (an insert has no fixed slot - only an update does,
 so the insert plus its re-pointed predecessor land in the tail) AND the child's data NFTs. Their relative order
 is not authenticated, so a caller could permute them. Note the `deploy` slot itself IS fixed (offset 14 in that
 layout), so only the child's data NFTs are unanchored.
 
 **What it would take:** reserve the child's data NFTs as fixed block slots (a `deployDataNft` slot kind sized
-from `deployTargets[i].dataNftCount`) so the C2 insert tail starts at a covenant-known offset, then order the
+from `deployTargets[i].dataNftCount`) so the vmap insert tail starts at a covenant-known offset, then order the
 SDK's outputs to match and drop the guard. Note the sizing input is not available where the `deploy` slots are
 reserved today - that loop runs off the DEPLOY modifier and `countDeploySites(node.body)`, with the standing
 comment "deployTargets isn't populated yet at this stage" - so the child's `dataNftCount` has to be resolved
@@ -1692,9 +1692,9 @@ option and is separately refused above (X69: it breaks settled sends and needs a
 the child data-NFT outputs against the entry outputs fails validation; the MistSwap swapper/oracle/migrator
 suites reach contract behaviour instead of dying in `beforeEach`.
 
-## Cross-contract call into a callee that writes C2 mapping entries (2026-08-07)
+## Cross-contract call into a callee that writes vmap mapping entries (2026-08-07)
 
-**STILL DEFERRED.** Calling a callee whose function writes C2 mapping entries fails before any transaction is
+**STILL DEFERRED.** Calling a callee whose function writes vmap mapping entries fails before any transaction is
 built:
 
 ```
@@ -1708,7 +1708,7 @@ MECHANISM. `StatefulContract._createBuilder` (~9055) and the outState path (~101
 category to the VISIBLE args when the callee's ABI function has `usesMsgSender`. `Contract.createUnlocker`
 (Contract.ts:391) accepts exactly `visibleInputs.length` or `inputs.length` and nothing between. That works
 only while `__internal__msgSenderCategory` is the callee's ONLY internal input. `SushiToken.transferFrom`
-declares 3 visible and 15 internal inputs (msgSenderCategory + `__internal__c2Batch{Slot,Proof,Next,PredOut}_0..2`
+declares 3 visible and 15 internal inputs (msgSenderCategory + `__internal__vmapBatch{Slot,Proof,Next,PredOut}_0..2`
 + trailingCount + returnOutputIdx), so visible+1 = 4 matches neither arm.
 
 DO NOT just widen the guard. The extra internals are not padding: they carry the callee's entry co-spend plan
@@ -1721,7 +1721,7 @@ populated at ~9204 and attached as `compilerRoute.internalArgs` at ~9447, gated 
 The MistSwap contracts compile without a message bus (`artifact.messageBus === undefined`), so they take the
 plain external-call path, which has no equivalent.
 
-**What it would take:** compute the callee's C2 batch plan for a plain external call - the same
+**What it would take:** compute the callee's vmap batch plan for a plain external call - the same
 `planBatchUpsert`/predecessor resolution the direct path runs, against the callee's collections - and pass it
 as internal args alongside the category, then relax the arity guard to "visible args plus a fully specified
 internal vector".

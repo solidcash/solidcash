@@ -9,7 +9,7 @@ import { createTestProvider } from '../../test-util.js';
  * `UNMEASURED_CONSERVATIVE` - the one rule of twelve that no node had ever confirmed. It is not a rule about
  * an exotic corner: eighteen e2e fixtures build a bare `OP_1` output. At 10 satoshis the DUST rule refuses
  * them anyway (that is X60, fixed separately). At 1,000 satoshis dust does not apply and this rule was the
- * only thing refusing them, so one unmeasured rule decided whether C2 and the E1 result graph were inside the
+ * only thing refusing them, so one unmeasured rule decided whether vmap and the E1 result graph were inside the
  * envelope at all. Guessing either way would have moved two working shapes on no evidence.
  *
  * THE METHOD, and why a `missing-inputs` verdict is worth anything here. X49 established that BCHN applies

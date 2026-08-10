@@ -11,7 +11,7 @@ import { createTestProvider } from '../test-util.js';
 // The OZ v5 ERC20 `_update` SHAPE of the full multiTransfer, as EACCToken produces after inlining: the per-key value
 // is bound to a single-assign LOCAL (`int v = amounts[i]`, OZ's `value` param), and the msg.sender DEBIT is a
 // READ-INTO-LOCAL RMW (`int fromBal = bal[msg.sender]; bal[msg.sender] = fromBal - v`) rather than a compound `-=`.
-// The C2 upsert-loop setup sees through the value local (findSingleAssignLocalInit) to record valueArrayParam=amounts,
+// The vmap upsert-loop setup sees through the value local (findSingleAssignLocalInit) to record valueArrayParam=amounts,
 // so this compiles + behaves IDENTICALLY to the direct `bal[recipients[i]] += amounts[i]` form (FullMultiTransfer).
 const SRC = `contract Token() {
   mapping(address => int) bal;

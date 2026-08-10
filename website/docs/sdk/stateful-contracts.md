@@ -113,7 +113,6 @@ All patterns return a `TransactionDetails` with `txid` and `hex` fields.
 
 ```typescript
 const result = await sc.call.transfer(to, amount)
-    .withEntryKey(senderPkh)         // specify mapping key
     .setState('counter', 5n)          // override state
     .transfer(recipientLbc, 1000n)    // manual satoshi transfer
     .emitEvent('Transfer', from, to, amount)  // emit event
@@ -134,17 +133,26 @@ const counter = await sc.state.counter();
 const counter = await sc.counter();
 ```
 
-## Working with Mappings
+## Working with Verified Mappings
+
+The SDK manages verified mappings (vmaps) automatically. It hashes each requested key, fetches and validates the
+authenticated entry list, and supplies either the exact entry or its bracketing predecessor as the proof. Normal
+calls do not need to manually locate entry NFTs.
 
 ```typescript
-// Set entry by key
-await sc.call.setBalance(bobPkh, 1000n)
-    .withEntryKey(bobPkh)
-    .send();
+// Insert or update an entry. The SDK derives the membership/non-membership proof.
+await sc.call.setBalance(bobPkh, 1000n).send();
 
-// Delete entry
-await sc.call.removeAccount(bobPkh)
-    .deleteEntry(0)
+// Solidity delete semantics: assign the value type's default.
+await sc.call.removeAccount(bobPkh).send();
+```
+
+For an unusual key expression that auto-derivation cannot resolve, `.withEntryKey(slotIndex, key)` supplies the
+logical key for a compiler-authored entry slot. It is an advanced override, not a way to bypass vmap validation:
+
+```typescript
+await sc.call.setDerivedBalance(seed, amount)
+    .withEntryKey(0, derivedKey)
     .send();
 ```
 
@@ -247,10 +255,11 @@ The SDK automatically derives the full transaction from your function call:
 
 1. Runs the contract bytecode in a local VM
 2. Inspects which state variables are read/written
-3. Discovers required entry NFTs, event outputs, and transfers
+3. Discovers required vmap membership or absence proofs, entry NFTs, event outputs, and transfers
 4. Constructs the complete transaction with all covenant outputs
 5. Iterates up to 20 times until the state converges
 
 :::tip
-Auto-derivation handles most scenarios automatically. Use manual overrides (`.setState()`, `.transfer()`, `.withEntryKey()`) only when auto-derivation cannot determine the correct values - for example, with expression-based mapping keys.
+Auto-derivation handles most scenarios automatically. Use manual overrides (`.setState()`, `.transfer()`,
+`.withEntryKey()`) only when auto-derivation cannot determine the correct values.
 :::

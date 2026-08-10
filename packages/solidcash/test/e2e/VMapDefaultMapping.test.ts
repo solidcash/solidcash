@@ -10,7 +10,7 @@ import { createTestProvider } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
-// Locks the FLIP: a plain mapping compiled with NO storage options is C2 by DEFAULT (exclusion-proof reads =
+// Locks the FLIP: a plain mapping compiled with NO storage options is vmap by DEFAULT (exclusion-proof reads =
 // Solidity storage parity). Exercises the full lifecycle under the default: deploy (HEAD auto-minted) -> write ->
 // RMW -> present read -> absent bracket-proven default -> omission claim reverts -> delete (nullify).
 const SRC = `contract C() {
@@ -21,7 +21,7 @@ const SRC = `contract C() {
   function check(int k, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(bal[k] == exp); }
 }`;
 
-describe('C2 is the default for a plain mapping (no options)', () => {
+describe('vmap is the default for a plain mapping (no options)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -29,9 +29,9 @@ describe('C2 is the default for a plain mapping (no options)', () => {
   const uid = (): string => { nonce += 1; return nonce.toString(16).padStart(64, '0'); };
   const fund = async (addr: string): Promise<void> => { await provider.addUtxo(addr, { txid: uid(), vout: 0, satoshis: 100000n }); };
 
-  it('a plain mapping is C2 by default: deploy, write, RMW, exclusion-proof reads, delete', async () => {
+  it('a plain mapping is vmap by default: deploy, write, RMW, exclusion-proof reads, delete', async () => {
     const art = compileString(SRC, { forceStateful: true }); // NO sortedMappings / sortedMappingsAll
-    expect(art.stateLayout?.collections?.find((c) => c.name === 'bal')?.sorted).toBe(true); // C2 by default
+    expect(art.stateLayout?.collections?.find((c) => c.name === 'bal')?.sorted).toBe(true); // vmap by default
 
     const f = { txid: uid(), vout: 0, satoshis: 400000n };
     await provider.addUtxo(p2pkh.address, f);

@@ -7,6 +7,7 @@ import {
   artifactTestMultipleConstructorParameters,
   artifactTestLogs,
   artifactTestConsecutiveLogs,
+  artifactTestConsecutiveLogsLegacy,
   artifactTestMultipleLogs,
   artifactTestRequires,
   artifactTestSingleFunction,
@@ -879,7 +880,7 @@ describe('Debugging tests', () => {
 
     it.each(legacyVmTargets)('reports current bytecode as unsupported with vmTarget %s', async (vmTarget) => {
       const provider = new MockNetworkProvider({ vmTarget });
-      const contract = new Contract(artifactTestConsecutiveLogs, [alicePub], { provider });
+      const contract = new Contract(artifactTestConsecutiveLogsLegacy, [alicePub], { provider });
       const contractUtxo = randomUtxo();
       await provider.addUtxo(contract.address, contractUtxo);
 

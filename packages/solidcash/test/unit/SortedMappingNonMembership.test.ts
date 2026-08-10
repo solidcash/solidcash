@@ -2,9 +2,9 @@ import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 
-// C2 fix core: a sound negative guard via a sorted singly-linked list of entry NFTs. Each entry commits
+// vmap fix core: a sound negative guard via a sorted singly-linked list of entry NFTs. Each entry commits
 // slot(32) ++ nextKey(32) ++ value. Non-membership of key k is proven by co-spending the bracketing predecessor
-// P with P.slot < k < P.nextKey (nextKey 0 = +infinity). This test proves the property that closes C2: the
+// P with P.slot < k < P.nextKey (nextKey 0 = +infinity). This test proves the property that closes vmap: the
 // bracket CANNOT be satisfied for a PRESENT key, and a fabricated predecessor fails category authentication - so
 // a spender can no longer omit an existing entry to make the guard read the default. See mapping-soundness-research.md B2.
 
@@ -144,7 +144,7 @@ function verifyNonMembershipBig(k: bigint, predCommitment: Uint8Array): true | s
 }
 
 // State (slots): HEAD[0|10] -> A[10|50] -> B[50|90] -> C[90|0(+inf)]
-describe('sorted linked-list mapping: non-membership soundness (C2)', () => {
+describe('sorted linked-list mapping: non-membership soundness (vmap)', () => {
   const LOW = (2n ** 200n);              // large 32-byte slots (all < 2^255 -> positive, sign-safe)
   const MID = (2n ** 200n) + (2n ** 120n);
   const HIGH = (2n ** 254n) - 1n;        // near-max positive 255-bit slot

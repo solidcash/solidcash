@@ -134,8 +134,8 @@ describe('createPair deployDataNft + dual getPair (factory wall)', () => {
       writeFileSync(`${SCRATCH}/pair-datanft-e2e.log`, `ERR ${err}\nfound=${dataNftFound}\n${commitLines.join('\n')}\n`);
     }
 
-    // Must not hit the old combined-deploy+C2 refusal (the createPair wall).
-    expect(err ?? '').not.toMatch(/combines a typed stateful child with C2 mapping access/);
+    // Must not hit the old combined-deploy+vmap refusal (the createPair wall).
+    expect(err ?? '').not.toMatch(/combines a typed stateful child with vmap mapping access/);
     expect(err ?? '').not.toMatch(/share the first trailing slot/);
     expect(err ?? '').not.toMatch(/does not support multi-key mapping writes/);
     // Full dual getPair success + full child data NFT genesis.

@@ -4,7 +4,6 @@ import {
   SignatureTemplate,
   TransactionBuilder,
 } from '../src/index.js';
-import { binToHex } from '@bitauth/libauth';
 import {
   alicePkh,
   alicePriv,
@@ -18,6 +17,7 @@ import p2pkhArtifact from './fixture/p2pkh.artifact.js';
 import bigintArtifact from './fixture/bigint.artifact.js';
 import { ARTIFACT_FUNCTION_NAME_COLLISION, ARTIFACT_NAME_COLLISION, ARTIFACT_CONTRACT_NAME_COLLISION, ARTIFACT_SAME_NAME_DIFFERENT_PATH } from './fixture/debugging/multi_contract_debugging_contracts.js';
 import { addressToLockScript, isNonTokenUtxo } from '../src/utils.js';
+import { binToHex } from '@bitauth/libauth';
 import SiblingIntrospectionArtifact from './fixture/SiblingIntrospection.artifact.js';
 import { createTestProvider } from './test-util.js';
 
@@ -55,10 +55,8 @@ describe('Multi-Contract-Debugging tests', () => {
             amount: sameNameDifferentPathContractUtxo.satoshis - 2000n,
           });
 
-        const expectedHex = `0x${binToHex(expectedLockingBytecode)}`;
-        expect(tx).toLog(`[Input #0] SiblingIntrospection.scash:6 outputBytecode: ${expectedHex}\n`
-          + `[Input #0] SiblingIntrospection.scash:10 inputBytecode: ${expectedHex}\n`
-          + '[Input #1] SameNameDifferentPath.scash:5 a is 0');
+        const expectedBytecodeHex = `0x${binToHex(expectedLockingBytecode)}`;
+        expect(tx).toLog(`[Input #0] SiblingIntrospection.scash:6 outputBytecode: ${expectedBytecodeHex}\n[Input #0] SiblingIntrospection.scash:10 inputBytecode: ${expectedBytecodeHex}\n[Input #1] SameNameDifferentPath.scash:5 a is 0`);
       });
 
       it('should log correct data for the reached console.log statements if a require statement fails, and not log unreached console.log statements', () => {
@@ -71,10 +69,9 @@ describe('Multi-Contract-Debugging tests', () => {
             amount: sameNameDifferentPathContractUtxo.satoshis - 2000n,
           });
 
-        const redirectedHex = `0x${binToHex(addressToLockScript(siblingIntrospectionContract.address))}`;
-        const expectedHex = `0x${binToHex(expectedLockingBytecode)}`;
-        expect(tx).toLog(`[Input #0] SiblingIntrospection.scash:6 outputBytecode: ${redirectedHex}`);
-        expect(tx).not.toLog(`[Input #0] SiblingIntrospection.scash:10 inputBytecode: ${expectedHex}`);
+        const siblingBytecodeHex = `0x${binToHex(addressToLockScript(siblingIntrospectionContract.address))}`;
+        expect(tx).toLog(`[Input #0] SiblingIntrospection.scash:6 outputBytecode: ${siblingBytecodeHex}`);
+        expect(tx).not.toLog(`[Input #0] SiblingIntrospection.scash:10 inputBytecode: 0x${binToHex(expectedLockingBytecode)}`);
         expect(tx).not.toLog('[Input #1] SameNameDifferentPath.scash:5 a is 0');
       });
     });

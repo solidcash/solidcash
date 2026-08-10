@@ -5,7 +5,7 @@
 // marketplace.test.ts drop-in keeps running while we prove real cross-compilation.
 //
 // Status: 17/22 files -> 22 real contract artifacts. The 5 fails (EACCToken, MarketplaceV1/V2/V3, MarketplaceDataV1)
-// are the deep C2 mapping-loop walls (whitelistWorkers nested write + extcall in a loop; _balances multitransfer
+// are the deep vmap mapping-loop walls (whitelistWorkers nested write + extcall in a loop; _balances multitransfer
 // RMW-loop) - compiler codegen gaps, not harness gaps. ecrecover cross-compiles via ecrecover: 'p2pkh'.
 //
 // Run:  node tasks/compile-real.mjs
@@ -75,6 +75,6 @@ for (const full of findSolSources(contractsDir)) {
 const total = ok + failures.length;
 console.log(`\n=== ${ok}/${total} files cross-compiled, ${contracts} contract artifacts -> ${path.relative(process.cwd(), artifactsDir)} ===`);
 if (failures.length) {
-  console.log('\nRemaining walls (deep C2 mapping-loop codegen, not harness):');
+  console.log('\nRemaining walls (deep vmap mapping-loop codegen, not harness):');
   for (const f of failures) console.log(`  ${f.rel}`);
 }

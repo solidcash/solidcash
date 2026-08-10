@@ -34,13 +34,13 @@ import { MappingType, ArrayType, StructType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
 
-const PREFIX = '__c2cache_';
+const PREFIX = '__vmapcache_';
 
 // A mapping key we can cache on. Only INVARIANT keys qualify: a simple identifier (invariance re-checked via
 // assignsName), or a nullary tx-derived address (msg.sender / tx.origin - inherently invariant; nothing reassigns
 // them and they read identically every iteration). `for(i) bal[msg.sender] -= amts[i]` (a batch debit from the
 // caller - the same-key half of an ERC-20 multiTransfer) is the driving case; its flush is a single msg.sender
-// C2 write, which is proven (MsgSenderC2).
+// vmap write, which is proven (MsgSenderVMap).
 type KeyKind =
   | { kind: 'id'; name: string }
   | { kind: 'nullary'; op: NullaryOperator }
@@ -87,15 +87,15 @@ type EntryInfo = {
 };
 
 /**
- * A C2 (sorted) mapping ARRAY value cannot be written more than once to the SAME entry in one call: each write is its
+ * A vmap (sorted) mapping ARRAY value cannot be written more than once to the SAME entry in one call: each write is its
  * own emitSortedValueUpsert, which co-spends the entry NFT + emits one output, so two of them double-spend the input
  * and the covenant OP_VERIFYs fail. This is the RUNTIME analog of CacheDynamicArrayInLoop (read-once/mutate-local/
  * write-once for STATE dynamic arrays), extended to a keyed MAPPING ENTRY m[k]. For any entry written via array ops
  * more than once (a loop `for(..) m[k][j]=v`, consecutive `m[k][0]=x; m[k][2]=z`, a conditional, a `.push` fold),
  * the entry is cached FUNCTION-wide:
- *   T[] __c2cache_N = m[k];   <every m[k] access -> __c2cache_N>   m[k] = __c2cache_N;   // flushed before each return
+ *   T[] __vmapcache_N = m[k];   <every m[k] access -> __vmapcache_N>   m[k] = __vmapcache_N;   // flushed before each return
  * The loop stays a RUNTIME loop over the LOCAL array (one covenant body, byte-limit safe); reads of m[k] redirect to
- * the local so read-after-write (`m[k][j]=m[k][j-1]+1`) reads the value being built; the C2 write is a single upsert.
+ * the local so read-after-write (`m[k][j]=m[k][j-1]+1`) reads the value being built; the vmap write is a single upsert.
  * Runs pre-semantic so the redirected accesses resolve as a local array (after DesugarReturnInLoop, so in-loop
  * returns are already flag+break). Restricted to be SOUND: single-key array-valued mapping, key `k` a simple
  * identifier NOT reassigned in the function (else the entry differs - the per-iteration sorted-insert case, left to
@@ -103,7 +103,7 @@ type EntryInfo = {
  */
 export default class CacheMappingEntryInLoop extends AstTraversal {
   private arrayMappings: Map<string, Type> = new Map(); // single-key array-valued mapping name -> array value type
-  // Single-key C2 (sorted) SCALAR mapping name -> value type. A scalar C2 entry written more than once / in a loop
+  // Single-key vmap (sorted) SCALAR mapping name -> value type. A scalar vmap entry written more than once / in a loop
   // to the SAME key (`for(i) balance[k] -= amts[i]`) hits the same wall as arrays: each `m[k]=v` is its own upsert
   // that co-spends the entry NFT + emits one output, so a second one double-spends the (already-spent) input and
   // reverts. Read-once/mutate-local/write-once (a single upsert) fixes it. Gated on `sorted` (the default entry
@@ -224,7 +224,7 @@ export default class CacheMappingEntryInLoop extends AstTraversal {
         const elementType = (this.arrayMappings.get(n.name) as ArrayType).elementType;
         const e = get(n.name, n.keys[0], !(elementType instanceof StructType)); if (e) e.bad = true;
       }
-      // Scalar C2 mapping: a WHOLE-entry write `m[k] = expr` (an RMW `m[k] -= v` desugars to this) to an INVARIANT
+      // Scalar vmap mapping: a WHOLE-entry write `m[k] = expr` (an RMW `m[k] -= v` desugars to this) to an INVARIANT
       // key (identifier or msg.sender/tx.origin) is the cacheable form (read once -> mutate local -> one upsert). A
       // delete marks it bad (needs nullify, not a plain reassign). Any array-op on a scalar mapping should not occur;
       // if it does, mark bad (be safe).

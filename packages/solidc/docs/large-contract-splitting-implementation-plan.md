@@ -154,7 +154,7 @@ participants and operations; a generic unbound cross-contract bus is insufficien
 
 These must hold against raw transactions, not only SDK-generated ones:
 
-1. `P` solely authorizes state, C2 roots, chunks, containers, and value.
+1. `P` solely authorizes state, vmap roots, chunks, containers, and value.
 2. A facet executes only with its exact branded `P` input.
 3. Each facet master preserves itself and cannot be substituted.
 4. Facet, selector, input positions, and state output are bound in script.
@@ -188,7 +188,7 @@ malformed transaction fails in script.
 
 ### A1 — state backend proof
 
-Exercise structs, default and C2 mappings (all proof modes), nested mappings,
+Exercise structs, default and vmap mappings (all proof modes), nested mappings,
 dynamic/packed arrays, chunks, and multi-NFT state. Facet deployment must create
 no application state NFT.
 
@@ -207,7 +207,7 @@ recoverable staged deployment; never strand branded facet funds if `P` fails.
 ### A4 — inter-facet message/settlement proof (post-v1 gate)
 
 Use two producers and one settlement facet to update the same scalar and then the
-same C2 entry. Prove non-commutative canonical ordering (`set`, then `add`) and
+same vmap entry. Prove non-commutative canonical ordering (`set`, then `add`) and
 read-your-writes in `S`. Attack missing, duplicate, reordered, replayed,
 wrong-destination/source, undeclared, conflicting, and payload-substitution
 messages; the wrong settlement facet; producer direct-state access; and two
@@ -308,9 +308,9 @@ and links. Deployment then:
 5. validates actual serialized input/transaction limits before signing.
 
 Return root/facet handles and categories, manifest, and all deployment
-transactions. Facets receive no state/chunk/C2 outputs.
+transactions. Facets receive no state/chunk/vmap outputs.
 
-### C2 — calls, reconnect, and debugging
+### vmap — calls, reconnect, and debugging
 
 Expose one logical `contract.call.<fn>` surface. Root routes use the normal
 builder. Facet routes add the selected master, encode selector/args, configure the
@@ -339,7 +339,7 @@ affinity; effect resources; and unknown-call widening. Golden tests assert stabl
 groups and explain every forced union or cut affinity.
 
 VM/adversarial tests cover A0–A2 plus replay against another same-layout proxy,
-same-code/different-category and different-code substitution, every C2 proof mode,
+same-code/different-category and different-code substitution, every vmap proof mode,
 chunks, multi-NFT state, effects, external calls, context, and timelocks.
 Add call-graph fixtures for shared pure-helper duplication, stateful-helper
 colocation, public-to-public calls, recursion/SCC colocation, oversized closures,

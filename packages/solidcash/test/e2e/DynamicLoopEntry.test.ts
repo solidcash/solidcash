@@ -24,7 +24,7 @@ describe('dynamic-bound loop mapping write (runtime OP_BEGIN/OP_UNTIL entry mint
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 
-  it('compiles to a C2 upsert-loop covenant (not unrolled)', () => {
+  it('compiles to a vmap upsert-loop covenant (not unrolled)', () => {
     const art = compileString(SRC);
     const setAll = art.abi.find((f) => f.name === 'setAll');
     expect(setAll?.sortedUpsertLoopInfo?.map((info) => info.collection)).toEqual(['bal']);

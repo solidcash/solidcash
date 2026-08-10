@@ -1,4 +1,5 @@
 *
 !dist/**
+!contracts/**
 !vitest/package.json
 !jest/package.json

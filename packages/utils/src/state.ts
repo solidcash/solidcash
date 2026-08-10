@@ -556,6 +556,11 @@ function standardPushdataFrame(data: Uint8Array): Uint8Array {
 function toPlainStateValue(v: StateValue): StateValue {
   if (Array.isArray(v)) return v.map(toPlainStateValue);
   if (v !== null && typeof v === 'object' && !(v instanceof Uint8Array)) {
+    // An ethers-v5 BigNumber wrapper is not plain data. `toObject()`/`toArray()` are the escape hatch
+    // that hands a caller ordinary values back, so unwrap to the bigint rather than deep-copying the
+    // wrapper's own fields (which would yield { _isBigNumber, _value, _hex } and lose the methods).
+    const bn = v as unknown as { _isBigNumber?: boolean; _value?: unknown };
+    if (bn._isBigNumber === true && typeof bn._value === 'bigint') return bn._value as StateValue;
     const out: StateRecord = {};
     for (const k of Object.keys(v)) out[k] = toPlainStateValue((v as StateRecord)[k]);
     return out;
@@ -1126,7 +1131,7 @@ export function parseChunkCommitment(hex: string): { chunkIndex: number; chunkDa
   return { chunkIndex: Number(key as bigint), chunkData: value as Uint8Array };
 }
 
-// ===== Root-addressed C2 value chunks =====
+// ===== Root-addressed vmap value chunks =====
 // Long values keep a prefix in the entry head. Continuation NFTs are isolated at an address derived from
 // (category, collection, slot, root), so their commitments need only a canonical uint16 index and raw data.
 
@@ -1141,17 +1146,17 @@ export function splitValueIntoValueChunks(value: Uint8Array): Uint8Array[] {
   for (let off = VALUE_HEAD_SIZE; off < value.length; off += VALUE_CHUNK_SIZE) {
     chunks.push(value.slice(off, off + VALUE_CHUNK_SIZE));
   }
-  if (chunks.length > VALUE_CHUNK_MAX_COUNT) throw new RangeError('C2 value requires too many chunks');
+  if (chunks.length > VALUE_CHUNK_MAX_COUNT) throw new RangeError('vmap value requires too many chunks');
   return chunks;
 }
 
 /** Build a canonical continuation commitment: uint16-le index || raw chunk data. */
 export function buildValueChunkCommitment(chunkIndex: number, chunkData: Uint8Array): string {
   if (!Number.isInteger(chunkIndex) || chunkIndex < 0 || chunkIndex >= VALUE_CHUNK_MAX_COUNT) {
-    throw new RangeError(`C2 value chunk index out of range: ${chunkIndex}`);
+    throw new RangeError(`vmap value chunk index out of range: ${chunkIndex}`);
   }
   if (chunkData.length < 1 || chunkData.length > VALUE_CHUNK_SIZE) {
-    throw new RangeError(`C2 value chunk data must contain 1..${VALUE_CHUNK_SIZE} bytes, got ${chunkData.length}`);
+    throw new RangeError(`vmap value chunk data must contain 1..${VALUE_CHUNK_SIZE} bytes, got ${chunkData.length}`);
   }
   const commitment = new Uint8Array(VALUE_CHUNK_INDEX_SIZE + chunkData.length);
   new DataView(commitment.buffer).setUint16(0, chunkIndex, true);
@@ -1163,7 +1168,7 @@ export function buildValueChunkCommitment(chunkIndex: number, chunkData: Uint8Ar
 export function parseValueChunkCommitment(hex: string): { chunkIndex: number; chunkData: Uint8Array } {
   const commitment = hexToBin(hex);
   if (commitment.length < VALUE_CHUNK_INDEX_SIZE + 1 || commitment.length > 128) {
-    throw new RangeError(`invalid C2 value chunk commitment length: ${commitment.length}`);
+    throw new RangeError(`invalid vmap value chunk commitment length: ${commitment.length}`);
   }
   return {
     chunkIndex: new DataView(commitment.buffer, commitment.byteOffset, commitment.byteLength).getUint16(0, true),
@@ -1175,19 +1180,19 @@ export function parseValueChunkCommitment(hex: string): { chunkIndex: number; ch
 export function joinValueChunks(
   headData: Uint8Array, chunks: readonly { chunkIndex: number; chunkData: Uint8Array }[], totalLength: number,
 ): Uint8Array {
-  if (!Number.isInteger(totalLength) || totalLength <= 60) throw new RangeError('chunked C2 value length must exceed 60');
-  if (headData.length !== VALUE_HEAD_SIZE) throw new RangeError(`C2 value head must contain exactly ${VALUE_HEAD_SIZE} bytes`);
+  if (!Number.isInteger(totalLength) || totalLength <= 60) throw new RangeError('chunked vmap value length must exceed 60');
+  if (headData.length !== VALUE_HEAD_SIZE) throw new RangeError(`vmap value head must contain exactly ${VALUE_HEAD_SIZE} bytes`);
   const remaining = totalLength - VALUE_HEAD_SIZE;
   const expectedCount = Math.ceil(remaining / VALUE_CHUNK_SIZE);
-  if (chunks.length !== expectedCount) throw new RangeError(`C2 value chunk count mismatch: expected ${expectedCount}, got ${chunks.length}`);
+  if (chunks.length !== expectedCount) throw new RangeError(`vmap value chunk count mismatch: expected ${expectedCount}, got ${chunks.length}`);
   const out = new Uint8Array(totalLength);
   out.set(headData, 0);
   for (let i = 0; i < chunks.length; i++) {
     const chunk = chunks[i];
-    if (chunk.chunkIndex !== i) throw new RangeError(`C2 value chunk index mismatch: expected ${i}, got ${chunk.chunkIndex}`);
+    if (chunk.chunkIndex !== i) throw new RangeError(`vmap value chunk index mismatch: expected ${i}, got ${chunk.chunkIndex}`);
     const expectedSize = i + 1 < expectedCount ? VALUE_CHUNK_SIZE : remaining - VALUE_CHUNK_SIZE * i;
     if (chunk.chunkData.length !== expectedSize) {
-      throw new RangeError(`C2 value chunk ${i} size mismatch: expected ${expectedSize}, got ${chunk.chunkData.length}`);
+      throw new RangeError(`vmap value chunk ${i} size mismatch: expected ${expectedSize}, got ${chunk.chunkData.length}`);
     }
     out.set(chunk.chunkData, VALUE_HEAD_SIZE + i * VALUE_CHUNK_SIZE);
   }
@@ -1502,7 +1507,7 @@ export function buildEntryNftCovenantScript(categoryId: Uint8Array, collectionHa
 /**
  * Build the hex-encoded bytecode for the entry-NFT covenant seeded with a category and collection signature.
  */
-/** Entry-NFT spend rules salted by a C2 value version. The salts only domain-separate the P2SH32 address. */
+/** Entry-NFT spend rules salted by a vmap value version. The salts only domain-separate the P2SH32 address. */
 export function buildValueChunkCovenantScript(
   categoryId: Uint8Array, collectionHash: Uint8Array, slot: Uint8Array, root: Uint8Array,
 ): Script {

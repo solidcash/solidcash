@@ -21,7 +21,7 @@ export function leSmallNumber(bytes: Uint8Array): number {
 // index - nested calls abort in inner-to-outer runtime order, not emission order). Shared by the stateless
 // (base TransactionBuilder) and stateful (block-layout-slot) complex/nested-arg probes.
 export function extractKeccakPreimageFromTrace(
-  trace: unknown[], base: number, n: number,
+  trace: unknown[], base: number, n: number, slotCount = n,
 ): { callIndex: number; preimage: Uint8Array } {
   let found: { callIndex: number; preimage: Uint8Array } | undefined;
   for (const s of trace) {
@@ -30,8 +30,11 @@ export function extractKeccakPreimageFromTrace(
     if (step.instructions?.[step.ip]?.opcode !== OP_INPUTBYTECODE) continue;
     if (step.stack.length < 2) continue;
     const idx = leSmallNumber(step.stack[step.stack.length - 1]);
-    if (idx >= base && idx < base + n) {
-      found = { callIndex: idx - base, preimage: Uint8Array.from(step.stack[step.stack.length - 2]) };
+    if (idx >= base && idx < base + slotCount) {
+      const marker = step.stack.length >= 3 ? leSmallNumber(step.stack[step.stack.length - 2]) : 0;
+      found = marker >= 1 && marker <= n
+        ? { callIndex: marker - 1, preimage: Uint8Array.from(step.stack[step.stack.length - 3]) }
+        : { callIndex: idx - base, preimage: Uint8Array.from(step.stack[step.stack.length - 2]) };
     }
   }
   if (!found) throw new Error('keccak256 preimage extraction: no side-car read found in the probe trace.');
@@ -60,32 +63,43 @@ export function keccakComputeBlocks(preimageLength: number): number {
 }
 
 /**
- * Build one keccak256 compute side-car for a given preimage: the input unlocker feeding
- * `<budget-pad><preimage><PUSHDATA(redeem)>`, the recreation output committing `R = keccak256(preimage)` (EVM
- * byte order) to a mutable NFT, and `R` itself. `salt` is the side-car branding (a stateful contract's category,
+ * Build one keccak256 compute side-car for one to three preimages: the input unlocker feeds
+ * `<budget-pad><preimage...><width><PUSHDATA(redeem)>`; the recreation commits the ordered digests directly to
+ * the same mutable NFT. `salt` is the side-car branding (a stateful contract's category,
  * or the shared 32-zero salt for stateless). Shared by the stateless (TransactionBuilder) and stateful
  * (StatefulContract block-layout-slot) co-spend paths. See docs/keccak-result-nft.md.
  */
 export function buildKeccakComputeSidecar(
-  preimage: Uint8Array, salt: Uint8Array, sidecar: Utxo, stateful = false,
+  preimageOrBatch: Uint8Array | readonly Uint8Array[], salt: Uint8Array, sidecar: Utxo, stateful = false,
 ): { unlocker: Unlocker; recreate: Output; commitment: Uint8Array } {
+  const preimages = preimageOrBatch instanceof Uint8Array ? [preimageOrBatch] : [...preimageOrBatch];
+  if (preimages.length < 1 || preimages.length > 3) {
+    throw new Error(`keccak256 compute side-car requires 1 to 3 preimages; received ${preimages.length}.`);
+  }
   const redeem = buildKeccakComputeRedeem(salt, stateful);
   const lock = keccakComputeLockingBytecode(salt, stateful);
-  const blocks = keccakComputeBlocks(preimage.length);
+  const blocks = preimages.reduce((sum, preimage) => sum + keccakComputeBlocks(preimage.length), 0);
   if (blocks > 3) {
-    throw new Error(`keccak256 preimage too large (${preimage.length} B = ${blocks} blocks); a single side-car `
-      + 'input funds at most 3 keccak blocks (~407 B). Split the hash or use multiple side-cars.');
+    throw new Error(`keccak256 batch too large (${blocks} total blocks); a single side-car input funds at most `
+      + '3 keccak blocks. Use a smaller batch or multiple side-cars.');
   }
   // Size the op-budget pad by the block count (~2900 unlocking bytes fund one block); the redeem + preimage
   // pushes already contribute to the per-input budget, so subtract them.
   const redeemPushLen = redeem.length + (redeem.length <= 255 ? 2 : 3);
-  const preimagePushLen = preimage.length + (preimage.length <= 75 ? 1 : preimage.length <= 255 ? 2 : 3);
+  const preimagePushLen = preimages.reduce(
+    (sum, preimage) => sum + preimage.length + (preimage.length <= 75 ? 1 : preimage.length <= 255 ? 2 : 3), 0,
+  );
   const padLen = Math.max(KECCAK256_COMPUTE_PAD_LENGTH, blocks * 3100 - redeemPushLen - preimagePushLen);
   const pad = new Uint8Array(padLen);
-  const commitment = keccak_256(preimage);
+  const commitment = Uint8Array.from(preimages.flatMap((preimage) => [...keccak_256(preimage)]));
   const unlocker: Unlocker = {
     generateUnlockingBytecode: () => Uint8Array.from(
-      [...pushDataBytes(pad), ...pushDataBytes(preimage), ...pushDataBytes(redeem)],
+      [
+        ...pushDataBytes(pad),
+        ...preimages.flatMap((preimage) => [...pushDataBytes(preimage)]),
+        ...pushDataBytes(Uint8Array.from([preimages.length])),
+        ...pushDataBytes(redeem),
+      ],
     ),
     generateLockingBytecode: () => lock,
   };

@@ -201,7 +201,7 @@ describe('X151 - a chunk read loop must index the run the SDK actually co-spends
     expect(await run(READ_READ, 120, 120)).toBe('ACCEPTED');
   }, 240_000);
 
-  it('X151-C2 CONTROL: the same three statements REORDERED settle', async () => {
+  it('X151-vmap CONTROL: the same three statements REORDERED settle', async () => {
     // `write A; read A; read B`: the read of A is served from the pending write, A never enters the read list,
     // and B's run is exactly where B's loop looks.
     expect(await run(WRITE_READ_READ, 120, 120)).toBe('ACCEPTED');

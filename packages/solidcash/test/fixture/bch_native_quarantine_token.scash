@@ -1,0 +1,28 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNativeQuarantine } from "../../contracts/BchNativeQuarantine.scash";
+
+contract QuarantineToken is ERC20, BchNativeQuarantine {
+    public int backedSupply;
+
+    function openSelf() {
+        address account = msg.sender;
+        require(balanceOf(account) == 0);
+        _mint(account, 0);
+    }
+
+    function _nativeQuarantineBlocks() internal pure override returns (uint32) { return 0; }
+    function _nativeCredit(address account, uint256 amount) internal override {
+        _update(address(0), account, amount);
+    }
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _update(account, address(0), amount);
+    }
+    function _nativeReserveAdded(int amount) internal override {
+        this.backedSupply = this.backedSupply + amount;
+    }
+    function _nativeReserveRemoved(int amount) internal override {
+        this.backedSupply = this.backedSupply - amount;
+    }
+}

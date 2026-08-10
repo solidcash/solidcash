@@ -99,7 +99,7 @@ doWhileStatement
     ;
 
 consoleStatement
-    : 'console.log' consoleParameterList ';'
+    : 'console.log' Identifier? consoleParameterList ';'
     ;
 
 requireMessage

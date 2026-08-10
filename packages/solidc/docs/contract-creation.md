@@ -39,7 +39,7 @@ honoring - not bypassing - the self-pin.
   genesis address equals the covenant's.
 - **create3** - a factory may use a salt-keyed registry, but `deployFrom` requires an explicit typed `new T()` so
   the covenant can authenticate the supplied child artifact and layout. A typed stateful child deployment that
-  also accesses a C2 mapping currently rejects before broadcast because both layouts claim the first trailing
+  also accesses a vmap mapping currently rejects before broadcast because both layouts claim the first trailing
   output slot. This combination remains deferred until those regions are separated.
 
 For every supported stateful child deployment, the covenant requires exactly one child minting NFT and exactly

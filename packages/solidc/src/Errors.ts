@@ -1143,6 +1143,13 @@ export class UnauthenticatedSelfdestructError extends SolidCashError {
   }
 }
 
+export class NestedSelfdestructError extends SolidCashError {
+  constructor(node: Node, funcName: string) {
+    super(node, `Function '${funcName}' places selfdestruct inside conditional or nested control flow. `
+      + 'Contract destruction must be a direct function-body statement so lifecycle handling is unambiguous.');
+  }
+}
+
 // H8: an inline pass must pick a callee body by name + arity, but same-name same-arity overloads are
 // indistinguishable by that key, so it would silently inline the last-defined body (possibly dropping a guard).
 export class AmbiguousInlineOverloadError extends SolidCashError {

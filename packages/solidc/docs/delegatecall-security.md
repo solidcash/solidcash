@@ -125,6 +125,9 @@ an unconditional `==` binding to a value the caller cannot choose; merely mentio
 (for example, checking its byte length) does not establish identity. The explicit `allowUnsafeOperations`
 compiler option retains the historical warning-only behavior for migration and adversarial testing.
 
+The signature check must be required before every delegatecall on the same control-flow path. A discarded
+check, a check in an optional branch, an `||` condition, or a check after the call does not authorize it.
+
 **A signature guard is only as good as its key (finding SEC-12).** `checkSig(s, pk)` proves that whoever
 supplied `pk` also supplied a matching `s` - nothing more. If the *same caller* supplies both, the check
 authorizes nobody and the proxy is wide open:

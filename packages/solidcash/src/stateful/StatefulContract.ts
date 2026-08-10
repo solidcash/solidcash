@@ -9013,6 +9013,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     return this;
   }
 
+  /** @internal Deliberately malformed test witnesses must never enter mock compatibility fallbacks. */
+  _hasRawWitnessOverrides(): boolean {
+    return (this._rawVMapBatchWitness?.size ?? 0) > 0 || (this._rawIterationKeysBlob?.size ?? 0) > 0;
+  }
+
   /** @internal - compute total output count for sentinel index when draining */
   /** @internal */
   async _createBuilder(
@@ -16817,6 +16822,7 @@ export class StatefulFunctionCall {
         // already-spent or mempool-conflicting UTXOs.
         const msg = err?.message ?? '';
         const reason = err?.reason ?? '';
+        if (this.parentContract?._hasRawWitnessOverrides()) throw err;
         const isUtxoStale = /\bmissing inputs\b/i.test(msg)
           || /\btxn-mempool-conflict\b/.test(msg)
           || /\bmissing inputs\b/i.test(reason)

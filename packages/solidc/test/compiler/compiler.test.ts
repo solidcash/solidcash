@@ -134,6 +134,8 @@ describe('Compiler', () => {
       expect(artifact.compiler.options).toEqual({
         enforceFunctionParameterTypes: true,
         enforceLocktimeGuard: false,
+        enforceFinalRequire: true,
+        allowUnsafeOperations: false,
         commitmentLimit: 128,
         // Graph-free source: auto selection narrows to direct-only and the artifact publishes the resolved value.
         messageBus: false,

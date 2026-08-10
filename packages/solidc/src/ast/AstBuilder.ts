@@ -250,7 +250,7 @@ import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
 import {
   InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
-  TernaryTypeMismatchError,
+  TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
 
@@ -2072,7 +2072,22 @@ export default class AstBuilder
     // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
     // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
     // addr); the SDK's selfdestructTo() routes the freed balance to addr at output 0.
-    if (functionDefinition.body.statements!.some((s) => s instanceof SelfdestructStatementNode)
+    const directSelfdestruct = functionDefinition.body.statements!
+      .some((s) => s instanceof SelfdestructStatementNode);
+    const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
+      if (value instanceof SelfdestructStatementNode) return !root;
+      if (!(value instanceof Node)) return false;
+      return Object.entries(value).some(([key, child]) => {
+        if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
+        if (child instanceof Node) return containsNestedSelfdestruct(child, false);
+        return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
+      });
+    };
+    const nestedSelfdestruct = functionDefinition.body.statements!
+      .some((statement) => !(statement instanceof SelfdestructStatementNode)
+        && containsNestedSelfdestruct(statement));
+    if (nestedSelfdestruct) throw new NestedSelfdestructError(functionDefinition, functionDefinition.name);
+    if (directSelfdestruct
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
       functionDefinition.modifiers.push(FunctionModifier.SELFDESTRUCT);
       functionDefinition.impliedSelfdestruct = true;

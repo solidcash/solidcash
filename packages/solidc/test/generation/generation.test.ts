@@ -29,6 +29,8 @@ describe('Code generation & target code optimisation', () => {
       delete legacyArtifact.invocationAnalysis;
       delete legacyArtifact.debug?.invokeDebug;
       delete legacyArtifact.compiler.options.messageBus;
+      delete legacyArtifact.compiler.options.enforceFinalRequire;
+      delete legacyArtifact.compiler.options.allowUnsafeOperations;
       // fingerprint is a deterministic hash of the (separately asserted) bytecode, so match its presence
       expect(legacyArtifact).toEqual({
         ...fixture.artifact, updatedAt: expect.any(String), fingerprint: expect.any(String),

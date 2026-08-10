@@ -115,6 +115,7 @@ import {
   StateArrayPopNode,
   StateArrayAssignNode,
   StateArrayDeleteNode,
+  SelfdestructStatementNode,
   UncheckedNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
@@ -6408,7 +6409,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!(next instanceof IdentifierNode)) break;
       target = next;
     }
-    if (hasAuthorizingSignatureGuard(node)) return undefined;
+    if (hasAuthorizingSignatureGuard(node, 'delegatecall')) return undefined;
     if (!keyIsCallerChosen(originalTarget, node)) return undefined;
     if (target instanceof IdentifierNode
       && node.parameters.some((parameter) => parameter.name === target.name)) {
@@ -12046,25 +12047,6 @@ const SIGNATURE_GUARD_KEY_ARG: Record<string, number> = {
   checkSig: 1, checkMultiSig: 1, checkDataSig: 2,
 };
 
-function collectSignatureGuardKeys(
-  node: Node | undefined, out: ExpressionNode[], seen: Set<Node> = new Set(),
-): void {
-  if (!node || seen.has(node)) return;
-  seen.add(node);
-  if (node instanceof FunctionCallNode) {
-    const keyArg = SIGNATURE_GUARD_KEY_ARG[node.identifier.name];
-    if (keyArg !== undefined) {
-      const key = node.parameters[keyArg];
-      if (key) out.push(key);
-    }
-  }
-  for (const v of Object.values(node)) {
-    if (v instanceof Node) { collectSignatureGuardKeys(v, out, seen); } else if (Array.isArray(v)) {
-      for (const e of v) if (e instanceof Node) collectSignatureGuardKeys(e, out, seen);
-    }
-  }
-}
-
 /**
  * Every value a local can hold in this body: its declaration initializer AND every later assignment. Reading
  * only the declaration (findLocalInit) lets `pubkey k = owner; k = pk;` launder a caller-supplied key past the
@@ -12328,10 +12310,67 @@ function isHashOf(expr: ExpressionNode | undefined, name: string, fn: FunctionDe
 }
 
 /** Does this function carry a signature check against a key the caller does not choose? */
-export function hasAuthorizingSignatureGuard(fn: FunctionDefinitionNode): boolean {
-  const keys: ExpressionNode[] = [];
-  collectSignatureGuardKeys(fn.body, keys);
-  return keys.some((key) => !keyIsCallerChosen(key, fn));
+interface AuthorizationControlSite { block: BlockNode; index: number }
+
+type GuardedOperation = 'delegatecall' | 'selfdestruct';
+
+/**
+ * Prove that every protected operation is dominated on its exact control-flow path by a require whose truth
+ * entails a signature check against authority the caller cannot choose. A discarded check, a check under `||`,
+ * a check in a sibling/optional branch, and a check after the operation all fail closed.
+ */
+export function hasAuthorizingSignatureGuard(
+  fn: FunctionDefinitionNode, operation: GuardedOperation = 'delegatecall',
+): boolean {
+  const guards: AuthorizationControlSite[][] = [];
+  const operations: AuthorizationControlSite[][] = [];
+
+  const requiredTrustedCheck = (expression: ExpressionNode): boolean => {
+    if (expression instanceof FunctionCallNode) {
+      const keyArg = SIGNATURE_GUARD_KEY_ARG[expression.identifier.name];
+      const key = keyArg === undefined ? undefined : expression.parameters[keyArg];
+      return key !== undefined && !keyIsCallerChosen(key, fn);
+    }
+    return expression instanceof BinaryOpNode && expression.operator === BinaryOperator.AND
+      && (requiredTrustedCheck(expression.left) || requiredTrustedCheck(expression.right));
+  };
+
+  const seen = new Set<Node>();
+  const walk = (node: Node | undefined, path: AuthorizationControlSite[]): void => {
+    if (!node || seen.has(node)) return;
+    seen.add(node);
+    if (node instanceof RequireNode && requiredTrustedCheck(node.expression)) guards.push(path);
+    if (operation === 'delegatecall'
+      && (node instanceof LowLevelCallNode || node instanceof LowLevelCallStatementNode)
+      && node.callMode === 'delegatecall') operations.push(path);
+    if (operation === 'selfdestruct' && node instanceof SelfdestructStatementNode) operations.push(path);
+    if (node instanceof BlockNode) {
+      for (const [index, statement] of (node.statements ?? []).entries()) {
+        walk(statement, [...path, { block: node, index }]);
+      }
+      return;
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
+        || key === 'symbolTable' || key === 'location' || key === 'type') continue;
+      if (value instanceof Node) walk(value, path);
+      else if (Array.isArray(value)) for (const child of value) if (child instanceof Node) walk(child, path);
+    }
+  };
+  walk(fn.body, []);
+
+  const dominates = (guard: AuthorizationControlSite[], target: AuthorizationControlSite[]): boolean => {
+    const guardSite = guard[guard.length - 1];
+    if (!guardSite) return false;
+    const targetLevel = target.findIndex((site) => site.block === guardSite.block);
+    if (targetLevel < 0 || guard.length - 1 !== targetLevel) return false;
+    return guard.slice(0, -1).every((site, index) => target[index]?.block === site.block
+      && target[index]?.index === site.index)
+      && guardSite.index < target[targetLevel].index;
+  };
+
+  return operations.length > 0
+    && operations.every((target) => guards.some((guard) => dominates(guard, target)));
 }
 
 // True if `type` is, or transitively contains, a function-pointer type (mapping value, array element,

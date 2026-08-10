@@ -47,7 +47,8 @@ contract CounterProxy() {
 `;
 
 const implArtifact = compileString(IMPL);
-const proxyArtifact = compileString(PROXY);
+// This legacy proxy fixture intentionally exercises the runtime path with a caller-selected implementation.
+const proxyArtifact = compileString(PROXY, { allowUnsafeOperations: true });
 
 describe('Inferred delegate mode (no `delegate` keyword in source)', () => {
   describe('Compiler', () => {

@@ -98,6 +98,52 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('caller-supplied address'));
     warn.mockRestore();
   });
+
+  it.each([
+    ['discarded', 'checkSig(s, owner); impl.delegatecall(input); require(input.length > 0);'],
+    ['conditional', 'if (ok) { require(checkSig(s, owner)); } impl.delegatecall(input); require(input.length > 0);'],
+    ['after', 'impl.delegatecall(input); require(checkSig(s, owner));'],
+  ])('does not accept a %s signature check before caller-selected delegation', (_label, body) => {
+    expect(() => compileStringRaw(`contract P(pubkey owner) { bigint counter;
+      function up(bytes input, address impl, sig s, bool ok) external { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.UntrustedDelegatecallTargetError);
+  });
+
+  it.each([
+    ['discarded', 'checkSig(s, owner); selfdestruct(to);'],
+    ['conditional', 'if (ok) { require(checkSig(s, owner)); } selfdestruct(to);'],
+    ['after', 'selfdestruct(to); require(checkSig(s, owner));'],
+  ])('does not accept a %s signature check for caller-directed destruction', (_label, body) => {
+    expect(() => compileStringRaw(`contract C(pubkey owner) { int n;
+      function kill(address to, sig s, bool ok) { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.UnauthenticatedSelfdestructError);
+  });
+
+  it('allows a required trusted signature that dominates the operation', () => {
+    expect(compileStringRaw(`contract C(pubkey owner) { int n;
+      function kill(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); }
+    }`, { messageBus: false }).contractName).toBe('C');
+  });
+
+  it.each([
+    'if (ok) { selfdestruct(to); } require(ok);',
+    'unchecked { selfdestruct(to); } require(ok);',
+    'while (ok) { selfdestruct(to); ok = false; } require(!ok);',
+  ])('rejects nested selfdestruct lifecycle placement: %s', (body) => {
+    expect(() => compileStringRaw(`contract C { int n;
+      function kill(address to, bool ok) { ${body} }
+    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+  });
+
+  it('records disabled checks in compiler metadata', () => {
+    const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const artifact = compileStringRaw(`contract C { int n;
+      function kill(address to) { require(true); selfdestruct(to); }
+    }`, { messageBus: false, allowUnsafeOperations: true, enforceFinalRequire: false });
+    expect(artifact.compiler?.options?.allowUnsafeOperations).toBe(true);
+    expect(artifact.compiler?.options?.enforceFinalRequire).toBe(false);
+    warn.mockRestore();
+  });
 });
 
 // Empty functions (receive()/fallback() and any regular void function) synthesize a state-preserving no-op spend

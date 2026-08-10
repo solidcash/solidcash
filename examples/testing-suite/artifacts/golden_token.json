@@ -246,11 +246,13 @@
     "options": {
       "enforceFunctionParameterTypes": true,
       "enforceLocktimeGuard": true,
+      "enforceFinalRequire": true,
+      "allowUnsafeOperations": false,
       "commitmentLimit": 128,
       "messageBus": false
     }
   },
-  "updatedAt": "2026-08-10T09:50:59.657Z",
+  "updatedAt": "2026-08-10T11:54:33.575Z",
   "invocationAnalysis": {
     "version": 1,
     "protocolVersions": [
@@ -636,11 +638,13 @@
       "options": {
         "enforceFunctionParameterTypes": true,
         "enforceLocktimeGuard": true,
+        "enforceFinalRequire": true,
+        "allowUnsafeOperations": false,
         "commitmentLimit": 128,
         "messageBus": false
       }
     },
-    "updatedAt": "2026-08-10T09:50:59.748Z",
+    "updatedAt": "2026-08-10T11:54:33.681Z",
     "invocationAnalysis": {
       "version": 1,
       "protocolVersions": [

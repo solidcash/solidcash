@@ -1273,6 +1273,8 @@ export function generateArtifact(
       options: {
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
+        enforceFinalRequire: compilerOptions.enforceFinalRequire,
+        allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
       },

@@ -598,7 +598,9 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
     && console.log === diagnosticConsoleLog && console.warn === diagnosticConsoleWarn;
   let cacheKey = '';
   if (cacheable) {
-    cacheKey = `${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
+    // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
+    // local development, so the package version alone cannot invalidate entries after metadata additions.
+    cacheKey = `artifact-v2\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const memHit = compileCacheGet(cacheKey);
     if (memHit) return cloneArtifact(memHit);
     const diskHit = diskCacheGet(cacheKey);

@@ -18,7 +18,7 @@ contract Vault(pubkey admin) {
 
   // `selfdestruct(to)` implies the `selfdestruct` modifier. The covenant pins tx.outputs[0] to `to`.
   function kill(sig s, address to) {
-    require(checkSig(s, admin));   // mandatory auth: selfdestruct functions must end in a require()
+    require(checkSig(s, admin));
     selfdestruct(to);
   }
 }
@@ -273,6 +273,10 @@ one (`pubkey(raw)`, or an alias later rebound to a parameter). An array **index*
 `i` - the container decides the bytes. The key operand is argument 1 of `checkSig` / `checkMultiSig` and
 argument 2 of `checkDataSig`; this is the same rule the delegatecall diagnostics apply (see
 [delegatecall-security.md](./delegatecall-security.md)).
+
+The check must be required and execute before selfdestruct on every path. Discarded, optional, `||`, and later
+checks do not count. `selfdestruct` must also be a direct function-body statement; nesting it in a branch, loop,
+or `unchecked` block is rejected.
 
 A key **parameter** also counts when an unconditional `require()` in the same function pins it to stored key
 material - the standard BCH admin idiom, where the caller may supply only the key whose hash is committed:

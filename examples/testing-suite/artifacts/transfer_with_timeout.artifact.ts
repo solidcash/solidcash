@@ -93,11 +93,13 @@ export default {
     options: {
       enforceFunctionParameterTypes: true,
       enforceLocktimeGuard: true,
+      enforceFinalRequire: true,
+      allowUnsafeOperations: false,
       commitmentLimit: 128,
       messageBus: false,
     },
   },
-  updatedAt: '2026-08-10T09:50:59.764Z',
+  updatedAt: '2026-08-10T11:54:33.700Z',
   invocationAnalysis: {
     version: 1,
     protocolVersions: [

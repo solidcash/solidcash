@@ -2,7 +2,7 @@ export interface CompatibilityTarget { hardhat: 2 | 3; ethers: 5 | 6 }
 export interface AliasRule { find: string | RegExp; replacement: string }
 export interface ViteLikeConfig {
   test?: { setupFiles?: string | string[]; [key: string]: unknown };
-  resolve?: { alias?: Record<string, string> | AliasRule[]; [key: string]: unknown };
+  resolve?: { alias?: Record<string, string> | AliasRule[]; dedupe?: string[]; [key: string]: unknown };
   optimizeDeps?: { exclude?: string[]; [key: string]: unknown };
   [key: string]: unknown;
 }
@@ -12,6 +12,9 @@ const testingStub = (name: string): string => fileURLToPath(
 );
 const solidcashVitest = fileURLToPath(
   new URL('../../solidcash/dist/test/TestExtensions.js', import.meta.url),
+);
+const testingSetup = fileURLToPath(
+  new URL('../../testing/dist/vitest-setup.js', import.meta.url),
 );
 
 export function compatibilityAliases(target: CompatibilityTarget): Record<string, string> {
@@ -52,6 +55,7 @@ export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig
     resolve: {
       ...user.resolve,
       alias: [...exactAliases, ...userAliases],
+      dedupe: ['@solidcash/testing', 'solidcash', ...(user.resolve?.dedupe ?? [])],
     },
     optimizeDeps: {
       ...user.optimizeDeps,
@@ -61,7 +65,7 @@ export function solidhatPreset(target: CompatibilityTarget, user: ViteLikeConfig
       globals: true,
       environment: 'node',
       ...user.test,
-      setupFiles: ['@solidcash/testing/vitest-setup', ...setupFiles],
+      setupFiles: [testingSetup, ...setupFiles],
     },
   };
 }

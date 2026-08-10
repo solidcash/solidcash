@@ -361,6 +361,26 @@ export function createDataNftUnlocker(
   );
 }
 
+export function createRelocatedDataNftUnlocker(
+  contract: Contract<any, any>, masterInputIndex: number, outputIndex: number, categoryId: string,
+): ContractUnlocker {
+  validateMasterInputIndex(masterInputIndex);
+  validateMasterInputIndex(outputIndex);
+  validateCategoryId(categoryId);
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  return createCovenantContractUnlocker(
+    contract,
+    `DataNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [
+      { name: 'flag', type: 'bigint' },
+      { name: 'outputIndex', type: 'bigint' },
+      { name: 'masterInputIndex', type: 'bigint' },
+    ],
+    [3n, BigInt(outputIndex), BigInt(masterInputIndex)],
+  );
+}
+
 export function createDestroyDataNftUnlocker(
   contract: Contract<any, any>, masterInputIndex: number, categoryId: string,
 ): ContractUnlocker {

@@ -2245,11 +2245,17 @@ export interface ExternalCallSlot {
     argSources?: ExternalCallArgSource[];
     opaqueReturn?: boolean;
     returnTypes?: Type[];
+    /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */
+    eager?: boolean;
+    /** @internal Source node used to lower an eager row before the body. */
+    sourceCallNode?: ExternalFunctionCallNode;
   }[];
   /** @internal Physical representative for a logical row removed by repeated-callee grouping. */
   batchRepresentative?: ExternalCallSlot;
   /** @internal Source node retained until Release 5 grouping/codegen. */
   sourceCallNode?: ExternalFunctionCallNode;
+  /** @internal Callsite may be absent at runtime; its master-index witness is -1 when not reached. */
+  optional?: boolean;
 }
 
 export interface ExternalOutputStateAccessInfo {

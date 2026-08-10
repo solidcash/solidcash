@@ -2272,10 +2272,32 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (statement instanceof MethodCallStatementNode
               && statement.expression instanceof ExternalFunctionCallNode) directCalls.add(statement.expression);
           }
+          const conditionalCallsite = (target: Node | undefined): boolean => {
+            if (!target) return false;
+            let conditional = false;
+            const seen = new Set<object>();
+            const visit = (value: unknown, underConditional: boolean): void => {
+              if (!(value instanceof Node) || seen.has(value) || conditional) return;
+              seen.add(value);
+              if (value === target) { conditional = underConditional; return; }
+              const nested = underConditional || /^(BranchNode|SwitchNode|SwitchCaseNode)$/.test(
+                value.constructor.name,
+              );
+              for (const [key, child] of Object.entries(value)) {
+                if (['resolvedFunction', 'functionReference', 'definition', 'symbolTable',
+                  'referencedContract', 'stateVariable', 'collection'].includes(key)) continue;
+                if (child instanceof Node) visit(child, nested);
+                else if (Array.isArray(child)) for (const item of child) visit(item, nested);
+              }
+            };
+            visit(node.body, false);
+            return conditional;
+          };
           const byTarget = new Map<string, ExternalCallSlot[]>();
           const allByTarget = new Map<string, ExternalCallSlot[]>();
           const inferredSelectors = new Map<ExternalCallSlot, Uint8Array>();
           for (const slot of logicalCallSlots) {
+            slot.optional = conditionalCallsite(slot.sourceCallNode);
             // Single-method interfaces normally omit selector verification, so
             // their slots have no baked selector yet. message-bus batch rows always carry
             // the original direct selector. Infer it without mutating the slot:
@@ -2306,11 +2328,12 @@ export default class SymbolTableTraversal extends AstTraversal {
               && slot.rawParameters.length === slot.rawParameterTypes.length;
             const rawSelector = decodedRaw ? slot.rawSelector : undefined;
             const eligible = identity !== ''
-              // A value-producing call whose target is pinned (an addressSource OR a self-pinned interface-typed
-              // state var) is admissible wherever it sits: `balanceOf` is `occurrence: conditional` and batches
-              // today through the addressSource arm, so conditionality is not what this gate is protecting.
+              // Calls reached through internal helpers are still calls to the same one-spend owner. Their source
+              // sites append rows under the same control flow as direct calls, so excluding them here splits one
+              // SDK route into incompatible compiler batches (e.g. helper-published events after direct reads).
               && (directCalls.has(slot.sourceCallNode!)
-                || ((slot.addressSource || slot.addressStateVar) && slot.hasReturnValues))
+                || ((slot.addressSource || slot.addressStateVar) && slot.hasReturnValues)
+                || !slot.optional)
               && !slot.loopArrayVar && !slot.fnPtrCall
               && (slot.callMode ?? ExternalCallMode.REGULAR) === ExternalCallMode.REGULAR
               && !!(slot.compileTimeSelector ?? inferredSelectors.get(slot) ?? rawSelector)
@@ -2320,7 +2343,11 @@ export default class SymbolTableTraversal extends AstTraversal {
               // refuses the batch at build time rather than mis-encoding it.
               && true;
             if (!eligible) continue;
-            const key = `${identity}|${slot.requiredDataNftIndices.join(',')}`;
+            // One state owner has exactly one spendable master, so every call to that owner must share one
+            // physical route even when individual methods touch different data-NFT subsets. The route owns the
+            // union of those shards; partitioning by the per-call subset makes the compiler expect several
+            // batches while the SDK necessarily composes one owner-wide batch.
+            const key = identity;
             const group = byTarget.get(key) ?? [];
             group.push(slot);
             byTarget.set(key, group);
@@ -2344,6 +2371,9 @@ export default class SymbolTableTraversal extends AstTraversal {
             const grouped = new Set<ExternalCallSlot>();
             for (const group of repeated) {
               const representative = group[0];
+              representative.requiredDataNftIndices = [...new Set(
+                group.flatMap((slot) => slot.requiredDataNftIndices),
+              )].sort((a, b) => a - b);
               representative.batchInvocations = group.map((slot, logicalIndex) => {
               slot.batchRepresentative = representative;
               slot.sourceCallNode!.externalBatchLogicalIndex = logicalIndex;
@@ -2375,6 +2405,13 @@ export default class SymbolTableTraversal extends AstTraversal {
                   ?? slot.sourceCallNode!.parameters.map((parameter) => parameter.type!),
                 logicalIndex,
                 argSources: slot.rawArgSources ?? slot.argSources,
+                sourceCallNode: slot.sourceCallNode,
+                ...((slot.optional
+                  && (slot.rawArgSources ?? slot.argSources ?? []).every((source) => [
+                    'forward', 'constructorArg', 'literal', 'msgSender', 'selfAddress',
+                  ].includes(source.kind))) && {
+                  eager: true,
+                }),
                 ...(slot.opaqueReturn && { opaqueReturn: true }),
                 ...((rawFunc?.returnTypes ?? slot.returnTypes) && {
                   returnTypes: rawFunc?.returnTypes ?? slot.returnTypes,
@@ -2644,6 +2681,7 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (anchorSymbol) anchorSymbol.references.push({ name: anchorName } as IdentifierNode);
             this.pushToStack(anchorParam);
           }
+
         }
       }
     }
@@ -2962,6 +3000,13 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // Inject _proxyMasterIndex for delegate functions
     if (node.modifiers.includes(FunctionModifier.DELEGATE)) {
+      const outputParam = new ParameterNode(PrimitiveType.BIGINT, '__internal__proxyMasterOutputIndex');
+      outputParam.location = node.location;
+      node.parameters.push(outputParam);
+      this.symbolTables[0].set(Symbol.variable(outputParam));
+      const outputSym = this.symbolTables[0].get('__internal__proxyMasterOutputIndex');
+      if (outputSym) outputSym.references.push({ name: '__internal__proxyMasterOutputIndex' } as IdentifierNode);
+      this.pushToStack(outputParam);
       const param = new ParameterNode(PrimitiveType.BIGINT, '__internal__proxyMasterIndex');
       param.location = node.location;
       node.parameters.push(param);

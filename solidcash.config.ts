@@ -14,6 +14,7 @@ export default defineConfig({
     mock: {
       type: 'mock',
       consensus: {
+        operationCostBudgetPerByte: 10_000,
         maximumInputBytes: 10_000_000,
         maximumTransactionBytes: 100_000_000,
         maximumStackItemBytes: 10_000_000,

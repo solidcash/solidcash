@@ -1,5 +1,5 @@
 import {
-  binToHex, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
   vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
@@ -844,6 +844,10 @@ export function assertFinalizedBytesWithCovenant(
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    console.error('preflight-provider-limits', builder.provider?.consensusLimits);
+  }
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
 
@@ -862,6 +866,124 @@ const evaluateEveryInput = (
       )));
     }
     if (objection !== true) {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+        const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
+        const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
+        const unlockerBytecodeHex = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: { contract?: { bytecode?: string } };
+        }).unlocker?.contract?.bytecode;
+        console.error('message-bus-failing-input', {
+          inputIndex,
+          builderInputKeys: Object.keys(builder.inputs[inputIndex] as unknown as object),
+          inputCategory: builder.inputs[inputIndex].token?.category,
+          unlockerCategory: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { category?: Uint8Array } };
+          }).unlocker?.contract?.category === undefined ? undefined : binToHex((builder.inputs[inputIndex] as unknown as {
+            unlocker: { contract: { category: Uint8Array } };
+          }).unlocker.contract.category),
+          unlockerContract: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { artifact?: { contractName?: string; fingerprint?: string } } };
+          }).unlocker?.contract?.artifact?.contractName,
+          unlockerLockingBytecode: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { lockingBytecode?: string } };
+          }).unlocker?.contract?.lockingBytecode,
+          redeemBytes: redeemBytecode?.length,
+          redeemHash: redeemBytecode === undefined ? undefined : binToHex(hash256(redeemBytecode)),
+          unlockerRedeemHash: unlockerBytecodeHex === undefined
+            ? undefined : binToHex(hash256(hexToBin(unlockerBytecodeHex))),
+          lockingBytecode: binToHex(sourceOutputs[inputIndex].lockingBytecode),
+          unlockingBytecode: binToHex(transaction.inputs[inputIndex].unlockingBytecode),
+        });
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+          console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
+            outputIndex,
+            output: transaction.outputs[outputIndex],
+          })));
+          console.error('message-bus-output-summary', transaction.outputs.slice(100, 140).map((output, offset) => ({
+            outputIndex: offset + 100,
+            lockingLength: output.lockingBytecode.length,
+            category: output.token === undefined ? undefined : Array.from(output.token.category, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft === undefined ? undefined : Array.from(output.token.nft.commitment, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+          })));
+          console.error('message-bus-loop-output-summary', transaction.outputs.map((output, outputIndex) => ({
+            outputIndex,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token === undefined ? undefined : binToHex(output.token.category),
+            commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+          })).filter((output) => output.lockingBytecode
+            === 'aa2020a1837b930aebaba6eb9e9300138a50768a4cd1b72771f674c6d9503ebcc28f87'));
+        }
+        const lockingGroups = new Map<string, { inputs: number[]; outputs: number[]; contracts: string[] }>();
+        sourceOutputs.forEach((source, index) => {
+          const locking = binToHex(source.lockingBytecode);
+          const group = lockingGroups.get(locking) ?? { inputs: [], outputs: [], contracts: [] };
+          group.inputs.push(index);
+          const contractName = (builder.inputs[index] as unknown as {
+            unlocker?: { contract?: { artifact?: { contractName?: string } } };
+          }).unlocker?.contract?.artifact?.contractName;
+          if (contractName && !group.contracts.includes(contractName)) group.contracts.push(contractName);
+          lockingGroups.set(locking, group);
+        });
+        transaction.outputs.forEach((output, index) => {
+          const locking = binToHex(output.lockingBytecode);
+          const group = lockingGroups.get(locking) ?? { inputs: [], outputs: [], contracts: [] };
+          group.outputs.push(index);
+          lockingGroups.set(locking, group);
+        });
+        console.error('message-bus-locking-groups', [...lockingGroups].filter(([, group]) => (
+          group.contracts.length > 0 || group.inputs.some((index) => index >= 90)
+        )));
+        const recent: Array<Record<string, unknown>> = [];
+        const inputReads: Array<Record<string, unknown>> = [];
+        const largeEqualVerifies: Array<Record<string, unknown>> = [];
+        let body29Captured = false;
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            if (!body29Captured && inputIndex === 105 && state.instructions.length === 29 && state.ip === 0) {
+              body29Captured = true;
+              console.error('message-bus-body29-entry', JSON.stringify(state.stack.map((item, index) => ({
+                index, fromTop: state.stack.length - index - 1, value: binToHex(item),
+              }))));
+            }
+            recent.push({
+              ip: state.ip,
+              opcode: state.instructions[state.ip]?.opcode,
+              instructionCount: state.instructions.length,
+              depth: state.stack.length,
+              top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
+            });
+            if (recent.length > 40) recent.shift();
+            if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
+              && (state.stack.at(-1)?.length ?? 0) > 100
+              && (state.stack.at(-2)?.length ?? 0) > 100) {
+              largeEqualVerifies.push({
+                left: binToHex(state.stack.at(-2)!), right: binToHex(state.stack.at(-1)!),
+              });
+              if (largeEqualVerifies.length > 4) largeEqualVerifies.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
+              const rawIndex = state.stack.at(-1);
+              inputReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index: rawIndex ? String(vmNumberToBigInt(rawIndex)) : 'missing',
+                prior: state.stack.at(-2) ? binToHex(state.stack.at(-2)!.slice(0, 16)) : undefined,
+                unlockingHead: rawIndex && Number(vmNumberToBigInt(rawIndex)) >= 0
+                  ? binToHex(transaction.inputs[Number(vmNumberToBigInt(rawIndex))]
+                    ?.unlockingBytecode.slice(0, 24) ?? new Uint8Array()) : undefined,
+              });
+              if (inputReads.length > 30) inputReads.shift();
+            }
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-failure-ring', recent);
+        console.error('message-bus-input-reads', inputReads);
+        console.error('message-bus-large-equals', largeEqualVerifies);
+      }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
         ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
         const bytecode = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
@@ -914,6 +1036,12 @@ const evaluateEveryInput = (
         }).filter((value) => value !== undefined);
         console.error('message-bus-failed-input-pushes', {
           inputIndex, bytecodeLength: bytecode.length, pushes, routeInputs,
+          returnRegion: transaction.outputs.slice(36, 44).map((output, offset) => ({
+            index: 36 + offset,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token?.category,
+            commitment: output.token?.nft?.commitment,
+          })),
         });
         const trackedPicks: Array<Record<string, unknown>> = [];
         createVirtualMachineBch2026ForProvider(builder.provider, {
@@ -1054,6 +1182,11 @@ const evaluateEveryInput = (
             opcode: state.instructions[state.ip]?.opcode,
             stack: state.stack.slice(-4).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
           })),
+          outlined17: trace.flatMap((state, traceIndex) => state.instructions.length === 17
+            ? [{
+              traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
+              stack: state.stack.slice(-12).map((item) => `${item.length}:${binToHex(item)}`),
+            }] : []).slice(-12),
         });
       }
       if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env

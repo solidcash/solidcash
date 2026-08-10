@@ -221,7 +221,10 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       }
       const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
       if (!deployment) return arg;
-      const registered = deployment.contract as { proxy?: StatefulContract };
+      const registered = deployment.contract as {
+        _logicalAddress?: string;
+        proxy?: StatefulContract & { _logicalAddress?: string };
+      };
       for (const call of abiFn.externalCalls ?? []) {
         const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
         const namedIndex = call.addressParam
@@ -230,6 +233,11 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
           implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
         }
       }
+      // A CREATE-style deployment is authenticated by its immutable logical-identity anchor. Preserve the
+      // Solidity-visible address in calldata so the covenant can bind that anchor to the physical co-spent
+      // master. Replacing it with the physical P2SH bytecode while still supplying the anchor makes the two
+      // intentionally distinct identities compare equal and rejects every such call.
+      if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
       const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
       return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
     });

@@ -362,12 +362,18 @@ export function hardhatCompatConfig(resolved: ResolvedConfig): Record<string, un
   return { ...resolved, networks };
 }
 
-let singleton: HardhatRuntimeEnvironment | undefined;
+// Vitest can load this package through both the setup-file and Hardhat compatibility alias module graphs.
+// Keep the active HRE process-global so those equivalent module instances cannot diverge onto separate providers.
+const hreGlobal = globalThis as typeof globalThis & {
+  __solidcashActiveHre?: HardhatRuntimeEnvironment;
+};
 
 /** The active HRE singleton (built lazily with a default mock-network config if `initHre` hasn't run). */
 export function getDefaultHre(): HardhatRuntimeEnvironment {
-  if (!singleton) singleton = createHardhatRuntimeEnvironment(resolveConfig({}));
-  return singleton;
+  if (!hreGlobal.__solidcashActiveHre) {
+    hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(resolveConfig({}));
+  }
+  return hreGlobal.__solidcashActiveHre;
 }
 
 /** Alias: the currently-active HRE (config-loaded if `initHre` ran, else the default). */
@@ -376,10 +382,14 @@ export const getActiveHre = getDefaultHre;
 /** Build (and cache) the HRE from an on-disk config in `dir`. Used by the CLI. */
 export async function initHre(dir?: string, networkName?: string): Promise<HardhatRuntimeEnvironment> {
   const config = await loadConfig(dir);
-  singleton = createHardhatRuntimeEnvironment(config, networkName);
+  hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(config, networkName);
+  if (process.env.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    console.error('init-hre-config', { dir, defaultNetwork: config.defaultNetwork,
+      consensus: config.networks[config.defaultNetwork]?.consensus });
+  }
   // Hardhat places configured account balances in genesis; initialize the mock account set before tests run.
-  await singleton.ethers.getSigners(config.accounts?.count ?? 20);
-  return singleton;
+  await hreGlobal.__solidcashActiveHre.ethers.getSigners(config.accounts?.count ?? 20);
+  return hreGlobal.__solidcashActiveHre;
 }
 
 export type { SolidcashConfig, TaskDefinition, TaskArguments, ContractRunner };

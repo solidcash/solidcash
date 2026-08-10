@@ -634,6 +634,26 @@ function buildFunctionAbiMetadata(
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
   const signatureGuard = signatureGuardOf(func, contract, provenance);
+  // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
+  // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
+  // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
+  // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
+  const routeEntryLoopWrites = func.messageBusRoute
+    ? [...new Set([
+      ...(func.entryLoopWrites ?? []),
+      ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)
+        .flatMap((candidate) => candidate.entryLoopWrites ?? []),
+    ])]
+    : func.entryLoopWrites;
+  const loopSignatureFunctions = func.messageBusRoute
+    ? [func, ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)]
+    : [func];
+  const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
+    .flatMap((candidate) => candidate.entryAccesses ?? [])
+    // Codegen may mark its private entry-slot copy as inLoop after semantic traversal; the authoritative
+    // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
+    .filter((access) => routeEntryLoopWrites?.includes(access.collection))
+    .map((access) => [access.collection, access.collectionSignature]));
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -808,15 +828,18 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
-    ...(func.entryLoopWrites && func.entryLoopWrites.some(
+    ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
       // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
-      entryLoopWrites: func.entryLoopWrites.filter(
+      entryLoopWrites: routeEntryLoopWrites.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
+      ...(Object.keys(routeEntryLoopWriteSignatures).length > 0 && {
+        entryLoopWriteSignatures: routeEntryLoopWriteSignatures,
+      }),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
     ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && {

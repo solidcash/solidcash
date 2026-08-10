@@ -2266,7 +2266,8 @@ export default class TypeCheckTraversal extends AstTraversal {
     // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
     // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
-      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterIndex',
+      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
+      '__internal__proxyMasterIndex',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {

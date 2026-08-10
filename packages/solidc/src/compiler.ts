@@ -3137,11 +3137,17 @@ function synthesizeMessageBusRoute(
       offloadedVerifier, compilerOptions.maximumInputBytes,
     )) : '';
   const compactAtomicBinder = `
+        bigint activeMasterOutput = -1;
+        for (bigint masterOutput = 0; masterOutput < tx.outputs.length; masterOutput = masterOutput + 1) {
+          if (tx.outputs[masterOutput].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
+            && tx.outputs[masterOutput].tokenCategory == tx.inputs[activeInputIndex].tokenCategory) {
+            activeMasterOutput = masterOutput;
+          }
+        }
         require(tx.inputs[activeInputIndex].tokenCategory.length == 33
           && tx.inputs[activeInputIndex].tokenCategory.slice(32, 33) == hex"02"
-          && tx.outputs[activeInputIndex].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode
-          && tx.outputs[activeInputIndex].tokenCategory == tx.inputs[activeInputIndex].tokenCategory
-          && tx.outputs[activeInputIndex].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
+          && activeMasterOutput >= 0
+          && tx.outputs[activeMasterOutput].nftCommitment == tx.inputs[activeInputIndex].nftCommitment);
         bytes activeCategory = tx.inputs[activeInputIndex].tokenCategory.slice(0, 32);
         bigint activeVerifier = __internal__activeVerifierIndex;
         require(activeVerifier >= 0 && activeVerifier < tx.inputs.length
@@ -3151,7 +3157,14 @@ function synthesizeMessageBusRoute(
           && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6
           && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        require(tx.outputs[activeVerifier].nftCommitment == bytes.concat(
+        bigint activeVerifierOutput = -1;
+        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
+          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
+            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
+            activeVerifierOutput = verifierOutput;
+          }
+        }
+        require(activeVerifierOutput >= 0 && tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
           tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
           bindingDigest
         ));
@@ -3213,15 +3226,22 @@ function synthesizeMessageBusRoute(
           bigint maximumSize = int(bytes.concat(callManifest.slice(cursor + 32, cursor + 34), hex"00"));
           bigint trailingUsed = int(bytes.concat(callManifest.slice(cursor + 34, cursor + 36), hex"00"));
           bigint returnOffset = int(bytes.concat(callManifest.slice(cursor + 36, cursor + 38), hex"00"));
-          bigint returnOutput = returnOffset == 65535 ? 65535 : base + returnOffset;
           cursor = cursor + 38;
           require(base < tx.inputs.length && base < tx.outputs.length);
           require(tx.inputs[base].lockingBytecode == participantLbc);
           require(tx.inputs[base].tokenCategory.length >= 33
             && tx.inputs[base].tokenCategory.slice(0, 32) == category
             && tx.inputs[base].tokenCategory.slice(32, 33) == hex"02");
-          require(tx.outputs[base].lockingBytecode == participantLbc
-            && tx.outputs[base].tokenCategory == tx.inputs[base].tokenCategory);
+          bigint participantOutputBase = -1;
+          for (bigint participantOutput = 0; participantOutput < tx.outputs.length;
+            participantOutput = participantOutput + 1) {
+            if (tx.outputs[participantOutput].lockingBytecode == participantLbc
+              && tx.outputs[participantOutput].tokenCategory == tx.inputs[base].tokenCategory) {
+              participantOutputBase = participantOutput;
+            }
+          }
+          require(participantOutputBase >= 0);
+          bigint returnOutput = returnOffset == 65535 ? 65535 : participantOutputBase + returnOffset;
           require(blockSize == fixedSize + trailingUsed && blockSize <= maximumSize);
           require(returnOffset == 65535 || returnOffset < fixedSize);
           if (base == activeInputIndex) {
@@ -3240,13 +3260,19 @@ function synthesizeMessageBusRoute(
         require(tx.inputs[activeVerifier].tokenCategory.length == 33
           && tx.inputs[activeVerifier].tokenCategory.slice(0, 32) == activeCategory
           && tx.inputs[activeVerifier].tokenCategory.slice(32, 33) == hex"01");
-        require(tx.outputs[activeVerifier].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
-          && tx.outputs[activeVerifier].tokenCategory == tx.inputs[activeVerifier].tokenCategory
-          && tx.outputs[activeVerifier].tokenAmount == tx.inputs[activeVerifier].tokenAmount
-          && tx.outputs[activeVerifier].value == tx.inputs[activeVerifier].value);
+        bigint activeVerifierOutput = -1;
+        for (bigint verifierOutput = 0; verifierOutput < tx.outputs.length; verifierOutput = verifierOutput + 1) {
+          if (tx.outputs[verifierOutput].lockingBytecode == tx.inputs[activeVerifier].lockingBytecode
+            && tx.outputs[verifierOutput].tokenCategory == tx.inputs[activeVerifier].tokenCategory) {
+            activeVerifierOutput = verifierOutput;
+          }
+        }
+        require(activeVerifierOutput >= 0
+          && tx.outputs[activeVerifierOutput].tokenAmount == tx.inputs[activeVerifier].tokenAmount
+          && tx.outputs[activeVerifierOutput].value == tx.inputs[activeVerifier].value);
         require(tx.inputs[activeVerifier].nftCommitment.length >= 6
           && tx.inputs[activeVerifier].nftCommitment.slice(0, 4) == hex"4c335631");
-        require(tx.outputs[activeVerifier].nftCommitment == bytes.concat(
+        require(tx.outputs[activeVerifierOutput].nftCommitment == bytes.concat(
           tx.inputs[activeVerifier].nftCommitment.slice(0, 6),
           bindingDigest
         ));
@@ -3574,8 +3600,15 @@ function synthesizeMessageBusRoute(
         bigint physicalEventOutputs = 0;
         bigint physicalValueOutputs = 0;
         bigint physicalTokenOutputs = 0;
+        bigint activeOutputBase = activeInputIndex;
+        for (bigint outputIndex = 0; outputIndex < tx.outputs.length; outputIndex = outputIndex + 1) {
+          if (tx.outputs[outputIndex].lockingBytecode == tx.inputs[activeInputIndex].lockingBytecode) {
+            activeOutputBase = outputIndex;
+          }
+        }
         for (bigint slot = activeInputIndex;
           slot < activeInputIndex + activeBlockSize; slot = slot + 1) {
+          bigint outputSlot = activeOutputBase + slot - activeInputIndex;
           bigint isSidecarSlot = 0;
           ${sidecarVerificationMode ? `for (bigint sidecar = 0;
             sidecar < activeSidecarTargets.length; sidecar = sidecar + 2) {
@@ -3589,12 +3622,12 @@ function synthesizeMessageBusRoute(
           // A return-event slot is allowed to publish the authenticated result vector, but every other slot in
           // the participant's complete balanced block must be byte-for-byte and value-for-value preserved.
           if (activeStaticInvocationRows > 0) {
-            require(tx.outputs[slot].value == tx.inputs[slot].value);
-            if (slot != activeReturnOutput) {
-              require(tx.outputs[slot].lockingBytecode == tx.inputs[slot].lockingBytecode);
-              require(tx.outputs[slot].tokenCategory == tx.inputs[slot].tokenCategory);
-              require(tx.outputs[slot].nftCommitment == tx.inputs[slot].nftCommitment);
-              require(tx.outputs[slot].tokenAmount == tx.inputs[slot].tokenAmount);
+            require(tx.outputs[outputSlot].value == tx.inputs[slot].value);
+            if (outputSlot != activeReturnOutput) {
+              require(tx.outputs[outputSlot].lockingBytecode == tx.inputs[slot].lockingBytecode);
+              require(tx.outputs[outputSlot].tokenCategory == tx.inputs[slot].tokenCategory);
+              require(tx.outputs[outputSlot].nftCommitment == tx.inputs[slot].nftCommitment);
+              require(tx.outputs[outputSlot].tokenAmount == tx.inputs[slot].tokenAmount);
             }
           }
           if (tx.inputs[slot].tokenCategory.length == 33
@@ -3602,14 +3635,14 @@ function synthesizeMessageBusRoute(
             && tx.inputs[slot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
-          if (tx.outputs[slot].tokenCategory.length == 33
-            && tx.outputs[slot].tokenCategory.slice(0, 32) == activeCategory
-            && tx.outputs[slot].tokenCategory.slice(32, 33) == hex"01") {
+          if (tx.outputs[outputSlot].tokenCategory.length == 33
+            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) == activeCategory
+            && tx.outputs[outputSlot].tokenCategory.slice(32, 33) == hex"01") {
             physicalResourceEndpoints = physicalResourceEndpoints + 1;
           }
           if (tx.inputs[slot].tokenCategory.length == 0
-            && tx.outputs[slot].tokenCategory.length == 0
-            && tx.inputs[slot].lockingBytecode == tx.outputs[slot].lockingBytecode
+            && tx.outputs[outputSlot].tokenCategory.length == 0
+            && tx.inputs[slot].lockingBytecode == tx.outputs[outputSlot].lockingBytecode
             && tx.inputs[slot].lockingBytecode != hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}") {
             physicalSatoshiContainers = physicalSatoshiContainers + 1;
           }
@@ -3620,24 +3653,24 @@ function synthesizeMessageBusRoute(
             physicalTokenContainers = physicalTokenContainers + 1;
           }
           if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && tx.outputs[slot].tokenCategory.length == 0
-            && tx.outputs[slot].lockingBytecode != hex"51") {
+            && tx.outputs[outputSlot].tokenCategory.length == 0
+            && tx.outputs[outputSlot].lockingBytecode != hex"51") {
             physicalValueOutputs = physicalValueOutputs + 1;
           }
           if (tx.inputs[slot].lockingBytecode == hex"${BALANCED_DUMMY_FUNDER_LOCKING_BYTECODE_HEX}"
-            && (tx.outputs[slot].tokenCategory.length == 32
-              || (tx.outputs[slot].tokenCategory.length == 33
-                && tx.outputs[slot].tokenCategory != bytes.concat(activeCategory, hex"02")))
+            && (tx.outputs[outputSlot].tokenCategory.length == 32
+              || (tx.outputs[outputSlot].tokenCategory.length == 33
+                && tx.outputs[outputSlot].tokenCategory != bytes.concat(activeCategory, hex"02")))
             // Participant-owned state/event NFTs use the participant category and are authenticated as
             // resource/event rows. A tcTransfer category is necessarily foreign to that participant in this
             // admitted shape; excluding the local category prevents trailing chunk mints from satisfying the
             // token-settlement cardinality check.
-            && tx.outputs[slot].tokenCategory.slice(0, 32) != activeCategory) {
+            && tx.outputs[outputSlot].tokenCategory.slice(0, 32) != activeCategory) {
             physicalTokenOutputs = physicalTokenOutputs + 1;
           }
-          if (slot != activeReturnOutput && tx.outputs[slot].tokenCategory == activeCategory
+          if (outputSlot != activeReturnOutput && tx.outputs[outputSlot].tokenCategory == activeCategory
             && tx.inputs[slot].tokenCategory != activeCategory
-            && tx.outputs[slot].tokenAmount == 0) {
+            && tx.outputs[outputSlot].tokenAmount == 0) {
             physicalEventOutputs = physicalEventOutputs + 1;
           }
         }
@@ -4634,10 +4667,13 @@ function compileResolvedAst(
       // An entry clone executes inside the route's participant block whether or not it carries an EFFECT, so it
       // needs the route's block layout either way. `graphEmissionHandler` is only set for clones whose source
       // has effects, which left an effect-free state writer (`userRefunded`) reaching codegen with no layout.
-      if (fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
-        || fn.name.startsWith('__message_bus_entry_')) {
+      const routeClone = fn.graphEmissionHandler || fn.name.startsWith('__message_bus_array_')
+        || fn.name.startsWith('__message_bus_entry_');
+      if (routeClone) {
         fn.blockLayout = messageBusRoute.blockLayout;
-        if (fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
+      }
+      if ((routeClone || fn.messageBusEligible)
+        && fn.entryAccesses?.length && messageBusRoute.entryAccesses?.length) {
           fn.messageBusPhysicalEntrySlots = fn.entryAccesses.map((entry) => {
             const byShape = messageBusRoute.entryAccesses!.filter((routeEntry) =>
               routeEntry.collection === entry.collection
@@ -4659,10 +4695,27 @@ function compileResolvedAst(
             };
             const byKeyName = byShape.filter((routeEntry) => routeEntry.keyParams
               .every((key, index) => keyBase(key) === keyBase(entry.keyParams[index])));
-            const canonical = byKeyName.length > 1
-              ? [byKeyName.reduce((lowest, candidate) =>
+            // Ordinary eligible handlers retain their source parameter names (`jobId_`, `address_`) while the
+            // route owns compiler-generated key names. The eligibility pass already records the authoritative
+            // source-argument -> route-input binding; use it to disambiguate same-shaped accesses before the
+            // weaker spelling/shape fallback used by generated clones.
+            const witnessKeys = entry.keySources?.map((source) => {
+              if (source.kind === 'msgSender') return fn.messageBusKeyWitnesses
+                ?.find((binding) => binding.source === 'msgSender')?.routeInput;
+              if (source.kind !== 'param') return undefined;
+              const inputIndex = fn.parameters.findIndex((parameter) => parameter.name === source.paramName);
+              return fn.messageBusKeyWitnesses
+                ?.find((binding) => binding.inputIndex === inputIndex)?.routeInput;
+            });
+            const byWitness = witnessKeys?.every((key) => key !== undefined)
+              ? byShape.filter((routeEntry) => routeEntry.keyParams
+                .every((key, index) => keyBase(key) === keyBase(witnessKeys[index]!)))
+              : [];
+            const named = byWitness.length > 0 ? byWitness : byKeyName;
+            const canonical = named.length > 1
+              ? [named.reduce((lowest, candidate) =>
                 (candidate.slotIndex < lowest.slotIndex ? candidate : lowest))]
-              : byKeyName;
+              : named;
             const candidates = canonical.length === 1 ? canonical : byShape;
             if (candidates.length !== 1) {
               throw new Error(
@@ -4675,7 +4728,6 @@ function compileResolvedAst(
             handlerManagedEntrySlots.add(physical.slotIndex);
             return physical.slotIndex;
           });
-        }
       }
     }
     messageBusRoute.messageBusHandlerManagedEntrySlots = [...handlerManagedEntrySlots];

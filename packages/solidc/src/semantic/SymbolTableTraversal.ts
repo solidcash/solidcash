@@ -154,6 +154,7 @@ import {
   TokenContainerAccessInConstructorError,
   InvalidModifierCombinationError,
   DelegatecallSelfMutationError,
+  UntrustedDelegatecallTargetError,
   InternalCallToExternalError,
   LibrarySelfExternalCallError,
   NamedArgumentError,
@@ -2911,13 +2912,15 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // C1/piece-6: the co-spend covenant pins the delegate input to the address the CALLER supplied, which proves
     // nothing about identity when that address is an unguarded function parameter - an unrelated spender then
-    // co-spends an implementation they wrote and rewrites this contract's state. Warn precisely: fire only when
-    // the target resolves to a parameter of this entry point AND nothing in the body constrains it (no signature
-    // guard against a key the caller does not choose - SEC-12 - and no require() mentioning it). A parameter
-    // pinned by `require(impl == this.implementation)` is the legitimate upgradeable-proxy shape and must keep
-    // compiling, which is why this warns rather than rejects.
+    // co-spends an implementation they wrote and rewrites this contract's state. Reject caller-derived targets
+    // unless genuine authorization protects the choice or an unconditional equality binds the target to trusted
+    // constructor/state identity. A length/shape check is not an identity binding. The explicit unsafe compiler
+    // option retains warning-only behavior for migration and adversarial tests.
     const callerSuppliedImpl = this.delegatecallTargetsUnguardedParameter(node);
     if (callerSuppliedImpl) {
+      if (!this.compilerOptions.allowUnsafeOperations) {
+        throw new UntrustedDelegatecallTargetError(node, node.name, callerSuppliedImpl);
+      }
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against '${callerSuppliedImpl}', an `
@@ -2932,11 +2935,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // C1: a delegatecall against a P2PKH-placeholder impl is NOT pinned (pinsDelegateCoSpend is false), so the
     // proxy cannot force the delegate to be co-spent - ANY spender then co-spends the state NFT and rewrites
-    // proxy state arbitrarily. Warn unless the function is pinned (a covenant impl, where the co-spend is forced
+    // proxy state arbitrarily. Reject unless the function is pinned (a covenant impl, where the co-spend is forced
     // - see piece 3) or gated by a signature against a key the caller does not choose (SEC-12: a checkSig against
     // a caller-supplied pubkey silenced this). Library-call sugar is excluded (its own layout/brand guards).
     if (this.hasExplicitDelegatecall(node.body) && !node.pinsDelegateCoSpend
       && !hasAuthorizingSignatureGuard(node)) {
+      if (!this.compilerOptions.allowUnsafeOperations) {
+        throw new UntrustedDelegatecallTargetError(node, node.name, 'an unpinned non-covenant implementation');
+      }
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: function '${node.name}'${line} issues delegatecall against a non-covenant (P2PKH) impl, so the `
@@ -6381,13 +6387,14 @@ export default class SymbolTableTraversal extends AstTraversal {
 
   /**
    * C1/piece-6: does this entry point's delegatecall target resolve to one of ITS OWN parameters with nothing in
-   * the body constraining it? Returns the parameter name, or undefined. A constructor argument is excluded (the
-   * contract's p2sh32 commits to it), as is any parameter reached by a signature guard or named in a require().
+   * the body binding it to trusted identity? Returns a description, or undefined. A constructor argument is
+   * excluded (the contract's p2sh32 commits to it), as is a caller-authorized or trusted-equality-bound target.
    */
   private delegatecallTargetsUnguardedParameter(node: FunctionDefinitionNode): string | undefined {
     if (!this.hasExplicitDelegatecall(node.body)) return undefined;
     const call = this.findDelegatecallNode(node.body);
     if (!call) return undefined;
+    const originalTarget = call.targetExpression;
     // Resolve through `address m = impl;` aliases to the underlying identifier.
     let target: ExpressionNode | undefined = call.targetExpression;
     const seenNames = new Set<string>();
@@ -6398,44 +6405,42 @@ export default class SymbolTableTraversal extends AstTraversal {
       if (!init) break;
       let next: ExpressionNode = init;
       while (next instanceof CastNode) next = next.expression;
-      if (!(next instanceof IdentifierNode)) return undefined; // a computed/literal target, not a bare parameter
+      if (!(next instanceof IdentifierNode)) break;
       target = next;
     }
-    if (!(target instanceof IdentifierNode)) return undefined;
-    const name = target.name;
-    if (!node.parameters.some((parameter) => parameter.name === name)) return undefined;
     if (hasAuthorizingSignatureGuard(node)) return undefined;
-    if (this.requireMentionsIdentifier(node.body, name)) return undefined;
-    return name;
+    if (!keyIsCallerChosen(originalTarget, node)) return undefined;
+    if (target instanceof IdentifierNode
+      && node.parameters.some((parameter) => parameter.name === target.name)) {
+      if (this.parameterBoundToTrustedIdentity(node, target.name)) return undefined;
+      return target.name;
+    }
+    return 'a computed target derived from caller-supplied data';
   }
 
-  /** Is `name` referenced by any require() in this body? That is the constraint that authorizes a parameter. */
-  private requireMentionsIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
-    if (!node || seen.has(node)) return false;
-    seen.add(node);
-    if (node instanceof RequireNode && this.referencesIdentifier(node.expression, name)) return true;
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) {
-        if (this.requireMentionsIdentifier(value, name, seen)) return true;
-      } else if (Array.isArray(value)) {
-        for (const e of value) if (e instanceof Node && this.requireMentionsIdentifier(e, name, seen)) return true;
+  /** Only an unconditional equality to a value the caller cannot choose pins implementation identity. */
+  private parameterBoundToTrustedIdentity(fn: FunctionDefinitionNode, name: string): boolean {
+    const binds = (expr: ExpressionNode): boolean => {
+      if (expr instanceof BinaryOpNode && expr.operator === BinaryOperator.AND) {
+        return binds(expr.left) || binds(expr.right);
       }
-    }
-    return false;
-  }
-
-  private referencesIdentifier(node: Node | undefined, name: string, seen: Set<Node> = new Set()): boolean {
-    if (!node || seen.has(node)) return false;
-    seen.add(node);
-    if (node instanceof IdentifierNode && node.name === name) return true;
-    for (const value of Object.values(node)) {
-      if (value instanceof Node) {
-        if (this.referencesIdentifier(value, name, seen)) return true;
-      } else if (Array.isArray(value)) {
-        for (const e of value) if (e instanceof Node && this.referencesIdentifier(e, name, seen)) return true;
+      if (!(expr instanceof BinaryOpNode) || expr.operator !== BinaryOperator.EQ) return false;
+      let left = expr.left;
+      let right = expr.right;
+      while (left instanceof CastNode) left = left.expression;
+      while (right instanceof CastNode) right = right.expression;
+      if (left instanceof IdentifierNode && left.name === name) return !keyIsCallerChosen(right, fn);
+      if (right instanceof IdentifierNode && right.name === name) return !keyIsCallerChosen(left, fn);
+      return false;
+    };
+    const scan = (block: BlockNode | undefined): boolean => {
+      for (const statement of block?.statements ?? []) {
+        if (statement instanceof RequireNode && binds(statement.expression)) return true;
+        if (statement instanceof UncheckedNode && scan(statement.block)) return true;
       }
-    }
-    return false;
+      return false;
+    };
+    return scan(fn.body);
   }
 
   private canonicalizeExpression(node: ExpressionNode): string {

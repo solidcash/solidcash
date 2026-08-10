@@ -137,7 +137,10 @@ import { cloneNode } from './ast/clone.js';
 export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   enforceFunctionParameterTypes: true,
   enforceLocktimeGuard: true,
-  enforceFinalRequire: false,
+  // Fail closed: an entry path without verification and without a state covenant is anyone-can-spend.
+  // Callers that intentionally need this behavior must opt out explicitly.
+  enforceFinalRequire: true,
+  allowUnsafeOperations: false,
   commitmentLimit: 128,
   chunkedArrays: true,
   chainId: 0,
@@ -4447,7 +4450,9 @@ function compileResolvedAst(
   ast = ast.accept(new TypeCheckTraversal(
     true, mergedCompilerOptions.solidityImportCompat ?? false, mergedCompilerOptions.rootFileId,
   )) as Ast;
-  ast = ast.accept(new EnsureFinalRequireTraversal(mergedCompilerOptions.enforceFinalRequire)) as Ast;
+  ast = ast.accept(new EnsureFinalRequireTraversal(
+    mergedCompilerOptions.enforceFinalRequire, mergedCompilerOptions.allowUnsafeOperations,
+  )) as Ast;
 
   // Inject synthetic tx.locktime guard where tx.locktime is used without a protocol-enforcing time check
   if (mergedCompilerOptions.enforceLocktimeGuard) {
@@ -5846,7 +5851,9 @@ function compileReferencedContracts(
     singleAst = singleAst.accept(new TypeCheckTraversal(
       true, compilerOptions.solidityImportCompat ?? false, compilerOptions.rootFileId,
     )) as Ast;
-    singleAst = singleAst.accept(new EnsureFinalRequireTraversal(compilerOptions.enforceFinalRequire)) as Ast;
+    singleAst = singleAst.accept(new EnsureFinalRequireTraversal(
+      compilerOptions.enforceFinalRequire, compilerOptions.allowUnsafeOperations,
+    )) as Ast;
     if (compilerOptions.enforceLocktimeGuard) {
       singleAst = singleAst.accept(new InjectLocktimeGuardTraversal()) as Ast;
     }

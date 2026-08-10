@@ -16,9 +16,12 @@ export interface CompilerOptions {
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
-  // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an
-  // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
+  // (FinalRequireStatementError). Defaults to true because such a path is unconditionally spendable;
+  // explicitly set false only when that behavior is intentional.
   enforceFinalRequire?: boolean;
+  // Permit compiler-detected caller-controlled delegatecall/selfdestruct authority. Defaults to false; this
+  // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
+  allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
   // EVM byte-parity mode for the abi.* family (temporary gate; to be dropped once parity is green). Under
   // evmCompat, abi.encode/encodePacked emit EVM-faithful bytes: 32-byte big-endian two's-complement words.

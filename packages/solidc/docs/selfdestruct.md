@@ -246,10 +246,10 @@ function kill() { require(true); selfdestruct(this.beneficiary); }
 ```
 
 If the destination is caller-supplied, gate the function with real authorization (e.g.
-`require(checkSig(s, admin))`). The compiler emits a **warning** when it sees the dangerous shape - a
+`require(checkSig(s, admin))`). The compiler emits a hard `UnauthenticatedSelfdestructError` when it sees the dangerous shape - a
 `selfdestruct(addr)` whose `addr` references a function parameter, in a function with no *authorizing*
-signature check - so the trap is hard to ship by accident. It is a warning, not an error (the author may
-authenticate by some other means), and it does not fire for the two safe forms above. A signature check is used
+signature check. `allowUnsafeOperations` is an explicit migration escape hatch which restores the warning-only
+behavior, and it does not fire for the two safe forms above. A signature check is used
 as the proxy for "authenticated" because on BCH it is the only primitive that authenticates a *party*
 (covenant/introspection conditions authenticate transaction *shape*).
 
@@ -354,14 +354,12 @@ source-modifier conflict to report.
 
 ## Roadmap
 
-The destination and value are fully pinned (address + single output + fee floor), so a permissionless
-selfdestruct is value-safe (see "Security considerations"). Remaining items:
+The destination and value are fully pinned (address + single output + fee floor). Remaining items:
 
-- **Compiler-enforce permissionless safety (partly done).** A compile-time **warning** now fires on a no-auth
-  selfdestruct whose destination is a caller-controlled argument (see "Security considerations"). The
+- **Compiler-enforce permissionless safety (done).** A hard compile error fires on a no-auth selfdestruct whose
+  destination is a caller-controlled argument (see "Security considerations"). The
   "authenticated" heuristic reads the checked key rather than merely counting signature checks, so a
-  self-authorizing `checkSig(s, pk)` no longer silences it. Escalating the warning to an opt-in hard error
-  remains.
+  self-authorizing `checkSig(s, pk)` does not silence it. `allowUnsafeOperations` is the explicit opt-out.
 - **Configurable fee cap.** The 2000-sat cap is a fixed constant; let the author raise it for large destroys.
 - **Batched destruction.** Support contracts above the single-transaction UTXO limit by applying the pins only
   on the final transaction of a batched destroy.

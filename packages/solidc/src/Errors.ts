@@ -1123,6 +1123,26 @@ export class DelegatecallSelfMutationError extends SolidCashError {
   }
 }
 
+export class UntrustedDelegatecallTargetError extends SolidCashError {
+  constructor(node: Node, funcName: string, target: string) {
+    super(node, `Function '${funcName}' delegates to ${target}, whose identity is controlled by the caller. `
+      + 'A hostile implementation can rewrite this contract state because delegatecall defers state authority to '
+      + 'the co-spent implementation. Bind the target unconditionally to a constructor argument or stored state, '
+      + 'or authenticate the caller against a key they do not choose. Set allowUnsafeOperations only if arbitrary '
+      + 'caller-selected implementation authority is intentional. See packages/solidc/docs/delegatecall-security.md.');
+  }
+}
+
+export class UnauthenticatedSelfdestructError extends SolidCashError {
+  constructor(node: Node, funcName: string) {
+    super(node, `Function '${funcName}' sends selfdestruct funds to a caller-controlled destination without `
+      + 'authorization against a key the caller does not choose. Any caller can redirect the contract balance to '
+      + 'themselves. Use a constructor/state/constant destination, add genuine authorization, or set '
+      + 'allowUnsafeOperations only if permissionless caller-directed destruction is intentional. '
+      + 'See packages/solidc/docs/selfdestruct.md.');
+  }
+}
+
 // H8: an inline pass must pick a callee body by name + arity, but same-name same-arity overloads are
 // indistinguishable by that key, so it would silently inline the last-defined body (possibly dropping a guard).
 export class AmbiguousInlineOverloadError extends SolidCashError {

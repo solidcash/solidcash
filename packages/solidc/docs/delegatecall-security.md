@@ -120,9 +120,10 @@ The address must be bound to something the caller does not control. Any one of t
 - a **`require()` against stored state** — `require(impl == this.implementation);`, the ordinary upgradeable
   proxy.
 
-A parameter with none of the three emits a `SECURITY-AUDIT C1` warning naming the parameter. It warns rather
-than rejecting **because the third shape is legitimate and common**, and a hard rejection would have to model
-every way a `require()` can constrain an address.
+A parameter with none of the three is rejected with `UntrustedDelegatecallTargetError`. The compiler recognizes
+an unconditional `==` binding to a value the caller cannot choose; merely mentioning the target in a condition
+(for example, checking its byte length) does not establish identity. The explicit `allowUnsafeOperations`
+compiler option retains the historical warning-only behavior for migration and adversarial testing.
 
 **A signature guard is only as good as its key (finding SEC-12).** `checkSig(s, pk)` proves that whoever
 supplied `pk` also supplied a matching `s` - nothing more. If the *same caller* supplies both, the check
@@ -296,8 +297,8 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
   `OP_UTXOBYTECODE[__internal__delegateInputIndex] == impl`, so a real delegate is required at `impl`; the
   delegate then authorizes the proxy's data NFTs via `_proxyMasterIndex`. VM-proven: a correct delegate passes,
   a wrong/absent one fails the pin (`Delegatecall` e2e). A **P2PKH-placeholder** `impl` is *not* pinned (a P2PKH
-  UTXO authorizes nothing, so pinning it would be unsound) and still emits the `SECURITY-AUDIT C1` warning — use
-  the delegate contract's real covenant address so the co-spend is forced.
+  UTXO authorizes nothing, so pinning it would be unsound) and is rejected unless genuinely caller-authorized —
+  use the delegate contract's real covenant address so the co-spend is forced.
   - `withDelegatecall` **auto-derivation is done**: `proxySc.call['up'](input, impl, pk, sig).withDelegatecall(
     implSc, 'increment', []).send()` builds a passing transaction — the SDK auto-fills
     `__internal__delegateInputIndex` with the co-spent delegate's position (the caller passes `impl`).
@@ -310,14 +311,14 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
   (`>= 2` functions), so its unlocking script leads with the selector. A single-function delegate has no selector
   (its leading push is `_proxyMasterIndex`), so the pinned path rejects it (fail-closed) — proxy to a multi-function
   implementation, which is the only case where a "wrong function" is possible anyway.
-- **C (`impl` not caller-chosen)** — *warned*, not rejected. A delegatecall whose target resolves (through local
-  aliases) to a parameter of the same entry point, with no signature guard and no `require()` naming it, emits a
-  `SECURITY-AUDIT C1` warning identifying the parameter. Rejecting would break `require(impl == storedImpl)`.
+- **C (`impl` not caller-chosen)** — enforced by default. A delegatecall whose target resolves (through casts and
+  local aliases) to caller data is rejected unless it is caller-authorized or an unconditional equality binds it
+  to constructor/state/constant identity. `require(impl == storedImpl)` remains valid; weak predicates like
+  `require(impl.length == 35)` do not count.
   **SEC-12:** "signature guard" means a check whose *key* is a constructor input, a state variable or a literal.
   A `checkSig` against a key the same caller supplies suppresses nothing - measured: the self-authorizing proxy
-  above compiled silently on `690c868c`, and so did a P2PKH `impl` with such a check beside it. Both now warn.
-  This is a diagnostic only: no bytecode changed (0 differences over 2,070 compiled repo sources), so the
-  measured `5 -> 999` takeover still settles - the warning is what tells you it can.
+  above compiled silently on `690c868c`, and so did a P2PKH `impl` with such a check beside it. Both now fail
+  compilation unless `allowUnsafeOperations` is explicitly enabled.
 - **D (reached at most once per path)** — enforced. A delegatecall inside a **loop** is a hard compile error; a
   delegatecall inside a **branch/switch/try arm** compiles and carries an extra epilogue covenant freezing the
   proxy's own data NFTs on every path that did not reach the edge. VM-proven both ways in
@@ -333,7 +334,7 @@ ran. A `brandLibrary: true` library adds the converse pin (the library refuses a
 ## Writing a safe proxy
 
 - Make `impl` the delegate contract's real category-pinned covenant address (not a hardcoded P2PKH), so the
-  co-spend + selector pins are emitted (a P2PKH `impl` disables them and keeps the C1 warning).
+  co-spend + selector pins are emitted (an unauthenticated P2PKH `impl` is rejected).
 - Do **not** take `impl` as an unguarded parameter. Use a constructor argument, a `require()` against stored
   state, or a signature guard **whose key is a constructor argument or state variable** (rule C). A `checkSig`
   against a `pubkey` parameter is not a guard: the caller supplies the key and the signature both (SEC-12).

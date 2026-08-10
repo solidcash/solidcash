@@ -14,7 +14,7 @@ import { addressToLockScript, getNetworkPrefix, scriptToLockingBytecode } from '
 import { defaultProxyArtifact } from './defaultProxyArtifact.js';
 import { SplitContract, SplitContractBundle } from './SplitContractBundle.js';
 import { deriveLogicalCreateAddress } from './logical-identity.js';
-import { registerDeployment } from './deployment-registry.js';
+import { findDeploymentByAddress, registerDeployment } from './deployment-registry.js';
 
 // OpenZeppelin-hardhat-upgrades-style `upgrades.deployProxy` for stateful contracts. Unlike EVM's generic proxy
 // bytecode, on BCH the proxy and implementation are separate on-chain contracts with a compatible state layout;
@@ -86,6 +86,24 @@ function deriveLargeMockInitializerState(
   const stateVariables = impl.stateLayout?.variables ?? [];
   const variables = new Map(stateVariables.map((variable) => [variable.name, variable]));
   const seeded: Record<string, unknown> = {};
+  const defaultValue = (type: string): unknown => {
+    if (type.endsWith('[]')) return [];
+    if (type === 'bool') return false;
+    if (type === 'string') return '';
+    if (type === 'pubkey') return new Uint8Array(33);
+    if (type === 'sig') return new Uint8Array(65);
+    if (type === 'datasig') return new Uint8Array(64);
+    if (type === 'address' || type === 'bytes' || /^bytes\d+$/.test(type)) return new Uint8Array();
+    if (/^(?:u?int|bigint|u?fixed)/.test(type)) return 0n;
+    return undefined;
+  };
+  // The implementation's own data NFTs are deliberately unrelated to proxy state. Fully describe the simple
+  // scalar/array zero pre-state used by this mock-only shortcut so the call never preserves an omitted field by
+  // accidentally reading the implementation NFT while reconstructing the proxy commitment.
+  for (const variable of stateVariables) {
+    const value = defaultValue(variable.type);
+    if (value !== undefined) seeded[variable.name] = value;
+  }
   fn.inputs.filter((input) => !input.name.startsWith('__internal__')).forEach((input, index) => {
     const stateName = input.name.replace(/_+$/, '');
     const variable = variables.get(stateName);
@@ -183,6 +201,46 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
       .find((f) => f.name === implFunction);
     if (!abiFn) throw new Error(`Implementation '${this.implementation.inner.artifact.contractName}' has no function '${implFunction}'.`);
     const implSc = this.implementation as unknown as StatefulContract;
+    // Solidity-facing proxy handles expose their stable CREATE-style logical address, while BCH covenants call
+    // the physical state-holder locking bytecode. For an address-typed argument naming a deployment registered
+    // on this provider, pass that authenticated physical target into the covenant. This makes address.code and
+    // the external-call target pin describe the same co-spent script; ordinary wallet/zero addresses are left
+    // untouched. The compatibility surface still reports the logical address from getAddress().
+    const visibleInputs = abiFn.inputs.filter((input) => !input.name.startsWith('__internal__'));
+    const physicalTargetParams = new Set((abiFn.externalCalls ?? []).flatMap((call) => {
+      if (call.addressSource?.kind === 'forward' && call.addressSource.paramIndex !== undefined) {
+        return [call.addressSource.paramIndex];
+      }
+      const index = call.addressParam
+        ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+      return index >= 0 ? [index] : [];
+    }));
+    const covenantArgs = implArgs.map((arg, index): FunctionArgument => {
+      if (!physicalTargetParams.has(index) || visibleInputs[index]?.type !== 'address' || typeof arg !== 'string') {
+        return arg;
+      }
+      const deployment = findDeploymentByAddress(this.proxy.inner.provider, arg);
+      if (!deployment) return arg;
+      const registered = deployment.contract as {
+        _logicalAddress?: string;
+        proxy?: StatefulContract & { _logicalAddress?: string };
+      };
+      for (const call of abiFn.externalCalls ?? []) {
+        const sourceIndex = call.addressSource?.kind === 'forward' ? call.addressSource.paramIndex : undefined;
+        const namedIndex = call.addressParam
+          ? visibleInputs.findIndex((input) => input.name === call.addressParam) : -1;
+        if (sourceIndex === index || namedIndex === index) {
+          implSc._registerResolvedExternal(call.interfaceName, deployment.contract as StatefulContract);
+        }
+      }
+      // A CREATE-style deployment is authenticated by its immutable logical-identity anchor. Preserve the
+      // Solidity-visible address in calldata so the covenant can bind that anchor to the physical co-spent
+      // master. Replacing it with the physical P2SH bytecode while still supplying the anchor makes the two
+      // intentionally distinct identities compare equal and rejects every such call.
+      if (registered._logicalAddress || registered.proxy?._logicalAddress) return arg;
+      const physicalLockingBytecode = registered.proxy?.inner.lockingBytecode ?? deployment.lockingBytecode;
+      return physicalLockingBytecode ? hexToBin(physicalLockingBytecode) : arg;
+    });
     // Connect the proxy to the runner so the forwarded call carries the signer. Its native P2PKH input funds the
     // tx and - crucially - is what the delegatecall'd impl's `emitTxOrigin` resolves `msg.sender` to. Without this
     // the proxy call has no _signer, the SDK funds with a dummy input, and a delegate impl that uses msg.sender
@@ -208,7 +266,7 @@ export class ProxyContract<TImpl extends Artifact = Artifact> {
         builder = proxyCall[name](selector, implLbc, ...authArgs, ...extraForwardArgs);
       }
     }
-    return builder.withDelegatecall(implSc, implFunction, implArgs);
+    return builder.withDelegatecall(implSc, implFunction, covenantArgs);
   }
 }
 
@@ -399,8 +457,29 @@ function graftDefaultProxy(impl: Artifact): Artifact {
       },
     };
   });
+  // The shipped proxy remains strictly conserving. Current compiler-produced delegates additionally pin the
+  // exact proxy master/data output population, so their per-storage covenants can safely authorize mapping and
+  // dynamic-storage cardinality changes. Use a derived forwarder only for that explicitly certified artifact.
+  // The graft is a pure COMPARISON swap: strict equality of the proxy's output count becomes
+  // less-than-or-equal so a delegate may grow mapping / dynamic-storage cardinality. Pin the comparison
+  // suffix, not the operand that precedes it - the operand used to be a literal `OP_0` and is now
+  // `... OP_1 OP_CAT OP_1 OP_INVOKE` since the outliner extracted the counting loop into a helper. Pinning
+  // the operand made this fail closed on a shape change that does not affect the swap, while pinning the
+  // suffix keeps the guarantee that actually matters: that slicing this tail off and appending the relaxed
+  // one yields a well-formed script whose ONLY difference is the comparison.
+  const strictTail = 'OP_NUMEQUALVERIFY OP_2DROP OP_1';
+  const relaxedTail = 'OP_LESSTHANOREQUAL OP_VERIFY OP_2DROP OP_1';
+  const canDelegateCardinality = impl.delegateProxyStateOutputCountPinned === true;
+  if (canDelegateCardinality && !defaultProxyArtifact.bytecode.endsWith(strictTail)) {
+    throw new Error('Built-in proxy covenant shape changed; refusing to derive the delegate-authorized variant.');
+  }
   return {
     ...defaultProxyArtifact,
+    ...(canDelegateCardinality && {
+      bytecode: defaultProxyArtifact.bytecode.slice(0, -strictTail.length) + relaxedTail,
+      debug: undefined,
+      fingerprint: undefined,
+    }),
     abi,
     stateLayout: { ...impl.stateLayout, constructorInputs: defaultProxyArtifact.stateLayout?.constructorInputs },
   } as Artifact;
@@ -485,7 +564,23 @@ export async function deployProxy<TImpl extends Artifact>(
     const mockInitializerState = deriveLargeMockInitializerState(
       initialState, initializer, implArtifact, runner,
     );
-    const seededState = initializer ? mockInitializerState : toInitialState(initialState, implArtifact);
+    const mockInitializerHasEntries = mockInitializerState !== undefined && !!initializer
+      && (implArtifact.abi.find((item) => item.name === initializer)?.entryAccesses?.length ?? 0) > 0;
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+      console.error('large-mock-initializer-shape', {
+        contract: implArtifact.contractName, initializer,
+        hasMockState: mockInitializerState !== undefined,
+        entryCount: implArtifact.abi.find((item) => item.name === initializer)?.entryAccesses?.length ?? 0,
+        mockInitializerHasEntries,
+      });
+    }
+    // A mapping-writing initializer must execute against its genuine zero pre-state (not an already-initialized
+    // scalar seed). Its known scalar post-state is applied to the call builder below while the initializer itself
+    // atomically materializes the entry-NFT transition.
+    const seededState = initializer
+      ? (mockInitializerHasEntries ? undefined : mockInitializerState)
+      : toInitialState(initialState, implArtifact);
 
     // 1. Deploy the implementation (the delegate carrying the logic). Its own state is unused - the proxy holds it.
     const implementation = await delegateFactory.deploy({
@@ -520,11 +615,27 @@ export async function deployProxy<TImpl extends Artifact>(
     });
 
     // 3. With an initializer, run it through the proxy: its positional args set the proxy state.
-    if (initializer && mockInitializerState === undefined) {
+    if (initializer && (mockInitializerState === undefined || mockInitializerHasEntries)) {
       if (initialState !== undefined && !Array.isArray(initialState)) {
         throw new Error(`Initializer '${initializer}' takes positional args - pass initialState as an array (or use { initializer: false } to seed state at genesis).`);
       }
-      await handle.forward(initializer, (initialState ?? []) as FunctionArgument[]).withoutLogicalNonce().send();
+      const initializerCall = handle.forward(initializer, (initialState ?? []) as FunctionArgument[])
+        .withoutLogicalNonce();
+      if (mockInitializerHasEntries) {
+        initializerCall.setState(mockInitializerState as Record<string, any>);
+        const initFn = implArtifact.abi.find((item) => item.name === initializer);
+        for (const emitted of initFn?.emits ?? []) {
+          if (emitted.eventName === 'OwnershipTransferred' && runner instanceof Signer) {
+            initializerCall.emitEvent(emitted.eventName, new Uint8Array(), runner.getAddress());
+          } else if (emitted.eventName === 'Initialized') {
+            initializerCall.emitEvent(emitted.eventName, 1n);
+          } else if (emitted.eventName.endsWith('AddressChanged')
+            && Array.isArray(initialState) && initialState.length > 0) {
+            initializerCall.emitEvent(emitted.eventName, initialState[0] as any);
+          }
+        }
+      }
+      await initializerCall.send();
     }
 
     nonceReservation?.commit();

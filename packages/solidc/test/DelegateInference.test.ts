@@ -122,6 +122,33 @@ describe('delegate inference', () => {
     expect(artifact.delegateArtifact!.source).toBe(artifact.source);
   });
 
+  it('does not leak dynamic storage settlement from refused handlers into a delegate message-bus route', () => {
+    const artifact = compileString(`contract C() {
+      address[] members;
+      mapping(address => int) scores;
+      function register(address member) public {
+        scores[member] = 1;
+        members.push(member);
+      }
+      function memberCount() public view returns (uint) {
+        return members.length;
+      }
+      function registered(address member) public view returns (bool) {
+        return scores[member] > 0;
+      }
+    }`, { messageBus: true });
+    const route = artifact.delegateArtifact?.messageBus?.route;
+    expect(route).toBeDefined();
+    expect(route?.dynamicReads).toBeUndefined();
+    expect(route?.dynamicWrites).toBeUndefined();
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'register')?.eligible)
+      .toBe(false);
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'memberCount')?.eligible)
+      .toBe(false);
+    expect(artifact.delegateArtifact?.messageBus?.handlers.find((handler) => handler.name === 'registered')?.eligible)
+      .toBe(true);
+  });
+
   it('stays lazy when the compile cache clones the artifact', () => {
     const previous = process.env.SOLIDC_COMPILE_CACHE;
     process.env.SOLIDC_COMPILE_CACHE = '1';

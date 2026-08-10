@@ -44,6 +44,10 @@ describe('sorted struct-valued mapping', () => {
       return (StatefulContract.withCategory(contract, categoryId) as unknown as Caller)[fn](...a, alicePub, sig).send();
     };
 
+    // An absent entry materializes the complete zero struct without consuming
+    // arguments which remain below the temporary encoded value.
+    expect(await call('checkXY', 5n, 0n, 0n)).toMatchObject({ txid: expect.stringMatching(/^[0-9a-f]{64}$/) });
+
     // Insert pos[5] = P(11, 22); both fields read back.
     expect((await call('setP', 5n, 11n, 22n)).txid).toBeDefined();
     expect(await present(5n)).toBe(true);

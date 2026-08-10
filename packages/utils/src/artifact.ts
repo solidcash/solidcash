@@ -6,6 +6,8 @@ export interface ResolvedImport {
 export type ImportResolverFn = (importPath: string, currentFile: string) => ResolvedImport | undefined;
 
 export interface CompilerOptions {
+  /** Validation ceiling for private/mock networks; defaults to BCH's 10,000-byte consensus limit. */
+  maximumInputBytes?: number;
   /** Internal second-pass input used to replace the in-master verifier with a pinned compact binder. */
   __messageBusVerifierProgram?: {
     verifyFunctionId: number;
@@ -16,8 +18,8 @@ export interface CompilerOptions {
   enforceFunctionParameterTypes?: boolean;
   enforceLocktimeGuard?: boolean;
   // Treat a spending path that performs no require()/verification and changes no state as a hard error
-  // (FinalRequireStatementError). Defaults to true because such a path is unconditionally spendable;
-  // explicitly set false only when that behavior is intentional.
+  // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an
+  // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
   enforceFinalRequire?: boolean;
   // Permit compiler-detected caller-controlled delegatecall/selfdestruct authority. Defaults to false; this
   // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
@@ -87,7 +89,6 @@ export interface EmitAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
-  keySource?: 'param' | 'own';
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
@@ -120,8 +121,6 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
-  /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
-  | 'deployDataNft'
   | 'lowLevelCall'
   | 'trailing';
 
@@ -198,8 +197,6 @@ export interface AbiFunction {
   /** The state-handler closure contains direct or mutual recursion. SDKs must
    * resource-preflight the concrete invocation before returning a builder. */
   recursiveStateHandler?: boolean;
-  /** This source batch entry is an SDK alias for the artifact's ordered local message-bus route. */
-  nativeSelfBatchDispatcher?: boolean;
   /** Compiler-owned message-bus batch graph route: a fixed per-row band of authenticated blockhash oracle inputs. */
   graphBlockhashOracle?: {
     inputBaseParameter: '__internal__blockhashInputIndex';
@@ -236,9 +233,6 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
-    // Redeem-script body (hex) Instantiation embeds for the child P2SH address. Prefer this over the
-    // standalone child artifact bytecode when present (referenced-compile can differ in size/content).
-    creationBytecode?: string;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
@@ -292,7 +286,9 @@ export interface AbiFunction {
   // Collections written by a runtime loop (`for(i<n) m[k[i]]=v[i]`); the SDK derives the N (key,value) pairs from
   // the VM trace and creates N trailing entry NFT outputs (a runtime-variable count, like dynamicWrites chunks).
   entryLoopWrites?: readonly string[];
-  // Sorted (vmap) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
+  /** Exact compiler-owned collection signatures for entryLoopWrites, keyed by collection name. */
+  entryLoopWriteSignatures?: Readonly<Record<string, string>>;
+  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
   // predecessors and emits N (P', NEW) commitment pairs, deriving the evolving sorted list per iteration.
   sortedInsertLoops?: readonly string[];
   // Per-loop derivation metadata for the above: the fixed leading key params, the varying key array param (its
@@ -300,7 +296,7 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
+  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
@@ -310,7 +306,7 @@ export interface AbiFunction {
   isReceive?: boolean;
   externalLibraries?: readonly string[];  // names of external script libraries this function uses
   externalLibraryCalls?: Readonly<Record<string, number>>;  // per-library call-site count
-  // keccak256 uses the compute-and-commit side-car; send() batches up to three straight-line calls per side-car.
+  // keccak256 uses the compute-and-commit side-car; send() co-spends N side-cars and fills results.
   keccakCompute?: boolean;
   keccakPreimageParams?: readonly (string | null)[]; // per keccak256 call (order): the param feeding it (send()
   // computes each R + co-spends per call)
@@ -414,7 +410,7 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
-  /** True when this is a verified mapping (vmap): its sorted links authenticate present and absent keys. */
+  /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
   sorted?: boolean;
   /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
    * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */
@@ -432,25 +428,17 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
-// Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
-  /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
-  keyDecodeTupleIndex?: number;
-  keyDecodeTupleTypes?: readonly string[];
-  /** Keep only iterations where predicateArrayParam[i] equals this integer value. */
-  predicateArrayParam?: string;
-  predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
-  valueRuntimeLocal?: string;  // compiler-generated per-iteration value rebuilt from the authenticated old entry
-  valueRuntimeExpression?: boolean; // final value is computed on-chain per iteration and trace-derived by the SDK
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   mutationValueScalarParam?: string;
@@ -481,9 +469,11 @@ export interface EntryAccessAbi {
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
-  // A sorted (vmap) write of an unbounded bytes/string value from this function parameter. The SDK persists the
+  // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
+  /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */
+  valueSource?: string;
 }
 
 export interface ExternalReadAbi {
@@ -654,9 +644,10 @@ export interface ExternalLibraryAbi {
   codeEnd?: number;   // ... and ends (the range the loader strips to)
   abi?: { inputs: readonly AbiInput[]; outputs: readonly AbiOutput[] };  // call signature, e.g. (bytes) -> bytes32
   code?: string;      // hex blob; present for user-supplied libraries
-  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns 1-3 hashes in
-  // its own mutable NFT commitment (the contract reads 32-byte slices); no separate result/data NFTs are emitted
-  minInstances?: number; // minimum side-car instances to deploy: ceil(max straight-line keccak call count / 3)
+  resultNft?: boolean; // true: "compute-and-commit" model - the side-car RUNS keccak and returns the hash in
+  // its NFT commitment (the contract reads it), rather than the contract running the blob
+  minInstances?: number; // (resultNft) minimum side-car instances to deploy at creation: the max keccak256 call
+  // count across the contract's functions (each function co-spends its own per-call side-cars)
   unbounded?: boolean;   // (resultNft) some function hashes inside a loop -> minInstances is a LOWER BOUND; the
   // real need is the loop's runtime count, so provision extra side-cars
 }
@@ -734,11 +725,11 @@ export interface InvocationAnalysisArtifact {
  * compiler and the SDK already depend on, so it is the only place the two can share a literal.
  *
  * The value is load-bearing rather than cosmetic: for a chunk-backed value crossing a handler boundary the
- * blob envelope, NOT the trailing region, is the binding constraint - an argument-carried value caps at 202
- * bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x earlier than
- * the region. Silent drift between the copies would therefore move a real limit.
+ * blob envelope, NOT the trailing region, is the binding constraint. The bound is the BCH maximum stack-item
+ * size: the blob is one unlocking-bytecode push and can use the canonical PUSHDATA2 form through 520 bytes.
+ * Silent drift between the copies would therefore move a real consensus-facing limit.
  */
-export const MAX_MESSAGE_BUS_BLOB_BYTES = 223;
+export const MAX_MESSAGE_BUS_BLOB_BYTES = 520;
 
 /** Shared wire constants for the atomic single-transaction message bus. */
 export const ATOMIC_MESSAGE_BUS_DOMAIN_HEX = '4c33425553310000';
@@ -767,6 +758,12 @@ export interface Artifact {
   isLibrary?: boolean;  // compiled from a `library` (stateless contract class); see docs/library-contracts.md
   brandedLibrary?: boolean;  // delegate library branded to its consumer's category; SDK supplies the __brand arg
   delegateOnly?: boolean; // deployed code facet: layout is for proxy offsets; genesis mints no application data
+  /**
+   * Every delegate entry point pins the exact number of outputs using the proxy's locking bytecode. This closes
+   * duplicate proxy master/data-NFT outputs and allows a proxy to delegate mutable-NFT cardinality changes to
+   * the implementation's per-storage-path covenant checks.
+   */
+  delegateProxyStateOutputCountPinned?: boolean;
   usesBlockhash?: boolean;  // contract reads blockhash(n); keeper maintains the (n->hash) oracle
   // Same source compiled with its proxy-implementable functions in delegate mode (state writes retargeted to a
   // co-spent proxy master). Present when the contract can serve as a proxy implementation; the SDK deploys and

@@ -130,7 +130,9 @@ export function getMessageBusVerifierAddress(contract: Contract<any, any>, categ
   const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
   return scriptToAddress(
-    buildMessageBusVerifierCovenantScript(program),
+    buildMessageBusVerifierCovenantScript(
+      program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+    ),
     contract.provider.network,
     'p2sh32',
     true,
@@ -143,7 +145,9 @@ export function getMessageBusVerifierLockingBytecode(
   validateCategoryId(categoryId);
   const program = contract.artifact.messageBus?.verifierProgram;
   if (!program) throw new Error(`Contract '${contract.artifact.contractName}' publishes no message bus verifier program`);
-  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(program), 'p2sh32');
+  return scriptToLockingBytecode(buildMessageBusVerifierCovenantScript(
+    program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  ), 'p2sh32');
 }
 
 export function getEntryNftAddress(
@@ -194,8 +198,10 @@ export function getValueChunkAddress(
   return scriptToAddress(covenantScript, contract.provider.network, contract.addressType, true);
 }
 
+// No contract parameter: unlike getValueChunkAddress this needs no network/addressType, and a route's chunks
+// belong to the CALLEE, so there is no caller contract that would be correct to take.
 export function getValueChunkLockingBytecode(
-  contract: Contract<any, any>, categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
+  categoryId: string, collection: string, slot: Uint8Array, root: Uint8Array,
 ): Uint8Array {
   validateCategoryId(categoryId);
   const collectionHash = computeCollectionHash(valueChunkSignature(collection));
@@ -281,6 +287,12 @@ export async function getContractState(
   }
 
   const reader = new StateReader(contract.artifact.stateLayout);
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE) {
+    console.error('get-contract-state-addresses', {
+      contract: contract.name, categoryId, tokenAddress: contract.tokenAddress,
+      allAddresses, dataNftOnlyAddresses,
+    });
+  }
   return reader.readStateFromChain(
     contract.provider, categoryId, allAddresses, dataNftOnlyAddresses, dynamicChunkAddresses,
   );
@@ -306,7 +318,9 @@ export function createMessageBusVerifierUnlocker(
   if (verifierArgs.length !== program.inputs.length) {
     throw new Error(`message bus verifier expects ${program.inputs.length} arguments, got ${verifierArgs.length}`);
   }
-  const covenantScript = buildMessageBusVerifierCovenantScript(program);
+  const covenantScript = buildMessageBusVerifierCovenantScript(
+    program, contract.provider.consensusLimits?.maximumInputBytes ?? 10_000,
+  );
   const abiInputs: AbiInput[] = [
     { name: '__internal__densityReserve', type: 'bytes' },
     ...program.inputs,
@@ -344,6 +358,26 @@ export function createDataNftUnlocker(
     covenantScript,
     [{ name: 'flag', type: 'bigint' }, { name: 'masterInputIndex', type: 'bigint' }],
     [1n, BigInt(masterInputIndex)],
+  );
+}
+
+export function createRelocatedDataNftUnlocker(
+  contract: Contract<any, any>, masterInputIndex: number, outputIndex: number, categoryId: string,
+): ContractUnlocker {
+  validateMasterInputIndex(masterInputIndex);
+  validateMasterInputIndex(outputIndex);
+  validateCategoryId(categoryId);
+  const covenantScript = buildDataNftCovenantScript(hexToBin(categoryId));
+  return createCovenantContractUnlocker(
+    contract,
+    `DataNft_${categoryId.slice(0, 8)}`,
+    covenantScript,
+    [
+      { name: 'flag', type: 'bigint' },
+      { name: 'outputIndex', type: 'bigint' },
+      { name: 'masterInputIndex', type: 'bigint' },
+    ],
+    [3n, BigInt(outputIndex), BigInt(masterInputIndex)],
   );
 }
 

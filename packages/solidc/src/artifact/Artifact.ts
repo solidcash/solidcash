@@ -35,27 +35,6 @@ function abiTypeString(type: Type | undefined): string {
   return type.toString().replace(/address payable/g, 'address');
 }
 
-/**
- * One `keccakPreimageParams` entry per keccak call (up to three calls share each reserved side-car slot).
- *
- * `computeBlockLayout` reserves a slot per counted keccak256 call, but code generation records a preimage param
- * only for a call it emits under this function's own traversal. A call reached through an internal helper is
- * emitted while `currentFunction` is the HELPER, so its param lands there and the entry point publishes none -
- * and the SDK, which co-spends one side-car per published param, then supplies zero side-cars for a covenant
- * that reads one. It reads whatever input sits at that index instead (measured on MistSwap's BentoBox
- * constructor: the funder's unlocking script, compared against the computed keccak argument).
- *
- * Pad the published list to the transitive call count with `null` - the SDK's "not a direct parameter" marker,
- * which routes to its VM probe. A keccak-loop function reserves no fixed slots and is left alone.
- */
-function keccakPreimageParamsFor(func: FunctionDefinitionNode): (string | null)[] {
-  const recorded = func.keccakPreimageParams ?? [];
-  if (func.keccakInLoop || !func.blockLayout) return recorded;
-  const calls = Number(func.libraryCallCounts?.get('keccak256') ?? 0n);
-  if (calls <= recorded.length) return recorded;
-  return [...recorded, ...Array.from({ length: calls - recorded.length }, () => null)];
-}
-
 // Covenant-bypass / full-state modifiers: a function carrying one may touch any state, so treat as a writer.
 const STATE_WRITING_MODIFIERS = [
   FunctionModifier.UPGRADE, FunctionModifier.SELFDESTRUCT, FunctionModifier.UNSAFE,
@@ -283,6 +262,7 @@ const journalReservedDynamicWritesOnly = (func: FunctionDefinitionNode): boolean
  * covenant-bypass modifier. Any doubt -> true, so a misclassified writer never gets the SDK's derivation skip.
  */
 function computeWritesState(func: FunctionDefinitionNode): boolean {
+  if (func.sourceReadOnly) return false;
   if (func.scalarJournal) return true;
   if (containsStatefulOperation(func.body?.statements)) return true;
   if ((func.externalCalls?.length ?? 0) > 0) return true;
@@ -654,6 +634,26 @@ function buildFunctionAbiMetadata(
   const provenance = indexBody(func);
   const callTargets = lowLevelCallTargets(func, contract, provenance);
   const signatureGuard = signatureGuardOf(func, contract, provenance);
+  // Graph handlers execute behind the synthetic route, while their loop-write metadata is discovered during
+  // code generation on the cloned handler itself. The SDK plans the physical trailing outputs from the route
+  // ABI, so publish the union there; otherwise a reached `mapping(K => V[]).push(...)` receives only a generic
+  // mutable placeholder and its handler covenant correctly rejects the missing entry-NFT output.
+  const routeEntryLoopWrites = func.messageBusRoute
+    ? [...new Set([
+      ...(func.entryLoopWrites ?? []),
+      ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)
+        .flatMap((candidate) => candidate.entryLoopWrites ?? []),
+    ])]
+    : func.entryLoopWrites;
+  const loopSignatureFunctions = func.messageBusRoute
+    ? [func, ...(contract?.functions ?? []).filter((candidate) => candidate.graphEmissionHandler)]
+    : [func];
+  const routeEntryLoopWriteSignatures = Object.fromEntries(loopSignatureFunctions
+    .flatMap((candidate) => candidate.entryAccesses ?? [])
+    // Codegen may mark its private entry-slot copy as inLoop after semantic traversal; the authoritative
+    // collection name is entryLoopWrites, so match that name rather than requiring the AST flag to survive.
+    .filter((access) => routeEntryLoopWrites?.includes(access.collection))
+    .map((access) => [access.collection, access.collectionSignature]));
   return {
     ...(isStateful && { writesState: computeWritesState(func) }),
     ...(func.scalarJournalRecursive && { recursiveStateHandler: true }),
@@ -686,6 +686,7 @@ function buildFunctionAbiMetadata(
         ...(ea.runtimeAliasPriorSlots?.length
           && { runtimeAliasPriorSlots: ea.runtimeAliasPriorSlots }),
         ...(ea.valueParam !== undefined && { valueParam: ea.valueParam }),
+        ...(ea.valueSource !== undefined && { valueSource: ea.valueSource }),
       })),
     }),
     ...(func.emitInfos && func.emitInfos.length > 0 && {
@@ -705,7 +706,6 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
-        ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {
@@ -739,6 +739,7 @@ function buildFunctionAbiMetadata(
           possibleTargets: possibleSelectorTargets(ec.interfaceName, ec.sourceCallNode.parameters),
         }),
         ...(ec.addressIsMsgSender && { addressIsMsgSender: true }),
+        ...(ec.addressSource && { addressSource: ec.addressSource }),
         ...(ec.fnPtrCall && { fnPtrCall: true }),
         // Explicit (true AND false) for regular direct calls so the SDK skips a single-method callee's (absent)
         // witness selector; call/staticcall/delegatecall inject no selector param.
@@ -752,6 +753,8 @@ function buildFunctionAbiMetadata(
         ...(ec.computedOffset !== undefined && ec.computedOffset > 0 && { computedOffset: ec.computedOffset }),
         ...(ec.callMode && ec.callMode !== ExternalCallMode.REGULAR && { callMode: ec.callMode }),
         ...(ec.opaqueReturn && { opaqueReturn: true }),
+        ...(ec.rawFunctionName && { rawFunctionName: ec.rawFunctionName }),
+        ...(ec.rawArgSources && { rawArgSources: ec.rawArgSources }),
         ...(ec.argSources && ec.argSources.length > 0 && { argSources: ec.argSources }),
         ...(ec.batchInvocations && {
           batchInvocations: ec.batchInvocations.map((row) => ({
@@ -776,7 +779,6 @@ function buildFunctionAbiMetadata(
     ...(func.tokenContainerAccesses && func.tokenContainerAccesses.length > 0 && {
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
-        ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
         operations: da.operations,
         ...(da.transferCount > 1 && { transferCount: da.transferCount }),
         ...(da.transferNftCount > 1 && { transferNftCount: da.transferNftCount }),
@@ -791,8 +793,8 @@ function buildFunctionAbiMetadata(
     ...(func.libraryCallCounts && func.libraryCallCounts.size > 0
       && { externalLibraryCalls: Object.fromEntries(func.libraryCallCounts) }),
     ...(func.keccakCompute && { keccakCompute: true }),
-    ...(keccakPreimageParamsFor(func).length > 0
-      && { keccakPreimageParams: keccakPreimageParamsFor(func) }),
+    ...(func.keccakPreimageParams && func.keccakPreimageParams.length > 0
+      && { keccakPreimageParams: func.keccakPreimageParams }),
     ...(func.keccakInLoop && { keccakInLoop: true }),
     ...(func.keccakLoopReads && { keccakLoopReads: true }),
     ...(func.ecrecoverCompute && { ecrecoverCompute: true }),
@@ -826,15 +828,18 @@ function buildFunctionAbiMetadata(
     }),
     ...(func.dynamicReads && func.dynamicReads.length > 0 && { dynamicReads: [...func.dynamicReads] }),
     ...(func.dynamicWrites && func.dynamicWrites.length > 0 && { dynamicWrites: [...func.dynamicWrites] }),
-    ...(func.entryLoopWrites && func.entryLoopWrites.some(
+    ...(routeEntryLoopWrites && routeEntryLoopWrites.some(
       (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
-      // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
-      entryLoopWrites: func.entryLoopWrites.filter(
+      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      entryLoopWrites: routeEntryLoopWrites.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
+      ...(Object.keys(routeEntryLoopWriteSignatures).length > 0 && {
+        entryLoopWriteSignatures: routeEntryLoopWriteSignatures,
+      }),
     }),
     ...(func.sortedInsertLoops && func.sortedInsertLoops.length > 0 && { sortedInsertLoops: [...func.sortedInsertLoops] }),
     ...(func.sortedInsertLoopInfo && func.sortedInsertLoopInfo.length > 0 && {
@@ -1000,7 +1005,6 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
-    ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
     ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
@@ -1223,14 +1227,9 @@ export function generateArtifact(
           branded: stateLayout !== undefined,
           abi: lib.abi,
           resultNft: true,
-          // One mutable side-car carries up to three ordered results in its own NFT commitment.
+          // minInstances = the max keccak256 call count across functions (side-cars to deploy at creation);
           // unbounded flags a keccak-in-loop function whose runtime count exceeds that static minimum.
-          // Count the PUBLISHED params, so a call attributed to an inlined helper still provisions its side-car.
-          minInstances: Math.max(0, ...allFns.map((f) => {
-            if (!f) return 0;
-            const calls = keccakPreimageParamsFor(f).length;
-            return f.keccakInLoop ? calls : Math.ceil(calls / 3);
-          })),
+          minInstances: Math.max(0, ...allFns.map((f) => f?.keccakPreimageParams?.length ?? 0)),
           ...(allFns.some((f) => f?.keccakInLoop) && { unbounded: true }),
         };
       }
@@ -1274,8 +1273,6 @@ export function generateArtifact(
       options: {
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
-        enforceFinalRequire: compilerOptions.enforceFinalRequire,
-        allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
       },

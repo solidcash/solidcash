@@ -916,11 +916,6 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitStateAccess(node: StateAccessNode): Node {
-    // this.category - own CashToken category in display-order bytes.
-    if (node.name === 'category' && !node.stateVariable) {
-      node.type = new BytesType(32);
-      return node;
-    }
     // this.balance - special built-in (when no state variable named 'balance'), returns int
     if (node.name === 'balance' && !node.stateVariable) {
       node.type = PrimitiveType.BIGINT;
@@ -1291,16 +1286,17 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
 
-    // Historical C2 backstop for a non-vmap collection: warn when a mapping value feeds a negative guard. A spender
-    // could omit an unauthenticated entry NFT and force the type default, bypassing one-time/replay/blacklist guards.
-    // Every ordinary mapping is now a verified mapping, so its predecessor proof makes this branch inapplicable.
+    // C2: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
+    // can OMIT the entry NFT, forcing the covenant to read the type default (false/0), so the guard passes - BCH
+    // Script cannot force an existing entry UTXO to be co-spent. One-time-write / replay / blacklist / hasVoted
+    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT C2.
     const guardedMapping = this.negativeGuardMapping(node.expression);
     if (guardedMapping) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
         + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
-        + '/ blacklist patterns (historical finding C2). Prefer a verified mapping or another authenticated set.',
+        + '/ blacklist patterns (SECURITY-AUDIT C2). Prefer a positive guard, or commit an entry-set accumulator.',
       );
     }
 
@@ -1322,7 +1318,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  // Historical C2 helper. Returns the mapping name if `cond` negatively guards a non-vmap mapping read,
+  // C2 helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
   // or the mirror image. Only direct mapping reads are flagged (the common one-time-write / replay / blacklist
   // idiom); compound conditions are left alone to avoid noise.
   private negativeGuardMapping(cond: ExpressionNode): string | undefined {
@@ -1340,8 +1336,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   private asMappingRead(expr: ExpressionNode): string | undefined {
-    // A sorted (vmap linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
-    // negative guard on it is safe - suppress the vmap warning for those collections.
+    // A sorted (C2 linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
+    // negative guard on it is safe - suppress the C2 warning for those collections.
     if (expr instanceof MappingAccessNode && !expr.collection?.sorted) return expr.name;
     return undefined;
   }
@@ -1640,20 +1636,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
-    // Solidity's counterfactual CREATE2 address idiom is recognizable by its 0xff domain byte:
-    // keccak256(abi.encodePacked(hex"ff", deployer, salt, initCodeHash)). That formula produces an EVM
-    // address, not the P2SH32 locking bytecode used by a native BCH deployment. In particular, stateful
-    // SolidCash contracts also self-pin their CashToken category, which is not available to this computation.
-    // Diagnose the hash itself rather than a surrounding address/contract cast so all common cast spellings
-    // (address(uint160(uint256(...))), IFoo(uint256(...)), etc.) are covered.
-    if (this.solidityImportCompat && this.isEvmCreate2AddressHash(node)) {
-      const loc = this.diagLine(node.location);
-      console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
-        + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
-        + 'CashToken category ID. Use the deploying factory\'s registry (for example getPair(token0, token1)) '
-        + 'instead of keccak256(abi.encodePacked(hex"ff", ...)).');
-    }
-
     if (node.fieldNames && node.namedOverloadCandidates) {
       const names = node.fieldNames;
       const argsFor = (f: FunctionDefinitionNode): ExpressionNode[] => {
@@ -1822,16 +1804,6 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
-  }
-
-  private isEvmCreate2AddressHash(node: FunctionCallNode): boolean {
-    if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
-    const encoded = node.parameters[0];
-    if (!(encoded instanceof AbiEncodePackedNode) || encoded.parameters.length !== 4) return false;
-    const domain = encoded.parameters[0];
-    return domain instanceof HexLiteralNode
-      && domain.value.length === 1
-      && domain.value[0] === 0xff;
   }
 
   visitReturn(node: ReturnNode): Node {
@@ -2271,14 +2243,31 @@ export default class TypeCheckTraversal extends AstTraversal {
     if (synthetic.length === 0) return;
     // Only auto-forward when the call site passed exactly the user-visible args (synthetic params are never
     // written at the call site).
-    if (node.parameters.length !== fn.parameters.length - synthetic.length) return;
+    // The call site normally writes only the user-visible args, but a compiler-generated route writes some
+    // synthetics itself (it passes `__internal__msgSenderCategory` explicitly). Forward the ones it did NOT
+    // write, identified BY NAME: counting positionally would double-forward when the route also omits a visible
+    // argument, appending a synthetic the call already carries instead of surfacing the real defect.
+    const missing = fn.parameters.length - node.parameters.length;
+    if (missing <= 0 || missing > synthetic.length) return;
+    // Forward exactly the trailing synthetics needed to reach the callee's arity. When the call site wrote none
+    // of them this is the original all-synthetics case; when a generated route wrote a leading one itself, only
+    // the rest are appended. If a name in that tail is ALREADY an argument the call is malformed for another
+    // reason - surface the arity error rather than masking it with a duplicate.
+    const pending = synthetic.slice(synthetic.length - missing);
+    const suppliedNames = new Set(node.parameters
+      .filter((p): p is IdentifierNode => p instanceof IdentifierNode).map((p) => p.name));
+    if (pending.some((p) => suppliedNames.has(p.name))) return;
     // Forward only synthetic params that propagate unchanged across an internal call: returnOutputIdx (the
     // subroutine emits no return event -> -1), and the tx-level msg.sender category / blockhash input index
     // (msg.sender and the co-spend indices are identical throughout an internal call, so reference the caller's
     // own same-named param). Bail on anything else (e.g. external-call selector/index params) so the normal
     // arity check still fires.
+    // `__internal__proxyMasterIndex` joins these for the same reason: within one delegate execution the proxy
+    // master sits at a fixed input, so an internal callee reads the caller's own value. Without it, a generated
+    // route cannot call a delegate-marked getter (`owner()`) at all.
     const FORWARDABLE = new Set([
-      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterIndex',
+      '__internal__msgSenderCategory', '__internal__blockhashInputIndex', '__internal__proxyMasterOutputIndex',
+      '__internal__proxyMasterIndex',
     ]);
     const callerParams = new Map(this.currentFunction.parameters.map((p) => [p.name, p]));
     const canForwardByName = (p: ParameterNode): boolean => {
@@ -2286,8 +2275,8 @@ export default class TypeCheckTraversal extends AstTraversal {
       return !!callerParam && callerParam.type.toString() === p.type.toString()
         && (FORWARDABLE.has(p.name) || p.name.startsWith('__internal__valueWitness_'));
     };
-    if (!synthetic.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
-    for (const p of synthetic) {
+    if (!pending.every((p) => p.name === '__internal__returnOutputIdx' || canForwardByName(p))) return;
+    for (const p of pending) {
       if (p.name === '__internal__returnOutputIdx') {
         const minusOne = new IntLiteralNode(-1n);
         minusOne.location = node.location;
@@ -2639,7 +2628,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         } else {
           expectInt(node, node.expression.type);
           if (this.solidityImportCompat && node.expression.type instanceof IntType
-            && !node.expression.type.signed && !node.legacyWrappingNegation) {
+            && !node.expression.type.signed) {
             throw new TypeError(
               node,
               node.expression.type,
@@ -2756,7 +2745,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.MSG_SENDER:
       case NullaryOperator.TX_ORIGIN:
-        node.type = new AddressType(node.legacyPayableAddress);
+        node.type = new AddressType();
         return node;
       default:
         return node;

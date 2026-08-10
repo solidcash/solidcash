@@ -243,6 +243,11 @@ export class StateReader {
 
     const dataNftUtxos = this.findDataNfts(dataNftPool, categoryId);
 
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_ROUTE
+      && dataNftUtxos.length < this.layout.dataNftCount) {
+      console.error('state-reader-data-nft-candidates', { categoryId, dataNftPool });
+    }
+
     if (dataNftUtxos.length < this.layout.dataNftCount) {
       throw new Error(
         `Expected ${this.layout.dataNftCount} data NFT(s) for category ${categoryId}, `

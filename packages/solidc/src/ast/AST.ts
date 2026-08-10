@@ -269,6 +269,8 @@ export interface EntryAccessInfo {
   // commitment stores only len ++ sha256(value); the SDK persists the full value as chunks (P5b) using this
   // param's runtime argument. Undefined when the value is a computed expression (chunk persistence guarded off).
   valueParam?: string;
+  // Canonical whole-value expression used by the SDK when it can be evaluated off-chain (notably literals).
+  valueSource?: string;
 }
 
 export interface TokenContainerAccessInfo {
@@ -310,6 +312,11 @@ export class FunctionDefinitionNode extends Node implements Named {
   selfExternalFunctionAliases?: Record<string, string>;
   requiredNftIndices?: number[];
   entryAccesses?: EntryAccessInfo[];
+  /** Compiler-owned message-bus handler mapping from its function-local entry
+   * slot ordinals to the enclosing route's physical participant slots. */
+  messageBusPhysicalEntrySlots?: number[];
+  /** Physical route entry slots whose transition covenant is emitted by a message-bus handler subroutine. */
+  messageBusHandlerManagedEntrySlots?: number[];
   tokenContainerAccesses?: TokenContainerAccessInfo[];
   externalReads?: ExternalReadSlot[];
   externalCalls?: ExternalCallSlot[];
@@ -398,6 +405,9 @@ export class FunctionDefinitionNode extends Node implements Named {
   // input[base + k]. SymbolTable allocates this many slots (min 1 when usesBlockhash).
   blockhashSlotCount?: number;
   modifiers: FunctionModifier[] = [];
+  // Solidity-compat proxy implementations must compile view/pure functions with delegate layout, which removes
+  // those modifiers from the physical handler. Retain the source-level read-only promise for ABI/SDK dispatch.
+  sourceReadOnly?: boolean;
   customModifiers: CustomModifierInvocation[] = [];
   // Number of base-constructor evaluation/body statements prepended during inheritance expansion. Solidity runs
   // these before evaluating the derived constructor's modifier arguments.
@@ -2238,6 +2248,11 @@ export interface ExternalCallSlot {
   argSources?: ExternalCallArgSource[];
   rawFunctionName?: string;
   rawArgSources?: ExternalCallArgSource[];
+  /** Decoded arguments/types for an `abi.encodeCall` low-level payload. Compiler-internal only. */
+  rawParameters?: ExpressionNode[];
+  rawParameterTypes?: Type[];
+  rawSelector?: Uint8Array;
+  rawInterfaceName?: string;
   opaqueReturn?: boolean; // generic dynamic dispatch: opaque bytes return, identity-bound to the witnessed address
   // Set by visitExternalFunctionCall when a loop call over a calldata/param address array with an opaque return
   // (the MultiCall pattern) is emitted INLINE per-iteration (co-spend + return read keyed on the live index).
@@ -2257,9 +2272,19 @@ export interface ExternalCallSlot {
     parameterTypes: Type[];
     logicalIndex: number;
     argSources?: ExternalCallArgSource[];
+    opaqueReturn?: boolean;
+    returnTypes?: Type[];
+    /** @internal Conditional row whose arguments are entry-frame derivable and are committed eagerly. */
+    eager?: boolean;
+    /** @internal Source node used to lower an eager row before the body. */
+    sourceCallNode?: ExternalFunctionCallNode;
   }[];
+  /** @internal Physical representative for a logical row removed by repeated-callee grouping. */
+  batchRepresentative?: ExternalCallSlot;
   /** @internal Source node retained until Release 5 grouping/codegen. */
   sourceCallNode?: ExternalFunctionCallNode;
+  /** @internal Callsite may be absent at runtime; its master-index witness is -1 when not reached. */
+  optional?: boolean;
 }
 
 export interface ExternalOutputStateAccessInfo {

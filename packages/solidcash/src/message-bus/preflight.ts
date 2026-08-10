@@ -1,8 +1,9 @@
 import {
-  binToHex, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
-  type Output, type Transaction,
+  binToHex, decodeAuthenticationInstructions, decodeTransactionUnsafe, encodeTransaction, encodeTransactionOutput, hash256, hexToBin,
+  vmNumberToBigInt, type AuthenticationProgramStateCommon, type Output, type Transaction,
 } from '@bitauth/libauth';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
+import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
 import { generateLibauthSourceOutputs } from '../utils.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
 import {
@@ -397,6 +398,8 @@ export interface FinalizedByteVerdict {
 }
 
 export interface FinalizedByteGateOptions {
+  /** Explicit mock-consensus overrides. Real providers should leave these undefined. */
+  consensusLimits?: { maximumInputBytes?: number; maximumTransactionBytes?: number };
   /**
    * Admit a transaction whose only refusals are POLICY. This is the mineable-but-unrelayable case: a shape
    * between the 100,000-byte relay ceiling and the 1,000,000-byte consensus ceiling is valid, and a caller
@@ -412,18 +415,6 @@ export interface FinalizedByteGateOptions {
    * refusal and can neither create nor suppress one. `inputSubjectsOfBuilder` reads it off a builder.
    */
   inputSubjects?: readonly (FinalizedByteSubject | undefined)[];
-  /**
-   * Override the consensus per-input unlocking-bytecode ceiling (default: real BCH 10,000). The stateful
-   * submit path passes the mock provider's relaxed `maximumInputBytes` so suites that intentionally exercise
-   * oversized unsplit contracts (MistSwap) can reach covenant behaviour; plain `TransactionBuilder.send`
-   * leaves this unset so X158 still measures the real 10KB spend boundary.
-   */
-  maximumUnlockingBytes?: number;
-  /**
-   * Override the consensus transaction-size ceiling (default: real BCH 1,000,000). Paired with
-   * `maximumUnlockingBytes` when a mock publishes a matching `maximumTransactionBytes`.
-   */
-  maximumTransactionBytes?: number;
 }
 
 /**
@@ -460,19 +451,17 @@ export const inputSubjectsOfBuilder = (
  * redeemBytes` is exactly the argument and push-prefix overhead - reported rather than re-derived, because a
  * re-derivation would be a second place to get the same arithmetic wrong.
  */
-const describeInputSubject = (
-  subject: FinalizedByteSubject, unlockingBytes: number, unlockingLimit: number = CONSENSUS_UNLOCKING_BYTES_LIMIT,
-): string => {
+const describeInputSubject = (subject: FinalizedByteSubject, unlockingBytes: number): string => {
   const name = subject.contractName === undefined ? 'an unnamed contract' : `contract '${subject.contractName}'`;
   if (subject.redeemBytes === undefined) return `; input spends ${name}`;
   const overhead = unlockingBytes - subject.redeemBytes;
-  if (subject.redeemBytes > unlockingLimit) {
+  if (subject.redeemBytes > CONSENSUS_UNLOCKING_BYTES_LIMIT) {
     return `; it spends ${name}, whose redeem script is ${subject.redeemBytes} bytes on its own - already `
-      + `${subject.redeemBytes - unlockingLimit} over the limit before any of its `
+      + `${subject.redeemBytes - CONSENSUS_UNLOCKING_BYTES_LIMIT} over the limit before any of its `
       + `${overhead} bytes of arguments and redeem push`;
   }
   return `; it spends ${name}, whose ${subject.redeemBytes}-byte redeem script fits the limit on its own but `
-    + `leaves only ${unlockingLimit - subject.redeemBytes} bytes for the ${overhead} bytes of `
+    + `leaves only ${CONSENSUS_UNLOCKING_BYTES_LIMIT - subject.redeemBytes} bytes for the ${overhead} bytes of `
     + 'arguments and redeem push it must also carry. The limit is on the WHOLE unlocking bytecode, so a '
     + "contract the compiler's script-size check passes can still be unspendable";
 };
@@ -534,15 +523,15 @@ export function isPushOnlyBytecode(bytecode: Uint8Array): boolean {
  * message bus test publishes are exactly what made the existing capacity checks vacuous.
  */
 export function assessFinalizedTransactionBytes(
-  transaction: Transaction,
-  subjects: readonly (FinalizedByteSubject | undefined)[] = [],
-  limits: { maximumUnlockingBytes?: number; maximumTransactionBytes?: number } = {},
+  transaction: Transaction, subjects: readonly (FinalizedByteSubject | undefined)[] = [],
+  consensusLimits: FinalizedByteGateOptions['consensusLimits'] = {},
 ): FinalizedByteVerdict {
-  const unlockingLimit = limits.maximumUnlockingBytes ?? CONSENSUS_UNLOCKING_BYTES_LIMIT;
-  const txSizeLimit = limits.maximumTransactionBytes ?? CONSENSUS_TRANSACTION_SIZE_LIMIT;
   const refusals: FinalizedByteRefusal[] = [];
   const readings: FinalizedByteReading[] = [];
   const serializedBytes = encodeTransaction(transaction).length;
+  const maximumTransactionBytes = consensusLimits.maximumTransactionBytes
+    ?? CONSENSUS_TRANSACTION_SIZE_LIMIT;
+  const maximumInputBytes = consensusLimits.maximumInputBytes ?? CONSENSUS_UNLOCKING_BYTES_LIMIT;
   const refuse = (
     rule: string, where: string, measured: number, allowed: number, detail: string,
   ): void => {
@@ -570,13 +559,13 @@ export function assessFinalizedTransactionBytes(
     rule: 'consensus-transaction-size',
     where: 'transaction',
     measured: serializedBytes,
-    allowed: txSizeLimit,
-    ratio: serializedBytes / txSizeLimit,
+    allowed: maximumTransactionBytes,
+    ratio: serializedBytes / maximumTransactionBytes,
   });
-  if (serializedBytes > txSizeLimit) {
-    refuse('consensus-transaction-size', 'transaction', serializedBytes, txSizeLimit,
-      `${serializedBytes} serialized bytes is ${serializedBytes - txSizeLimit} over the `
-      + `${txSizeLimit}-byte consensus ceiling; these bytes are invalid however they are `
+  if (serializedBytes > maximumTransactionBytes) {
+    refuse('consensus-transaction-size', 'transaction', serializedBytes, maximumTransactionBytes,
+      `${serializedBytes} serialized bytes is ${serializedBytes - maximumTransactionBytes} over the `
+      + `${maximumTransactionBytes}-byte consensus ceiling; these bytes are invalid however they are `
       + 'transported, not merely unrelayable');
   }
 
@@ -585,12 +574,12 @@ export function assessFinalizedTransactionBytes(
   transaction.inputs.forEach((input, index) => {
     const bytes = input.unlockingBytecode.length;
     if (bytes > worstUnlocking.bytes) worstUnlocking = { input: index, bytes };
-    if (bytes > unlockingLimit) {
+    if (bytes > maximumInputBytes) {
       const subject = subjects[index];
-      refuse('consensus-unlocking-bytes', `input ${index}`, bytes, unlockingLimit,
-        `${bytes} unlocking bytecode bytes is ${bytes - unlockingLimit} over the `
-        + `${unlockingLimit}-byte per-input script limit`
-        + (subject === undefined ? '' : describeInputSubject(subject, bytes, unlockingLimit)));
+      refuse('consensus-unlocking-bytes', `input ${index}`, bytes, maximumInputBytes,
+        `${bytes} unlocking bytecode bytes is ${bytes - maximumInputBytes} over the `
+        + `${maximumInputBytes}-byte per-input script limit`
+        + (subject === undefined ? '' : describeInputSubject(subject, bytes)));
     }
     if (!isPushOnlyBytecode(input.unlockingBytecode)) {
       refuse('scriptsig-push-only', `input ${index}`, 1, 0,
@@ -602,8 +591,8 @@ export function assessFinalizedTransactionBytes(
       rule: 'consensus-unlocking-bytes',
       where: `input ${worstUnlocking.input}`,
       measured: worstUnlocking.bytes,
-      allowed: unlockingLimit,
-      ratio: worstUnlocking.bytes / unlockingLimit,
+      allowed: maximumInputBytes,
+      ratio: worstUnlocking.bytes / maximumInputBytes,
     });
   }
 
@@ -701,10 +690,9 @@ export function formatFinalizedByteVerdict(verdict: FinalizedByteVerdict): strin
 export function assertFinalizedTransactionBytes(
   transaction: Transaction, options: FinalizedByteGateOptions = {},
 ): FinalizedByteVerdict {
-  const verdict = assessFinalizedTransactionBytes(transaction, options.inputSubjects ?? [], {
-    maximumUnlockingBytes: options.maximumUnlockingBytes,
-    maximumTransactionBytes: options.maximumTransactionBytes,
-  });
+  const verdict = assessFinalizedTransactionBytes(
+    transaction, options.inputSubjects ?? [], options.consensusLimits,
+  );
   const consensus = verdict.refusals.filter((row) => row.regime === 'consensus');
   const policy = verdict.refusals.filter((row) => row.regime === 'policy');
   const enforced = options.allowNonRelayable === true ? consensus : [...consensus, ...policy];
@@ -808,19 +796,12 @@ export function covenantObjectionOf(
 export function assertFinalizedBytesWithCovenant(
   builder: TransactionBuilder, transaction: Transaction,
   subjects: readonly (FinalizedByteSubject | undefined)[],
-  limits: { maximumUnlockingBytes?: number; maximumTransactionBytes?: number } = {},
 ): void {
-  const verdict = limits.maximumUnlockingBytes === undefined && limits.maximumTransactionBytes === undefined
-    ? assessFinalizedTransactionBytes(transaction, subjects)
-    : assessFinalizedTransactionBytes(transaction, subjects, limits);
+  const verdict = assessFinalizedTransactionBytes(transaction, subjects);
   if (verdict.admitted) return;
   const covenant = covenantObjectionOf(builder, transaction);
   // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
-  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, {
-    inputSubjects: subjects,
-    maximumUnlockingBytes: limits.maximumUnlockingBytes,
-    maximumTransactionBytes: limits.maximumTransactionBytes,
-  });
+  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, { inputSubjects: subjects });
   throw new Error(
     `messageBus: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `
@@ -863,12 +844,362 @@ export function assertFinalizedBytesWithCovenant(
 const evaluateEveryInput = (
   builder: TransactionBuilder, transaction: Transaction,
 ): void => {
+  if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+    ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    console.error('preflight-provider-limits', builder.provider?.consensusLimits);
+  }
   const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
   const vm = createVirtualMachineBch2026ForProvider(builder.provider);
 
   transaction.inputs.forEach((_input, inputIndex) => {
-    const objection = vm.stateSuccess(vm.evaluate({ inputIndex, sourceOutputs, transaction }));
+    const evaluated = vm.evaluate({ inputIndex, sourceOutputs, transaction });
+    const objection = vm.stateSuccess(evaluated);
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_OUTLINE_COMPARE === '1' && inputIndex === 3) {
+      const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
+      console.error('outline-compare-nine', trace.flatMap((state, traceIndex) => (
+        state.instructions.length === 9 ? [{
+          traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
+          error: state.error,
+          stack: state.stack.slice(-8).map((item) => binToHex(item)),
+        }] : []
+      )));
+    }
     if (objection !== true) {
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+        const unlockingInstructions = decodeAuthenticationInstructions(transaction.inputs[inputIndex].unlockingBytecode);
+        const redeemBytecode = (unlockingInstructions.at(-1) as { data?: Uint8Array } | undefined)?.data;
+        const unlockerBytecodeHex = (builder.inputs[inputIndex] as unknown as {
+          unlocker?: { contract?: { bytecode?: string } };
+        }).unlocker?.contract?.bytecode;
+        console.error('message-bus-failing-input', {
+          inputIndex,
+          builderInputKeys: Object.keys(builder.inputs[inputIndex] as unknown as object),
+          inputCategory: builder.inputs[inputIndex].token?.category,
+          unlockerCategory: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { category?: Uint8Array } };
+          }).unlocker?.contract?.category === undefined ? undefined : binToHex((builder.inputs[inputIndex] as unknown as {
+            unlocker: { contract: { category: Uint8Array } };
+          }).unlocker.contract.category),
+          unlockerContract: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { artifact?: { contractName?: string; fingerprint?: string } } };
+          }).unlocker?.contract?.artifact?.contractName,
+          unlockerLockingBytecode: (builder.inputs[inputIndex] as unknown as {
+            unlocker?: { contract?: { lockingBytecode?: string } };
+          }).unlocker?.contract?.lockingBytecode,
+          redeemBytes: redeemBytecode?.length,
+          redeemHash: redeemBytecode === undefined ? undefined : binToHex(hash256(redeemBytecode)),
+          unlockerRedeemHash: unlockerBytecodeHex === undefined
+            ? undefined : binToHex(hash256(hexToBin(unlockerBytecodeHex))),
+          lockingBytecode: binToHex(sourceOutputs[inputIndex].lockingBytecode),
+          unlockingBytecode: binToHex(transaction.inputs[inputIndex].unlockingBytecode),
+        });
+        if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_FAILURE_RING === '1') {
+          console.error('message-bus-selected-outputs', [3, 35, 40, 42, 105, 106, 107, 108, 109].map((outputIndex) => ({
+            outputIndex,
+            output: transaction.outputs[outputIndex],
+          })));
+          console.error('message-bus-output-summary', transaction.outputs.slice(100, 140).map((output, offset) => ({
+            outputIndex: offset + 100,
+            lockingLength: output.lockingBytecode.length,
+            category: output.token === undefined ? undefined : Array.from(output.token.category, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+            capability: output.token?.nft?.capability,
+            commitment: output.token?.nft === undefined ? undefined : Array.from(output.token.nft.commitment, (byte) => byte.toString(16).padStart(2, '0')).join(''),
+          })));
+          console.error('message-bus-loop-output-summary', transaction.outputs.map((output, outputIndex) => ({
+            outputIndex,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token === undefined ? undefined : binToHex(output.token.category),
+            commitment: output.token?.nft === undefined ? undefined : binToHex(output.token.nft.commitment),
+          })).filter((output) => output.lockingBytecode
+            === 'aa2020a1837b930aebaba6eb9e9300138a50768a4cd1b72771f674c6d9503ebcc28f87'));
+        }
+        const lockingGroups = new Map<string, { inputs: number[]; outputs: number[]; contracts: string[] }>();
+        sourceOutputs.forEach((source, index) => {
+          const locking = binToHex(source.lockingBytecode);
+          const group = lockingGroups.get(locking) ?? { inputs: [], outputs: [], contracts: [] };
+          group.inputs.push(index);
+          const contractName = (builder.inputs[index] as unknown as {
+            unlocker?: { contract?: { artifact?: { contractName?: string } } };
+          }).unlocker?.contract?.artifact?.contractName;
+          if (contractName && !group.contracts.includes(contractName)) group.contracts.push(contractName);
+          lockingGroups.set(locking, group);
+        });
+        transaction.outputs.forEach((output, index) => {
+          const locking = binToHex(output.lockingBytecode);
+          const group = lockingGroups.get(locking) ?? { inputs: [], outputs: [], contracts: [] };
+          group.outputs.push(index);
+          lockingGroups.set(locking, group);
+        });
+        console.error('message-bus-locking-groups', [...lockingGroups].filter(([, group]) => (
+          group.contracts.length > 0 || group.inputs.some((index) => index >= 90)
+        )));
+        const recent: Array<Record<string, unknown>> = [];
+        const inputReads: Array<Record<string, unknown>> = [];
+        const largeEqualVerifies: Array<Record<string, unknown>> = [];
+        let body29Captured = false;
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            if (!body29Captured && inputIndex === 105 && state.instructions.length === 29 && state.ip === 0) {
+              body29Captured = true;
+              console.error('message-bus-body29-entry', JSON.stringify(state.stack.map((item, index) => ({
+                index, fromTop: state.stack.length - index - 1, value: binToHex(item),
+              }))));
+            }
+            recent.push({
+              ip: state.ip,
+              opcode: state.instructions[state.ip]?.opcode,
+              instructionCount: state.instructions.length,
+              depth: state.stack.length,
+              top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 48))}`),
+            });
+            if (recent.length > 40) recent.shift();
+            if (state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY
+              && (state.stack.at(-1)?.length ?? 0) > 100
+              && (state.stack.at(-2)?.length ?? 0) > 100) {
+              largeEqualVerifies.push({
+                left: binToHex(state.stack.at(-2)!), right: binToHex(state.stack.at(-1)!),
+              });
+              if (largeEqualVerifies.length > 4) largeEqualVerifies.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_INPUTBYTECODE) {
+              const rawIndex = state.stack.at(-1);
+              inputReads.push({
+                ip: state.ip,
+                instructionCount: state.instructions.length,
+                index: rawIndex ? String(vmNumberToBigInt(rawIndex)) : 'missing',
+                prior: state.stack.at(-2) ? binToHex(state.stack.at(-2)!.slice(0, 16)) : undefined,
+                unlockingHead: rawIndex && Number(vmNumberToBigInt(rawIndex)) >= 0
+                  ? binToHex(transaction.inputs[Number(vmNumberToBigInt(rawIndex))]
+                    ?.unlockingBytecode.slice(0, 24) ?? new Uint8Array()) : undefined,
+              });
+              if (inputReads.length > 30) inputReads.shift();
+            }
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-failure-ring', recent);
+        console.error('message-bus-input-reads', inputReads);
+        console.error('message-bus-large-equals', largeEqualVerifies);
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+        const bytecode = transaction.inputs[inputIndex]?.unlockingBytecode ?? new Uint8Array();
+        const pushes: Array<{ at: number; length: number; head: string }> = [];
+        for (let at = 0; at < bytecode.length && pushes.length < 80;) {
+          const opcode = bytecode[at];
+          let width = 0; let length = 0;
+          if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
+          else if (opcode === 76 && at + 1 < bytecode.length) { width = 2; length = bytecode[at + 1]; }
+          else if (opcode === 77 && at + 2 < bytecode.length) {
+            width = 3; length = bytecode[at + 1] | (bytecode[at + 2] << 8);
+          } else break;
+          if (at + width + length > bytecode.length) break;
+          const payload = bytecode.slice(at + width, at + width + length);
+          pushes.push({ at, length, head: binToHex(payload.slice(0, 12)) });
+          at += width + length;
+        }
+        const routeInputs = transaction.inputs.map((txInput, routeInputIndex) => {
+          const code = txInput.unlockingBytecode;
+          const terminalPushes = Array.from({ length: code.length }, (_unused, at) => {
+            const opcode = code[at];
+            const width = opcode >= 1 && opcode <= 75 ? 1 : opcode === 76 ? 2 : opcode === 77 ? 3 : 0;
+            const length = width === 1 ? opcode : width === 2 ? code[at + 1]
+              : width === 3 ? (code[at + 1] | (code[at + 2] << 8)) : -1;
+            return width > 0 && at + width + length === code.length ? { at, width, length } : undefined;
+          }).filter((value) => value !== undefined);
+          const frames: Array<{ at: number; length: number; head: string }> = [];
+          for (let at = 0; at < code.length && frames.length < 80;) {
+            const opcode = code[at];
+            let width = 0; let length = 0;
+            if (opcode === 0) { width = 1; length = 0; }
+            else if (opcode >= 1 && opcode <= 75) { width = 1; length = opcode; }
+            else if (opcode === 76 && at + 1 < code.length) { width = 2; length = code[at + 1]; }
+            else if (opcode === 77 && at + 2 < code.length) {
+              width = 3; length = code[at + 1] | (code[at + 2] << 8);
+            } else break;
+            if (at + width + length > code.length) break;
+            const payload = code.slice(at + width, at + width + length);
+            frames.push({ at, length, head: binToHex(payload.slice(0, 12)) });
+            at += width + length;
+          }
+          return frames[0]?.head === '53434231'
+            ? {
+              routeInputIndex, bytecodeLength: code.length, frames,
+              aroundArguments: binToHex(code.slice(200, 260)),
+              tail: binToHex(code.slice(-40)),
+              terminalPushes,
+            }
+            : undefined;
+        }).filter((value) => value !== undefined);
+        console.error('message-bus-failed-input-pushes', {
+          inputIndex, bytecodeLength: bytecode.length, pushes, routeInputs,
+          returnRegion: transaction.outputs.slice(36, 44).map((output, offset) => ({
+            index: 36 + offset,
+            lockingBytecode: binToHex(output.lockingBytecode),
+            category: output.token?.category,
+            commitment: output.token?.nft?.commitment,
+          })),
+        });
+        const trackedPicks: Array<Record<string, unknown>> = [];
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: new Set([Op.OP_PICK]),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            const prior = state.instructions[state.ip - 1]?.opcode;
+            if (prior !== Op.OP_SUB) return;
+            const selectedDepth = state.stack.at(-1);
+            const depth = selectedDepth ? Number(vmNumberToBigInt(selectedDepth)) : -1;
+            const selected = depth >= 0 ? state.stack[state.stack.length - 2 - depth] : undefined;
+            trackedPicks.push({
+              ip: state.ip, stackDepth: state.stack.length, selectedDepth: depth,
+              selectedLength: selected?.length,
+              selectedHead: selected ? binToHex(selected.slice(0, 16)) : undefined,
+            });
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-tracked-picks', trackedPicks);
+        const proxyBinding: Array<Record<string, unknown>> = [];
+        const batchConstruction: Array<Record<string, unknown>> = [];
+        const forwardSelectorHistory: Array<Record<string, unknown>> = [];
+        let recentlyHadForwardSelector = 0;
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: new Set(Array.from({ length: 256 }, (_, opcode) => opcode)),
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            if (state.ip === 11 && state.instructions[state.ip]?.opcode === Op.OP_EQUALVERIFY) {
+              proxyBinding.push({
+                instructionCount: state.instructions.length,
+                stackDepth: state.stack.length,
+                top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item)}`),
+                selectorDepths: state.stack.flatMap((item, index) =>
+                  item.length === 4 && binToHex(item) === '9f3e4a91'
+                    ? [state.stack.length - 1 - index] : []),
+              });
+            }
+            if (state.stack.some((item) => item.length >= 4
+              && item[0] === 0x53 && item[1] === 0x43 && item[2] === 0x42 && item[3] === 0x31)) {
+              batchConstruction.push({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                batchItems: state.stack.flatMap((item, index) => item.length >= 4
+                  && item[0] === 0x53 && item[1] === 0x43 && item[2] === 0x42 && item[3] === 0x31
+                  ? [{ depth: state.stack.length - 1 - index, length: item.length,
+                    head: binToHex(item.slice(0, 32)) }] : []),
+                top: state.stack.slice(-8).map((item) => `${item.length}:${binToHex(item.slice(0, 24))}`),
+              });
+              if (batchConstruction.length > 40) batchConstruction.shift();
+            }
+            const selectorDepths = state.stack.flatMap((item, index) =>
+              item.length === 4 && binToHex(item) === '9f3e4a91'
+                ? [state.stack.length - 1 - index] : []);
+            if (selectorDepths.length > 0) recentlyHadForwardSelector = 12;
+            if (recentlyHadForwardSelector > 0) {
+              forwardSelectorHistory.push({
+                ip: state.ip,
+                opcode: state.instructions[state.ip]?.opcode,
+                instructionCount: state.instructions.length,
+                stackDepth: state.stack.length,
+                selectorDepths,
+                top: state.stack.slice(-6).map((item) => `${item.length}:${binToHex(item.slice(0, 16))}`),
+              });
+              if (forwardSelectorHistory.length > 60) forwardSelectorHistory.shift();
+              recentlyHadForwardSelector -= 1;
+            }
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-proxy-binding', proxyBinding);
+        console.error('message-bus-batch-construction', batchConstruction);
+        console.error('message-bus-forward-selector-history', forwardSelectorHistory);
+        const ccHistory: Array<Record<string, unknown>> = [];
+        const recentTargetOps: Array<Record<string, unknown>> = [];
+        const recentOps: Array<Record<string, unknown>> = [];
+        const ccOnsets: Array<Record<string, unknown>[]> = [];
+        const emptyDecodeSites: Array<Record<string, unknown>[]> = [];
+        const scanUntilStates: Array<Record<string, unknown>> = [];
+        let previouslyHadCc = false;
+        const allOpcodes = new Set(Array.from({ length: 256 }, (_, opcode) => opcode));
+        createVirtualMachineBch2026ForProvider(builder.provider, {
+          opcodes: allOpcodes,
+          beforeOperation: (unknownState) => {
+            const state = unknownState as AuthenticationProgramStateCommon;
+            const hasTargetBytecode = state.stack.some((item) => item.length === 19_152);
+            const ccIndices = state.stack.flatMap((item, index) =>
+              item.length === 1 && item[0] === 0xcc ? [index] : []);
+            const record = {
+              ip: state.ip,
+              opcode: state.instructions[state.ip]?.opcode,
+              instructionCount: state.instructions.length,
+              programOps: state.instructions.slice(0, 12).map((instruction) => instruction.opcode),
+              stackDepth: state.stack.length,
+              ccDepths: ccIndices.map((index) => state.stack.length - 1 - index),
+              top: state.stack.slice(-8).map((item) => binToHex(item.slice(0, 8))),
+            };
+            recentOps.push(record);
+            if (recentOps.length > 40) recentOps.shift();
+            if (hasTargetBytecode && state.instructions[state.ip]?.opcode === Op.OP_UNTIL) {
+              scanUntilStates.push(record);
+              if (scanUntilStates.length > 12) scanUntilStates.shift();
+            }
+            if (state.instructions[state.ip]?.opcode === Op.OP_INVOKE
+              && state.stack.at(-1)?.length === 1 && state.stack.at(-1)?.[0] === 0x81
+              && state.stack.at(-2)?.length === 0) {
+              emptyDecodeSites.push([{ ...record,
+                fullStack: state.stack.map((item) => `${item.length}:${binToHex(item.slice(0, 16))}`),
+              }]);
+            }
+            if (!hasTargetBytecode) return;
+            recentTargetOps.push(record);
+            if (recentTargetOps.length > 30) recentTargetOps.shift();
+            const hasCc = ccIndices.length > 0;
+            if (hasCc && !previouslyHadCc) ccOnsets.push(recentTargetOps.slice());
+            previouslyHadCc = hasCc;
+            if (!hasCc) return;
+            ccHistory.push(record);
+            if (ccHistory.length > 120) ccHistory.shift();
+          },
+        }).evaluate({ inputIndex, sourceOutputs, transaction });
+        console.error('message-bus-scan-until', scanUntilStates);
+        console.error('message-bus-empty-decode-sites', emptyDecodeSites.slice(-4));
+        console.error('message-bus-cc-onsets', ccOnsets.slice(0, 8));
+        console.error('message-bus-cc-history', ccHistory);
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ROUTE === '1') {
+        const trace = vm.debug({ inputIndex, sourceOutputs, transaction });
+        const failed = [...trace].reverse().find((state) => state.error) ?? trace.at(-1);
+        const failedIndex = failed ? trace.lastIndexOf(failed) : -1;
+        console.error('message-bus-preflight-failure', {
+          inputIndex,
+          ip: failed?.ip,
+          instructionCount: failed?.instructions.length,
+          stack: failed?.stack.slice(-6).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
+          preceding: trace.slice(Math.max(0, failedIndex - 2), failedIndex + 1).map((state) => ({
+            ip: state.ip,
+            opcode: state.instructions[state.ip]?.opcode,
+            stack: state.stack.slice(-4).map((item) => ({ bytes: item.length, hex: binToHex(item) })),
+          })),
+          outlined17: trace.flatMap((state, traceIndex) => state.instructions.length === 17
+            ? [{
+              traceIndex, ip: state.ip, opcode: state.instructions[state.ip]?.opcode,
+              stack: state.stack.slice(-12).map((item) => `${item.length}:${binToHex(item)}`),
+            }] : []).slice(-12),
+        });
+      }
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+        ?.SOLIDC_DEBUG_ROUTE_INPUTS === '1') {
+        // Names the contract/function behind every co-spent input, so a failing index can be attributed without
+        // decoding locking bytecode by hand. The composition places participants far from their proxies.
+        console.error('route-inputs', builder.inputs.map((u, i) => {
+          const un = (u as { unlocker?: { contract?: { name?: string };
+            abiFunction?: { name?: string } } }).unlocker;
+          if (!un?.contract?.name) return undefined;
+          return `${i}${i === inputIndex ? '*FAIL' : ''}:${un.contract.name}.${un.abiFunction?.name ?? '-'}`;
+        }).filter(Boolean).join(' | '));
+      }
       throw mapMessageBusVmFailure(builder, transaction, inputIndex, String(objection));
     }
   });

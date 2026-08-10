@@ -17,7 +17,10 @@ import { FullLocationData } from './types.js';
  *    the interpreter's control stack unbalanced across the invoke boundary.
  * 2. It defines nothing: OP_DEFINE inside a shared body would run again on the second invoke and fail with
  *    "function identifier previously defined".
- * 3. It reads no bytecode-relative context. OP_ACTIVEBYTECODE returns the *function body* once invoked, not the
+ * 3. It does not cross another invocation boundary. Relocating an existing OP_INVOKE into a second outlined
+ *    helper adds a nested continuation frame, and BCH-2026 control-flow state is scoped to those frames. Keep
+ *    each invocation in the body where it was originally emitted.
+ * 4. It reads no bytecode-relative context. OP_ACTIVEBYTECODE returns the *function body* once invoked, not the
  *    enclosing script; OP_CODESEPARATOR moves the signing checkpoint; and OP_CHECKSIG and friends sign the
  *    active bytecode, so moving one would change both the sighash preimage and the body the SDK reports as
  *    that function's signing bytecode. All are excluded.
@@ -30,7 +33,7 @@ const OPEN_OPS = new Set<number>([Op.OP_IF, Op.OP_NOTIF, Op.OP_BEGIN]);
 const CLOSE_OPS = new Set<number>([Op.OP_ENDIF, Op.OP_UNTIL]);
 // Never relocate: see properties (2) and (3) above.
 const BARRIER_OPS = new Set<number>([
-  Op.OP_DEFINE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
+  Op.OP_DEFINE, Op.OP_INVOKE, Op.OP_ACTIVEBYTECODE, Op.OP_CODESEPARATOR,
   Op.OP_CHECKSIG, Op.OP_CHECKSIGVERIFY, Op.OP_CHECKMULTISIG, Op.OP_CHECKMULTISIGVERIFY,
 ]);
 

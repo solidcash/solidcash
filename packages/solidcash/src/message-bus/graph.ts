@@ -680,10 +680,8 @@ const MAX_GRAPH_DEPTH = 7;
  * a bare `223`; `@solidcash/utils` is the only package the compiler and the SDK both depend on, so it is the
  * only place they can share one literal.
  *
- * A re-export rather than a rename, because the value is load-bearing: for a chunk-backed value crossing a
- * handler boundary the blob and not the trailing region is the binding constraint - an argument-carried value
- * caps at 202 bytes (2 chunks) while a computed one reaches all 64 trailing slots, so the envelope binds 32x
- * earlier than the region.
+ * A re-export rather than a rename, because the value is load-bearing: the blob is one BCH stack item, and the
+ * shared value is the consensus 520-byte maximum accepted by the compiler-generated PUSHDATA2 route.
  *
  * `assertGraphBatchBlobEnvelope` closes the loop the other way, from the artifact back to this bound.
  */

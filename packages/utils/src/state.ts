@@ -37,6 +37,54 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
   // The caller passes display-order bytes, so reverse them to match the VM.
   const catInternal = categoryId.slice().reverse();
   return [
+    // flag=3 carries an explicit output coordinate for composed layouts where the input and output bands differ.
+    // Stack: <masterInputIndex> <outputIndex> <flag>
+    Op.OP_DUP,
+    Op.OP_3,
+    Op.OP_NUMEQUAL,
+    Op.OP_IF,
+    Op.OP_DROP,
+    Op.OP_SWAP, // outputIndex, masterInputIndex
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n),
+    Op.OP_SPLIT,
+    Op.OP_2,
+    Op.OP_EQUALVERIFY,
+    catInternal,
+    Op.OP_EQUALVERIFY,
+    // Authenticate this mutable data NFT.
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOTOKENCATEGORY,
+    encodeInt(32n),
+    Op.OP_SPLIT,
+    Op.OP_1,
+    Op.OP_EQUALVERIFY,
+    catInternal,
+    Op.OP_EQUALVERIFY,
+    // Preserve its covenant, category, FT amount, and satoshi value at the explicit output coordinate.
+    Op.OP_DUP,
+    Op.OP_OUTPUTBYTECODE,
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOBYTECODE,
+    Op.OP_EQUALVERIFY,
+    Op.OP_DUP,
+    Op.OP_OUTPUTTOKENCATEGORY,
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOTOKENCATEGORY,
+    Op.OP_EQUALVERIFY,
+    Op.OP_DUP,
+    Op.OP_OUTPUTTOKENAMOUNT,
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOTOKENAMOUNT,
+    Op.OP_GREATERTHANOREQUAL,
+    Op.OP_VERIFY,
+    Op.OP_DUP,
+    Op.OP_OUTPUTVALUE,
+    Op.OP_INPUTINDEX,
+    Op.OP_UTXOVALUE,
+    Op.OP_EQUAL,
+    Op.OP_NIP,
+    Op.OP_ELSE,
     // Stack: <masterInputIndex | 0> <flag>
     // Check for flag=2 (destroy path) before consuming the flag
     Op.OP_DUP,
@@ -154,6 +202,7 @@ export function buildDataNftCovenantScript(categoryId: Uint8Array): Script {
     Op.OP_INPUTINDEX,
     Op.OP_OUTPUTVALUE,
     Op.OP_EQUAL,
+    Op.OP_ENDIF,
     Op.OP_ENDIF,
   ];
 }

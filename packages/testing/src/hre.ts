@@ -29,6 +29,7 @@ import {
 import { solidcashArtifactsPath } from './artifact-paths.js';
 
 const DEFAULT_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
+const HARDHAT_ACCOUNT_BRANCH = "m/44'/60'/0'/0";
 
 /** Build a network provider from a resolved network config. */
 export function createProvider(name: string, netCfg: NetworkConfig | undefined): NetworkProvider {
@@ -213,7 +214,11 @@ function buildEthers(provider: NetworkProvider, mnemonic: string, opts: EthersOp
       // Hardhat accounts are effectively pre-funded for large deployment suites. Split BCH contracts consume
       // several genesis outputs, so use a similarly generous mock default while retaining an explicit override.
       return anyProvider.getSigners(count, {
-        satoshis: 100_000_000n, fundingUtxos: 32, mnemonic, path: accountsPath, ...o,
+        // Bounded message-bus participant blocks can require dozens of
+        // category-neutral filler inputs in one call. Keep the Hardhat-style
+        // mock accounts generously pre-split so those compiler-owned slots do
+        // not turn into an artificial wallet-funding limit.
+        satoshis: 100_000_000n, fundingUtxos: 128, mnemonic, path: accountsPath, ...o,
       });
     }
     return signersFromMnemonic(o.mnemonic ?? mnemonic, provider, { count, path: accountsPath });
@@ -382,7 +387,9 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
   const mnemonic = config.mnemonic ?? DEFAULT_MNEMONIC;
   const ethersOpts: EthersOptions = {
     artifactsDir: config.paths.artifacts,
-    accountsPath: config.accounts?.path,
+    // Keep getSigners() and the hardhat-shaped config.networks.*.accounts.path view identical. Ported suites
+    // commonly reconstruct HDNodeWallets from that published path and expect wallet i to be signer i.
+    accountsPath: config.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
   };
   const base = buildConnection(name, config.networks[name], mnemonic, ethersOpts);
   // The active provider backs the module-global network helpers (loadFixture/time/...).
@@ -420,7 +427,7 @@ export function createHardhatRuntimeEnvironment(config: ResolvedConfig, networkN
 export function hardhatCompatConfig(resolved: ResolvedConfig): Record<string, unknown> {
   const accounts = {
     mnemonic: resolved.mnemonic ?? DEFAULT_MNEMONIC,
-    path: resolved.accounts?.path ?? "m/44'/60'/0'/0",
+    path: resolved.accounts?.path ?? HARDHAT_ACCOUNT_BRANCH,
     count: resolved.accounts?.count ?? 20,
     initialIndex: resolved.accounts?.initialIndex ?? 0,
   };
@@ -430,12 +437,18 @@ export function hardhatCompatConfig(resolved: ResolvedConfig): Record<string, un
   return { ...resolved, networks };
 }
 
-let singleton: HardhatRuntimeEnvironment | undefined;
+// Vitest can load this package through both the setup-file and Hardhat compatibility alias module graphs.
+// Keep the active HRE process-global so those equivalent module instances cannot diverge onto separate providers.
+const hreGlobal = globalThis as typeof globalThis & {
+  __solidcashActiveHre?: HardhatRuntimeEnvironment;
+};
 
 /** The active HRE singleton (built lazily with a default mock-network config if `initHre` hasn't run). */
 export function getDefaultHre(): HardhatRuntimeEnvironment {
-  if (!singleton) singleton = createHardhatRuntimeEnvironment(resolveConfig({}));
-  return singleton;
+  if (!hreGlobal.__solidcashActiveHre) {
+    hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(resolveConfig({}));
+  }
+  return hreGlobal.__solidcashActiveHre;
 }
 
 /** Alias: the currently-active HRE (config-loaded if `initHre` ran, else the default). */
@@ -444,10 +457,14 @@ export const getActiveHre = getDefaultHre;
 /** Build (and cache) the HRE from an on-disk config in `dir`. Used by the CLI. */
 export async function initHre(dir?: string, networkName?: string): Promise<HardhatRuntimeEnvironment> {
   const config = await loadConfig(dir);
-  singleton = createHardhatRuntimeEnvironment(config, networkName);
+  hreGlobal.__solidcashActiveHre = createHardhatRuntimeEnvironment(config, networkName);
+  if (process.env.SOLIDC_DEBUG_ROUTE_CONCISE === '1') {
+    console.error('init-hre-config', { dir, defaultNetwork: config.defaultNetwork,
+      consensus: config.networks[config.defaultNetwork]?.consensus });
+  }
   // Hardhat places configured account balances in genesis; initialize the mock account set before tests run.
-  await singleton.ethers.getSigners(config.accounts?.count ?? 20);
-  return singleton;
+  await hreGlobal.__solidcashActiveHre.ethers.getSigners(config.accounts?.count ?? 20);
+  return hreGlobal.__solidcashActiveHre;
 }
 
 export type { SolidcashConfig, TaskDefinition, TaskArguments, ContractRunner };

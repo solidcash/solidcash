@@ -544,6 +544,20 @@ describe('StorageSlot slot-ALIAS factory: getStringSlot(ref).value = v is a dire
       + ' function set(string memory v) public { StorageSlot.getStringSlot(_fb).value = v; } }';
     expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
   });
+
+  it('compiles a qualified imported inline slot-alias call', () => {
+    const storageSlot = 'library StorageSlot { struct StringSlot { string value; }'
+      + ' function getStringSlot(string storage store) internal pure returns (StringSlot storage r)'
+      + ' { assembly { r.slot := store.slot } } }';
+    const source = 'import "./StorageSlot.sol"; contract C { string private _fb;'
+      + ' function set(string memory v) public { StorageSlot.getStringSlot(_fb).value = v; } }';
+    expect(() => compileString(source, {
+      solidityImportCompat: true,
+      rootFileId: '/C.sol',
+      importResolver: (importPath) => importPath === './StorageSlot.sol'
+        ? { source: storageSlot, id: '/StorageSlot.sol' } : undefined,
+    })).not.toThrow();
+  });
   it('leaves the raw-slot PARAM factory (getUint256Slot -> __evm_storage register) working', () => {
     const src = 'pragma solidity ^0.8.20; struct Uint256Slot { uint256 value; }'
       + ' library StorageSlot { function getUint256Slot(bytes32 slot) internal pure returns (Uint256Slot storage r)'

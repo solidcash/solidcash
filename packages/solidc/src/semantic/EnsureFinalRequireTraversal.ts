@@ -189,7 +189,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
     .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
   if (selfdestructs.length === 0) return;
 
-  if (hasAuthorizingSignatureGuard(node, 'selfdestruct')) return;
+  if (hasAuthorizingSignatureGuard(node)) return;
 
   for (const sd of selfdestructs) {
     if (!keyIsCallerChosen(sd.recipient, node)) continue; // destination is from state / a constant - safe

@@ -45,7 +45,7 @@ import {
   AmbiguousInlineOverloadError, OperatorOverloadSignatureError, UsingForInvalidFunctionReferenceError,
 } from '../Errors.js';
 import {
-  StructType, AddressType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
+  StructType, AddressType, BytesType, MappingType, ArrayType, Type, ValueType, PrimitiveType,
 } from '@solidcash/utils';
 import { Modifier } from '../ast/Globals.js';
 import { BinaryOperator, NullaryOperator, UnaryOperator } from '../ast/Operator.js';
@@ -89,6 +89,7 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private stillCalled: Set<string> = new Set();
   private stateVarNames: Set<string> = new Set();
   private freeFnRefs: Set<string> = new Set(); // names called from within another free-function body
+  private usingForLibraryNames: Set<string> = new Set(); // `using L for T` libraries reachable by member call
   private rawSlotFreeFns: Set<string> = new Set();
   private keepDefFns: Set<string> = new Set();
   private usingBoundFns: Set<string> = new Set();
@@ -100,6 +101,8 @@ export default class InlineReturningStateHelpers extends AstTraversal {
   private suppress = false;
   private stateValueTypes: Map<string, Type> = new Map();
   private currentValueTypes: Map<string, Type> = new Map();
+  private localBufferNames: Set<string> = new Set(); // memory locals a lowering may relocate out of the stack
+
 
   constructor(private solidityImportCompat = false) {
     super();
@@ -126,6 +129,11 @@ export default class InlineReturningStateHelpers extends AstTraversal {
     }
     this.usingBoundFns = new Set((node.usingForDirectives ?? [])
       .flatMap((directive) => directive.functionBindings?.map((binding) => binding.funcName) ?? []));
+    this.usingForLibraryNames = new Set([
+      ...(node.usingForDirectives ?? []),
+      ...node.importedContracts.flatMap((contract) => contract.usingForDirectives ?? []),
+      ...(node.contract?.usingForDirectives ?? []),
+    ].flatMap((directive) => (directive.libraryName ? [directive.libraryName] : [])));
     this.operatorBindings = new Map();
     this.operatorFns = new Set();
     this.validatePreloweredOperators(node);
@@ -341,6 +349,16 @@ export default class InlineReturningStateHelpers extends AstTraversal {
           // A same-library sibling is called unqualified (`functionCallWithValue`); record its qualified form.
           if (libPrefix && !called.includes('.')) this.freeFnRefs.add(libPrefix + called);
         }
+        // A `using L for T` member call (`address(token).functionCall(data)` in OZ SafeERC20) reaches its
+        // library function through a MethodCallNode, so it leaves no FunctionCallNode reference. Dropping the
+        // target while this caller survives strands the member call: the using-for binding then registers no
+        // functions and the receiver fails to resolve. Record every library-qualified spelling; retention is
+        // conservative and an unused free function is harmless.
+        if (n instanceof MethodCallNode) {
+          this.freeFnRefs.add(n.methodName);
+          if (libPrefix) this.freeFnRefs.add(libPrefix + n.methodName);
+          for (const library of this.usingForLibraryNames) this.freeFnRefs.add(`${library}.${n.methodName}`);
+        }
       });
     }
     // Library free-functions are inlined here as storage-pointer value helpers, or (like OZ Address's
@@ -377,6 +395,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       if (fn?.body) {
         this.currentValueTypes = new Map(this.stateValueTypes);
         for (const p of fn.parameters) this.currentValueTypes.set(p.name, p.type);
+        // Names DEFINED as locals in this body. A forwarded parameter (OZ Address's `errorMessage`) is not one
+        // and stays aliasable; a `bytes memory x = ...` buffer (SafeERC20's `approvalCall`) is, and must keep
+        // its own binding because the memory lowering can relocate it.
+        this.localBufferNames = new Set();
+        this.walk(fn.body, (visited) => {
+          if (visited instanceof VariableDefinitionNode) this.localBufferNames.add(visited.name);
+        });
         this.stack = [inlineKey(fn.name, fn.parameters.length)];
         fn.body = this.visit(fn.body) as BlockNode;
       }
@@ -1083,7 +1108,17 @@ export default class InlineReturningStateHelpers extends AstTraversal {
         // A read-only value parameter supplied by a plain local is already a stable, eagerly-evaluated value.
         // Alias it directly instead of introducing a second stack local. Besides producing the canonical direct
         // lowering, this keeps covenant OP_PICK depths independent of whether the call was source-inlined.
-        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name)) {
+        // MEMORY-located arguments are excluded: a `bytes`/`string`/array/struct local can be relocated into the
+        // shared buffer by the memory lowering, leaving the alias naming a variable that no longer exists on the
+        // stack (OZ SafeERC20: `_callOptionalReturnBool(token, approvalCall)` reading `approvalCall` in assembly).
+        // Alias a read-only value parameter to the caller local that supplies it, unless that local is a
+        // MEMORY-located one the memory lowering can relocate - the alias would then name a variable that no
+        // longer exists (OZ SafeERC20's `approvalCall`). A caller PARAMETER is never relocated that way, so it
+        // stays aliasable; excluding it too left OZ Address's forwarded `errorMessage` without its binding.
+        const relocatableMemoryArg = arg instanceof IdentifierNode
+          && this.definedAsLocal(arg.name)
+          && (p.modifier.includes(Modifier.MEMORY) || this.isMemoryLocated(p.type));
+        if (arg instanceof IdentifierNode && !this.isWritten(callee.body, p.name) && !relocatableMemoryArg) {
           rename.set(p.name, arg.name);
           aliasedValueParams.add(p.name);
         } else {
@@ -1179,6 +1214,18 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       return { read: clone(arg), writeBack: (l) => at(new StateAssignNode(arg.name, id(l))) };
     }
     return undefined;
+  }
+
+  // A reference type whose local can be relocated into the shared memory buffer by the memory lowering.
+  private definedAsLocal(name: string): boolean {
+    return this.localBufferNames.has(name);
+  }
+
+  private isMemoryLocated(type: Type | undefined): boolean {
+    return type === PrimitiveType.STRING
+      || (type instanceof BytesType && type.bound === undefined)
+      || type instanceof ArrayType
+      || type instanceof StructType;
   }
 
   // The body writes storage pointer `name` (an AssignNode target, or a state/mapping/array/field assign on it).

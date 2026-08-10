@@ -1274,6 +1274,7 @@ describe('low-level .call target through inlined-local aliases traced to a self-
     expect(compileString(direct, {}).abi.find((f) => f.name === 'f')?.externalCalls?.find((e) => e.opaqueReturn)
       ?.addressStateVar).toBe('ll_config_token');
   });
+
 });
 
 describe('postfix on a mapping/array element in a return: `return m[k]++` (OZ Nonces._useNonce)', () => {

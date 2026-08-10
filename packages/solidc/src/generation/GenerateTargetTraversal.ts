@@ -6,6 +6,7 @@ import {
   ArrayType,
   MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
+  decodeInt,
   encodeInt,
   encodeString,
   Op,
@@ -1308,6 +1309,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   entryPointBytecodes: Map<string, Uint8Array> = new Map(); // selector hex -> raw function body bytecode
   invokedFunctionBytecodes: Map<number, Uint8Array> = new Map(); // function id -> internal OP_INVOKE body
   outlinedSubroutineBytecodes: Map<number, Uint8Array> = new Map(); // compiler helper id -> OP_INVOKE body
+  invokeDebugInfo: Map<number, FunctionDebugInformation & { bytecode: string; name?: string }> = new Map();
 
   // Every OP_DEFINE'd body emitted at contract level, kept in Script form so cross-function outlining can share
   // repeated spans between them before the dispatcher is emitted. `outputIndex` is the body's data push.
@@ -2827,7 +2829,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * optimises the bodies it emits. Without it a captured helper ships whatever the emitters produced verbatim -
    * this path did not even normalise - so the stack shuffles the table folds away stayed in every copy.
    */
-  private static optimisedHelperBody(sub: GenerateTargetTraversalWithLocation): Script {
+  private static optimisedHelperBody(sub: GenerateTargetTraversalWithLocation): ReturnType<typeof optimiseBytecode> {
     const normalised = normaliseScript(sub.output);
     return optimiseBytecode(
       normalised,
@@ -2835,7 +2837,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       [...sub.consoleLogs],
       [...sub.requires],
       0, // no constructor param pushes in a helper body
-    ).script;
+    );
   }
 
   private defineCapturedSubroutine(
@@ -2876,7 +2878,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         .filter(([dependency, uses]) => dependency !== id && uses > 0 && this.subroutineDefined.get(dependency))
         .map(([dependency]) => dependency),
     ));
-    const bodyScript = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    const optimisationResult = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    const bodyScript = optimisationResult.script;
     if (!this.isSubroutineUseProbe && sub.output.length <= OPTIMISER_COMPAT_CHECK_MAX_OPS
       && needsOptimiserCrossCheck(normaliseScript(sub.output))) {
       if (!scriptsEqual(optimiseBytecodeOld(normaliseScript(sub.output)), bodyScript)) {
@@ -2885,11 +2888,20 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     }
     const bodyBytecode = scriptToBytecode(bodyScript);
     this.outlinedSubroutineBytecodes.set(Number(id), bodyBytecode);
+    this.invokeDebugInfo.set(Number(id), {
+      bytecode: binToHex(bodyBytecode),
+      name: `compiler helper ${id}`,
+      requires: optimisationResult.requires,
+      logs: optimisationResult.logs,
+      sourceMap: generateSourceMap(optimisationResult.locationData),
+    });
     const start = this.output.length;
     this.definedBodyRecords.push({
       outputIndex: start,
       script: bodyScript,
-      locationData: new Array(bodyScript.length).fill(locationData),
+      locationData: GenerateTargetTraversalWithLocation.alignLocations(
+        optimisationResult.locationData, bodyScript.length, locationData,
+      ),
       compilerHelperId: Number(id),
     });
     this.emit(bodyBytecode, locationData);
@@ -2934,7 +2946,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     inlineEmit(sub);
     // Measured on the body that would actually be defined, i.e. the optimised one, or the decision is taken
     // against a size the emitted subroutine never has.
-    const optimised = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub);
+    const optimised = GenerateTargetTraversalWithLocation.optimisedHelperBody(sub).script;
     // A STRUCTURAL helper that outlining can reach is left to outlining.
     //
     // This check compares defining the helper against writing it out at each site, but inlining is not what
@@ -3241,11 +3253,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     //
     // NOT peephole-optimised, unlike an entry point's body or a captured helper's. A user function's body is
     // the one place a `require` can fail without being recorded as one - a library function's own require
-    // reaches the VM from in here - and its debug record is a FLAT fill of the function's location, so the SDK
-    // attributes a failure through the contract-level source map. Folding instructions inside the body moves
-    // the reported pointer relative to that map and the failure lands on the wrong line (measured: a library
-    // require blamed on the contract declaration instead of its own line). Worth ~94 bytes over the corpus,
-    // which is not worth an error message that points somewhere else.
+    // reaches the VM from in here. Folding instructions inside the body moves the reported pointer relative to
+    // its debug record and can land a failure on the wrong line. Keep the emitted instructions stable and retain
+    // the sub-traversal's detailed locations so nested OP_INVOKE failures remain line-addressable.
     const bodyScript = normaliseScript(subTraversal.output);
 
     // Unreachable functions are still compiled above: code-generation performs a number of important
@@ -3257,10 +3267,21 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.definedBodyRecords.push({
       outputIndex: this.output.length,
       script: bodyScript,
-      locationData: new Array(bodyScript.length).fill(locationData),
+      locationData: GenerateTargetTraversalWithLocation.alignLocations(
+        subTraversal.locationData, bodyScript.length, locationData,
+      ),
       functionId: func.functionId!,
     });
     this.invokedFunctionBytecodes.set(func.functionId!, scriptToBytecode(bodyScript));
+    this.invokeDebugInfo.set(func.functionId!, {
+      bytecode: binToHex(scriptToBytecode(bodyScript)),
+      name: func.name,
+      requires: subTraversal.requires,
+      logs: subTraversal.consoleLogs,
+      sourceMap: generateSourceMap(GenerateTargetTraversalWithLocation.alignLocations(
+        subTraversal.locationData, bodyScript.length, locationData,
+      )),
+    });
     this.emit(scriptToBytecode(bodyScript), locationData);
     this.emit(encodeInt(BigInt(func.functionId!)), locationData);
     this.emit(Op.OP_DEFINE, locationData);
@@ -3596,8 +3617,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
       // instruction pointer against these, and a pointer reported from inside a shared body would not match.
-      const debugInfo = record.selectorHex === undefined
-        ? undefined : this.entryPointDebugInfo.get(record.selectorHex);
+      const debugInfo = record.selectorHex !== undefined
+        ? this.entryPointDebugInfo.get(record.selectorHex)
+        : this.invokeDebugInfo.get(record.functionId ?? record.compilerHelperId!);
       const anchors = [
         ...(debugInfo?.requires ?? []).map((entry) => entry.ip),
         ...(debugInfo?.logs ?? []).flatMap((entry) => [
@@ -3664,16 +3686,58 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     outcome.bodies.forEach((body, index) => {
       const functionId = this.definedBodyRecords[index].functionId;
       if (functionId !== undefined) {
-        this.invokedFunctionBytecodes.set(functionId, scriptToBytecode(body.script));
+        const bytecode = scriptToBytecode(body.script);
+        this.invokedFunctionBytecodes.set(functionId, bytecode);
+        const debugInfo = this.invokeDebugInfo.get(functionId);
+        if (debugInfo) {
+          const remap = (ip: number): number => body.indexMap[ip] ?? ip;
+          this.invokeDebugInfo.set(functionId, {
+            ...debugInfo,
+            bytecode: binToHex(bytecode),
+            sourceMap: generateSourceMap(body.locationData),
+            requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
+            logs: debugInfo.logs.map((entry) => ({
+              ...entry,
+              ip: remap(entry.ip),
+              data: entry.data.map((item) => typeof item === 'string' ? item : { ...item, ip: remap(item.ip) }),
+            })),
+          });
+        }
       }
       const compilerHelperId = this.definedBodyRecords[index].compilerHelperId;
       if (compilerHelperId !== undefined) {
-        this.outlinedSubroutineBytecodes.set(compilerHelperId, scriptToBytecode(body.script));
+        const bytecode = scriptToBytecode(body.script);
+        this.outlinedSubroutineBytecodes.set(compilerHelperId, bytecode);
+        const debugInfo = this.invokeDebugInfo.get(compilerHelperId);
+        if (debugInfo) {
+          const remap = (ip: number): number => body.indexMap[ip] ?? ip;
+          this.invokeDebugInfo.set(compilerHelperId, {
+            ...debugInfo,
+            bytecode: binToHex(bytecode),
+            sourceMap: generateSourceMap(body.locationData),
+            requires: debugInfo.requires.map((entry) => ({ ...entry, ip: remap(entry.ip) })),
+            logs: debugInfo.logs.map((entry) => ({
+              ...entry,
+              ip: remap(entry.ip),
+              data: entry.data.map((item) => typeof item === 'string' ? item : { ...item, ip: remap(item.ip) }),
+            })),
+          });
+        }
       }
     });
 
     for (const outlined of outcome.functions) {
-      this.emit(scriptToBytecode(outlined.script), locationData);
+      const id = Number(decodeInt(outlined.id));
+      const bytecode = scriptToBytecode(outlined.script);
+      this.outlinedSubroutineBytecodes.set(id, bytecode);
+      this.invokeDebugInfo.set(id, {
+        bytecode: binToHex(bytecode),
+        name: `outlined source span ${id}`,
+        requires: [],
+        logs: [],
+        sourceMap: generateSourceMap(outlined.locationData),
+      });
+      this.emit(bytecode, locationData);
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);
     }

@@ -1,5 +1,5 @@
 import { hexToBin } from '@bitauth/libauth';
-import { bytecodeToAsm } from '@solidcash/utils';
+import { bytecodeToAsm, bytecodeToScript, sourceMapToLocationData } from '@solidcash/utils';
 import { compileString } from './direct-compile.js';
 
 // These tests inspect the physical route's helper allocation and byte budget.
@@ -86,6 +86,15 @@ describe('general vmap bytecode sharing', () => {
     const helperIds = compactHelperDefinitions(asm);
     expect(helperIds.length).toBeGreaterThanOrEqual(4);
     expect(new Set(helperIds).size).toBe(helperIds.length);
+    const invokeDebug = (artifact.debug as typeof artifact.debug & {
+      invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
+    }).invokeDebug ?? {};
+    const helperDebug = Object.values(invokeDebug)
+      .filter((debug) => debug.name?.startsWith('compiler helper') || debug.name?.startsWith('outlined source span'));
+    expect(helperDebug.length).toBeGreaterThanOrEqual(1);
+    for (const debug of helperDebug) {
+      expect(sourceMapToLocationData(debug.sourceMap)).toHaveLength(bytecodeToScript(hexToBin(debug.bytecode)).length);
+    }
     expect(artifact.bytecode.length / 2).toBeLessThan(3800);
   });
 

@@ -4494,6 +4494,9 @@ function compileResolvedAst(
   const functionDebug = traversal.entryPointDebugInfo.size > 0
     ? Object.fromEntries(traversal.entryPointDebugInfo)
     : undefined;
+  const invokeDebug = traversal.invokeDebugInfo.size > 0
+    ? Object.fromEntries(traversal.invokeDebugInfo)
+    : undefined;
 
   const debug = {
     bytecode: binToHex(scriptToBytecode(optimisationResult.script)),
@@ -4501,6 +4504,7 @@ function compileResolvedAst(
     logs: optimisationResult.logs,
     requires: optimisationResult.requires,
     ...(functionDebug && { functionDebug }),
+    ...(invokeDebug && { invokeDebug }),
   };
 
   // Extract function body bytecodes for multi-function OP_INVOKE dispatch (keyed by selector hex)

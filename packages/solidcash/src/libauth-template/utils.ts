@@ -1,4 +1,4 @@
-import { AbiFunction, AbiInput, Artifact, bytecodeToScript, formatBitAuthScript } from '@solidcash/utils';
+import { AbiFunction, AbiInput, Artifact, Op, bytecodeToScript, decodeInt, formatBitAuthScript } from '@solidcash/utils';
 import { HashType, LibauthTokenDetails, SignatureAlgorithm, TokenDetails, VmTarget } from '../interfaces.js';
 import { hexToBin, binToHex, isHex, decodeCashAddress, Input, assertSuccess, decodeAuthenticationInstructions, AuthenticationInstructionPush } from '@bitauth/libauth';
 import { EncodedFunctionArgument, isSignatureTemplateArray } from '../Argument.js';
@@ -76,6 +76,14 @@ export const formatParametersForDebugging = (
   }).join('\n');
 };
 
+export const getInvokeBodyLockScriptName = (contractName: string, id: string): string => {
+  const safeId = id.startsWith('-') ? `negative_${id.slice(1)}` : id;
+  return `${contractName}_invoke_${safeId}_body_lock`;
+};
+
+export const getDefinedFunctionBodyLockScriptName = (contractName: string, selector: string): string =>
+  `${contractName}_define_${selector}_body_lock`;
+
 export const formatBytecodeForDebugging = (artifact: Artifact): string => {
   if (!artifact.debug) {
     return artifact.bytecode
@@ -84,10 +92,36 @@ export const formatBytecodeForDebugging = (artifact: Artifact): string => {
       .join('\n');
   }
 
+  const script = bytecodeToScript(hexToBin(artifact.debug.bytecode));
+  const replacements = new Map<number, string>();
+  const invokeDebug = artifact.debug.invokeDebug ?? {};
+  for (let index = 2; index < script.length; index += 1) {
+    if (script[index] !== Op.OP_DEFINE || !(script[index - 2] instanceof Uint8Array)) continue;
+    const encodedId = script[index - 1];
+    const numericId = encodedId instanceof Uint8Array
+      ? decodeInt(encodedId)
+      : encodedId === Op.OP_1NEGATE
+        ? -1n
+        : encodedId >= Op.OP_1 && encodedId <= Op.OP_16
+          ? BigInt(encodedId - Op.OP_1 + 1)
+          : undefined;
+    if (numericId === undefined) continue;
+    const id = numericId.toString();
+    const selector = encodedId instanceof Uint8Array ? binToHex(encodedId) : '';
+    const body = script[index - 2] as Uint8Array;
+    const bodyHex = binToHex(body);
+    if (invokeDebug[id]?.bytecode === bodyHex) {
+      replacements.set(index - 2, `<${getInvokeBodyLockScriptName(artifact.contractName, id)}>`);
+    } else if (artifact.functionBodies?.[selector] === bodyHex) {
+      replacements.set(index - 2, `<${getDefinedFunctionBodyLockScriptName(artifact.contractName, selector)}>`);
+    }
+  }
+
   return formatBitAuthScript(
-    bytecodeToScript(hexToBin(artifact.debug.bytecode)),
+    script,
     artifact.debug.sourceMap,
     artifact.source,
+    replacements,
   );
 };
 
@@ -121,6 +155,18 @@ export const formatFunctionBodyForDebugging = (artifact: Artifact, selectorHex: 
   return formatBitAuthScript(
     bytecodeToScript(hexToBin(functionBody)),
     functionDebug.sourceMap,
+    artifact.source,
+  );
+};
+
+export const formatInvokeBodyForDebugging = (artifact: Artifact, functionId: string): string => {
+  const invokeDebug = (artifact.debug as NonNullable<Artifact['debug']> & {
+    invokeDebug?: Record<string, { bytecode: string; sourceMap: string }>;
+  }).invokeDebug?.[functionId];
+  if (!invokeDebug) throw new Error(`No OP_INVOKE debug information for function id ${functionId}`);
+  return formatBitAuthScript(
+    bytecodeToScript(hexToBin(invokeDebug.bytecode)),
+    invokeDebug.sourceMap,
     artifact.source,
   );
 };

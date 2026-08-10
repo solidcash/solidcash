@@ -27,6 +27,7 @@ describe('Code generation & target code optimisation', () => {
       // selection is not part of the historical artifact contract.
       const legacyArtifact = JSON.parse(JSON.stringify(artifact));
       delete legacyArtifact.invocationAnalysis;
+      delete legacyArtifact.debug?.invokeDebug;
       delete legacyArtifact.compiler.options.messageBus;
       // fingerprint is a deterministic hash of the (separately asserted) bytecode, so match its presence
       expect(legacyArtifact).toEqual({

@@ -41,7 +41,7 @@ import { addressToLockScript, extendedStringify, zip } from '../utils.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
 import { zlibSync } from 'fflate';
 import MockNetworkProvider from '../network/MockNetworkProvider.js';
-import { addHexPrefixExceptEmpty, DEFAULT_VM_TARGET, formatBytecodeForDebugging, formatFunctionBodyForDebugging, formatParametersForDebugging, getBodyLockScriptName, getBodyUnlockScriptName, getLockScriptName, getSignatureAndPubkeyFromP2PKHInput, getUnlockScriptName, serialiseTokenDetails } from './utils.js';
+import { addHexPrefixExceptEmpty, DEFAULT_VM_TARGET, formatBytecodeForDebugging, formatFunctionBodyForDebugging, formatInvokeBodyForDebugging, formatParametersForDebugging, getBodyLockScriptName, getBodyUnlockScriptName, getDefinedFunctionBodyLockScriptName, getInvokeBodyLockScriptName, getLockScriptName, getSignatureAndPubkeyFromP2PKHInput, getUnlockScriptName, serialiseTokenDetails } from './utils.js';
 
 // TODO: Add / improve descriptions throughout the template generation
 
@@ -222,6 +222,8 @@ const generateAllTemplateScripts = (
         input.unlocker.contract.encodedConstructorArgs,
         inputIndex,
       );
+      const invokeBodyScripts = generateInvokeBodyScripts(input.unlocker.contract);
+      const definedBodyScripts = generateDefinedFunctionBodyScripts(input.unlocker.contract);
 
       const originalArgs = originalArgsMap.get(inputIndex);
       if (originalArgs) {
@@ -232,10 +234,10 @@ const generateAllTemplateScripts = (
           ...generateBodyLockScript(contract, abiFunction, selectorHex),
           ...generateBodyUnlockScript(contract, abiFunction, originalArgs, contract.encodedConstructorArgs, inputIndex),
         };
-        return { ...p2shScripts, ...bodyScripts };
+        return { ...p2shScripts, ...bodyScripts, ...definedBodyScripts, ...invokeBodyScripts };
       }
 
-      return p2shScripts;
+      return { ...p2shScripts, ...definedBodyScripts, ...invokeBodyScripts };
     }
 
     throw new Error('Unknown unlocker type');
@@ -807,6 +809,32 @@ const generateFunctionIndexTemplateVariable = (
 // (walletTemplateToCompilerConfiguration), so without prefixing, the body entity's Key-typed
 // signature variables would overwrite the P2SH entity's WalletData-typed variables.
 const BODY_VARIABLE_PREFIX = 'body_';
+
+/** Named definitions for ABI bodies pushed into the main script before OP_DEFINE. */
+const generateDefinedFunctionBodyScripts = (contract: Contract): WalletTemplate['scripts'] =>
+  Object.fromEntries(Object.keys(contract.artifact.functionBodies ?? {}).flatMap((selector) => {
+    const abiFunction = contract.artifact.abi.find((candidate) => candidate.selector === selector);
+    if (!abiFunction || !contract.artifact.debug?.functionDebug?.[selector]) return [];
+    return [[getDefinedFunctionBodyLockScriptName(contract.artifact.contractName, selector), {
+      lockingType: 'standard' as const,
+      name: `${contract.artifact.contractName} ${abiFunction.name} (${selector}) defined body`,
+      script: formatFunctionBodyForDebugging(contract.artifact, selector),
+    }]];
+  }));
+
+/** Standalone, source-mapped views for every body hidden behind OP_INVOKE in the executable scripts. */
+const generateInvokeBodyScripts = (contract: Contract): WalletTemplate['scripts'] => {
+  const invokeDebug = (contract.artifact.debug as (NonNullable<Artifact['debug']> & {
+    invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
+  }) | undefined)?.invokeDebug ?? {};
+  return Object.fromEntries(Object.entries(invokeDebug).map(([id, debug]) => {
+    return [getInvokeBodyLockScriptName(contract.artifact.contractName, id), {
+      lockingType: 'standard' as const,
+      name: `${contract.artifact.contractName} ${debug.name ?? `OP_INVOKE ${id}`} (invoked body)`,
+      script: formatInvokeBodyForDebugging(contract.artifact, id),
+    }];
+  }));
+};
 
 const generateTemplateEntitiesBody = (
   contract: Contract,

@@ -334,12 +334,19 @@ export interface FunctionDebugInformation {
   logs: readonly LogEntry[];
 }
 
+/** Debug metadata for bytecode entered through OP_INVOKE, keyed by its script-number identifier. */
+export interface InvokeDebugInformation extends FunctionDebugInformation {
+  bytecode: string;
+  name?: string;
+}
+
 export interface DebugInformation {
   bytecode: string; // unlike `bytecode` property above, this is a hex-encoded binary string
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements
   functionDebug?: Record<string, FunctionDebugInformation>; // per-function debug info keyed by selector hex
+  invokeDebug?: Record<string, InvokeDebugInformation>; // nested OP_INVOKE bodies keyed by function id
 }
 
 export interface LogEntry {

@@ -1,5 +1,5 @@
 import { AuthenticationErrorCommon, AuthenticationInstruction, AuthenticationProgramCommon, AuthenticationProgramStateCommon, AuthenticationVirtualMachine, ResolvedTransactionCommon, WalletTemplate, WalletTemplateScriptUnlocking, binToHex, createCompiler, createVirtualMachineBch2023, createVirtualMachineBch2025, createVirtualMachineBchSpec, decodeAuthenticationInstructions, encodeAuthenticationInstruction, walletTemplateToCompilerConfiguration } from '@bitauth/libauth';
-import { Artifact, LogData, LogEntry, Op, PrimitiveType, RequireStatement, StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
+import { Artifact, FunctionDebugInformation, LogData, LogEntry, Op, PrimitiveType, RequireStatement, StackItem, asmToBytecode, bytecodeToAsm, decodeBool, decodeInt, decodeString } from '@solidcash/utils';
 import { findLastIndex, toRegExp } from './utils.js';
 import { FailedRequireError, FailedTransactionError, FailedTransactionEvaluationError } from './Errors.js';
 import { getBitauthUri } from './libauth-template/LibauthTemplate.js';
@@ -179,10 +179,49 @@ const debugSingleScenario = (
     return step.controlStack.filter((item) => typeof item === 'object' && item !== null).length === 1;
   };
 
+  type InvokeDebug = FunctionDebugInformation & { bytecode: string };
+  const invokeDebug = (artifact?.debug as (NonNullable<Artifact['debug']> & {
+    invokeDebug?: Record<string, InvokeDebug>;
+  }) | undefined)?.invokeDebug ?? {};
+  const functionDepth = (step: AuthenticationProgramStateCommon): number =>
+    step.controlStack.filter((item) => typeof item === 'object' && item !== null).length;
+  const activeBodyDebugByStep = new Map<AuthenticationProgramStateCommon, InvokeDebug>();
+  const debugAtDepth: Array<InvokeDebug | undefined> = [];
+
+  for (let index = 0; index < executedDebugSteps.length; index += 1) {
+    const step = executedDebugSteps[index];
+    const depth = functionDepth(step);
+    if (index > 0) {
+      const prior = executedDebugSteps[index - 1];
+      const priorDepth = functionDepth(prior);
+      if (depth < priorDepth) debugAtDepth.length = depth + 1;
+      if (depth === priorDepth + 1 && prior.instructions[prior.ip]?.opcode === Op.OP_INVOKE) {
+        // Recover the actual identifier from the OP_INVOKE transition. Comparing bytecode alone is insufficient:
+        // two separately-defined functions may be byte-identical while belonging to different source lines.
+        const identifier = prior.stack[prior.stack.length - 1];
+        debugAtDepth[depth] = identifier ? invokeDebug[decodeInt(identifier).toString()] : undefined;
+      }
+    }
+    const debug = debugAtDepth[depth];
+    if (debug) activeBodyDebugByStep.set(step, debug);
+  }
+
+  const activeBodyDebug = (step: AuthenticationProgramStateCommon): InvokeDebug | undefined => {
+    const identified = activeBodyDebugByStep.get(step);
+    if (identified) return identified;
+    const activeBytecode = binToHex(Uint8Array.from(
+      step.instructions.flatMap((instruction) => [...encodeAuthenticationInstruction(instruction)]),
+    ));
+    const matches = Object.values(invokeDebug).filter((debug) => debug.bytecode === activeBytecode);
+    return matches.length === 1 ? matches[0] : undefined;
+  };
+
   // Returns the logs array for a debug step - either from the function body's debug info
   // or from the main artifact debug info. For steps inside the main script (before OP_INVOKE),
   // the main logs are empty, so this is safe to use for all steps.
-  const getLogsForStep = (_step: AuthenticationProgramStateCommon): readonly LogEntry[] => {
+  const getLogsForStep = (step: AuthenticationProgramStateCommon): readonly LogEntry[] => {
+    const invoked = activeBodyDebug(step);
+    if (invoked) return invoked.logs;
     if (entryPointFuncSelector !== undefined && artifact?.debug?.functionDebug?.[entryPointFuncSelector]) {
       return artifact.debug.functionDebug[entryPointFuncSelector].logs;
     }
@@ -191,7 +230,8 @@ const debugSingleScenario = (
 
   // P2PKH inputs do not have an artifact, so we skip the console.log handling
   if (artifact) {
-    const logMatchingSteps = executedDebugSteps.filter(isEntryPointBodyStep);
+    const logMatchingSteps = executedDebugSteps.filter((step) =>
+      isEntryPointBodyStep(step) || activeBodyDebug(step) !== undefined);
 
     // Try to match each executed debug step to a log entry if it exists. Note that inside loops,
     // the same log statement may be executed multiple times in different debug steps
@@ -201,7 +241,12 @@ const debugSingleScenario = (
         const logEntries = getLogsForStep(debugStep).filter((log) => log.ip === debugStep.ip);
         if (logEntries.length === 0) return [];
 
-        const reversedPriorDebugSteps = logMatchingSteps.slice(0, index + 1).reverse();
+        const currentBodyDebug = activeBodyDebug(debugStep);
+        const reversedPriorDebugSteps = logMatchingSteps.slice(0, index + 1)
+          .filter((step) => currentBodyDebug
+            ? activeBodyDebug(step) === currentBodyDebug
+            : isEntryPointBodyStep(step))
+          .reverse();
         const enumNames = new Set((artifact.enums ?? []).map((e) => e.name));
 
         return logEntries.map((logEntry) => {
@@ -245,12 +290,15 @@ const debugSingleScenario = (
       throw new FailedTransactionError(error, getBitauthUri(template));
     }
 
-    // Use entryPointFuncSelector to search the correct function's debug info. A failure raised inside a shared
-    // body has an unrelated instruction pointer, so it must not be resolved against this function's requires.
-    let requireStatement = isEntryPointBodyStep(lastExecutedDebugStep)
-      ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
-      : undefined;
-    let functionSourceMap = getFunctionSourceMap(artifact, entryPointFuncSelector);
+    // Resolve the instruction pointer against the bytecode currently active in the VM. OP_INVOKE replaces
+    // `instructions`, so nested and recursive calls cannot be attributed from frame depth alone.
+    const invokedDebug = activeBodyDebug(lastExecutedDebugStep);
+    const requireStatement = invokedDebug
+      ? invokedDebug.requires.find((entry) => entry.ip === requireStatementIp)
+      : isEntryPointBodyStep(lastExecutedDebugStep)
+        ? findRequireStatement(artifact, requireStatementIp, entryPointFuncSelector)
+        : undefined;
+    const functionSourceMap = invokedDebug?.sourceMap ?? getFunctionSourceMap(artifact, entryPointFuncSelector);
 
     if (requireStatement) {
       // Use failingIp for the source map lookup. In function bodies, the instruction after

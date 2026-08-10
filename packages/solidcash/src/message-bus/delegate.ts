@@ -197,7 +197,7 @@ export const UNADMITTED_DELEGATE_PARTICIPANT_CLASSES: readonly { id: string; rea
   }),
   Object.freeze({
     id: 'collection-writing-delegate',
-    reason: 'a C2 sorted write inside a delegate function has no settling instance on this baseline '
+    reason: 'a vmap sorted write inside a delegate function has no settling instance on this baseline '
       + '(board task X11)',
   }),
   Object.freeze({
@@ -401,7 +401,7 @@ export function classifyDelegateParticipant(input: DelegateParticipantInput): De
   if (slotKinds.includes('entry')) {
     throw new DelegateParticipantClassError(
       'class \'collection-writing-delegate\' is not admitted: implementation function '
-      + `'${input.implementation.functionName}' publishes a collection entry slot, and a C2 sorted write inside `
+      + `'${input.implementation.functionName}' publishes a collection entry slot, and a vmap sorted write inside `
       + 'a delegate function has no settling instance on this baseline (board task X11)',
     );
   }

@@ -7,7 +7,9 @@ import { compileString } from '../src/index.js';
 // See docs/delegatecall.md and docs/delegate-modifier-drop-evaluation.md.
 
 const markedNames = (src: string): string[] => {
-  const variant = compileString(src).delegateArtifact;
+  // This suite classifies delegate eligibility, including intentionally hostile low-level targets. Production
+  // compilation rejects those by default; opt out here so the inference-specific assertions remain isolated.
+  const variant = compileString(src, { allowUnsafeOperations: true }).delegateArtifact;
   if (!variant) return [];
   return variant.abi.filter((f) => f.modifiers?.includes('delegate')).map((f) => f.name);
 };

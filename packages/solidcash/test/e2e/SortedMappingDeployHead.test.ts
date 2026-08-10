@@ -7,15 +7,15 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// Deploy-time HEAD init: a freshly deployed contract with a C2 (sorted) mapping now gets its HEAD sentinel (slot 0)
+// Deploy-time HEAD init: a freshly deployed contract with a vmap (sorted) mapping now gets its HEAD sentinel (slot 0)
 // minted at genesis, so the first read/write works with NO manual seeding. Before this, an empty sorted mapping had
-// no HEAD -> "missing HEAD sentinel" on first use. Fundamental for real C2-default contracts.
+// no HEAD -> "missing HEAD sentinel" on first use. Fundamental for real vmap-default contracts.
 const SRC = `contract C() {
   mapping(int => bigint) balances;
   function set(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); balances[k] = v; }
 }`;
 
-describe('C2 mapping deploy-time HEAD sentinel', () => {
+describe('vmap mapping deploy-time HEAD sentinel', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

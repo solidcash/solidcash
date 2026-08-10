@@ -6,7 +6,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// General P5b chunking for DYNAMIC ARRAY values in a sorted (C2) mapping. A dynamic array value is chunkable:
+// General P5b chunking for DYNAMIC ARRAY values in a sorted (vmap) mapping. A dynamic array value is chunkable:
 // small arrays inline (len4 tail), large arrays chunk off-commitment. Element writes `m[k][i]=v` and push/pop are
 // whole-value RMW (materialize the array, apply surgery, re-chunk), mirroring the struct field-write path.
 describe('sorted array-valued mapping: element write + chunking', () => {
@@ -87,7 +87,7 @@ describe('sorted array-valued mapping: element write + chunking', () => {
     expect((await contract.checkAt(7n, 5n, b('f6'), alicePub, sig).send()).txid).toBeDefined(); // element 5 preserved
   });
 
-  it('push/pop under C2: INSERT (empty->[v]), inline->chunked and back, across the 60 B boundary', async () => {
+  it('push/pop under vmap: INSERT (empty->[v]), inline->chunked and back, across the 60 B boundary', async () => {
     // push/pop CHANGE the element count, so the value can flip across the inline<->chunked size boundary. int elems
     // pack 32 B, so [10] = 34 B (inline), [10,20] = 66 B (chunked). Exercises INSERT-via-push (computed value),
     // inline->chunked (push), chunked->chunked (push), and chunked->inline (pop) - the SDK derives the new chunk set.

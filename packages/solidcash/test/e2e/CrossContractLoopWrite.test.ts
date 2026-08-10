@@ -7,11 +7,11 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// Boundary #1 loop sub-case: contract A calls Bank via withExternalCall, and Bank's function WRITES a C2 (sorted)
+// Boundary #1 loop sub-case: contract A calls Bank via withExternalCall, and Bank's function WRITES a vmap (sorted)
 // mapping in a LOOP - `for(i) this.bal[ks[i]] (+)= vs[i]`. The cross-contract dispatch co-spends each of Bank's
 // existing entries (UPDATE-only) and mints Bank's trailing loop outputs with SDK-computed commitments; Bank's
 // covenant verifies (a wrong commitment reverts). An absent key (insert) fails closed.
-describe('cross-contract callee C2 LOOP write', () => {
+describe('cross-contract callee vmap LOOP write', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -104,7 +104,7 @@ contract Bank2() is IB {
 }`;
     const CALLER2 = `pragma solidcash >=0.8.0;
 ${IB}
-contract C2(bytes bankAddr) { bigint calls; function go(int[] ks, int[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); IB(bankAddr).creditN(ks, vs); this.calls = this.calls + 1; } }`;
+contract vmap(bytes bankAddr) { bigint calls; function go(int[] ks, int[] vs, pubkey pk, sig s) { require(checkSig(s, pk)); IB(bankAddr).creditN(ks, vs); this.calls = this.calls + 1; } }`;
     const artBank = compileString(BANK2, { forceStateful: true });
     const artCaller = compileString(CALLER2, { forceStateful: true });
     const { contract: bank, categoryId: catBank } = await deploy(artBank, []);

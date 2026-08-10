@@ -5,9 +5,9 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// An enum value is its ordinal integer on the wire, so `mapping(K => Enum)` is C2-backed by default (int value kind):
+// An enum value is its ordinal integer on the wire, so `mapping(K => Enum)` is vmap-backed by default (int value kind):
 // unforgeable present reads AND exclusion-proof absent reads (an unwritten key proves the default = the 0th member).
-describe('sorted enum-valued mapping (C2, int value kind)', () => {
+describe('sorted enum-valued mapping (vmap, int value kind)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

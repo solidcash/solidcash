@@ -10,7 +10,7 @@ import { createTestProvider } from '../test-util.js';
 
 // Address-VALUED sorted mapping `mapping(int => address)` - the NFT-owner shape. The value tail stores the address
 // verbatim (its locking bytecode); it is the last commitment field, so a variable width is unambiguous. Present ->
-// the stored address, absent -> the empty default. C2-sound as usual (absence proven by the bracket).
+// the stored address, absent -> the empty default. vmap-sound as usual (absence proven by the bracket).
 const SRC = `contract C() {
   mapping(int => address) owner;
   function setOwner(int k, address a, pubkey pk, sig s) { require(checkSig(s, pk)); owner[k] = a; }

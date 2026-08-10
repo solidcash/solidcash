@@ -18,7 +18,7 @@ contract Vault(pubkey admin) {
 
   // `selfdestruct(to)` implies the `selfdestruct` modifier. The covenant pins tx.outputs[0] to `to`.
   function kill(sig s, address to) {
-    require(checkSig(s, admin));   // mandatory auth: selfdestruct functions must end in a require()
+    require(checkSig(s, admin));
     selfdestruct(to);
   }
 }
@@ -246,10 +246,10 @@ function kill() { require(true); selfdestruct(this.beneficiary); }
 ```
 
 If the destination is caller-supplied, gate the function with real authorization (e.g.
-`require(checkSig(s, admin))`). The compiler emits a **warning** when it sees the dangerous shape - a
+`require(checkSig(s, admin))`). The compiler emits a hard `UnauthenticatedSelfdestructError` when it sees the dangerous shape - a
 `selfdestruct(addr)` whose `addr` references a function parameter, in a function with no *authorizing*
-signature check - so the trap is hard to ship by accident. It is a warning, not an error (the author may
-authenticate by some other means), and it does not fire for the two safe forms above. A signature check is used
+signature check. `allowUnsafeOperations` is an explicit migration escape hatch which restores the warning-only
+behavior, and it does not fire for the two safe forms above. A signature check is used
 as the proxy for "authenticated" because on BCH it is the only primitive that authenticates a *party*
 (covenant/introspection conditions authenticate transaction *shape*).
 
@@ -273,6 +273,10 @@ one (`pubkey(raw)`, or an alias later rebound to a parameter). An array **index*
 `i` - the container decides the bytes. The key operand is argument 1 of `checkSig` / `checkMultiSig` and
 argument 2 of `checkDataSig`; this is the same rule the delegatecall diagnostics apply (see
 [delegatecall-security.md](./delegatecall-security.md)).
+
+The check must be required and execute before selfdestruct on every path. Discarded, optional, `||`, and later
+checks do not count. `selfdestruct` must also be a direct function-body statement; nesting it in a branch, loop,
+or `unchecked` block is rejected.
 
 A key **parameter** also counts when an unconditional `require()` in the same function pins it to stored key
 material - the standard BCH admin idiom, where the caller may supply only the key whose hash is committed:
@@ -354,14 +358,12 @@ source-modifier conflict to report.
 
 ## Roadmap
 
-The destination and value are fully pinned (address + single output + fee floor), so a permissionless
-selfdestruct is value-safe (see "Security considerations"). Remaining items:
+The destination and value are fully pinned (address + single output + fee floor). Remaining items:
 
-- **Compiler-enforce permissionless safety (partly done).** A compile-time **warning** now fires on a no-auth
-  selfdestruct whose destination is a caller-controlled argument (see "Security considerations"). The
+- **Compiler-enforce permissionless safety (done).** A hard compile error fires on a no-auth selfdestruct whose
+  destination is a caller-controlled argument (see "Security considerations"). The
   "authenticated" heuristic reads the checked key rather than merely counting signature checks, so a
-  self-authorizing `checkSig(s, pk)` no longer silences it. Escalating the warning to an opt-in hard error
-  remains.
+  self-authorizing `checkSig(s, pk)` does not silence it. `allowUnsafeOperations` is the explicit opt-out.
 - **Configurable fee cap.** The 2000-sat cap is a fixed constant; let the author raise it for large destroys.
 - **Batched destruction.** Support contracts above the single-transaction UTXO limit by applying the pins only
   on the final transaction of a batched destroy.

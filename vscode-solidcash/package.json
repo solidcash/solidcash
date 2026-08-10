@@ -2,7 +2,7 @@
   "name": "solidcash-vscode",
   "displayName": "SolidCash",
   "description": "Syntax highlighting, hover documentation and code navigation for SolidCash smart contracts",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "publisher": "solidcash",
   "license": "MIT",
   "repository": {

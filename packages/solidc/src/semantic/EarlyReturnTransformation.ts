@@ -13,6 +13,11 @@ import {
   ParameterNode,
   SourceFileNode,
   RevertNode,
+  VariableDefinitionNode,
+  AssignNode,
+  IdentifierNode,
+  WhileNode,
+  DoWhileNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { computeBranchOps } from './branchOps.js';
@@ -34,6 +39,10 @@ import { computeBranchOps } from './branchOps.js';
  * It only transforms functions that have return types (internal/public).
  */
 export default class EarlyReturnTransformation extends AstTraversal {
+  private returnCounter = 0;
+
+  constructor(private readonly canonicalizeScalarReturns = false) { super(); }
+
   visitSourceFile(node: SourceFileNode): Node {
     for (let i = 0; i < node.freeFunctions.length; i++) {
       node.freeFunctions[i] = this.visit(node.freeFunctions[i]) as FunctionDefinitionNode;
@@ -61,11 +70,71 @@ export default class EarlyReturnTransformation extends AstTraversal {
     // Transform the body statements to nest early returns
     if (node.body.statements) {
       node.body.statements = transformStatements(node.body.statements);
+      if (this.canonicalizeScalarReturns && node.returnTypes.length === 1) {
+        const returns = collectReturns(node.body);
+        // A bare `return;` in a scalar named-return function means "return the current named value" and has no
+        // expression to beta-reduce. Leave that function in the already-structured form; constructing an assign
+        // from expressions[0] would create an invalid AST (FlashloanStrategyMock's inherited/modifier-expanded
+        // corpus exposes this Solidity 0.6 shape).
+        if (returns.length > 1 && returns.every((ret) => ret.expressions.length === 1)
+          && !containsReturnInConditionalContainer(node.body)) {
+          const name = `__earlyret_${this.returnCounter++}`;
+          const decl = new VariableDefinitionNode(node.returnTypes[0], [], name);
+          decl.location = node.location;
+          node.body = node.body.accept(new CanonicalizeScalarReturns(name)) as BlockNode;
+          const tailId = new IdentifierNode(name); tailId.location = node.location;
+          const tail = new ReturnNode([tailId]); tail.location = node.location;
+          node.body.statements = [decl, ...(node.body.statements ?? []), tail];
+        }
+      }
     }
 
     node.body = this.visit(node.body) as BlockNode;
     return node;
   }
+}
+
+class CanonicalizeScalarReturns extends AstTraversal {
+  constructor(private readonly name: string) { super(); }
+
+  visitReturn(node: ReturnNode): Node {
+    const id = new IdentifierNode(this.name); id.location = node.location;
+    const assign = new AssignNode(id, node.expressions[0]); assign.location = node.location;
+    return assign;
+  }
+}
+
+function collectReturns(node: Node): ReturnNode[] {
+  const out: ReturnNode[] = [];
+  const walk = (current: Node): void => {
+    if (current instanceof ReturnNode) out.push(current);
+    for (const [key, value] of Object.entries(current)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      if (value instanceof Node) walk(value);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
+    }
+  };
+  walk(node);
+  return out;
+}
+
+// Early-return nesting deliberately does not convert control flow that exits a loop/try/switch. Replacing such a
+// return with an assignment would continue executing that container, so leave those functions in their existing
+// fail-closed subroutine form.
+function containsReturnInConditionalContainer(node: Node): boolean {
+  let unsafe = false;
+  const walk = (current: Node, conditional: boolean): void => {
+    if (current instanceof ReturnNode && conditional) { unsafe = true; return; }
+    const nested = conditional || current instanceof WhileNode || current instanceof DoWhileNode
+      || current instanceof TryCatchNode || current instanceof SwitchNode;
+    for (const [key, value] of Object.entries(current)) {
+      if (key === 'type' || key === 'symbolTable' || key === 'location') continue;
+      if (value instanceof Node) walk(value, nested);
+      else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item, nested);
+    }
+  };
+  walk(node, false);
+  return unsafe;
 }
 
 /**

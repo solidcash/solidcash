@@ -1,10 +1,10 @@
 import { sha256, hexToBin, binToHex } from '@bitauth/libauth';
 import { Utxo } from '../interfaces.js';
 
-// Off-chain manager for a C2-sound sorted linked-list mapping (see docs/sorted-mapping-c2.md). Entries are entry
-// NFTs whose commitment is slot(32) ++ nextKey(32) [++ value]; they form a sorted singly-linked list. This class
-// rebuilds the list from the on-chain entry UTXOs and produces the co-spend PLANS the transaction builder needs:
-// non-membership (bracketing predecessor), membership (the entry), insert/delete (predecessor +/- node splices).
+// Off-chain manager for a verified mapping (vmap; see docs/verified-mappings.md). Entries are entry NFTs whose
+// commitment is slot(32) ++ nextKey(32) [++ value]; they form an authenticated sorted singly-linked list. This
+// class rebuilds the list from on-chain entry UTXOs and produces the co-spend plans the transaction builder needs:
+// absence (the bracketing predecessor), membership (the exact entry), and updates (predecessor/node splices).
 // The covenant that consumes these plans is VM-proven in test/e2e/SortedMapping*.test.ts.
 
 const SLOT_BYTES = 32;
@@ -184,7 +184,7 @@ export class SortedList {
 
   /**
    * Plan simultaneous distinct-key upserts. All predecessor decisions are made against the ORIGINAL list, then
-   * links are rebuilt over the final union. This is the off-chain mirror for the fixed straight-line C2 batch
+   * links are rebuilt over the final union. This is the off-chain mirror for the fixed straight-line vmap batch
    * covenant: shared predecessors are consumed once, same-gap inserts become one ascending chain, and an updated
    * existing predecessor carries both its new value and its new first-successor link in one output.
    */
@@ -193,8 +193,15 @@ export class SortedList {
     for (const w of writes) {
       const n = bytesToSlotValue(w.slot);
       if (n === 0n) throw new Error('slot 0 is reserved for the sorted-list HEAD sentinel');
+      // LOAD-BEARING, and it fails closed on purpose. Two writes in one batch CAN land on one key without the
+      // compiler seeing it - the ERC-20 fee shape writes `bal[msg.sender]` and `bal[this.owner]`, one key
+      // whenever the owner is the sender - and the tempting fix is to dedupe here and let the existing
+      // same-proof-UTXO merge downstream handle it. MEASURED: it builds, it settles, and it SILENTLY DROPS the
+      // second write. On `transfer(to, 40)` from the owner with fee 7, the owner ends at 60 instead of 67: the
+      // debit applied, the fee credit vanished, and nothing errored. Deduping is only correct when the writes
+      // are redundant; these must COMPOSE. Refusing keeps the shape unbuildable instead of quietly wrong.
       const key = n.toString();
-      if (bySlot.has(key)) throw new Error('C2 batch upsert contains a duplicate slot');
+      if (bySlot.has(key)) throw new Error('vmap batch upsert contains a duplicate slot');
       bySlot.set(key, w);
     }
     if (bySlot.size === 0) return { inputs: [], outputs: [] };

@@ -175,7 +175,16 @@ export default class HoistChainedContractCalls extends AstTraversal {
       if (base instanceof AddressType && base.interfaceName) return this.member(base, expr.name);
       return undefined;
     }
-    if (expr instanceof FunctionCallNode || expr instanceof MethodCallNode) return this.callReturnsContract(expr);
+    if (expr instanceof FunctionCallNode) {
+      // `Concrete(address).publicMapping(key)` uses a contract cast as the receiver. Treat the cast as that
+      // imported contract type so the public collection getter can be hoisted before a chained call on its
+      // interface-valued result (`MasterChefV2(a).lpToken(pid).balanceOf(a)`).
+      if (!expr.identifier.name.includes('.') && expr.parameters.length === 1 && this.members.has(expr.identifier.name)) {
+        return new AddressType(false, expr.identifier.name);
+      }
+      return this.callReturnsContract(expr);
+    }
+    if (expr instanceof MethodCallNode) return this.callReturnsContract(expr);
     return undefined;
   }
 

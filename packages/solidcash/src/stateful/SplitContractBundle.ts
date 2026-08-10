@@ -72,6 +72,13 @@ export class SplitContract {
     return this;
   }
 
+  /**
+   * ethers v5 `.deployed()` alias (MistSwap uses it throughout): same promise as `waitForDeployment()`.
+   * ContractFactory attaches this on unsplit deploys; split bundles must expose it too or `await c.deployed()`
+   * throws `is not a function` after a successful HardhatSplitContractFactory.deploy.
+   */
+  deployed(): Promise<this> { return this.waitForDeployment(); }
+
   deploymentTransaction(): unknown { return this.deploymentTransactions.at(-1); }
 
   getFunction(name: string): (...args: FunctionArgument[]) => StatefulFunctionCall {
@@ -92,6 +99,11 @@ export class SplitContract {
       for (const emitted of fn?.emits ?? []) {
         const event = facet.inner.artifact.events?.find((item) => item.signature === emitted.eventSignature);
         if (!event) continue;
+        // The point of this loop is to supply argument VALUES the builder cannot derive on its own. A
+        // zero-parameter event has none, and the builder already lays its marker output out from the facet's
+        // published `emits`; adding a manual one on top emits it twice and the covenant refuses the extra
+        // output. `values.every()` is vacuously true on an empty list, which is how this slipped through.
+        if (event.parameters.length === 0) continue;
         const values = event.parameters.map((parameter) => {
           if (byName.has(parameter.name)) return byName.get(parameter.name)!;
           if (parameter.type === 'address' && runner instanceof Signer) return addressToLockScript(runner.getAddress());

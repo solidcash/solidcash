@@ -18,6 +18,8 @@ import {
   TupleIndexOpNode,
   AbiEncodeNode,
   AbiEncodePackedNode,
+  AbiEncodeWithSelectorNode,
+  AbiEncodeWithSignatureNode,
   AbiDecodeNode,
   AbiDecodeAtNode,
   InstantiationNode,
@@ -1446,8 +1448,12 @@ function preserveOverriddenFunction(
 function superImplFor(contract: ContractNode, definingContract: string, fnName: string): string | undefined {
   const mangled = superImplName(definingContract, fnName);
   if (contract.functions.some((f) => f.name === mangled)) return mangled;
-  const plain = contract.functions.find((f) => f.name === fnName);
-  if (plain && (plain.definingContract ?? plain.inheritedFrom ?? contract.name) === definingContract) {
+  // Same-name overloads from the child and base coexist after flattening. Search by both name and origin:
+  // taking the first name match makes `Base.initialize()` disappear when the child also declares
+  // `initialize(uint)` (FlexUSD's LibraryLock initializer).
+  const plain = contract.functions.find((f) => f.name === fnName
+    && (f.definingContract ?? f.inheritedFrom ?? contract.name) === definingContract);
+  if (plain) {
     return fnName;
   }
   return undefined;
@@ -1732,15 +1738,23 @@ function mergeNamedList(
       // Overloadable members (events, errors) coexist when their parameter signatures differ. Keep the parent's
       // declaration alongside the same-name child/sibling one; skip only an exact-signature duplicate.
       if (overloadable) {
-        const sigOf = (it: { name: string; parameters?: { type: unknown }[] }): string =>
-          (it.parameters ?? []).map((p) => String(p.type)).join(',');
-        const parentSig = sigOf(parentItem as { name: string; parameters?: { type: unknown }[] });
-        const present = [...childList, ...toInsert as unknown as typeof childList].some(
-          (it) => it.name === parentItem.name
-            && sigOf(it as { name: string; parameters?: { type: unknown }[] }) === parentSig,
+        type Overloadable = { name: string; parameters?: { type: unknown; indexed?: boolean }[] };
+        const sigOf = (it: Overloadable): string => (it.parameters ?? []).map((p) => String(p.type)).join(',');
+        const indexedOf = (it: Overloadable): string =>
+          (it.parameters ?? []).map((p) => (p.indexed ? '1' : '0')).join(',');
+        const parentSig = sigOf(parentItem as Overloadable);
+        const present = [...childList, ...toInsert as unknown as typeof childList].find(
+          (it) => it.name === parentItem.name && sigOf(it as Overloadable) === parentSig,
         );
         if (present) {
-          if (key === 'eventDefinitions') child.hasDuplicateInheritedEventSignature = true;
+          // `contract C is A, I` where the base and the interface both declare the same event is the ordinary
+          // Solidity shape (UniswapV2Factory/IUniswapV2Factory both declare PairCreated): an IDENTICAL
+          // redeclaration deduplicates. Matching parameter types with DIFFERING `indexed` flags is a genuine
+          // conflicting redefinition - the two declarations disagree on the topic layout - so flag that.
+          if (key === 'eventDefinitions'
+            && indexedOf(present as Overloadable) !== indexedOf(parentItem as Overloadable)) {
+            child.hasDuplicateInheritedEventSignature = true;
+          }
           continue;
         }
       } else {
@@ -1820,7 +1834,7 @@ function flattenedIndexedSubstitution(
  * Recursively substitute IdentifierNode references in an expression tree.
  * Returns a new expression if substitution occurred, otherwise returns the original.
  */
-function substituteInExpression(
+export function substituteInExpression(
   expr: ExpressionNode,
   subs: Map<string, ExpressionNode>,
 ): ExpressionNode {
@@ -1896,6 +1910,18 @@ function substituteInExpression(
   }
 
   if (expr instanceof AbiEncodePackedNode) {
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    return expr;
+  }
+
+  if (expr instanceof AbiEncodeWithSelectorNode) {
+    expr.selector = substituteInExpression(expr.selector, subs);
+    expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
+    return expr;
+  }
+
+  if (expr instanceof AbiEncodeWithSignatureNode) {
+    expr.signature = substituteInExpression(expr.signature, subs);
     expr.parameters = expr.parameters.map((p) => substituteInExpression(p, subs));
     return expr;
   }

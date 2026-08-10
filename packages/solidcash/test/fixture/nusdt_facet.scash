@@ -1,0 +1,209 @@
+pragma solidcash >=0.8.0;
+
+// Facet library: everything the master delegates. One facet rather than three -
+// each additional facet costs the master a constructor argument (~57 B of pushes
+// in the DEPLOYED redeem script, which the artifact's own byte count does not
+// show), and the master needs that room for `openSelf` and `deposit`.
+//
+// Every function here is UPDATE-only on its mappings. A first-touch INSERT cannot
+// settle through a delegate (the proxy conserves its own-category mutable NFT
+// count and an insert mints a node), so key creation lives on the master.
+//
+// The other thing that cannot be delegated is a TOKEN CONTAINER: a delegate input
+// fails its covenant on any container operation, including a plain read. Everything
+// that touches the reserve therefore lives on the master, which is why `deposit` is
+// there and `transferFrom` is here.
+//
+// Runs as a delegate against the proxy master's state, so the state block below
+// MUST stay byte-identical to nusdt_state.inc and to the master.
+library UsdtFacet {
+
+
+    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Pause();
+    event Unpause();
+    event Deprecate(address newAddress);
+    event AddedBlackList(address indexed user);
+    event RemovedBlackList(address indexed user);
+    event Frozen(address indexed user);
+    event Unfrozen(address indexed user);
+    event QuarantineParams(int blocks);
+
+    event Issue(int amount);
+    event Redeem(int amount);
+    event DestroyedBlackFunds(address indexed blackListedUser, int balance);
+
+    event Transfer(address indexed from, address indexed to, int value);
+    event DepositClaimed(address indexed to, int value);
+
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+
+    // ---- shared state layout (see nusdt_state.inc) ----
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    function transferOwnership(address newOwner) public {
+        require(msg.sender == this.owner);
+        require(newOwner != this.owner);
+        this.owner = newOwner;
+    }
+
+    function pause() public {
+        require(msg.sender == this.owner);
+        require(!this.paused);
+        this.paused = true;
+        emit Pause();
+    }
+
+    function unpause() public {
+        require(msg.sender == this.owner);
+        require(this.paused);
+        this.paused = false;
+        emit Unpause();
+    }
+
+    function removeBlackList(address clearedUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[clearedUser] = false;
+        emit RemovedBlackList(clearedUser);
+    }
+
+    function unfreeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = false;
+        emit Unfrozen(user);
+    }
+
+    function deprecate(address newAddress) public {
+        require(msg.sender == this.owner);
+        this.deprecated = true;
+        this.upgradedAddress = newAddress;
+        emit Deprecate(newAddress);
+    }
+
+    function setQuarantineBlocks(int blocks) public {
+        require(msg.sender == this.owner);
+        require(blocks >= 0);
+        this.quarantineBlocks = blocks;
+        emit QuarantineParams(blocks);
+    }
+    function redeem(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.totalSupply >= amount);
+        require(this.balances[this.owner] >= amount);
+        this.totalSupply = this.totalSupply - amount;
+        this.balances[this.owner] = this.balances[this.owner] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        emit Redeem(amount);
+    }
+
+    // Destroyed funds leave circulation, but the underlying FTs stay in the
+    // container as unminted premint and so become re-issuable. This is the
+    // "returning burn" of the supply model and it keeps containerSeen >=
+    // backedSupply intact.
+    function destroyBlackFunds(address blackListedUser) public {
+        require(msg.sender == this.owner);
+        require(this.isBlackListed[blackListedUser]);
+        int dirtyFunds = this.balances[blackListedUser];
+        this.balances[blackListedUser] = 0;
+        this.totalSupply = this.totalSupply - dirtyFunds;
+        this.backedSupply = this.backedSupply - dirtyFunds;
+        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    }
+
+    function tick(int nowHeight) public {
+        require(tx.time >= nowHeight);
+        require(nowHeight >= this.clock);
+        this.clock = nowHeight;
+    }
+
+    // Delegated, unlike `transfer`, because every mapping write it makes is an UPDATE:
+    // `allowed[from][spender]` is only written on a branch that already read a live
+    // allowance (so `approve` created the row), and `balances[to]` requires the recipient
+    // to have run `openSelf`. It sits here to buy the master the room for `deposit`,
+    // which cannot be delegated at any size - see the master's note on that function.
+    function transferFrom(address from, address to, int value) public {
+        require(!this.paused);
+        require(!this.deprecated);
+        address spender = msg.sender;
+        require(!this.isBlackListed[from]);
+        require(!this.frozen[from]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        int currentAllowance = this.allowed[from][spender];
+
+        // USDT decrements only FINITE allowances; MAX_UINT is the infinite sentinel.
+        if (currentAllowance < MAX_ALLOWANCE) {
+            require(currentAllowance >= value);
+            this.allowed[from][spender] = currentAllowance - value;
+        }
+
+        require(to != from);
+        require(this.balances[from] >= value);
+        this.balances[from] = this.balances[from] - value;
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(from, to, value);
+    }
+
+    // Re-entry, step 3. Permissionless and consensus-gated: the CLTV compare cannot
+    // be accelerated, so a matured claim is a fact about the chain, not about who
+    // is asking. The issuer's only lever is to blacklist or freeze the claimant
+    // inside the window, checked here.
+    function claimDeposit() public {
+        require(!this.paused);
+        require(!this.deprecated);
+        address claimant = msg.sender;
+        int pending = this.pendingAmount[claimant];
+        require(pending > 0);
+        require(tx.time >= this.pendingUnlockAt[claimant]);
+        require(!this.isBlackListed[claimant]);
+        require(!this.frozen[claimant]);
+
+        this.pendingAmount[claimant] = 0;
+        this.pendingUnlockAt[claimant] = 0;
+        this.balances[claimant] = this.balances[claimant] + pending;
+        emit DepositClaimed(claimant, pending);
+    }
+
+    function issue(int amount) public {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        require(this.containerSeen >= this.backedSupply + amount);
+        this.balances[this.owner] = this.balances[this.owner] + amount;
+        this.totalSupply = this.totalSupply + amount;
+        this.backedSupply = this.backedSupply + amount;
+        emit Issue(amount);
+    }
+
+    function addBlackList(address evilUser) public {
+        require(msg.sender == this.owner);
+        this.isBlackListed[evilUser] = true;
+        emit AddedBlackList(evilUser);
+    }
+
+    function freeze(address user) public {
+        require(msg.sender == this.owner);
+        this.frozen[user] = true;
+        emit Frozen(user);
+    }
+}

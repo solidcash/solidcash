@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, readdirSync, existsSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { clearCompileCache, compileString } from '../src/compiler.js';
+import { clearCompileCache, compileString, getCompileCacheEntryCount } from '../src/compiler.js';
 
 /**
  * Cross-worker disk cache (SOLIDC_COMPILE_CACHE_DIR): vitest forks do not share the in-process Map.
@@ -12,6 +12,7 @@ import { clearCompileCache, compileString } from '../src/compiler.js';
 describe('SOLIDC_COMPILE_CACHE_DIR disk layer', () => {
   const previousCache = process.env.SOLIDC_COMPILE_CACHE;
   const previousDir = process.env.SOLIDC_COMPILE_CACHE_DIR;
+  const previousMaxEntries = process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES;
   let dir: string | undefined;
 
   afterEach(() => {
@@ -20,8 +21,19 @@ describe('SOLIDC_COMPILE_CACHE_DIR disk layer', () => {
     else process.env.SOLIDC_COMPILE_CACHE = previousCache;
     if (previousDir === undefined) delete process.env.SOLIDC_COMPILE_CACHE_DIR;
     else process.env.SOLIDC_COMPILE_CACHE_DIR = previousDir;
+    if (previousMaxEntries === undefined) delete process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES;
+    else process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES = previousMaxEntries;
     if (dir && existsSync(dir)) rmSync(dir, { recursive: true, force: true });
     dir = undefined;
+  });
+
+  it('bounds historical source variants in long-running watch processes', () => {
+    process.env.SOLIDC_COMPILE_CACHE = '1';
+    process.env.SOLIDC_COMPILE_CACHE_MAX_ENTRIES = '2';
+    for (const name of ['First', 'Second', 'Third']) {
+      compileString(`contract ${name} { function f() { require(true); } }`, { messageBus: false });
+    }
+    expect(getCompileCacheEntryCount()).toBe(2);
   });
 
   it('writes a cache file on miss and returns the same bytecode on a subsequent hit', () => {

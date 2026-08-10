@@ -1,5 +1,3 @@
-import { formatArtifact } from '@solidcash/utils';
-import { compileString } from 'solidc';
 import fs from 'fs';
 import { createRequire } from 'module';
 import { URL, fileURLToPath } from 'url';
@@ -16,7 +14,7 @@ function newestMtimeUnder(dir: string): number {
       const p = path.join(d, ent.name);
       if (ent.isDirectory()) {
         walk(p);
-      } else if (ent.isFile()) {
+      } else if (ent.isFile() && (ent.name.endsWith('.js') || ent.name.endsWith('.json'))) {
         newest = Math.max(newest, fs.statSync(p).mtimeMs);
       }
     }
@@ -32,8 +30,11 @@ function newestMtimeUnder(dir: string): number {
  * files (e.g. dist/compiler.js) can update under incremental tsc without touching
  * dist/index.js — walking the tree catches those rebuilds.
  */
-function newestDependencyMtime(sourcePath: string): number {
-  let newest = fs.statSync(sourcePath).mtimeMs;
+let compilerMtime: number | undefined;
+
+function newestCompilerMtime(): number {
+  if (compilerMtime !== undefined) return compilerMtime;
+  let newest = 0;
   for (const pkg of ['solidc', '@solidcash/utils']) {
     try {
       const pkgJson = require.resolve(`${pkg}/package.json`);
@@ -45,7 +46,12 @@ function newestDependencyMtime(sourcePath: string): number {
       newest = Date.now();
     }
   }
-  return newest;
+  compilerMtime = newest;
+  return compilerMtime;
+}
+
+function newestDependencyMtime(sourcePath: string): number {
+  return Math.max(fs.statSync(sourcePath).mtimeMs, newestCompilerMtime());
 }
 
 /** True when both artifact outputs exist and are newer than sources + compiler. */
@@ -55,14 +61,14 @@ function artifactsUpToDate(sourcePath: string, outputs: string[]): boolean {
   return outputs.every((out) => fs.existsSync(out) && fs.statSync(out).mtimeMs >= depMtime);
 }
 
-export const compile = (): void => {
+export const compile = async (): Promise<void> => {
   const directory = new URL('../contracts', import.meta.url);
   const result = fs.readdirSync(directory)
     .filter((fn) => fn.endsWith('.scash'));
 
   fs.mkdirSync(new URL('../artifacts', import.meta.url), { recursive: true });
 
-  result.forEach((fn) => {
+  const pending = result.filter((fn) => {
     const contractFile = new URL(fn, `${directory}/`);
     const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
     const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
@@ -72,8 +78,24 @@ export const compile = (): void => {
 
     if (artifactsUpToDate(sourcePath, [jsonPath, tsPath])) {
       console.log(`Up-to-date ${fn}`);
-      return;
+      return false;
     }
+
+    return true;
+  });
+
+  // Loading solidc pulls in the full compiler and generated parser. Keep the warm,
+  // no-op build path lightweight by importing it only when an artifact is stale.
+  if (pending.length === 0) return;
+  const [{ formatArtifact }, { compileString }] = await Promise.all([
+    import('@solidcash/utils'),
+    import('solidc'),
+  ]);
+
+  pending.forEach((fn) => {
+    const contractFile = new URL(fn, `${directory}/`);
+    const jsonOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.json')}`, import.meta.url);
+    const tsOutputFile = new URL(`../artifacts/${fn.replace('.scash', '.artifact.ts')}`, import.meta.url);
 
     try {
       const contents = fs.readFileSync(contractFile, { encoding: 'utf-8' });
@@ -90,4 +112,4 @@ export const compile = (): void => {
   });
 };
 
-compile();
+await compile();

@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 
 // Address-keyed sorted mapping `mapping(address => int)` - the ERC20 balance shape. An address key is hashed as its
 // locking bytecode (the covenant's on-stack address == the SDK's addressToLockScript), so the slot is
-// keyToSlot(addressToLockScript(addr)). Distinct addresses are independent entries; C2-sound as usual.
+// keyToSlot(addressToLockScript(addr)). Distinct addresses are independent entries; vmap-sound as usual.
 const SRC = `contract C() {
   mapping(address => int) bal;
   function setBal(address a, int v, pubkey pk, sig s) { require(checkSig(s, pk)); bal[a] = v; }

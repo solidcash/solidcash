@@ -688,7 +688,7 @@ contract Reader(bytes32 counterCategory) {
   });
 
   describe('collection outState reconstruction', () => {
-    it('reads an existing final C2 entry written by the callee', async () => {
+    it('reads an existing final vmap entry written by the callee', async () => {
       const provider = createTestProvider();
       const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
       const targetBase = new Contract(targetArtifact, [], { provider });
@@ -714,7 +714,7 @@ contract Reader(bytes32 counterCategory) {
       await expect(targetStateful.getState()).resolves.toEqual(expect.any(Object));
     });
 
-    it('rejects a forged final C2 entry value', async () => {
+    it('rejects a forged final vmap entry value', async () => {
       const provider = createTestProvider();
       const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
       const targetBase = new Contract(targetArtifact, [], { provider });
@@ -757,7 +757,7 @@ contract Reader(bytes32 counterCategory) {
       );
     });
 
-    it('returns the default only with an authenticated final C2 predecessor', async () => {
+    it('returns the default only with an authenticated final vmap predecessor', async () => {
       const provider = createTestProvider();
       const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
       const targetBase = new Contract(targetArtifact, [], { provider });
@@ -782,7 +782,7 @@ contract Reader(bytes32 counterCategory) {
       ).resolves.toBeDefined();
     });
 
-    it('rejects a forged final C2 predecessor link for an absent key', async () => {
+    it('rejects a forged final vmap predecessor link for an absent key', async () => {
       const provider = createTestProvider();
       const targetArtifact = compileString(COLLECTION_OUTSTATE_TARGET_CONTRACT);
       const targetBase = new Contract(targetArtifact, [], { provider });

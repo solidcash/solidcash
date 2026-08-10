@@ -10,12 +10,12 @@ import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
-const badChunkRoot = 'C2 value chunks do not match the authenticated root';
+const badChunkRoot = 'vmap value chunks do not match the authenticated root';
 
-// P5b: a sorted (C2) mapping with an unbounded bytes/string VALUE that EXCEEDS the 60 B inline body. The entry
+// P5b: a sorted (vmap) mapping with an unbounded bytes/string VALUE that EXCEEDS the 60 B inline body. The entry
 // commitment stores len(4 B LE) ++ sha256(value) ++ head28 (128 B total); the full value persists
 // off-commitment in per-slot value chunks and a read verifies a caller witness against the stored hash. This closes
-// the last C2 value-type gap: C2 is the unforgeable default for bytes/string of ANY practical length, not just <=60 B.
+// the last vmap value-type gap: vmap is the unforgeable default for bytes/string of ANY practical length, not just <=60 B.
 
 const ZERO = slotValueToBytes(0n);
 
@@ -112,7 +112,7 @@ describe('sorted mapping with a LONG (>60 B) unbounded bytes/string value (P5b)'
       function put(int k, bytes v, pubkey pk, sig s) { require(checkSig(s, pk)); data[k] = v; }
       function check(int k, bytes expected, pubkey pk, sig s) { require(checkSig(s, pk)); require(data[k] == expected); }
     }`;
-    const art = compileString(SRC); // C2 by default (no options)
+    const art = compileString(SRC); // vmap by default (no options)
     expect(art.stateLayout?.collections?.find((c) => c.name === 'data')?.sorted).toBe(true);
     expect(art.abi.find((f) => f.name === 'put')?.entryAccesses?.[0]?.valueParam).toBe('v'); // value param recorded
 

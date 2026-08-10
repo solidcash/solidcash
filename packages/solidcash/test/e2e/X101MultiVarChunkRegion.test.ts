@@ -10,7 +10,7 @@ import {
 /**
  * X101 - the trailing chunk region with SEVERAL dynamic vars, measured against X10's residual.
  *
- * X10 grew the region speculatively when a trailing C2 entry mint aborts the probe before the state data NFT is
+ * X10 grew the region speculatively when a trailing vmap entry mint aborts the probe before the state data NFT is
  * verified, and restricted the grow to ONE chunk var, on the stated worry that with several vars "growing the
  * first is not a search of the right shape". Measured, it is: the covenant reaches the trailing NEW node's
  * address BEFORE it verifies any chunk, so while the region is still all placeholders only its TOTAL output
@@ -28,7 +28,7 @@ import {
 type Provider = ReturnType<typeof createTestProvider>;
 type Tx = ReturnType<typeof decodeTransactionUnsafe>;
 
-/** Two chunk-backed dynamic writes plus a C2 entry MINT - the shape that reaches the speculative grow. */
+/** Two chunk-backed dynamic writes plus a vmap entry MINT - the shape that reaches the speculative grow. */
 const MINT = `pragma solidcash >=0.8.0;
 contract X101Mint() {
   mapping(bytes20 => bigint) balances;
@@ -70,7 +70,7 @@ contract X101Only() {
   }
 }`;
 
-// Output map for the collection shapes: master, state data NFT, C2 predecessor, then the chunk region.
+// Output map for the collection shapes: master, state data NFT, vmap predecessor, then the chunk region.
 const OUT = { master: 0, dataNft: 1, predecessor: 2, chunk: 3 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {

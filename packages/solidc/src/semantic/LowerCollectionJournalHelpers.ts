@@ -141,7 +141,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     // exactly one chunk-backed bytes/string state variable into a returning value handler. This pass then
     // declines that same helper, because its return arity is no longer zero, so its collection accesses stay
     // raw inside an OP_INVOKE body: code generation reaches them with no block layout, and a synthesized
-    // batch clone reaches them with C2 witness parameters its call site never forwards. Both produced an
+    // batch clone reaches them with vmap witness parameters its call site never forwards. Both produced an
     // internal compiler error rather than a diagnostic - 'Block layout not available while compiling ...' and
     // a parameter-arity mismatch on '__message_bus_resource_...'. The two journals do not yet share one exit, so
     // reject the combination with a stable message.
@@ -343,7 +343,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
         this.at(new IdentifierNode(entry.journalName), candidate.fn))), candidate.fn));
       // This pass runs between semantic traversals. The first traversal's
       // entry metadata describes the pre-lowered storage body; leaving it on
-      // the node would make the second traversal retain C2 witness parameters
+      // the node would make the second traversal retain vmap witness parameters
       // for accesses which no longer exist.
       candidate.fn.entryAccesses = undefined;
       candidate.fn.sortedBatchInfo = undefined;
@@ -645,7 +645,7 @@ export default class LowerCollectionJournalHelpers extends AstTraversal {
     const caches = new Map<FunctionDefinitionNode, ActiveMultiCache>();
     // One physical entry gets one pending journal value per wrapper, however many different handlers touch it.
     // Keeping a pool per callee was enough while a route admitted a single handler; with several handlers over
-    // one collection it allocated a separate cache local - and therefore a separate C2 slot - per handler for
+    // one collection it allocated a separate cache local - and therefore a separate vmap slot - per handler for
     // the same entry, which the SDK reports as a duplicate upsert slot.
     const sharedLocals: ActiveMultiCache['locals'] = [];
     const calls: FunctionCallStatementNode[] = [];

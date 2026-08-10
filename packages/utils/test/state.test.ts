@@ -796,7 +796,7 @@ describe('attachDecodedAccessors (typechain .toObject() / .toArray() at the user
 });
 
 
-describe('root-addressed C2 value chunk codec', () => {
+describe('root-addressed vmap value chunk codec', () => {
   const bytesOf = (n: number): Uint8Array => Uint8Array.from({ length: n }, (_v, i) => (i * 13 + 7) & 0xff);
 
   it('keeps 28 bytes in the head and packs continuation commitments to 128 bytes', () => {

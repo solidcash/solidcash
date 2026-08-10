@@ -27,10 +27,6 @@ const requireFailure = (file: string, line: number, statement: string): string =
   `${file}:${line} Require statement failed at input 0 in contract ${file} at line ${line}.\n`
   + `Failing statement: ${statement}`;
 
-const transactionFailure = (file: string, line: number, statement: string): string =>
-  `${file}:${line} Error in transaction at input 0 in contract ${file} at line ${line}.\n`
-  + `Reason: Program failed an OP_VERIFY operation.\nFailing statement: ${statement}`;
-
 function loadCash(name: string): string {
   return readFileSync(resolve(VALID_DIR, name), 'utf-8');
 }
@@ -273,8 +269,8 @@ describe('Valid Contracts - SDK e2e', () => {
       const { provider, contract } = setupContract(loadCash('free_function_void.scash'));
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.compute(0n));
-      // The OP_DEFINE callsite is source-mapped even though the inner require is not.
-      await expect(txPromise).rejects.toThrow(transactionFailure('Calculator.scash', 7, 'assertPositive(x)'));
+      // Free-function OP_INVOKE bodies retain their own source map, so report the actual inner guard.
+      await expect(txPromise).rejects.toThrow(requireFailure('Calculator.scash', 2, 'require(x > 0)'));
     });
 
     it('free_function_void: fails when x >= 100', async () => {
@@ -674,6 +670,99 @@ describe('Valid Contracts - SDK e2e', () => {
       await addUtxos(provider, contract.address);
       const txPromise = sendTx(provider, contract, contract.unlock.spend(2n));
       await expect(txPromise).rejects.toThrow(FailedRequireError);
+    });
+
+    it('attributes a require failure inside a nested OP_INVOKE body', async () => {
+      const source = [
+        'contract NestedDebug() {',
+        '  function checked(int value) internal returns (bool) {',
+        '    require(value == 7, "nested check");',
+        '    return true;',
+        '  }',
+        '  function spend(int value) { require(checked(value)); }',
+        '  function alternate(int value) { require(checked(value)); }',
+        '}',
+      ].join('\n');
+      const { provider, contract } = setupContract(source);
+      const invokeDebug = (contract.artifact.debug as typeof contract.artifact.debug & {
+        invokeDebug?: Record<string, { name?: string }>;
+      }).invokeDebug;
+      expect(Object.values(invokeDebug ?? {}))
+        .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'checked' })]));
+      await addUtxos(provider, contract.address);
+      const { utxos, changeAmount } = gatherUtxos(await contract.getUtxos(), { amount: 1000n });
+      const builder = new TransactionBuilder({ provider })
+        .addInputs(utxos, contract.unlock.spend(1n))
+        .addOutput({ to: contract.address, amount: 1000n })
+        .addOutput({ to: contract.address, amount: changeAmount });
+      const invokedBodyView = Object.values(builder.getLibauthTemplate().scripts)
+        .find((script) => script.name.includes('checked (invoked body)'));
+      expect(invokedBodyView).toBeDefined();
+      expect((invokedBodyView as { script: string }).script).toContain('require(value == 7, "nested check")');
+      const checkedId = Object.entries(invokeDebug ?? {}).find(([, debug]) => debug.name === 'checked')?.[0];
+      const mainScript = Object.values(builder.getLibauthTemplate().scripts)
+        .find((script) => script.name === 'NestedDebug');
+      expect((mainScript as { script: string }).script)
+        .toContain(`<NestedDebug_invoke_${checkedId}_body_lock>`);
+      const spendSelector = contract.artifact.abi.find((entry) => entry.name === 'spend')!.selector!;
+      expect((mainScript as { script: string }).script)
+        .toContain(`<NestedDebug_define_${spendSelector}_body_lock>`);
+      expect(builder.getBitauthUri()).toContain('https://ide.bitauth.com/import-template/');
+
+      await expect(builder.send()).rejects.toThrow(
+        'NestedDebug.scash:3 Require statement failed at input 0 in contract NestedDebug.scash at line 3 '
+        + 'with the following message: nested check.\nFailing statement: require(value == 7, "nested check")',
+      );
+    });
+
+    it('uses the invoked function id when byte-identical bodies have different source locations', async () => {
+      const source = [
+        'contract IdenticalDebug() {',
+        '  function first(int value) internal returns (bool) {',
+        '    require(value == 7, "first body");',
+        '    return true;',
+        '  }',
+        '  function second(int value) internal returns (bool) {',
+        '    require(value == 7, "second body");',
+        '    return true;',
+        '  }',
+        '  function useFirst(int value) { require(first(value)); }',
+        '  function alternateFirst(int value) { require(first(value)); }',
+        '  function useSecond(int value) { require(second(value)); }',
+        '  function alternateSecond(int value) { require(second(value)); }',
+        '}',
+      ].join('\n');
+      const { provider, contract } = setupContract(source);
+      await addUtxos(provider, contract.address);
+
+      await expect(sendTx(provider, contract, contract.unlock.useSecond(1n))).rejects.toThrow(
+        'IdenticalDebug.scash:7 Require statement failed at input 0 in contract IdenticalDebug.scash at line 7 '
+        + 'with the following message: second body.\nFailing statement: require(value == 7, "second body")',
+      );
+    });
+
+    it('attributes failures through multiple nested OP_INVOKE frames', async () => {
+      const source = [
+        'contract DeepDebug() {',
+        '  function leaf(int value) internal returns (bool) {',
+        '    require(value == 9, "deep leaf");',
+        '    return true;',
+        '  }',
+        '  function middle(int value) internal returns (bool) { return leaf(value); }',
+        '  function otherMiddle(int value) internal returns (bool) { return leaf(value); }',
+        '  function use(int value) { require(middle(value)); }',
+        '  function alternate(int value) { require(middle(value)); }',
+        '  function useOther(int value) { require(otherMiddle(value)); }',
+        '  function alternateOther(int value) { require(otherMiddle(value)); }',
+        '}',
+      ].join('\n');
+      const { provider, contract } = setupContract(source);
+      await addUtxos(provider, contract.address);
+
+      await expect(sendTx(provider, contract, contract.unlock.use(1n))).rejects.toThrow(
+        'DeepDebug.scash:3 Require statement failed at input 0 in contract DeepDebug.scash at line 3 '
+        + 'with the following message: deep leaf.\nFailing statement: require(value == 9, "deep leaf")',
+      );
     });
   });
 

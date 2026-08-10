@@ -8,7 +8,7 @@ import { createTestProvider } from '../test-util.js';
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
 // Behavioral proof for CoalesceMappingEntryFieldWrites (docs/coalesce-mapping-entry-field-writes.md). Consecutive
-// whole-field writes to the same C2 mapping entry are collapsed to one entry read + one whole-struct write. Each
+// whole-field writes to the same vmap mapping entry are collapsed to one entry read + one whole-struct write. Each
 // `chk*` reads the stored entry back and requires the exact values on the VM, so a miscompile fails the spend.
 describe('CoalesceMappingEntryFieldWrites: VM behavioral parity', () => {
   const sig = new SignatureTemplate(alicePriv);

@@ -290,7 +290,7 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    it('should refuse typed child deployment combined with a C2 insert', async () => {
+    it('should deploy a typed child combined with a vmap insert (deployDataNft layout)', async () => {
       const salt = '00'.repeat(31) + '01'; // salt = 1
       const childFundingUtxo: Utxo = {
         txid: 'd2cd'.repeat(16),
@@ -299,13 +299,14 @@ describe('StatefulContract.deployFrom()', () => {
       };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // C2 always co-spends a proof node (HEAD for the first insert), so funding follows the entry slot.
+      // vmap always co-spends a proof node (HEAD for the first insert), so funding follows the entry slot.
       const create3Abi = create3FactoryArtifact.abi.find((f) => f.name === 'create3')!;
+      expect(create3Abi.blockLayout?.slots.some((s) => s.kind === 'deployDataNft')).toBe(true);
       const requiredNftCount = create3Abi.requiredNftIndices?.length
         ?? create3FactoryArtifact.stateLayout!.dataNftCount;
-      const fundingInputIndex = 2 + requiredNftCount; // master + data NFTs + C2 predecessor
+      const fundingInputIndex = 2 + requiredNftCount; // master + data NFTs + vmap predecessor
 
-      const attempt = StatefulContract.deployFrom({
+      const result = await StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'create3',
@@ -317,7 +318,10 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      await expect(attempt).rejects.toThrow('share the first trailing slot');
+      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.tx.txid).toBeDefined();
+      const childState = await result.child.getState();
+      expect(childState.counter).toBe(0n);
     });
   });
 
@@ -341,12 +345,12 @@ describe('StatefulContract.deployFrom()', () => {
       expect(factory.categoryId).toBe(fundingUtxo.txid);
     });
 
-    it('should refuse a typed child deployment with a C2 predecessor proof', async () => {
+    it('should deploy a typed child with a vmap predecessor proof (insert)', async () => {
       const childFundingUtxo: Utxo = { txid: 'e2cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
-      // HEAD fills the C2 proof slot, so funding follows it at input 3.
-      const attempt = StatefulContract.deployFrom({
+      // HEAD fills the vmap proof slot, so funding follows it at input 3.
+      const result = await StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'recreate',
@@ -358,15 +362,16 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      await expect(attempt).rejects.toThrow('share the first trailing slot');
+      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.tx.txid).toBeDefined();
     });
 
-    it('should refuse a typed child deployment with a C2 update shape', async () => {
+    it('should deploy a typed child with a vmap update shape', async () => {
       const childFundingUtxo: Utxo = { txid: 'e3cd'.repeat(16), vout: 0, satoshis: 100000n };
       await provider.addUtxo(p2pkh.address, childFundingUtxo);
 
       // Entry now exists: it takes the entry slot, funding shifts to the deploy slot (index 3)
-      const attempt = StatefulContract.deployFrom({
+      const result = await StatefulContract.deployFrom({
         provider,
         factory,
         deployFunctionName: 'recreate',
@@ -378,7 +383,8 @@ describe('StatefulContract.deployFrom()', () => {
         funder: p2pkh.unlock.spend(alicePub, new SignatureTemplate(alicePriv)),
         changeAddress: p2pkh.address,
       });
-      await expect(attempt).rejects.toThrow('share the first trailing slot');
+      expect(result.child.categoryId).toBe(childFundingUtxo.txid);
+      expect(result.tx.txid).toBeDefined();
     });
   });
 

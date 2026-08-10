@@ -84,7 +84,7 @@ describe('StatefulFunctionCall.staticCall() - with arguments', () => {
   });
 });
 
-// The realistic EA getJob(id) shape: a view returning a struct read from a (C2-default) mapping. Requires a real
+// The realistic EA getJob(id) shape: a view returning a struct read from a (vmap-default) mapping. Requires a real
 // deploy so the sorted-mapping HEAD sentinel is auto-minted (setupStatefulUtxos does not create it).
 const MAP_SRC = `pragma solidcash >=0.8.0;
 contract M() {
@@ -95,7 +95,7 @@ contract M() {
 }`;
 
 describe('StatefulFunctionCall.staticCall() - mapping-entry view (EA getJob shape)', () => {
-  it('reads a struct entry from a real-deployed C2 mapping', async () => {
+  it('reads a struct entry from a real-deployed vmap mapping', async () => {
     const { MockNetworkProvider } = await import('../../src/index.js');
     const art = compileString(MAP_SRC, { forceStateful: true });
     const provider = new MockNetworkProvider();
@@ -137,7 +137,7 @@ describe('callStatic namespace (ethers v5 sc.callStatic.fn)', () => {
 });
 
 describe('StatefulFunctionCall.staticCall() - missing mapping key (Solidity parity)', () => {
-  it('returns the zero-struct for an absent key (C2 exclusion-proof read)', async () => {
+  it('returns the zero-struct for an absent key (vmap exclusion-proof read)', async () => {
     const { MockNetworkProvider } = await import('../../src/index.js');
     const art = compileString(MAP_SRC, { forceStateful: true });
     const provider = new MockNetworkProvider();

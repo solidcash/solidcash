@@ -18,8 +18,8 @@ historical rule. `helpers.ts` only centralizes compiler imports and does not alt
 
 An audit of the 1,111 tests found little exact duplication. Two confirmed redundancies remain as cleanup targets:
 
-- `yul-evm.test.ts` has two identical mapping-entry low-level-call tests. The second is labelled C2-default but
-  currently passes the same compiler options as the first; remove it or make it exercise C2 explicitly.
+- `yul-evm.test.ts` has two identical mapping-entry low-level-call tests. The second is labelled vmap-default but
+  currently passes the same compiler options as the first; remove it or make it exercise vmap explicitly.
 - `storage-collections.test.ts` compiles the same bytes-element-delete source twice in one test. The initial
   `contractName` assertion is redundant because the following bytecode comparison already proves compilation.
 

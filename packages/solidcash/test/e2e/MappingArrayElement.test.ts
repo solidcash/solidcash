@@ -1,6 +1,6 @@
 import { compileString as _csRawSolidc } from 'solidc';
 
-// Asserts fixed-array element surgery through the mandatory C2 entry layout.
+// Asserts fixed-array element surgery through the mandatory vmap entry layout.
 const compileString = (s: string, o: Record<string, unknown> = {}): ReturnType<typeof _csRawSolidc> =>
   _csRawSolidc(s, o);
 import { binToHex, hexToBin } from '@bitauth/libauth';

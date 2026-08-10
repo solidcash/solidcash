@@ -328,6 +328,14 @@ contract Test(pubkey owner) {
 }
 `;
 
+// BCH_2025_05 predates the bounded-int opcodes used to normalize `int`/`uint` parameters.
+// Keep this fixture on BCH-native bigint arithmetic so the legacy-VM debugging test exercises
+// logging itself rather than failing on an opcode that is intentionally unavailable on that VM.
+const CONTRACT_TEST_CONSECUTIVE_LOGS_LEGACY = CONTRACT_TEST_CONSECUTIVE_LOGS.replace(
+  'sig ownerSig, int num',
+  'sig ownerSig, bigint num',
+);
+
 const CONTRACT_TEST_MULTIPLE_LOGS = `
 contract Test(pubkey owner) {
   function transfer(sig ownerSig, int num) {
@@ -376,6 +384,7 @@ export const artifactTestMultilineRequires = compileString(CONTRACT_TEST_MULTILI
 export const artifactTestZeroHandling = compileString(CONTRACT_TEST_ZERO_HANDLING);
 export const artifactTestLogs = compileString(CONTRACT_TEST_LOGS);
 export const artifactTestConsecutiveLogs = compileString(CONTRACT_TEST_CONSECUTIVE_LOGS);
+export const artifactTestConsecutiveLogsLegacy = compileString(CONTRACT_TEST_CONSECUTIVE_LOGS_LEGACY);
 export const artifactTestMultipleLogs = compileString(CONTRACT_TEST_MULTIPLE_LOGS);
 export const artifactTestMultipleConstructorParameters = compileString(CONTRACT_TEST_MULTIPLE_CONSTRUCTOR_PARAMETERS);
 export const artifactTestRequireInsideLoop = compileString(CONTRACT_TEST_REQUIRE_INSIDE_LOOP);

@@ -19,23 +19,23 @@ type SplitOptions = NonNullable<Parameters<typeof compileStringSplitRaw>[1]>;
 export const compileFile = (
   sourcePath: Parameters<typeof compileFileRaw>[0], options: FileOptions = {},
 ): ReturnType<typeof compileFileRaw> => compileFileRaw(sourcePath, {
-  messageBus: false, ...options,
+  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileString = (
   source: string, options: StringOptions = {},
 ): ReturnType<typeof compileStringRaw> => compileStringRaw(source, {
-  messageBus: false, ...options,
+  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringMulti = (
   source: string, options: MultiOptions = {},
 ): ReturnType<typeof compileStringMultiRaw> => compileStringMultiRaw(source, {
-  messageBus: false, ...options,
+  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });
 
 export const compileStringSplit = (
   source: string, options: SplitOptions = {},
 ): ReturnType<typeof compileStringSplitRaw> => compileStringSplitRaw(source, {
-  messageBus: false, ...options,
+  messageBus: false, enforceFinalRequire: false, allowUnsafeOperations: true, ...options,
 });

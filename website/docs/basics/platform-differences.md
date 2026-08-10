@@ -20,7 +20,7 @@ would.
 | Integer encoding | 256-bit two's complement | **LE sign-magnitude**; `int`/`uint` are `int256`/`uint256`, `bigint` is arbitrary precision |
 | Overflow | checked reverts, `unchecked` wraps | **same** for `int`/`uint`; `bigint` grows (never wraps) |
 | Structural hash | keccak256 | **sha256** for physical slots and event topic0; **real keccak256** for values |
-| Storage | account key-value (`SSTORE`) | **NFT-commitment state**; one spend = one execution |
+| Storage | account key-value (`SSTORE`) | **NFT-commitment state**; mappings use authenticated vmaps; one spend = one execution |
 | Address | 20-byte | **variable-length locking bytecode**; `payable` is a no-op |
 | Memory | big-endian heap | **little-endian on-stack buffer** |
 | Gas | metered | not metered (bytecode and stack size limits instead) |
@@ -115,6 +115,9 @@ This is the deepest difference, and it explains most of the others.
 - **No persistent contract storage.** There is no `SSTORE` key-value store surviving between transactions.
   State lives in **CashToken NFT commitments** carried by the contract's UTXOs. One spend equals one function
   execution, and the "new state" is an output the covenant constrains.
+- **Mappings require proofs.** A transaction author can omit arbitrary UTXOs, so every mapping is a verified
+  mapping (vmap). Reads co-spend either the exact key or the predecessor proving that the key is absent. This
+  preserves Solidity's unset-key default without trusting the transaction builder.
 - **No re-entrancy and no call stack.** External calls are not synchronous jumps; they are modelled as
   **co-spent inputs and outputs** pinned by the covenant. A contract cannot be re-entered mid-execution,
   because there is no mid-execution to re-enter. Re-entrancy guards ported from Solidity are harmless but

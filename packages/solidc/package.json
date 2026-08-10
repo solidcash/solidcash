@@ -45,7 +45,10 @@
     "prepare": "yarn rebuild",
     "prepublishOnly": "yarn test && yarn lint",
     "test": "vitest run",
-    "test:fast": "vitest run"
+    "test:hardhat-console": "vitest run --config vitest.hardhat-console.config.ts",
+    "test:fast": "vitest run",
+    "test:changed": "vitest run --changed --passWithNoTests",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@bitauth/libauth": "^3.1.0-next.8",

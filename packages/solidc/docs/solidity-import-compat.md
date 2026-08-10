@@ -44,8 +44,9 @@ type error, or fills in a Solidity-equivalent default) - so they now apply to ev
 - The storage-layout specifier `contract C layout at <expr>` (an EVM base slot, meaningless on the UTXO model) is
   dropped at the source level in either mode.
 - A spending path that performs no `require()`/verification and changes no state compiles to an
-  unconditionally-spendable script. This is a **warning** by default; pass `enforceFinalRequire: true` to turn
-  it back into a hard `FinalRequireStatementError` (e.g. for CI). A `selfdestruct` function with no `require()`
+  unconditionally-spendable script. This is a hard `FinalRequireStatementError` by default; explicitly pass
+  `enforceFinalRequire: false` (or CLI `--allow-unverified-paths`) only when that behavior is intentional. The
+  compiler still warns under the opt-out. A `selfdestruct` function with no `require()`
   stays a hard error regardless - it skips all covenant codegen, so a missing guard lets any caller trigger the
   destruction.
 - Empty `receive()`/`fallback()` synthesize a state-preserving no-op spend path (`require(true)`), with a warning.

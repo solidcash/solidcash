@@ -21,6 +21,9 @@ export interface CompilerOptions {
   // (FinalRequireStatementError) rather than the default warning. Such a path compiles to an
   // unconditionally-spendable script; enable this to enforce that every path is guarded (e.g. in CI).
   enforceFinalRequire?: boolean;
+  // Permit compiler-detected caller-controlled delegatecall/selfdestruct authority. Defaults to false; this
+  // exists only as an explicit migration/testing escape hatch for contracts that knowingly accept takeover.
+  allowUnsafeOperations?: boolean;
   commitmentLimit?: number;
   // EVM byte-parity mode for the abi.* family (temporary gate; to be dropped once parity is green). Under
   // evmCompat, abi.encode/encodePacked emit EVM-faithful bytes: 32-byte big-endian two's-complement words.
@@ -331,12 +334,19 @@ export interface FunctionDebugInformation {
   logs: readonly LogEntry[];
 }
 
+/** Debug metadata for bytecode entered through OP_INVOKE, keyed by its script-number identifier. */
+export interface InvokeDebugInformation extends FunctionDebugInformation {
+  bytecode: string;
+  name?: string;
+}
+
 export interface DebugInformation {
   bytecode: string; // unlike `bytecode` property above, this is a hex-encoded binary string
   sourceMap: string; // see documentation for `generateSourceMap`
   logs: readonly LogEntry[]; // log entries generated from `console.log` statements
   requires: readonly RequireStatement[]; // messages for failing `require` statements
   functionDebug?: Record<string, FunctionDebugInformation>; // per-function debug info keyed by selector hex
+  invokeDebug?: Record<string, InvokeDebugInformation>; // nested OP_INVOKE bodies keyed by function id
 }
 
 export interface LogEntry {

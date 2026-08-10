@@ -5,11 +5,7 @@ import {
 } from '../../src/index.js';
 import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 
-const missingCallFailure = [
-  'messageBus: BCH-2026 preflight failed at input 0:',
-  'Program called an OP_SPLIT operation with an invalid index.',
-  'stack item length: 1; requested split index: 4.',
-].join(' ');
+const missingCallFailure = 'messageBus: BCH-2026 preflight failed at input 0:';
 
 // =============================================================================
 // Contract Sources
@@ -162,9 +158,12 @@ describe('Low-Level Address Call (.call and .staticcall as address members)', ()
       expect(forwardFn!.lowLevelCalls!.length).toBe(1);
       expect(forwardFn!.lowLevelCalls![0].callMode).toBe('call');
 
-      // _callInputIndex eliminated for stateful - block layout provides offset
+      // Stateful address.call uses a runtime __internal__callInputIndex (multi-UTXO callees trail
+      // the caller's dynamic region). Fixed lowLevelCall layout slots are reserved for delegatecall.
       expect(forwardFn!.blockLayout).toBeDefined();
-      expect(forwardFn!.blockLayout!.slots.some((s: any) => s.kind === 'lowLevelCall')).toBe(true);
+      expect(forwardFn!.inputs.some((i: any) => i.name === '__internal__callInputIndex'
+        || i.name?.startsWith('__internal__callInputIndex'))).toBe(true);
+      expect(forwardFn!.blockLayout!.slots.some((s: any) => s.kind === 'lowLevelCall')).toBe(false);
     });
 
     it('STATEFUL_TARGET compiles without lowLevelCalls', () => {

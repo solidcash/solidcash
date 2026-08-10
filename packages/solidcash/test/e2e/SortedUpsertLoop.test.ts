@@ -12,7 +12,7 @@ const WRONG_BALANCE_PREFLIGHT = new RegExp(
   '^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\\.$',
 );
 
-// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (the multitransfer CREDIT half to EXISTING recipients). Each
+// Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (the multitransfer CREDIT half to EXISTING recipients). Each
 // iteration co-spends k[i]'s OWN entry at input[master+blockSize+i], verifies its slot == keyToSlot(k[i]), and mints
 // the updated entry (oldValue op v[i]) at output[master+blockSize+i]. 1:1 co-spend/mint, source order = counter order
 // (no permutation); the covenant binds each credit to keyToSlot(k[i]) AND to v[i], and pins entry-input-count ==
@@ -49,10 +49,14 @@ const SRC = `contract Token() {
     require(checkSig(s, pk));
     for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = 42; }
   }
+  function setIndex(int[] accounts, pubkey pk, sig s) {
+    require(checkSig(s, pk));
+    for (int i = 0; i < accounts.length; i++) { this.bal[accounts[i]] = i; }
+  }
   function chk(int a, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(this.bal[a] == exp); }
 }`;
 
-describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existing recipients)', () => {
+describe('vmap diff-key per-iteration UPDATE loop (multitransfer credit to existing recipients)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
@@ -218,7 +222,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(3n)).toBe(0n);
     expect(await valOf(7n)).toBe(0n);
     expect(await valOf(5n)).toBe(0n);
-    // a nullified key reads 0 via chk (require(m[k] == 0)); the nodes stay present-nullified (C2 delete == nullify).
+    // a nullified key reads 0 via chk (require(m[k] == 0)); the nodes stay present-nullified (vmap delete == nullify).
     await fund(contract.address); await expect(call('chk', 7n, 0n)).resolves.toBeDefined();
     await fund(contract.address); await expect(call('chk', 7n, 200n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT); // old value gone
   });
@@ -254,6 +258,22 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
     expect(await valOf(3n)).toBe(42n);
     expect(await valOf(9n)).toBe(42n);
     await fund(contract.address); await expect(call('chk', 3n, 42n)).resolves.toBeDefined();
+  });
+
+  // LOOP-VAR VALUE `m[k[i]] = i`. The range-splice insert loop cannot express this (it assigns one loop-invariant
+  // value to every new node), so it used to fail closed. The per-iteration upsert loop mints each entry separately,
+  // which is exactly the shape a per-iteration value needs. Admitting it is only correct if each key actually
+  // receives ITS OWN index, so pin both distinct values rather than merely asserting it compiles.
+  it('writes the per-iteration loop variable (setIndex([3, 9]) -> 3 = 0, 9 = 1)', async () => {
+    const { contract, valOf, call } = await setup();
+    await fund(contract.address); await call('setBal', 3n, 100n);   // 3 exists -> update
+    await fund(contract.address);
+    await call('setIndex', [3n, 9n]);                               // 3 -> 0 (index 0), 9 new -> insert 1
+    expect(await valOf(3n)).toBe(0n);
+    expect(await valOf(9n)).toBe(1n);
+    await fund(contract.address); await expect(call('chk', 9n, 1n)).resolves.toBeDefined();
+    // Not the other key's index, and not a loop-invariant value applied to both.
+    await fund(contract.address); await expect(call('chk', 9n, 0n)).rejects.toThrow(WRONG_BALANCE_PREFLIGHT);
   });
 
   // SCALAR `+=` DUPLICATE: a fixed-amount airdrop with a duplicate key accumulates the scalar per occurrence (the
@@ -300,7 +320,7 @@ describe('C2 diff-key per-iteration UPDATE loop (multitransfer credit to existin
 
 // The real multitransfer shape: address-keyed balances (mapping(address => int)). Address ARRAY elements are now
 // encoded as their locking bytecode (convertAddressArg), so keyToSlot(recipients[i]) matches the seeded entries.
-describe('C2 address-keyed credit loop (multitransfer to existing address recipients)', () => {
+describe('vmap address-keyed credit loop (multitransfer to existing address recipients)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

@@ -327,7 +327,7 @@ As in Solidity, a mapping is **not iterable** by default. Declaring it `enumerab
 enumerable mapping(address => uint256) balances;
 ```
 
-See [Stateful Contracts](/docs/language/stateful-contracts#mappings) for storage backends and iteration.
+See [Stateful Contracts](/docs/language/stateful-contracts#verified-mappings) for storage backends and iteration.
 
 ## Tuple
 

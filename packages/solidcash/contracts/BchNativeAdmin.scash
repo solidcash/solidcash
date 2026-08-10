@@ -1,0 +1,24 @@
+pragma solidcash >=0.8.0;
+
+import { BchNativeQuarantine } from "./BchNativeQuarantine.scash";
+
+// Optional privileged policy for tokens whose quarantine period must remain
+// mutable. Fixed-policy tokens inherit BchNative alone and expose no admin.
+abstract contract BchNativeAdmin is BchNativeQuarantine {
+    public uint32 quarantineBlocks;
+
+    function _nativeAdmin() internal view virtual returns (address);
+    function _nativeQuarantineBlocks() internal view override returns (uint32) {
+        return this.quarantineBlocks;
+    }
+
+    function _nativeInitialize(uint32 blocks) internal {
+        this.quarantineBlocks = blocks;
+    }
+
+    function setQuarantineBlocks(uint32 blocks) {
+        require(msg.sender == _nativeAdmin());
+        this.quarantineBlocks = blocks;
+        _nativeEmitQuarantineParams(blocks);
+    }
+}

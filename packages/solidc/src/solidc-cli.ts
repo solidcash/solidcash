@@ -30,6 +30,8 @@ program
   .option('--no-message-bus', 'Disable inferred atomic message-bus composition (fails if the contract requires it).')
   .option('-S, --skip-enforce-function-parameter-types', 'Do not enforce function parameter types.')
   .option('-L, --skip-enforce-locktime-guard', 'Do not inject a tx.time guard when tx.locktime is used.')
+  .option('--allow-unverified-paths', 'Allow spending paths with no verification or state covenant (unsafe).')
+  .option('--allow-unsafe-operations', 'Allow detected caller-controlled delegatecall/selfdestruct authority (unsafe).')
   .addOption(
     new Option('-f, --format <format>', 'Specify the format of the output.')
       .choices(['json', 'ts'])
@@ -57,6 +59,8 @@ function run(): void {
   const compilerOptions: CompilerOptions = {
     enforceFunctionParameterTypes: !opts.skipEnforceFunctionParameterTypes,
     enforceLocktimeGuard: !opts.skipEnforceLocktimeGuard,
+    enforceFinalRequire: !opts.allowUnverifiedPaths,
+    allowUnsafeOperations: opts.allowUnsafeOperations,
     // Commander reports true when the default-on `--no-*` option is absent. Leave that implicit so ordinary
     // CLI compilation uses automatic selection rather than turning the absent flag into required mode.
     messageBus: opts.messageBus === false ? false : undefined,

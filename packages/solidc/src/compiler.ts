@@ -91,7 +91,7 @@ import { validateLowLevelCallShapes } from './semantic/LowLevelCallShapes.js';
 import {
   PointerTableExpansion, PointerTableExpansionMap, ProvenLoopCeilingMap,
 } from './semantic/PointerTableBound.js';
-import LowerC2CounterLoops from './semantic/LowerC2CounterLoops.js';
+import LowerVMapCounterLoops from './semantic/LowerVMapCounterLoops.js';
 import LowerInlineAssembly from './semantic/LowerInlineAssembly.js';
 import LowerMemoryModel from './semantic/LowerMemoryModel.js';
 import ValidateDataLocations from './semantic/ValidateDataLocations.js';
@@ -4378,7 +4378,7 @@ function compileResolvedAst(
   ast = ast.accept(new UnrollFixedBoundEntryLoop()) as Ast;
 
   // Canonical dynamic C2 `m[i] = f(i)` loops execute through a hidden SDK-derived slot-order permutation.
-  ast = ast.accept(new LowerC2CounterLoops()) as Ast;
+  ast = ast.accept(new LowerVMapCounterLoops()) as Ast;
 
   // Break/continue expansion (before semantic analysis)
   ast = expandBreakContinue(ast);

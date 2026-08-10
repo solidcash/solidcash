@@ -10,13 +10,13 @@ escrows[escrowId].consensus  = escrow.consensus;
 escrows[escrowId].claimed    = 1;
 ```
 
-Each `m[k].f = v` on a C2 (sorted) mapping compiles to a FULL entry read-modify-write via `emitSortedValueUpsert`
+Each `m[k].f = v` on a vmap (sorted) mapping compiles to a FULL entry read-modify-write via `emitSortedValueUpsert`
 - read the entry, splice one field, re-chunk, pin, and co-spend the entry UTXO. So three field writes = three whole
 upserts, each carrying the sorted-linked-list covenant machinery. The older entry backend chained consecutive
-same-entry writes (`pendingEntryWrites`), but the initial C2 path did not. The legacy backend has since been removed;
-this document records the coalescing work that brought the mandatory C2 path to read-once/write-once behavior.
+same-entry writes (`pendingEntryWrites`), but the initial vmap path did not. The legacy backend has since been removed;
+this document records the coalescing work that brought the mandatory vmap path to read-once/write-once behavior.
 
-Measured cost (uint256[3]-field struct, C2): one field write ~1111 B; two ~1888 B (each extra field ~+777 B);
+Measured cost (uint256[3]-field struct, vmap): one field write ~1111 B; two ~1888 B (each extra field ~+777 B);
 read-once/write-once ~1213 B. So two fields is -36%, and it grows with the number of fields.
 
 ## Transformation
@@ -47,7 +47,7 @@ gates that make the reorder observationally identical:
   entry; skipped (left as individual writes).
 - **No value has side effects** (no call / instantiation / assignment expression) - pure values are order-independent.
 
-Plus: same collection (a `sorted`/C2 struct-valued mapping), keys structurally equal across the run and side-effect
+Plus: same collection (a `sorted`/vmap struct-valued mapping), keys structurally equal across the run and side-effect
 free (a stable entry), and only whole-field writes (`keys.length == keyCount`; array-ELEMENT writes `m[k].a[i]=v` are
 left alone). Runs of >= 2 writes coalesce.
 

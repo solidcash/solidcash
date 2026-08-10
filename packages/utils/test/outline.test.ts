@@ -45,6 +45,32 @@ describe('cross-function bytecode outlining', () => {
     expect(result.savedBytes).toBe(0);
   });
 
+  // The third parameter used to be a `candidateLimit`/`maximumRounds` search bound; it is now `peekIdPushBytes`,
+  // which reports the encoded push width of the NEXT identifier so the cost model is exact rather than costing
+  // every site at the widest identifier a helper can need. Passing a number here silently produced
+  // "peekIdPushBytes is not a function" at runtime, which is what a stale call site looks like.
+  it('costs sites against the caller-reported identifier width', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    // A one-byte identifier is the cheapest a site can be, so sharing stays profitable and still happens.
+    expect(outlineSharedSpans(source, allocateId, () => 1).functions.length).toBeGreaterThan(0);
+    // Costing every site at an absurd identifier width makes no candidate profitable, so nothing is shared.
+    expect(outlineSharedSpans(source, allocateId, () => 1_000).functions).toEqual([]);
+  });
+
+  it('allows the compiler to probe a narrower minimum without changing the conservative default', () => {
+    const eleven = REPEATED.slice(0, 11);
+    const source = [body([...eleven, ...FILLER]), body([...FILLER, ...eleven])];
+    expect(outlineSharedSpans(source, allocateId, () => 1).functions).toEqual([]);
+    expect(outlineSharedSpans(source, allocateId, () => 1, 'savings', 11).functions).toHaveLength(1);
+  });
+
+  it('allows a bounded candidate-group probe without changing the default', () => {
+    const source = [body([...REPEATED, ...FILLER]), body([...FILLER, ...REPEATED])];
+    const bounded = outlineSharedSpans(source, allocateId, () => 1, 'savings', 12, 1);
+    expect(bounded.functions.length).toBeGreaterThan(0);
+    expect(bounded.savedBytes).toBeGreaterThan(0);
+  });
+
   it('keeps a conditional whole rather than stranding its OP_ELSE', () => {
     // The repeated run sits between OP_IF and OP_ELSE. A depth-only balance check would happily share
     // "<run> OP_ELSE <run>" - depth never moves - and the invoked body would abort with "OP_ELSE outside of a
@@ -104,5 +130,49 @@ describe('cross-function bytecode outlining', () => {
     }
     // Instructions before the shared span keep their position.
     expect(first.indexMap[0]).toBe(0);
+  });
+
+  it('does not retain one-invoke aliases after multi-round outlining', () => {
+    const repeatedBlock: Script = [...REPEATED, ...FILLER, ...REPEATED, ...FILLER];
+    const result = outlineSharedSpans([
+      body([...repeatedBlock, Op.OP_2DROP, ...repeatedBlock]),
+      body([...FILLER, ...repeatedBlock, Op.OP_NIP, ...repeatedBlock]),
+    ], allocateId);
+    const key = (id: Uint8Array): string => [...id].join(',');
+    const ids = new Set(result.functions.map((fn) => key(fn.id)));
+    for (const fn of result.functions) {
+      const isAlias = fn.script.length === 2 && fn.script[1] === Op.OP_INVOKE
+        && fn.script[0] instanceof Uint8Array
+        && ids.has(key(fn.script[0]));
+      expect(isAlias).toBe(false);
+    }
+  });
+
+  // PARAMETERIZED sharing is DISABLED as unsound (see `outline.ts`, and `8c727b03f`): it parks per-site operands
+  // on the altstack, and because outlined bodies re-enter the corpus on later rounds, a nested parameterized
+  // helper can retrieve the wrong altstack value - observed as "OP_INVOKE an undefined function identifier" on
+  // ChainedPush. This row therefore pins that it does NOT happen. Restore the assertions below, and this title,
+  // if the nesting proof lands and the feature is re-enabled.
+  it('does NOT share straight-line spans whose pushed constants differ (parameterization is disabled)', () => {
+    const operations: Script[] = [
+      [Op.OP_ADD, Op.OP_SWAP, Op.OP_SUB, Op.OP_OVER, Op.OP_BOOLAND, Op.OP_ROT, Op.OP_BOOLOR, Op.OP_TUCK],
+      [Op.OP_NUMEQUAL, Op.OP_NIP, Op.OP_LESSTHAN, Op.OP_DROP, Op.OP_SHA256, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+      [Op.OP_HASH160, Op.OP_OVER, Op.OP_GREATERTHAN, Op.OP_NIP, Op.OP_SHA1, Op.OP_SWAP, Op.OP_ADD, Op.OP_TUCK],
+      [Op.OP_HASH256, Op.OP_ROT, Op.OP_NUMNOTEQUAL, Op.OP_DROP, Op.OP_RIPEMD160, Op.OP_DUP, Op.OP_CAT, Op.OP_SIZE],
+    ];
+    const parameterized = (offset: number): Script => operations.flatMap((segment, index) => [
+      Uint8Array.of(offset + index + 17), ...segment,
+    ]);
+    const result = outlineSharedSpans([
+      body(parameterized(0)),
+      body(parameterized(32)),
+    ], allocateId);
+
+    expect(result.functions.find((fn) => fn.script.includes(Op.OP_TOALTSTACK))).toBeUndefined();
+    // And no helper parks operands on the altstack by any other route, which is the property that made it unsound.
+    for (const fn of result.functions) {
+      expect(fn.script).not.toContain(Op.OP_TOALTSTACK);
+      expect(fn.script).not.toContain(Op.OP_FROMALTSTACK);
+    }
   });
 });

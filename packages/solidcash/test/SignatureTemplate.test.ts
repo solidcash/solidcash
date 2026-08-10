@@ -33,6 +33,17 @@ describe('SignatureTemplate', () => {
       expect(fromWif.privateKey).toEqual(alicePriv);
       expect(fromPriv.privateKey).toEqual(alicePriv);
     });
+
+    it('rejects unknown sighash flag bits', () => {
+      expect(() => new SignatureTemplate(alicePriv, 0x41 as HashType))
+        .toThrow('Invalid hash type flags: unknown bits 0x40');
+    });
+
+    it('rejects the contradictory UTXOS and ANYONECANPAY combination', () => {
+      const invalid = HashType.SIGHASH_ALL | HashType.SIGHASH_UTXOS | HashType.SIGHASH_ANYONECANPAY;
+      expect(() => new SignatureTemplate(alicePriv, invalid))
+        .toThrow('SIGHASH_UTXOS and SIGHASH_ANYONECANPAY cannot be combined');
+    });
   });
 
   describe('generateSignature', () => {

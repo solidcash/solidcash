@@ -1,6 +1,6 @@
 # Proving non-existence for mappings on BCH (research)
 
-Design research behind finding C2 (`mapping-omission-security.md`). C2 is that a negative guard
+Design research behind finding vmap (`mapping-omission-security.md`). vmap is that a negative guard
 (`require(!m[k])`) is bypassable: a spender omits an existing entry NFT, the covenant reads the type default,
 the guard passes. This doc records *why* it is hard, what the resource envelope allows, the contention wall, and
 a brainstorm of non-existence-proof techniques with a decision matrix.
@@ -59,7 +59,7 @@ the covenant code (baked), not in a UTXO** - because any committed UTXO must be 
 - read-heavy sound flags -> bake the commitment (writes become rare covenant upgrades);
 - write-heavy sound sets -> per-UTXO structures (parallel writes, but reads spend);
 - you cannot have contention-free reads *and* contention-free frequent writes for one globally-consistent sound
-  set. That corner is a property of the UTXO model, the same "no free global state" fact that created C2.
+  set. That corner is a property of the UTXO model, the same "no free global state" fact that created vmap.
 
 **Design principle: separate code from data.** But the baked commitment above *mixes state into the covenant
 code*, and that is rejected. The master UTXO is **code + identity**; all set state is **data** in its own UTXOs.
@@ -173,7 +173,7 @@ A set that is **frequently written, frequently read, and globally consistent** (
 enforced live on every transfer) has **no contention-free sound analog on UTXO** - you must relax one axis:
 accept contention (mutable root), accept staleness (baked/epoch commitment), shard (bounded parallelism), or
 change semantics (positive capabilities). This is not a gap in any single design; it is the UTXO model's lack of
-free global consistent state - the same root cause as C2 itself.
+free global consistent state - the same root cause as vmap itself.
 
 **Compiler role:** don't ship one structure as "the fix." Detect the guard's access pattern (or take an
 annotation) and require/select the matching representation - nullifier, baked filter, sorted list, or Merkle -

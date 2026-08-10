@@ -36,7 +36,70 @@ Read the error message to see which line in the SolidCash contract causes the tr
 
 ### Console Logging
 
-To help with debugging you can add `console.log` statements to your SolidCash contract file to log variables. This way you investigate whether the variables have the expected values when they get to the failing `require` statement in the SolidCash file. After adding the `console.log` statements, recompile your contract so they are added to your contract's Artifact.
+To help with debugging, add `console.log` statements to a contract to inspect literals and variables when execution reaches a particular line:
+
+```solidity
+function withdraw(int requested, int available) {
+    console.log("requested:", requested, "available:", available);
+    require(requested <= available);
+}
+```
+
+Recompile the contract after adding a log statement. Logging information is stored in the artifact and the SDK prints it during local debug evaluation. A log statement emits no Bitcoin Script instructions, does not increase the deployed contract size, and has no effect during regular network execution.
+
+You can assert logged output in Vitest or Jest with the [`toLog` matcher](/docs/sdk/test-matchers#console-log-matcher):
+
+```ts
+await expect(transaction).toLog(/requested: 10 available: 20/);
+```
+
+#### Hardhat `console.sol` compatibility
+
+Solidity contracts ported from an EVM project can keep their Hardhat console import. SolidCash treats `hardhat/console.sol` as a compiler-provided debugging module, so Hardhat does not need to be installed and the import resolver does not read a file from `node_modules`.
+
+Both common Solidity import forms are supported:
+
+```solidity
+import "hardhat/console.sol";
+import { console } from "hardhat/console.sol";
+```
+
+Hardhat implements its console library by ABI-encoding each call and making a `staticcall` to a reserved EVM address. The Hardhat development network recognizes that address and prints the decoded payload. Bitcoin Cash has no equivalent reserved address, so SolidCash maps these calls to its artifact-based debugger instead. The resulting BCH contract bytecode remains unchanged.
+
+SolidCash supports the complete public function surface from Hardhat's `console.sol`:
+
+| Function | Supported arguments |
+| --- | --- |
+| `console.log()` | No arguments |
+| `console.log(...)` | Every Hardhat overload of one to four `uint`, `string`, `bool`, or `address` values |
+| `console.logInt(value)` | One `int` value |
+| `console.logUint(value)` | One `uint` value |
+| `console.logString(value)` | One `string` value |
+| `console.logBool(value)` | One `bool` value |
+| `console.logAddress(value)` | One `address` value |
+| `console.logBytes(value)` | One dynamic `bytes` value |
+| `console.logBytes1(value)` through `console.logBytes32(value)` | One matching fixed-size byte value |
+
+For example, an imported Hardhat contract can retain its existing logging calls:
+
+```solidity
+pragma solidity ^0.8.20;
+
+import "hardhat/console.sol";
+
+contract Vault {
+    function withdraw(uint amount, address recipient) external {
+        console.log("withdraw", amount, recipient);
+        console.logUint(amount);
+        console.logAddress(recipient);
+        require(amount > 0);
+    }
+}
+```
+
+:::note
+Console output is development metadata, not an on-chain event. Use [events](/docs/language/events-errors) when applications need durable, transaction-level logs.
+:::
 
 ### Bitauth IDE
 
@@ -79,4 +142,3 @@ OP_ENDIF                               /* }                                     
 ```
 
 [BitauthIDE]: https://ide.bitauth.com/import-template/eJzFWAtv2zYQ_isCN2BJ4drUW8raAK3jNkbSJEvcFUMdGBR1stXakidRWYIg--07SrIk23LgDhlGBKEiHu-7x3fUMY_k55TPYMHIEZkJsUyPer3Qh64XCpaJWZfHi558gEiEnIkwjl4LWCznTMDrO9ot9na_pXFEOsSHlCfhUkqhuuFiGScCfCVI4oXCWTorVlEwYgtAiT6-u8nfKR8hgoRJ6RPwsuk0jKbKqATCDWm2LJSRo6_kff90olHNnFCT3HbIHSRpjkg7RJopQkjJ0SMZJSxKA0i-hGI2ChcQZ2ISRstM0MmSJWiBwI1ScN3sfhyJhHGh8ARyhxUWoQ9ZxPM_GlsrP1qQlIMcSvmJHkrzc_2pNL7NqnnMv6NU25JYNzyLclnpNUtC5s0LV1OIfEhuwum2O-N6cUxq65U4qH0akxJmTGqnap0dIh6W8tUZPJCnTrmyG2oTR8zCVOFlWDcBau1f2HwO4oQJJkES4OEyxHy24VSLe0LVynaglf63YVWh2QtppWgHzirkmE8f7rfhymqoMpOLKSJW4B54lpdCCbShqRUPR4N77RXRTjAUXrI0hZ2U3dgGd2yeyVK93YxEWyHgaq_XZF1beY2jNxUF5TkTxUkyScNpxESWQBfdnOBeVJ1O5HMm7uP0WEG9KDOOxhE-bYQxjKqEofL1AOY7w0gob5U36vFYnmZFKNL2-i5q9qm9aFchlDMeZKMiM0stnenas6fGVoRaZDBavDqi4igVScZFnKxHroxs0yt671KfUh2de1PVQy6wzLzv8FDIUN0JTNM0HN8OdF91dA6e5wDYNtWtAMAzqBMYzKQ6DTzDsWzVtkzX81zDCMDEZX5cJW5buaY6vqFalmq5mouPGlcD29JBM3QwPNPjuh84oOIyZcw1dU-1mQVUc6lmaWbg0uMys96DAB77MI6U_UbvlbJM2HTBGh8i5W_aVdUu_XVPHc3xqvcj0C86fgy64koLlQ7K5BTp6qxyVbGjk3On5NKh8vgvvMZcXcOfWZhArfaXVKnqWJ5tCyb4bB-vL68muoK_rob9MzlT-evi86fBb5_fncvn4YcGdFX9ovT8AFFrK_BYkS7tMUpoQyJcX56fF_NITv3TQf_sZvhxw2s5ksLtA-yQ-HcEO2gid2o7Dg-f4V8JfTG8UramwfnNYDvgT_t4tK_Xe4r-vwzPp5pmq--OnCW7PMk8hlnw80au4PpOCjZptsq12qTZ74Pr4Yc_GtA1zcqikiyrvlx7UmwX9M2Xd1dNnpXoz9Gsgu6UVjxLsDXoNbTzy_7ZaPhpUDvcDHgTWtx382Afv63Oiv2P1BJaO7m-vCqCvXP8FwyXdXRxUpwbzwyEfjHYFfSeoi9fXKRoCyHCK0S8b2NYdXgoXjYwg_JV26dFaW3_1pvddxG2tQzveKCU2mUZ_TUDWZOyvS4_00XvW3SHsiftSk2ywUVTVo1AfQtCxS_RaZC1Kwh5ic6INO4ZZNWOke1LAVFlY8mzJEHs97KJPIVwOsNd2vprGWtypNqGhViaa3QIfr7zhC6T8A4zc1b-2bgfEstwLddjhqepaJvuO6pl2hq1uUZdz0HjTUvXLIeCYXsAGmO2a_HA9j3K8YfbJL9V5N9UxotMPpI8yfKy8EhkUx5j3zAsnEGjVm9G9Z5TbMLQFgBuBa5lqrYWcNc3HGrqAQ-Au6aqqtRmjgm6r_nUU33VBWmyjUmjlu5z3fAC2S_jIQQRh4ts4cnkGxgH17LzaBQdPHbg7yuWfCXpPBbk9gkvKnJR5CHUTIqjsHTlx9ZWYlvMVQ1HM1Xug61xmfvA9wPbMTBArmcyZpgOhs-2ASzHYTLjkthww0ScIqMxWdRFpKfmvy00WY1xlnC4fA5-ZXmbSsNxnm4xL_8AUE0PwQ==
-

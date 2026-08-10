@@ -502,6 +502,50 @@ describe('inlines internal value helpers that make an EXTERNAL contract call (OZ
   });
 });
 
+describe('direct external call through an interface-valued state mapping', () => {
+  it('resolves the mapping value ABI before public-getter symbol shadowing', () => {
+    const src = 'interface IStrategy { function exit(uint256 balance) external returns (int256); }'
+      + ' contract C { mapping(address => IStrategy) public strategy;'
+      + ' function f(address token, uint256 balance) public {'
+      + ' int256 change = strategy[token].exit(balance); require(change == change); } }';
+    expect(compileString(src, { solidityImportCompat: true }).contractName).toBe('C');
+  });
+});
+
+describe('native lowering of canonical Solidity self batches', () => {
+  it('publishes batch(bytes[],bool) as an ordered local-route SDK alias', () => {
+    const artifact = compileString('contract C { uint public x; function set(uint v) public { x = v; }'
+      + ' function batch(bytes[] calldata calls, bool revertOnFail) external payable'
+      + ' returns (bool[] memory successes, bytes[] memory results) {'
+      + ' successes = new bool[](calls.length); results = new bytes[](calls.length);'
+      + ' for (uint i = 0; i < calls.length; i++) {'
+      + ' (bool success, bytes memory result) = address(this).delegatecall(calls[i]);'
+      + ' require(success || !revertOnFail); successes[i] = success; results[i] = result; } } }',
+    { solidityImportCompat: true });
+    expect(artifact.abi.find((fn) => fn.name === 'batch')?.nativeSelfBatchDispatcher).toBe(true);
+  });
+});
+
+describe('conditionally evaluated external-read helpers', () => {
+  it('beta-reduces a named-return helper inside a short-circuit RHS without hoisting it', () => {
+    const src = 'interface I { function balanceOf(address a) external view returns (uint); }'
+      + ' contract C { mapping(I => uint) public held;'
+      + ' function _balance(I token) internal view returns (uint amount) {'
+      + ' amount = token.balanceOf(address(this)) + held[token]; }'
+      + ' function f(I token, bool skip, uint total) public view {'
+      + ' require(skip || _balance(token) >= total); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
+describe('cast-wrapped low-level call targets', () => {
+  it('pins address(local).call(data) to the live local locking bytecode', () => {
+    const src = 'contract C { function f(address a, address b, bool pickA, bytes calldata data) public {'
+      + ' address target = pickA ? a : b; (bool ok,) = address(target).call(data); require(ok); } }';
+    expect(() => compileString(src, { solidityImportCompat: true })).not.toThrow();
+  });
+});
+
 // A low-level `.call`/`.staticcall`/`.delegatecall` on a struct-FIELD address receiver (`t.dest.call(..)`) was
 // rejected: resolveLowLevelReceiverType missed a state-var base (StateAccessNode) and a mapping collection base
 // (collectionMap), so it fell through to the interface path (MethodCallNotSupported); and the field receiver was
@@ -639,11 +683,11 @@ describe('synthesizes __extaddr for IFoo(<param-rooted field>).method() (caller-
 // `arbitratorFee` and the field `a.arbitratorFee` collide; the catch-all rename corrupted `a.arbitratorFee` ->
 // `a.__rh0_arbitratorFee` -> "Struct has no field __rh0_arbitratorFee". Fixed by skipping FieldAccessNode.name.
 
-describe('C2-default: OVERLOADED internal C2-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
-  // `_approve/3` calls `_approve/4` (which writes the C2 `_allowances`). InlineStoragePointerCalls resolved callees
+describe('vmap-default: OVERLOADED internal vmap-writer chain inlines by (name, arity) (OZ ERC20 _approve/3 -> _approve/4)', () => {
+  // `_approve/3` calls `_approve/4` (which writes the vmap `_allowances`). InlineStoragePointerCalls resolved callees
   // and its recursion guard by NAME only, so the arity-4 call inside `_approve/3` was never inlined yet `_approve`
   // was dropped by name -> "Undefined reference to symbol _approve". Overload-aware (name, arity) resolution fixes it.
-  it('compiles the overloaded _approve chain that writes a nested C2 mapping', () => {
+  it('compiles the overloaded _approve chain that writes a nested vmap mapping', () => {
     const src = 'pragma solidity ^0.8.20; contract Base {'
       + ' mapping(address => mapping(address => uint256)) private _allowances;'
       + ' function _approve(address o, address s, uint256 v, bool e) internal { _allowances[o][s] = v; }'
@@ -760,6 +804,35 @@ describe('loop-body vars are not single-assign (Router02 per-iteration computed 
       + ' IFoo(L.at(factory, path[i])).m(5); } } }', opts);
     const fn = art.abi.find((a) => a.name === 'f');
     expect(fn?.inputs.some((inp) => inp.name.startsWith('__internal__loopTargets'))).toBe(true);
+  });
+  it('supports several calls through one per-iteration interface local', () => {
+    const art = compileString(`pragma solidity 0.6.12;
+      interface IFoo { function a() external view returns (uint); function b() external view returns (uint);
+        function label() external view returns (string memory); }
+      contract C { function f(address[] memory targets) public view returns (uint[] memory out) {
+        out = new uint[](targets.length);
+        for (uint i; i < targets.length; i++) { IFoo target = IFoo(targets[i]);
+          string memory ignored = target.label(); string memory direct = IFoo(targets[i]).label();
+          out[i] = target.a() + target.b() + bytes(ignored).length + bytes(direct).length; }
+      } }`, opts);
+    const fn = art.abi.find((a) => a.name === 'f');
+    // A BCH master UTXO cannot service several view methods in one transaction; the compatibility query receives
+    // one value-witness array per distinct return slot instead of attempting duplicate co-spends.
+    expect(fn?.inputs.filter((inp) => inp.name.startsWith('__internal__viewReturn'))).toHaveLength(3);
+  });
+  it('dispatches an inlined loop-local receiver assigned from an external result', () => {
+    expect(() => compileString(`pragma solidity 0.6.12;
+      interface IPair { function reserve() external view returns (uint); }
+      interface IFactory { function pair(address token) external view returns (IPair); }
+      contract C { IFactory factory;
+        function rate(address token) public view returns (uint) {
+          IPair p; p = factory.pair(token); return p.reserve();
+        }
+        function rates(address[] memory tokens) public view returns (uint[] memory out) {
+          out = new uint[](tokens.length);
+          for (uint i; i < tokens.length; i++) out[i] = rate(tokens[i]);
+        }
+      }`, opts)).not.toThrow();
   });
 });
 
@@ -1436,12 +1509,18 @@ describe('SPDX source-unit identifiers', () => {
     const invalid = [
       '// SPDX-License-Identifier: MIT\n// SPDX-License-Identifier: GPL-3.0\ncontract C {}',
       '/* SPDX-License-Identifier: MIT\\nSPDX-License-Identifier: GPL-3.0 */ contract C {}',
-      '/* SPDX-License-Identifier: MIT */ /* SPDX-License-Identifier: MIT */ contract C {}',
     ];
     for (const source of invalid) {
       expect(() => compileString(source, { solidityImportCompat: true }))
         .toThrow(/Multiple SPDX license identifiers/);
     }
+  });
+
+  it('accepts repeated identical identifiers', () => {
+    expect(compileString(
+      '// SPDX-License-Identifier: MIT\n/* SPDX-License-Identifier: MIT */ contract C {}',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
   });
 
   it('accepts one combined identifier and ignores tag-shaped string contents', () => {
@@ -1456,6 +1535,14 @@ describe('SPDX source-unit identifiers', () => {
     expect(compileString(
       'contract C { /* SPDX-License-Identifier: MIT */ }\n// ----\n'
       + '// Warning: SPDX-License-Identifier: <SPDX-License>',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+
+  it('accepts retained SPDX headers in explicitly flattened source units', () => {
+    expect(compileString(
+      '// SPDX-License-Identifier: MIT\n// File contracts/C.sol\n'
+      + '// SPDX-License-Identifier: GPL-3.0\ncontract C {}',
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });

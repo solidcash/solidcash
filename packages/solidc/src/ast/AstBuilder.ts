@@ -250,7 +250,7 @@ import { getPragmaName, PragmaName, getVersionOpFromCtx } from './Pragma.js';
 import { version } from '../index.js';
 import {
   InvalidArrayBoundError, InvalidDataLocationError, ParseError, StateVariableNameCollisionError,
-  TernaryTypeMismatchError,
+  TernaryTypeMismatchError, NestedSelfdestructError,
   UnsupportedTypeError, VersionError,
 } from '../Errors.js';
 
@@ -466,7 +466,7 @@ export default class AstBuilder
   }
 
   private usesLegacySolidityNow(): boolean {
-    return /pragma\s+solidity\s+(?:\^|~|=)?\s*0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
+    return /pragma\s+solidity\s+(?:[<>=~^]+\s*)?0\.[0-6](?:\.|\s|;)/.test(this.sourceCode);
   }
 
   private usesLegacySolidityDefaultFunctionVisibility(): boolean {
@@ -2072,7 +2072,22 @@ export default class AstBuilder
     // `selfdestruct(addr)` in the body implies the selfdestruct modifier (collapse all state UTXOs, no
     // recreation). The destination is enforced in codegen (visitSelfdestructStatement pins tx.outputs[0] to
     // addr); the SDK's selfdestructTo() routes the freed balance to addr at output 0.
-    if (functionDefinition.body.statements!.some((s) => s instanceof SelfdestructStatementNode)
+    const directSelfdestruct = functionDefinition.body.statements!
+      .some((s) => s instanceof SelfdestructStatementNode);
+    const containsNestedSelfdestruct = (value: unknown, root = true): boolean => {
+      if (value instanceof SelfdestructStatementNode) return !root;
+      if (!(value instanceof Node)) return false;
+      return Object.entries(value).some(([key, child]) => {
+        if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
+        if (child instanceof Node) return containsNestedSelfdestruct(child, false);
+        return Array.isArray(child) && child.some((entry) => containsNestedSelfdestruct(entry, false));
+      });
+    };
+    const nestedSelfdestruct = functionDefinition.body.statements!
+      .some((statement) => !(statement instanceof SelfdestructStatementNode)
+        && containsNestedSelfdestruct(statement));
+    if (nestedSelfdestruct) throw new NestedSelfdestructError(functionDefinition, functionDefinition.name);
+    if (directSelfdestruct
       && !functionDefinition.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
       functionDefinition.modifiers.push(FunctionModifier.SELFDESTRUCT);
       functionDefinition.impliedSelfdestruct = true;
@@ -4443,6 +4458,10 @@ export default class AstBuilder
   visitNullaryOp(ctx: NullaryOpContext): NullaryOpNode {
     const operator = ctx.getText() as NullaryOperator;
     const nullaryOp = new NullaryOpNode(operator);
+    if (this.solidityImportCompat && this.usesLegacySolidityNow()
+      && (operator === NullaryOperator.MSG_SENDER || operator === NullaryOperator.TX_ORIGIN)) {
+      nullaryOp.legacyPayableAddress = true;
+    }
     nullaryOp.location = Location.fromCtx(ctx);
     return nullaryOp;
   }
@@ -4473,6 +4492,8 @@ export default class AstBuilder
       return negated;
     }
     const unaryOp = new UnaryOpNode(operator, expression);
+    unaryOp.legacyWrappingNegation = this.solidityImportCompat
+      && this.usesLegacySolidityNow() && operator === UnaryOperator.NEGATE;
     unaryOp.location = Location.fromCtx(ctx);
     return unaryOp;
   }
@@ -4940,7 +4961,7 @@ export default class AstBuilder
     if (name.startsWith('__internal__')) {
       throw new StateVariableNameCollisionError(name, Location.fromCtx(ctx));
     }
-    // A state var may shadow a solidcash introspection built-in (age/tokens/categoryId/activeInputIndex/
+    // A state var may shadow a solidcash introspection built-in (age/tokens/category/categoryId/activeInputIndex/
     // activeBytecode) - the state var wins in scope (Solidity-like); naming one after a built-in just makes that
     // built-in inaccessible in the contract. (Default; was gated behind solidityImportCompat.)
 
@@ -7041,7 +7062,7 @@ export default class AstBuilder
 
   visitMethodCall(ctx: MethodCallContext): ExpressionNode {
     const object = this.visit(ctx.expression());
-    const methodName = ctx.Identifier()?.getText()
+    const methodName = ctx.anyIdentifier()?.getText()
       ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const parameters = this.buildCallArguments(ctx.expressionList()!);
     const callOpts = this.parseCallOptions(ctx.callOptions());
@@ -7326,7 +7347,20 @@ export default class AstBuilder
       .consoleParameter_list()
       .map((p) => this.visit(p) as ConsoleParameterNode);
 
-    const node = new ConsoleStatementNode(parameters);
+    const callText = ctx.getText().slice(0, ctx.getText().indexOf('('));
+    const method = callText.slice('console.'.length);
+    const hardhatTypedMethod = /^(?:logInt|logUint|logString|logBool|logAddress|logBytes(?:[1-9]|[12][0-9]|3[0-2])?)$/;
+    if (method !== 'log' && !hardhatTypedMethod.test(method)) {
+      throw new ParseError(`Unknown Hardhat console method 'console.${method}'`, Location.fromCtx(ctx));
+    }
+    if (method !== 'log' && parameters.length !== 1) {
+      throw new ParseError(
+        `Hardhat console method 'console.${method}' expects exactly one argument`,
+        Location.fromCtx(ctx),
+      );
+    }
+
+    const node = new ConsoleStatementNode(parameters, method);
     node.location = Location.fromCtx(ctx);
     return node;
   }
@@ -8985,7 +9019,8 @@ export default class AstBuilder
       return wrap(this.visit(lhsCtx) as ExpressionNode);
     }
     const ctx = lhsCtx as MethodCallContext;
-    const method = ctx.Identifier()?.getText() ?? 'length';
+    const method = ctx.anyIdentifier()?.getText()
+      ?? (ctx.getText().includes('.value') ? 'value' : 'length');
     const recvCtx = ctx.expression();
     const loc = Location.fromCtx(ctx);
     const callArgs = this.buildCallArguments(ctx.expressionList());

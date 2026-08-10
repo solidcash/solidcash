@@ -15,7 +15,7 @@ const SRC = `contract C() {
   function checkCell(int k, int i, int j, int exp, pubkey pk, sig s) { require(checkSig(s, pk)); require(grid[k][i][j] == exp); }
 }`;
 
-describe('C2 mapping 2D array-value element write (m[k][i][j] = v)', () => {
+describe('vmap mapping 2D array-value element write (m[k][i][j] = v)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

@@ -82,13 +82,20 @@ contract Token(pubkey admin) {
 }
 ```
 
-:::caution
-Mappings and token containers cannot be accessed in the constructor because no UTXO commitment exists yet at deployment time.
-:::
+Mapping assignments in a constructor are supported. The SDK derives the initial entry outputs while it builds the
+deployment transaction; there is no earlier mapping state for the constructor to read.
 
-## Mappings
+## Verified Mappings
 
-Mappings are key-value stores backed by **entry NFTs** - one NFT per key.
+Every SolidCash mapping is a **verified mapping**, or **vmap** for short. Mapping entries are backed by mutable
+**entry NFTs**, one per key. The entries form an authenticated sorted list, so each read proves one of two things:
+
+- the requested key exists and this is its committed value; or
+- the key is genuinely absent, so Solidity's type-default value is correct.
+
+This matters on a UTXO chain: a transaction author chooses which UTXOs to spend. Without an absence proof, they
+could hide an existing entry and make it appear unset. Vmaps prevent that omission attack automatically; there is
+no source modifier or compiler option to enable them.
 
 ```solidity
 contract Ledger() {
@@ -134,12 +141,14 @@ contract Ledger() {
 }
 ```
 
-This removes the entry NFT for the given key.
+As in Solidity, `delete mapping[key]` assigns the value type's default (`0`, `false`, or empty). The authenticated
+node may remain on chain with that default value; deletion does not mean an unauthenticated physical removal.
 
 ## Mapping Iteration
 
-As in Solidity, a mapping is **not iterable** by default. Declaring it `enumerable` opts into iteration,
-which SolidCash supports in three modes:
+As in Solidity, a mapping is **not iterable in source code** by default. Declaring it `enumerable` enables
+iteration in three modes. It does not change the storage or security model: plain and enumerable mappings are both
+vmaps.
 
 ```solidity
 enumerable mapping(bytes20 => int) public balances;
@@ -184,7 +193,8 @@ contract Ledger() {
 ```
 
 :::tip
-Mapping iteration is compiled to entry NFT enumeration. All entry NFTs for the mapping are included as transaction inputs and iterated at script execution time.
+Mapping iteration follows the authenticated vmap links. All reachable entry NFTs for the mapping are included as
+transaction inputs, and the covenant verifies that the list is complete and correctly ordered.
 :::
 
 ## Dynamic Arrays
@@ -323,7 +333,7 @@ Under the hood, stateful contracts use CashToken NFTs to store state:
 |----------|---------|------------|
 | **Master NFT** | Contract identity and control | `minting` |
 | **Data NFTs** | State variable values (128 bytes each) | `mutable` |
-| **Entry NFTs** | Mapping key-value pairs (one per key) | `mutable` |
+| **Entry NFTs** | Verified mapping nodes: key slot, next link, and value (one per key) | `mutable` |
 | **Event NFTs** | Emitted event records | `mutable` |
 | **Token Container NFTs** | FT/NFT balances per category | `mutable` |
 | **Satoshi Container** | BCH balance (plain UTXO) | N/A |

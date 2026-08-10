@@ -1,0 +1,128 @@
+import { hexToBin } from '@bitauth/libauth';
+import { bytecodeToAsm, bytecodeToScript, sourceMapToLocationData } from '@solidcash/utils';
+import { compileString } from './direct-compile.js';
+
+// These tests inspect the physical route's helper allocation and byte budget.
+// Message-bus route synthesis has its own cost and structure regression suite.
+const DIRECT_ROUTE = { forceStateful: true, messageBus: false } as const;
+
+// Dynamically allocated helper ids render either as a hex push or, when the id came from the single-byte pool
+// (script numbers 1..16 and -1, which push as one opcode), as OP_1..OP_16 / OP_1NEGATE. Both are the same kind
+// of definition; only the encoding differs.
+const compactHelperDefinitions = (asm: string): string[] => (
+  [...asm.matchAll(
+    /(?:^| )((?:8[c-f]|[9a-f][0-9a-f]|[0-9a-f]{4,6})|OP_1[0-6]|OP_[1-9]|OP_1NEGATE) OP_DEFINE(?: |$)/g,
+  )].map((match) => match[1])
+);
+
+describe('general vmap bytecode sharing', () => {
+  it('keeps depth-sensitive sorted-output authentication inline', () => {
+    const artifact = compileString(
+      'contract C { mapping(int=>bool) m; function f(int k) external { m[k]=true; require(true); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    expect(asm).not.toContain('8a OP_DEFINE');
+    // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes), then
+    // again to 1990 when a SINGLE fixed sorted write moved onto the batch path (SymbolTableTraversal). That is
+    // a correctness change, not drift: the old `> 1` gate left a lone vmap insert - ERC20Mock's constructor
+    // `_balances[msg.sender] = supply` - on the scalar path, which carries no batch witnesses and fails
+    // constructor derivation with OP_EQUALVERIFY against an empty key. Verified by reverting the gate to `> 1`,
+    // which returns this contract to its old size. Measured 1952; the ceiling keeps catching further growth.
+    expect(artifact.bytecode.length / 2).toBeLessThan(1990);
+  });
+
+  it('shares a collection-specific entry address across reads and writes', () => {
+    const artifact = compileString(
+      'contract C { mapping(int=>bool) m; function f(int k) external {'
+      + ' require(!m[k]); m[k]=true; require(true); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    // Sharing means one definition reached from both the read and the write, so assert an id that is invoked
+    // more than once rather than a total helper count: outlining the contract-level script adds its own
+    // definitions, and counting all of them stopped saying anything about this collection's entry address.
+    const shared = compactHelperDefinitions(asm)
+      .filter((id) => [...asm.matchAll(new RegExp(`(?:^| )${id} OP_INVOKE(?: |$)`, 'g'))].length >= 2);
+    expect(shared.length).toBeGreaterThanOrEqual(1);
+    // Budget raised by the single-write collection-address output cardinality proof (+28 real bytes).
+    // Raised from 1920 with the same single-write batch-path change described above; measured 2229.
+    expect(artifact.bytecode.length / 2).toBeLessThan(2270);
+  });
+
+  it('shares the authenticated-absence bracket after three reads', () => {
+    const artifact = compileString(
+      'contract C { mapping(int=>bool) m; function f(int a,int b,int c) external {'
+      + ' require(!m[a] && !m[b] && !m[c]); require(true); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    expect(asm).toContain('8b OP_DEFINE');
+  });
+
+  it('shares repeated composite state traversal by structural type', () => {
+    const artifact = compileString(
+      'struct S { int a; int b; string c; address d; int e; } contract C { S[] x;'
+      + ' function f(int i) external { require(x[i].a>=0); x[i].b=2; x[i].e=3; require(true); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    expect(compactHelperDefinitions(asm).length).toBeGreaterThanOrEqual(1);
+    expect(artifact.bytecode.length / 2).toBeLessThan(9300);
+  });
+
+  it('allocates collision-free structural and field-prefix helpers across entry points', () => {
+    const artifact = compileString(
+      'struct S { int a; string b; int c; } struct T { address a; bytes b; bool c; }'
+      + ' contract C { S[] x; T[] y;'
+      + ' function f(int i) external { require(x[i].c>=0); }'
+      + ' function g(int i) external { require(x[i].c>=0); }'
+      + ' function h(int i) external { require(x[i].c>=0 && y[i].c); }'
+      + ' function j(int i) external { require(y[i].c); }'
+      + ' function k(int i) external { require(y[i].c); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(4);
+    expect(new Set(helperIds).size).toBe(helperIds.length);
+    const invokeDebug = (artifact.debug as typeof artifact.debug & {
+      invokeDebug?: Record<string, { bytecode: string; name?: string; sourceMap: string }>;
+    }).invokeDebug ?? {};
+    const helperDebug = Object.values(invokeDebug)
+      .filter((debug) => debug.name?.startsWith('compiler helper') || debug.name?.startsWith('outlined source span'));
+    expect(helperDebug.length).toBeGreaterThanOrEqual(1);
+    for (const debug of helperDebug) {
+      expect(sourceMapToLocationData(debug.sourceMap)).toHaveLength(bytecodeToScript(hexToBin(debug.bytecode)).length);
+    }
+    expect(artifact.bytecode.length / 2).toBeLessThan(3800);
+  });
+
+  it('chains cumulative struct-field prefixes through the nearest smaller helper', () => {
+    const artifact = compileString(
+      'struct S { string a; string b; string c; string d; string e; } contract C { S[] x;'
+      + ' function f(int i) external {'
+      + ' require(x[i].c.length>=0 && x[i].c.length>=0 && x[i].c.length>=0'
+      + ' && x[i].e.length>=0 && x[i].e.length>=0 && x[i].e.length>=0); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(3);
+    expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
+  });
+
+  it('shares repeated variable-width array element extraction', () => {
+    const artifact = compileString(
+      'struct S { int a; string b; int c; } contract C { S[] x;'
+      + ' function f(int i) external { S[] a=x;'
+      + ' require(a[i].c>=0 && a[i].c>=0 && a[i].c>=0); } }',
+      DIRECT_ROUTE,
+    );
+    const asm = bytecodeToAsm(hexToBin(artifact.debug.bytecode));
+    const helperIds = compactHelperDefinitions(asm);
+    expect(helperIds.length).toBeGreaterThanOrEqual(1);
+    expect(helperIds.some((id) => asm.includes(`${id} OP_INVOKE`))).toBe(true);
+    expect(artifact.bytecode.length / 2).toBeLessThan(2800);
+  });
+});

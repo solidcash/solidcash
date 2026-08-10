@@ -7,12 +7,12 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from './fixture/vars.js';
 import { createTestProvider } from './test-util.js';
 
-// A value-returning internal helper doing a C2 (sorted) mapping RMW inside an `unchecked` block - OZ Nonces
+// A value-returning internal helper doing a vmap (sorted) mapping RMW inside an `unchecked` block - OZ Nonces
 // `_useNonce`: `unchecked { return _nonces[owner]++; }` (the EIP-2612 permit nonce). It co-spends the sorted-list
 // entry slots (block layout, only an entry point has one), so it cannot be an OP_INVOKE subroutine; the returning
 // helper is inlined into the entry caller. SOUNDNESS: `return m[k]++` desugars to the SAVE-OLD form
 // (`__t = m[k]; m[k] = __t+1; return __t`), NOT the postval-minus-1 reconstruction (`m[k]=m[k]+1; return m[k]-1`)
-// which re-reads the entry AFTER its write - a C2 entry cannot be read after it is co-spent, so the reconstruction
+// which re-reads the entry AFTER its write - a vmap entry cannot be read after it is co-spent, so the reconstruction
 // OP_VERIFY-fails when inlined. This drives one RMW against a PRE-SEEDED entry and requires the read-old/return-pre/
 // write-new behaviour, for BOTH the helper (inline) and the direct form (baseline).
 const SRC = `contract C() {
@@ -41,7 +41,7 @@ const SRC = `contract C() {
   }
 }`;
 
-describe('value-returning C2 mapping RMW helper (OZ Nonces._useNonce) inlines soundly (save-old)', () => {
+describe('value-returning vmap mapping RMW helper (OZ Nonces._useNonce) inlines soundly (save-old)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
 

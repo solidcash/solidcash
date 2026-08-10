@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { binToHex, encodeTransactionBch, hexToBin } from '@bitauth/libauth';
 import { OpcodesBch2026 as Op } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-opcodes.js';
-import { MockNetworkProvider } from '../src/index.js';
+import { MockNetworkProvider, MOCK_RELAXED_OPERATION_COST } from '../src/index.js';
 import type { ConsensusLimits, NetworkPolicy } from '../src/network/NetworkProvider.js';
 
 /**
@@ -53,7 +53,13 @@ async function sendHashing(
   }
 }
 
-const RELAXED = { hashDigestIterationsPerByte: 10_000_000 };
+// The operation-cost budget is relaxed alongside the hash allowance so this file varies ONE thing. The mock
+// default budget is the real 800 per byte, and a 200-iteration hash loop exceeds it - which would make these
+// rows fail for a reason that has nothing to do with the hash regime they exist to measure.
+const RELAXED = {
+  hashDigestIterationsPerByte: 10_000_000,
+  operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST,
+};
 
 describe('X58 mock hash-regime plumbing reaches mem-cash', () => {
   // POSITIVE CONTROL. Dust enforcement selects mem-cash's standard VM, which reads the standard allowance.

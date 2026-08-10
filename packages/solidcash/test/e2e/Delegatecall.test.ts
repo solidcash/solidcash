@@ -187,7 +187,7 @@ describe('Delegatecall', () => {
   // ========================================================
   describe('Compilation and ABI metadata', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL);
-    const proxyArtifact = compileString(DELEGATECALL_PROXY);
+    const proxyArtifact = compileString(DELEGATECALL_PROXY, { allowUnsafeOperations: true });
 
     it('delegate function should have _proxyMasterIndex in ABI inputs', () => {
       const incrementAbi = implArtifact.abi.find((f) => f.name === 'increment')!;
@@ -265,7 +265,7 @@ describe('Delegatecall', () => {
   // ========================================================
   describe('Proxy + Implementation transaction building', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL);
-    const proxyArtifact = compileString(DELEGATECALL_PROXY);
+    const proxyArtifact = compileString(DELEGATECALL_PROXY, { allowUnsafeOperations: true });
 
     it('should build proxy + impl delegatecall transaction', async () => {
       const provider = createTestProvider();
@@ -362,7 +362,8 @@ describe('Delegatecall', () => {
 
     it('C1/piece-3: pins the delegate identity AND function (wrong impl or selector fails)', async () => {
       const provider = createTestProvider();
-      const pinnedArtifact = compileString(PINNED_PROXY);
+      // This fixture deliberately exercises the lower-level runtime pin with a caller-supplied target.
+      const pinnedArtifact = compileString(PINNED_PROXY, { allowUnsafeOperations: true });
       const proxy = await deploy(provider, pinnedArtifact, [], { counter: 5n });
       const impl = await deploy(provider, implArtifact, [], { counter: 0n });
       const implSelector = hexToBin(implArtifact.abi.find((f) => f.name === 'increment')!.selector!);
@@ -454,7 +455,7 @@ describe('Delegatecall', () => {
   // ========================================================
   describe('Multi-state delegate transaction', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
-    const proxyArtifact = compileString(DELEGATECALL_PROXY_MULTI);
+    const proxyArtifact = compileString(DELEGATECALL_PROXY_MULTI, { allowUnsafeOperations: true });
 
     it('should build multi-state increment via delegate', async () => {
       const provider = createTestProvider();
@@ -551,7 +552,7 @@ describe('Delegatecall', () => {
   // Direct proxy operations (non-delegatecall paths)
   // ========================================================
   describe('Direct proxy operations', () => {
-    const proxyArtifact = compileString(DELEGATECALL_PROXY);
+    const proxyArtifact = compileString(DELEGATECALL_PROXY, { allowUnsafeOperations: true });
 
     it('should build authorize (unsafe) transaction on proxy', async () => {
       const provider = createTestProvider();
@@ -643,7 +644,7 @@ describe('Delegatecall', () => {
   // ========================================================
   describe('Auto-derivation via withDelegatecall', () => {
     const implArtifact = compileDelegateSource(DELEGATE_IMPL);
-    const proxyArtifact = compileString(DELEGATECALL_PROXY);
+    const proxyArtifact = compileString(DELEGATECALL_PROXY, { allowUnsafeOperations: true });
 
     it('should auto-derive single state variable via delegatecall', async () => {
       const provider = createTestProvider();
@@ -689,7 +690,7 @@ describe('Delegatecall', () => {
           function up(bytes input, address impl, pubkey pk, sig s) external {
             require(checkSig(s, pk)); impl.delegatecall(input); require(input.length > 0);
           }
-        }`);
+        }`, { allowUnsafeOperations: true });
       const proxyContract = new Contract(pinnedArtifact, [], { provider });
       const { categoryId: proxyCatId } = await setupStatefulUtxos(
         provider, proxyContract, pinnedArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
@@ -750,7 +751,7 @@ describe('Delegatecall', () => {
 
     it('should auto-derive multi-state via delegatecall', async () => {
       const multiImplArtifact = compileDelegateSource(DELEGATE_IMPL_MULTI);
-      const multiProxyArtifact = compileString(DELEGATECALL_PROXY_MULTI);
+      const multiProxyArtifact = compileString(DELEGATECALL_PROXY_MULTI, { allowUnsafeOperations: true });
 
       const provider = createTestProvider();
       const proxyContract = new Contract(multiProxyArtifact, [], { provider });

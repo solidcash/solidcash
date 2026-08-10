@@ -8,7 +8,7 @@ import { createTestProvider } from '../test-util.js';
 
 // Solidity parity for mapping(K=>bool): `delete m[k]` and `m[k]=false` NULLIFY (assign the default), they do not
 // physically remove the entry (Solidity delete == assign-default; libsolidity storageSetToZero). A sorted bool set
-// is a value mapping (true=0x01 tail, false=empty tail), so a present-false entry reads false and the C2 bracket
+// is a value mapping (true=0x01 tail, false=empty tail), so a present-false entry reads false and the vmap bracket
 // still proves absent keys false - no omittable default. `claimed[k]` reads true only for a present true entry.
 const SRC = `contract C() {
   mapping(int => bool) flag;
@@ -68,7 +68,7 @@ describe('sorted bool mapping nullify (Solidity delete parity)', () => {
     expect(await present(30n)).toBe(true); // delete nullifies, does not remove (matches Solidity)
     await expect(call('needFalse', 30n)).resolves.toBeDefined();
 
-    // An absent key reads false via the C2 bracket (needFalse passes, needTrue reverts) - omission-proof.
+    // An absent key reads false via the vmap bracket (needFalse passes, needTrue reverts) - omission-proof.
     await expect(call('needFalse', 99n)).resolves.toBeDefined();
     await expect(call('needTrue', 99n)).rejects.toThrow(
       /^messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation\.$/,

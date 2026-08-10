@@ -169,23 +169,23 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_3 OP_PICK OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_2OVER OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_2 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_3 OP_PICK OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_2OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_4 OP_PICK OP_SUB OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_3 OP_ROLL OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_DUP OP_5 OP_PICK OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_PICK OP_OVER OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_DROP OP_SWAP OP_2DUP OP_LESSTHAN OP_VERIFY OP_DROP OP_ELSE OP_DUP OP_4 OP_PICK OP_NUMEQUALVERIFY OP_ENDIF OP_DUP OP_4 OP_ROLL OP_ADD OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_NUMEQUAL OP_NIP OP_NIP OP_NIP',
       'source': 'contract IfStatement(int x, int y) {\n    function hello(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x - 2) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            require(d == a);\n        }\n        d = d + a;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895279518a6976528a69755379518a6976528a69757093518a6976528a6976547994518a6976528a6976537a52949c6376557993518a6976528a6954797893518a6976528a697b757c6e9f6975677654799d6876547a93518a6976528a69537a9c777777',
-        'sourceMap': '1::15:1;;;;;;2:19:2:24;;;;;;;;;;:26::31;;;;;;;;;;3:16:3:21;::::1;;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
+        'bytecode': '0c765102ff008d93012180012051895279518a7f77010088755379518a7f77010088757093518a7f7701008876547994518a7f7701008876537a52949c6376557993518a7f7701008854797893518a7f770100887b757c6e9f6975677654799d6876547a93518a7f77010088537a9c777777',
+        'sourceMap': '1::15:1;;;2:19:2:24;;;;;;;;;:26::31;;;;;;;;;3:16:3:21;::::1;;;;;;;4:12:4:13:0;:16::17;;:12:::1;;;;;;;5::5:13:0;:17::18;;:21::22;:17:::1;:12;:24:9:9:0;6:20:6:21;:24::25;;:20:::1;;;;;;;7:16:7:17:0;;:20::21;:16:::1;;;;;;;:12::22;;;8:20:8:25:0;::::1;:12::27;5:24:9:9;9:15:11::0;10:20:10:21;:25::26;;:12::28:1;9:15:11:9;12:12:12:13:0;:16::17;;:12:::1;;;;;;;13:21:13:22:0;;:8::24:1;2:4:14:5;;',
         'logs': [],
         'requires': [
           {
-            'ip': 82,
+            'ip': 73,
             'line': 8,
           },
           {
-            'ip': 88,
+            'ip': 79,
             'line': 10,
           },
           {
-            'ip': 104,
+            'ip': 94,
             'line': 13,
           },
         ],
@@ -342,10 +342,10 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '5279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d51 320abd58 OP_DEFINE 5279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c7777 a45a12c9 OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '5279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d51 320abd58 OP_DEFINE 5279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c7777 a45a12c9 OP_DEFINE 765102ff008d9301218001207f77010088 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract MultiFunctionIfStatements(int x, int y) {\n    function transfer(int a, int b) {\n        int d = a + b;\n        d = d - a;\n        if (d == x && bool(x)) {\n            int c = d + b;\n            d = a + c;\n            require(c > d);\n        } else {\n            d = a;\n        }\n        d = d + a;\n        require(d == y);\n    }\n\n    function timeout(int b) {\n        int d = b;\n        d = d + 2;\n        if (d == x) {\n            int c = d + b;\n            d = c + d;\n            require(c > d);\n        }\n        d = b;\n        require(d == y);\n    }\n}\n',
       'debug': {
-        'bytecode': '445279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d5104320abd5889255279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c777704a45a12c989497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695189748c7a82549d8a',
+        'bytecode': '445279518a755379518a757093518a76547994518a7653799c635279926700686376567993518a55797893518a7b757c6e9f6975675479776876557a93518a547a9d6d6d5104320abd5889255279518a75527976529376537a9c6376547993518a6e93518a7b757c6e9f697568729c777704a45a12c98911765102ff008d9301218001207f770100885189748c7a82549d8a',
         'sourceMap': '2:4:14:5;;;16::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
@@ -607,31 +607,31 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '7c817621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_6 OP_PICK OP_SIZE OP_8 OP_EQUALVERIFY OP_DROP OP_6 OP_PICK OP_4 OP_SPLIT OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_OVER OP_5 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_DROP OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKDATASIGVERIFY OP_CHECKSIG',
+      'bytecode': '7c81765102ff008d930121800120 OP_1 OP_DEFINE OP_6 OP_PICK OP_SIZE OP_8 OP_EQUALVERIFY OP_DROP OP_6 OP_PICK OP_4 OP_SPLIT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_OVER OP_5 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_SWAP OP_CHECKLOCKTIMEVERIFY OP_DROP OP_3 OP_ROLL OP_GREATERTHANOREQUAL OP_VERIFY OP_3 OP_ROLL OP_4 OP_ROLL OP_3 OP_ROLL OP_CHECKDATASIGVERIFY OP_CHECKSIG',
       'source': '// This contract forces HODLing until a certain price target has been reached\n// A minimum block is provided to ensure that oracle price entries from before this block are disregarded\n// i.e. when the BCH price was $1000 in the past, an oracle entry with the old block number and price can not be used.\n// Instead, a message with a block number and price from after the minBlock needs to be passed.\n// This contract serves as a simple example for checkDataSig-based contracts.\ncontract HodlVault(\n    pubkey ownerPk,\n    pubkey oraclePk,\n    int minBlock,\n    int priceTarget\n) {\n    function spend(\n        sig ownerSig,\n        datasig oracleSig,\n        bytes8 oracleMessage\n    ) {\n        // message: { blockHeight, price }\n        bytes4 blockHeightBin, bytes4 priceBin = oracleMessage.split(4);\n        int blockHeight = int(blockHeightBin);\n        int price = int(priceBin);\n\n        // Check that blockHeight is after minBlock and not in the future\n        require(blockHeight >= minBlock);\n        require(tx.time >= blockHeight);\n\n        // Check that current price is at least priceTarget\n        require(price >= priceTarget);\n\n        // Handle necessary signature checks\n        require(checkDataSig(\n            oracleSig,\n            oracleMessage,\n            oraclePk,\n        ));\n        require(checkSig(ownerSig, ownerPk));\n    }\n}\n',
       'debug': {
-        'bytecode': '267c817621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895679825888755679547f518a6976528a69518a6976528a6978557aa2697cb175537aa269537a547a537abbac',
-        'sourceMap': '6::37:1;;;;;;15:8:15:28;;;;;;18:49:18:62;;:69::70;:49::71:1;19:30:19:44:0;;:26::45:1;;;;;20:24:20:32:0;;:20::33:1;;;;;23:16:23:27:0;:31::39;;:16:::1;:8::41;24:27:24:38:0;:8::40:1;;27:25:27:36:0;;:16:::1;:8::38;31:12:31:21:0;;32::32:25;;33::33:20;;30:8:34:11:1;35::35:45',
+        'bytecode': '0e7c81765102ff008d93012180012051895679825888755679547f518a7f77010088518a7f7701008878557aa2697cb175537aa269537a547a537abbac',
+        'sourceMap': '6::37:1;;;15:8:15:28;;;;;;18:49:18:62;;:69::70;:49::71:1;19:30:19:44:0;;:26::45:1;;;;20:24:20:32:0;;:20::33:1;;;;23:16:23:27:0;:31::39;;:16:::1;:8::41;24:27:24:38:0;:8::40:1;;27:25:27:36:0;;:16:::1;:8::38;31:12:31:21:0;;32::32:25;;33::33:20;;30:8:34:11:1;35::35:45',
         'logs': [],
         'requires': [
           {
-            'ip': 38,
+            'ip': 33,
             'line': 23,
           },
           {
-            'ip': 40,
+            'ip': 35,
             'line': 24,
           },
           {
-            'ip': 45,
+            'ip': 40,
             'line': 27,
           },
           {
-            'ip': 52,
+            'ip': 47,
             'line': 30,
           },
           {
-            'ip': 54,
+            'ip': 49,
             'line': 35,
           },
         ],
@@ -659,15 +659,15 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '937621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_4 OP_ROLL OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_3 OP_ROLL OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_ROT OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_GREATERTHAN',
+      'bytecode': '93765102ff008d930121800120 OP_1 OP_DEFINE OP_1 OP_2 OP_3 OP_4 OP_5 OP_6 OP_5 OP_PICK OP_3 OP_LESSTHAN OP_IF OP_3 OP_6 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_2ROT OP_5 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_4 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_3 OP_ROLL OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_ROT OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_GREATERTHAN',
       'source': 'contract DeepReplace() {\n    function hello() {\n        int a = 1;\n        int b = 2;\n        int c = 3;\n        int d = 4;\n        int e = 5;\n        int f = 6;\n\n        if (a < 3) {\n            a = 3;\n        }\n\n        require(a > b + c + d + e + f);\n    }\n}\n',
       'debug': {
-        'bytecode': '25937621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa152895152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c6871557a518a6976528a69547a518a6976528a69537a518a6976528a697b518a6976528a69a0',
-        'sourceMap': '1::16:1;;;;;;3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;;:28::29:0;;:20:::1;;;;;;;:32::33:0;;:20:::1;;;;;;;:36::37:0;:20:::1;;;;;;;:8::39',
+        'bytecode': '0d93765102ff008d93012180012051895152535455565579539f6353567a757c6b7c6b7c6b7c6b7c6c6c6c6c6871557a518a7f77010088547a518a7f77010088537a518a7f770100887b518a7f77010088a0',
+        'sourceMap': '1::16:1;;;3:16:3:17;4::4;5::5;6::6;7::7;8::8;10:12:10:13;;:16::17;:12:::1;:19:12:9:0;11:16:11:17;:12::18:1;;;;;;;;;;;;;;;;10:19:12:9;14:16:14:21:0;:24::25;;:20:::1;;;;;;:28::29:0;;:20:::1;;;;;;:32::33:0;;:20:::1;;;;;;:36::37:0;:20:::1;;;;;;:8::39',
         'logs': [],
         'requires': [
           {
-            'ip': 72,
+            'ip': 65,
             'line': 14,
           },
         ],
@@ -704,15 +704,15 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_OVER OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_SWAP OP_4 OP_NUM2BIN OP_EQUAL',
+      'bytecode': 'OP_DUP OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_OVER OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_SWAP OP_4 OP_NUM2BIN OP_EQUAL',
       'source': 'contract BoundedBytes() {\n    function spend(bytes4 b, int i) {\n        require(b == toPaddedBytes(i, 4));\n    }\n}\n',
       'debug': {
-        'bytecode': '7682548875787621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757c548087',
-        'sourceMap': '2:19:2:27;;;;;:29::34;;;;;;;;;;3:35:3:36;:38::39;:21::40:1;:8::42',
+        'bytecode': '768254887578765102ff008d9301218001207f77010088757c548087',
+        'sourceMap': '2:19:2:27;;;;;:29::34;;;;;;;;;;;;;;3:35:3:36;:38::39;:21::40:1;:8::42',
         'logs': [],
         'requires': [
           {
-            'ip': 19,
+            'ip': 23,
             'line': 3,
           },
         ],
@@ -943,10 +943,10 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 7621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
+      'bytecode': '537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d7551 e8e62fca OP_DEFINE 5479a97b88547a547aac777777 2f7ef34c OP_DEFINE 765102ff008d9301218001207f77010088 OP_1 OP_DEFINE OP_DEPTH OP_1SUB OP_ROLL OP_SIZE OP_4 OP_NUMEQUALVERIFY OP_INVOKE',
       'source': 'contract Mecenas(bytes20 recipient, bytes20 funder, int pledge, int period) {\n    function recvFunds() {\n        require(this.age >= period);\n\n        // Check that the first output sends to the recipient\n        require(tx.outputs[0].lockingBytecode == new LockingBytecodeP2PKH(recipient));\n\n        int minerFee = 1000;\n        int currentValue = tx.inputs[this.activeInputIndex].value;\n        int changeValue = currentValue - pledge - minerFee;\n\n        // If there is not enough left for *another* pledge after this one, we send the remainder to the recipient\n        // Otherwise we send the remainder to the recipient and the change back to the contract\n        if (changeValue <= pledge + minerFee) {\n            require(tx.outputs[0].value == currentValue - minerFee);\n        } else {\n            require(tx.outputs[0].value == pledge);\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeValue);\n        }\n    }\n\n    function reclaim(pubkey pk, sig s) {\n        require(hash160(pk) == funder);\n        require(checkSig(s, pk));\n    }\n}\n',
       'debug': {
-        'bytecode': '47537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c89497621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695189748c7a82549d8a',
+        'bytecode': '47537ab27500cd0376a9147b7e0288ac7e8802e803c0c676547994518a527994518a765579547993518aa16300cc707c94518a9d6700cc55799d51cdc0c78851cc789d686d6d755104e8e62fca890d5479a97b88547a547aac777777042f7ef34c8911765102ff008d9301218001207f770100885189748c7a82549d8a',
         'sourceMap': '2:4:21:5;;;23::26;;;1:0:27:1;;;;;;;;;',
         'logs': [],
         'requires': [],
@@ -1024,11 +1024,11 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '6a 6d02 OP_SIZE OP_SWAP OP_CAT OP_CAT 4120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e OP_SIZE OP_DUP 4b OP_GREATERTHAN OP_IF 4c OP_SWAP OP_CAT OP_ENDIF OP_SWAP OP_CAT OP_CAT OP_0 OP_OUTPUTVALUE OP_0 OP_NUMEQUALVERIFY OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY e803 OP_INPUTINDEX OP_UTXOVALUE OP_OVER OP_SUB OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DUP OP_ROT OP_GREATERTHANOREQUAL OP_IF OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_OVER OP_NUMEQUALVERIFY OP_ENDIF OP_DROP OP_1',
+      'bytecode': '6a 6d02 OP_SIZE OP_SWAP OP_CAT OP_CAT 4120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e OP_SIZE OP_DUP 4b OP_GREATERTHAN OP_IF 4c OP_SWAP OP_CAT OP_ENDIF OP_SWAP OP_CAT OP_CAT OP_0 OP_OUTPUTVALUE OP_0 OP_NUMEQUALVERIFY OP_0 OP_OUTPUTBYTECODE OP_EQUALVERIFY e803 OP_INPUTINDEX OP_UTXOVALUE OP_OVER OP_SUB OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DUP OP_ROT OP_GREATERTHANOREQUAL OP_IF OP_1 OP_OUTPUTBYTECODE OP_INPUTINDEX OP_UTXOBYTECODE OP_EQUALVERIFY OP_1 OP_OUTPUTVALUE OP_OVER OP_NUMEQUALVERIFY OP_ENDIF OP_DROP OP_1',
       'source': "pragma solidcash >=0.8.0;\n\n/* This is a contract showcasing covenants outside of regular transactional use.\n * It enforces the contract to make an \"announcement\" on Memo.cash, and send the\n * remainder of contract funds back to the contract.\n */\ncontract Announcement() {\n    function announce() {\n        // Create the memo.cash announcement output\n        bytes announcement = new LockingBytecodeNullData([\n            0x6d02,\n            bytes('A contract may not injure a human being or, through inaction, allow a human being to come to harm.')\n        ]);\n\n        // Check that the first tx output matches the announcement\n        require(tx.outputs[0].value == 0);\n        require(tx.outputs[0].lockingBytecode == announcement);\n\n        // Calculate leftover money after fee (1000 sats)\n        // Check that the second tx output sends the change back if there's enough leftover for another announcement\n        int minerFee = 1000;\n        int changeAmount = tx.inputs[this.activeInputIndex].value - minerFee;\n        if (changeAmount >= minerFee) {\n            require(tx.outputs[1].lockingBytecode == tx.inputs[this.activeInputIndex].lockingBytecode);\n            require(tx.outputs[1].value == changeAmount);\n        }\n    }\n}\n",
       'debug': {
-        'bytecode': '016a026d02827c7e7e4c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e8276014ba063014c7c7e687c7e7e00cc009d00cd8802e803c0c678947621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169767ba26351cdc0c78851cc789d687551',
-        'sourceMap': '10:29:13:10;11:12:11:18;::::1;;;;12:18:12:118:0;:12::119:1;;;;;;;;;;;;16:27:16:28:0;:16::35:1;:39::40:0;:8::42:1;17:27:17:28:0;:16::45:1;:8::63;21:23:21:27:0;22:37:22:58;:27::65:1;:68::76:0;:27:::1;;;;;;;;;23:12:23:24:0;:28::36;:12:::1;:38:26:9:0;24:31:24:32;:20::49:1;:63::84:0;:53::101:1;:12::103;25:31:25:32:0;:20::39:1;:43::55:0;:12::57:1;23:38:26:9;8:4:27:5;',
+        'bytecode': '016a026d02827c7e7e4c624120636f6e7472616374206d6179206e6f7420696e6a75726520612068756d616e206265696e67206f722c207468726f75676820696e616374696f6e2c20616c6c6f7720612068756d616e206265696e6720746f20636f6d6520746f206861726d2e8276014ba063014c7c7e687c7e7e00cc009d00cd8802e803c0c67894765102ff008d9301218001207f77010088767ba26351cdc0c78851cc789d687551',
+        'sourceMap': '10:29:13:10;11:12:11:18;::::1;;;;12:18:12:118:0;:12::119:1;;;;;;;;;;;;16:27:16:28:0;:16::35:1;:39::40:0;:8::42:1;17:27:17:28:0;:16::45:1;:8::63;21:23:21:27:0;22:37:22:58;:27::65:1;:68::76:0;:27:::1;;;;;;;;;;;;;23:12:23:24:0;:28::36;:12:::1;:38:26:9:0;24:31:24:32;:20::49:1;:63::84:0;:53::101:1;:12::103;25:31:25:32:0;:20::39:1;:43::55:0;:12::57:1;23:38:26:9;8:4:27:5;',
         'logs': [],
         'requires': [
           {
@@ -1040,11 +1040,11 @@ export const fixtures: Fixture[] = [
             'line': 17,
           },
           {
-            'ip': 47,
+            'ip': 51,
             'line': 24,
           },
           {
-            'ip': 51,
+            'ip': 55,
             'line': 25,
           },
         ],
@@ -1118,15 +1118,15 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE OP_DUP OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_DROP OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_10 OP_NUMEQUAL',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE OP_DUP OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_10 OP_SWAP OP_NUM2BIN OP_BIN2NUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_NUMEQUAL',
       'source': 'contract Num2Bin() {\n    function spend(int size) {\n        bytes byte_ = toPaddedBytes(10, size);\n        require(int(byte_) == 10);\n    }\n}\n',
       'debug': {
-        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1528976518a6976528a69755a7c8081518a6976528a695a9c',
-        'sourceMap': '1::6:1;;;;;;2:19:2:27;;;;;;;;;3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;;:30::32:0;:8::34:1',
+        'bytecode': '0c765102ff008d930121800120518976518a7f77010088755a7c8081518a7f770100885a9c',
+        'sourceMap': '1::6:1;;;2:19:2:27;;;;;;;;3:36:3:38;:40::44;:22::45:1;4:16:4:26;;;;;;;:30::32:0;:8::34:1',
         'logs': [],
         'requires': [
           {
-            'ip': 28,
+            'ip': 23,
             'line': 4,
           },
         ],
@@ -1159,32 +1159,32 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
+      'bytecode': 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_DUP OP_1 OP_NUMEQUALVERIFY OP_1ADD OP_2 OP_NUMEQUAL',
       'source': "contract DebugMessages() {\n  function spend(int value) {\n    require(value == 1, \"Wrong value passed\");\n    console.log(value, \"test\");\n    console.log(value, \"test2\");\n    require(value + 1 == 2, \"Sum doesn't work\");\n  }\n}\n",
       'debug': {
-        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1697576519d8b529c',
-        'sourceMap': '2:17:2:26;;;;;;;;;;3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
+        'bytecode': '76765102ff008d9301218001207f770100887576519d8b529c',
+        'sourceMap': '2:17:2:26;;;;;;;;;;;;;;3:12:3:17;:21::22;:4::46:1;6:12:6:21;:25::26:0;:4::48:1',
         'logs': [
           {
-            'ip': 13,
+            'ip': 17,
             'line': 4,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 13,
+                'ip': 17,
               },
               'test',
             ],
           },
           {
-            'ip': 13,
+            'ip': 17,
             'line': 5,
             'data': [
               {
                 'stackIndex': 0,
                 'type': 'int256',
-                'ip': 13,
+                'ip': 17,
               },
               'test2',
             ],
@@ -1192,12 +1192,12 @@ export const fixtures: Fixture[] = [
         ],
         'requires': [
           {
-            'ip': 12,
+            'ip': 16,
             'line': 3,
             'message': 'Wrong value passed',
           },
           {
-            'ip': 16,
+            'ip': 20,
             'line': 6,
             'message': "Sum doesn't work",
           },
@@ -1292,23 +1292,23 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_2 OP_PICK OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
+      'bytecode': 'OP_2 OP_PICK OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_ROT OP_SWAP OP_2 OP_SUB OP_NUMEQUAL OP_IF OP_2DUP OP_EQUAL OP_ELSE OP_0 OP_ENDIF OP_IF OP_0 OP_VERIFY OP_ELSE OP_OVER 48656c6c6f20 OP_2 OP_PICK OP_CAT OP_EQUAL OP_IF OP_DUP 576f726c64 OP_EQUALVERIFY OP_ELSE OP_1 OP_0 OP_NOT OP_NOT OP_NOT OP_NUMEQUALVERIFY OP_ENDIF OP_ENDIF OP_2DROP OP_1',
       'source': 'contract MultilineStatements(\n    int x,\n    string y\n) {\n    function spend(\n        int a,\n        string b\n    ) {\n        if (a == x - 2\n         && b == y) {\n            require(false);\n        } else if (b == "Hello "\n        + y) {\n            require(\n                y == "World"\n            );\n        } else {\n            require(true == !!!false);\n        }\n    }\n}\n',
       'debug': {
-        'bytecode': '52797621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
-        'sourceMap': '6:8:6:13;;;;;;;;;;;9:12:9;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
+        'bytecode': '5279765102ff008d9301218001207f77010088757b7c52949c636e8767006863006967780648656c6c6f2052797e87637605576f726c64886751009191919d68686d51',
+        'sourceMap': '6:8:6:13;;;;;;;;;;;;;;;9:12:9;:17::18;:21::22;:17:::1;:12;::10:18:0;10;::::1;9;;;10:20:12:9:0;11::11:25;:12::27:1;12:15:19:9:0;:19:12:20;:24::32;13:10:13:11;;12:24:::1;:19;13:13:17:9:0;15:16:15:17;:21::28;14:12:16:14:1;17:15:19:9:0;18:20:18:24;:31::36;:30:::1;:29;:28;:12::38;17:15:19:9;12;5:4:20:5;',
         'logs': [],
         'requires': [
           {
-            'ip': 26,
+            'ip': 30,
             'line': 11,
           },
           {
-            'ip': 37,
+            'ip': 41,
             'line': 14,
           },
           {
-            'ip': 44,
+            'ip': 48,
             'line': 18,
           },
         ],
@@ -1514,35 +1514,36 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '7a757c6b7c6b7c OP_1 OP_DEFINE OP_0 OP_0 OP_0 OP_0 OP_BEGIN OP_DUP OP_UTXOVALUE OP_4 OP_1 OP_INVOKE OP_FROMALTSTACK OP_FROMALTSTACK OP_DUP OP_1ADD OP_NIP OP_TXOUTPUTCOUNT OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_5 OP_1 OP_INVOKE OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ELSE OP_3 OP_PICK OP_1ADD OP_4 OP_1 OP_INVOKE OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
+      'bytecode': 'OP_0 OP_0 OP_0 OP_0 OP_BEGIN OP_DUP OP_UTXOVALUE OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_DUP OP_1ADD OP_NIP OP_TXOUTPUTCOUNT OP_2DUP OP_LESSTHAN OP_DUP OP_IF OP_2 OP_PICK OP_OUTPUTTOKENCATEGORY OP_0 OP_EQUAL OP_NOT OP_NIP OP_DUP OP_IF OP_4 OP_PICK OP_3 OP_PICK OP_OUTPUTVALUE OP_ADD OP_5 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_FROMALTSTACK OP_ELSE OP_3 OP_PICK OP_1ADD OP_4 OP_ROLL OP_DROP OP_SWAP OP_TOALTSTACK OP_SWAP OP_TOALTSTACK OP_SWAP OP_FROMALTSTACK OP_FROMALTSTACK OP_ENDIF OP_ENDIF OP_2DROP OP_DUP OP_TXINPUTCOUNT OP_GREATERTHANOREQUAL OP_UNTIL OP_2SWAP OP_GREATERTHAN OP_VERIFY OP_SWAP OP_0 OP_GREATERTHAN OP_NIP',
       'source': 'contract Loopy() {\n    function doLoop() {\n        int inputSum = 0;\n        int outputSum = 0;\n        int tokenCount = 0;\n        int i = 0;\n\n        do {\n            inputSum = tx.inputs[i].value;\n            i = i + 1;\n\n            int x = tx.outputs.length;\n            bool b = i < x;\n\n            if (b) {\n                b = tx.outputs[i].tokenCategory != 0x;\n\n                if (b) {\n                    outputSum = outputSum + tx.outputs[i].value;\n                } else {\n                    tokenCount = tokenCount + 1;\n                }\n\n                console.log(tokenCount);\n            }\n        } while (i < tx.inputs.length);\n\n        require(inputSum > outputSum);\n        require(tokenCount > 0);\n    }\n}\n',
       'debug': {
-        'bytecode': '077a757c6b7c6b7c5189000000006576c654518a6c6c768b77c46e9f76635279d100879177766354795379cc9355518a6b7c6c6c6c6753798b54518a6c6c68686d76c3a26672a0697c00a077',
-        'sourceMap': '1::31:1;;;3:23:3:24;4:24:4:25;5:25:5:26;6:16:6:17;8:8:26:39;9:33:9:34;:23::41:1;:12::42;;;;;10:16:10:17:0;:::21:1;:12::22;12:20:12:37:0;13:21:13:26;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;:20::48;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
+        'bytecode': '000000006576c6547a757c6b7c6b7c6c6c768b77c46e9f76635279d100879177766354795379cc93557a757c6b7c6b7c6b7c6c6c6c6753798b547a757c6b7c6b7c6c6c68686d76c3a26672a0697c00a077',
+        'sourceMap': '3:23:3:24;4:24:4:25;5:25:5:26;6:16:6:17;8:8:26:39;9:33:9:34;:23::41:1;:12::42;;;;;;;;;;10:16:10:17:0;:::21:1;:12::22;12:20:12:37:0;13:21:13:26;::::1;15:16:15:17:0;:19:25:13;16:31:16:32;;:20::47:1;:51::53:0;:20:::1;;:16::54;18:20:18:21:0;:23:20:17;19:32:19:41;;:55::56;;:44::63:1;:32;:20::64;;;;;;;;;;;;;20:23:22:17:0;21:33:21:43;;:::47:1;:20::48;;;;;;;;;;20:23:22:17;15:19:25:13;8:11:26:9;26:17::18:0;:21::37;8:8::39:1;;28:16:28:36:0;::::1;:8::38;29:16:29:26:0;:29::30;:8::32:1;2:4:30:5',
         'logs': [
           {
-            'ip': 56,
+            'ip': 68,
             'line': 24,
             'data': [
               {
                 'stackIndex': 3,
                 'type': 'int256',
-                'ip': 56,
+                'ip': 68,
               },
             ],
           },
         ],
         'requires': [
           {
-            'ip': 64,
+            'ip': 76,
             'line': 28,
           },
           {
-            'ip': 68,
+            'ip': 80,
             'line': 29,
           },
         ],
       },
+      'fingerprint': 'fa36d9b24d49525e027ba3cf3accd349e9f84d0c1bbd1141e98d6894173a1a2a',
       'compiler': {
         'name': 'solidc',
         'version': '0.13.1',
@@ -1552,6 +1553,7 @@ export const fixtures: Fixture[] = [
           'commitmentLimit': 128,
         },
       },
+      'updatedAt': '2026-08-09T06:33:53.606Z',
     },
   },
   {
@@ -1566,11 +1568,11 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': 'OP_0 OP_2 OP_BEGIN OP_OVER OP_1ADD OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
+      'bytecode': 'OP_0 OP_2 OP_BEGIN OP_OVER OP_1ADD OP_ROT OP_DROP OP_SWAP OP_2DUP OP_ADD OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_10 OP_LESSTHAN OP_VERIFY OP_OVER OP_10 OP_GREATERTHANOREQUAL OP_UNTIL OP_2DROP OP_1',
       'source': 'contract Loopy() {\n    function doLoop() {\n        int i = 0;\n        int x = 2;\n\n        do {\n            i = i + 1;\n            console.log(i);\n            require(i + x < 10);\n        } while (i < 10);\n    }\n}\n',
       'debug': {
-        'bytecode': '005265788b7b757c6e937621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1695a9f69785aa2666d51',
-        'sourceMap': '3:16:3:17;4::4;6:8:10:25;7:16:7:17;:::21:1;:12::22;;;9:20:9:25:0;::::1;;;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
+        'bytecode': '005265788b7b757c6e93765102ff008d9301218001207f770100885a9f69785aa2666d51',
+        'sourceMap': '3:16:3:17;4::4;6:8:10:25;7:16:7:17;:::21:1;:12::22;;;9:20:9:25:0;::::1;;;;;;;;;;;;;:28::30:0;:20:::1;:12::32;10:17:10:18:0;:21::23;6:8::25:1;;2:4:11:5;',
         'logs': [
           {
             'ip': 8,
@@ -1586,7 +1588,7 @@ export const fixtures: Fixture[] = [
         ],
         'requires': [
           {
-            'ip': 20,
+            'ip': 24,
             'line': 9,
           },
         ],
@@ -1614,19 +1616,19 @@ export const fixtures: Fixture[] = [
           'inputs': [],
         },
       ],
-      'bytecode': '7621000000000000000000000000000000000000000000000000000000000000008080a2 OP_1 OP_DEFINE 20ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa1 OP_2 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_VERIFY OP_DUP OP_2 OP_INVOKE OP_VERIFY OP_16 OP_NUMEQUAL',
+      'bytecode': '765102ff008d930121800120 OP_1 OP_DEFINE 1122334455667788 OP_4 OP_LSHIFTBIN OP_4 OP_RSHIFTBIN 0000000055667788 OP_EQUALVERIFY OP_8 OP_2 OP_RSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_1 OP_LSHIFTNUM OP_1 OP_INVOKE OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_16 OP_NUMEQUAL',
       'source': 'contract Bitshift() {\n    function spend() {\n        bytes8 x = 0x1122334455667788;\n        bytes8 y = x << 4 >> 4;\n\n        require(y == 0x0000000055667788);\n\n        int a = 8;\n        int b = a >> 2 << 1;\n\n        require (b == 16);\n    }\n}\n',
       'debug': {
-        'bytecode': '247621000000000000000000000000000000000000000000000000000000000000008080a251892220ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa15289081122334455667788549854990800000000556677888858528e518a6976528a69518d518a6976528a69609c',
-        'sourceMap': '1::13:1;;;;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;9:21:9:22;:16:::1;;;;;;;;:26::27:0;:16:::1;;;;;;;;11:22:11:24:0;:8::26:1',
+        'bytecode': '0c765102ff008d9301218001205189081122334455667788549854990800000000556677888858528e518a7f77010088518d518a7f77010088609c',
+        'sourceMap': '1::13:1;;;3:19:3:37;4:24:4:25;:19:::1;:29::30:0;:19:::1;6:21:6:39:0;:8::41:1;8:16:8:17:0;9:21:9:22;:16:::1;;;;;;;:26::27:0;:16:::1;;;;;;;11:22:11:24:0;:8::26:1',
         'logs': [],
         'requires': [
           {
-            'ip': 12,
+            'ip': 9,
             'line': 6,
           },
           {
-            'ip': 34,
+            'ip': 29,
             'line': 11,
           },
         ],
@@ -1671,19 +1673,19 @@ export const fixtures: Fixture[] = [
           ],
         },
       ],
-      'bytecode': 'OP_DUP OP_DUP 000000000000000000000000000000000000000000000000000000000000008080 OP_GREATERTHANOREQUAL OP_VERIFY OP_DUP ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7f OP_LESSTHANOREQUAL OP_VERIFY OP_DROP OP_SWAP OP_0NOTEQUAL OP_2 OP_PICK OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL OP_IF OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY OP_ELSE OP_OVER OP_3 OP_PICK OP_EQUALVERIFY OP_ENDIF OP_2DROP OP_DROP OP_1',
+      'bytecode': 'OP_DUP OP_DUP OP_1 ff00 OP_LSHIFTNUM OP_ADD 21 OP_NUM2BIN 20 OP_SPLIT OP_NIP 00 OP_EQUALVERIFY OP_DROP OP_SWAP OP_0NOTEQUAL OP_2 OP_PICK OP_SIZE OP_4 OP_EQUALVERIFY OP_DROP OP_1 OP_NUMEQUAL OP_IF OP_DUP OP_6 OP_GREATERTHAN OP_VERIFY OP_ELSE OP_OVER OP_3 OP_PICK OP_EQUALVERIFY OP_ENDIF OP_2DROP OP_DROP OP_1',
       'source': 'contract TypeEnforcement() {\n    function spend(\n        int nonEnforcedInt,\n        bool enforcedBool,\n        bytes4 enforcedBytes,\n        bytes nonEnforcedBytes\n    ) {\n        if (enforcedBool == true) {\n            require(nonEnforcedInt > 6);\n        } else {\n            require(enforcedBytes == nonEnforcedBytes);\n        }\n    }\n}\n',
       'debug': {
-        'bytecode': '767621000000000000000000000000000000000000000000000000000000000000008080a2697620ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff7fa169757c92527982548875519c637656a0696778537988686d7551',
-        'sourceMap': '3:8:3:26;;;;;;;;;;4::4:25;;5::5:28;;;;;;8:28:8:32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
+        'bytecode': '76765102ff008d9301218001207f77010088757c92527982548875519c637656a0696778537988686d7551',
+        'sourceMap': '3:8:3:26;;;;;;;;;;;;;;4::4:25;;5::5:28;;;;;;8:28:8:32;:12:::1;:34:10:9:0;9:20:9:34;:37::38;:20:::1;:12::40;10:15:12:9:0;11:20:11:33;:37::53;;:12::55:1;10:15:12:9;2:4:13:5;;',
         'logs': [],
         'requires': [
           {
-            'ip': 24,
+            'ip': 28,
             'line': 9,
           },
           {
-            'ip': 29,
+            'ip': 33,
             'line': 11,
           },
         ],

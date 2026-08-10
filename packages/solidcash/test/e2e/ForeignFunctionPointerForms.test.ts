@@ -61,14 +61,14 @@ describe('param', () => {
       contract H() is IH { bigint counter;
         function inc(pubkey o, sig s) { require(checkSig(s, o)); this.counter = this.counter + 1; }
         function dec(pubkey o, sig s) { require(checkSig(s, o)); this.counter = this.counter - 1; } }`;
-    const C2 = `pragma solidcash >=0.8.0;
+    const vmap = `pragma solidcash >=0.8.0;
       interface IH { public bigint counter; function inc(pubkey o, sig s); function dec(pubkey o, sig s); }
-      contract C2() { bigint n;
+      contract vmap() { bigint n;
         function relay2(function(pubkey,sig) external a, function(pubkey,sig) external b, pubkey pk, sig s) {
           require(checkSig(s, pk)); a(pk, s); b(pk, s); this.n = this.n + 1; } }`;
 
     it('dispatches two different callees (A.inc + B.dec) - not the first for both', async () => {
-      const ha = compileString(H); const ca = compileString(C2);
+      const ha = compileString(H); const ca = compileString(vmap);
       const incSel = hexToBin(ha.abi.find((f) => f.name === 'inc')!.selector!);
       const decSel = hexToBin(ha.abi.find((f) => f.name === 'dec')!.selector!);
 

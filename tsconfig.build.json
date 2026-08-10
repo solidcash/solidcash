@@ -20,7 +20,8 @@
     "resolveJsonModule": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "incremental": true
+    "incremental": true,
+    "composite": true
   },
   "exclude": [
     "node_modules",

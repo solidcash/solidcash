@@ -5,11 +5,11 @@ Status: **Tier-1 (assembly-storage) + OZ StorageSlot param-factory SHIPPED and r
 reflect shipped reality (the earlier "nothing implemented" text was stale) and to fold in two things: the
 128-byte-commitment PACKING cost model, and the prerequisites the EVM-ABI-parity work retired.
 
-**Current mapping note (2026-07-22):** every mapping uses the mandatory C2 sorted/exclusion-proof backend. The
+**Current mapping note (2026-07-22):** every mapping uses the mandatory vmap sorted/exclusion-proof backend. The
 legacy entry backend and the `sortedMappingsAll` / `sortedMappings` options have been removed. Later design-era
-references to an opt-in or fallback are historical only; [`sorted-mapping-c2.md`](sorted-mapping-c2.md) is normative.
+references to an opt-in or fallback are historical only; [`verified-mappings.md`](verified-mappings.md) is normative.
 Tier-2 below refers to re-homing all high-level state onto an EVM-like raw slot model, not to making ordinary
-mappings omission-proof; C2 already provides that property.
+mappings omission-proof; vmap already provides that property.
 
 The question was: can Solidity's storage model be mapped soundly onto solidcash, including the assembly that
 manipulates storage slots directly (`sstore`/`sload` with derived slots)? Earlier this was called
@@ -40,7 +40,7 @@ existing 128-byte-aware substrates fits, so a contiguous or packable region cost
 | EVM shape | Substrate (all already built) | 128B usage | UTXOs |
 |---|---|---|---|
 | declared vars; ERC-7201 namespaced struct fields; any **contiguous static slot run**; array elements `H(p)+i` | **packed register** (data NFT, bin-packed by ordinal, whole-commitment rebuild on write; `SymbolTableTraversal` ~591-704) | ~3-4 words per commitment | 1 per page, not 1 per slot |
-| mapping entries `H(k.p)` (sparse keyspace) | **entry NFT** at the collection's deterministic address, slot id (key) in the commitment; C2-sorted by default for supported values (`SortedList.ts`, `emitSorted*`) | 1 per live key | 1 per live key |
+| mapping entries `H(k.p)` (sparse keyspace) | **entry NFT** at the collection's deterministic address, slot id (key) in the commitment; vmap-sorted by default for supported values (`SortedList.ts`, `emitSorted*`) | 1 per live key | 1 per live key |
 | `bytes` / `string` / dynamic arrays (values > 32 bytes) | **chunk** (dynamic-storage.md) | 120B payload per chunk UTXO + a `uint32 len` header packed in a register | `ceil(len / 120)` |
 
 Rules that fall out of this:
@@ -51,14 +51,14 @@ Rules that fall out of this:
   bin-packer, NOT to N `__evm_storage[base+i]` entries.
 - **Sparse mapping slots are entry NFTs, directly located by slot id.** One entry per live key at the
   collection's deterministic address (slot id in its commitment); the EVM slot number `H(h(k).p)` is the
-  logical label over that entry. C2 sorting is an absence-proof overlay, not a location mechanism.
+  logical label over that entry. vmap sorting is an absence-proof overlay, not a location mechanism.
 - **Values over 32 bytes ride the chunk model.** `bytes`/`string`/dynamic arrays already split into 120B
   chunks with the length authority in a register field.
 - **One-UTXO-per-slot stays only for genuinely-sparse assembly slot math** (hand-written `sstore` at a
   keccak-derived scattered slot with no packable neighbours). Even there, a contiguous field group packs.
 
 Net: EVM storage parity is a **logical slot-addressable VIEW** over the existing packed register + entry-NFT
-(C2-sortable) + chunk substrates, chosen to minimize UTXO count. It is not a physical re-homing onto a flat
+(vmap-sortable) + chunk substrates, chosen to minimize UTXO count. It is not a physical re-homing onto a flat
 per-slot mapping. This matches the deep-research conclusion: make the hybrid EVM-slot-addressable and
 sound, do not rebuild it.
 
@@ -87,7 +87,7 @@ sound, do not rebuild it.
 Since shipped (see Phasing): the ERC-7201 **const-slot** factory (P1); EVM-exact register layout past a
 struct/array (P3); the Tier-2 mapping-slot assembly idiom bridge (P4). P2 (sorting the slot space) was
 DROPPED by design - it needs no absence proof (see Soundness). Remaining: deeper Tier-2 (nested mappings /
-array-element idiom); the sorted-MAPPING string-value tail (P5, a C2-feature niche). See Phasing.
+array-element idiom); the sorted-MAPPING string-value tail (P5, a vmap-feature niche). See Phasing.
 
 ## What the EVM-ABI-parity work changed (prerequisites now retired)
 
@@ -168,12 +168,12 @@ trustless is the LINKAGE-completeness build below. Evaluation of how (count vs l
   live, distinct-key entries. That requires (a) the count in the ALWAYS-PRESENT register / data NFT (a hidden
   `<map>$count` field, like a dynamic array's `A$len`) - NOT a withholdable entry UTXO, else the count itself
   is omittable; (b) EVERY insert/delete updates it atomically on ALL codegen paths; (c) NO duplicate-key
-  entries - uniqueness on insert = an absence proof = the C2 sorted list. So an enumerable mapping is built ON
-  C2.
+  entries - uniqueness on insert = an absence proof = the vmap sorted list. So an enumerable mapping is built ON
+  vmap.
 - **DECISION: LINKAGE ONLY, drop the count (2026-07-16, user).** The count duplicates work the sorted list
   already does, and placing it at the mapping's master UTXO would add GLOBAL write contention (every insert/
   delete rebuilds that one commitment) that the per-key entry UTXOs otherwise avoid - plus a corruptible
-  redundant source of truth whose stale-LOW desync would silently OMIT. The C2 list already proves completeness
+  redundant source of truth whose stale-LOW desync would silently OMIT. The vmap list already proves completeness
   by LINKAGE and is self-contained. Structure (`SortedList.ts`): commitment = `slot(32) ++ nextKey(32) ++
   value`; a HEAD sentinel at slot 0 (always present, `:85,141`); tail = `nextKey == 0` (+inf). Sound iteration:
   co-spend HEAD then follow the chain to the tail, verifying HEAD.slot==0, each entry.slot == prev.nextKey
@@ -185,7 +185,7 @@ trustless is the LINKAGE-completeness build below. Evaluation of how (count vs l
   co-spent UTXO (the HEAD) and a per-iteration spend of the HEAD sentinel - contention only at iteration time
   and on head-adjacent inserts, far less than the count's every-write master-UTXO contention. So NO `.length`
   in O(1) (a count would be needed for that) - an acceptable trade.
-- **Delete semantics must be reconciled.** C2 delete = NULLIFY (node stays). A nullified node is a live UTXO
+- **Delete semantics must be reconciled.** vmap delete = NULLIFY (node stays). A nullified node is a live UTXO
   not logically present, so either the count/iteration must skip default-valued nodes (and the covenant must
   verify non-default per co-spent entry, else a nullified node substitutes for a real one) or delete must
   SPLICE (re-link predecessor.next, more covenant work) so count == physical == iterable. Splice is cleaner
@@ -194,12 +194,12 @@ trustless is the LINKAGE-completeness build below. Evaluation of how (count vs l
   entries (+ the HEAD) in ONE transaction. For a large mapping (millions of USDT balances) that overflows the
   tx-size and per-input compute limits regardless of the completeness mechanism. So enumeration is only
   feasible for BOUNDED / small collections (admin sets, participant lists), NOT a general balances primitive.
-- **KEY RECOVERY (separate cost, note).** A C2 commitment stores `slot = H(key)`, not the raw key, so
+- **KEY RECOVERY (separate cost, note).** A vmap commitment stores `slot = H(key)`, not the raw key, so
   `for (key, value of m)` must recover the key: the SDK (which knows all keys while building the tx) supplies
   each as an unlocking arg and the covenant verifies `H(key) == slot` - ~1 native `sha256` per entry (cheap,
   not keccak). Orthogonal to completeness.
 
-Verdict: an OPT-IN `enumerable mapping` built on C2, proving completeness by LINKAGE ALONE (no count, no master
+Verdict: an OPT-IN `enumerable mapping` built on vmap, proving completeness by LINKAGE ALONE (no count, no master
 UTXO, no global write contention), is sound and worth building for BOUNDED collections. Splice-delete keeps the
 chain clean (nullify would bloat it). The DEFAULT `mapping` stays Solidity-parity: not enumerable, slot p = 0,
 no overhead.
@@ -211,8 +211,8 @@ tail@nextKey 0, `slot=keyToSlot(key)=sha256(key)` high-bit-masked; `visitCollect
 `i < __internal__collectionIterCount_N`; SDK derivation `StatefulContract` ~5194 co-spends all entries + the
 count; `emitCollectionIterInputIndex` = `masterInput + blockSize + priorCounts + i`).
 
-**Scope order.** Deliver VALUES mode first - the C2 commitment has slot (chain) + nextKey (chain) + value
-(body), so VALUES needs NO raw key. KEYS/ENTRIES need the raw key, which the C2 commitment does NOT store
+**Scope order.** Deliver VALUES mode first - the vmap commitment has slot (chain) + nextKey (chain) + value
+(body), so VALUES needs NO raw key. KEYS/ENTRIES need the raw key, which the vmap commitment does NOT store
 (only `slot=H(key)`); that is a SECOND increment (SDK supplies the keys in slot order as a co-spent blob,
 covenant splits + verifies `H(key)==slot` per entry, ~1 sha256/entry). Enumerable+VALUES on a `sorted`
 collection routes to linkage; keep the existing partial-window path for non-sorted (signed use), so nothing
@@ -250,7 +250,7 @@ fails closed.
 STATUS: **SHIPPED + adversarially verified** (VALUES mode). SDK half 07cd085a (co-spend HEAD + slot-ordered
 entries); codegen half 42eaed88 (`emitSortedIterationLinkage` in GTT). `for (int v of this.m)` over a sorted
 `enumerable mapping` compiles to the linkage-completeness covenant below; KEYS/ENTRIES on a sorted mapping throw
-a clean error (the C2 commitment stores slot=H(key), not the raw key).
+a clean error (the vmap commitment stores slot=H(key), not the raw key).
 
 Recipe (as built): reuse the address pin + commitment split from `emitSortedSetRead` - `emitMasterInputIndex;
 OP_UTXOTOKENCATEGORY; 32 SPLIT DROP; emitP2sh32FromCovenant(buildEntryNftCovenantScript(cat, collectionHash))`
@@ -301,7 +301,7 @@ large mappings.
   no concurrent mutation (or a covenant rule that forbids writes to the mapping while a pagination is open). A
   single-tx window is atomic (no concurrency). Document the chosen semantics per use.
 
-### C2 is a PARITY REQUIREMENT for mappings, so it should be the DEFAULT (correction)
+### vmap is a PARITY REQUIREMENT for mappings, so it should be the DEFAULT (correction)
 
 Earlier this doc said "plain `mapping` = Solidity parity." That is INCOMPLETE. Plain matches Solidity for
 POSITIVE reads (`m[k]=v; m[k]` == v) but NOT for the guarantee that matters: in Solidity a read is UNFORGEABLE,
@@ -311,37 +311,37 @@ ABSENT => 0 - the covenant cannot distinguish "genuinely absent" from "the spend
 forges `m[k] == 0` by omission. That is a SEMANTIC divergence, not a cost difference - a ported Solidity
 contract relying on the guard is silently exploitable.
 
-C2's bracketing (`P.slot < H(k) < P.nextKey`) recovers Solidity's unforgeable "absent => 0". So **C2 is a parity
+vmap's bracketing (`P.slot < H(k) < P.nextKey`) recovers Solidity's unforgeable "absent => 0". So **vmap is a parity
 requirement for mappings, not an enumeration feature** - enumeration is the bonus the same structure provides.
-The parity-correct backend is therefore mandatory C2; the unsafe plain opt-out was removed in the 2026-07-22 merge.
+The parity-correct backend is therefore mandatory vmap; the unsafe plain opt-out was removed in the 2026-07-22 merge.
 The former P5 prerequisite is also complete: values beyond the inline commitment capacity use authenticated,
 root-addressed chunks, including unbounded bytes/string and encoded compound values. Cost remains the price of the
-guarantee: C2 requires an authenticated exact node or bracketing predecessor, analogous to the proof work purchased
+guarantee: vmap requires an authenticated exact node or bracketing predecessor, analogous to the proof work purchased
 by EVM trie gas.
 
-Type story then collapses: `mapping` = the C2 backend (sound exclusion proofs = parity) with iteration GATED
+Type story then collapses: `mapping` = the vmap backend (sound exclusion proofs = parity) with iteration GATED
 (Solidity mappings are not iterable, so the default surface stays non-enumerable though the structure could
-iterate); `enumerable mapping` = the SAME C2 backend with iteration ENABLED. `enumerable` becomes a pure
-iteration TOGGLE on one universal C2 backend, not a structural choice.
+iterate); `enumerable mapping` = the SAME vmap backend with iteration ENABLED. `enumerable` becomes a pure
+iteration TOGGLE on one universal vmap backend, not a structural choice.
 
 **DECISION (2026-07-16, user): KEEP the `mapping` / `enumerable mapping` split - do NOT collapse into one
-iterable mapping.** With C2 as the default backend, `enumerable` no longer gates the STRUCTURE or COST (every
-mapping is C2); it is now purely a CAPABILITY TOGGLE - "is `for..of` allowed on this mapping?". We keep it
+iterable mapping.** With vmap as the default backend, `enumerable` no longer gates the STRUCTURE or COST (every
+mapping is vmap); it is now purely a CAPABILITY TOGGLE - "is `for..of` allowed on this mapping?". We keep it
 because: (1) SURFACE PARITY - Solidity mappings are not iterable, so a plain `mapping` reading exactly like
 Solidity's is the stated goal; `enumerable mapping` marks the extension (as OZ `EnumerableMap` does). Collapsing
 would make `mapping` iterable = not "exactly Solidity parity" for the surface. (2) INTENT NUDGE - iteration has
 a hard bounded-size / pagination reality (a million-entry mapping cannot be fully enumerated in one tx); opting
 in via `enumerable` is where the dev acknowledges "I will keep this bounded / paginate," rather than writing
 `for (k,v of balances)` into a runtime wall. The gate is cheap (already shipped, tiny) and collapsing later is a
-small reversible change (drop the keyword + un-gate). This does NOT revert the C2-default direction - the
+small reversible change (drop the keyword + un-gate). This does NOT revert the vmap-default direction - the
 structure is universal; only the iteration SURFACE stays opt-in.
 
 ### Mapping and enumeration resolution
 
-All mappings maintain the C2 linked list from deployment onward. This is required for sound default-on-absent
+All mappings maintain the vmap linked list from deployment onward. This is required for sound default-on-absent
 reads; a cheaper unlinked mapping would reintroduce the omission vulnerability and is no longer available.
 `enumerable mapping` is therefore not a different storage backend. It enables source-level traversal over the same
-authenticated C2 chain. Plain `mapping` retains Solidity's non-iterable language surface while receiving identical
+authenticated vmap chain. Plain `mapping` retains Solidity's non-iterable language surface while receiving identical
 membership and exclusion security. Unbounded bytes/string, structs, and arrays use the root-addressed chunk format
 when their encoded value exceeds the inline commitment capacity.
 
@@ -354,7 +354,7 @@ its slot id: entries of one collection share that collection's deterministic P2S
 carries its slot id (key) in its commitment, so `__evm_storage[slot]` is found by scanning that address for
 the entry whose committed key == slot. No linked-list traversal is needed to FIND an element.
 
-The sorted-linked-list (C2) exists for exactly one thing: an ABSENCE proof (bracketing `pred.slot < H(k) <
+The sorted-linked-list (vmap) exists for exactly one thing: an ABSENCE proof (bracketing `pred.slot < H(k) <
 pred.nextKey`), which stops the OMISSION attack - withholding an existing entry so a read sees "absent -> 0"
 (breaking a `require(x == 0)` guard) or a write mints a duplicate. That attack only applies to storage held
 in withholdable per-key UTXOs. It does NOT apply to the slot space in general, because the storage that
@@ -362,18 +362,18 @@ actually needs absence proofs is covered elsewhere:
 
 - **Declared vars** live in the data NFT (register), a MANDATORY co-spend+recreate (`requiredNftIndices`).
   Their value cannot be withheld, so `require(admin == 0)`-style guards are sound with zero absence machinery.
-- **Mappings** are the withholdable case, and the existing default C2 sorted list (`docs/sorted-mapping-c2.md`)
+- **Mappings** are the withholdable case, and the existing default vmap sorted list (`docs/verified-mappings.md`)
   is precisely for them (balances/allowances/owners). After P4 an assembly mapping-slot access routes to the
-  SAME high-level mapping collection, so opting that mapping into C2 makes the assembly path sound too.
+  SAME high-level mapping collection, so opting that mapping into vmap makes the assembly path sound too.
 - **`__evm_storage`** - after P1 (ERC-7201 -> promoted register/collection) and P4 (mapping idiom -> the
   high-level mapping) the residual is only genuinely-raw, non-declared computed slots. A negative-existence
   guard on such a raw slot is vanishingly rare; a contract that needs one should use a declared mapping
-  (C2-sortable), not a raw slot.
+  (vmap-sortable), not a raw slot.
 
 So sorting the whole 2^256 slot space by default would pay a bracketing co-spend on every access to cover a
-case that is already sound (declared vars) or better expressed as a mapping (C2). It is dropped by design
+case that is already sound (declared vars) or better expressed as a mapping (vmap). It is dropped by design
 (see P2). The only residual, documented limitation: a raw permissionless `require(sload(rawSlot)==0)` guard
-inherits the plain-mapping omission concern - niche, and the sound path is a declared C2 mapping.
+inherits the plain-mapping omission concern - niche, and the sound path is a declared vmap mapping.
 
 ## Phasing
 
@@ -423,14 +423,14 @@ Priorities carry the PACKING lens above: each phase lowers to a 128B-aware subst
   struct-field slot math past a composite base.
 - **P2 - sorted-list soundness re-homing [DROPPED BY DESIGN].** The premise was wrong: the slot space does
   not need absence proofs (see Soundness above). Elements are directly located by slot id at a deterministic
-  address; declared-var guards are sound via the always-present register; mapping guards use the existing C2
-  C2 backend (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
+  address; declared-var guards are sound via the always-present register; mapping guards use the existing vmap
+  vmap backend (and after P4 the assembly path shares that collection). Sorting the whole slot space would be pure
   overhead. Not implemented.
-- **P5 - sorted value-type tail [DONE].** Mandatory C2 mappings support unbounded `string`, `bytes`, structs, and
+- **P5 - sorted value-type tail [DONE].** Mandatory vmap mappings support unbounded `string`, `bytes`, structs, and
   arrays. Values up to 60 bytes remain inline; larger values store an authenticated length/root/head tail and
   mutable value-chunk NFTs at the digest-specific collection address. Writes pin every chunk and reads reassemble
   and verify the root; overwrites reclaim the old digest's chunks. Fixed-width `int`/`bytesN`/`address` values remain
-  inline. Runtime-loop chunk output is tracked separately in the C2 loop implementation notes.
+  inline. Runtime-loop chunk output is tracked separately in the vmap loop implementation notes.
 
 Byte-identical LOGICAL slot numbers (the SDK keccak veneer) is reachable any time after P1, reusing the ABI
 encoder + real-keccak fold; fold it in only where a corpus contract exposes a raw slot number cross-chain.
@@ -459,5 +459,5 @@ encoder + real-keccak fold; fold it in only where a corpus contract exposes a ra
       common hand-written-storage case. Lower-value extensions remain: dynamic-array element idiom, struct-field
       slot math.
 - [x] P2: DROPPED BY DESIGN - the slot space needs no absence proof (declared vars = always-present register;
-      mappings = existing C2 backend; raw slots directly located by slot id). Sorting it would be pure overhead.
+      mappings = existing vmap backend; raw slots directly located by slot id). Sorting it would be pure overhead.
 - [x] P5: sorted string / unbounded-bytes value tail, including authenticated chunk storage and overwrite GC.

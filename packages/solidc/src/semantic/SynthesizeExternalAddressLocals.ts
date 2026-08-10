@@ -23,6 +23,7 @@ import {
   CollectionIterationNode,
   ContractReferenceNode,
   FunctionModifier,
+  StateVariableVisibility,
 } from '../ast/AST.js';
 import {
   AddressType, StructType, ArrayType, MappingType, Type,
@@ -121,11 +122,25 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       return out;
     };
     for (const iface of ifaces) { this.typeNames.add(iface.name); this.ifaceMethods.set(iface.name, methodsOf(iface.name)); }
+    const contractMethods = (contract: ContractNode): Set<string> => new Set([
+      ...(contract.functions ?? []).map((f) => f.name),
+      ...contract.stateVariables
+        .filter((sv) => sv.visibility === StateVariableVisibility.PUBLIC
+          || sv.visibility === StateVariableVisibility.EXTERNAL)
+        .map((sv) => sv.name),
+      ...contract.collections
+        .filter((collection) => collection.visibility === StateVariableVisibility.PUBLIC
+          || collection.visibility === StateVariableVisibility.EXTERNAL)
+        .map((collection) => collection.name),
+    ]);
     for (const c of node.importedContracts as ContractNode[]) {
       this.typeNames.add(c.name);
-      this.ifaceMethods.set(c.name, new Set((c.functions ?? []).map((f) => f.name)));
+      this.ifaceMethods.set(c.name, contractMethods(c));
     }
-    if (node.contract) this.typeNames.add(node.contract.name);
+    if (node.contract) {
+      this.typeNames.add(node.contract.name);
+      this.ifaceMethods.set(node.contract.name, contractMethods(node.contract));
+    }
     for (const fn of node.freeFunctions ?? []) {
       const ret = fn.returnTypes?.length === 1 ? fn.returnTypes[0] : undefined;
       if (fn.modifiers.includes(FunctionModifier.PURE)
@@ -160,10 +175,15 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
     // struct root in practice (the shape appears alongside struct state), so no extra gate term - keeping the
     // gate tight avoids visiting fn-ptr-array-only contracts whose broadcast lowering must stay untouched.
     const hasStructRoot = [...this.stateRoots.values()].some((t) => holdsStruct(t));
+    const hasInterfaceCollection = [...this.stateRoots.values()].some((t) => {
+      const elem = elementOf(t);
+      return elem instanceof AddressType && !!elem.interfaceName;
+    });
     // A COMPUTED cast target `IFoo(pairFor(..)).m()` needs the pass even with no state var (params-only contract).
     // Detect it cheaply (a MethodCall on an `IFoo(<non-identifier>)` cast) so the gate stays otherwise tight.
     const hasComputedTarget = this.hasComputedCastTarget(node);
-    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0 || hasStructRoot || hasComputedTarget) {
+    if (this.stateVarIface.size > 0 || this.plainAddrStateVars.size > 0
+      || hasStructRoot || hasInterfaceCollection || hasComputedTarget) {
       node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
       if (node.constructorDef) {
         this.visitingConstructor = true;
@@ -333,7 +353,7 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
       node.object.location = loc;
     } else if (cachedField && !ADDRESS_METHODS.has(node.methodName)
       && this.isInterfaceMethod(cachedField.iface, node.methodName)) {
-      // C2's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
+      // vmap's function-local mapping-entry cache is mutable and declared after the body-top prologue, so capture
       // its current interface field immediately before the call rather than tracing back to the initial state
       // read. The external-call covenant then pins the co-spent target to exactly that runtime field value.
       const localName = `${PREFIX}cache${this.transitiveCounter}_${cachedField.iface}`;
@@ -522,24 +542,26 @@ export default class SynthesizeExternalAddressLocals extends AstTraversal {
   // unless the whole chain is state-rooted with param/literal indices (sound + valid at the body top).
   private chainTarget(obj: ExpressionNode):
   { iface: string; localName: string; init: ExpressionNode } | undefined {
-    if (!(obj instanceof FieldAccessNode)) return undefined;
+    // A direct interface-valued collection read (`strategies[token].exit(..)`) is the same self-pinned target
+    // shape as an interface field reached through a collection. Hoist parameter/literal-indexed elements too.
+    // Loop-local indices remain excluded by resolveChainType/indexSafe and continue through the per-iteration
+    // array dispatch machinery.
+    if (!(obj instanceof FieldAccessNode || obj instanceof MappingAccessNode
+      || obj instanceof ArrayAccessNode || obj instanceof TupleIndexOpNode)) return undefined;
     // A single-assignment storage pointer is the same self-pinned chain (`S storage s = m[k]; s.target`).
     // Normalize its base before checking provenance and use the normalized chain as the body-top initializer.
     const normalized = this.inlineStoragePtrBases(cloneNode(obj) as ExpressionNode);
-    if (!(normalized instanceof FieldAccessNode)) return undefined;
-    const base = this.resolveChainType(normalized.expression);
-    if (!(base instanceof StructType)) return undefined;
-    const fieldType = base.fields.find((f) => f.name === normalized.name)?.type;
-    if (!(fieldType instanceof AddressType) || !fieldType.interfaceName) return undefined;
+    const targetType = this.resolveChainType(normalized);
+    if (!(targetType instanceof AddressType) || !targetType.interfaceName) return undefined;
     const key = this.chainKey(normalized);
     if (!key) return undefined;
-    return { iface: fieldType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
+    return { iface: targetType.interfaceName, localName: `${PREFIX}${key}`, init: normalized };
   }
 
   private localStructFieldTarget(obj: ExpressionNode): { iface: string } | undefined {
     if (!(obj instanceof FieldAccessNode) || !(obj.expression instanceof IdentifierNode)) return undefined;
     const localName = obj.expression.name;
-    if (!localName.startsWith('__c2cache_') && !this.singleAssignLocals.has(localName)) return undefined;
+    if (!localName.startsWith('__vmapcache_') && !this.singleAssignLocals.has(localName)) return undefined;
     const init = this.localInits.get(localName);
     const structType = this.localStructTypes.get(localName)
       ?? (init ? this.resolveChainType(init) : undefined);

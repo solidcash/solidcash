@@ -70,9 +70,9 @@ describe('function pointers in state (dispatch table)', () => {
     expect(invTx.txid).toBeDefined();
   });
 
-  // Two distinct selectors in ONE C2 list: the second register is an INSERT into a non-empty sorted list (co-spends
-  // the first entry or HEAD as predecessor). Each dispatches its own handler - proves the C2 fn-ptr path grows the
-  // list, not just the empty-list genesis. (The fn-ptr value is an int functionId; exclusion-proof reads per C2.)
+  // Two distinct selectors in ONE vmap list: the second register is an INSERT into a non-empty sorted list (co-spends
+  // the first entry or HEAD as predecessor). Each dispatches its own handler - proves the vmap fn-ptr path grows the
+  // list, not just the empty-list genesis. (The fn-ptr value is an int functionId; exclusion-proof reads per vmap.)
   it('holds two distinct handlers in the sorted list and dispatches each', async () => {
     const provider = createTestProvider();
     const contract = new Contract(artifact, [], { provider });

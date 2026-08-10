@@ -6,7 +6,7 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-// Boundary #1: contract A calls Bank via withExternalCall, and Bank's function WRITES a C2 (sorted) mapping. The
+// Boundary #1: contract A calls Bank via withExternalCall, and Bank's function WRITES a vmap (sorted) mapping. The
 // cross-contract dispatch now co-spends Bank's sorted entry (SortedList: exact for UPDATE, predecessor for INSERT)
 // and mints Bank's entry output(s) with the commitment derived from Bank's VM trace.
 const IBANK = 'interface IBank { function setBal(int k, int v); }';
@@ -27,7 +27,7 @@ contract Caller(bytes bankAddr) {
   }
 }`;
 
-describe('cross-contract callee C2 sorted write (normal key)', () => {
+describe('cross-contract callee vmap sorted write (normal key)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
   const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });

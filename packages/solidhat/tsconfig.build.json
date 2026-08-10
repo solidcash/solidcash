@@ -2,9 +2,14 @@
   "extends": "../../tsconfig.build.json",
   "compilerOptions": {
     "outDir": "./dist",
+    "rootDir": "./src",
     "types": ["node", "vitest/globals"],
     "module": "Node16",
     "moduleResolution": "Node16"
   },
-  "include": ["src/**/*"]
+  "include": ["src/**/*"],
+  "references": [
+    { "path": "../testing/tsconfig.build.json" },
+    { "path": "../solidcash/tsconfig.build.json" }
+  ]
 }

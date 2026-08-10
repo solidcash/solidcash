@@ -10,7 +10,7 @@ import { bigIntToVmNumber } from '@bitauth/libauth';
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// KEYS / ENTRIES iteration over a SORTED (enumerable) `mapping(bytes20 => int)`. The C2 entry stores slot=H(key),
+// KEYS / ENTRIES iteration over a SORTED (enumerable) `mapping(bytes20 => int)`. The vmap entry stores slot=H(key),
 // not the raw key, so the caller supplies the keys (setIterationKeys) and the covenant verifies keyToSlot(key) ==
 // each entry's slot during the linkage walk. A forged/wrong key hashes to a different slot -> reverts; a missing
 // entry breaks the chain -> reverts. bytes20 is a fixed-width key (required for the sequential blob split).

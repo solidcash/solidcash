@@ -89,14 +89,14 @@ it must not silently compile to incorrect covenant behavior.
 
 ### Compiler and covenant soundness
 
-- [x] Fix the documented C2 sorted-mapping read issue involving a last-use local key.
+- [x] Fix the documented vmap sorted-mapping read issue involving a last-use local key.
   - Evidence/design: [`packages/solidc/docs/deferrals.md`](packages/solidc/docs/deferrals.md), “Multi-return
-    STATE helper inline” and its corrected C2 root-cause analysis.
+    STATE helper inline” and its corrected vmap root-cause analysis.
   - Completion requires a minimal source-level regression, generated-bytecode/VM proof, and a negative test
     preventing recurrence through desugaring or inlining.
   - Evidence: `packages/solidcash/test/e2e/SortedMappingComputedKeyRmw.test.ts` exercises the exact local-copy
     trigger through compiler, SDK transaction construction, VM execution, and state readback.
-- [x] Audit nearby C2 key-source and stack-liveness paths for the same stale-offset class of bug.
+- [x] Audit nearby vmap key-source and stack-liveness paths for the same stale-offset class of bug.
   - The audit added direct parameter, initialized-copy, declaration-then-assignment, computed-local, live-local,
     and inlined-helper reads to `SortedMappingComputedKeyRmw.test.ts`. It found that the adjacent
     `T key; key = expr;` form retained an opaque local metadata label and failed local execution. The compiler now
@@ -345,8 +345,13 @@ it must not silently compile to incorrect covenant behavior.
   - Completion requires one of: reducing emitted operation cost for the shape, rejecting it at compile time with
     a stable diagnostic, or documenting it as an unsupported construct. It must not keep passing tests while
     failing on chain.
-- [ ] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
+- [x] Fix the derivation-path split: the mocknet suite never exercises the derivation path that every real
   network uses.
+  - **CLOSED via the second completion option, both halves landed.** The gate is
+    `packages/solidcash/test/e2e/FaithfulDerivationPathGate.test.ts` and the explicit statement is this entry:
+    mocknet's sparse default carries NO derivation-path claim, and what IS claimed for the production path is
+    exactly what that file asserts. The first option was measured and rejected on two grounds recorded below
+    (the limit is conflated with script size; the faithful path costs 161 s on one file).
   - `relaxedConsensus` and `useSparseProbe` are both selected by
     `(provider.consensusLimits?.maximumInputBytes ?? 10_000) > 10_000`, at six call sites across
     `StatefulTransactionBuilder.ts`, `StatefulContract.ts`, `upgrades.ts`, and `SplitContractBundle.ts`.
@@ -366,7 +371,7 @@ it must not silently compile to incorrect covenant behavior.
     is a real defect on the branch every live network takes. The chain-free mocknet reproduction predicted it.
   - Root cause, with direct evidence. `StatefulTransactionBuilder.ts:3068` runs `covenantBuilder.debug()` only
     when NOT relaxed, and its own comment says that probe is what "can discover commitments and output counts for
-    dynamic C2 inserts/chunks". Its failure is swallowed by a best-effort `try/catch`. For these array shapes the
+    dynamic vmap inserts/chunks". Its failure is swallowed by a best-effort `try/catch`. For these array shapes the
     probe throws, so the discovery never happens and the transaction is then built and funded from an unresolved
     shape, which fails the covenant with `OP_VERIFY`. The relaxed mock skips the probe entirely and never
     exercises any of this. Counted over the sweep: the production run emitted 14 swallowed
@@ -506,7 +511,7 @@ it must not silently compile to incorrect covenant behavior.
     retained result reports 107 named failures and no generic `Error` or raw `RangeError` bucket.
 - [x] Verify every supported state mutation, external call, delegate call, and lifecycle path fails closed when
   supplied forged, reordered, duplicated, or missing auxiliary inputs.
-  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 81/81 executed tests cover C2 batch
+  - A deterministic integrity baseline now runs as `yarn test:security-conformance`: 81/81 executed tests cover vmap batch
     witness tampering, dynamic-loop entry tampering, external-call target substitution, cross-contract
     fail-closed subcases, delegate identity/selector pinning, split/merge missing/duplicated/reordered/redirected
     lifecycle elements, deploy child-genesis and upgrade/selfdestruct
@@ -514,7 +519,7 @@ it must not silently compile to incorrect covenant behavior.
     bytecode is carried by a compiler-owned covenant witness, so the SDK-selected master remains authenticated
     even with `SIGHASH_NONE`. Ordinary scalar/data-NFT and dynamic-chunk transitions reject missing, duplicated,
     semantically significant reordered, redirected, and commitment-forged state elements without relying on any
-    signature guard. C2 entries additionally cover missing, duplicated, reordered, redirected, capability/value,
+    signature guard. vmap entries additionally cover missing, duplicated, reordered, redirected, capability/value,
     link, proof, successor, predecessor-output, and orphan rows; nested mappings, array values, and flattened
     struct fields share that physical backend. Old chunks themselves are an identity-authenticated unordered input set. Satoshi-container
     and fungible-token container transitions additionally preserve container presence, position, destination,
@@ -523,11 +528,11 @@ it must not silently compile to incorrect covenant behavior.
     `upgrades.deployProxy` profile preserves the proxy state block and requires the pinned implementation
     co-spend. Untyped deploy
     factories reject before broadcast because the supplied
-    child artifact cannot be covenant-authenticated; typed stateful deploy combined with a C2 access also rejects
+    child artifact cannot be covenant-authenticated; typed stateful deploy combined with a vmap access also rejects
     until their trailing output regions can be separated. The gate also covers the built-in proxy lifecycle,
     multi-NFT initialization/state preservation, delegated events and returns, nested initializer helpers, and
     compiler/SDK refusal of implementation functions that reach ineligible operations. This closes the stable
-    physical backends: scalar/data NFT, dynamic chunks, C2 entries, satoshi/token containers, events/returns,
+    physical backends: scalar/data NFT, dynamic chunks, vmap entries, satoshi/token containers, events/returns,
     external/delegate composition, and lifecycle elements. Experimental profiles remain outside the stable claim.
 
 ### Cross-contract state bus and nested calls
@@ -595,14 +600,14 @@ it must not silently compile to incorrect covenant behavior.
   - `Erc20LikeApplication.test.ts`, "decodes Transfer event arguments for mint and transfer": the decoded event
     list omits the mint, whose `from` is the zero address, and leads with the transfer instead. Compare against
     the known "identical data NFTs unorderable on a non-deterministic provider" issue.
-  - `MsgSenderCrossContractC2.test.ts`, "rejects an LBC-swapped caller": `expect(masterA).toBeDefined()` fails at
+  - `MsgSenderCrossContractVMap.test.ts`, "rejects an LBC-swapped caller": `expect(masterA).toBeDefined()` fails at
     line 109, so a `getUtxos()` lookup for the caller's master NFT returns nothing straight after setup.
   - Both were provisionally grouped with the shared-signer order dependence below. That grouping was WRONG: each
     still fails alone on a pristine chain, so neither is a contamination artifact. Only `DeployThenCallFold`
     belongs in that group, and it passes 13/13 alone on a pristine chain.
   - CORRECTION after the full run at `cf6de29c`: `Erc20LikeApplication` PASSED there, so it is state-dependent
     rather than deterministic and the "genuine live-only finding" label above was over-confident on the strength
-    of a single pristine-and-alone failure. `MsgSenderCrossContractC2` failed again and still stands.
+    of a single pristine-and-alone failure. `MsgSenderCrossContractVMap` failed again and still stands.
     Reproduce both across several chain states before treating either as settled.
   - Neither reproduces on mocknet at any consensus limits, so both join the CREATE-anchor item as findings that
     require a live node to observe.
@@ -688,7 +693,26 @@ it must not silently compile to incorrect covenant behavior.
 - [ ] Resolve contradictory or stale documentation, including short-circuit behavior and outdated corpus gap
   descriptions.
 - [ ] Give every documented limitation one of: supported, experimental, deferred, or permanent BCH difference.
-- [ ] Ensure public website examples compile against the exact release packages.
+- [x] Ensure public website examples compile against the exact release packages.
+  - **Measured, and it was already healthy.** `yarn examples` only ever covered three hand-written files at the
+    repo root; the 252 fenced SolidCash blocks under `website/docs` - the first thing a new user copies - were
+    ungated. Compiling the 133 that DECLARE a contract, library or interface: 128 compile, 5 are skipped because
+    they import a file the docs do not ship, 0 fail. So the docs were not stale; they were simply unwatched.
+  - The TypeScript half is covered too, by the check that pays: every name the docs import from `solidcash`,
+    `solidc` or `@solidcash/utils` must still be exported. 33 names across 3 packages, all resolving. Full
+    type-checking of the 262 TS blocks was deliberately NOT attempted - most are fragments referencing variables
+    defined in the prose around them, so the failures would be about the harness rather than the docs, whereas an
+    import of a renamed or dropped name is what a reader hits immediately.
+  - Method note worth keeping: this must be `tsc`, not a runtime `name in module` check. The runtime version was
+    written first and is wrong - an interface has no runtime presence, so every type-only export reads as
+    missing. It reported `WcTransactionObject` as dropped from `solidcash` when `index.ts` re-exports it
+    perfectly well via `export * from './walletconnect-utils.js'`; `tsc` resolves it without complaint. The gate
+    carries a negative control in its own history: an invented name fails with TS2305, so it is not vacuous.
+  - Now gated by `yarn test:docs-snippets` (`scripts/release-docs-snippets.ts`), wired into CI between the
+    examples and package-smoke steps. The scope is deliberately narrow so the gate stays trustworthy: fragments
+    that never declared a contract are not compiled (they were never meant to stand alone, and failing them would
+    say nothing about the docs being correct), and import-bearing blocks are counted and skipped rather than
+    failed, so the number stays visible instead of being silently absorbed.
 
 ### Solidity corpus and differential testing
 
@@ -732,6 +756,44 @@ it must not silently compile to incorrect covenant behavior.
   - The gate proves named-fixture restoration and cold/warm/dependency-invalidated compilation, preserves the last
     valid artifact after a failed rebuild, and verifies `clean` removes artifacts and cache data.
 - [ ] Add a required BCHN regtest smoke suite for release candidates.
+- [-] **Gate run at head, 2026-08-08.** Every locally runnable release gate passes: `lint` (all packages),
+  `spellcheck` (0 issues), `examples`, `test:security-conformance` (15 files, 81 passed, 1 skipped),
+  `test:package-smoke` (6 packed packages), `test:generated-project-smoke`, `test:application-conformance`
+  (9 files, 94 passed), and solidcash `e2e` + `unit` (334 files, 2,748 passed). The BCHN regtest gate is
+  out of scope by maintainer direction and is the one gate not run.
+  - One real gate defect found and FIXED: `spellcheck` reported 18 issues in 18 files, and every one was in a
+    GITIGNORED path - generated `examples/effectiveacceleration/artifacts-real/**` output and the local `/codex/`
+    scratch directory. A clean clone does not contain them, so the gate was red locally while being green for
+    the release it is meant to certify, which is the worst of both. `.cspell.json` now sets `"useGitignore":
+    true`, so the gate checks the repository rather than the workspace. It also drops the run from 2,198 files
+    to 2,127 and takes 16 s.
+- [x] **Attribute the solidc vmap bytecode-size increase introduced with the MistSwap work.**
+  - Commit `f7ca0e714` closes the attribution with a direct revert measurement. `db11255c6` deliberately moved a
+    single fixed sorted write onto the batch path: the former `> 1` predicate left a lone insert, including an
+    ERC20 constructor balance initialization, without the batch witnesses required for derivation. Restoring the
+    old predicate restores the old byte sizes but also restores that incorrect transaction shape.
+  - The measured 1,952-byte and 2,229-byte outputs are therefore the required cost of the corrected batch path,
+    not unexplained drift. The ceilings remain close at 1,990 and 2,270 bytes so future growth is still detected.
+    `VMapBatchMetadata` now asserts the intended single-write batch metadata, while `DeployThenCallFold` matches only
+    the metadata fields it is designed to test.
+  - Current-head evidence on 2026-08-09: `VMapBytecodeOptimizations`, `VMapBatchMetadata`, and `DeployThenCallFold`
+    pass 17/17 tests together.
+- [-] **Clean-clone run done, 2026-08-08, and it found two things the in-repo run could not.** The branch was
+  cloned to a fresh directory, installed with `--frozen-lockfile`, built, and gated. Install plus build takes
+  61 s and succeeds; `examples` and `test:docs-snippets` pass unchanged.
+  - `spellcheck` failed on 4 coined words, all written during this session and all in tracked files.
+    <!-- cspell:ignore truthily goldens unrun docscheck -->
+    They were `truthily`, `goldens`, `unrun` and `docscheck`. Reworded rather than added to the dictionary, so the
+    dictionary keeps meaning something. Honest note: the clean clone PROMPTED this catch but was not uniquely
+    able to find it - re-running spellcheck in the working tree shows the same 4. The lesson is to re-run the
+    gate after writing, not that the clone was required.
+  - `yarn test` failed on 6 `solidc` files, EVERY ONE a 30 s timeout and none an assertion, all 6 passing on a
+    warm re-run in the same clone. That first run is exactly what CI performs on every job: the yarn cache
+    restores `node_modules` but not vitest's transform cache, so CI pays the cold cost each time while a
+    developer re-running locally never sees it. `packages/solidc` had the tightest budget in the repo at 30 s
+    against solidcash's 120 s; it is now 60 s, which still fails a genuine hang. Not claimed: that CI is
+    observably flaky today - the clone also ran under load from concurrent sessions, and the honest statement is
+    that the margin was thin enough to disappear under load.
 - [ ] Run build, lint, spellcheck, unit tests, e2e tests, examples, corpus gates, and package smoke tests from a
   clean checkout.
 - [x] Ensure CI runs for the actual release branch (`solidcash_v*`), not only pushes to `master`.
@@ -900,7 +962,7 @@ Primary evidence:
 - [`packages/solidc/docs/deferrals.md`](packages/solidc/docs/deferrals.md)
 - [`packages/solidc/docs/external-contract-calls.md`](packages/solidc/docs/external-contract-calls.md)
 - [`packages/solidc/docs/buffered-state-and-message-bus-research.md`](packages/solidc/docs/buffered-state-and-message-bus-research.md)
-- [`packages/solidc/docs/sorted-mapping-c2.md`](packages/solidc/docs/sorted-mapping-c2.md)
+- [`packages/solidc/docs/verified-mappings.md`](packages/solidc/docs/verified-mappings.md)
 - [`examples/solidity-corpus/README.md`](examples/solidity-corpus/README.md)
 - [`examples/solidity-corpus/scorecard.txt`](examples/solidity-corpus/scorecard.txt)
 - [`examples/solidity-corpus/PROGRESS.md`](examples/solidity-corpus/PROGRESS.md)
@@ -916,7 +978,7 @@ Update this table whenever a release candidate is cut.
 |---|---|---|---|
 | Clean install | **PASS** — `yarn install --frozen-lockfile --ignore-scripts` with worktree-local dependencies | `d5d4d70f` | 2026-08-04 |
 | Build | **PASS** — all six packages plus testing-suite fixture compilation | `codex/release-readiness-fixes` | 2026-08-04 |
-| Compiler tests | **PASS** — 3,146/3,146 across the complete run plus fresh-process retries for three load-sensitive cases; includes storage-pointer, alias-source, and adjacent C2 local-key regressions | `codex/release-readiness-fixes` | 2026-08-05 |
+| Compiler tests | **PASS** — 3,146/3,146 across the complete run plus fresh-process retries for three load-sensitive cases; includes storage-pointer, alias-source, and adjacent vmap local-key regressions | `codex/release-readiness-fixes` | 2026-08-05 |
 | SDK unit/e2e/mocknet | **PASS** — 433 files; 3,808 passed, 39 skipped, 9 todo. High-bit EVM storage and shared Yul-memory regressions pass | `codex/release-readiness-fixes` | 2026-08-04 |
 | Lint | **PASS** — seven workspaces plus root testing-suite lint | `codex/release-readiness-fixes` | 2026-08-04 |
 | Spellcheck | **PASS** — 2,101 files, zero issues; explicit 890-term baseline dictionary | `codex/release-readiness-fixes` | 2026-08-05 |

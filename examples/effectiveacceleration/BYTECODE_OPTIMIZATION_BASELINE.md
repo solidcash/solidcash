@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-23.
 
-Recorded from the generated artifacts in `artifacts-real/` before the general C2 and structural-codec optimization work. Sizes are `artifact.bytecode.length / 2`; half-byte values expose pre-existing odd-length artifact strings and are intentionally preserved rather than rounded.
+Recorded from the generated artifacts in `artifacts-real/` before the general vmap and structural-codec optimization work. Sizes are `artifact.bytecode.length / 2`; half-byte values expose pre-existing odd-length artifact strings and are intentionally preserved rather than rounded.
 
 | Contract | Baseline bytes |
 | --- | ---: |
@@ -57,7 +57,7 @@ MarketplaceV1 function-body baseline:
 | postThreadMessage | 4690 |
 | updateJobWhitelist | 3366 |
 
-Synthetic C2 baselines (`forceStateful: true`):
+Synthetic vmap baselines (`forceStateful: true`):
 
 | Shape | Bytes |
 | --- | ---: |
@@ -208,7 +208,7 @@ passed:
 | solidcash, including VM/e2e tests | 3178 passed, 23 skipped, 9 todo |
 | utils | 288 passed, 1 todo |
 | testing | 10 passed |
-| Focused C2, array, and struct/mapping set | 114 passed |
+| Focused vmap, array, and struct/mapping set | 114 passed |
 
 The skipped tests remain existing tracked follow-up work and were not silently enabled or removed by this
 optimization series. `yarn lint` is not currently a clean repository gate: it reports 240 existing errors across

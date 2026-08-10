@@ -1,0 +1,49 @@
+pragma solidcash >=0.8.0;
+
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { BchNative } from "../../contracts/BchNative.scash";
+import { BlackList } from "../../contracts/BlackList.scash";
+
+contract MyToken(address initialOwner)
+    is ERC20, BchNative, BlackList
+{
+    public address owner;
+    public int backedSupply;
+
+    constructor() {
+        this.owner = initialOwner;
+    }
+
+    function issue(uint256 amount) {
+        require(msg.sender == this.owner);
+        require(amount > 0);
+        int nativeAmount = int(amount);
+        bytes32 category = this.category;
+        require(this.tokens[category].tokenAmount >= this.backedSupply + nativeAmount);
+        this.backedSupply = this.backedSupply + nativeAmount;
+        _mint(this.owner, amount);
+    }
+
+    function openSelf() {
+        address account = msg.sender;
+        require(balanceOf(account) == 0);
+        _mint(account, 0);
+        this.blacklisted[account] = false;
+    }
+
+    function _blacklistAdmin() internal view override returns (address) { return this.owner; }
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.backedSupply = this.backedSupply + int(amount);
+        _update(address(0), account, amount);
+    }
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _update(account, address(0), amount);
+        this.backedSupply = this.backedSupply - int(amount);
+    }
+    function _nativeCanWrap(address account) internal view override returns (bool) {
+        return !this.blacklisted[account];
+    }
+    function _nativeCanUnwrap(address account) internal view override returns (bool) {
+        return !this.blacklisted[account];
+    }
+}

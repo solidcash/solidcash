@@ -48,6 +48,18 @@ const FIELD_VAR: Partial<Record<NullaryOperator, string>> = {
   [NullaryOperator.BLOCK_COINBASE]: '__block_coinbase',
 };
 
+// State layout must not depend on the order functions happen to be traversed after inheritance/modifier
+// rewriting. Split preparation and the ordinary pipeline can visit the same block fields in different orders;
+// append every synthesized register in this one physical order instead.
+const FIELD_ORDER = [
+  '__block_number',
+  '__block_timestamp',
+  '__block_difficulty',
+  '__block_size',
+  '__block_totalFees',
+  '__block_coinbase',
+];
+
 const OWNER_VAR = '__blockOracleOwner';
 const SIG_PARAM = '__blockOracleSig';
 const UPDATE_FN = '__updateBlockOracle';
@@ -202,7 +214,7 @@ export default class SynthesizeBlockOracle extends AstTraversal {
 
     if (this.used.size === 0) return node;
 
-    const fields = [...this.used];
+    const fields = [...this.used].sort((a, b) => FIELD_ORDER.indexOf(a) - FIELD_ORDER.indexOf(b));
     for (const varName of fields) {
       if (!node.stateVariables.some((sv) => sv.name === varName)) {
         node.stateVariables.push(this.at(new StateVariableNode(registerType(varName), varName)) as StateVariableNode);

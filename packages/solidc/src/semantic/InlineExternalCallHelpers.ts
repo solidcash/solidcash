@@ -15,15 +15,20 @@ import {
   CastNode,
   TupleAssignmentNode,
   BranchNode,
+  MappingAccessNode,
+  MappingAssignNode,
+  MappingDeleteNode,
   WhileNode,
   DoWhileNode,
   UncheckedNode,
+  ReturnNode,
 } from '../ast/AST.js';
 import { collectAmbiguousInlineKeys, inlineKey } from './inlineOverloadGuard.js';
 import { AmbiguousInlineOverloadError } from '../Errors.js';
 import { AddressType, Type } from '@solidcash/utils';
 import AstTraversal from '../ast/AstTraversal.js';
 import { cloneNode } from '../ast/clone.js';
+import EarlyReturnTransformation from './EarlyReturnTransformation.js';
 
 /**
  * Inlines internal calls to VOID helper functions that make external calls. An external call is a co-spend
@@ -83,8 +88,8 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       // Graph handlers intentionally execute behind OP_INVOKE: their hidden callManifest/caller/result
       // frame is what makes each reached edge authoritative. Flattening one into __message_bus1 erases that
       // context and turns its external calls into inert ordinary-call nodes.
-      if (!fn.graphEmissionHandler && fn.body && fn.returnTypes.length === 0
-        && this.makesExternalCall(fn)) {
+      if (!fn.graphEmissionHandler && fn.body && this.canDiscardCallResult(fn)
+        && (this.makesExternalCall(fn) || this.hasConditionalCollectionAccess(fn))) {
         this.voidExternalCallHelpers.add(fn.name);
       }
     }
@@ -102,6 +107,23 @@ export default class InlineExternalCallHelpers extends AstTraversal {
       if (fn.body) fn.body.statements = this.inlineStatements(fn.body.statements ?? [], [fn.name]);
     }
     return node;
+  }
+
+  // A bare call statement may ignore a helper's named returns. Inline that shape too when the helper falls through
+  // normally (no explicit return statement): the named return variables are ordinary locals whose values are simply
+  // discarded by the caller. This covers Kashi's `_borrow() { updateExchangeRate(); ... }`, where keeping the public
+  // returning helper as an OP_INVOKE subroutine would hide its oracle co-spend from the caller's SDK metadata.
+  private canDiscardCallResult(fn: FunctionDefinitionNode): boolean {
+    if (fn.returnTypes.length === 0) return true;
+    if (fn.returnNames.length !== fn.returnTypes.length || fn.returnNames.some((name) => !name)) return false;
+    let safeReturns = true;
+    this.walk(fn.body, (n) => {
+      if (n instanceof ReturnNode && (n.expressions.length !== fn.returnNames.length
+        || n.expressions.some((e, i) => !(e instanceof IdentifierNode) || e.name !== fn.returnNames[i]))) {
+        safeReturns = false;
+      }
+    });
+    return safeReturns;
   }
 
   private static isLowLevel(m: string): boolean {
@@ -169,6 +191,27 @@ export default class InlineExternalCallHelpers extends AstTraversal {
         if (n.object instanceof IdentifierNode && this.isInterfaceTyped(env.get(n.object.name))) { found = true; return; }
         if (InlineExternalCallHelpers.isLowLevel(n.methodName)) found = true;
       }
+    });
+    return found;
+  }
+
+  // A collection journal hoists every helper entry read to its wrapper's prologue. That is not semantics-
+  // preserving when a branch selects the entry (SushiToken's `_moveDelegates`/`_writeCheckpoint`): a key can be
+  // derived from another entry, two runtime keys can alias, and the untaken arm must not require a physical NFT.
+  // Inline this narrow helper shape so IfConvertConditionalEntryOp and ordinary entry analysis retain the branch
+  // predicate. The same alpha-renaming machinery used for external-call helpers handles locals and repeated calls.
+  private hasConditionalCollectionAccess(fn: FunctionDefinitionNode): boolean {
+    let found = false;
+    const containsCollection = (root: Node): boolean => {
+      let contains = false;
+      this.walk(root, (candidate) => {
+        if (candidate instanceof MappingAccessNode || candidate instanceof MappingAssignNode
+          || candidate instanceof MappingDeleteNode) contains = true;
+      });
+      return contains;
+    };
+    this.walk(fn.body, (candidate) => {
+      if (candidate instanceof BranchNode && containsCollection(candidate)) found = true;
     });
     return found;
   }
@@ -273,7 +316,27 @@ export default class InlineExternalCallHelpers extends AstTraversal {
     const n = this.counter++;
     const map = new Map<string, string>();
     for (const p of helper.parameters) map.set(p.name, `${PREFIX}${n}_${p.name}`);
-    const body = cloneNode(helper.body);
+    for (const name of helper.returnNames) if (name) map.set(name, `${PREFIX}${n}_${name}`);
+    // A void helper's `return;` exits the HELPER, not its caller. Normalize early returns before splicing so the
+    // remaining helper statements sit in the appropriate else branch, then erase the now-terminal bare returns.
+    // Otherwise `accrue()`'s `if (elapsed == 0) return;` leaks into a uint-returning caller after inlining.
+    const normalized = cloneNode(helper) as FunctionDefinitionNode;
+    normalized.accept(new EarlyReturnTransformation());
+    const stripReturns = (block: BlockNode): void => {
+      const kept: StatementNode[] = [];
+      for (const statement of block.statements ?? []) {
+        if (statement instanceof ReturnNode) continue;
+        if (statement instanceof BranchNode) {
+          stripReturns(statement.ifBlock);
+          if (statement.elseBlock) stripReturns(statement.elseBlock);
+        } else if (statement instanceof BlockNode) stripReturns(statement);
+        else if (statement instanceof UncheckedNode) stripReturns(statement.block);
+        kept.push(statement);
+      }
+      block.statements = kept;
+    };
+    stripReturns(normalized.body);
+    const body = normalized.body;
     this.walk(body, (node) => {
       if (node instanceof VariableDefinitionNode && !map.has(node.name)) {
         map.set(node.name, `${PREFIX}${n}_${node.name}`);

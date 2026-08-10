@@ -9,7 +9,7 @@ import { createTestProvider } from '../test-util.js';
 // End-to-end value-mapping upsert `mapping(int => int)`. `bal[k] = v` compiles to the sorted upsert covenant:
 // present key (slot==H(k)) -> UPDATE the value (link preserved); absent key -> INSERT (co-spend predecessor, mint
 // NEW[k|next|v]). The SDK co-spends the exact entry (update) or predecessor (insert); the covenant pins the output
-// value, so the RHS is derived from the VM trace. A read `bal[k]` returns the stored value / default (C2-sound).
+// value, so the RHS is derived from the VM trace. A read `bal[k]` returns the stored value / default (vmap-sound).
 const SRC = `contract C() {
   mapping(int => int) bal;
   function setBal(int k, int v, pubkey pk, sig s) { require(checkSig(s, pk)); bal[k] = v; }

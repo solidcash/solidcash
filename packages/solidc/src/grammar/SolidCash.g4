@@ -687,7 +687,7 @@ whileStatement
     ;
 
 consoleStatement
-    : 'console.log' consoleParameterList ';'
+    : 'console.log' Identifier? consoleParameterList ';'
     ;
 
 assemblyStatement
@@ -948,7 +948,7 @@ expression
     // callable form unambiguous with the UnaryOp alternative above.
     | expression '.length' callOptions? expressionList # MethodCall
     | expression '.value' callOptions? expressionList # MethodCall
-    | expression '.' Identifier callOptions? expressionList # MethodCall
+    | expression '.' anyIdentifier callOptions? expressionList # MethodCall
     // Applying options to a function value without calling it still yields a function value; Solidity permits
     // reading its address/selector component in a larger expression (`this.f{gas: 1}.selector == this.f.selector`).
     | expression '.' Identifier callOptions memberName # CallOptionsMember

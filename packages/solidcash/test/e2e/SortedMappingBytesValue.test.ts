@@ -6,7 +6,7 @@ import { keyToSlot, encodeEntryCommitment, slotValueToBytes, getEntryNftAddress,
 import { alicePriv, alicePub } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
-// A C2 sorted mapping with a fixed-width bytesN value (e.g. mapping(int => bytes32) for a commitment/hash). The
+// A vmap sorted mapping with a fixed-width bytesN value (e.g. mapping(int => bytes32) for a commitment/hash). The
 // value is the raw N-byte commitment tail (no OP_BIN2NUM); present read -> the bytes, absent read -> N zero bytes.
 // The upsert/read/RMW machinery is identical to the int case; only the value normalize differs (verbatim vs number).
 const SRC = `contract C() {

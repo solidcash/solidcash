@@ -3,7 +3,7 @@ import { describe, it, expect } from 'vitest';
 import { createVirtualMachineBch2026, hash256, hexToBin } from '@bitauth/libauth';
 import { Op } from '@solidcash/utils';
 
-// End-to-end claim-once (the headline C2 use case): `mapping(address => bool) claimed;
+// End-to-end claim-once (the headline vmap use case): `mapping(address => bool) claimed;
 // function claim(a){ require(!claimed[a]); claimed[a] = true; }`. Backed by the sorted linked list, a claim IS an
 // insert (which requires the key to be absent - the bracket Ps < k < S). So claiming an already-claimed key has
 // no valid predecessor and reverts: claim-once, with no default-on-absent branch to omit. This walks a realistic
@@ -93,7 +93,7 @@ function claim(model: ListModel, k: number): true | string {
   return verdict;
 }
 
-describe('sorted linked-list mapping: claim-once (C2 end-to-end)', () => {
+describe('sorted linked-list mapping: claim-once (vmap end-to-end)', () => {
   it('lets each address claim exactly once; a second claim reverts (no omittable default)', () => {
     const list = new ListModel();
     // A sequence of distinct claimers all succeed, building the sorted list.

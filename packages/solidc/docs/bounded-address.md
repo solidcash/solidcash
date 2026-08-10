@@ -110,14 +110,14 @@ achievable.
 
 ## 5. Address-keyed mappings - soundness
 
-`mapping(address => V)`. C2 model: `slot = sha256(key)` high-bit-masked (type-agnostic over the key bytes;
+`mapping(address => V)`. vmap model: `slot = sha256(key)` high-bit-masked (type-agnostic over the key bytes;
 `keyToSlot`), sorted-linked-list entries give exclusion proofs for `require(m[a] == 0)`. Nested keys:
 `sha256(sha256(a) ++ sha256(b) ++ ..)` masked. The rescope interacts with this in exactly one place - the KEY
 PREIMAGE - and the soundness rests on making it canonical:
 
 1. **The key preimage is the canonical lbc, hashed as-is: `slot = sha256(lbc(addr))` masked.** NOT the padded frame.
    Rationale: the lbc is the address's unique identity; it is what is on the covenant stack; and it keeps address
-   keys consistent with the existing type-agnostic `sha256(value)` model (address keys already work in C2 this way).
+   keys consistent with the existing type-agnostic `sha256(value)` model (address keys already work in vmap this way).
    The Section-3 storage frame is never the key preimage. NB this is for `mapping(address => V)` where `address` is
    the BCH-lbc `AddressType`. A ported EVM contract that keys by the EVM 20-byte address uses `uint160` (Section 2),
    which is a NUMBER key - `slot = sha256(uint160-bytes)` - and is already handled; the two are different key spaces,
@@ -139,7 +139,7 @@ PREIMAGE - and the soundness rests on making it canonical:
    (e.g. the length-0 frame `00 ..pad..`, i.e. `len = 0`) so `address(0)` is one fixed preimage -> one fixed slot,
    and `a == address(0)` is a byte compare against that canonical frame. Must be defined once and used by covenant
    AND SDK. (This is an EVM-parity edge, not specific to keys, but keys make it load-bearing.)
-5. **Iteration (KEYS/ENTRIES over a sorted address mapping)**: the C2 entry stores `slot = sha256(key)`, not the raw
+5. **Iteration (KEYS/ENTRIES over a sorted address mapping)**: the vmap entry stores `slot = sha256(key)`, not the raw
    key, so KEYS iteration supplies the keys and the covenant verifies `sha256(key) == slot`. Address keys are
    variable-length lbc, which the existing variable-width iteration protocol already handles (LENGTH-PREFIXED key
    blob). No change needed beyond using the same canonical lbc preimage.
@@ -170,8 +170,8 @@ value). Fail-closed is mandatory.
   (state vars + commitment packing) behind/replacing the `rawbytes` path: `store` pads (with ceiling guard),
   `load` strips to the exact lbc. Deliverable: address state vars pack inline in the 128B commitment (no chunk
   UTXO), uniform with `bytesN`. Measure against the framed model. No slot-field or mapping-key change required yet.
-- **Phase 2 - address-keyed mappings.** Route `mapping(address => V)` / `mapping(K => address)` through C2 with the
-  canonical `sha256(lbc)` key preimage (Section 5) and the inline fixed-36 value (fits the C2 entry's <=64B value
+- **Phase 2 - address-keyed mappings.** Route `mapping(address => V)` / `mapping(K => address)` through vmap with the
+  canonical `sha256(lbc)` key preimage (Section 5) and the inline fixed-36 value (fits the vmap entry's <=64B value
   slot, no chunk). Adversarial tests: same address fresh-vs-loaded hashes identically; `address(0)` sentinel;
   exclusion proof for an absent address key; ceiling-exceeding key fails closed.
 - **Phase 3 - address as a 2-slot composite field** (`sload`/`sstore` on an address slot). Rides composite sub-slot
@@ -233,7 +233,7 @@ brainstorm was too bullish. Honest re-weighting:
 - *Uniform / deterministic*: minor, and it ADDS a 5th address representation unless the whole model is reconciled
   (large effort).
 - *Sound address-keyed mappings*: NOT unique to the fixed form - soundness needs an exact key round-trip, which the
-  status-quo framing also provides; address keys already work in C2 as `sha256(value)`.
+  status-quo framing also provides; address keys already work in vmap as `sha256(value)`.
 
 **CONS - confirmed / heavier:**
 - Breaks the slot-layout conformance (Phase 3, the EVM-20B-layout vs 2-slot-field tension).

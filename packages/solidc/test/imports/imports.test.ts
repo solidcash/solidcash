@@ -3560,9 +3560,9 @@ describe('Imports', () => {
         '/lib/grandparent.scash': `
           contract GrandParent() {
             int constant C1 = 10;
-            int constant C2 = 20;
+            int constant vmap = 20;
             function gpFunc(int x) {
-              require(x <= C1 + C2);
+              require(x <= C1 + vmap);
             }
           }
         `,
@@ -3587,7 +3587,7 @@ describe('Imports', () => {
         }
       `;
 
-      // Should compile without error - ordering should be C1, C2, C3, C4
+      // Should compile without error - ordering should be C1, vmap, C3, C4
       const artifact = compileString(code, {
         importResolver: createMapResolver(files),
         rootFileId: '/main.scash',

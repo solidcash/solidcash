@@ -1,0 +1,304 @@
+pragma solidcash >=0.8.0;
+
+import { UsdtFacet } from "./nusdt_facet.scash";
+
+
+// =============================================================================
+// NativeUsdt - proxy master for a drop-in port of Ethereum USDT (TetherToken,
+// 0xdAC17F958D2ee523a2206206994597C13D831ec7, solc v0.4.18) backed by a REAL
+// CashTokens fungible token.
+//
+// WHY THIS IS SPLIT. The monolithic version of this contract compiles to 12,612 B
+// of script. BCH applies MAX_INPUT_BYTESIZE = 10,000 bytes PER SPENDING INPUT
+// (the P2SH32 redeem script plus its unlocking data), so a monolith cannot be
+// spent at all - its deploy probe cannot even run one instruction. No single
+// function is over the limit (largest body 964 B); the total is the SUM of all
+// bodies plus one shared dispatcher. So this needs partitioning, not
+// intra-function splitting.
+//
+// The partition follows docs/large-contract-splitting.md strategy S2: a proxy
+// master holding the state, plus a facet deployed as a BRANDED DELEGATE LIBRARY
+// (docs/library-contracts.md). The facet rides its OWN co-spent input with its
+// own 10 KB budget, so splitting multiplies the available budget instead of
+// compressing code.
+//
+// ONE facet, not three. The 10,000 B cap is on the whole UNLOCKING BYTECODE -
+// redeem script plus constructor arguments plus the call's own arguments - and
+// each extra facet costs the master a constructor argument (~72 B deployed for
+// one, ~171 B for three). The master runs at ~9,760 B of usable budget, so that
+// difference is not decorative. See packages/solidc/docs/native-usdt-port.md s1.2.
+//
+// WHERE THE LINE IS DRAWN: BY WRITE KIND, NOT BY SUBJECT. A mapping UPDATE
+// settles through a delegate, but a first-touch INSERT cannot - an insert mints
+// an entry node, so the transaction's own-category mutable NFT count rises, and a
+// delegatecall master conserves that count (the same defence that refuses an
+// appended fabricated entry node). So every function that can CREATE a key runs
+// directly here - transfer, approve, openSelf - and update-only functions are
+// delegated: redeem, destroyBlackFunds, removeBlackList, unfreeze, transferFrom.
+// That is what makes the mapping surface reachable at all; see
+// packages/solidc/docs/native-usdt-port.md s3.
+//
+// `transferFrom` is delegated even though it writes `balances[to]`, because
+// `openSelf` has already created that row - the same precondition every delegated
+// mapping write here relies on. Its budget buys `deposit` a place on the master.
+//
+// Soundness of the split rests on the library BRAND, not on an address: a facet
+// compiled with { brandLibrary: true } pins the co-spent master's category in its
+// own covenant, so a library branded to another contract cannot be delegatecalled
+// against this one (LibraryDelegate.test.ts proves the foreign-consumer reject).
+//
+//   * `name` / `symbol` are `bytes32`, not `string`. A dynamic-length BCH state
+//     variable is stored as length+hash in the commitment with the bytes living in
+//     separate CHUNK UTXOs that must be co-spent on EVERY call that reads state -
+//     a permanent per-transaction cost for metadata no on-chain logic ever reads.
+//     Both values fit in 32 bytes ("Tether USD", "USDT"), and richer metadata
+//     belongs in BCMR anyway.
+//
+// WHY NAMED FORWARDERS AND NOT A FALLBACK. A single `fallback(bytes)` dispatcher
+// is smaller, but the SDK derives sorted-mapping (C2) entry slots from the ABI of
+// the function being CALLED. A bytes-blob fallback hides the facet's arguments, so
+// every param-keyed mapping write - `balances[to]`, `isBlackListed[who]`,
+// `allowed[owner][spender]` - fails slot derivation. Named forwarders keep those
+// parameters in the master's own ABI, and `L.f()` desugars to the delegatecall
+// while the SDK auto-wires the facet co-spend from registerLibrary.
+//
+// WHAT STAYS IN THE MASTER. Delegate mode cannot execute token-container
+// operations - `this.tokens[cat].transfer(...)` makes the delegate input fail its
+// covenant (docs/delegatecall.md), and merely READING a container from a delegating
+// function is refused the same way. The four functions that touch the reserve
+// therefore live here: `setBacking`, `withdraw`, `cancelDeposit`, `deposit`.
+// =============================================================================
+
+contract NativeUsdt(address initialOwner) {
+
+    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
+
+    // ---- events emitted from the master itself ----
+    event Transfer(address indexed from, address indexed to, int value);
+    event Approval(address indexed tokenOwner, address indexed spender, int value);
+    event Issue(int amount);
+    event AddedBlackList(address indexed user);
+    event Frozen(address indexed user);
+    event Withdrawal(address indexed from, int value);
+    event DepositCancelled(address indexed to, int value);
+    event DepositQuarantined(address indexed to, int value, int unlockAt);
+
+    // ---- shared state layout (see nusdt_state.inc) ----
+    address owner;
+    int totalSupply;
+    mapping(address => int) balances;
+    mapping(address => mapping(address => int)) allowed;
+    bool paused;
+    mapping(address => bool) isBlackListed;
+    bytes32 name;
+    bytes32 symbol;
+    uint8 decimals;
+    bool deprecated;
+    address upgradedAddress;
+    mapping(address => bool) frozen;
+    mapping(address => int) pendingAmount;
+    mapping(address => int) pendingUnlockAt;
+    int quarantineBlocks;
+    bytes32 backingCategory;
+    bool backingSet;
+    int containerSeen;
+    int backedSupply;
+    int clock;
+
+    modifier onlyOwner() {
+        require(msg.sender == this.owner);
+        _;
+    }
+
+    // All supply is preminted into the backing container at genesis; the ledger
+    // starts empty and `issue` (facet) releases premint into circulation. This is
+    // the only sound supply model on BCH - fungible amounts of a category can
+    // never be created after that category's genesis transaction.
+    constructor(bytes32 tokenName, bytes32 tokenSymbol, uint8 tokenDecimals, int quarantine) {
+        this.name = tokenName;
+        this.symbol = tokenSymbol;
+        this.decimals = tokenDecimals;
+        this.owner = initialOwner;
+        this.paused = false;
+        this.deprecated = false;
+        this.totalSupply = 0;
+        this.containerSeen = 0;
+        this.backedSupply = 0;
+        this.quarantineBlocks = quarantine;
+        this.clock = 0;
+        this.backingSet = false;
+        this.upgradedAddress = initialOwner;
+        this.backingCategory = 0x0000000000000000000000000000000000000000000000000000000000000000;
+    }
+
+    // Pin the backing FT category, once. `containerSeen` is read from the
+    // container's ACTUAL token amount rather than an owner-supplied number, so the
+    // owner cannot overstate the premint and `issue` can never release more than
+    // physically exists. One-shot - the category can never be repointed.
+    function setBacking(bytes32 category) onlyOwner {
+        require(!this.backingSet);
+        this.backingSet = true;
+        this.backingCategory = category;
+        this.containerSeen = this.tokens[category].tokenAmount;
+    }
+
+    // Unwrap: burn ledger balance, hand out real bearer CashTokens. Policy still
+    // applies on the way out (paused / blacklist / frozen), which is what makes an
+    // exit-side veto possible at all. `totalSupply` is unchanged - the tokens
+    // still exist, they have merely left the tracked set.
+    function withdraw(bytes32 category, bytes20 to, int amount) {
+        require(!this.paused);
+        require(!this.deprecated);
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(amount > 0);
+        require(this.balances[sender] >= amount);
+        require(this.tokens[category].tokenAmount >= amount);
+
+        this.balances[sender] = this.balances[sender] - amount;
+        this.backedSupply = this.backedSupply - amount;
+        this.containerSeen = this.containerSeen - amount;
+        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), amount);
+        emit Withdrawal(sender, amount);
+    }
+
+    // A refused deposit is never confiscated: the depositor takes the FTs back out
+    // to bearer form. Deliberately available to a blacklisted or frozen claimant
+    // too - refusing admission must not mean seizing funds, or wrapping becomes a
+    // honeypot and nobody wraps.
+    function cancelDeposit(bytes32 category, bytes20 to) {
+        require(!this.deprecated);
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        address claimant = msg.sender;
+        int pending = this.pendingAmount[claimant];
+        require(pending > 0);
+        require(this.tokens[category].tokenAmount >= pending);
+
+        this.pendingAmount[claimant] = 0;
+        this.pendingUnlockAt[claimant] = 0;
+        this.containerSeen = this.containerSeen - pending;
+        this.backedSupply = this.backedSupply - pending;
+        this.tokens[category].transfer(new LockingBytecodeP2PKH(to), pending);
+        emit DepositCancelled(claimant, pending);
+    }
+
+    // ---- facet forwarders ----
+    // NOTE: each forwarder's parameter names match the facet's exactly. The SDK
+    // resolves a sorted-mapping key by looking the facet's declared keyParam name
+    // up in the ABI of the function being called, so a renamed forwarder parameter
+    // silently breaks slot derivation ("Cannot convert value to bytes for type
+    // address") rather than failing at compile time.
+    function redeem(int amount) { UsdtFacet.redeem(amount); }
+    function destroyBlackFunds(address blackListedUser) { UsdtFacet.destroyBlackFunds(blackListedUser); }
+    function transferOwnership(address newOwner) { UsdtFacet.transferOwnership(newOwner); }
+    function pause() { UsdtFacet.pause(); }
+    function unpause() { UsdtFacet.unpause(); }
+    function removeBlackList(address clearedUser) { UsdtFacet.removeBlackList(clearedUser); }
+    function unfreeze(address user) { UsdtFacet.unfreeze(user); }
+    function deprecate(address newAddress) { UsdtFacet.deprecate(newAddress); }
+    function setQuarantineBlocks(int blocks) { UsdtFacet.setQuarantineBlocks(blocks); }
+    function tick(int nowHeight) { UsdtFacet.tick(nowHeight); }
+    function claimDeposit() { UsdtFacet.claimDeposit(); }
+
+    // ---- The container path, direct (non-delegated) ----
+    // Re-entry, step 2, and the one admission function that is NOT delegated. A token
+    // container is a master-only capability: a delegate input fails its covenant on any
+    // container operation, so a facet cannot see the reserve at all - not even to read it.
+    // Its own mapping writes are plain UPDATEs, so this is here for the container alone.
+    // `transferFrom` was moved to the facet to pay for the room; see its note there.
+    function deposit(bytes32 category, int nowHeight, int amount) {
+        require(!this.paused);
+        require(!this.deprecated);
+        require(this.backingSet);
+        require(category == this.backingCategory);
+        require(amount > 0);
+        require(tx.time >= nowHeight);
+        require(nowHeight >= this.clock);
+        this.clock = nowHeight;
+
+        address claimant = msg.sender;
+        require(this.pendingAmount[claimant] == 0);
+
+        // The reserve must GROW by at least `amount` in this transaction. Both sides
+        // derive the token container's p2sh32 on-chain from (master category, backing
+        // category), so this measures the container specifically - an output paying
+        // the depositor, or any other address, is not counted.
+        //
+        // A DELTA, not an absolute. Summing container-paying outputs against
+        // `containerSeen` would look equivalent and is not: anyone can pay the
+        // container address directly, which raises the real balance without raising
+        // the ledger's figure, and a depositor could then credit themselves against
+        // someone else's donation without paying anything. Comparing the two sides of
+        // this transaction makes that impossible, and makes the line preservation as
+        // well as growth - the whole reserve must come back out to the container.
+        int reserveBefore = this.tokens[category].tokenAmount;
+        int reserveAfter = this.outState.tokens[category].tokenAmount;
+        require(reserveAfter >= reserveBefore + amount);
+
+        this.containerSeen = this.containerSeen + amount;
+        this.backedSupply = this.backedSupply + amount;
+
+        int unlockAt = nowHeight + this.quarantineBlocks;
+        this.pendingAmount[claimant] = amount;
+        this.pendingUnlockAt[claimant] = unlockAt;
+        emit DepositQuarantined(claimant, amount, unlockAt);
+    }
+
+    // ---- The INSERT path, direct (non-delegated) ----
+    // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a C2 INSERT
+    // mints one, so a first-touch mapping write cannot settle through a facet. These six each
+    // first-touch a key, so they run HERE, on the master, where the write is direct.
+    // The update-only functions (redeem, destroyBlackFunds, removeBlackList, unfreeze) stay on
+    // their facets, because an UPDATE through a delegate does settle.
+
+    function transfer(address to, int value) {
+        require(!this.paused);
+        require(!this.deprecated);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        require(to != sender);
+        require(this.balances[sender] >= value);
+        this.balances[sender] = this.balances[sender] - value;
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
+    }
+
+    function transferFrom(address from, address to, int value) { UsdtFacet.transferFrom(from, to, value); }
+
+    function approve(address spender, int value) {
+        require(!this.deprecated);
+        address tokenOwner = msg.sender;
+        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
+        this.allowed[tokenOwner][spender] = value;
+        emit Approval(tokenOwner, spender, value);
+    }
+
+    function issue(int amount) { UsdtFacet.issue(amount); }
+
+    function addBlackList(address evilUser) { UsdtFacet.addBlackList(evilUser); }
+
+    function freeze(address user) { UsdtFacet.freeze(user); }
+
+    function openSelf() {
+        address who = msg.sender;
+        require(this.balances[who] == 0);
+        require(this.pendingAmount[who] == 0);
+        this.balances[who] = 0;
+        this.pendingAmount[who] = 0;
+        this.pendingUnlockAt[who] = 0;
+        this.isBlackListed[who] = false;
+        this.frozen[who] = false;
+    }
+
+    function authorize(pubkey pk, sig s) unsafe {
+        require(checkSig(s, pk));
+    }
+}

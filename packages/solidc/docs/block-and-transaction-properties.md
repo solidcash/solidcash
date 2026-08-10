@@ -556,6 +556,11 @@ extensions are added on top.
 `this.activeInputIndex` / `this.activeBytecode` / `this.categoryId`, and full per-input/output introspection
 `tx.inputs[i].*` / `tx.outputs[i].*`.
 
+`this.category` is the Solidity-oriented own-category accessor: it strips the NFT capability byte from the
+master input's native `OP_UTXOTOKENCATEGORY` result and reverses the serialized bytes once, yielding the
+display-order `bytes32` used by `this.tokens[...]` and SDK category IDs. Own-category token-container accesses
+are compiler-derived and therefore add no category parameter to the public ABI.
+
 **Recurring divergences** (all by design): the fee-family values are **sat/KB**, not wei/gas; the gas-family
 values are fixed shims (no metering on BCH); randomness (`prevrandao`) is grindable, not a beacon; `chainid`
 is a single byte; and `difficulty` stays the real PoW difficulty rather than aliasing `prevrandao`.

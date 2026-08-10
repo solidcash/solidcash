@@ -365,7 +365,7 @@ describe('call a function-pointer struct field directly (s.x(), t[i].x(), m[k].x
       + ` t[0].x = h; ${FP} fp = t[0].x; return fp(); } }`;
     expect(bc(direct)).toBe(bc(hoist));
   });
-  it('accepts direct and hoisted mapping element function-pointer calls under C2', () => {
+  it('accepts direct and hoisted mapping element function-pointer calls under vmap', () => {
     const S = 'struct S { ' + FP + ' x; } mapping(uint => S) m;';
     const direct = `contract C { ${S} ${H} function f() public returns (uint) { m[0].x = h; return m[0].x(); } }`;
     const hoist = `contract C { ${S} ${H} function f() public returns (uint) {`
@@ -439,7 +439,7 @@ describe('clearer diagnostic for an external call on an interface-typed struct-f
   // generic "only supported on interface/contract instances" error was misleading. Give the accurate limitation +
   // the hoist-to-local workaround (which compiles for a non-inlined receiver; the co-spent target then traces).
   const I = 'interface IERC20 { function balanceOf(address a) external view returns (uint256); }';
-  it('captures an interface field from a mutable C2 mapping-entry cache at the call site', () => {
+  it('captures an interface field from a mutable vmap mapping-entry cache at the call site', () => {
     const src = `pragma solidity ^0.8.0; ${I} contract C { struct Pool { IERC20 lpToken; uint256 x; }`
       + ' mapping(uint256 => Pool) pools; function f(uint256 k) public returns (uint256) {'
       + ' Pool storage pool = pools[k]; pool.x++; return pool.lpToken.balanceOf(address(this)); } }';
@@ -1016,6 +1016,16 @@ describe('abi.encodePacked supported source types', () => {
     expect(compileString(
       'contract C { function f(uint[] memory a, bytes memory b, string memory s)'
       + ' public pure returns (bytes memory) { return abi.encodePacked(uint(1), a, b, s); } }',
+      { solidityImportCompat: true },
+    ).contractName).toBe('C');
+  });
+});
+
+describe('soft-keyword method names', () => {
+  it('accepts leave as an interface method name and call', () => {
+    expect(compileString(
+      'interface IBar { function leave(uint share) external; }'
+      + ' contract C(IBar bar) { function f(uint share) public { bar.leave(share); require(true); } }',
       { solidityImportCompat: true },
     ).contractName).toBe('C');
   });

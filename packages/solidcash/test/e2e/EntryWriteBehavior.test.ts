@@ -85,7 +85,7 @@ describe('read-after-write same key', () => {
 
 describe('write in loop', () => {
   // Invariant-key loops cache the entry locally and flush one authenticated upsert. Varying array-key loops and
-  // canonical counter-key loops use the C2 upsert-loop covenant, including Solidity-style delete-to-default.
+  // canonical counter-key loops use the vmap upsert-loop covenant, including Solidity-style delete-to-default.
   const dep = async (src: string): Promise<any> =>
     getContractFactory(compileString(src, { forceStateful: true }), await fundedSigner()).deploy();
   const MAP = (body: string): string => `contract C { mapping(int => int) m;

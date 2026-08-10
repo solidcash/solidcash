@@ -13,7 +13,7 @@ features which were previously discussed together:
 The first two deliver substantial value without a cross-contract bus. The third generalizes them to
 repeated callees and finite circular call graphs. Nothing here changes current compiler behaviour.
 
-Related: `subroutine-extraction.md`, `sorted-mapping-c2.md`, `mapping-loop-writes.md`,
+Related: `subroutine-extraction.md`, `verified-mappings.md`, `mapping-loop-writes.md`,
 `dynamic-storage.md`, `evm-storage-parity.md`, `delegatecall.md`, `auto-derivation.md`,
 `external-contract-calls.md`, `unified-linear-memory.md`, and `deferrals.md`.
 
@@ -132,7 +132,7 @@ The journal does not replace existing state soundness mechanisms:
 | logical state | journal key | flush backend |
 |---|---|---|
 | scalar / packed field | field slot | existing commitment reconstruction |
-| mapping entry | `(mapping, key)` | existing entry/C2 covenant |
+| mapping entry | `(mapping, key)` | existing entry/vmap covenant |
 | collection/chunk | `(collection, index/chunk)` | dynamic-storage covenant |
 | nested lvalue | composite logical slot | corresponding existing backend |
 
@@ -513,7 +513,7 @@ result substitution all fail in VM tests.
 
 - Extend prefetch/access analysis and the journal to concrete mapping keys and collection indices.
 - Deduplicate required state entries across all invocations of a participant.
-- Flush through the existing C2/entry/dynamic-storage backends; do not duplicate their authenticity
+- Flush through the existing vmap/entry/dynamic-storage backends; do not duplicate their authenticity
   logic.
 - Support ordered bytes/string and dynamic-array writes through authenticated payload/chunk data,
   including replacement, append, delete, and disjoint-index updates.
@@ -625,7 +625,7 @@ These must hold for raw hostile transactions, not only SDK-generated ones:
 - Auto-derivation convergence when target/argument discovery depends on prior logical results.
 - Async nonce, expiry, cancellation, relayer-funding, and liveness policy.
 - Keeping the direct single-call path byte- and performance-stable.
-- Independent security review comparable to C2 before enabling cross-participant cycles.
+- Independent security review comparable to vmap before enabling cross-participant cycles.
 
 ---
 

@@ -6,10 +6,10 @@ import { alicePriv, alicePub, alicePkh } from '../fixture/vars.js';
 import p2pkhArtifact from '../fixture/p2pkh.artifact.js';
 import { createTestProvider } from '../test-util.js';
 
-describe('sorted fixed-array-valued mapping (C2)', () => {
+describe('sorted fixed-array-valued mapping (vmap)', () => {
   const provider = createTestProvider();
   const sig = new SignatureTemplate(alicePriv);
-  it('int[3] element write + read under C2', async () => {
+  it('int[3] element write + read under vmap', async () => {
     const SRC = `contract C() {
       mapping(int => int[3]) m;
       function setAt(int k, int i, int v, pubkey pk, sig s) { require(checkSig(s, pk)); m[k][i] = v; }

@@ -31,16 +31,42 @@ export function buildLineToOpcodesMap(bytecode: Script, sourceMap: string): Line
   }, {});
 }
 
-export function buildLineToAsmMap(bytecode: Script, sourceMap: string): LineToAsmMap {
-  const lineToOpcodesMap = buildLineToOpcodesMap(bytecode, sourceMap);
+export function buildLineToAsmMap(
+  bytecode: Script,
+  sourceMap: string,
+  instructionReplacements: ReadonlyMap<number, string> = new Map(),
+): LineToAsmMap {
+  if (instructionReplacements.size === 0) {
+    const lineToOpcodesMap = buildLineToOpcodesMap(bytecode, sourceMap);
 
-  return Object.fromEntries(
-    Object.entries(lineToOpcodesMap).map(([lineNumber, opcodeList]) => [lineNumber, scriptToBitAuthAsm(opcodeList)]),
-  );
+    return Object.fromEntries(
+      Object.entries(lineToOpcodesMap).map(([lineNumber, opcodeList]) => [lineNumber, scriptToBitAuthAsm(opcodeList)]),
+    );
+  }
+
+  const locationData = sourceMapToLocationData(sourceMap);
+  let maxLine = 0;
+  const lineToAsmMap: LineToAsmMap = {};
+
+  locationData.forEach(({ location, positionHint }, index) => {
+    if (index >= bytecode.length) return;
+    let line = positionHint === PositionHint.END ? location?.end.line : location?.start.line;
+    if (line !== undefined && line < maxLine) line = maxLine;
+    if (line !== undefined) maxLine = Math.max(maxLine, line);
+    const asm = instructionReplacements.get(index) ?? scriptToBitAuthAsm([bytecode[index]]);
+    lineToAsmMap[line] = [...(lineToAsmMap[line]?.split(' ') ?? []), asm].filter(Boolean).join(' ');
+  });
+
+  return lineToAsmMap;
 }
 
-export function formatBitAuthScript(bytecode: Script, sourceMap: string, sourceCode: string): string {
-  const lineToAsmMap = buildLineToAsmMap(bytecode, sourceMap);
+export function formatBitAuthScript(
+  bytecode: Script,
+  sourceMap: string,
+  sourceCode: string,
+  instructionReplacements: ReadonlyMap<number, string> = new Map(),
+): string {
+  const lineToAsmMap = buildLineToAsmMap(bytecode, sourceMap, instructionReplacements);
 
   const escapedSourceCode = sourceCode.replaceAll('/*', '\\/*').replaceAll('*/', '*\\/');
   const sourceCodeLines = escapedSourceCode.split('\n');

@@ -315,7 +315,7 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
     expect(eventOuts.length).toBe(2);
   });
 
-  // A delegate that WRITES A MAPPING (users[msg.sender]=v). A C2 INSERT mints one new entry node, so the
+  // A delegate that WRITES A MAPPING (users[msg.sender]=v). A vmap INSERT mints one new entry node, so the
   // transaction's own-category mutable NFT count rises by one - which is exactly what the default proxy's
   // `emitOwnCategoryMutableNftConservation` (C1 full-state authority, `in == out`) forbids.
   const MAP_IMPL = `pragma solidcash >=0.8.0;
@@ -339,11 +339,11 @@ describe('upgrades.deployProxy (ethers/hardhat OZ-upgrades style)', () => {
    * layout-independent and cannot compute the implementation's collection entry address, so it has no way to
    * admit the one node without admitting the other output.
    *
-   * The boundary is the PROXY, not the delegate: a delegated C2 write that mints nothing - an UPDATE of an
-   * existing key - settles through a strict proxy (DelegateSortedC2Write.test.ts), and the implementation
+   * The boundary is the PROXY, not the delegate: a delegated vmap write that mints nothing - an UPDATE of an
+   * existing key - settles through a strict proxy (DelegateVerifiedMappingWrite.test.ts), and the implementation
    * covenant accepts this transaction too.
    */
-  it('refuses a delegated C2 mapping INSERT at the proxy, which conserves its own mutable NFT count', async () => {
+  it('refuses a delegated vmap mapping INSERT at the proxy, which conserves its own mutable NFT count', async () => {
     const signer = await fundedSigner();
     await signer.provider.addUtxo(signer.getAddress(), { txid: 'f6'.repeat(32), vout: 0, satoshis: 1_000_000n });
     await signer.provider.addUtxo(signer.getAddress(), { txid: '07'.repeat(32), vout: 0, satoshis: 1_000_000n });

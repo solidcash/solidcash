@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { ConsensusBch2026 } from '@bitauth/libauth/build/lib/vm/instruction-sets/bch/2026/bch-2026-consensus.js';
 import { compileString } from '../../direct-compile.js';
 import { Contract, StatefulContract, SignatureTemplate, MockNetworkProvider } from '../../../src/index.js';
-import { MOCK_CONSENSUS_LIMITS } from '../../../src/network/MockNetworkProvider.js';
+import { MOCK_CONSENSUS_LIMITS, MOCK_RELAXED_OPERATION_COST } from '../../../src/network/MockNetworkProvider.js';
 import { createTestProvider, setupStatefulUtxos } from '../../test-util.js';
 import { alicePub, alicePriv } from '../../fixture/vars.js';
 
@@ -151,7 +151,10 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
    */
   const OVER_BUDGET_DEPTH = 24n;
   const STOCK_BUDGET = ConsensusBch2026.operationCostBudgetPerByte;
-  const RELAXED_BUDGET = MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte;
+  // NOT MOCK_CONSENSUS_LIMITS.operationCostBudgetPerByte: that default is now the REAL 800, identical to
+  // STOCK_BUDGET, which would silently collapse the control arm below into the subject and make the pair
+  // meaningless. This arm has to be genuinely relaxed for "differs in exactly one field" to hold.
+  const RELAXED_BUDGET = MOCK_RELAXED_OPERATION_COST;
 
   /** Stage the recursive contract against one published operation-cost budget. */
   const stageAtBudget = async (operationCostBudgetPerByte: number): Promise<StatefulContract<any>> => {
@@ -201,16 +204,24 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
 
   /**
    * The sibling row, and its refusal is a DIFFERENT one - correctly so. A structurally unbounded recursion
-   * cannot complete, so it fails the evaluation itself rather than a budget, at any budget. That was left
-   * unstated while this row also matched only the wrapper; it is pinned here so the two rows cannot silently
-   * converge on the same refusal again.
+   * cannot complete, so it fails the evaluation itself rather than a budget. It is pinned here so the two
+   * rows cannot silently converge on the same refusal again - and that is not hypothetical: against the real
+   * operation-cost budget the density limit fires FIRST and this row did converge, which is why it now stages
+   * a relaxed budget so the structural refusal is what it observes.
    */
   it('rejects structurally unbounded recursion before returning a transaction builder', async () => {
     const artifact = compileString(UNBOUNDED, { forceStateful: true });
     expect(artifact.abi.find((fn) => fn.name === 'recurse')?.recursiveStateHandler).toBe(true);
-    const contract = new Contract(artifact, [], { provider });
+    // Staged at the RELAXED budget on purpose. The subject here is the structural refusal - an
+    // unbounded recursion cannot complete - and against the real 800 the density limit fires first,
+    // which would collapse this row onto the budget row above and prove nothing about structure.
+    // Removing the budget as a confound is what keeps the two refusals distinguishable.
+    const staged = new MockNetworkProvider({
+      consensusLimits: { ...MOCK_CONSENSUS_LIMITS, operationCostBudgetPerByte: MOCK_RELAXED_OPERATION_COST },
+    });
+    const contract = new Contract(artifact, [], { provider: staged });
     const { categoryId } = await setupStatefulUtxos(
-      provider, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
+      staged, contract, artifact.stateLayout!, { x: 0n }, { saltContract: true },
     );
     const sc = StatefulContract.withCategory(contract, categoryId);
     const refusal = await sc.recurse().build().then(() => undefined, (error: Error) => error.message);
@@ -218,7 +229,11 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     expect(refusal).toMatch(
       /Recursive state invocation 'recurse' does not fit or fails its concrete BCH VM preflight/,
     );
-    expect(refusal).toContain('Unsuccessful evaluation: completed with a non-truthy value');
+    // ATTRIBUTABLE, without pinning WHICH concrete cause fires: that depends on the published budget. At a
+    // relaxed budget the loop runs until the covenant completes with a non-truthy value; against the mock's real 800 per
+    // byte it trips density control first and the refusal carries a source-mapped location instead. Both are
+    // genuine VM refusals of the same unbounded shape, so require a concrete cause rather than one wording.
+    expect(refusal).toMatch(/Unsuccessful evaluation: completed with a non-truthy value|C\.scash:\d+/);
     expect(refusal).toContain('at input 0 in contract');
   });
 

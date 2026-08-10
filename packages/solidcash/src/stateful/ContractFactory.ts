@@ -1,5 +1,5 @@
 import { Artifact, asmToBytecode } from '@solidcash/utils';
-import { hexToBin } from '@bitauth/libauth';
+import { hexToBin, lockingBytecodeToCashAddress } from '@bitauth/libauth';
 import type NetworkProvider from '../network/NetworkProvider.js';
 import Signer from '../Signer.js';
 import { Contract } from '../Contract.js';
@@ -9,7 +9,7 @@ import {
   StatefulContract, ConnectedStatefulContract, ContractRunner, DeployOptions,
 } from './StatefulContract.js';
 import { TransactionBuilder } from '../TransactionBuilder.js';
-import { addressToLockScript } from '../utils.js';
+import { addressToLockScript, getNetworkPrefix } from '../utils.js';
 import { buildLogicalIdentityCommitment, deriveLogicalCreateAddress } from './logical-identity.js';
 import { registerDeployment } from './deployment-registry.js';
 
@@ -105,6 +105,40 @@ export async function selectGenesisFundingUtxo(
 }
 
 /**
+ * Split one of the signer's coins so it holds at least `needed` plain (token-free) UTXOs.
+ *
+ * A call's funder slots each want their own outpoint, but a wallet accumulates VALUE, not COUNT: a signer that
+ * has deployed a few contracts is left with one large change coin and cannot fund a two-funder call, even
+ * though it is nowhere near broke. `selectGenesisFundingUtxo` already fans out for the genesis case; this is
+ * the same move for ordinary calls. Returns the plain UTXOs afterwards, or undefined if the signer genuinely
+ * cannot cover it (the caller then raises its own, more specific error).
+ */
+export async function fanOutPlainUtxos(
+  signer: Signer, needed: number, excludedOutpoints: ReadonlySet<string> = new Set(),
+): Promise<Utxo[] | undefined> {
+  const plain = (us: Utxo[]): Utxo[] => us
+    .filter((u) => !u.token && !excludedOutpoints.has(`${u.txid}:${u.vout}`));
+  const current = plain(await signer.getUtxos());
+  if (current.length >= needed) return current;
+
+  const fee = 1000n;
+  const perOutput = 5000n;
+  const missing = needed - current.length;
+  // Spend the largest coin only; splitting several would consume the very outpoints the caller still needs.
+  const [largest] = [...current].sort((a, b) => (b.satoshis > a.satoshis ? 1 : -1));
+  if (!largest || largest.satoshis < perOutput * BigInt(missing + 1) + fee) return undefined;
+
+  const tb = new TransactionBuilder({ provider: signer.provider });
+  tb.addInput(largest, signer.unlockP2PKH());
+  for (let i = 0; i < missing; i++) tb.addOutput({ to: signer.getAddress(), amount: perOutput });
+  tb.addOutput({ to: signer.getAddress(), amount: largest.satoshis - perOutput * BigInt(missing) - fee });
+  await tb.send();
+
+  const after = plain(await signer.getUtxos());
+  return after.length >= needed ? after : undefined;
+}
+
+/**
  * ethers-style contract factory for stateful contracts. `new ContractFactory(artifact, runner).deploy(...args)`
  * runs a real genesis deploy (like ethers `ContractFactory.deploy`): a Signer runner auto-selects a genesis
  * funding UTXO and funds+signs; a NetworkProvider runner needs an explicit `{ fundingUtxo, funder, changeAddress }`
@@ -119,14 +153,51 @@ export class ContractFactory<T extends Artifact = Artifact> {
   }
 
   /**
+   * ethers `factory.attach(address)` — connect to an already-deployed instance. For stateful contracts the
+   * "address" may be a CashAddress, locking-bytecode hex, raw locking bytecode bytes (event args), or a
+   * category id (txid of the genesis funder). MistSwap does
+   * `UniswapV2Pair.attach((await createPairTx.wait()).events[0].args.pair)`.
+   */
+  attach(addressOrCategory: string | Uint8Array): Promise<ConnectedStatefulContract<T>> {
+    let id: string;
+    if (typeof addressOrCategory === 'string') {
+      id = addressOrCategory;
+    } else if (addressOrCategory instanceof Uint8Array) {
+      // Event-decoded address params are locking-bytecode bytes; encode as CashAddress for at().
+      const provider = this.runner instanceof Signer ? this.runner.provider : (this.runner as NetworkProvider);
+      const prefix = getNetworkPrefix(provider.network);
+      const encoded = lockingBytecodeToCashAddress({
+        bytecode: addressOrCategory, prefix, tokenSupport: true,
+      });
+      if (typeof encoded === 'string') {
+        throw new Error(`ContractFactory.attach: invalid locking bytecode (${encoded})`);
+      }
+      id = encoded.address;
+    } else {
+      throw new Error('ContractFactory.attach: address must be a string or Uint8Array locking bytecode');
+    }
+    return StatefulContract.at(id, this.artifact, this.runner);
+  }
+
+  /**
    * Deploy the contract. Positional constructor args, with an optional trailing overrides object (ethers
    * `factory.deploy(...args, overrides?)`).
    */
   async deploy(...args: Array<ConstructorArgument | DeployContractOptions>): Promise<DeployedContract<T>> {
+    // ethers parity: a deploy argument may be a PROMISE. `resolveProperties` awaits them before encoding, so
+    // suites routinely pass a read straight through - MistSwap's SushiMakerKashi deploys with
+    // `factory.pairCodeHash()` un-awaited. Without this the encoder sees a Promise and refuses the bytes32.
+    // eslint-disable-next-line no-param-reassign
+    args = await Promise.all(args);
     const ctorCount = this.artifact.constructorInputs.length;
     // Positional args beyond the contract-level params feed the explicit `constructor(...) {}` block
     // (ethers passes all deploy args to the constructor; here they split across the two layers).
-    const initCount = this.artifact.abi.find((f) => f.name === '__construct')?.inputs.length ?? 0;
+    // Count only the inputs a CALLER supplies. `__internal__` params (the msg.sender category, vmap slot/proof
+    // operands) are SDK-filled, so counting them made `expected` too large and the trailing-overrides check
+    // below never matched: the overrides object was then taken as a constructor argument and forwarded to
+    // __construct, which failed with an off-by-one argument count.
+    const initCount = this.artifact.abi.find((f) => f.name === '__construct')?.inputs
+      .filter((input) => !input.name.startsWith('__internal__')).length ?? 0;
     const expected = ctorCount + initCount;
     let overrides: DeployContractOptions = {};
     if ((args.length === expected + 1 || args.length === ctorCount + 1)
@@ -139,6 +210,22 @@ export class ContractFactory<T extends Artifact = Artifact> {
     const signer = this.runner instanceof Signer ? this.runner : undefined;
     const provider: NetworkProvider = signer ? signer.provider : (this.runner as NetworkProvider);
 
+    // Pure / library contracts (no CashToken state): inject a zero-width stateLayout so they can still
+    // go through StatefulContract.deploy + the dispatch Proxy (MistSwap ChainlinkOracleV2 / RewarderBrokenMock
+    // call pure/view methods as `oracle.getDataParameter(...)` / `peek(...)`).
+    const dataNftCount = this.artifact.stateLayout?.dataNftCount ?? 0;
+    const deployArtifact = (!this.artifact.stateLayout || dataNftCount === 0)
+      ? {
+        ...this.artifact,
+        stateLayout: this.artifact.stateLayout ?? {
+          variables: [],
+          dataNftCount: 0,
+          commitmentLimit: 128,
+          collections: [],
+        },
+      } as T
+      : this.artifact;
+
     let { fundingUtxo, funder, changeAddress } = overrides;
     if (!fundingUtxo) {
       if (!signer) {
@@ -148,8 +235,8 @@ export class ContractFactory<T extends Artifact = Artifact> {
         );
       }
       const verifierCount = overrides.messageBusVerificationInputCount
-        ?? (this.artifact.messageBus?.verifierProgram ? 1 : 0);
-      fundingUtxo = await selectGenesisFundingUtxo(signer, this.artifact, new Set(), 1 + verifierCount);
+        ?? (deployArtifact.messageBus?.verifierProgram ? 1 : 0);
+      fundingUtxo = await selectGenesisFundingUtxo(signer, deployArtifact, new Set(), 1 + verifierCount);
       funder = funder ?? signer.unlockP2PKH();
       changeAddress = changeAddress ?? signer.getAddress();
     }
@@ -178,7 +265,7 @@ export class ContractFactory<T extends Artifact = Artifact> {
           }).address,
         ),
       }] : undefined);
-      result = await StatefulContract.deploy<T>(this.artifact, constructorArgs, {
+      result = await StatefulContract.deploy<T>(deployArtifact, constructorArgs, {
         provider,
         fundingUtxo,
         funder,
@@ -201,7 +288,18 @@ export class ContractFactory<T extends Artifact = Artifact> {
 
     const contract = result.contract as DeployedContract<T>;
     if (logicalAddress) (contract as StatefulContract)._logicalAddress = logicalAddress;
-    if (signer) (contract as StatefulContract)._logicalNonceSigner = signer;
+    // ethers parity: `factory.deploy()` returns a contract CONNECTED to the factory's signer, so a call on it
+    // needs no explicit `.connect(signer)`. Without `_signer` the builder computed `neededFunders` correctly and
+    // then skipped provisioning them, because that whole block is gated on a signer being present. Nothing
+    // errored: the transaction was simply built without the sender's native P2PKH input (it falls back to P2SH32
+    // OP_TRUE dummy funders), so any covenant reading msg.sender / tx.origin - emitTxOrigin scans for exactly
+    // that input - OP_VERIFYs an empty origin. It bit SplitContractBundle hardest, whose `deployed.call.f()`
+    // never connects explicitly (SplitFacetMsgSender.test.ts), and every MistSwap SushiToken
+    // mint/approve/renounceOwnership route.
+    if (signer) {
+      (contract as StatefulContract)._signer = signer;
+      (contract as StatefulContract)._logicalNonceSigner = signer;
+    }
     // ethers-style deployment accessors (attach to the instance; the dispatch proxy passes them through).
     (contract as { deploymentTransaction: () => TransactionDetails }).deploymentTransaction = () => result.tx;
     const awaitDeployed = async (): Promise<DeployedContract<T>> => {

@@ -413,9 +413,9 @@ contract CalleeKNested() is ICalleeK {
     const { categoryId: calleeCategory } = await setupStatefulUtxos(
       provider, calleeContract, calleeArtifact.stateLayout!, { counter: 5n }, { saltContract: true },
     );
-    // Two shared stateful side-cars (one per keccak call).
+    // One shared mutable side-car carries both ordered results.
     const calleeSidecarLock = binToHex(keccakComputeLockingBytecode(new Uint8Array(32), true));
-    for (let i = 0; i < 2; i++) {
+    for (let i = 0; i < 1; i++) {
       await provider.addUtxo(calleeSidecarLock, {
         txid: (0x90 + i).toString(16).padStart(2, '0').repeat(32), vout: 0, satoshis: 100_000n,
         token: { category: KECCAK_SIDECAR_CATEGORY, amount: 0n, nft: { capability: 'mutable', commitment: '' } },

@@ -135,6 +135,21 @@ describe('Caller-controlled destructive authority is rejected by default', () =>
     }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
   });
 
+  it('infers selfdestruct lifecycle semantics after modifier expansion', () => {
+    const artifact = compileStringRaw(`contract C(pubkey owner) { int n;
+      modifier destroys(address to, sig s) { require(checkSig(s, owner)); selfdestruct(to); _; }
+      function kill(address to, sig s) destroys(to, s) { require(true); }
+    }`, { messageBus: false });
+    expect(artifact.abi.find((entry) => entry.name === 'kill')?.modifiers).toContain('selfdestruct');
+  });
+
+  it('rejects conditional selfdestruct introduced by a modifier', () => {
+    expect(() => compileStringRaw(`contract C { int n;
+      modifier destroys(address to) { if (true) { selfdestruct(to); } _; }
+      function kill(address to) destroys(to) { require(true); }
+    }`, { messageBus: false })).toThrow(Errors.NestedSelfdestructError);
+  });
+
   it('records disabled checks in compiler metadata', () => {
     const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
     const artifact = compileStringRaw(`contract C { int n;

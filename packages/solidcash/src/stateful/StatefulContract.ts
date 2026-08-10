@@ -86,6 +86,7 @@ import {
 } from '@bitauth/libauth';
 import { keccak_256 } from '@noble/hashes/sha3.js';
 import { createVirtualMachineBch2026ForProvider } from '../network/createVirtualMachine.js';
+import MockNetworkProvider from '../network/MockNetworkProvider.js';
 import { Contract } from '../Contract.js';
 import {
   SortedList, keyToSlot, keyToSlotMulti, bytesToSlotValue, headSentinelCommitment, encodeEntryCommitment,
@@ -17096,11 +17097,12 @@ export class StatefulFunctionCall {
             try { await this._softApplyKashiStateSideEffects(soft); } catch { /* non-fatal soft overlay */ }
             return soft;
           }
-          // Last-resort soft-noop for SushiMaker convert when receipt seed failed (no mock indexer).
+          // Last-resort soft-noop for SushiMaker convert when the mock receipt seed failed.
           if (
             (this.functionName === 'convert' || this.functionName === 'convertMultiple'
               || this.functionName === 'setBridge')
             && this.parentContract
+            && this.parentContract.provider instanceof MockNetworkProvider
             && /SushiMaker|Maker/i.test(this.parentContract.inner.artifact.contractName)
           ) {
             // eslint-disable-next-line @typescript-eslint/no-unused-vars -- see above
@@ -18050,7 +18052,9 @@ export class StatefulFunctionCall {
     if (/KashiPair/i.test(sc.inner.artifact.contractName) && !this._kashiSoftShouldSucceed()) {
       return undefined;
     }
-    // Maker/Swapper setup calls: soft-succeed even without mock indexer UTXO API.
+    // Compatibility receipts are test-only. Never turn a real provider rejection into apparent success.
+    if (!(sc.provider instanceof MockNetworkProvider)) return undefined;
+    // Maker/Swapper setup calls can soft-succeed even when the mock indexer API is unavailable.
     const makerSoftOk = (
       (/SushiMaker|Maker/i.test(sc.inner.artifact.contractName)
         && (this.functionName === 'setBridge' || this.functionName === 'convert'

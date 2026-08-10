@@ -1,6 +1,7 @@
 import { createHash } from 'crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs';
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { fileURLToPath } from 'url';
 import {
   CharStream, CommonTokenStream, ParserATNSimulator, PredictionContextCache,
 } from 'antlr4';
@@ -33,7 +34,7 @@ import {
   MethodCallNode, MethodCallStatementNode, Node, ParameterNode, RequireNode,
   NullaryOpNode, TupleAssignmentNode, VariableDefinitionNode,
   SourceFileNode, StatementNode, TransferStatementNode, TypeIntrospectionNode, AbiDecodeNode, ReturnNode,
-  TokenContainerMethodStatementNode,
+  TokenContainerMethodStatementNode, SelfdestructStatementNode,
   AssemblyStatementNode, CastNode, IntLiteralNode, TryCatchNode,
 } from './ast/AST.js';
 import AstBuilder from './ast/AstBuilder.js';
@@ -123,7 +124,7 @@ import { ImportResolver } from './ImportResolver.js';
 import {
   AbstractContractInstantiationError, CircularContractReferenceError, LibrarySelfExternalCallError,
   UndefinedReferenceError, UnknownContractTypeError, EmittingStateHelperEventError, SolidcDiagnosticError,
-  CompilerRecursionLimitError, UnsupportedInlineAssemblyError,
+  CompilerRecursionLimitError, UnsupportedInlineAssemblyError, NestedSelfdestructError,
 } from './Errors.js';
 import { generatedOriginOf, Location, Point, withGeneratedSource, withSourceFile } from './ast/Location.js';
 import { MAX_INPUT_BYTESIZE } from './constants.js';
@@ -145,6 +146,33 @@ export const DEFAULT_COMPILER_OPTIONS: CompilerOptions = {
   chunkedArrays: true,
   chainId: 0,
 };
+
+const compilerModuleStat = statSync(fileURLToPath(import.meta.url));
+const COMPILER_CACHE_BUILD_ID = process.env.SOLIDC_COMPILE_CACHE_BUILD_ID
+  ?? `${compilerModuleStat.size}:${compilerModuleStat.mtimeMs}`;
+
+/** Apply lifecycle placement rules again after custom modifier bodies have been inserted into functions. */
+function validateExpandedSelfdestructs(contract: ContractNode): void {
+  const containsSelfdestruct = (value: unknown, root = true): boolean => {
+    if (value instanceof SelfdestructStatementNode) return !root;
+    if (!(value instanceof Node)) return false;
+    return Object.entries(value).some(([key, child]) => {
+      if (key === 'location' || key === 'type' || key === 'symbolTable') return false;
+      if (child instanceof Node) return containsSelfdestruct(child, false);
+      return Array.isArray(child) && child.some((entry) => containsSelfdestruct(entry, false));
+    });
+  };
+  for (const fn of contract.functions) {
+    const direct = (fn.body.statements ?? []).some((statement) => statement instanceof SelfdestructStatementNode);
+    const nested = (fn.body.statements ?? []).some((statement) => !(statement instanceof SelfdestructStatementNode)
+      && containsSelfdestruct(statement));
+    if (nested) throw new NestedSelfdestructError(fn, fn.name);
+    if (direct && !fn.modifiers.includes(FunctionModifier.SELFDESTRUCT)) {
+      fn.modifiers.push(FunctionModifier.SELFDESTRUCT);
+      fn.impliedSelfdestruct = true;
+    }
+  }
+}
 
 /** Apply compiler defaults without allowing an explicitly present `undefined` to disable a default-on feature. */
 // `enabled` is the user-facing `messageBus: true`: skip graph-edge narrowing but keep the direct-only fallback.
@@ -600,7 +628,7 @@ function compileStringUnchecked(code: string, compilerOptions: CompileOptions = 
   if (cacheable) {
     // Keep cached artifacts tied to their published shape. Compiler versions can remain unchanged throughout
     // local development, so the package version alone cannot invalidate entries after metadata additions.
-    cacheKey = `artifact-v2\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
+    cacheKey = `artifact-v3\x00${COMPILER_CACHE_BUILD_ID}\x00${code}\x00${JSON.stringify(artifactCompilerOptions)}`;
     const memHit = compileCacheGet(cacheKey);
     if (memHit) return cloneArtifact(memHit);
     const diskHit = diskCacheGet(cacheKey);
@@ -4019,6 +4047,7 @@ function compileResolvedAst(
 
   // Modifier expansion (before semantic analysis)
   ast = expandModifiers(ast);
+  validateExpandedSelfdestructs(ast.contract);
 
   // Lower `transient` state vars to per-function locals after modifier expansion. A transient reference in a
   // modifier argument/body is now visible in the concrete function body, and public getters synthesized above

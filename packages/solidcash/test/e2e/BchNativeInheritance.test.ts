@@ -10,11 +10,10 @@ import {
 } from '../../src/index.js';
 import { addressToLockScript } from '../../src/utils.js';
 import {
-  createTestProvider, genesisFtContainer, plainNumerics, setupStatefulUtxos,
+  createTestProvider, plainNumerics, setupStatefulUtxos,
 } from '../test-util.js';
-import {
-  aliceAddress, alicePriv, bobPkh, bobPriv,
-} from '../fixture/vars.js';
+import { getTokenContainerAddress } from '../../src/stateful/covenant-helpers.js';
+import { aliceAddress, alicePriv, bobPriv } from '../fixture/vars.js';
 
 const fx = (name: string): URL => new URL(`../fixture/${name}`, import.meta.url);
 
@@ -39,20 +38,21 @@ async function deploy(): Promise<Deployed> {
   deployment += 1;
   const provider = createTestProvider();
   const ownerAddress = addressToLockScript(aliceAddress);
-  const category = `${'b'.repeat(62)}${deployment.toString(16).padStart(2, '0')}`;
   const inner = new Contract(artifact, [ownerAddress], { provider });
-  await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
+  const setup = await setupStatefulUtxos(provider, inner, artifact.stateLayout!, {
     owner: ownerAddress,
-    totalSupply: 0n,
-    backingCategory: new Uint8Array(32),
-    backingSet: false,
-    containerSeen: 0n,
+    _totalSupply: 0n,
     backedSupply: 0n,
-    quarantineBlocks: 0n,
-    clock: 0n,
-  }, { saltContract: true, categoryOverride: category });
+  }, {
+    saltContract: true,
+    extraOutputs: (category) => [{
+      address: getTokenContainerAddress(inner, category, category),
+      satoshis: 1_200n,
+      token: { amount: 1_000n },
+    }],
+  });
+  const category = setup.categoryId;
   const token = StatefulContract.withCategory(inner, category);
-  const reserve = await genesisFtContainer(provider, inner, category, [1_000n]);
   const owner = new Signer(alicePriv, provider);
   const bob = new Signer(bobPriv, provider);
   let nonce = 0xc000 + deployment * 0x100;
@@ -62,11 +62,8 @@ async function deploy(): Promise<Deployed> {
       txid: nonce.toString(16).padStart(64, 'c'), vout: 0, satoshis: 500_000n,
     });
   };
-  await fund(owner);
-  await fund(bob);
-  await token.connect(owner).call.setBacking(reserve.category).send();
   return {
-    provider, token, category: reserve.category, owner, bob, fund,
+    provider, token, category, owner, bob, fund,
   };
 }
 
@@ -85,7 +82,7 @@ async function openBob(d: Deployed): Promise<void> {
 async function wrapForBob(d: Deployed, coin: Utxo): Promise<void> {
   await d.provider.addUtxo(d.bob.getAddress(), coin);
   await d.fund(d.bob);
-  await d.token.connect(d.bob).call.wrap(d.category, 5n)
+  await d.token.connect(d.bob).call.wrap(5n)
     .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
     .tokenContainerDeposit(d.category, 5n)
     .send();
@@ -96,28 +93,51 @@ describe('BchNative inheritance', () => {
     expect(artifact.contractName).toBe('MyToken');
     const abi = new Set(artifact.abi.map((entry) => entry.name));
     for (const name of [
-      'transfer', 'setBacking', 'wrap', 'withdraw', 'deposit', 'claimDeposit', 'cancelDeposit',
+      'transfer', 'approve', 'allowance', 'transferFrom',
+      'wrap', 'withdraw',
       'blacklist', 'unblacklist', 'openSelf',
     ]) expect(abi).toContain(name);
     expect((artifact.stateLayout?.collections ?? []).map((entry) => entry.name))
-      .toEqual(expect.arrayContaining(['balances', 'blacklisted', 'pendingDeposits']));
+      .toEqual(expect.arrayContaining(['_balances', '_allowances', 'blacklisted']));
+    expect((artifact.stateLayout?.collections ?? []).map((entry) => entry.name))
+      .not.toContain('pendingDeposits');
+    expect((artifact.stateLayout?.variables ?? []).map((entry) => entry.name))
+      .not.toContain('__block_number');
+    expect(abi).not.toContain('setBacking');
+    expect(abi).not.toContain('tick');
   });
 
   it('lets inherited blacklisting veto unwrap without entering BchNative storage', async () => {
     const d = await deploy();
     const connected = d.token.connect(d.owner);
     await d.fund(d.owner);
-    await connected.call.issue(100n).send();
+    await connected.call.openSelf().send();
+    const coin = bearerCoin(d);
+    await d.provider.addUtxo(d.owner.getAddress(), coin);
+    await d.fund(d.owner);
+    await connected.call.wrap(5n)
+      .addInput(coin, new SignatureTemplate(alicePriv).unlockP2PKH())
+      .tokenContainerDeposit(d.category, 5n)
+      .send();
+    const ownerAddress = addressToLockScript(d.owner.getAddress());
+    expect(await d.token.state._balances(ownerAddress)).toBe(5n);
+    expect((await d.token.getState())._totalSupply).toBe(5n);
     await d.fund(d.owner);
     await connected.call.blacklist(addressToLockScript(aliceAddress)).send();
     await d.fund(d.owner);
-    await expect(connected.call.withdraw(d.category, bobPkh, 10n).send()).rejects.toThrow();
+    await expect(connected.call.withdraw(d.bob.getAddress(), 5n).send()).rejects.toThrow();
 
     await d.fund(d.owner);
     await connected.call.unblacklist(addressToLockScript(aliceAddress)).send();
     await d.fund(d.owner);
-    await connected.call.withdraw(d.category, bobPkh, 10n).send();
-    expect((plainNumerics(await d.token.getState()).backedSupply)).toBe(90n);
+    await connected.call.withdraw(d.bob.getAddress(), 5n).send();
+    expect((plainNumerics(await d.token.getState()).backedSupply)).toBe(0n);
+    expect(await d.token.state._balances(ownerAddress)).toBe(0n);
+    expect((await d.token.getState())._totalSupply).toBe(0n);
+    const bobBearer = await d.provider.getUtxos(d.bob.getAddress());
+    expect(bobBearer
+      .filter((utxo) => utxo.token?.category === d.category)
+      .reduce((sum, utxo) => sum + (utxo.token?.amount ?? 0n), 0n)).toBe(5n);
   });
 
   it('lets inherited blacklisting veto wrap without entering BchNative storage', async () => {
@@ -128,7 +148,7 @@ describe('BchNative inheritance', () => {
     const coin = bearerCoin(d);
     await d.provider.addUtxo(d.bob.getAddress(), coin);
     await d.fund(d.bob);
-    await expect(d.token.connect(d.bob).call.wrap(d.category, 5n)
+    await expect(d.token.connect(d.bob).call.wrap(5n)
       .addInput(coin, new SignatureTemplate(bobPriv).unlockP2PKH())
       .tokenContainerDeposit(d.category, 5n)
       .send()).rejects.toThrow();
@@ -138,9 +158,50 @@ describe('BchNative inheritance', () => {
     const d = await deploy();
     await openBob(d);
     await wrapForBob(d, bearerCoin(d));
-    expect(await d.token.state.balances(addressToLockScript(d.bob.getAddress()))).toBe(5n);
+    expect(await d.token.state._balances(addressToLockScript(d.bob.getAddress()))).toBe(5n);
     const state = plainNumerics(await d.token.getState());
     expect(state.backedSupply).toBe(5n);
-    expect(state.containerSeen).toBe(1_005n);
+  });
+
+  it('inherits OZ allowance spending, including the uint256 infinite sentinel', async () => {
+    const d = await deploy();
+    const owner = d.token.connect(d.owner);
+    await d.fund(d.owner);
+    await owner.call.openSelf().send();
+    const coin = bearerCoin(d);
+    await d.provider.addUtxo(d.owner.getAddress(), coin);
+    await d.fund(d.owner);
+    await owner.call.wrap(5n)
+      .addInput(coin, new SignatureTemplate(alicePriv).unlockP2PKH())
+      .tokenContainerDeposit(d.category, 5n)
+      .send();
+    await openBob(d);
+
+    const bobAddress = addressToLockScript(d.bob.getAddress());
+    const ownerAddress = addressToLockScript(d.owner.getAddress());
+    await d.fund(d.owner);
+    await owner.call.approve(bobAddress, 3n).send();
+    await d.fund(d.bob);
+    const state = await d.token.getState();
+    await d.token.connect(d.bob).call.transferFrom(ownerAddress, bobAddress, 2n)
+      .setState({ owner: state.owner })
+      .send();
+    expect(await d.token.state._allowances(ownerAddress, bobAddress)).toBe(1n);
+    expect(await d.token.state._balances(bobAddress)).toBe(2n);
+
+    await d.fund(d.bob);
+    await expect(d.token.connect(d.bob).call.transferFrom(ownerAddress, bobAddress, 2n)
+      .setState({ owner: state.owner })
+      .send()).rejects.toThrow();
+
+    const infinite = (1n << 256n) - 1n;
+    await d.fund(d.owner);
+    await owner.call.approve(bobAddress, infinite).send();
+    await d.fund(d.bob);
+    await d.token.connect(d.bob).call.transferFrom(ownerAddress, bobAddress, 2n)
+      .setState({ owner: state.owner })
+      .send();
+    expect(await d.token.state._allowances(ownerAddress, bobAddress)).toBe(infinite);
+    expect(await d.token.state._balances(bobAddress)).toBe(4n);
   });
 });

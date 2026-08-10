@@ -84,6 +84,7 @@ export interface EmitAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
+  keySource?: 'param' | 'own';
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)

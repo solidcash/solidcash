@@ -10,7 +10,7 @@ abstract contract BlackList {
     event Blacklisted(address indexed account);
     event Unblacklisted(address indexed account);
 
-    function _blacklistAdmin() internal view returns (address);
+    function _blacklistAdmin() internal view virtual returns (address);
 
     function blacklist(address account) {
         require(msg.sender == _blacklistAdmin());

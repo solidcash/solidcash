@@ -1,45 +1,15 @@
 pragma solidcash >=0.8.0;
 
-import { BchNative } from "../../contracts/BchNative.scash";
+import { ERC20 } from "../../contracts/ERC20.scash";
+import { ERC20Metadata } from "../../contracts/ERC20Metadata.scash";
+import { BchNativeEvents } from "../../contracts/BchNativeEvents.scash";
+import { BchNativeAdmin } from "../../contracts/BchNativeAdmin.scash";
+import { BlackList } from "../../contracts/BlackList.scash";
 
-// =============================================================================
-// NativeTetherToken, composed by INHERITANCE and partitioned by the built-in
-// splitter (compileFileSplit) - not by hand-rolled delegate-library facets.
-//
-// Same contract as native_usdt.scash, reorganised into the deployed USDT's own
-// contract hierarchy:
-//
-//   Ownable
-//   Pausable      is Ownable
-//   BasicToken    is Ownable          balances and transfer
-//   StandardToken is BasicToken       allowances, transferFrom, approve
-//   BlackList     is BasicToken       isBlackListed, destroyBlackFunds
-//   Freezable     is Ownable          (extension) reversible per-account freeze
-//   BchNative                         reusable FT reserve + quarantined wrap/unwrap
-//   NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, BchNative
-//
-// Ownable is reached along four paths, so this leans on C3 linearization to give
-// `owner` and `onlyOwner` exactly one definition in the flattened contract.
-//
-// Why this shape rather than the six-file facet split (nusdt*.scash):
-//   * The state layout is declared ONCE. The facet split duplicates a 20-variable
-//     block across six files with only a test to keep them honest, because a
-//     delegate writes the caller's state by slot and libraries cannot inherit.
-//   * `struct Pending` is usable again. The facet split had to degrade it to two
-//     parallel mappings, since every facet importing it collided on the struct.
-//   * Forwarders disappear. No named-forwarder boilerplate, and no rule that a
-//     forwarder's parameter names must match the facet's.
-//   * The partition is the compiler's, so it re-plans when bodies change instead
-//     of rotting into a hand-drawn line that no longer fits.
-//
-// Deviations carried over from the facet split, unchanged and for the same
-// reasons (see packages/solidc/docs/native-usdt-port.md s2.2): no SafeMath,
-// uint8 decimals, bytes32 name/symbol, no upgradedAddress forwarding, no
-// on-chain view functions, premint-then-release supply.
-// =============================================================================
-
+// USDT policy rebuilt around OpenZeppelin ERC20 v5.6.1. ERC20 remains the sole
+// owner of balances, total supply, approvals, allowance spending, infinite
+// allowances, Transfer/Approval events, and ERC-6093 errors.
 abstract contract Ownable {
-
     public address owner;
 
     modifier onlyOwner() {
@@ -54,256 +24,130 @@ abstract contract Ownable {
 }
 
 abstract contract Pausable is Ownable {
-
     public bool paused;
 
     event Pause();
     event Unpause();
 
-    modifier whenNotPaused() {
+    function pause() onlyOwner {
         require(!this.paused);
-        _;
-    }
-
-    modifier whenPaused() {
-        require(this.paused);
-        _;
-    }
-
-    function pause() onlyOwner whenNotPaused {
         this.paused = true;
         emit Pause();
     }
 
-    function unpause() onlyOwner whenPaused {
+    function unpause() onlyOwner {
+        require(this.paused);
         this.paused = false;
         emit Unpause();
     }
 }
 
-// USDT's BasicToken: the balance ledger and `transfer`.
-// Deprecation lives here too, because it is what gates the ERC20 entry points.
-abstract contract BasicToken is Ownable {
-
-    public int totalSupply;
-    mapping(address => int) public balances;
-    public bytes32 name;
-    public bytes32 symbol;
-    public uint8 decimals;
-    public bool deprecated;
-    public address upgradedAddress;
-
-    event Transfer(address indexed from, address indexed to, int value);
-    event Deprecate(address newAddress);
-
-    modifier notDeprecated() {
-        require(!this.deprecated);
-        _;
-    }
-
-    function deprecate(address newAddress) onlyOwner {
-        this.deprecated = true;
-        this.upgradedAddress = newAddress;
-        emit Deprecate(newAddress);
-    }
-}
-
-// USDT's StandardToken: allowances on top of the balance ledger.
-abstract contract StandardToken is BasicToken {
-
-    // USDT's MAX_UINT infinite-allowance sentinel, preserved at full width so a
-    // ported integration passing 2**256-1 still means "infinite".
-    int constant MAX_ALLOWANCE = 2 ** 256 - 1;
-
-    mapping(address => mapping(address => int)) public allowed;
-
-    event Approval(address indexed tokenOwner, address indexed spender, int value);
-
-    // The EIP-20 race guard IS present in the deployed source: a non-zero
-    // allowance must be zeroed before it can be changed to another non-zero value.
-    function approve(address spender, int value) notDeprecated {
-        address tokenOwner = msg.sender;
-        require(!(value != 0 && this.allowed[tokenOwner][spender] != 0));
-        this.allowed[tokenOwner][spender] = value;
-        emit Approval(tokenOwner, spender, value);
-    }
-}
-
-abstract contract BlackList is BasicToken {
-
-    mapping(address => bool) public isBlackListed;
-
-    event AddedBlackList(address indexed user);
-    event RemovedBlackList(address indexed user);
-    event DestroyedBlackFunds(address indexed blackListedUser, int balance);
-
-    function addBlackList(address evilUser) onlyOwner {
-        this.isBlackListed[evilUser] = true;
-        emit AddedBlackList(evilUser);
-    }
-
-    function removeBlackList(address clearedUser) onlyOwner {
-        this.isBlackListed[clearedUser] = false;
-        emit RemovedBlackList(clearedUser);
-    }
-}
-
-// Extension: reversible, non-destructive, and distinct from the blacklist. A
-// frozen account can neither send nor receive, and cannot claim a matured deposit.
-abstract contract Freezable is Ownable {
-
-    mapping(address => bool) public frozen;
-
-    event Frozen(address indexed user);
-    event Unfrozen(address indexed user);
-
-    function freeze(address user) onlyOwner {
-        this.frozen[user] = true;
-        emit Frozen(user);
-    }
-
-    function unfreeze(address user) onlyOwner {
-        this.frozen[user] = false;
-        emit Unfrozen(user);
-    }
-}
-
-// =============================================================================
-// The token. Everything below needs state from more than one base, which is why
-// it lives here rather than in one of them.
-// =============================================================================
-contract NativeTetherToken(address initialOwner)
-    is Pausable, StandardToken, BlackList, Freezable, BchNative
+contract NativeTetherToken(address initialOwner, string tokenName, string tokenSymbol)
+    is ERC20, ERC20Metadata(tokenName, tokenSymbol), Pausable, BlackList, BchNativeEvents, BchNativeAdmin
 {
+    public uint8 tokenDecimals;
+    public int backedSupply;
 
-    event Issue(int amount);
-    event Redeem(int amount);
+    event Issue(uint256 amount);
+    event Redeem(uint256 amount);
+    event DestroyedBlackFunds(address indexed account, uint256 balance);
 
-    // All supply is preminted into the backing token container at genesis; the
-    // ledger starts empty and `issue` releases premint into circulation. This is
-    // the only sound supply model on BCH: fungible amounts of a category can
-    // never be created after the genesis transaction.
-    constructor(bytes32 tokenName, bytes32 tokenSymbol, uint8 tokenDecimals, int quarantine) {
-        this.name = tokenName;
-        this.symbol = tokenSymbol;
-        this.decimals = tokenDecimals;
+    constructor(uint8 decimals_, uint32 quarantine) {
         this.owner = initialOwner;
         this.paused = false;
-        this.deprecated = false;
-        this.totalSupply = 0;
-        this.containerSeen = 0;
-        this.backedSupply = 0;
-        this.quarantineBlocks = quarantine;
-        this.clock = 0;
-        this.backingSet = false;
+        this.tokenDecimals = decimals_;
+        _nativeInitialize(quarantine);
     }
 
-    // ==== ERC20 movement ====
-
-    function transfer(address to, int value) whenNotPaused notDeprecated {
-        address sender = msg.sender;
-        require(!this.isBlackListed[sender]);
-        require(!this.frozen[sender]);
-        require(!this.frozen[to]);
-
-        require(to != sender);
-        require(this.balances[sender] >= value);
-        this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + value;
-        emit Transfer(sender, to, value);
+    function decimals() public view override returns (uint8) {
+        return this.tokenDecimals;
     }
 
-    function transferFrom(address from, address to, int value) whenNotPaused notDeprecated {
-        address spender = msg.sender;
-        require(!this.isBlackListed[from]);
-        require(!this.frozen[from]);
-        require(!this.frozen[to]);
-
-        int currentAllowance = this.allowed[from][spender];
-
-        // USDT only decrements finite allowances; MAX_ALLOWANCE is the sentinel.
-        if (currentAllowance < MAX_ALLOWANCE) {
-            require(currentAllowance >= value);
-            this.allowed[from][spender] = currentAllowance - value;
+    // OZ v5's single customization point. Pausing and blacklisting are policy
+    // layered around ERC20; the ledger and allowance implementation stay OZ.
+    function _update(address from, address to, uint256 value) internal override {
+        require(!this.paused);
+        if (from != address(0)) {
+            require(!this.blacklisted[from]);
         }
-
-        require(to != from);
-        require(this.balances[from] >= value);
-        this.balances[from] = this.balances[from] - value;
-        this.balances[to] = this.balances[to] + value;
-        emit Transfer(from, to, value);
+        if (to != address(0)) {
+            require(!this.blacklisted[to]);
+        }
+        _updateLedger(from, to, value);
     }
 
-    // ==== Supply ====
-
-    function issue(int amount) onlyOwner {
+    // Preminted CashTokens cap ledger issuance. Nothing can mint the native FT
+    // category after genesis, so ERC20 issuance must stay within that reserve.
+    function issue(uint256 amount) onlyOwner {
         require(amount > 0);
-        require(this.containerSeen >= this.backedSupply + amount);
-        this.balances[this.owner] = this.balances[this.owner] + amount;
-        this.totalSupply = this.totalSupply + amount;
-        this.backedSupply = this.backedSupply + amount;
+        int nativeAmount = int(amount);
+        bytes32 category = this.category;
+        require(this.tokens[category].tokenAmount >= this.backedSupply + nativeAmount);
+        this.backedSupply = this.backedSupply + nativeAmount;
+        _mint(this.owner, amount);
         emit Issue(amount);
     }
 
-    function redeem(int amount) onlyOwner {
+    function redeem(uint256 amount) onlyOwner {
         require(amount > 0);
-        require(this.totalSupply >= amount);
-        require(this.balances[this.owner] >= amount);
-        this.totalSupply = this.totalSupply - amount;
-        this.balances[this.owner] = this.balances[this.owner] - amount;
-        this.backedSupply = this.backedSupply - amount;
+        int nativeAmount = int(amount);
+        _burn(this.owner, amount);
+        this.backedSupply = this.backedSupply - nativeAmount;
         emit Redeem(amount);
     }
 
-    // Destroyed funds leave circulation but the underlying FTs stay in the
-    // container as unminted premint, so they become re-issuable - the "returning
-    // burn" of the supply model, keeping containerSeen >= backedSupply intact.
-    function destroyBlackFunds(address blackListedUser) onlyOwner {
-        require(this.isBlackListed[blackListedUser]);
-        int dirtyFunds = this.balances[blackListedUser];
-        this.balances[blackListedUser] = 0;
-        this.totalSupply = this.totalSupply - dirtyFunds;
-        this.backedSupply = this.backedSupply - dirtyFunds;
-        emit DestroyedBlackFunds(blackListedUser, dirtyFunds);
+    function destroyBlackFunds(address account) onlyOwner {
+        require(this.blacklisted[account]);
+        uint256 dirtyFunds = balanceOf(account);
+        _burn(account, dirtyFunds);
+        this.backedSupply = this.backedSupply - int(dirtyFunds);
+        emit DestroyedBlackFunds(account, dirtyFunds);
     }
 
-    // ==== BchNative integration ====
+    function _blacklistAdmin() internal view override returns (address) {
+        return this.owner;
+    }
 
-    function _nativeAdmin() internal view override returns (address) { return this.owner; }
-    function _nativeCredit(address account, int amount) internal override {
-        this.balances[account] = this.balances[account] + amount;
+    function _nativeAdmin() internal view override returns (address) {
+        return this.owner;
     }
-    function _nativeDebit(address account, int amount) internal override {
-        require(this.balances[account] >= amount);
-        this.balances[account] = this.balances[account] - amount;
+
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.backedSupply = this.backedSupply + int(amount);
+        _update(address(0), account, amount);
     }
+
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _update(account, address(0), amount);
+        this.backedSupply = this.backedSupply - int(amount);
+    }
+
+    function _nativeReserveAdded(int amount) internal override {
+        this.backedSupply = this.backedSupply + amount;
+    }
+
+    function _nativeReserveRemoved(int amount) internal override {
+        this.backedSupply = this.backedSupply - amount;
+    }
+
+    // USDT admits native funds through quarantine rather than immediate wrap.
     function _nativeCanWrap(address account) internal view override returns (bool) {
         return false;
     }
+
     function _nativeCanDeposit(address account) internal view override returns (bool) {
-        return account == msg.sender && !this.paused && !this.deprecated;
-    }
-    function _nativeCanUnwrap(address account) internal view override returns (bool) {
-        return !this.paused && !this.deprecated && !this.isBlackListed[account] && !this.frozen[account];
-    }
-    function _nativeCanClaim(address account) internal view override returns (bool) {
-        return !this.paused && !this.deprecated && !this.isBlackListed[account] && !this.frozen[account];
-    }
-    function _nativeCanCancel(address account) internal view override returns (bool) {
-        return account == msg.sender && !this.deprecated;
+        return account == msg.sender && !this.paused && !this.blacklisted[account];
     }
 
-    // Open YOUR OWN account. Keyed on msg.sender, so it carries no address argument. A
-    // first-touch INSERT cannot settle through a delegate, and two ABSENT keys in one
-    // collection prove through the same predecessor - creating all five keys up front makes
-    // every later route an UPDATE against a distinct entry.
-    function openSelf() {
-        address who = msg.sender;
-        require(this.balances[who] == 0);
-        require(this.pendingDeposits[who].amount == 0);
-        this.balances[who] = 0;
-        this.pendingDeposits[who] = Pending({ amount: 0, unlockAt: 0 });
-        this.isBlackListed[who] = false;
-        this.frozen[who] = false;
+    function _nativeCanUnwrap(address account) internal view override returns (bool) {
+        return !this.paused && !this.blacklisted[account];
+    }
+
+    function _nativeCanClaim(address account) internal view override returns (bool) {
+        return !this.paused && !this.blacklisted[account];
+    }
+
+    function _nativeCanCancel(address account) internal view override returns (bool) {
+        return account == msg.sender;
     }
 }

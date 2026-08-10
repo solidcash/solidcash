@@ -17,7 +17,7 @@ import { createTestProvider } from '../test-util.js';
 // What this buys over nusdt*.scash (see docs/native-usdt-port.md s5):
 //   one declaration of the state layout instead of four copies; `struct Pending`
 //   back instead of two parallel mappings; no forwarders; 3 scripts totalling
-//   15,762 B instead of 4 totalling 18,671 B; and a partition the compiler
+//   13,673 B; and a partition the compiler
 //   re-plans instead of a hand-drawn line that rots.
 //
 // Owner-gated routes settle here now: the two bugs that blocked them - msg.sender
@@ -45,28 +45,38 @@ beforeAll(() => {
 }, 900000);
 
 describe('NativeUsdtInherited / composition', () => {
-  // Ownable is reached along four paths (Pausable, BasicToken via StandardToken and
-  // BlackList, and Freezable). C3 has to collapse those into one `owner`.
-  it('C3 linearization gives the diamond base exactly one state slot', () => {
+  it('inherits one OZ ledger and allowance layout', () => {
     const names = (flat.stateLayout?.variables ?? []).map((v) => v.name);
     expect(names.filter((n) => n === 'owner')).toHaveLength(1);
     expect(names.filter((n) => n === 'paused')).toHaveLength(1);
-    // BasicToken is inherited by both StandardToken and BlackList.
-    expect(names.filter((n) => n === 'totalSupply')).toHaveLength(1);
+    expect(names.filter((n) => n === '_totalSupply')).toHaveLength(1);
+    expect(names.filter((n) => n === '_name')).toHaveLength(1);
+    expect(names.filter((n) => n === '_symbol')).toHaveLength(1);
     const collections = (flat.stateLayout?.collections ?? []).map((c) => c.name);
-    expect(collections.filter((n) => n === 'balances')).toHaveLength(1);
+    expect(collections.filter((n) => n === '_balances')).toHaveLength(1);
+    expect(collections.filter((n) => n === '_allowances')).toHaveLength(1);
   });
 
   it('exposes the whole USDT surface from one file', () => {
     const abi = new Set(flat.abi.map((f) => f.name));
     for (const fn of [
       'transfer', 'transferFrom', 'approve', 'issue', 'redeem', 'destroyBlackFunds',
-      'addBlackList', 'removeBlackList', 'freeze', 'unfreeze', 'pause', 'unpause',
-      'transferOwnership', 'deprecate', 'setBacking', 'withdraw',
-      'tick', 'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
+      'blacklist', 'unblacklist', 'pause', 'unpause', 'transferOwnership', 'withdraw',
+      'deposit', 'claimDeposit', 'cancelDeposit', 'setQuarantineBlocks',
+      'name', 'symbol', 'decimals',
     ]) {
       expect(abi.has(fn), `${fn} missing from the inherited contract`).toBe(true);
     }
+    expect(flat.abi.find((entry) => entry.name === 'setQuarantineBlocks')?.inputs[0]?.type)
+      .toBe('uint32');
+  });
+
+  it('opts into the complete BchNative lifecycle event behavior', () => {
+    const events = new Set((flat.events ?? []).map((event) => event.name));
+    for (const event of [
+      'Wrapped', 'Withdrawal', 'DepositQuarantined', 'DepositClaimed',
+      'DepositCancelled', 'QuarantineParams',
+    ]) expect(events).toContain(event);
   });
 
   // The facet split had to degrade Pending to two parallel mappings, because every
@@ -82,9 +92,14 @@ describe('NativeUsdtInherited / composition', () => {
 
 describe('NativeUsdtInherited / the built-in splitter', () => {
   it('partitions the over-limit contract into shards that all fit', () => {
-    expect(scriptSize(flat)).toBeGreaterThan(MAX_INPUT_BYTESIZE);
+    expect(scriptSize(flat)).toBe(10672);
     const rows: Array<[string, number]> = [['root', scriptSize(bundle.root)]];
     for (const [name, art] of Object.entries(bundle.facets)) rows.push([name, scriptSize(art)]);
+    expect(Object.fromEntries(rows)).toEqual({
+      root: 1714,
+      NativeTetherToken__Facet0: 2685,
+      NativeTetherToken__Facet1: 9274,
+    });
     for (const [name, size] of rows) {
       expect(size, `${name} is ${size} B, over the ${MAX_INPUT_BYTESIZE} B per-input limit`)
         .toBeLessThanOrEqual(MAX_INPUT_BYTESIZE);
@@ -120,13 +135,8 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
         txid: byte.repeat(32), vout: 0, satoshis: 1_000_000n,
       }));
     }
-    const b32 = (text: string): Uint8Array => {
-      const out = new Uint8Array(32);
-      out.set(new TextEncoder().encode(text));
-      return out;
-    };
     const deployed = await SplitContractBundle.from(bundle, signer).deploy(
-      [addressToLockScript(aliceAddress), b32('Tether USD'), b32('USDT'), 6n, 10n],
+      [addressToLockScript(aliceAddress), 'Tether USD', 'USDT', 6n, 10n],
       {
         fundingUtxo: funding[0],
         facetOverrides: Object.fromEntries(bundle.manifest.facets.map((f, i) => [
@@ -134,7 +144,7 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
         ])),
       },
     );
-    expect((await deployed.root.getState()).decimals).toBe(6n);
+    expect((await deployed.root.getState()).tokenDecimals).toBe(6n);
 
     // Every route spends. Collected rather than asserted one at a time, so a future re-plan that
     // pushes one shard back over the limit names the route it broke.
@@ -143,7 +153,6 @@ describe('NativeUsdtInherited / the built-in splitter', () => {
       ['pause', () => deployed.call.pause().send()],
       ['unpause', () => deployed.call.unpause().send()],
       ['setQuarantineBlocks', () => deployed.call.setQuarantineBlocks(25n).send()],
-      ['deprecate', () => deployed.call.deprecate(addressToLockScript(aliceAddress)).send()],
     ] as Array<[string, () => Promise<unknown>]>) {
       try { await call(); } catch (error) { refused.push(`${name}: ${(error as Error).message.slice(0, 120)}`); }
     }

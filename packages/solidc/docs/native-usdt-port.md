@@ -362,16 +362,14 @@ instead of by hand-written facets. Tests in
 `packages/solidcash/test/e2e/NativeUsdtInherited.test.ts`.
 
 ```
-Ownable
-Pausable      is Ownable                BasicToken  is Ownable          StandardToken is BasicToken
-BlackList     is BasicToken             Freezable   is Ownable          BchNative
-NativeTetherToken is Pausable, StandardToken, BlackList, Freezable, BchNative
+ERC20 v5.6.1 port       Pausable is Ownable       BlackList       BchNative
+NativeTetherToken is ERC20, Pausable, BlackList, BchNative
 ```
 
-Ownable is reached along four paths, so this leans on C3 linearization. It holds: `owner`, `paused`,
-`totalSupply` and `balances` each get exactly one slot in the flattened layout (test-pinned).
+The inherited `_balances`, `_allowances`, and `_totalSupply` layout belongs exclusively to ERC20. USDT policy
+extends the OZ `_update` customization point without recreating transfer or allowance accounting.
 
-### 5.1 It is strictly better as source, and smaller as bytecode
+### 5.1 Modern ERC20 composition
 
 | | hand-split facets | inheritance + auto-split |
 | --- | --- | --- |
@@ -380,10 +378,12 @@ Ownable is reached along four paths, so this leans on C3 linearization. It holds
 | `pendingDeposits` | two parallel mappings (facets collided on `struct Pending`) | **the struct** |
 | forwarders | 13 named, parameter names must match the facet's | **none** |
 | scripts produced | **2**, hand-partitioned | 3, compiler-partitioned |
-| total bytecode | **15,927 B** | **15,762 B** |
+| total bytecode | **15,927 B** | **13,673 B** |
 
-The unsplit inherited contract is 12,123 B. Its deployable shards are root 1,334 B, `Facet0` 5,237 B, and
-`Facet1` 9,191 B, leaving 809 B of artifact-script headroom below the per-input cap on the largest shard.
+The recreated inherited contract uses the SolidCash-native OpenZeppelin ERC20 v5.6.1 port rather than a local
+`StandardToken` approximation. The unsplit contract is 10,672 B. Its deployable shards are root 1,714 B,
+`Facet0` 2,685 B, and `Facet1` 9,274 B, leaving 726 B of artifact-script headroom below the per-input cap on the
+largest shard.
 The splitter also budgets constructor and call arguments when planning the actual spend.
 
 Two earlier conclusions in this document are superseded:

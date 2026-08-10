@@ -41,7 +41,7 @@ const BARRIER_OPS = new Set<number>([
  * come from a single-byte pool first, so a site costs two and shorter spans start paying: purely on size, 5 is
  * the optimum (90,395 -> 89,930 on the corpus, and independently 5,503 -> 5,470 on the real-world examples).
  *
- * 12 IS THE FLOOR, and the reason is not size. Sharing more aggressively than that breaks machinery that
+ * 12 is the standalone/default safety floor, and the reason is not size. Sharing more aggressively than that
  * reads the script's structure rather than just running it: at 5 the SDK could no longer derive a return value
  * (`SolidityCorpusBehavior`), and split facet sizing, split call-edge unions and proxy delegate initialisers
  * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
@@ -49,13 +49,16 @@ const BARRIER_OPS = new Set<number>([
  *
  * RAISED 7 -> 12 when the C2 entry-write derivation joined that list of structure-reading subsystems. It reads
  * the emitted script rather than just running it, and below 12 the spans it needs get shared out from under it:
- * `EntryWriteBehavior.test.ts` fails 5/30 with "auto-derivation oscillation" at 7, 10 and 11, and passes at 12.
+ * At the time, `EntryWriteBehavior.test.ts` failed 5/30 with "auto-derivation oscillation" at 7, 10 and 11,
+ * and passed at 12.
  * Bisected to 71a8971ab (single-byte helper ids), but NOT to anything revertible in it - not the id relocation
  * (disabling `rehomeHotHelperIds` changes nothing) and not the candidate sort tie-break. It is the cost model
  * admitting shorter spans, which is the same failure mode this floor already existed to hold back.
  *
- * Costs +150 bytes over a 60-contract corpus (21,783 -> 21,933, +0.69%). If the derivation is ever made
- * robust to shared spans, this comes straight back down - the size is there to be recovered.
+ * Later compiler/SDK derivation changes made 10 pass the C2 and runtime regressions again. Solidc now probes
+ * 12 through 10 for ordinary contracts and keeps a narrower window only when its measured whole-script result is smaller;
+ * message-bus contracts retain 12 because their exact active-bytecode resource model is separately pinned.
+ * Keeping 12 as this API's default preserves conservative behavior for direct utility callers.
  */
 export const MINIMUM_WINDOW_ELEMENTS = 12;
 // Smallest single data push seeded as a candidate in its own right. A site costs an id push plus OP_INVOKE, so
@@ -66,6 +69,8 @@ const MINIMUM_POOLED_CONSTANT_BYTES = 6;
 // Was 512, which was binding: raising it recovers 77 bytes over the corpus and saturates at this value, with
 // no measurable compile-time cost. Rounds do NOT need raising - 12 of them emit exactly what 6 do, so the
 // fixed point really is reached inside the existing budget.
+// Solidc additionally probes 512 for ordinary contracts: considering fewer groups can avoid a marginal early
+// match fragmenting a longer span, and the caller compares the measured whole-script results.
 const CANDIDATE_GROUPS_PER_ROUND = 1024;
 // Rounds of outlining. Each round applies every disjoint profitable candidate it finds, so a handful of rounds
 // reaches the fixed point; the cap only bounds pathological inputs.
@@ -241,7 +246,10 @@ function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[
  * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
  * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
  */
-function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[] {
+function findCandidates(
+  bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
+  candidateGroupsPerRound: number,
+): Candidate[] {
   const keyIds = new Map<string, number>();
   const idOf = (element: Script[number]): number => {
     const key = elementKey(element);
@@ -255,9 +263,9 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
 
   const windows = new Map<number, Occurrence[]>();
   bodyIds.forEach((ids, bodyIndex) => {
-    for (let i = 0; i + MINIMUM_WINDOW_ELEMENTS <= ids.length; i += 1) {
+    for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
       let hash = 0;
-      for (let j = 0; j < MINIMUM_WINDOW_ELEMENTS; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
+      for (let j = 0; j < minimumWindowElements; j += 1) hash = (Math.imul(hash, 31) + ids[i + j]) | 0;
       const group = windows.get(hash) ?? [];
       group.push({ body: bodyIndex, start: i });
       windows.set(hash, group);
@@ -271,13 +279,13 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
     const exact = new Map<string, Occurrence[]>();
     for (const occurrence of bucket) {
       const ids = bodyIds[occurrence.body];
-      const key = ids.slice(occurrence.start, occurrence.start + MINIMUM_WINDOW_ELEMENTS).join(',');
+      const key = ids.slice(occurrence.start, occurrence.start + minimumWindowElements).join(',');
       const group = exact.get(key) ?? [];
       group.push(occurrence);
       exact.set(key, group);
     }
     for (const group of exact.values()) {
-      if (group.length >= 2) groups.push({ occurrences: group, seed: MINIMUM_WINDOW_ELEMENTS });
+      if (group.length >= 2) groups.push({ occurrences: group, seed: minimumWindowElements });
     }
   }
   // Ranked by the gross bytes a group could share - occurrences times the encoded size of its seed - not by
@@ -291,7 +299,7 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
   };
   const rank = new Map(groups.map((group) => [group, group.occurrences.length * seedBytes(group)]));
   groups.sort((left, right) => rank.get(right)! - rank.get(left)!);
-  groups.splice(CANDIDATE_GROUPS_PER_ROUND);
+  groups.splice(candidateGroupsPerRound);
 
   // A large repeated constant never reaches the window length, however many times it appears and however big
   // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
@@ -378,7 +386,9 @@ function findCandidates(bodies: OutlineBody[], idPushBytes: number): Candidate[]
   // Ties broken toward the longer span. Claiming is first-come, and a short span applied first fragments every
   // longer span that contains it: the longer one survives the next round only as a shorter, less profitable
   // remainder. Preferring length on equal savings keeps the containing span whole.
-  candidates.sort((left, right) => right.saved - left.saved || right.bytes - left.bytes);
+  candidates.sort((left, right) => (ranking === 'density'
+    ? (right.saved / right.bytes) - (left.saved / left.bytes) : right.saved - left.saved)
+    || right.saved - left.saved || right.bytes - left.bytes);
   return candidates;
 }
 
@@ -399,6 +409,10 @@ export function outlineSharedSpans(
    * which silently rejects candidates that are in fact profitable.
    */
   peekIdPushBytes?: () => number,
+  ranking: 'savings' | 'density' = 'savings',
+  minimumWindowElements: number = MINIMUM_WINDOW_ELEMENTS,
+  /** Maximum ranked candidate groups extended in each round; lower probes can change greedy claim order. */
+  candidateGroupsPerRound: number = CANDIDATE_GROUPS_PER_ROUND,
 ): OutlineResult {
   // `origins` tracks, per current position, the original instruction index it came from, so require/log
   // instruction pointers can be remapped once the rewriting settles.
@@ -423,7 +437,9 @@ export function outlineSharedSpans(
     // claim sites in, so the caller may legitimately quote a width wider than its next allocation to hold
     // marginal candidates back.
     const idPushBytes = peekIdPushBytes?.() ?? PROBE_IDENTIFIER_PUSH_BYTES;
-    const candidates = findCandidates(corpus, idPushBytes);
+    const candidates = findCandidates(
+      corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound,
+    );
     if (candidates.length === 0) break;
 
     // Candidates were all measured against the same corpus, so apply only those whose sites are still intact:

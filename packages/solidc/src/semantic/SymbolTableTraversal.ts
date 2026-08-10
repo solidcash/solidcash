@@ -4410,6 +4410,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
   }
 
+  private isOwnCategoryKey(key: IdentifierNode): boolean {
+    const definition = key.definition?.definition;
+    return definition instanceof VariableDefinitionNode
+      && definition.expression instanceof StateAccessNode
+      && definition.expression.name === 'category'
+      && !definition.expression.stateVariable;
+  }
+
   private collectTokenContainerAccesses(node: Node, map: Map<string, TokenContainerAccessInfo>): void {
     if (node instanceof FieldAccessNode && node.expression instanceof MappingAccessNode
         && node.expression.isTokenContainerAccess) {
@@ -4420,7 +4428,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4434,7 +4442,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         if (existing) {
           if (!existing.operations.includes('read')) existing.operations.push('read');
         } else {
-          map.set(slotKey, { keyParam: keyExpr.name, operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
+          map.set(slotKey, { keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: ['read'], slotIndex: -1, transferCount: 0, transferNftCount: 0 });
         }
       }
       return;
@@ -4452,7 +4460,7 @@ export default class SymbolTableTraversal extends AstTraversal {
           else if (op === 'transferNft') existing.transferNftCount++;
         } else {
           map.set(slotKey, {
-            keyParam: keyExpr.name, operations: [op], slotIndex: -1,
+            keyParam: keyExpr.name, keySource: this.isOwnCategoryKey(keyExpr) ? 'own' : 'param', operations: [op], slotIndex: -1,
             transferCount: op === 'transfer' ? 1 : 0,
             transferNftCount: op === 'transferNft' ? 1 : 0,
           });
@@ -8408,7 +8416,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       // Validate key is a function parameter
       for (const key of node.keys) {
         if (!(key instanceof IdentifierNode)
-          || !this.currentFunction.parameters.some((p) => p.name === (key as IdentifierNode).name)) {
+          || (!this.currentFunction.parameters.some((p) => p.name === key.name)
+            && !this.isOwnCategoryKey(key))) {
           throw new TokenContainerKeyMustBeParameterError(node);
         }
       }
@@ -8530,7 +8539,8 @@ export default class SymbolTableTraversal extends AstTraversal {
     // Validate key is a function parameter
     const keyExpr = node.tokenContainerKeyExpression;
     if (!(keyExpr instanceof IdentifierNode)
-      || !this.currentFunction.parameters.some((p) => p.name === keyExpr.name)) {
+      || (!this.currentFunction.parameters.some((p) => p.name === keyExpr.name)
+        && !this.isOwnCategoryKey(keyExpr))) {
       throw new TokenContainerKeyMustBeParameterError(node);
     }
 
@@ -8817,6 +8827,10 @@ export default class SymbolTableTraversal extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     // this.outState is a built-in property, not a state variable
     if (node.name === 'outState') {
+      return node;
+    }
+    // this.category is a compiler-derived introspection property.
+    if (node.name === 'category' && !this.stateVariableMap.has('category')) {
       return node;
     }
     // this.balance is a built-in property when no state variable named 'balance' exists

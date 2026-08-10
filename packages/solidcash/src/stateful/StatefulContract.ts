@@ -8664,17 +8664,20 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               .filter((index) => index >= 0);
             const eventOutputBase = physicalEventIndices[0] ?? stb.getEventOutputBase();
             const eventOutputRange = { min: eventOutputBase, max: eventOutputBase + eventCount };
-            // Outlining may share an event commitment verification and invoke it once per emitted slot. Scan
-            // every invocation phase: selecting only the longest phase loses later emits, leaving their empty
-            // placeholders to fail the event placement/binding epilogue.
-            const eventCommits = extractCommitmentsFromTrace(
-              fullTrace2, eventCount, eventOutputRange, true,
-            ) ?? [];
-            commitmentProgress += eventCommits.length;
-            latestEventCommits = eventCommits;
-            for (let ei = 0; ei < eventCount && ei < eventCommits.length; ei++) {
-              stb.setEventRawCommitment(emitInfos![ei].emitIndex, eventCommits[ei]);
+            // Preserve physical output positions for conditional emits. A skipped earlier emit leaves a hole;
+            // compacting the later commitments into an array assigns (for example) Transfer to Approval and
+            // makes both event-slot covenants fail. Outlining may invoke the shared verifier multiple times, so
+            // scan all phases but retain each verified output index.
+            const eventCommitMap = extractCommitmentMapFromTrace(fullTrace2, eventOutputRange, true);
+            const eventCommits: string[] = [];
+            for (let ei = 0; ei < eventCount; ei++) {
+              const commitment = eventCommitMap.get(eventOutputBase + ei);
+              if (commitment === undefined) continue;
+              eventCommits[ei] = commitment;
+              stb.setEventRawCommitment(emitInfos![ei].emitIndex, commitment);
             }
+            commitmentProgress += eventCommitMap.size;
+            latestEventCommits = eventCommits;
           }
 
           // NFT transfer commitments are extracted separately via extractVerifiedValuesFromTrace below
@@ -13231,10 +13234,11 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
 
         // Resolve the token container category from the function argument by keyParam name
         const keyParamIndex = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
-        if (keyParamIndex < 0) {
+        if (access.keySource !== 'own' && keyParamIndex < 0) {
           throw new Error(`Token container key parameter '${access.keyParam}' not found in function inputs`);
         }
-        const tokenContainerCategoryValue = args[keyParamIndex];
+        const tokenContainerCategoryValue = access.keySource === 'own'
+          ? this.categoryId : args[keyParamIndex];
         const tokenContainerCategoryId = tokenContainerCategoryValue instanceof Uint8Array
           ? binToHex(tokenContainerCategoryValue) : String(tokenContainerCategoryValue);
 
@@ -14017,7 +14021,8 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
     if (tokenContainerAccesses) {
       for (const access of tokenContainerAccesses) {
         const catParamIdx = abiFunction!.inputs.findIndex((inp) => inp.name === access.keyParam);
-        const catValue = catParamIdx >= 0 ? args[catParamIdx] : undefined;
+        const catValue = access.keySource === 'own'
+          ? this.categoryId : catParamIdx >= 0 ? args[catParamIdx] : undefined;
         const catId = catValue instanceof Uint8Array
           ? binToHex(catValue) : (catValue !== undefined ? String(catValue) : '');
         const ftCount = access.transferCount ?? (access.operations.includes('transfer') ? 1 : 0);

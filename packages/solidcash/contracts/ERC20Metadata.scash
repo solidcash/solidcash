@@ -1,0 +1,18 @@
+pragma solidcash >=0.8.0;
+
+// Optional IERC20Metadata behavior. The ERC20 ledger deliberately keeps
+// allowances and transfers unprunable while tokens that do not need textual
+// metadata avoid carrying two state fields and their constructor machinery.
+abstract contract ERC20Metadata {
+    internal string immutable _name;
+    internal string immutable _symbol;
+
+    constructor(string name_, string symbol_) {
+        this._name = name_;
+        this._symbol = symbol_;
+    }
+
+    function name() public view returns (string) { return this._name; }
+    function symbol() public view returns (string) { return this._symbol; }
+    function decimals() public view virtual returns (uint8) { return 18; }
+}

@@ -6,6 +6,7 @@ import {
   ArrayType,
   MINIMUM_WINDOW_ELEMENTS,
   encodeBool,
+  decodeInt,
   encodeInt,
   encodeString,
   Op,
@@ -1292,6 +1293,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   private currentContractIsBrandedLibrary: boolean = false;
   // True when the contract reads blockhash(n): forces it stateful (the oracle is branded to its own category).
   private currentContractUsesBlockhash: boolean = false;
+  private currentContractHasMessageBus: boolean = false;
   private currentContractEmitsEvent: boolean = false;
 
   /** X12. This contract is a split FACET: `delegateOnly`, so its own data NFTs are never materialized. */
@@ -1780,6 +1782,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.dynamicReadBases = [];
     this.currentContractIsBrandedLibrary = node.isBrandedLibrary;
     this.currentContractUsesBlockhash = node.usesBlockhash;
+    this.currentContractHasMessageBus = node.functions.some((fn) => fn.messageBusRoute === true);
     this.currentContractEmitsEvent = node.emitsEvent;
     this.currentContractIsSplitFacet = node.isSplitFacet;
     this.contractParameters = node.parameters;
@@ -2353,7 +2356,26 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (visited.has(node)) return ids;
     visited.add(node);
     if (node instanceof FunctionCallNode && node.resolvedFunction?.functionId !== undefined) {
-      ids.add(node.resolvedFunction.functionId);
+      const statements = node.resolvedFunction.body?.statements;
+      const emptyBody = statements?.length === 0;
+      const noOpBody = statements?.length === 1 && statements[0] instanceof RequireNode
+        && statements[0].expression instanceof BoolLiteralNode && statements[0].expression.value;
+      const returned = statements?.length === 1 && statements[0] instanceof ReturnNode
+        ? statements[0].expressions[0] : undefined;
+      const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
+        || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
+        || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
+        || argument instanceof StringLiteralNode;
+      // `visitUserFunctionCall` folds this exact shape, so it has no physical OP_INVOKE edge and must not keep
+      // an otherwise-dead OP_DEFINE body alive in the reachability closure.
+      const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
+        || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
+        || returned instanceof StringLiteralNode
+        || (returned instanceof IdentifierNode
+          && !node.resolvedFunction.parameters.some((parameter) => parameter.name === returned.name));
+      if (!((emptyBody || noOpBody || foldableReturn) && node.parameters.every(inertArgument))) {
+        ids.add(node.resolvedFunction.functionId);
+      }
     }
     // A function used as a value (function pointer / `this.f` self-ref) is invoked indirectly via OP_INVOKE,
     // so its internal subroutine must be OP_DEFINE'd too.
@@ -3593,6 +3615,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     // Diagnostic escape hatch: SOLIDCASH_NO_OUTLINE=1 keeps every body inline, so a covenant failure can be
     // attributed to (or cleared of) span sharing without bisecting the optimiser.
     if ((globalThis as any).process?.env?.SOLIDCASH_NO_OUTLINE) return;
+    if (!this.isSubroutineUseProbe) this.releaseUnusedSingleByteIdsForOutlining();
     const bodies = this.definedBodyRecords.map((record) => {
       // Pin every require/console.log site. The SDK attributes a failing evaluation by matching the VM's
       // instruction pointer against these, and a pointer reported from inside a shared body would not match.
@@ -3623,15 +3646,44 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     let winningPool: ReturnType<typeof this.snapshotCompactHelperIds> | undefined;
     const entryPool = this.snapshotCompactHelperIds();
     for (const width of new Set(widths)) {
-      this.restoreCompactHelperIds(entryPool);
-      const attempt = outlineSharedSpans(
-        bodies.map((body) => ({ ...body, script: [...body.script], locationData: [...body.locationData] })),
-        () => encodeInt(this.allocateCompactHelperId()),
-        () => width,
-      );
-      if (result === undefined || attempt.savedBytes > result.savedBytes) {
-        result = attempt;
-        winningPool = this.snapshotCompactHelperIds();
+      const strategies = this.currentContractHasMessageBus
+        ? [['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original']] as const
+        : [
+          ['savings', 12, 1024, 'original'], ['density', 12, 1024, 'original'],
+          ['savings', 11, 1024, 'original'], ['density', 11, 1024, 'original'],
+          ['savings', 10, 1024, 'original'], ['density', 10, 1024, 'original'],
+          // Seven-element spans recover compact repeated state-covenant fragments (notably ERC20 mapping
+          // transitions) that cannot grow into the ten-element candidates above. The whole-script winner gate
+          // keeps this probe inert on contracts where those marginal candidates fragment a better outline.
+          ['savings', 7, 1024, 'original'], ['density', 7, 1024, 'original'],
+          ['savings', 10, 512, 'original'], ['density', 10, 512, 'original'],
+          ['savings', 10, 512, 'shortest'], ['density', 10, 512, 'shortest'],
+        ] as const;
+      for (const [ranking, minimumWindowElements, candidateGroupsPerRound, bodyOrder] of strategies) {
+        this.restoreCompactHelperIds(entryPool);
+        const order = bodies.map((_body, index) => index);
+        if (bodyOrder === 'shortest') order.sort((left, right) =>
+          bodies[left].script.length - bodies[right].script.length);
+        const orderedAttempt = outlineSharedSpans(
+          order.map((index) => {
+            const body = bodies[index];
+            return { ...body, script: [...body.script], locationData: [...body.locationData] };
+          }),
+          () => encodeInt(this.allocateCompactHelperId()),
+          () => width,
+          ranking,
+          minimumWindowElements,
+          candidateGroupsPerRound,
+        );
+        const normalizedBodies = new Array(orderedAttempt.bodies.length);
+        order.forEach((originalIndex, orderedIndex) => {
+          normalizedBodies[originalIndex] = orderedAttempt.bodies[orderedIndex];
+        });
+        const attempt = { ...orderedAttempt, bodies: normalizedBodies };
+        if (result === undefined || attempt.savedBytes > result.savedBytes) {
+          result = attempt;
+          winningPool = this.snapshotCompactHelperIds();
+        }
       }
     }
     this.restoreCompactHelperIds(winningPool!);
@@ -3677,6 +3729,49 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       this.emit(outlined.id, locationData);
       this.emit(Op.OP_DEFINE, locationData);
     }
+  }
+
+  /**
+   * Invocation analysis conservatively reserves every internal function id before bodies are generated, and
+   * structural probes allocate helpers that the real pass can later inline away. At the final outlining stage,
+   * the emitted OP_DEFINE stream is authoritative: unused one-byte ids and allocated compact ids can be safely
+   * recycled for outlined spans.
+   */
+  private releaseUnusedSingleByteIdsForOutlining(): void {
+    const defined = new Set<bigint>();
+    for (let i = 1; i < this.output.length; i += 1) {
+      if (this.output[i] === Op.OP_DEFINE && this.output[i - 1] instanceof Uint8Array) {
+        try {
+          defined.add(decodeInt(this.output[i - 1] as Uint8Array));
+        } catch {
+          // Four-byte ABI selectors are identifiers too, but not minimally encoded VM numbers and never overlap
+          // the one-byte script-number pool considered below.
+        }
+      }
+    }
+    for (const record of this.definedBodyRecords) {
+      if (record.functionId !== undefined) defined.add(BigInt(record.functionId));
+      if (record.compilerHelperId !== undefined) defined.add(BigInt(record.compilerHelperId));
+    }
+    const protectedIds = (id: bigint): boolean => this.freeFunctionIds.includes(id)
+      || GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.includes(id);
+    const recycled = [...this.compactHelperIds.allocated]
+      .filter((id) => !defined.has(id) && !protectedIds(id));
+    for (const id of recycled) {
+      this.compactHelperIds.used.delete(id);
+      this.compactHelperIds.allocated.delete(id);
+    }
+    for (const id of GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS) {
+      if (defined.has(id) || this.freeFunctionIds.includes(id)
+        || GenerateTargetTraversalWithLocation.ALL_SUBROUTINE_IDS.includes(id)) continue;
+      this.compactHelperIds.used.delete(id);
+      this.compactHelperIds.allocated.delete(id);
+    }
+    this.compactHelperIds.cheap = [...new Set([
+      ...GenerateTargetTraversalWithLocation.SINGLE_BYTE_PUSH_IDS
+        .filter((id) => !this.compactHelperIds.used.has(id)),
+      ...recycled,
+    ])].sort((left, right) => encodeDataPush(encodeInt(left)).length - encodeDataPush(encodeInt(right)).length);
   }
 
   /**
@@ -7708,6 +7803,32 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
    * pull the selector from the bottom.
    */
   visitUserFunctionCall(node: FunctionCallNode, targetFunc: FunctionDefinitionNode): Node {
+    // Fold a side-effect-free internal function that returns one boolean literal. Policy extension hooks often
+    // default to `return true`/`return false`; compiling those as separately defined OP_INVOKE bodies costs a
+    // definition plus a call at every check, even though their result is known after inheritance expansion.
+    // Restrict argument elision to identifiers/literals: more complex expressions must still be evaluated for
+    // their own observable effects, even when the callee ignores them.
+    const soleStatement = targetFunc.body?.statements?.length === 1
+      ? targetFunc.body.statements[0] : undefined;
+    const emptyBody = targetFunc.body?.statements?.length === 0;
+    const noOpBody = soleStatement instanceof RequireNode
+      && soleStatement.expression instanceof BoolLiteralNode && soleStatement.expression.value;
+    const returned = soleStatement instanceof ReturnNode && soleStatement.expressions.length === 1
+      ? soleStatement.expressions[0] : undefined;
+    const inertArgument = (argument: ExpressionNode): boolean => argument instanceof IdentifierNode
+      || argument instanceof BoolLiteralNode || argument instanceof IntLiteralNode
+      || argument instanceof DecimalLiteralNode || argument instanceof HexLiteralNode
+      || argument instanceof StringLiteralNode;
+    const foldableReturn = returned instanceof BoolLiteralNode || returned instanceof IntLiteralNode
+      || returned instanceof DecimalLiteralNode || returned instanceof HexLiteralNode
+      || returned instanceof StringLiteralNode
+      || (returned instanceof IdentifierNode
+        && !targetFunc.parameters.some((parameter) => parameter.name === returned.name));
+    if ((emptyBody || noOpBody || (returned && foldableReturn)) && node.parameters.every(inertArgument)) {
+      if (returned) this.visit(returned);
+      return node;
+    }
+
     // X91. Refuse a forwarded synthetic witness the caller cannot supply BEFORE anything is emitted - ahead of
     // the journal-context picks, the hidden-context pushes and the argument loop - so no partially lowered call
     // is left behind. Checked against this caller's stack rather than against the callee's effect list: the
@@ -13059,6 +13180,19 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   visitStateAccess(node: StateAccessNode): Node {
     const locationData = { location: node.location, positionHint: PositionHint.START };
 
+    // this.category - master category without the NFT capability byte, converted
+    // from native serialization order to Solidity/display-order bytes32.
+    if (node.name === 'category' && !node.stateVariable) {
+      this.emitMasterInputIndex(locationData);
+      this.emit(Op.OP_UTXOTOKENCATEGORY, locationData);
+      this.emit(encodeInt(32n), locationData);
+      this.emit(Op.OP_SPLIT, locationData);
+      this.emit(Op.OP_DROP, locationData);
+      this.emit(Op.OP_REVERSEBYTES, locationData);
+      this.pushToStack('(value)');
+      return node;
+    }
+
     // this.balance - get own category, derive satoshi container lbc, loop over inputs
     if (node.name === 'balance' && !node.stateVariable) {
       // Get own category (32 bytes, strip capability flag)
@@ -14713,7 +14847,8 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
   }
 
   // A C2 mapping value that can exceed the 60 B inline tail: any variable-width blob - unbounded `bytes`/`string`,
-  // struct, dynamic array (isChunkableValueType). Stored as len(4B) ++ [ inline value if <=60 B | sha256(value) ];
+  // variable/large struct, dynamic array (isChunkableValueType). Stored as
+  // len(4B) ++ [ inline value if <=60 B | sha256(value) ];
   // a long value persists in per-slot chunk NFTs and a read verifies a witness against the hash. Fixed-width
   // (int/bool/bytesN) and small-variable (address) values never chunk (always within the 128 B commitment).
   private isChunkableValue(vt: Type): boolean {

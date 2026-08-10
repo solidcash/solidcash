@@ -1,81 +1,49 @@
 pragma solidcash >=0.8.0;
 
+import { ERC20 } from "../../contracts/ERC20.scash";
 import { BchNative } from "../../contracts/BchNative.scash";
 import { BlackList } from "../../contracts/BlackList.scash";
 
-// Minimal reusable ledger sibling. BchNative never assumes this exact storage
-// shape; MyToken connects the two bases through the internal hooks.
-abstract contract ERC20 {
+contract MyToken(address initialOwner)
+    is ERC20, BchNative, BlackList
+{
     public address owner;
-    public int totalSupply;
-    mapping(address => int) public balances;
+    public int backedSupply;
 
-    event Transfer(address indexed from, address indexed to, int value);
-
-    function transfer(address to, int value) {
-        address sender = msg.sender;
-        require(value > 0);
-        require(to != sender);
-        require(this.balances[sender] >= value);
-        this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + value;
-        emit Transfer(sender, to, value);
-    }
-}
-
-// The requested composition form. Blacklisting belongs to the token policy,
-// while BchNative exposes the hooks that allow it to govern wrap/unwrap.
-contract MyToken(address initialOwner) is ERC20, BchNative, BlackList {
-
-    constructor(int quarantine) {
+    constructor() {
         this.owner = initialOwner;
-        this.totalSupply = 0;
-        this.backingSet = false;
-        this.containerSeen = 0;
-        this.backedSupply = 0;
-        this.quarantineBlocks = quarantine;
-        this.clock = 0;
     }
 
-    function issue(int amount) {
+    function issue(uint256 amount) {
         require(msg.sender == this.owner);
         require(amount > 0);
-        require(this.containerSeen >= this.backedSupply + amount);
-        this.balances[this.owner] = this.balances[this.owner] + amount;
-        this.totalSupply = this.totalSupply + amount;
-        this.backedSupply = this.backedSupply + amount;
+        int nativeAmount = int(amount);
+        bytes32 category = this.category;
+        require(this.tokens[category].tokenAmount >= this.backedSupply + nativeAmount);
+        this.backedSupply = this.backedSupply + nativeAmount;
+        _mint(this.owner, amount);
     }
 
-    // A future inherited claim is an UPDATE, not a delegated first-touch insert.
     function openSelf() {
         address account = msg.sender;
-        require(this.balances[account] == 0);
-        this.balances[account] = 0;
+        require(balanceOf(account) == 0);
+        _mint(account, 0);
         this.blacklisted[account] = false;
     }
 
-    function _nativeAdmin() internal view override returns (address) { return this.owner; }
     function _blacklistAdmin() internal view override returns (address) { return this.owner; }
-    function _nativeCredit(address account, int amount) internal override {
-        this.balances[account] = this.balances[account] + amount;
+    function _nativeCredit(address account, uint256 amount) internal override {
+        this.backedSupply = this.backedSupply + int(amount);
+        _update(address(0), account, amount);
     }
-    function _nativeDebit(address account, int amount) internal override {
-        require(this.balances[account] >= amount);
-        this.balances[account] = this.balances[account] - amount;
+    function _nativeDebit(address account, uint256 amount) internal override {
+        _update(account, address(0), amount);
+        this.backedSupply = this.backedSupply - int(amount);
     }
     function _nativeCanWrap(address account) internal view override returns (bool) {
         return !this.blacklisted[account];
     }
-    function _nativeCanDeposit(address account) internal view override returns (bool) {
-        return !this.blacklisted[account];
-    }
     function _nativeCanUnwrap(address account) internal view override returns (bool) {
         return !this.blacklisted[account];
-    }
-    function _nativeCanClaim(address account) internal view override returns (bool) {
-        return !this.blacklisted[account];
-    }
-    function _nativeCanCancel(address account) internal view override returns (bool) {
-        return account == msg.sender;
     }
 }

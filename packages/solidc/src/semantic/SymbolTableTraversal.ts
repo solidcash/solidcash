@@ -4928,7 +4928,8 @@ export default class SymbolTableTraversal extends AstTraversal {
           byLocal.set(nm, list);
         }
       }
-      for (const v of Object.values(n)) {
+      for (const key in n) {
+        const v = n[key as keyof Node];
         if (v instanceof Node) gather(v, seen);
         else if (Array.isArray(v)) for (const e of v) if (e instanceof Node) gather(e, seen);
       }
@@ -6317,7 +6318,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node instanceof StateArrayDeleteNode) {
       return true;
     }
-    for (const v of Object.values(node)) {
+    for (const key in node) {
+      const v = node[key as keyof Node];
       if (v instanceof Node) { if (this.hasStateWrite(v, seen)) return true; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node && this.hasStateWrite(e, seen)) return true;
       }
@@ -6336,7 +6338,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       && !(node instanceof LowLevelCallStatementNode && node.synthesizedFromLibraryCall)) {
       return true;
     }
-    for (const v of Object.values(node)) {
+    for (const key in node) {
+      const v = node[key as keyof Node];
       if (v instanceof Node) { if (this.hasExplicitDelegatecall(v, seen)) return true; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node && this.hasExplicitDelegatecall(e, seen)) return true;
       }
@@ -6356,7 +6359,8 @@ export default class SymbolTableTraversal extends AstTraversal {
       && node.synthesizedFromLibraryCall) {
       return true;
     }
-    for (const v of Object.values(node)) {
+    for (const key in node) {
+      const v = node[key as keyof Node];
       if (v instanceof Node) { if (this.hasSynthesizedDelegatecall(v, seen)) return true; } else if (Array.isArray(v)) {
         for (const e of v) if (e instanceof Node && this.hasSynthesizedDelegatecall(e, seen)) return true;
       }

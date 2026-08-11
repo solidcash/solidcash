@@ -491,8 +491,9 @@ function containsStatefulCall(
     seenFunctions.add(node.resolvedFunction);
     if (containsStatefulOperation(node.resolvedFunction.body?.statements, seenFunctions)) return true;
   }
-  for (const [key, value] of Object.entries(node)) {
+  for (const key in node) {
     if (STATEFUL_CALL_WALK_SKIP.has(key)) continue;
+    const value = node[key as keyof Node];
     if (value instanceof Node && containsStatefulCall(value, seenFunctions, seenNodes)) return true;
     if (Array.isArray(value)) {
       for (const child of value) {

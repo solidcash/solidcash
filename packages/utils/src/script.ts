@@ -71,7 +71,18 @@ export function scriptToBitAuthAsm(script: Script): string {
 }
 
 export function asmToScript(asm: string): Script {
-  return bytecodeToScript(asmToBytecode(asm));
+  asm = asm.replace(/\s+/g, ' ').trim();
+  if (asm === '') return [];
+  return asm.split(' ').map((token) => {
+    if (token.startsWith('OP_')) {
+      const opcode = Op[token as keyof typeof Op];
+      if (opcode === undefined) throw new Error(`asmToBytecode: unknown opcode "${token}"`);
+      return opcode as number;
+    }
+    const data = hexToBin(token.replace(/<|>/g, '').replace(/^0x/, ''));
+    if (!foldsToPushNumberOpcode(data)) return data;
+    return data[0] === NEGATIVE_ONE_BYTE ? Op.OP_1NEGATE : data[0] + PUSH_NUMBER_OPCODE_OFFSET;
+  });
 }
 
 // asmToBytecode also works for BitAuth ASM

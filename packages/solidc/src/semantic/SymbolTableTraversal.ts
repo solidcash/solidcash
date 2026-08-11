@@ -340,7 +340,48 @@ const RESOLVED_BACKREF_KEYS = new Set([
   'referencedContract', 'symbolTable', 'type',
 ]);
 
+interface FunctionBodySurvey {
+  usesMsgSender: boolean;
+  keccakInLoop: boolean;
+  hasValueTransfer: boolean;
+  hasFunctionCall: boolean;
+  hasExternalRead: boolean;
+  hasExternalOutStateRead: boolean;
+  hasExternalFunctionCall: boolean;
+  recovery: { total: number; evm: number; inLoop: boolean };
+}
+
+interface ActiveFunctionBodySurvey {
+  result: FunctionBodySurvey;
+  seen: WeakMap<Node, boolean>;
+  recoveryLoopDepth: number;
+  keccakLoopDepth: number;
+}
+
 export default class SymbolTableTraversal extends AstTraversal {
+  private activeBodySurvey?: ActiveFunctionBodySurvey;
+
+  // Function symbol resolution already visits every structural body node. Gather the independent pre-scan facts
+  // on that unavoidable traversal instead of walking the resolved body again. Collection loops count for recovery
+  // side-cars but not keccak's runtime-loop flag, matching the former survey exactly.
+  override visit(node: Node): Node {
+    const survey = this.activeBodySurvey;
+    if (!survey) return super.visit(node);
+    const recoveryLoop = node instanceof WhileNode || node instanceof DoWhileNode
+      || node instanceof CollectionIterationNode;
+    const keccakLoop = node instanceof WhileNode || node instanceof DoWhileNode;
+    if (recoveryLoop) survey.recoveryLoopDepth += 1;
+    if (keccakLoop) survey.keccakLoopDepth += 1;
+    try {
+      const result = super.visit(node);
+      this.recordBodySurveyNode(result, survey);
+      return result;
+    } finally {
+      if (keccakLoop) survey.keccakLoopDepth -= 1;
+      if (recoveryLoop) survey.recoveryLoopDepth -= 1;
+    }
+  }
+
   private readonly transferFreeFunctions = new WeakSet<FunctionDefinitionNode>();
   private symbolTables: SymbolTable[] = [new SymbolTable(GLOBAL_SYMBOL_TABLE)];
   private functionSignatures: Set<string> = new Set();
@@ -1999,8 +2040,24 @@ export default class SymbolTableTraversal extends AstTraversal {
     this.remapEcrecoverAlias(node.body);
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
-    node.body = this.visit(node.body);
-    const bodySurvey = this.surveyFunctionBody(node.body);
+    const bodySurvey: FunctionBodySurvey = {
+      usesMsgSender: false,
+      keccakInLoop: false,
+      hasValueTransfer: false,
+      hasFunctionCall: false,
+      hasExternalRead: false,
+      hasExternalOutStateRead: false,
+      hasExternalFunctionCall: false,
+      recovery: { total: 0, evm: 0, inLoop: false },
+    };
+    this.activeBodySurvey = {
+      result: bodySurvey, seen: new WeakMap(), recoveryLoopDepth: 0, keccakLoopDepth: 0,
+    };
+    try {
+      node.body = this.visit(node.body);
+    } finally {
+      this.activeBodySurvey = undefined;
+    }
     if (!bodySurvey.hasValueTransfer) this.transferFreeFunctions.add(node);
 
     // msg.sender pre-scan: inject synthetic _msgSenderCategory parameter
@@ -3911,91 +3968,53 @@ export default class SymbolTableTraversal extends AstTraversal {
     walk(node);
   }
 
-  // Survey the ordinary body graph once for the three independent annotations every function needs. Recovery
-  // nodes may be revisited when a shared subtree is reached first outside and then inside a loop; msg.sender and
-  // keccak preserve their former visit-once semantics with separate seen sets.
-  private surveyFunctionBody(node: Node): {
-    usesMsgSender: boolean;
-    keccakInLoop: boolean;
-    hasValueTransfer: boolean;
-    hasFunctionCall: boolean;
-    hasExternalRead: boolean;
-    hasExternalOutStateRead: boolean;
-    hasExternalFunctionCall: boolean;
-    recovery: { total: number; evm: number; inLoop: boolean };
-  } {
-    const result = {
-      usesMsgSender: false,
-      keccakInLoop: false,
-      hasValueTransfer: false,
-      hasFunctionCall: false,
-      hasExternalRead: false,
-      hasExternalOutStateRead: false,
-      hasExternalFunctionCall: false,
-      recovery: { total: 0, evm: 0, inLoop: false },
-    };
-    const recoverySeen = new WeakMap<Node, boolean>();
-    const walk = (current: Node, recoveryInLoop = false, keccakInLoop = false): void => {
-      const nowRecoveryInLoop = recoveryInLoop || current instanceof WhileNode
-        || current instanceof DoWhileNode || current instanceof CollectionIterationNode;
-      const nowKeccakInLoop = keccakInLoop || current instanceof WhileNode || current instanceof DoWhileNode;
-      const previousLoopState = recoverySeen.get(current);
-      if (previousLoopState === true || previousLoopState === nowRecoveryInLoop) return;
-      recoverySeen.set(current, nowRecoveryInLoop);
-      const firstOrdinaryVisit = previousLoopState === undefined;
-      if (firstOrdinaryVisit) {
-        if (current instanceof NullaryOpNode && current.operator === NullaryOperator.MSG_SENDER) {
-          result.usesMsgSender = true;
-        }
-        if (nowKeccakInLoop && current instanceof FunctionCallNode
+  private recordBodySurveyNode(current: Node, survey: ActiveFunctionBodySurvey): void {
+    const nowRecoveryInLoop = survey.recoveryLoopDepth > 0;
+    const previousLoopState = survey.seen.get(current);
+    if (previousLoopState === true || previousLoopState === nowRecoveryInLoop) return;
+    survey.seen.set(current, nowRecoveryInLoop);
+    const firstOrdinaryVisit = previousLoopState === undefined;
+    const { result } = survey;
+    if (firstOrdinaryVisit) {
+      if (current instanceof NullaryOpNode && current.operator === NullaryOperator.MSG_SENDER) {
+        result.usesMsgSender = true;
+      }
+      if (survey.keccakLoopDepth > 0 && current instanceof FunctionCallNode
           && current.identifier.name === GlobalFunction.KECCAK256) result.keccakInLoop = true;
-        if (current instanceof FunctionCallNode
+      if (current instanceof FunctionCallNode
           && (current.identifier.name in this.resolvedLibraries || current.resolvedFunction !== undefined)) {
-          result.hasFunctionCall = true;
-        }
-        if ((current instanceof ExternalStateAccessNode && current.readInfo !== undefined)
+        result.hasFunctionCall = true;
+      }
+      if ((current instanceof ExternalStateAccessNode && current.readInfo !== undefined)
           || (current instanceof ExternalMappingAccessNode && current.readInfo !== undefined
             && !current.readInfo.outputState)) result.hasExternalRead = true;
-        if ((current instanceof ExternalMappingAccessNode && current.readInfo?.outputState === true)
+      if ((current instanceof ExternalMappingAccessNode && current.readInfo?.outputState === true)
           || (current instanceof ExternalOutputStateAccessNode && current.accessInfo !== undefined)) {
-          result.hasExternalOutStateRead = true;
-        }
-        if (current instanceof ExternalFunctionCallNode && current.callInfo !== undefined
+        result.hasExternalOutStateRead = true;
+      }
+      if (current instanceof ExternalFunctionCallNode && current.callInfo !== undefined
           && !current.foldedIntoDeploy) result.hasExternalFunctionCall = true;
-        if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
+      if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
           || current instanceof AddressSendExpressionNode
           || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)
           || (current instanceof MethodCallStatementNode && current.call.callOptions?.value !== undefined)
           || (current instanceof MethodCallNode && current.callOptions?.value !== undefined)
           || (current instanceof ExternalFunctionCallNode && current.callOptions?.value !== undefined)
           || (current instanceof InstantiationNode && current.callOptions?.value !== undefined)) {
-          result.hasValueTransfer = true;
-        }
+        result.hasValueTransfer = true;
       }
-      const recoveryCall = current instanceof FunctionCallNode && (
-        current.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
+    }
+    const recoveryCall = current instanceof FunctionCallNode && (
+      current.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
         || current.identifier.name === GlobalFunction.ECRECOVER_P2PKH
         || current.identifier.name === GlobalFunction.ECRECOVER_EVM);
-      if (recoveryCall) {
-        if (previousLoopState === undefined) {
-          result.recovery.total += 1;
-          if (current.identifier.name === GlobalFunction.ECRECOVER_EVM) result.recovery.evm += 1;
-        }
-        if (nowRecoveryInLoop) result.recovery.inLoop = true;
+    if (recoveryCall) {
+      if (previousLoopState === undefined) {
+        result.recovery.total += 1;
+        if (current.identifier.name === GlobalFunction.ECRECOVER_EVM) result.recovery.evm += 1;
       }
-      for (const key in current) {
-        if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-        const value = current[key as keyof Node];
-        if (value instanceof Node) walk(value, nowRecoveryInLoop, nowKeccakInLoop);
-        else if (Array.isArray(value)) {
-          for (const item of value) {
-            if (item instanceof Node) walk(item, nowRecoveryInLoop, nowKeccakInLoop);
-          }
-        }
-      }
-    };
-    walk(node);
-    return result;
+      if (nowRecoveryInLoop) result.recovery.inLoop = true;
+    }
   }
 
   private collectCollectionIterations(node: Node, iterations: CollectionIterationInfo[]): void {

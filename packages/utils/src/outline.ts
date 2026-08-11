@@ -341,7 +341,7 @@ function findCandidates(
   // it is: 256-bit arithmetic bounds are emitted inline at every overflow check, 32 bytes a time. Seed those
   // one element wide so the same pipeline can share them. An identifier operand is excluded - rewriting the
   // element in front of an OP_DEFINE or OP_INVOKE would redirect dispatch rather than share a constant.
-  const constants = new Map<string, Occurrence[]>();
+  const constants = new Map<number, Occurrence[]>();
   bodies.forEach((body, bodyIndex) => {
     for (let i = 0; i < body.script.length; i += 1) {
       const element = body.script[i];
@@ -351,7 +351,9 @@ function findCandidates(
       if (next === Op.OP_DEFINE || next === Op.OP_INVOKE) continue;
       // `<body> <id> OP_DEFINE`: the first element is a function being defined, not a constant being used.
       if (body.script[i + 2] === Op.OP_DEFINE) continue;
-      const key = elementKey(element);
+      // `bodyIds` already interns byte-identical elements for this discovery pass. Reuse that exact identity rather
+      // than rebuilding the (potentially large) constant's string key a second time.
+      const key = bodyIds[bodyIndex][i];
       let group = constants.get(key);
       if (group === undefined) {
         group = [];

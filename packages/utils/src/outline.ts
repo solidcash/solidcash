@@ -157,7 +157,6 @@ const controlDelta = (element: Script[number]): number => {
 
 const isBarrier = (element: Script[number]): boolean =>
   typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
-const neverAnchored = (): boolean => false;
 
 interface BalanceScratch {
   // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
@@ -181,7 +180,7 @@ interface BalanceScratch {
  * shallower than it - those have the matching OP_IF inside the span.
  */
 function longestBalancedSpan(
-  elements: Script, anchored: (index: number) => boolean,
+  elements: Script, anchoredIndices: Uint8Array | undefined,
   regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
 ): { start: number; end: number; bytes: number } {
   let bestStart = 0;
@@ -194,7 +193,7 @@ function longestBalancedSpan(
   firstIndexAtDepth[0] = 0;
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
-    if (isBarrier(element) || anchored(i)) {
+    if (isBarrier(element) || (anchoredIndices !== undefined && anchoredIndices[i] !== 0)) {
       depth = 0;
       generation = ++scratch.generation;
       depthGeneration[0] = generation;
@@ -468,11 +467,8 @@ function findCandidates(
         }
       }
     }
-    const anchored = anchoredIndices === undefined
-      ? neverAnchored
-      : (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(
-      headScript, anchored, head.start, length, bodyBytePrefixes[head.body], balanceScratch,
+      headScript, anchoredIndices, head.start, length, bodyBytePrefixes[head.body], balanceScratch,
     );
     if (balanced.bytes === 0) continue;
 

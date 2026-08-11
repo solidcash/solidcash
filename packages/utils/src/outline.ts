@@ -159,6 +159,14 @@ const isBarrier = (element: Script[number]): boolean =>
   typeof element === 'number' && BARRIER_FLAGS[element] !== 0;
 const neverAnchored = (): boolean => false;
 
+interface BalanceScratch {
+  // Candidate regions are scanned sequentially. Reusing these dense tables avoids constructing a Map (or fresh
+  // typed arrays) for every overlapping region; generation stamps reset the logical contents in constant time.
+  firstIndexAtDepth: Int32Array;
+  depthGeneration: Uint32Array;
+  generation: number;
+}
+
 /**
  * Longest balanced, barrier-free sub-span of `elements`, measured in encoded bytes.
  *
@@ -174,36 +182,42 @@ const neverAnchored = (): boolean => false;
  */
 function longestBalancedSpan(
   elements: Script, anchored: (index: number) => boolean,
-  regionStart: number, regionLength: number, bytePrefix: Uint32Array,
+  regionStart: number, regionLength: number, bytePrefix: Uint32Array, scratch: BalanceScratch,
 ): { start: number; end: number; bytes: number } {
   let best = { start: 0, end: 0, bytes: 0 };
   let depth = 0;
-  let firstIndexAtDepth = new Map<number, number>([[0, 0]]);
+  const { firstIndexAtDepth, depthGeneration } = scratch;
+  let generation = ++scratch.generation;
+  depthGeneration[0] = generation;
+  firstIndexAtDepth[0] = 0;
+  const reset = (start: number): void => {
+    depth = 0;
+    generation = ++scratch.generation;
+    depthGeneration[0] = generation;
+    firstIndexAtDepth[0] = start;
+  };
   for (let i = 0; i < regionLength; i += 1) {
     const element = elements[regionStart + i];
     if (isBarrier(element) || anchored(i)) {
-      depth = 0;
-      firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
+      reset(i + 1);
       continue;
     }
-    if (element === Op.OP_ELSE) firstIndexAtDepth.delete(depth);
+    if (element === Op.OP_ELSE) depthGeneration[depth] = 0;
     const previousDepth = depth;
     depth += controlDelta(element);
     if (depth < 0) {
-      depth = 0;
-      firstIndexAtDepth = new Map<number, number>([[0, i + 1]]);
+      reset(i + 1);
       continue;
     }
     if (depth < previousDepth) {
-      for (const key of [...firstIndexAtDepth.keys()]) {
-        if (key > depth) firstIndexAtDepth.delete(key);
-      }
+      for (let key = depth + 1; key <= previousDepth; key += 1) depthGeneration[key] = 0;
     }
-    const start = firstIndexAtDepth.get(depth);
-    if (start === undefined) {
-      firstIndexAtDepth.set(depth, i + 1);
+    if (depthGeneration[depth] !== generation) {
+      depthGeneration[depth] = generation;
+      firstIndexAtDepth[depth] = i + 1;
       continue;
     }
+    const start = firstIndexAtDepth[depth];
     const bytes = bytePrefix[regionStart + i + 1] - bytePrefix[regionStart + start];
     if (bytes > best.bytes) best = { start, end: i + 1, bytes };
   }
@@ -307,6 +321,12 @@ function findCandidates(
     }
     return prefix;
   });
+  const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
+  const balanceScratch: BalanceScratch = {
+    firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
+    depthGeneration: new Uint32Array(maximumBodyLength + 1),
+    generation: 0,
+  };
 
   const windows = new Map<number, Occurrence[]>();
   bodyIds.forEach((ids, bodyIndex) => {
@@ -433,7 +453,7 @@ function findCandidates(
       ? neverAnchored
       : (index: number): boolean => anchoredIndices[index] !== 0;
     const balanced = longestBalancedSpan(
-      headScript, anchored, head.start, length, bodyBytePrefixes[head.body],
+      headScript, anchored, head.start, length, bodyBytePrefixes[head.body], balanceScratch,
     );
     if (balanced.bytes === 0) continue;
 

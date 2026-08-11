@@ -2269,9 +2269,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         found = true;
         return;
       }
-      for (const [key, value] of Object.entries(node)) {
+      for (const key in node) {
         if (['resolvedFunction', 'functionReference', 'definition', 'collection',
           'stateVariable', 'symbolTable'].includes(key)) continue;
+        const value = node[key as keyof Node];
         if (value instanceof Node) visit(value, seen);
         else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, seen);
       }
@@ -2288,9 +2289,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (current instanceof IdentifierNode && current.functionReference?.functionId !== undefined) {
         ids.add(current.functionReference.functionId);
       }
-      for (const [key, value] of Object.entries(current)) {
+      for (const key in current) {
         if (['resolvedFunction', 'functionReference', 'definition', 'collection',
           'stateVariable', 'symbolTable'].includes(key)) continue;
+        const value = current[key as keyof Node];
         if (value instanceof Node) visit(value, seen);
         else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) visit(item, seen);
       }
@@ -2407,8 +2409,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     if (node instanceof IdentifierNode && node.functionReference?.functionId !== undefined) {
       ids.add(node.functionReference.functionId);
     }
-    for (const [key, value] of Object.entries(node)) {
+    for (const key in node) {
       if (key === 'resolvedFunction' || key === 'functionReference') continue; // back-references
+      const value = node[key as keyof Node];
       if (value instanceof Node) this.collectInvokedFunctionIds(value, ids, visited);
       else if (Array.isArray(value)) {
         for (const item of value) if (item instanceof Node) this.collectInvokedFunctionIds(item, ids, visited);
@@ -2459,7 +2462,7 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     const writerIds = new Set<number>();
     const scan = (
       root: Node, slots: Map<string, StateVariableNode>, calls: Set<number>,
-      writes: { value: boolean; dynamicArray: boolean }, seen = new Set<Node>(),
+      writes: { value: boolean; dynamicArray: boolean; emits: boolean }, seen = new Set<Node>(),
     ): void => {
       if (seen.has(root)) return;
       seen.add(root);
@@ -2498,9 +2501,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (root instanceof IdentifierNode && root.functionReference?.functionId !== undefined) {
         calls.add(root.functionReference.functionId);
       }
-      for (const [key, value] of Object.entries(root)) {
+      if (root instanceof EmitStatementNode) writes.emits = true;
+      for (const key in root) {
         if (key === 'resolvedFunction' || key === 'functionReference' || key === 'definition'
           || key === 'collection' || key === 'stateVariable') continue;
+        const value = root[key as keyof Node];
         if (value instanceof Node) scan(value, slots, calls, writes, seen);
         else if (Array.isArray(value)) {
           for (const item of value) if (item instanceof Node) scan(item, slots, calls, writes, seen);
@@ -2511,32 +2516,14 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (fn.functionId === undefined || !fn.body) continue;
       const slots = new Map<string, StateVariableNode>();
       const calls = new Set<number>();
-      const writes = { value: false, dynamicArray: false };
+      const writes = { value: false, dynamicArray: false, emits: false };
       scan(fn.body, slots, calls, writes);
       // An event emitted from a returning OP_INVOKE subroutine is silently dropped (the subroutine
       // epilogue returns before emit settlement, which only runs on the entry-point path). Void emit
       // helpers are force-inlined, so the exposure is any returning internally-invoked helper that
       // emits - whether or not it also writes state. Reject it (fail closed) rather than lose the event.
       if (fn.returnTypes.length > 0 && internallyInvoked.has(fn.functionId)) {
-        let emits = false;
-        const detectEmit = (current: Node, seen = new Set<Node>()): void => {
-          if (seen.has(current) || emits) return;
-          seen.add(current);
-          if (current instanceof EmitStatementNode) {
-            emits = true;
-            return;
-          }
-          for (const [key, value] of Object.entries(current)) {
-            if (['resolvedFunction', 'functionReference', 'definition', 'collection',
-              'stateVariable', 'symbolTable'].includes(key)) continue;
-            if (value instanceof Node) detectEmit(value, seen);
-            else if (Array.isArray(value)) {
-              for (const item of value) if (item instanceof Node) detectEmit(item, seen);
-            }
-          }
-        };
-        detectEmit(fn.body);
-        if (emits && !fn.graphEmissionHandler) {
+        if (writes.emits && !fn.graphEmissionHandler) {
           throw new Error(
             `Returning state helper '${fn.name}' with an event must be inlined before code generation`,
           );
@@ -5694,9 +5681,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           walk(callee.body);
         }
       }
-      for (const [key, value] of Object.entries(node)) {
+      for (const key in node) {
         if (key === 'definition' || key === 'resolvedFunction' || key === 'functionReference'
           || key === 'symbolTable' || key === 'type' || key === 'location') continue;
+        const value = node[key as keyof Node];
         if (value instanceof Node) walk(value);
         else if (Array.isArray(value)) {
           for (const item of value) if (item instanceof Node) walk(item);
@@ -18223,8 +18211,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
       if (root === target) return true;
       if (seen.has(root)) return false;
       seen.add(root);
-      for (const [name, value] of Object.entries(root)) {
+      for (const name in root) {
         if (['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction'].includes(name)) continue;
+        const value = root[name as keyof Node];
         if (value instanceof Node && contains(value, target, seen)) return true;
         if (Array.isArray(value) && value.some((v) => v instanceof Node && contains(v, target, seen))) return true;
       }
@@ -18240,8 +18229,9 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
         && n.condition.operator === BinaryOperator.EQ) {
         capturePredicate(n.condition);
       }
-      for (const [name, value] of Object.entries(n)) {
+      for (const name in n) {
         if (['location', 'collection', 'symbol', 'symbolTable', 'type', 'resolvedFunction'].includes(name)) continue;
+        const value = n[name as keyof Node];
         if (value instanceof Node) walk(value);
         else if (Array.isArray(value)) for (const v of value) if (v instanceof Node) walk(v);
       }
@@ -18287,9 +18277,10 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
           else invalidReassignment = true;
         }
       }
-      for (const [key, value] of Object.entries(node)) {
+      for (const key in node) {
         if (key === 'location' || key === 'type' || key === 'symbolTable' || key === 'definition'
           || key === 'collection') continue;
+        const value = node[key as keyof Node];
         if (value instanceof Node) walk(value);
         else if (Array.isArray(value)) for (const item of value) if (item instanceof Node) walk(item);
       }

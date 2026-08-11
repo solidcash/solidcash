@@ -280,16 +280,14 @@ function emittedBytes(bodies: { script: Script }[], functions: OutlinedFunction[
   return total;
 }
 
-/**
- * Every profitable outlining candidate across `bodies`, best-saving first.
- *
- * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
- * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
- */
-function findCandidates(
-  bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
-  candidateGroupsPerRound: number,
-): Candidate[] {
+interface CandidateCorpus {
+  bodyIds: number[][];
+  bodyBytePrefixes: Uint32Array[];
+  maximumBodyLength: number;
+}
+
+/** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
+function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
   const keyIds = new Map<string, number>();
   const idOf = (element: Script[number]): number => {
     const key = elementKey(element);
@@ -301,6 +299,27 @@ function findCandidates(
   };
   const bodyIds = bodies.map((body) => body.script.map(idOf));
   const maximumBodyLength = bodies.reduce((maximum, body) => Math.max(maximum, body.script.length), 0);
+  const bodyBytePrefixes = bodies.map((body) => {
+    const prefix = new Uint32Array(body.script.length + 1);
+    for (let i = 0; i < body.script.length; i += 1) {
+      prefix[i + 1] = prefix[i] + elementByteSize(body.script[i]);
+    }
+    return prefix;
+  });
+  return { bodyIds, bodyBytePrefixes, maximumBodyLength };
+}
+
+/**
+ * Every profitable outlining candidate across `bodies`, best-saving first.
+ *
+ * Windows are bucketed by a rolling hash over per-element key ids rather than by joined strings: the corpus is
+ * scanned once per round, and only same-bucket groups pay for an element-by-element comparison.
+ */
+function findCandidates(
+  bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
+  candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
+): Candidate[] {
+  const { bodyIds, bodyBytePrefixes, maximumBodyLength } = prepared;
   // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
   // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
   const diagonalSpan = maximumBodyLength * 2 + 1;
@@ -331,13 +350,6 @@ function findCandidates(
     if (lengths[leftStart] === 0) lengths[leftStart] = 1;
     return lengths[leftStart] - 1;
   };
-  const bodyBytePrefixes = bodies.map((body) => {
-    const prefix = new Uint32Array(body.script.length + 1);
-    for (let i = 0; i < body.script.length; i += 1) {
-      prefix[i + 1] = prefix[i] + elementByteSize(body.script[i]);
-    }
-    return prefix;
-  });
   const balanceScratch: BalanceScratch = {
     firstIndexAtDepth: new Int32Array(maximumBodyLength + 1),
     depthGeneration: new Uint32Array(maximumBodyLength + 1),
@@ -568,8 +580,15 @@ export function outlineSharedSpans(
         ) as Candidate[] | undefined;
       }
     }
+    let prepared = round === 0
+      ? initialCandidateCache?.get('prepared-corpus') as CandidateCorpus | undefined
+      : undefined;
+    if (cached === undefined && prepared === undefined) {
+      prepared = prepareCandidateCorpus(corpus);
+      if (round === 0) initialCandidateCache?.set('prepared-corpus', prepared);
+    }
     const candidates = cached === undefined
-      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound)
+      ? findCandidates(corpus, idPushBytes, ranking, minimumWindowElements, candidateGroupsPerRound, prepared)
       : costCandidates(cached, idPushBytes, ranking);
     if (round === 0 && cached === undefined) {
       initialCandidateCache?.set(initialCacheKey, [...candidates]);

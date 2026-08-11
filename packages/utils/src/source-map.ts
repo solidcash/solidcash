@@ -97,7 +97,10 @@ export const sourceMapToLocationData = (sourceMap: string): FullLocationData => 
   let prevEndColumn = 0;
   let prevHint: PositionHint = PositionHint.START;
 
-  return sourceMap.split(';').map((entry: string) => {
+  const entries = sourceMap.split(';');
+  const locationData = new Array<FullLocationData[number]>(entries.length);
+  for (let index = 0; index < entries.length; index += 1) {
+    const entry = entries[index];
     const [startLineStr, startColumnStr, endLineStr, endColumnStr, positionHintStr] = entry.split(':');
 
     const startLine = startLineStr ? Number(startLineStr) : prevStartLine;
@@ -115,14 +118,15 @@ export const sourceMapToLocationData = (sourceMap: string): FullLocationData => 
     const hint: PositionHint = parsePositionHint(positionHintStr) ?? prevHint;
     prevHint = hint;
 
-    return {
+    locationData[index] = {
       location: {
         start: { line: startLine, column: startColumn },
         end: { line: endLine, column: endColumn },
       },
       positionHint: hint,
     };
-  });
+  }
+  return locationData;
 };
 
 const parsePositionHint = (hint: string): PositionHint | undefined => {

@@ -3299,6 +3299,8 @@ export default class LowerInlineAssembly extends AstTraversal {
 
   // Track the current function's parameters so calldataload/calldatasize can resolve against them.
   visitFunctionDefinition(node: FunctionDefinitionNode): Node {
+    const hasAssembly = bodyHasAssembly(node.body);
+    if (!hasAssembly) return node;
     const previousSourceFunction = currentSourceFunction;
     currentSourceFunction = node;
     const sourceStatements = node.body.statements ?? [];
@@ -3372,7 +3374,7 @@ export default class LowerInlineAssembly extends AstTraversal {
       const type = currentVars.get(name);
       return type instanceof FunctionType && type.isExternal;
     }));
-    if (bodyHasAssembly(node.body)) {
+    if (hasAssembly) {
       for (const p of node.parameters) {
         if (!p.modifier.includes('calldata') || !(p.type instanceof StructType)) continue;
         const snapshot = `__cdorig_${p.name}`;
@@ -3400,7 +3402,7 @@ export default class LowerInlineAssembly extends AstTraversal {
     yulLoopDepth = 0;
     // Record that this function had inline assembly BEFORE it is lowered away, so PruneUnreachableFreeFunctions can
     // still drop it when dead (a fully-lowerable helper like OZ Math.mulDiv leaves no residual assembly to detect).
-    if (bodyHasAssembly(node.body)) node.hadInlineAssembly = true;
+    node.hadInlineAssembly = true;
     const result = super.visitFunctionDefinition(node) as FunctionDefinitionNode;
     currentSourceFunction = previousSourceFunction;
     if (currentMutableFnPtrSelectors.size > 0) {

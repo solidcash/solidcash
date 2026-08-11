@@ -119,9 +119,10 @@ export interface OutlineResult {
 // Outlining rescans every body once per round, so the same data element is hex-encoded up to MAXIMUM_ROUNDS
 // times. Keyed on identity, so two distinct arrays holding equal bytes still compute (and agree on) one key.
 const dataKeys = new WeakMap<Uint8Array, string>();
+const opcodeKeys = Array.from({ length: 256 }, (_unused, opcode) => `o${opcode}`);
 
 const elementKey = (element: Script[number]): string => {
-  if (typeof element === 'number') return `o${element}`;
+  if (typeof element === 'number') return opcodeKeys[element];
   let key = dataKeys.get(element);
   if (key === undefined) {
     key = `d${binToHex(element)}`;

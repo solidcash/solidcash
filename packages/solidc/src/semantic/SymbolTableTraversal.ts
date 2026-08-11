@@ -348,6 +348,7 @@ interface FunctionBodySurvey {
   hasExternalRead: boolean;
   hasExternalOutStateRead: boolean;
   hasExternalFunctionCall: boolean;
+  hasStatefulOperation: boolean;
   recovery: { total: number; evm: number; inLoop: boolean };
 }
 
@@ -1477,6 +1478,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     }
 
     node.functions = this.visitList(node.functions) as FunctionDefinitionNode[];
+    if ((this.sourceFile?.freeFunctions.length ?? 0) === 0) {
+      Object.defineProperty(node, 'hasStatefulOperations', {
+        value: node.functions.some((fn) =>
+          (fn as FunctionDefinitionNode & { hasStatefulOperation?: boolean }).hasStatefulOperation === true),
+        writable: true,
+        configurable: true,
+      });
+    }
 
     // X29 / SEC-7. An effect-carrying graph emission handler stays behind OP_INVOKE so its outgoing edges keep
     // their callManifest binding, which means its `emit` / `transfer` outputs are produced by a SUBROUTINE - and a
@@ -2066,6 +2075,7 @@ export default class SymbolTableTraversal extends AstTraversal {
       hasExternalRead: false,
       hasExternalOutStateRead: false,
       hasExternalFunctionCall: false,
+      hasStatefulOperation: false,
       recovery: { total: 0, evm: 0, inLoop: false },
     };
     this.activeBodySurvey = {
@@ -2076,6 +2086,9 @@ export default class SymbolTableTraversal extends AstTraversal {
     } finally {
       this.activeBodySurvey = undefined;
     }
+    Object.defineProperty(node, 'hasStatefulOperation', {
+      value: bodySurvey.hasStatefulOperation, writable: true, configurable: true,
+    });
     if (!bodySurvey.hasValueTransfer) this.transferFreeFunctions.add(node);
 
     // msg.sender pre-scan: inject synthetic _msgSenderCategory parameter
@@ -4012,6 +4025,17 @@ export default class SymbolTableTraversal extends AstTraversal {
       }
       if (current instanceof ExternalFunctionCallNode && current.callInfo !== undefined
           && !current.foldedIntoDeploy) result.hasExternalFunctionCall = true;
+      if (current instanceof StateAssignNode || current instanceof DeleteStateNode
+          || current instanceof MappingAssignNode || current instanceof MappingFieldAssignNode
+          || current instanceof MappingDeleteNode || current instanceof EmitStatementNode
+          || current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
+          || current instanceof TokenContainerMethodStatementNode || current instanceof LowLevelCallStatementNode
+          || current instanceof StateArrayPushNode || current instanceof StateArrayPopNode
+          || current instanceof StateArrayAssignNode || current instanceof StateArrayDeleteNode
+          || current instanceof ExternalFunctionCallNode
+          || (current instanceof InstantiationNode && current.isStatefulDeploy)) {
+        result.hasStatefulOperation = true;
+      }
       if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
           || current instanceof AddressSendExpressionNode
           || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)

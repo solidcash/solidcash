@@ -314,11 +314,11 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
     expect(bytecode.length).toBeGreaterThan(0);
   });
 
-  it('should start with OP_DUP for tri-path flag=2 check', () => {
+  it('should dispatch explicit-output flag=3 before the legacy tri-path', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // Tri-path: OP_DUP OP_2 OP_NUMEQUAL OP_IF (destroy) OP_ELSE (inner dual-path) OP_ENDIF
+    // Outer dispatch: flag=3 uses an explicit output coordinate.
     expect(script[0]).toBe(Op.OP_DUP);
-    expect(script[1]).toBe(Op.OP_2);
+    expect(script[1]).toBe(Op.OP_3);
     expect(script[2]).toBe(Op.OP_NUMEQUAL);
     expect(script[3]).toBe(Op.OP_IF);
     // Should contain OP_ELSE and OP_ENDIF for the outer and inner paths
@@ -353,11 +353,11 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
 
   it('should have destroy path (flag=2) that skips output preservation', () => {
     const script = buildDataNftCovenantScript(categoryId);
-    // Outer OP_IF (flag=2 destroy path) should contain OP_DROP to discard the flag
-    // and end before the common preservation section
-    const outerIfIdx = script.indexOf(Op.OP_IF);
-    const outerElseIdx = script.indexOf(Op.OP_ELSE);
-    const destroyPath = script.slice(outerIfIdx + 1, outerElseIdx);
+    // The flag=2 dispatch is nested in the ELSE of the flag=3 dispatch.
+    const explicitElseIdx = script.indexOf(Op.OP_ELSE);
+    const destroyIfIdx = script.indexOf(Op.OP_IF, explicitElseIdx + 1);
+    const destroyElseIdx = script.indexOf(Op.OP_ELSE, destroyIfIdx + 1);
+    const destroyPath = script.slice(destroyIfIdx + 1, destroyElseIdx);
 
     // Destroy path: OP_DROP, verify master minting NFT, verify this input's category
     expect(destroyPath[0]).toBe(Op.OP_DROP);
@@ -374,9 +374,10 @@ describe('buildDataNftCovenantScript (tri-path)', () => {
     expect(script).toContain(Op.OP_OUTPUTVALUE);
 
     // Verify satoshi check is in the ELSE branch (flag=0/1), not in the IF branch (flag=2)
-    const outerIfIdx = script.indexOf(Op.OP_IF);
-    const outerElseIdx = script.indexOf(Op.OP_ELSE);
-    const destroyPath = script.slice(outerIfIdx + 1, outerElseIdx);
+    const explicitElseIdx = script.indexOf(Op.OP_ELSE);
+    const destroyIfIdx = script.indexOf(Op.OP_IF, explicitElseIdx + 1);
+    const destroyElseIdx = script.indexOf(Op.OP_ELSE, destroyIfIdx + 1);
+    const destroyPath = script.slice(destroyIfIdx + 1, destroyElseIdx);
     expect(destroyPath).not.toContain(Op.OP_UTXOVALUE);
     expect(destroyPath).not.toContain(Op.OP_OUTPUTVALUE);
   });

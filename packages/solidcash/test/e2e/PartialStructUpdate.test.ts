@@ -197,7 +197,7 @@ describe('Partial Struct Update', () => {
       // Data NFT output
       expect(txOutputs[1].token?.nft?.capability).toBe('mutable');
 
-      // Batch C2 inserts also recreate HEAD after the fixed target output, so identify the entry by its
+      // Batch vmap inserts also recreate HEAD after the fixed target output, so identify the entry by its
       // authenticated slot rather than assuming the last same-category mutable NFT is the target.
       const expectedSlot = keyToSlot(alicePkh);
       const entryOutput = txOutputs.find((o) => {

@@ -5,7 +5,7 @@ supply path - and the quarantined admission boundary now works end to end: `depo
 the reserve itself and `claimDeposit` releases it (s3.3). Two arrangements exist: the hand-split `.scash` files
 (s1, master + one facet) and an inheritance-composed rewrite partitioned by the built-in splitter (s5). Files
 under `packages/solidcash/test/fixture/`, tests in `packages/solidcash/test/e2e/NativeUsdt.test.ts` (29) plus
-`NativeUsdtDepositProof`, `C2RuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
+`NativeUsdtDepositProof`, `VMapRuntimeSlotAlias`, `NativeUsdtInherited` and `NativeUsdtSurfaceParity`.
 
 Reference: `TetherToken` at `0xdAC17F958D2ee523a2206206994597C13D831ec7`, solc `v0.4.18+commit.9cf6e910`.
 Audited against the **deployed verified source** (fetched via Blockscout), which is byte-identical to
@@ -19,12 +19,12 @@ reference.
 > audit) re-verified unchanged.
 >
 > Measured in two passes, because upstream landed eight more size commits mid-session. The first pass
-> (through `83c0a8da`) showed the two C2-heavy facets GROWING while everything else shrank, and this
-> document concluded that outlining "does not help a body dominated by C2 access sequences". **That
+> (through `83c0a8da`) showed the two vmap-heavy facets GROWING while everything else shrank, and this
+> document concluded that outlining "does not help a body dominated by vmap access sequences". **That
 > conclusion was wrong** - it was an artifact of the subroutine probe being gated off for those contracts.
 > `290dfa43` ("run the subroutine probe when a contract uses aggregates") turned it on and both facets fell
 > ~35%. Recorded because the retracted claim is the more instructive half: a facet that resists outlining is
-> evidence about the probe's gating, not about C2 codegen.
+> evidence about the probe's gating, not about vmap codegen.
 
 ## 1. What was built
 
@@ -100,7 +100,7 @@ compile.
 ### 1.3 Named forwarders, not a `fallback` dispatcher
 
 A single `fallback(bytes)` Diamond dispatcher is smaller (master ~5.8 KB) and was tried first. It does not
-work: the SDK derives C2 entry slots from the ABI of the function being called, and a bytes-blob fallback
+work: the SDK derives vmap entry slots from the ABI of the function being called, and a bytes-blob fallback
 hides the facet's arguments, so every param-keyed mapping write fails slot derivation. Named forwarders keep
 those parameters in the master's own ABI - and preserve the named ABI a drop-in replacement wants anyway.
 
@@ -165,7 +165,7 @@ mean seizing funds, or wrapping becomes a honeypot and nobody wraps.
 
 ## 3. The delegated mapping INSERT wall, and how the port got past it
 
-**Superseded by measurement.** The original finding was that no sorted-mapping (C2) write through a delegate
+**Superseded by measurement.** The original finding was that no sorted-mapping (vmap) write through a delegate
 facet worked at all, root-caused to the `L.f()` forwarder publishing `entryAccesses = null` so the SDK
 provisioned no entry UTXOs. Upstream **X11 (`837c8b8d`, 2026-07-29)** fixed exactly that, by making
 `hasNothingToDerive` read the ROUTED implementation accesses instead of the forwarder's own. What remains is a

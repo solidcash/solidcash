@@ -195,7 +195,7 @@ describe('Satoshi Container', () => {
     const provider = createTestProvider();
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
 
-    it('should reject a transfer exceeding the mock-provisioned dust container', async () => {
+    it('should reject a transfer when no satoshi container was deployed', async () => {
       const fundingUtxo: Utxo = {
         txid: 'c1cd'.repeat(16),
         vout: 0,
@@ -214,13 +214,12 @@ describe('Satoshi Container', () => {
 
       const deployedContract = result.contract;
 
-      // Mock providers provision only a dust container for composition compatibility; it must not authorize an
-      // unfunded transfer. Production providers still report the missing-container error before this point.
+      // No initial balance means no satoshi-container UTXO on either mock or production providers.
       await expect(
         deployedContract.call
           .sendFunds(new SignatureTemplate(alicePriv), bobPkh, 10000n)
           .send(),
-      ).rejects.toThrow('exceeds satoshi container balance');
+      ).rejects.toThrow('Satoshi container UTXO not found');
     });
   });
 

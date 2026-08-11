@@ -797,12 +797,18 @@ export function covenantObjectionOf(
 export function assertFinalizedBytesWithCovenant(
   builder: TransactionBuilder, transaction: Transaction,
   subjects: readonly (FinalizedByteSubject | undefined)[],
+  options: Pick<FinalizedByteGateOptions, 'consensusLimits'> = {},
 ): void {
-  const verdict = assessFinalizedTransactionBytes(transaction, subjects);
+  const verdict = assessFinalizedTransactionBytes(transaction, subjects, options.consensusLimits);
   if (verdict.admitted) return;
   const covenant = covenantObjectionOf(builder, transaction);
   // Byte-only: the one decider that speaks is the one that always spoke, with the message it always produced.
-  if (covenant === undefined) assertFinalizedTransactionBytes(transaction, { inputSubjects: subjects });
+  if (covenant === undefined) {
+    assertFinalizedTransactionBytes(transaction, {
+      inputSubjects: subjects,
+      consensusLimits: options.consensusLimits,
+    });
+  }
   throw new Error(
     `messageBus: finalized transaction refused by its covenant and ${verdict.refusals.length} byte rule(s) `
     + `(${verdict.serializedBytes} serialized bytes, ${verdict.inputCount} inputs, `

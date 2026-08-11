@@ -98,8 +98,16 @@ export const formatBytecodeForDebugging = (artifact: Artifact): string => {
   for (let index = 2; index < script.length; index += 1) {
     if (script[index] !== Op.OP_DEFINE || !(script[index - 2] instanceof Uint8Array)) continue;
     const encodedId = script[index - 1];
+    let decodedNumericId: bigint | undefined;
+    if (encodedId instanceof Uint8Array) {
+      try {
+        decodedNumericId = decodeInt(encodedId);
+      } catch {
+        // Four-byte ABI selectors are valid OP_DEFINE identifiers but are not minimally encoded VM numbers.
+      }
+    }
     const numericId = encodedId instanceof Uint8Array
-      ? decodeInt(encodedId)
+      ? decodedNumericId
       : encodedId === Op.OP_1NEGATE
         ? -1n
         : encodedId >= Op.OP_1 && encodedId <= Op.OP_16

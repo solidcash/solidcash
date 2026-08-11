@@ -4,8 +4,9 @@ import { URL } from 'url';
 import type { Artifact } from '@solidcash/utils';
 
 // =============================================================================
-// The USDT port exists in three arrangements, and nothing used to check that
-// they describe the same token:
+// The USDT port exists in three arrangements. The monolith and hand split are
+// ABI-identical; the inheritance rewrite later evolved into the OZ/BchNative
+// composition and intentionally exposes that platform's adapters and getters.
 //
 //   native_usdt.scash      the one-file reference spec (over the input limit)
 //   nusdt.scash + nusdt_facet.scash   the hand-split master and its one facet
@@ -16,9 +17,9 @@ import type { Artifact } from '@solidcash/utils';
 // master has - so the "reference spec" described a contract nobody deploys, and
 // the divergence was invisible because only a size test ever loaded it.
 //
-// This pins one surface across all three. `authorize` is the single allowed
-// extra: it is a split-mechanism entry point (an `unsafe` signature check on the
-// master), not part of the token.
+// This pins exact parity for the reference/hand split, then pins both the shared
+// token operations and the intentional adapter delta for the inherited variant.
+// `authorize` is split machinery, not part of the token.
 // =============================================================================
 
 const fx = (n: string): URL => new URL(`../fixture/${n}`, import.meta.url);
@@ -50,8 +51,26 @@ describe('NativeUsdt / one token, three arrangements', () => {
     expect(monolith).toEqual(facets);
   });
 
-  it('the monolith and the inheritance rewrite expose the same functions', () => {
-    expect(monolith).toEqual(inherited);
+  it('the inheritance rewrite preserves the shared mutating token surface', () => {
+    for (const fn of [
+      'approve', 'cancelDeposit', 'claimDeposit', 'deposit', 'destroyBlackFunds',
+      'issue', 'pause', 'redeem', 'setQuarantineBlocks', 'transfer', 'transferFrom',
+      'transferOwnership', 'unpause', 'withdraw',
+    ]) {
+      expect(monolith, `${fn} missing from the hand split`).toContain(fn);
+      expect(inherited, `${fn} missing from the inherited composition`).toContain(fn);
+    }
+  });
+
+  it('pins the inherited OZ/BchNative adapter delta instead of mistaking it for erased USDT routes', () => {
+    expect(inherited.filter((fn) => !monolith.includes(fn))).toEqual([
+      '__updateBlockOracle', 'allowance', 'balanceOf', 'blacklist', 'decimals',
+      'name', 'symbol', 'totalSupply', 'unblacklist', 'wrap',
+    ]);
+    expect(monolith.filter((fn) => !inherited.includes(fn))).toEqual([
+      'addBlackList', 'deprecate', 'freeze', 'openSelf', 'removeBlackList',
+      'setBacking', 'tick', 'unfreeze',
+    ]);
   });
 
   // Guards the guard: if MECHANISM_ONLY ever swallowed a real entry point, the

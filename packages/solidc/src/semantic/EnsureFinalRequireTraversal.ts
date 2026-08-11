@@ -36,6 +36,8 @@ import {
   SelfdestructStatementNode,
   BlockNode,
   FunctionCallNode,
+  InstantiationNode,
+  ExternalFunctionCallNode,
 } from '../ast/AST.js';
 import AstTraversal from '../ast/AstTraversal.js';
 import { hasAuthorizingSignatureGuard, keyIsCallerChosen } from './SymbolTableTraversal.js';
@@ -67,6 +69,12 @@ export default class EnsureFinalRequireTraversal extends AstTraversal {
       || node.collections.length > 0
       || node.eventDefinitions.length > 0
       || node.deploysWithValue
+      // A zero-state factory is still stateful: its inferred/explicit deploy entry point emits a child genesis
+      // block and receives the generated deploy covenant even though the parent has no data NFT of its own.
+      || node.functions.some((func) => func.modifiers.includes(FunctionModifier.DEPLOY))
+      // Zero-storage routers are likewise stateful execution participants: typed calls, transfers, and other
+      // transaction effects are verified by generated covenants even though no parent data NFT exists.
+      || node.functions.some((func) => containsStatefulOperation(func.body?.statements))
       || node.functions.some((func) => func.modifiers.includes(FunctionModifier.SELFDESTRUCT));
 
     node.parameters = this.visitList(node.parameters) as ParameterNode[];
@@ -189,7 +197,7 @@ function checkUnauthenticatedSelfdestruct(node: FunctionDefinitionNode, allowUns
     .filter((s): s is SelfdestructStatementNode => s instanceof SelfdestructStatementNode);
   if (selfdestructs.length === 0) return;
 
-  if (hasAuthorizingSignatureGuard(node)) return;
+  if (hasAuthorizingSignatureGuard(node, 'selfdestruct')) return;
 
   for (const sd of selfdestructs) {
     if (!keyIsCallerChosen(sd.recipient, node)) continue; // destination is from state / a constant - safe
@@ -471,6 +479,14 @@ function containsStatefulCall(
 ): boolean {
   if (seenNodes.has(node)) return false;
   seenNodes.add(node);
+  // A stateful `new Child(...)` emits and covenant-pins a child genesis block even when it is nested in a
+  // variable declaration rather than represented as a statement of its own. In particular, this is the only
+  // stateful operation in an implied-deploy function on a zero-state parent.
+  if (node instanceof InstantiationNode && node.isStatefulDeploy) return true;
+  // Typed external calls are authenticated by the generated co-spend/identity covenant. They commonly sit
+  // inside a loop as MethodCallStatementNode -> ExternalFunctionCallNode, so looking only at statement classes
+  // misclassifies an otherwise verified entry point as an unguarded no-op.
+  if (node instanceof ExternalFunctionCallNode) return true;
   if (node instanceof FunctionCallNode && node.resolvedFunction && !seenFunctions.has(node.resolvedFunction)) {
     seenFunctions.add(node.resolvedFunction);
     if (containsStatefulOperation(node.resolvedFunction.body?.statements, seenFunctions)) return true;

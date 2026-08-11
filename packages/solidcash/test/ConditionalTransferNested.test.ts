@@ -42,7 +42,7 @@ describe('value-transfer in a nested/else-if branch compiles (was an internal st
     const src = 'contract C { modifier owner(bool allowed) { if (allowed) _; }'
       + ' function f(bool allowed, address payable refund) public owner(allowed) {'
       + ' if (!refund.send(1)) revert(); require(true); } }';
-    expect(() => compileString(src, { solidityImportCompat: true }))
+    expect(() => compileString(src, { solidityImportCompat: true, enforceFinalRequire: false }))
       .toThrow(/TransferFrameUnavailableError|cannot preserve its covenant frame/);
   });
 });

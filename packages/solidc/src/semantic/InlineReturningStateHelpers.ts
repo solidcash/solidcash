@@ -317,11 +317,13 @@ export default class InlineReturningStateHelpers extends AstTraversal {
       const compilerOwnedRouteClone = fn.name.startsWith('__message_bus_entry_')
         || fn.name.startsWith('__message_bus_resource_')
         || (fn.graphEmissionHandler && (fn.externalCalls?.length ?? 0) === 0);
-      if (compilerOwnedRouteClone
+      const returningEntryEffectClone = fn.name.startsWith('__message_bus_entry_')
+        && fn.graphEmissionHandler && this.eligibleShape(fn);
+      if (returningEntryEffectClone || (compilerOwnedRouteClone
         && fn.collectionJournal && appendsDynamicArray
         && (fn.parameters[0]?.name === `__dj_${fn.name}`
           || fn.parameters[0]?.name.startsWith(`__cj_${fn.name}`))
-        && this.eligibleShape(fn)) {
+        && this.eligibleShape(fn))) {
         this.inlinedFns.add(fn.name);
       }
     }

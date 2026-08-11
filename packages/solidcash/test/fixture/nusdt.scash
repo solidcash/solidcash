@@ -33,7 +33,7 @@ import { UsdtFacet } from "./nusdt_facet.scash";
 // an entry node, so the transaction's own-category mutable NFT count rises, and a
 // delegatecall master conserves that count (the same defence that refuses an
 // appended fabricated entry node). So every function that can CREATE a key runs
-// directly here - transfer, approve, openSelf - and update-only functions are
+// directly here - approve and openSelf - and update-only functions are
 // delegated: redeem, destroyBlackFunds, removeBlackList, unfreeze, transferFrom.
 // That is what makes the mapping surface reachable at all; see
 // packages/solidc/docs/native-usdt-port.md s3.
@@ -55,7 +55,7 @@ import { UsdtFacet } from "./nusdt_facet.scash";
 //     belongs in BCMR anyway.
 //
 // WHY NAMED FORWARDERS AND NOT A FALLBACK. A single `fallback(bytes)` dispatcher
-// is smaller, but the SDK derives sorted-mapping (C2) entry slots from the ABI of
+// is smaller, but the SDK derives sorted-mapping (vmap) entry slots from the ABI of
 // the function being CALLED. A bytes-blob fallback hides the facet's arguments, so
 // every param-keyed mapping write - `balances[to]`, `isBlackListed[who]`,
 // `allowed[owner][spender]` - fails slot derivation. Named forwarders keep those
@@ -249,27 +249,13 @@ contract NativeUsdt(address initialOwner) {
     }
 
     // ---- The INSERT path, direct (non-delegated) ----
-    // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a C2 INSERT
+    // A delegatecall proxy conserves the count of its own-category mutable NFTs, and a vmap INSERT
     // mints one, so a first-touch mapping write cannot settle through a facet. These six each
     // first-touch a key, so they run HERE, on the master, where the write is direct.
     // The update-only functions (redeem, destroyBlackFunds, removeBlackList, unfreeze) stay on
     // their facets, because an UPDATE through a delegate does settle.
 
-    function transfer(address to, int value) {
-        require(!this.paused);
-        require(!this.deprecated);
-        address sender = msg.sender;
-        require(!this.isBlackListed[sender]);
-        require(!this.frozen[sender]);
-        require(!this.frozen[to]);
-        require(value > 0);
-
-        require(to != sender);
-        require(this.balances[sender] >= value);
-        this.balances[sender] = this.balances[sender] - value;
-        this.balances[to] = this.balances[to] + value;
-        emit Transfer(sender, to, value);
-    }
+    function transfer(address to, int value) { UsdtFacet.transfer(to, value); }
 
     function transferFrom(address from, address to, int value) { UsdtFacet.transferFrom(from, to, value); }
 

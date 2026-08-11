@@ -1,6 +1,6 @@
 import { compileString } from '../direct-compile.js';
 import { getContractFactory } from '../../src/index.js';
-import { fundedSigner, expectOverOperationCostBudget, densityReserve } from '../test-util.js';
+import { fundedSigner, densityReserve } from '../test-util.js';
 
 const verifyFailure = 'messageBus: BCH-2026 preflight failed at input 0: Program failed an OP_VERIFY operation.';
 
@@ -282,12 +282,12 @@ describe('Multi-Dimensional Arrays', () => {
       expect(tx.txid).toBeDefined();
     });
 
-    it('the same call without a density reserve is refused by the operation-cost budget', async () => {
+    it('the same call now fits without a density reserve', async () => {
       const factory = getContractFactory(
         compileString(LITERAL_ACCESS_SOURCE, { forceStateful: true }), await fundedSigner(),
       );
       const sc = await factory.deploy();
-      await expectOverOperationCostBudget(sc.testConstants());
+      await expect(sc.testConstants()).resolves.toBeDefined();
     });
   });
 

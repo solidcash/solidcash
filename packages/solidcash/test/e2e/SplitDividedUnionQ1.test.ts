@@ -24,10 +24,16 @@ contract Pair {
   function publish(uint256 v) public {
     touched = v;
     updateTail(v * 2);
+    require(v != 100000000000000000000000000000000000001);
+    require(v != 100000000000000000000000000000000000002);
+    require(v != 100000000000000000000000000000000000003);
     require(v >= 0, "n");
   }
   function updateTail(uint256 v) public {
     total = total + v;
+    require(v != 200000000000000000000000000000000000001);
+    require(v != 200000000000000000000000000000000000002);
+    require(v != 200000000000000000000000000000000000003);
     require(v >= 0, "n");
   }
 }`;
@@ -48,6 +54,8 @@ describe('Q1 row B: a divided call-edge union settles on the VM', () => {
     const unionBytes = union.manifest.facets[0].estimatedRedeemBytes;
     expect([...union.manifest.facets[0].functions].sort()).toEqual(['publish', 'updateTail']);
 
+    // The root gained mandatory state-output/cardinality pins; this source deliberately carries enough unique
+    // entry logic that the root fits below the one-byte-too-small union cap while each divided facet still fits.
     const divided = compileStringSplit(SOURCE, { ...options, maxShardBytes: unionBytes - 1 });
     expect(divided.manifest.facets).toHaveLength(2);
     const publishRoute = divided.manifest.routes.find((route) => route.function === 'publish')!;

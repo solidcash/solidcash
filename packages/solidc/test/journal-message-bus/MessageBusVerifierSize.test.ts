@@ -18,16 +18,16 @@ describe('atomic verifier bytecode specialization', () => {
     const verifierProgram = artifact.messageBus?.verifierProgram;
     expect(verifierProgram).toBeDefined();
     const sidecar = messageBusVerifierCovenantBytecode(verifierProgram!).length;
-    // Moved 1094 -> 1105 (tax 974 -> 985) when MINIMUM_WINDOW_ELEMENTS rose 7 -> 12 to keep the C2
-    // entry-write derivation readable; see the constant's note. The BOUNDS below are the actual
-    // contract and both still hold with room - this pair is a tripwire on drift, not a limit.
+    // The integrated route also carries authenticated logical-caller and local effect-frame support. Those
+    // facilities moved the scalar participant from 1105 to 1346 bytes; the exact pair remains a drift tripwire,
+    // while the bounds retain deliberate headroom below BCH's deployment limit.
     expect({ direct, composed, frameworkTax: composed - direct }).toEqual({
       direct: 120,
-      composed: 1105,
-      frameworkTax: 985,
+      composed: 1346,
+      frameworkTax: 1226,
     });
-    expect(composed).toBeLessThanOrEqual(1200);
-    expect(composed - direct).toBeLessThanOrEqual(1000);
+    expect(composed).toBeLessThanOrEqual(1400);
+    expect(composed - direct).toBeLessThanOrEqual(1250);
     expect(sidecar).toBeLessThanOrEqual(10_000);
   });
 

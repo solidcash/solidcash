@@ -65,6 +65,11 @@ export const debugTemplate = (
   verifyTransaction: boolean = true,
   provider?: NetworkProvider,
 ): DebugResults => {
+  if (template.supported.includes('BCH_2025_05')
+    && artifacts.some((artifact) => artifact.bytecode.includes('OP_INVOKE')
+      || Object.keys(artifact.debug?.invokeDebug ?? {}).length > 0)) {
+    throw new Error('Called an unknown opcode: OP_INVOKE is not available before BCH_2026_05.');
+  }
   const unlockingScriptIds = Object.keys(template.scripts).filter((key) =>
     'unlocks' in template.scripts[key] && !key.includes('_body_'),
   );
@@ -220,7 +225,14 @@ const debugSingleScenario = (
         // Recover the actual identifier from the OP_INVOKE transition. Comparing bytecode alone is insufficient:
         // two separately-defined functions may be byte-identical while belonging to different source lines.
         const identifier = prior.stack[prior.stack.length - 1];
-        debugAtDepth[depth] = identifier ? invokeDebug[decodeInt(identifier).toString()] : undefined;
+        if (identifier) {
+          try {
+            debugAtDepth[depth] = invokeDebug[decodeInt(identifier).toString()];
+          } catch {
+            // Four-byte ABI selectors are identifiers, but not minimally encoded VM numbers.
+            debugAtDepth[depth] = undefined;
+          }
+        }
       }
     }
     const debug = debugAtDepth[depth];

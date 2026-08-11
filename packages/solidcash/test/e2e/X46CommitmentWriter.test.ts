@@ -44,7 +44,7 @@ describe('X46: a commitment against state the same call overwrote authorizes nob
   const bobDrains = async (
     write: string,
   ): Promise<{ ok: boolean; to?: string; amount?: bigint; error?: string }> => {
-    const artifact = compileString(SRC(write), {});
+    const artifact = compileString(SRC(write), { allowUnsafeOperations: true });
     const p2pkh = new Contract(p2pkhArtifact, [alicePkh], { provider });
     const fundingUtxo: Utxo = { txid: uid(), vout: 0, satoshis: 300000n };
     await provider.addUtxo(p2pkh.address, fundingUtxo);

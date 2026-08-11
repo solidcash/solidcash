@@ -12,7 +12,7 @@ pragma solidcash >=0.8.0;
 // The other thing that cannot be delegated is a TOKEN CONTAINER: a delegate input
 // fails its covenant on any container operation, including a plain read. Everything
 // that touches the reserve therefore lives on the master, which is why `deposit` is
-// there and `transferFrom` is here.
+// there and the update-only transfer paths are here.
 //
 // Runs as a delegate against the proxy master's state, so the state block below
 // MUST stay byte-identical to nusdt_state.inc and to the master.
@@ -136,7 +136,25 @@ library UsdtFacet {
         this.clock = nowHeight;
     }
 
-    // Delegated, unlike `transfer`, because every mapping write it makes is an UPDATE:
+    // Both transfer paths are delegated because every mapping write they make is an UPDATE:
+    // callers must run `openSelf` before receiving, so both balance rows already exist.
+    function transfer(address to, int value) public {
+        require(!this.paused);
+        require(!this.deprecated);
+        address sender = msg.sender;
+        require(!this.isBlackListed[sender]);
+        require(!this.frozen[sender]);
+        require(!this.frozen[to]);
+        require(value > 0);
+
+        require(to != sender);
+        require(this.balances[sender] >= value);
+        this.balances[sender] = this.balances[sender] - value;
+        this.balances[to] = this.balances[to] + value;
+        emit Transfer(sender, to, value);
+    }
+
+    // Every mapping write transferFrom makes is also an UPDATE:
     // `allowed[from][spender]` is only written on a branch that already read a live
     // allowance (so `approve` created the row), and `balances[to]` requires the recipient
     // to have run `openSelf`. It sits here to buy the master the room for `deposit`,

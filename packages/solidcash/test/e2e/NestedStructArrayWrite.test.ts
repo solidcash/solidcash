@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { compileString } from '../direct-compile.js';
 import { Contract, StatefulContract } from '../../src/index.js';
 import {
-  createTestProvider, setupStatefulUtxos, expectOverOperationCostBudget, densityReserve,
+  createTestProvider, setupStatefulUtxos, densityReserve,
 } from '../test-util.js';
 
 
@@ -57,8 +57,9 @@ describe('nested struct-array element write (runtime, sibling preservation)', ()
     await sc.w(A, B).send();
     await expect(sc.chkWrong(A, B).send()).rejects.toThrow(verifyFailure);
   });
-  it('the same write without a density reserve is refused by the operation-cost budget', async () => {
+  it('the same write now fits without a density reserve', async () => {
     const sc = await mk(SRC);
-    await expectOverOperationCostBudget(sc.w(A, B).send());
+    await expect(sc.w(A, B).send()).resolves.toBeDefined();
+    await expect(sc.chk(A, B).send()).resolves.toBeDefined();
   });
 });

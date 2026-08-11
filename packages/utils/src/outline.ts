@@ -50,7 +50,7 @@ const BARRIER_OPS = new Set<number>([
  * all failed; at 6 a multi-NFT delegate initializer still failed. Those subsystems are the constraint, not the
  * cost model.
  *
- * RAISED 7 -> 12 when the C2 entry-write derivation joined that list of structure-reading subsystems. It reads
+ * RAISED 7 -> 12 when the vmap entry-write derivation joined that list of structure-reading subsystems. It reads
  * the emitted script rather than just running it, and below 12 the spans it needs get shared out from under it:
  * At the time, `EntryWriteBehavior.test.ts` failed 5/30 with "auto-derivation oscillation" at 7, 10 and 11,
  * and passed at 12.
@@ -58,7 +58,7 @@ const BARRIER_OPS = new Set<number>([
  * (disabling `rehomeHotHelperIds` changes nothing) and not the candidate sort tie-break. It is the cost model
  * admitting shorter spans, which is the same failure mode this floor already existed to hold back.
  *
- * Later compiler/SDK derivation changes made 10 pass the C2 and runtime regressions again. Solidc now probes
+ * Later compiler/SDK derivation changes made 10 pass the vmap and runtime regressions again. Solidc now probes
  * 12 through 10 for ordinary contracts and keeps a narrower window only when its measured whole-script result is smaller;
  * message-bus contracts retain 12 because their exact active-bytecode resource model is separately pinned.
  * Keeping 12 as this API's default preserves conservative behavior for direct utility callers.

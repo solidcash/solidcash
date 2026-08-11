@@ -290,17 +290,42 @@ export class AtomicMessageBusComposition {
         const contract = byLockingBytecode.get(participant.lockingBytecode.toLowerCase())!;
         const blockSize = participant.blockLayout!.blockSize;
         const returnBlob = participantReturnBlob(participant.participant, results);
-        const local = await contract
-          ._batchRaw(
-            participant.batch.blob,
-            participant.batch.routeWitnesses as FunctionArgument[],
-            graphRouteContext(graph, participant.participant),
-            graph.layout.participantInputs[participant.participant],
-            returnBlob !== undefined,
-            returnBlob,
-            true,
-          )
-          .build();
+        const localCall = contract._batchRaw(
+          participant.batch.blob,
+          participant.batch.routeWitnesses as FunctionArgument[],
+          graphRouteContext(graph, participant.participant),
+          graph.layout.participantInputs[participant.participant],
+          returnBlob !== undefined,
+          returnBlob,
+          true,
+        );
+        // A participant probe is built in isolation while its covenant addresses outputs in the final graph's
+        // absolute coordinate space. Forward/literal BCH transfers are already compiler-authenticated in the
+        // invocation manifest, so materialize them directly instead of asking the isolated probe to discover an
+        // output at a shifted absolute index. The final covenant still verifies recipient and amount in-place.
+        for (const invocationIndex of participant.invocations) {
+          const invocation = plan.invocations[invocationIndex];
+          const handler = participant.artifact.messageBus?.handlers.find(
+            (candidate) => candidate.selector === invocation.selectorHex,
+          );
+          const supplied = descriptors[invocationIndex];
+          for (const transfer of handler?.transfers ?? []) {
+            const recipient = transfer.recipient.kind === 'forward'
+              && transfer.recipient.paramIndex !== undefined
+              ? supplied.args[transfer.recipient.paramIndex] : undefined;
+            const amountValue = transfer.amount.kind === 'forward' && transfer.amount.paramIndex !== undefined
+              ? supplied.args[transfer.amount.paramIndex]
+              : transfer.amount.kind === 'literal' && transfer.amount.value !== undefined
+                ? BigInt(transfer.amount.value) : undefined;
+            if (!(recipient instanceof Uint8Array) || typeof amountValue !== 'bigint') {
+              throw new Error(
+                `messageBus: BCH transfer in '${invocation.function}' is not a forwarded/literal canonical effect`,
+              );
+            }
+            localCall.transfer(recipient, amountValue);
+          }
+        }
+        const local = await localCall.build();
         aggregate.locktime = Math.max(aggregate.locktime, local.locktime);
         while (local.outputs.length < blockSize && local.outputs.length < local.inputs.length) {
           const input = local.inputs[local.outputs.length];

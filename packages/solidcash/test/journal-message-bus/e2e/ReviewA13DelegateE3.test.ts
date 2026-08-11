@@ -200,18 +200,23 @@ const compilerWarnings = (source: string): string[] => {
   const unique = `${source}\n// a13-warning-probe-${uniqueSourceCounter}`;
   // eslint-disable-next-line no-console
   console.log = (...args: unknown[]): void => { messages.push(args.join(' ')); };
-  try { compileString(unique); } finally { console.log = original; }
+  try {
+    compileString(unique, { allowUnsafeOperations: true, enforceFinalRequire: false });
+  } finally { console.log = original; }
   return messages;
 };
 
-const implArtifact = compileString(IMPL_SCALAR);
-const foreignArtifact = compileString(IMPL_FOREIGN);
-const pinnedProxyArtifact = compileString(PROXY_BYTECODE_PINNED);
-const trapProxyArtifact = compileString(PROXY_PINNED_BUT_CALLER_CHOSEN);
-const authorizedProxyArtifact = compileString(PROXY_CALLER_AUTHORIZED);
-const selfAuthProxyArtifact = compileString(PROXY_SELF_AUTHORIZED);
-const bytesTargetProxyArtifact = compileString(PROXY_BYTES_TARGET);
-const bytesUnusedProxyArtifact = compileString(PROXY_BYTES_UNUSED);
+const compileReviewFixture = (source: string): Artifact => compileString(source, {
+  allowUnsafeOperations: true, enforceFinalRequire: false,
+});
+const implArtifact = compileReviewFixture(IMPL_SCALAR);
+const foreignArtifact = compileReviewFixture(IMPL_FOREIGN);
+const pinnedProxyArtifact = compileReviewFixture(PROXY_BYTECODE_PINNED);
+const trapProxyArtifact = compileReviewFixture(PROXY_PINNED_BUT_CALLER_CHOSEN);
+const authorizedProxyArtifact = compileReviewFixture(PROXY_CALLER_AUTHORIZED);
+const selfAuthProxyArtifact = compileReviewFixture(PROXY_SELF_AUTHORIZED);
+const bytesTargetProxyArtifact = compileReviewFixture(PROXY_BYTES_TARGET);
+const bytesUnusedProxyArtifact = compileReviewFixture(PROXY_BYTES_UNUSED);
 
 describe('A13 review of E3: bytecode-pinned detection', () => {
   it('A13-1a: FIXED - the gate refuses the caller-chosen proxy by name, pin or no pin', () => {

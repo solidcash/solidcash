@@ -29,6 +29,56 @@ export interface StructArgument { [field: string]: ConstructorArgument }
 export type ConstructorArgument = bigint | boolean | string | Uint8Array | ConstructorArgument[] | StructArgument;
 export type FunctionArgument = ConstructorArgument | SignatureTemplate | SignatureTemplate[];
 
+/** Coerce ethers BigNumber, the testing shim, BN.js, and equivalent numeric objects to bigint. */
+function coerceNumericObject(value: object): bigint | undefined {
+  const numeric = value as {
+    toBigInt?: () => bigint; _value?: unknown; _isBigNumber?: boolean; _hex?: string; hex?: string;
+    type?: string; toString?: (base?: number) => string; valueOf?: () => unknown;
+  };
+  if (typeof numeric.toBigInt === 'function') {
+    try {
+      const converted = numeric.toBigInt();
+      if (typeof converted === 'bigint') return converted;
+    } catch { /* try the compatible representations below */ }
+  }
+  if (typeof numeric._value === 'bigint') return numeric._value;
+  if (typeof numeric._value === 'number' && Number.isFinite(numeric._value)) {
+    return BigInt(Math.trunc(numeric._value));
+  }
+  if (typeof numeric._value === 'string' && /^-?\d+$/.test(numeric._value)) return BigInt(numeric._value);
+  if (numeric._value && typeof numeric._value === 'object') {
+    const nested = coerceNumericObject(numeric._value as object);
+    if (nested !== undefined) return nested;
+  }
+  if ((numeric._isBigNumber === true || numeric.type === 'BigNumber') && typeof numeric._hex === 'string') {
+    try { return BigInt(numeric._hex); } catch { /* continue */ }
+  }
+  if (typeof numeric.hex === 'string' && /^0x[0-9a-f]+$/i.test(numeric.hex)) {
+    try { return BigInt(numeric.hex); } catch { /* continue */ }
+  }
+  if (typeof numeric.valueOf === 'function') {
+    try {
+      const converted = numeric.valueOf();
+      if (typeof converted === 'bigint') return converted;
+      if (typeof converted === 'number' && Number.isFinite(converted)) return BigInt(Math.trunc(converted));
+    } catch { /* continue */ }
+  }
+  if (typeof numeric.toString === 'function') {
+    try {
+      const converted = numeric.toString(10);
+      if (/^(?:-?\d+|0x[0-9a-f]+)$/i.test(converted)) return BigInt(converted);
+    } catch { /* not a numeric object */ }
+  }
+  return undefined;
+}
+
+function coerceArrayElements(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(coerceArrayElements);
+  if (value && typeof value === 'object' && !(value instanceof Uint8Array)
+    && !(value instanceof SignatureTemplate)) return coerceNumericObject(value) ?? value;
+  return value;
+}
+
 export type EncodedConstructorArgument = Uint8Array;
 export type EncodedFunctionArgument = Uint8Array | SignatureTemplate | SignatureTemplate[];
 export const isSignatureTemplateArray = (value: unknown): value is SignatureTemplate[] =>
@@ -83,7 +133,8 @@ export function encodeFunctionArgument(
     // pushdata encoder runs - the scalar path below converts it, but the array path delegates straight to
     // encodePushdataValue, which would otherwise encode the raw address STRING (mismatching addressToLockScript
     // everywhere the value is used, e.g. keyToSlot of an address[] mapping key).
-    const encoded = encodePushdataValue(convertAddressArg(argument, typeStr) as StateValue, typeStr, structs);
+    const coerced = coerceArrayElements(argument);
+    const encoded = encodePushdataValue(convertAddressArg(coerced, typeStr) as StateValue, typeStr, structs);
     // The unlocking template pushes each encoded argument as one stack item. A sole 0x00 count prefix would be
     // minimally encoded as OP_0 and arrive as an empty item, so the covenant could no longer split/decode the
     // array header. The equivalent explicit pushdata form remains two bytes and therefore survives the outer
@@ -108,6 +159,12 @@ export function encodeFunctionArgument(
     // ethers-parity: accept a JS `number` for an integer arg by coercing a safe integer to bigint.
     if (typeof argument === 'number' && Number.isSafeInteger(argument)) {
       argument = BigInt(argument);
+    }
+    if (typeof argument === 'string' && /^(?:-?\d+|0x[0-9a-f]+)$/i.test(argument)) {
+      argument = BigInt(argument);
+    }
+    if (typeof argument === 'object' && argument !== null && !(argument instanceof Uint8Array)) {
+      argument = coerceNumericObject(argument) ?? argument;
     }
     if (typeof argument !== 'bigint') {
       throw new TypeError(typeof argument, type);

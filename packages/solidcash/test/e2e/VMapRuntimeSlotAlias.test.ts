@@ -7,7 +7,7 @@ import { createTestProvider, setupStatefulUtxos, plainNumerics } from '../test-u
 import { alicePriv } from '../fixture/vars.js';
 
 // =============================================================================
-// Two writes in one C2 batch that land on ONE key at runtime.
+// Two writes in one vmap batch that land on ONE key at runtime.
 //
 // `bal[msg.sender]` and `bal[this.owner]` are distinct key SOURCES, so the
 // compiler emits two entry slots. Whenever the owner is the sender they are the
@@ -71,7 +71,7 @@ async function setup(owner: Uint8Array): Promise<Fixture> {
   return { sc, signer, read };
 }
 
-describe('C2 batch: two slots resolving to one key at runtime', () => {
+describe('vmap batch: two slots resolving to one key at runtime', () => {
   it('settles when the three keys are distinct (control)', async () => {
     const { sc, signer, read } = await setup(THIRD_PARTY);
     const sender = addressToLockScript(signer.getAddress());

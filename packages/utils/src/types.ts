@@ -862,7 +862,7 @@ export function isChunkableValueType(type: Type): boolean {
   if (type === PrimitiveType.STRING || type.toString() === 'string') return true;
   if (type instanceof BytesType && type.bound === undefined) return true;
   if (type instanceof StructType) {
-    // A statically packed struct that fits the inline C2 value tail can never
+    // A statically packed struct that fits the inline vmap value tail can never
     // require chunk witnesses. Treating it as dynamically chunkable adds a
     // length/hash branch to every read and write for no reachable value.
     return !isFixedWidthType(type) || fixedWidthBytes(type) > 60;

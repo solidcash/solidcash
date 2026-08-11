@@ -89,6 +89,7 @@ export interface EmitAbi {
 
 export interface TokenContainerAccessAbi {
   keyParam: string;
+  keySource?: 'param' | 'own';
   operations: readonly string[];
   transferCount?: number;      // number of transfer() calls (>1 for fan-out)
   transferNftCount?: number;   // number of transferNft() calls (>1 for fan-out)
@@ -121,6 +122,8 @@ export type BlockSlotKind =
   | 'event'
   | 'returnEvent'
   | 'deploy'
+  /** Child data-NFT genesis outputs that follow a `deploy` slot (factory createPair-style). */
+  | 'deployDataNft'
   | 'lowLevelCall'
   | 'trailing';
 
@@ -233,6 +236,10 @@ export interface AbiFunction {
     // create2 salt (`new C{salt}()`): forwarded param name, hex literal, or computed (SDK needs explicit
     // childSalt). Lets the SDK build the child Contract with the salt the deploy covenant pins.
     salt?: { param: string } | { literal: string } | { computed: true };
+    /** Exact child redeem-script body embedded by the factory for CREATE/CREATE2 address derivation. */
+    creationBytecode?: string;
+    /** The deploy covenant folds a same-transaction child call and its post-call genesis must be VM-derived. */
+    hasFoldedChildCall?: boolean;
   }[];
   tokenContainerAccesses?: readonly TokenContainerAccessAbi[];
   usesMsgSender?: boolean;
@@ -288,7 +295,7 @@ export interface AbiFunction {
   entryLoopWrites?: readonly string[];
   /** Exact compiler-owned collection signatures for entryLoopWrites, keyed by collection name. */
   entryLoopWriteSignatures?: Readonly<Record<string, string>>;
-  // Sorted (C2) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
+  // Sorted (vmap) collections written by a diff-key INSERT loop (`for(i<n) m[k[i]]=v`); the SDK co-spends N bracketing
   // predecessors and emits N (P', NEW) commitment pairs, deriving the evolving sorted list per iteration.
   sortedInsertLoops?: readonly string[];
   // Per-loop derivation metadata for the above: the fixed leading key params, the varying key array param (its
@@ -296,7 +303,7 @@ export interface AbiFunction {
   // compute each H(k) = keyToSlotMulti([...fixedKeys, arr[i]]) and build the co-spend/output plan off-chain.
   sortedInsertLoopInfo?: readonly SortedInsertLoopAbi[];
   sortedUpsertLoopInfo?: readonly SortedUpsertLoopAbi[];
-  /** Fixed straight-line C2 writes sharing one atomic linked-list transition. */
+  /** Fixed straight-line vmap writes sharing one atomic linked-list transition. */
   sortedBatchInfo?: readonly { collection: string; slotIndices: readonly number[] }[];
   // Function params whose value feeds blockhash(n); the SDK reads the arg to resolve addr(n) and co-spend
   // the (n->hash) oracle UTXO as a trailing input.
@@ -410,7 +417,7 @@ export interface CollectionInfo {
   bound?: number;
   /** True when collection can only be assigned in constructor - omitted when false (default). */
   immutable?: boolean;
-  /** True when this mapping uses the C2 sorted-linked-list backend (SDK drives it via SortedList). */
+  /** True when this mapping uses the vmap sorted-linked-list backend (SDK drives it via SortedList). */
   sorted?: boolean;
   /** True when the value is a variable-width blob that chunks when large (P5b): unbounded bytes/string, struct,
    * dynamic array. The SDK gates chunk read-witness / write-mint / GC on this. Omitted when false. */
@@ -428,17 +435,25 @@ export interface SortedInsertLoopAbi {
   valueBool?: boolean;               // ... or is this bool literal (true -> 0x01 tail, false -> empty tail)
 }
 
-// Per-iteration C2 UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
+// Per-iteration vmap UPDATE loop `for(i) m[k[i]] += v[i]` (multitransfer credit to existing recipients): the SDK
 // co-spends each k[i]'s existing entry at input[master+blockSize+i] and mints its updated commitment at
 // output[master+blockSize+i] with value = oldValue op v[i].
 export interface SortedUpsertLoopAbi {
   collection: string;
   fixedKeyParams: readonly string[];
   varyingArrayParam: string;   // the array of keys (recipients), one per iteration
+  /** The varying array contains ABI blobs; decode this tuple element to obtain each key. */
+  keyDecodeTupleIndex?: number;
+  keyDecodeTupleTypes?: readonly string[];
+  /** Keep only iterations where predicateArrayParam[i] equals this integer value. */
+  predicateArrayParam?: string;
+  predicateEquals?: string;
   valueArrayParam?: string;    // the array of per-key values (amounts); absent for 'delete' (no value)
   valueArrayOffset?: string;   // set value = valueArrayParam[i] + this signed decimal constant
   valueScalarParam?: string;   // a loop-INVARIANT param value (same for every key), e.g. `+= amount` (fixed airdrop)
   valueConst?: string;         // a loop-invariant INT LITERAL value (decimal string), e.g. `+= 100`
+  valueRuntimeLocal?: string;
+  valueRuntimeExpression?: boolean;
   mutation?: 'push' | 'pop' | 'setAt';
   mutationValueArrayParam?: string;
   mutationValueScalarParam?: string;
@@ -469,7 +484,7 @@ export interface EntryAccessAbi {
   // A write slot gated off when its key aliases the delete slot at this index (swap-remove of the last key).
   aliasCondDeleteSlot?: number;
   runtimeAliasPriorSlots?: readonly number[];
-  // A sorted (C2) write of an unbounded bytes/string value from this function parameter. The SDK persists the
+  // A sorted (vmap) write of an unbounded bytes/string value from this function parameter. The SDK persists the
   // full value as chunks (P5b); the entry stores only len ++ sha256(value). Absent for computed-expression values.
   valueParam?: string;
   /** Canonical expression for a whole-value write when it is not a direct parameter (e.g. `lit:hello`). */

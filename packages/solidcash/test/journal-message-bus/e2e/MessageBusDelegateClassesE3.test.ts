@@ -275,20 +275,24 @@ const expectPreflightRefusal = (message: string, input: number, reason: string):
 // Artifacts
 // ---------------------------------------------------------------------------
 
-const implArtifact = compileString(IMPL_SCALAR);
-const foreignArtifact = compileString(IMPL_FOREIGN);
-const pinnedProxyArtifact = compileString(PROXY_BYTECODE_PINNED);
-const authorizedProxyArtifact = compileString(PROXY_CALLER_AUTHORIZED);
-const openProxyArtifact = compileString(PROXY_CALLER_CHOSEN);
-const returningImplArtifact = compileString(IMPL_RETURNING);
-const emittingImplArtifact = compileString(IMPL_EMITTING);
-const collectionImplArtifact = compileString(IMPL_COLLECTION);
-const soloImplArtifact = compileString(IMPL_SINGLE_FUNCTION);
-const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL);
-const trapProxyArtifact = compileString(PROXY_PINNED_BUT_CALLER_SELECTED);
-const selfAuthProxyArtifact = compileString(PROXY_SELF_AUTHORIZED);
-const stateKeyProxyArtifact = compileString(PROXY_STATE_KEY_AUTHORIZED);
-const payoutProxyArtifact = compileString(PROXY_PINNED_WITH_UNRELATED_ADDRESS);
+const compileReviewFixture = (source: string): Artifact => compileString(source, {
+  allowUnsafeOperations: true,
+  enforceFinalRequire: false,
+});
+const implArtifact = compileReviewFixture(IMPL_SCALAR);
+const foreignArtifact = compileReviewFixture(IMPL_FOREIGN);
+const pinnedProxyArtifact = compileReviewFixture(PROXY_BYTECODE_PINNED);
+const authorizedProxyArtifact = compileReviewFixture(PROXY_CALLER_AUTHORIZED);
+const openProxyArtifact = compileReviewFixture(PROXY_CALLER_CHOSEN);
+const returningImplArtifact = compileReviewFixture(IMPL_RETURNING);
+const emittingImplArtifact = compileReviewFixture(IMPL_EMITTING);
+const collectionImplArtifact = compileReviewFixture(IMPL_COLLECTION);
+const soloImplArtifact = compileReviewFixture(IMPL_SINGLE_FUNCTION);
+const conditionalProxyArtifact = compileReviewFixture(PROXY_CONDITIONAL);
+const trapProxyArtifact = compileReviewFixture(PROXY_PINNED_BUT_CALLER_SELECTED);
+const selfAuthProxyArtifact = compileReviewFixture(PROXY_SELF_AUTHORIZED);
+const stateKeyProxyArtifact = compileReviewFixture(PROXY_STATE_KEY_AUTHORIZED);
+const payoutProxyArtifact = compileReviewFixture(PROXY_PINNED_WITH_UNRELATED_ADDRESS);
 
 describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
   // =========================================================================
@@ -822,7 +826,7 @@ describe('message bus delegate participant classes (E3, SEMANTIC)', () => {
      * with no signature check publishes no `signatureGuard` - read back as `unknown`, refused by the allow-list.
      */
     it("refuses 'self-authorized' when the proxy checks no key anywhere", () => {
-      const artifact = compileString(`pragma solidcash >=0.8.0;
+      const artifact = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3KeylessProxy() {
     bigint counter;
     function up(bytes input, address impl, sig s) external {
@@ -894,7 +898,7 @@ contract E3KeylessProxy() {
      * round-14 mistake again in a new spelling.
      */
     it('refuses the `bytes`-typed delegatecall target, and admits the same shape targeting the ctor arg', () => {
-      const escape = compileString(`pragma solidcash >=0.8.0;
+      const escape = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3BytesTargetProxy(address impl) {
     bigint counter;
     function up(bytes input, bytes target) external {
@@ -910,7 +914,7 @@ contract E3BytesTargetProxy(address impl) {
 
       // GUARD CONTROL, byte-identical published parameter TYPES (`bytes`, `bytes`), one expression apart: the
       // delegatecall reaches the constructor argument and `target` is only read. Still admitted.
-      const honest = compileString(`pragma solidcash >=0.8.0;
+      const honest = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3BytesUnusedProxy(address impl) {
     bigint counter;
     function up(bytes input, bytes target) external {
@@ -927,7 +931,7 @@ contract E3BytesUnusedProxy(address impl) {
     });
 
     it('refuses the `bytes`-typed key material, and admits the same shape checking the ctor key', () => {
-      const escape = compileString(`pragma solidcash >=0.8.0;
+      const escape = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3BytesKeyProxy(pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, bytes k, sig s) external {
@@ -943,7 +947,7 @@ contract E3BytesKeyProxy(pubkey owner) {
 
       // GUARD CONTROL, same parameter types, same `bytes k`, one expression apart: the signature is checked
       // against the constructor argument. Still admitted, so the refusal is credited to the KEY's provenance.
-      const honest = compileString(`pragma solidcash >=0.8.0;
+      const honest = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3BytesKeyHonestProxy(pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, bytes k, sig s) external {
@@ -998,7 +1002,7 @@ contract E3StateTargetProxy(address impl) {
         'alias cycle': 'address a = impl; address b = a; a = b; a.delegatecall(input);',
       };
       for (const [name, body] of Object.entries(bodies)) {
-        const artifact = compileString(`pragma solidcash >=0.8.0;
+        const artifact = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract E3ComputedProxy(address impl, address alt) {
     bigint counter;
     struct Route { bytes to; }
@@ -1124,7 +1128,7 @@ contract E3Hash160Proxy(bytes20 pkh) {
       expect(match![0]).toContain('function up(bytes input, address impl, pubkey pk, sig s) external');
       expect(match![0]).toContain('require(checkSig(s, pk));');
 
-      const fixtureArtifact = compileString(`pragma solidcash >=0.8.0;\n${match![0]}`);
+      const fixtureArtifact = compileReviewFixture(`pragma solidcash >=0.8.0;\n${match![0]}`);
       expect(classify(fixtureArtifact, [])).toThrow(/class 'self-authorized' is not admitted/);
 
       // X50. The built-in proxy the SDK ships was the pre-X37 artifact behind 13 of the 27 refusals above. It

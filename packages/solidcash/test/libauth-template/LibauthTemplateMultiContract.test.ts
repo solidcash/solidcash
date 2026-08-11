@@ -1,4 +1,5 @@
 import { fixtures } from '../fixture/libauth-template/multi-contract-fixtures.js';
+import { normalizeTemplate } from './normalize-template.js';
 
 describe('Libauth Template generation tests (multi-contract)', () => {
   it.each(fixtures)('should generate a valid libauth template for $name', async (fixture) => {
@@ -6,6 +7,6 @@ describe('Libauth Template generation tests (multi-contract)', () => {
     const generatedTemplate = builder.getLibauthTemplate();
     // console.warn(JSON.stringify(generatedTemplate, null, 2));
     // console.warn(builder.bitauthUri());
-    expect(generatedTemplate).toEqual(fixture.template);
+    expect(normalizeTemplate(generatedTemplate)).toEqual(normalizeTemplate(fixture.template));
   });
 });

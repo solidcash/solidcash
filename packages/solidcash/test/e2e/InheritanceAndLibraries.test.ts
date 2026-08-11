@@ -13,8 +13,7 @@ import {
   bobPriv, bobPub,
 } from '../fixture/vars.js';
 
-const libraryRequireFailure = 'UsesSub.scash:5 Error in transaction at input 0 in contract UsesSub.scash at line 5.\n'
-  + 'Reason: Program failed an OP_VERIFY operation.\nFailing statement: SafeMath.sub(a, b)';
+const libraryRequireFailure = /UsesSub\.scash:4 Require statement failed at input 0/;
 
 // --- Helpers -------------------------------------------------------------
 

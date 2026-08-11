@@ -38,7 +38,7 @@ describe('library-contracts 3b: consumer delegatecalls a state-touching library'
   it('runs the library function against the proxy state via the existing delegatecall path', async () => {
     const provider = createTestProvider();
     const libArt = compileString(LIB);
-    const proxyArt = compileString(PROXY);
+    const proxyArt = compileString(PROXY, { allowUnsafeOperations: true });
     expect(libArt.isLibrary).toBe(true);
 
     const proxyContract = new Contract(proxyArt, [], { provider });
@@ -83,7 +83,7 @@ contract DelegatecallProxy() {
     require(input.length > 0);
   }
 }`;
-    const proxyArt = compileString(MISMATCH_PROXY);
+    const proxyArt = compileString(MISMATCH_PROXY, { allowUnsafeOperations: true });
     const proxyContract = new Contract(proxyArt, [], { provider });
     const { categoryId: proxyCatId } = await setupStatefulUtxos(
       provider, proxyContract, proxyArt.stateLayout!, { other: 0n, counter: 0n }, { saltContract: true },
@@ -288,7 +288,7 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
     const provider = createTestProvider();
     const libArt = compileString(LIB, { brandLibrary: true });
     expect(libArt.brandedLibrary).toBe(true);
-    const proxyArt = compileString(PROXY);
+    const proxyArt = compileString(PROXY, { allowUnsafeOperations: true });
 
     // Owning consumer first, so its category is known; then brand the library to it via the SDK helper
     // (StatefulContract.libraryBrand reverses the display categoryId to the internal order OP_UTXOTOKENCATEGORY
@@ -406,7 +406,7 @@ describe('library-contracts 3b: branded library master-gate (contention)', () =>
   it('registerLibrary rejects a library branded to a different category', () => {
     const provider = createTestProvider();
     const libArt = compileString(LIB, { brandLibrary: true });
-    const proxyArt = compileString(PROXY);
+    const proxyArt = compileString(PROXY, { allowUnsafeOperations: true });
     const consumerCat = `${'33'.repeat(31)}cc`;
     const consumer = new Contract(proxyArt, [], { provider });
     const consumerSc = StatefulContract.withCategory(consumer, consumerCat);

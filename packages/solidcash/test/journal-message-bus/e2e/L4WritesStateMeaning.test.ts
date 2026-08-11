@@ -98,7 +98,9 @@ const abiOf = (name: string): AbiFunction =>
 
 describe('X176 - `writesState` means "needs the state machinery", not "mutates"', () => {
   beforeAll(() => {
-    artifact = compileString(SRC);
+    // This fixture deliberately contains an unverified external-call-only body so it can isolate the meaning of
+    // `writesState`; opt out of the compiler's secure final-require default for that unrelated measurement.
+    artifact = compileString(SRC, { enforceFinalRequire: false });
     statelessArtifact = compileString(STATELESS, { forceStateful: true } as never);
   });
 

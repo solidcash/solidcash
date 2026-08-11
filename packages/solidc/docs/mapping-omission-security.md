@@ -1,4 +1,4 @@
-# Mapping omission and negative guards (historical finding C2)
+# Mapping omission and negative guards (historical finding vmap)
 
 > **Resolution (2026-07-22): fixed by mandatory verified mappings (vmaps).** The omission-prone entry model described below has been
 > removed. Every mapping now uses the authenticated sorted-linked-list backend, and there is no compiler opt-out.
@@ -62,8 +62,8 @@ from presence questions. Both are consistent - integrity-when-present is sound; 
 
 ## The sound solution
 
-**Why fixing C2 is harder than fixing C1.** C1 needed to prove a delegate is *present* - cheap (co-spend it, pin
-`OP_UTXOBYTECODE`). C2's dangerous case proves a key is *absent* - a non-membership statement, which
+**Why fixing vmap is harder than fixing C1.** C1 needed to prove a delegate is *present* - cheap (co-spend it, pin
+`OP_UTXOBYTECODE`). vmap's dangerous case proves a key is *absent* - a non-membership statement, which
 permissionlessly requires an authenticated set. There is no BCH shortcut, because consensus arbitrates
 spend-once and input-unspent, not inclusion, and Script cannot query the UTXO set.
 

@@ -5,7 +5,7 @@ import { alicePriv } from '../fixture/vars.js';
 import { createTestProvider } from '../test-util.js';
 
 // A delegate that writes both trailing-output families in one call: a dynamic state-array chunk and a
-// chunkable C2 mapping value. Their values must remain distinct while codegen builds the two covenant regions.
+// chunkable vmap mapping value. Their values must remain distinct while codegen builds the two covenant regions.
 const SOURCE = `pragma solidcash >=0.8.0;
 contract MixedDelegate() {
   address[] userAddresses;

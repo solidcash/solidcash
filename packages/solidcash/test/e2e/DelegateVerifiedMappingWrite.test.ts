@@ -69,7 +69,7 @@ interface Fixture {
 async function setup(seedKey30: boolean): Promise<Fixture> {
   const provider = createTestProvider();
   const libArt = compileString(LIB);
-  const proxyArt = compileString(PROXY);
+  const proxyArt = compileString(PROXY, { allowUnsafeOperations: true });
   const proxyContract = new Contract(proxyArt, [], { provider });
 
   const genesis = await provider.addTokenUtxosDynamic((cat: string) => {
@@ -138,7 +138,7 @@ describe('X11: delegate vmap sorted mapping write', () => {
    * all along, and not from some unrelated derivation path.
    */
   it('the forwarder publishes no entryAccesses; the delegated implementation does', () => {
-    const proxyAbi = compileString(PROXY).abi as any[];
+    const proxyAbi = compileString(PROXY, { allowUnsafeOperations: true }).abi as any[];
     const libAbi = compileString(LIB).abi as any[];
     expect(proxyAbi.find((f) => f.name === '__fallback')?.entryAccesses ?? []).toEqual([]);
     expect(libAbi.find((f) => f.name === 'setBal')?.entryAccesses).toEqual([

@@ -69,7 +69,9 @@ contract C() {
   int counter;
   function kill(bytes20 to) { require(true); selfdestruct(new LockingBytecodeP2PKH(to)); }
 }`;
-  const permissionlessArtifact = compileString(PERMISSIONLESS);
+  // These adversarial rows intentionally exercise caller-directed destruction and then prove the generated
+  // value covenant prevents siphoning. Keep the compiler's unsafe escape hatch explicit in the fixture.
+  const permissionlessArtifact = compileString(PERMISSIONLESS, { allowUnsafeOperations: true });
 
   async function deployPermissionless(initialBalance?: bigint): Promise<any> {
     const fundingUtxo: Utxo = { txid: 'a1b2'.repeat(16), vout: 0, satoshis: 300000n };

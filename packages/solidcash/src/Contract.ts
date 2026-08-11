@@ -540,6 +540,19 @@ export class Contract<
     };
   }
 
+  /** @internal Construct an unlocker from an enriched ABI entry while preserving this artifact's
+   * selector-dispatch policy. Stateful composition adds compiler-owned inputs after Contract construction,
+   * so its final ABI entry can be newer than the name-based unlocker captured by the constructor. */
+  createAbiUnlocker(abiFunction: AbiFunction): ContractFunctionUnlocker {
+    const soleFn = this.artifact.abi.length === 1 ? this.artifact.abi[0] : undefined;
+    const soleFnIsProxyImpl = soleFn?.modifiers?.includes('delegate')
+      && (!this.artifact.isLibrary || this.artifact.delegateOnly === true);
+    const selector = soleFn && !soleFnIsProxyImpl
+      ? undefined
+      : abiFunction.selector ? hexToBin(abiFunction.selector) : undefined;
+    return this.createUnlocker(abiFunction, selector);
+  }
+
   // blockhash(n) brands its (n->hash) oracle to the contract's OWN category (master-bound), so a reader is
   // always STATEFUL and its co-spend is resolved by StatefulContract via the blockhashOracle block-layout
   // slot. Returns [] when the function reads no blockhash; otherwise reaching this base-Contract path means

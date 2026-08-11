@@ -231,10 +231,10 @@ describe('recursion in a stateful contract no longer crashes the compiler', () =
     );
     // ATTRIBUTABLE, without pinning WHICH concrete cause fires: that depends on the published budget. At a
     // relaxed budget the loop runs until the covenant completes with a non-truthy value; against the mock's real
-    // 800-per-byte budget, exact-transaction preflight can trip density control first. Both are concrete VM
-    // refusals of the same unbounded shape; neither may degrade into a generic template/debug failure.
+    // limits, exact-transaction preflight can trip density control or the VM's concrete control-stack ceiling.
+    // All are concrete VM refusals of the same unbounded shape; none may degrade into a template/debug failure.
     expect(refusal).toMatch(
-      /Unsuccessful evaluation: completed with a non-truthy value|operation cost density limit/,
+      /Unsuccessful evaluation: completed with a non-truthy value|operation cost density limit|maximum control stack depth/,
     );
     expect(refusal).toContain('input 0');
   });

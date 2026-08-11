@@ -2,6 +2,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { binToHex } from '@bitauth/libauth';
 import {
   buildKeccakComputeRedeem, keccakComputeLockingBytecode, KECCAK256_COMPUTE_PAD_LENGTH,
+  buildKeccakComputeRedeemLegacy, keccakComputeLockingBytecodeLegacy,
 } from '@solidcash/utils';
 import type { Unlocker, Utxo, Output } from '../interfaces.js';
 
@@ -71,13 +72,15 @@ export function keccakComputeBlocks(preimageLength: number): number {
  */
 export function buildKeccakComputeSidecar(
   preimageOrBatch: Uint8Array | readonly Uint8Array[], salt: Uint8Array, sidecar: Utxo, stateful = false,
+  legacy = false,
 ): { unlocker: Unlocker; recreate: Output; commitment: Uint8Array } {
   const preimages = preimageOrBatch instanceof Uint8Array ? [preimageOrBatch] : [...preimageOrBatch];
   if (preimages.length < 1 || preimages.length > 3) {
     throw new Error(`keccak256 compute side-car requires 1 to 3 preimages; received ${preimages.length}.`);
   }
-  const redeem = buildKeccakComputeRedeem(salt, stateful);
-  const lock = keccakComputeLockingBytecode(salt, stateful);
+  if (legacy && preimages.length !== 1) throw new Error('legacy keccak side-cars accept exactly one preimage.');
+  const redeem = legacy ? buildKeccakComputeRedeemLegacy(salt, stateful) : buildKeccakComputeRedeem(salt, stateful);
+  const lock = legacy ? keccakComputeLockingBytecodeLegacy(salt, stateful) : keccakComputeLockingBytecode(salt, stateful);
   const blocks = preimages.reduce((sum, preimage) => sum + keccakComputeBlocks(preimage.length), 0);
   if (blocks > 3) {
     throw new Error(`keccak256 batch too large (${blocks} total blocks); a single side-car input funds at most `
@@ -93,14 +96,14 @@ export function buildKeccakComputeSidecar(
   const pad = new Uint8Array(padLen);
   const commitment = Uint8Array.from(preimages.flatMap((preimage) => [...keccak_256(preimage)]));
   const unlocker: Unlocker = {
-    generateUnlockingBytecode: () => Uint8Array.from(
-      [
+    generateUnlockingBytecode: () => Uint8Array.from(legacy
+      ? [...pushDataBytes(pad), ...pushDataBytes(preimages[0]), ...pushDataBytes(redeem)]
+      : [
         ...pushDataBytes(pad),
         ...preimages.flatMap((preimage) => [...pushDataBytes(preimage)]),
         ...pushDataBytes(Uint8Array.from([preimages.length])),
         ...pushDataBytes(redeem),
-      ],
-    ),
+      ]),
     generateLockingBytecode: () => lock,
   };
   const recreate: Output = {

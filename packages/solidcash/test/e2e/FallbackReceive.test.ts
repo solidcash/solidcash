@@ -164,7 +164,9 @@ describe('Stateful fallback/receive ABI metadata (M-NEW-3)', () => {
   `;
 
   describe('stateful fallback with delegatecall', () => {
-    const artifact = compileString(STATEFUL_PROXY);
+    // The literal is intentionally a non-covenant placeholder: this suite checks ABI metadata, not a safe
+    // production forwarding path, so acknowledge the unsafe target explicitly.
+    const artifact = compileString(STATEFUL_PROXY, { allowUnsafeOperations: true });
 
     it('should have lowLevelCalls metadata on fallback ABI entry', () => {
       const fallback = artifact.abi.find((f) => f.name === '__fallback');

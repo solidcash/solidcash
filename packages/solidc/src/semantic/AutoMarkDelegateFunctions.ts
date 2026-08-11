@@ -21,7 +21,7 @@ import { containsStatefulOperation } from './EnsureFinalRequireTraversal.js';
 // Modifiers that make inferred delegate mode meaningless or unsound. They simply make the function ineligible;
 // the ordinary standalone form remains valid.
 const INELIGIBLE_MODIFIERS = [
-  FunctionModifier.PURE, FunctionModifier.INTERNAL, FunctionModifier.PRIVATE,
+  FunctionModifier.PURE, FunctionModifier.VIEW, FunctionModifier.INTERNAL, FunctionModifier.PRIVATE,
   FunctionModifier.UNSAFE, FunctionModifier.UPGRADE, FunctionModifier.DEPLOY, FunctionModifier.SELFDESTRUCT,
   FunctionModifier.SPLIT, FunctionModifier.MERGE, FunctionModifier.DELEGATE,
 ];
@@ -39,7 +39,6 @@ function walk(node: Node | undefined, seen: Set<Node>, hit: (n: Node) => boolean
   }
   return false;
 }
-
 /**
  * A function only benefits from delegate mode if it touches state the proxy owns - that is what gets delegated.
  * Uses the shared definition (state writes, emits, low-level calls); an emit is included because the event NFT
@@ -139,11 +138,7 @@ export function isDelegateEligible(
   if (fn.modifiers.some((m) => INELIGIBLE_MODIFIERS.includes(m))) return false;
   // Corpus-compatible lowering may leave internal helpers intact until after this pass. State reached through
   // that closure belongs to the proxy just as state touched directly by the entry point does.
-  // A view that reads proxy-owned state (including synthesized public mapping/array getters) needs the delegate
-  // covenant just as a writer does: evaluating its standalone form would authenticate the implementation's state.
-  // Pure functions still exit through INELIGIBLE_MODIFIERS because they have no proxy context to retarget.
-  if (!fn.modifiers.includes(FunctionModifier.VIEW)
-    && !reachableFrom(fn, callables).some(touchesProxyState)) return false;
+  if (!reachableFrom(fn, callables).some(touchesProxyState)) return false;
   if (hasUnsupportedDelegateOperation(fn, callables)) return false;
   if (hasDelegatecall(fn, callables)) return false;
   return true;
@@ -168,11 +163,6 @@ export default function autoMarkDelegateFunctions(ast: Ast, forceStateful = fals
   let marked = 0;
   for (const fn of contract.functions) {
     if (!isDelegateEligible(fn, callables)) continue;
-    if (fn.modifiers.includes(FunctionModifier.VIEW)) {
-      if (contract.functions.some((other) => other !== fn && other.name === fn.name)) continue;
-      fn.sourceReadOnly = true;
-      fn.modifiers = fn.modifiers.filter((modifier) => modifier !== FunctionModifier.VIEW);
-    }
     fn.modifiers.push(FunctionModifier.DELEGATE);
     marked += 1;
   }

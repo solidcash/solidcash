@@ -221,7 +221,7 @@ const runDelegatecall = async (
   implSource: string, append?: 'own' | 'foreign', omitImpl = false, counter = 1n,
 ): Promise<Row> => {
   const implArtifact = compileString(implSource);
-  const proxyArtifact = compileString(PROXY);
+  const proxyArtifact = compileString(PROXY, { allowUnsafeOperations: true });
   const provider = createTestProvider();
   const proxy = await deploy(provider, proxyArtifact, { counter: 0n });
   const impl = await deploy(provider, implArtifact, { counter: 0n });

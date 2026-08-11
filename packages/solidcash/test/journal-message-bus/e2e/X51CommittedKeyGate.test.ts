@@ -183,11 +183,14 @@ const failingInput = (message: string): number | null => {
   return match ? Number(match[1]) : null;
 };
 
-const implArtifact = compileString(IMPL);
-const committedProxyArtifact = compileString(PROXY_COMMITTED);
-const openProxyArtifact = compileString(PROXY_UNCOMMITTED);
-const conditionalProxyArtifact = compileString(PROXY_CONDITIONAL_COMMITMENT);
-const decoyProxyArtifact = compileString(PROXY_COMMITTED_TO_PARAMETER);
+const compileReviewFixture = (source: string): Artifact => compileString(source, {
+  allowUnsafeOperations: true, enforceFinalRequire: false,
+});
+const implArtifact = compileReviewFixture(IMPL);
+const committedProxyArtifact = compileReviewFixture(PROXY_COMMITTED);
+const openProxyArtifact = compileReviewFixture(PROXY_UNCOMMITTED);
+const conditionalProxyArtifact = compileReviewFixture(PROXY_CONDITIONAL_COMMITMENT);
+const decoyProxyArtifact = compileReviewFixture(PROXY_COMMITTED_TO_PARAMETER);
 
 /** Run the gate for one proxy artifact against the honest implementation. */
 const classify = (
@@ -384,7 +387,7 @@ describe('X51: a committed caller-supplied key is admitted, read from the artifa
 
     /** X62: key provenance is not control flow. An optional check cannot authorize a later delegatecall. */
     it('refuses a branch-guarded signature check by both the X51 and pre-X51 routes', () => {
-      const branched = (guard: string, name: string): Artifact => compileString(`pragma solidcash >=0.8.0;
+      const branched = (guard: string, name: string): Artifact => compileReviewFixture(`pragma solidcash >=0.8.0;
 contract ${name}(bytes20 adminPkh, pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, pubkey pk, sig s, bool flag) external {
@@ -433,7 +436,7 @@ contract X62Dominating(bytes20 adminPkh) {
       expect(classify(old, [alicePkh]))
         .toThrow(/class 'non-dominating-signature-guard' is not admitted.*predating the dominance field/);
 
-      const partial = compileString(`pragma solidcash >=0.8.0;
+      const partial = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract X62Partial(pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, sig s) external {
@@ -448,7 +451,7 @@ contract X62Partial(pubkey owner) {
       expect(classify(partial, [alicePub]))
         .toThrow(/class 'multi-edge-proxy' is not admitted/);
 
-      const disjunction = compileString(`pragma solidcash >=0.8.0;
+      const disjunction = compileReviewFixture(`pragma solidcash >=0.8.0;
 contract X62Disjunction(pubkey owner) {
     bigint counter;
     function up(bytes input, address impl, sig s, bool flag) external {

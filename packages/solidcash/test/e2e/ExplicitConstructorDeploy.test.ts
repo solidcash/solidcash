@@ -149,7 +149,7 @@ describe('explicit-constructor stateful deploy (genesis derivation)', () => {
     );
   });
 
-  it('derives a constructor write to every key of a nested C2 mapping', async () => {
+  it('derives a constructor write to every key of a nested vmap mapping', async () => {
     const artifact = compileString(`
       contract Registry() {
           mapping(int => mapping(int => int)) values;

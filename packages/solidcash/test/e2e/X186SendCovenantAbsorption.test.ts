@@ -355,8 +355,10 @@ describe('X186 - the absorption window at TransactionBuilder.send', () => {
       const preflight = read('message-bus/preflight.ts');
       const bare = callsTo(preflight, 'assertFinalizedTransactionBytes');
       expect(bare, `bare calls: ${bare.join(' | ')}`).toHaveLength(3);
-      expect(bare[0]).toMatch(/if \(covenant === undefined\)/);
       const text = preflight.join('\n');
+      expect(text).toMatch(
+        /if \(covenant === undefined\) \{\s+assertFinalizedTransactionBytes\(transaction, \{/,
+      );
       for (const entry of ['preflightMessageBusTransaction', 'sendPreflightedMessageBusTransaction']) {
         const body = text.split(entry)[2] ?? text.split(entry)[1];
         expect(body.indexOf('evaluateEveryInput(builder, transaction)'))

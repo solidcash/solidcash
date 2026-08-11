@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { compileString } from '../direct-compile.js';
-import { Contract, StatefulContract } from '../../src/index.js';
-import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
+import { Contract, MockNetworkProvider, StatefulContract } from '../../src/index.js';
+import { setupStatefulUtxos } from '../test-util.js';
 
 /**
  * X126. THE FINALIZED-BYTES GATE IS WIRED INTO THE STATEFUL SUBMIT PATH, and refuses there.
@@ -36,7 +36,9 @@ const artifact = compileString(SOURCE, { forceStateful: true });
 
 /** A fresh deployment and a broadcast counter, so the two runs share nothing but the code under test. */
 async function deploy(): Promise<{ contract: StatefulContract; broadcasts: () => number }> {
-  const provider = createTestProvider();
+  // This row measures the production relay gate, not the mock's explicit miner-direct profile (whose widened
+  // transaction limit intentionally suppresses relay-only rules).
+  const provider = new MockNetworkProvider({ consensusLimits: { maximumTransactionBytes: 100_000 } });
   const inner = new Contract(artifact, [], { provider });
   const { categoryId } = await setupStatefulUtxos(
     provider, inner, artifact.stateLayout!, { calls: 0n }, { saltContract: true },

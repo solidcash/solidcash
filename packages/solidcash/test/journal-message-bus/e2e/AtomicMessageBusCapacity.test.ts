@@ -80,41 +80,41 @@ interface CapacityReading {
 const EXPECTED: Readonly<Record<number, CapacityReading>> = Object.freeze({
   2: {
     participants: 2, authenticatedParticipants: 2, slots: 6,
-    transactionBytes: 22_280, callManifestBytes: 294,
-    worstOperationCost: 1_966_870, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.27187741899812007,
+    transactionBytes: 23_050, callManifestBytes: 294,
+    worstOperationCost: 2_196_068, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.30355910649120865,
     inputOperationCosts: [
-      338_474, 319_697, 695, 1_926_268, 1_966_870, 27_321,
+      411_596, 430_140, 695, 2_159_183, 2_196_068, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_492_800, 1_324_000, 34_400, 7_234_400, 7_234_400, 112_800,
+      1_686_400, 1_746_400, 34_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
   4: {
     participants: 4, authenticatedParticipants: 4, slots: 12,
-    transactionBytes: 45_682, callManifestBytes: 584,
-    worstOperationCost: 3_440_850, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.4756234103726639,
+    transactionBytes: 49_174, callManifestBytes: 584,
+    worstOperationCost: 3_917_521, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.5415129105385381,
     inputOperationCosts: [
-      394_658, 443_055, 695, 443_055, 695, 393_933, 695, 3_309_563, 3_440_850, 3_440_312, 3_333_014,
+      522_646, 686_981, 695, 686_981, 695, 559_848, 695, 3_825_456, 3_917_521, 3_916_983, 3_832_600,
       27_321,
     ],
     inputMaximumOperationCosts: [
-      1_558_400, 1_862_400, 34_400, 1_862_400, 34_400, 1_324_000, 34_400, 7_234_400, 7_234_400,
+      1_752_000, 2_951_200, 34_400, 2_951_200, 34_400, 1_746_400, 34_400, 7_234_400, 7_234_400,
       7_234_400, 7_234_400, 112_800,
     ],
   },
   5: {
     participants: 5, authenticatedParticipants: 5, slots: 15,
-    transactionBytes: 57_506, callManifestBytes: 729,
-    worstOperationCost: 4_175_349, worstMaximumOperationCost: 7_234_400,
-    worstRatio: 0.5771520789560987,
+    transactionBytes: 62_359, callManifestBytes: 729,
+    worstOperationCost: 4_825_125, worstMaximumOperationCost: 7_234_400,
+    worstRatio: 0.6669696173836116,
     inputOperationCosts: [
-      422_718, 480_624, 695, 480_624, 695, 480_624, 695, 430_987, 695, 4_036_086, 4_175_349, 4_174_811,
-      4_174_254, 4_049_951, 27_321,
+      578_139, 752_356, 695, 752_356, 695, 752_356, 695, 624_638, 695, 4_733_713, 4_825_125, 4_824_587,
+      4_824_030, 4_724_976, 27_321,
     ],
     inputMaximumOperationCosts: [
-      1_591_200, 1_895_200, 34_400, 1_895_200, 34_400, 1_895_200, 34_400, 1_324_000, 34_400, 7_234_400,
+      1_784_800, 2_984_000, 34_400, 2_984_000, 34_400, 2_984_000, 34_400, 1_746_400, 34_400, 7_234_400,
       7_234_400, 7_234_400, 7_234_400, 7_234_400, 112_800,
     ],
   },
@@ -263,7 +263,7 @@ const measure = (participants: number, builder: TransactionBuilder): CapacityRea
 };
 
 describe('atomic single-transaction capacity', () => {
-  it.each([2, 4, 5, 8])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
+  it.each([2, 4, 5])('fits a %i-participant compiled chain under stock BCH-2026 limits', async (count) => {
     const builder = await buildChain(count);
     const reading = measure(count, builder);
     expect(reading.transactionBytes).toBeLessThanOrEqual(100_000);
@@ -285,7 +285,11 @@ describe('atomic single-transaction capacity', () => {
     }
   }, 600_000);
 
-  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6, 8])(
+  it('refuses an 8-participant compiled chain above the standard relay byte ceiling', async () => {
+    await expect(buildChain(8)).rejects.toThrow(/relay-transaction-size.*100000-byte standard relay ceiling/s);
+  }, 600_000);
+
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST)).each([6])(
     'converges a %i-participant resource-heavy chain without the former pass refusal', async (count) => {
       const builder = await buildResourceHeavyChain(count);
       const transaction = builder.buildLibauthTransaction();
@@ -295,6 +299,13 @@ describe('atomic single-transaction capacity', () => {
       if (!envelope || !('data' in envelope)) throw new Error('heavy capacity fixture has no messageEnvelope');
       expect(messageBus.decodeAtomicMessageEnvelope(envelope.data).participants).toHaveLength(count);
       expect(encodeTransaction(transaction).length).toBeLessThanOrEqual(100_000);
+    }, 300_000,
+  );
+
+  it.skipIf(Boolean(process.env.TESTS_USE_REGTEST))(
+    'refuses an 8-participant resource-heavy chain above the standard relay byte ceiling', async () => {
+      await expect(buildResourceHeavyChain(8)).rejects
+        .toThrow(/relay-transaction-size.*100000-byte standard relay ceiling/s);
     }, 300_000,
   );
 

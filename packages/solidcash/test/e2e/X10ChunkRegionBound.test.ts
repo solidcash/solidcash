@@ -68,7 +68,7 @@ contract X10Only() {
   }
 }`;
 
-const OUT = { master: 0, dataNft: 1, predecessor: 2, chunk0: 3, chunk1: 4 } as const;
+const OUT = { master: 0, dataNft: 1, mintNew: 2, mintBatch: 3, mintChunk0: 4, chunk0: 3, chunk1: 4 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {
   const provider = createTestProvider();
@@ -108,15 +108,17 @@ function mutate(hex: string, apply: (tx: Tx) => void): string {
 }
 
 describe('X10 trailing chunk region beside a vmap entry mint', () => {
-  it('settles a single-chunk write beside the entry mint, chunk before the NEW node', async () => {
+  it('settles a single-chunk write beside the entry mint', async () => {
     // Positive control on the VM: the shape the bound does NOT reach still settles, and its physical layout
-    // is unchanged - one real chunk at output 3, the minted NEW node at output 4.
+    // follows the fixed-batch topology: the minted NEW node at output 2, its batch node at output 3, then one
+    // real chunk at output 4.
     const { outcome, broadcasts } = await attempt(MINT, 120);
     expect(outcome).toBe('ACCEPTED');
     const commitments = commitmentsOf(broadcasts[broadcasts.length - 1]);
-    expect(commitments[OUT.chunk0].startsWith('004c78')).toBe(true);
-    expect(commitments[OUT.chunk0].length).toBe(246); // 3-byte header + 120 data bytes
-    expect(commitments[OUT.chunk1].length).toBe(130); // NEW node: slot32 || next32 || value
+    expect(commitments[OUT.mintNew].length).toBe(130); // NEW node: slot32 || next32 || value
+    expect(commitments[OUT.mintBatch].length).toBe(128); // fixed-width batch node
+    expect(commitments[OUT.mintChunk0].startsWith('004c78')).toBe(true);
+    expect(commitments[OUT.mintChunk0].length).toBe(246); // 3-byte header + 120 data bytes
   }, 180_000);
 
   it('settles both multi-chunk boundaries beside the entry mint', async () => {

@@ -916,6 +916,10 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   visitStateAccess(node: StateAccessNode): Node {
+    if (node.name === 'category' && !node.stateVariable) {
+      node.type = new BytesType(32);
+      return node;
+    }
     // this.balance - special built-in (when no state variable named 'balance'), returns int
     if (node.name === 'balance' && !node.stateVariable) {
       node.type = PrimitiveType.BIGINT;
@@ -1286,17 +1290,17 @@ export default class TypeCheckTraversal extends AstTraversal {
     const parameters = node.expression.type ? [node.expression.type] : [];
     expectParameters(node, parameters, [PrimitiveType.BOOL]);
 
-    // C2: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
+    // vmap: warn when a mapping value feeds a NEGATIVE guard (require(!m[k]) / require(m[k] == 0|false)). A spender
     // can OMIT the entry NFT, forcing the covenant to read the type default (false/0), so the guard passes - BCH
     // Script cannot force an existing entry UTXO to be co-spent. One-time-write / replay / blacklist / hasVoted
-    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT C2.
+    // maps are drainable. Positive guards (require(m[k]), require(m[k] >= x)) are fail-safe. See SECURITY-AUDIT vmap.
     const guardedMapping = this.negativeGuardMapping(node.expression);
     if (guardedMapping) {
       const line = node.location?.start?.line ? ` (line ${node.location.start.line})` : '';
       console.log(
         `Warning: require()${line} negatively guards on mapping '${guardedMapping}'. A spender can omit the entry `
         + 'NFT so the covenant reads the default (false/0) and the guard passes, bypassing one-time-write / replay '
-        + '/ blacklist patterns (SECURITY-AUDIT C2). Prefer a positive guard, or commit an entry-set accumulator.',
+        + '/ blacklist patterns (SECURITY-AUDIT vmap). Prefer a positive guard, or commit an entry-set accumulator.',
       );
     }
 
@@ -1318,7 +1322,7 @@ export default class TypeCheckTraversal extends AstTraversal {
     return node;
   }
 
-  // C2 helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
+  // vmap helpers. Returns the mapping name if `cond` is a negative guard on a mapping read: !m[k], m[k] == 0|false,
   // or the mirror image. Only direct mapping reads are flagged (the common one-time-write / replay / blacklist
   // idiom); compound conditions are left alone to avoid noise.
   private negativeGuardMapping(cond: ExpressionNode): string | undefined {
@@ -1336,8 +1340,8 @@ export default class TypeCheckTraversal extends AstTraversal {
   }
 
   private asMappingRead(expr: ExpressionNode): string | undefined {
-    // A sorted (C2 linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
-    // negative guard on it is safe - suppress the C2 warning for those collections.
+    // A sorted (vmap linked-list) mapping makes non-existence PROVABLE (the covenant reverts on omission), so a
+    // negative guard on it is safe - suppress the vmap warning for those collections.
     if (expr instanceof MappingAccessNode && !expr.collection?.sorted) return expr.name;
     return undefined;
   }
@@ -1636,6 +1640,14 @@ export default class TypeCheckTraversal extends AstTraversal {
     node.identifier = this.visit(node.identifier) as IdentifierNode;
     node.parameters = this.visitList(node.parameters);
 
+    if (this.solidityImportCompat && this.isEvmCreate2AddressHash(node)) {
+      const loc = this.diagLine(node.location);
+      console.log(`Warning: EVM CREATE2 address computation${loc} cannot derive a native BCH contract address. `
+        + 'BCH deployments use P2SH32 locking bytecode, and stateful contract addresses also commit to their '
+        + 'CashToken category ID. Use the deploying factory\'s registry (for example getPair(token0, token1)) '
+        + 'instead of keccak256(abi.encodePacked(hex"ff", ...)).');
+    }
+
     if (node.fieldNames && node.namedOverloadCandidates) {
       const names = node.fieldNames;
       const argsFor = (f: FunctionDefinitionNode): ExpressionNode[] => {
@@ -1804,6 +1816,16 @@ export default class TypeCheckTraversal extends AstTraversal {
     }
 
     return node;
+  }
+
+  private isEvmCreate2AddressHash(node: FunctionCallNode): boolean {
+    if (node.identifier.name !== GlobalFunction.KECCAK256 || node.parameters.length !== 1) return false;
+    const encoded = node.parameters[0];
+    if (!(encoded instanceof AbiEncodePackedNode) || encoded.parameters.length !== 4) return false;
+    const domain = encoded.parameters[0];
+    return domain instanceof HexLiteralNode
+      && domain.value.length === 1
+      && domain.value[0] === 0xff;
   }
 
   visitReturn(node: ReturnNode): Node {
@@ -2628,7 +2650,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         } else {
           expectInt(node, node.expression.type);
           if (this.solidityImportCompat && node.expression.type instanceof IntType
-            && !node.expression.type.signed) {
+            && !node.expression.type.signed && !node.legacyWrappingNegation) {
             throw new TypeError(
               node,
               node.expression.type,
@@ -2745,7 +2767,7 @@ export default class TypeCheckTraversal extends AstTraversal {
         return node;
       case NullaryOperator.MSG_SENDER:
       case NullaryOperator.TX_ORIGIN:
-        node.type = new AddressType();
+        node.type = new AddressType(node.legacyPayableAddress);
         return node;
       default:
         return node;

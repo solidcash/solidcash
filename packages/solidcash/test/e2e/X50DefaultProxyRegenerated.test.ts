@@ -29,9 +29,9 @@ import {
  * `fingerprint` still described the unedited compile - so the file's own three fields disagreed.
  *
  * The relaxation is DROPPED, not reapplied. `out >= in` admits net creation of own-category MUTABLE NFTs
- * generally, not just collection nodes, and the hostile row below shows what that buys: an appended mutable NFT
- * of the proxy category rides along beside an honest delegated write, outside every per-slot pin the delegate
- * emits. The A/B guard isolates it to one opcode.
+ * generally, not just collection nodes. Compiler-produced delegates now independently pin the exact proxy state
+ * output population, so the hostile row below also proves that relaxing only the proxy cannot bypass the newer
+ * implementation-side defense.
  */
 
 const DELEGATE_IMPL = `pragma solidcash >=0.8.0;
@@ -140,10 +140,11 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     expect(defaultProxyArtifact.fingerprint).toBe(fresh.fingerprint);
     expect(JSON.parse(JSON.stringify(defaultProxyArtifact))).toEqual(JSON.parse(JSON.stringify(fresh)));
 
-    // The two fields the hand edit desynchronised now agree, at 130 bytes rather than 159 against 158.
-    // (173 until the contract-level script was outlined, which shares the duplicated conservation loop.)
-    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(130);
-    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(130);
+    // The two fields the hand edit desynchronised agree. The route-safe forwarder
+    // re-decodes its ABI frame instead of trusting a stale top-relative stack cell;
+    // that security check intentionally expanded the outlined proxy to 224 bytes.
+    expect(asmByteLength(defaultProxyArtifact.bytecode)).toBe(224);
+    expect(defaultProxyArtifact.debug!.bytecode.length / 2).toBe(224);
     expect(defaultProxyArtifact.bytecode.endsWith(STRICT_TAIL)).toBe(true);
   });
 
@@ -232,10 +233,10 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
   /**
    * A/B GUARD NEGATIVE CONTROL, and the reason the refusal above is credited to the conservation rather than to
    * the +15 bytes of data-NFT value preservation that landed in the same regenerate. The identical transaction
-   * against a proxy identical in every byte EXCEPT the four-token tail - `OP_0 OP_NUMEQUALVERIFY` put back to
-   * `OP_0 OP_LESSTHANOREQUAL OP_VERIFY` - is ACCEPTED. One opcode is the whole difference.
+   * against a proxy identical in every byte EXCEPT the comparison tail reaches the certified implementation,
+   * whose exact proxy-state-output pin must still reject the appended NFT.
    */
-  it('accepts the same append when only the conservation opcode is relaxed', async () => {
+  it('still refuses the append in the implementation when only the proxy conservation is relaxed', async () => {
     const { signer, provider } = await fundedSigner();
     const relaxed = relaxedCopy();
     // Identical up to the tail, and one byte longer, so nothing else can explain a difference in outcome.
@@ -254,18 +255,6 @@ describe('X50: the shipped default proxy is a compile of its own source', () => 
     });
     const outcome = await provider.sendRawTransaction(raw(builder))
       .then(() => 'ACCEPTED').catch((error: Error) => error.message);
-    expect(outcome).toBe('ACCEPTED');
-
-    // MEASURED, and the whole reason the relaxation is dropped: it LANDS. The proxy's data-NFT covenant address
-    // now carries TWO mutable NFTs of the proxy category where the grafted layout names one - the genuine
-    // counter 6 (`OP_6`) and a forged counter 16 (`OP_16`) - and no per-slot pin the delegate emits covers the
-    // second.
-    // NOT a demonstrated wrong read: this provider returns UTXOs in insertion order, so `getState()` still
-    // reports 6. Ordering of identical-shaped data NFTs is provider-dependent, which is the exposure.
-    const resident = (await provider.getUtxos(dataNftAddress)).filter(
-      (candidate: any) => candidate.token?.category === categoryId && candidate.token?.nft?.capability === 'mutable',
-    );
-    expect(resident.map((candidate: any) => candidate.token.nft.commitment).sort())
-      .toEqual(['56', FORGED_COMMITMENT]);
+    expectScriptRejection(outcome, 2);
   }, 300_000);
 });

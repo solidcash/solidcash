@@ -289,8 +289,14 @@ export interface GraphEffectFrame {
   sites: number;
   eventBase: number;
   eventWidth: number;
+  eventOffset?: number;
   transferBase: number;
   transferWidth: number;
+  transferOffset?: number;
+  tokenTransferBase: number;
+  tokenTransferWidth: number;
+  tokenTransferOffset?: number;
+  tokenNftTransfers: boolean;
 }
 
 export interface CustomModifierInvocation {
@@ -335,6 +341,8 @@ export class FunctionDefinitionNode extends Node implements Named {
     // Redeem-script body (hex) Instantiation embeds when computing the child P2SH address. Must match the
     // SDK's child Contract body exactly; a standalone child artifact can differ (referenced-compile size).
     creationBytecode?: string;
+    // True when a same-transaction child call is folded into the authenticated child genesis.
+    hasFoldedChildCall?: boolean;
   }[];
 
   lowLevelCalls?: { callMode: 'call' | 'staticcall' | 'delegatecall'; dataParamIndex?: number }[];
@@ -1314,6 +1322,8 @@ export class InstantiationNode extends ExpressionNode {
   // child is deployed in its post-foo state. Maps a child state-var name to the (parent-context) expression
   // its value should hold; the deploy covenant emits this instead of the default for that field.
   foldedStateInit?: Map<string, ExpressionNode>;
+  // Unlike constructor folding, this requires the SDK to derive the child's post-call genesis from the VM.
+  hasFoldedChildCall?: boolean;
   // The child has a constructor whose writes could NOT be folded: the true genesis of unwritten fields is
   // unknown, so later call-folds must not resolve their reads to type defaults.
   ctorFoldFailed?: boolean;

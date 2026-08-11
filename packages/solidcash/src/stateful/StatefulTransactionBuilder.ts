@@ -41,7 +41,7 @@ import {
 } from '../message-bus/preflight.js';
 import { parseEventCommitment } from './StateReader.js';
 import {
-  Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker,
+  Utxo, UnlockableUtxo, TransactionDetails, isP2PKHUnlocker, Unlocker,
 } from '../interfaces.js';
 import { BALANCED_SLOT_SATOSHIS } from './balancedBlocks.js';
 import { createRelocatedDataNftUnlocker } from './covenant-helpers.js';
@@ -127,6 +127,8 @@ export interface ExternalCallUtxoGroup {
     internalArgs?: Record<string, any>;
     eventSignaturesBySlot?: Array<string | undefined>;
   };
+  /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
+  internalArgs?: Record<string, any>;
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
@@ -138,7 +140,7 @@ export interface ExternalCallUtxoGroup {
   /** X13: B's block carries a funding input at its published returnEvent offset, so B's return-event NFT is
    * emitted at that offset instead of appended after the whole participant region. */
   returnEventInBlock?: boolean;
-  /** A route's chunkable C2 WRITE pins its value chunks as outputs in the callee's TRAILING band. The value is
+  /** A route's chunkable vmap WRITE pins its value chunks as outputs in the callee's TRAILING band. The value is
    * computed on-chain (`publishJobEvent` stamps `block.timestamp` before storing), so the SDK cannot build the
    * chunks off-chain the way `valueChunkMints` does for a caller-known value - the commitments are extracted
    * from the callee's derivation probe and placed here, keyed by block slot. */
@@ -161,10 +163,12 @@ export interface ExternalCallUtxoGroup {
   entryLoopCollection?: string;
   /** Sorted entry slots known at planning time to be inserts. Placeholder NEW
    * outputs let the first derivation pass reach and reveal both commitments. */
-  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number }>;
+  plannedEntryInserts?: Array<{ blockSlot: number; outputBlockSlot: number; commitment?: string }>;
   /** Internal handles for the placeholders above. */
   plannedEntryInsertHandles?: number[];
-  /** Exact C2 predecessor recreations reserved in compiler-route trailing slots. */
+  /** Hidden output-index arguments stored block-relative until this group's absolute output base is known. */
+  relativeOutputInternalArgs?: string[];
+  /** Exact vmap predecessor recreations reserved in compiler-route trailing slots. */
   batchPredecessorOutputs?: Array<{
     outputBlockSlot: number; lockingBytecode: Uint8Array; commitment: string;
   }>;
@@ -226,7 +230,7 @@ export interface StatefulTransactionOptions extends TransactionBuilderOptions {
   compilerRouteDelegateBlock?: boolean;
   batchEntriesBeforeDynamicChunks?: boolean;
   iterationEntryInputs?: UnlockableUtxo[];
-  // C2 diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
+  // vmap diff-key insert loop: the N bracketing predecessors, co-spent at input[blockSize+c] but NOT preserved as
   // outputs (unlike iterationEntryInputs) - they are MODIFIED to P' which is emitted via loopEntryVars. Kept separate
   // so they are not counted in the loop-entry output base.
   insertLoopPredecessorInputs?: UnlockableUtxo[];
@@ -297,6 +301,7 @@ export class StatefulTransactionBuilder {
   private satoshiContainerUtxo?: UnlockableUtxo;
   private satoshiContainerLockingBytecode?: Uint8Array;
   private containerDepositAmount: bigint = 0n;
+  private pendingTokenContainerDeposits: Map<string, bigint> = new Map();
   private pendingTokenContainerTransfers: TokenContainerTransferData[] = [];
   private pendingTokenContainerTransferNfts: TokenContainerTransferNftData[] = [];
   private tokenContainerTransferInsertionCounter = 0;
@@ -331,7 +336,7 @@ export class StatefulTransactionBuilder {
   string, Map<string, StateValue>
   > = new Map(); // categoryId -> (varName -> value)
 
-  // Cross-contract callee (B) C2 sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
+  // Cross-contract callee (B) vmap sorted-entry outputs, derived from B's VM trace (docs/deferrals.md #1).
   // categoryId -> (B block-slot position si -> commitment hex). The external-call output loop mints B's updated
   // (or predecessor P') entry at that slot; a NEW insert node rides the trailing region below.
   private externalCallEntryOutputs: Map<string, Map<number, string>> = new Map();
@@ -855,7 +860,7 @@ export class StatefulTransactionBuilder {
     return this;
   }
 
-  /** B's C2 sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
+  /** B's vmap sorted-entry output at its block-slot position (commitment from B's VM trace). docs/deferrals.md #1. */
   setExternalCallEntryOutput(categoryId: string, blockSlot: number, commitmentHex: string): this {
     let m = this.externalCallEntryOutputs.get(categoryId);
     if (!m) { m = new Map(); this.externalCallEntryOutputs.set(categoryId, m); }
@@ -929,6 +934,18 @@ export class StatefulTransactionBuilder {
       tokenContainerCategoryId, lockingBytecode, amount,
       insertionOrder: this.tokenContainerTransferInsertionCounter++,
     });
+    return this;
+  }
+
+  clearTokenContainerDeposits(): this {
+    this.pendingTokenContainerDeposits.clear();
+    return this;
+  }
+
+  addTokenContainerDeposit(tokenContainerCategoryId: string, amount: bigint): this {
+    if (amount <= 0n) throw new Error('Token container deposit amount must be positive');
+    const prior = this.pendingTokenContainerDeposits.get(tokenContainerCategoryId) ?? 0n;
+    this.pendingTokenContainerDeposits.set(tokenContainerCategoryId, prior + amount);
     return this;
   }
 
@@ -1069,7 +1086,7 @@ export class StatefulTransactionBuilder {
 
   /**
    * P5b: buffer an unpinned same-category value-chunk output (a LONG sorted-mapping value's persisted chunk).
-   * Unlike addOutput, this permits the contract's own category: value chunks are 0x01 mutable NFTs the C2 write
+   * Unlike addOutput, this permits the contract's own category: value chunks are 0x01 mutable NFTs the vmap write
    * covenant tolerates (no total-output bound; minting uniqueness counts only 0x02; C3 skipped for entry access).
    * They are materialized trailing (after dynamic chunks / loop entries) with their commitment fixed, so the
    * auto-derivation never sees them. Soundness is by the entry's stored sha256(value), verified on read.
@@ -1542,6 +1559,12 @@ export class StatefulTransactionBuilder {
 
   setLocktime(locktime: number): this {
     this.locktimeOverride = locktime;
+    return this;
+  }
+
+  addInput(utxo: Utxo, unlocker: Unlocker): this {
+    const already = this.allInputs.some((input) => input.txid === utxo.txid && input.vout === utxo.vout);
+    if (!already) this.allInputs.push({ ...utxo, unlocker });
     return this;
   }
 
@@ -2179,7 +2202,7 @@ export class StatefulTransactionBuilder {
             continue;
           }
 
-          // C2 sorted-entry slot for a cross-contract callee WRITE (docs/deferrals.md #1): mint B's updated entry
+          // vmap sorted-entry slot for a cross-contract callee WRITE (docs/deferrals.md #1): mint B's updated entry
           // (UPDATE) or its re-pointed predecessor P' (INSERT) with the commitment derived from B's VM trace. A
           // read-only entry (or an absent-key funder placeholder) has no stored commitment -> mirror the input.
           if (slot?.kind === 'entry') {
@@ -2352,7 +2375,11 @@ export class StatefulTransactionBuilder {
       // used to hand the return event - and computeBlockLayout always orders events before the returnEvent, so
       // deferring the return channel past the event outputs is what makes the two agree. `deferred` is empty
       // for every implementation without an event slot, so a plain returning delegate keeps this exact index.
-      const externalReturnEvents = this.pendingReturnEventOutputs.filter((r) => r.categoryId !== this.categoryId);
+      // A full external-call block has already emitted its return event at the block's returnEvent slot. Only
+      // legacy/transitive tail returns belong beside the delegated implementation; appending an in-block return
+      // a second time shifts the implementation preservation output and invalidates its covenant frame.
+      const externalReturnEvents = this.tailReturnEventOutputs()
+        .filter((r) => r.categoryId !== this.categoryId);
       if (this.delegateReturnEventAfterEvents) deferredDelegateReturnEvents.push(...externalReturnEvents);
       for (const re of (this.delegateReturnEventAfterEvents ? [] : externalReturnEvents)) {
         builder.addOutput({
@@ -2379,7 +2406,7 @@ export class StatefulTransactionBuilder {
         if (entry.slotIndex < fillThreshold) {
           // Position-holding placeholder: neutral OP_TRUE, outside the collection address namespace. The covenant
           // existence-gates this absent slot away, so it is never verified; using the entry address here would
-          // incorrectly increase C2's exact collection-output cardinality.
+          // incorrectly increase vmap's exact collection-output cardinality.
           builder.addOutput({ to: Uint8Array.of(0x51), amount: 1000n });
         }
         continue;
@@ -2505,7 +2532,9 @@ export class StatefulTransactionBuilder {
         );
       }
 
-      const remainingFtAmount = inputFtAmount - transferredFtAmount;
+      const depositedFtAmount = this.pendingTokenContainerDeposits
+        .get(container.tokenContainerCategoryId) ?? 0n;
+      const remainingFtAmount = inputFtAmount - transferredFtAmount + depositedFtAmount;
 
       // Check if NFT was transferred out
       const nftWasTransferred = this.pendingTokenContainerTransferNfts.some(
@@ -3386,6 +3415,8 @@ export class StatefulTransactionBuilder {
    * and prints a window of ops ending at the failure. Best-effort: the caller swallows any error here.
    */
   private _logCovenantFailureTrace(builder: TransactionBuilder, reason: string): void {
+    if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
+      ?.SOLIDC_DEBUG_COVENANT_TRACE !== '1') return;
     const transaction = builder.buildLibauthTransaction(true);
     const sourceOutputs = generateLibauthSourceOutputs(builder.inputs);
     const named = reason.match(/input(?: index)? (\d+)/);
@@ -3606,7 +3637,7 @@ export class StatefulTransactionBuilder {
       }
     }
 
-    // The debug probe can discover commitments and output counts for dynamic C2 inserts/chunks. Rebuild before
+    // The debug probe can discover commitments and output counts for dynamic vmap inserts/chunks. Rebuild before
     // measuring and funding so the fee calculation sees the converged covenant shape rather than the smaller
     // pre-probe transaction. Otherwise a newly learned entry output is added only by the final build, leaving its
     // dust value unfunded (for example: 2400 sats in, 3600 sats out for the first mapping insertion).

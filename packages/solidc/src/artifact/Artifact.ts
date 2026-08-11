@@ -706,6 +706,8 @@ function buildFunctionAbiMetadata(
         dataNftCount: dt.dataNftCount,
         ...(dt.constructorArgs && { constructorArgs: dt.constructorArgs }),
         ...(dt.salt && { salt: dt.salt }),
+        ...(dt.creationBytecode && { creationBytecode: dt.creationBytecode }),
+        ...(dt.hasFoldedChildCall && { hasFoldedChildCall: true }),
       })),
     }),
     ...(func.externalReads && func.externalReads.length > 0 && {
@@ -779,6 +781,7 @@ function buildFunctionAbiMetadata(
     ...(func.tokenContainerAccesses && func.tokenContainerAccesses.length > 0 && {
       tokenContainerAccesses: func.tokenContainerAccesses.map((da) => ({
         keyParam: da.keyParam,
+        ...(da.keySource && da.keySource !== 'param' && { keySource: da.keySource }),
         operations: da.operations,
         ...(da.transferCount > 1 && { transferCount: da.transferCount }),
         ...(da.transferNftCount > 1 && { transferNftCount: da.transferNftCount }),
@@ -833,7 +836,7 @@ function buildFunctionAbiMetadata(
     ) && {
       // A fixed atomic batch materializes every target in its block-layout entry slots and uses only its
       // non-target predecessor rewrites as trailing outputs. It is not a runtime loop-output collection: exposing
-      // it here makes the SDK attempt to decode C2 slot/link commitments as legacy key/value loop commitments.
+      // it here makes the SDK attempt to decode vmap slot/link commitments as legacy key/value loop commitments.
       entryLoopWrites: routeEntryLoopWrites.filter(
         (collection) => !func.sortedBatchInfo?.some((batch) => batch.collection === collection),
       ),
@@ -1005,6 +1008,7 @@ export function generateArtifact(
     ...(func.modifiers.length > 0 && {
       modifiers: func.modifiers.map((m) => m.toString()),
     }),
+    ...(func.nativeSelfBatchDispatcher && { nativeSelfBatchDispatcher: true }),
     ...buildFunctionAbiMetadata(func, isStateful, contract, ast.interfaceDefinitions),
     ...(func.splitCountParam && { splitCountParam: func.splitCountParam }),
     ...(func.mergeCountParam && { mergeCountParam: func.mergeCountParam }),
@@ -1229,7 +1233,10 @@ export function generateArtifact(
           resultNft: true,
           // minInstances = the max keccak256 call count across functions (side-cars to deploy at creation);
           // unbounded flags a keccak-in-loop function whose runtime count exceeds that static minimum.
-          minInstances: Math.max(0, ...allFns.map((f) => f?.keccakPreimageParams?.length ?? 0)),
+          minInstances: Math.max(0, ...allFns.map((f) => {
+            const calls = f?.keccakPreimageParams?.length ?? 0;
+            return f?.keccakInLoop ? calls : Math.ceil(calls / 3);
+          })),
           ...(allFns.some((f) => f?.keccakInLoop) && { unbounded: true }),
         };
       }
@@ -1273,6 +1280,8 @@ export function generateArtifact(
       options: {
         enforceFunctionParameterTypes: compilerOptions.enforceFunctionParameterTypes,
         enforceLocktimeGuard: compilerOptions.enforceLocktimeGuard,
+        enforceFinalRequire: compilerOptions.enforceFinalRequire,
+        allowUnsafeOperations: compilerOptions.allowUnsafeOperations,
         commitmentLimit: compilerOptions.commitmentLimit,
         messageBus: compilerOptions.messageBus,
       },

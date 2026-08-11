@@ -235,7 +235,7 @@ async function runDelegate(
 ): Promise<string> {
   const provider = createTestProvider();
   const implArtifact = compile(implSource);
-  const proxyArtifact = compile(proxySource);
+  const proxyArtifact = compile(proxySource, { allowUnsafeOperations: true });
   const proxyContract = new Contract(proxyArtifact, [], { provider });
   const { categoryId: proxyCatId } = await setupStatefulUtxos(
     provider, proxyContract, proxyArtifact.stateLayout!, initialState, { saltContract: true },

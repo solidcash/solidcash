@@ -36,7 +36,9 @@ function evalSidecar(preimage: Uint8Array, commitR: Uint8Array, in0Category: Uin
   const redeem = buildKeccakComputeRedeem(C);
   const lock = keccakComputeLockingBytecode(C);
   const pad = new Uint8Array(KECCAK256_COMPUTE_PAD_LENGTH);
-  const scUnlock = Uint8Array.from([...push(pad), ...push(preimage), ...push(redeem)]);
+  // The covenant accepts one to three preimages; push the batch width after
+  // the preimages (OP_1 is the minimal VM-number encoding of a single item).
+  const scUnlock = Uint8Array.from([...push(pad), ...push(preimage), 0x51, ...push(redeem)]);
   const transaction = {
     version: 2, locktime: 0,
     inputs: [
@@ -66,14 +68,14 @@ describe('keccak compute-and-commit side-car (utils)', () => {
   it('COVENANT hash matches the baked integrity constant', () => {
     const covBytes = Uint8Array.from(KECCAK256_COMPUTE_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(covBytes))).toBe(KECCAK256_COMPUTE_COVENANT_HASH);
-    expect(covBytes.length).toBe(2394);
+    expect(covBytes.length).toBe(2443);
   });
 
   it('STATEFUL COVENANT hash matches its baked constant and differs only in the self-pres tail', () => {
     const stateful = Uint8Array.from(KECCAK256_COMPUTE_STATEFUL_COVENANT.match(/.{2}/g)!.map((b) => parseInt(b, 16)));
     expect(binToHex(hash256(stateful))).toBe(KECCAK256_COMPUTE_STATEFUL_COVENANT_HASH);
     // Self-preserves via OP_INPUTINDEX (absolute slot) - 4 bytes shorter than the offset-from-end stateless one.
-    expect(stateful.length).toBe(2390);
+    expect(stateful.length).toBe(2439);
     expect(KECCAK256_COMPUTE_STATEFUL_COVENANT.endsWith('c076d27b88c0c778cd88c0ce78d1887551')).toBe(true);
     // Everything before the self-pres tail is byte-identical to the stateless covenant (same brand + keccak).
     const statelessHead = KECCAK256_COMPUTE_COVENANT.slice(0, -'c0c493c39476d27b88c0c778cd88c0ce78d1887551'.length);

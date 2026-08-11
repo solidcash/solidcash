@@ -1230,6 +1230,9 @@ export class TransactionBuilder {
       this,
       decodeTransactionUnsafe(hexToBin(tx)),
       inputSubjectsOfBuilder(this),
+      this.provider.policy?.enforceProductionInputLimit === false
+        ? { consensusLimits: this.provider.consensusLimits }
+        : {},
     );
 
     let txid: string;

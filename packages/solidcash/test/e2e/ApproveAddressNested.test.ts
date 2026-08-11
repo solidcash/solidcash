@@ -23,7 +23,7 @@ async function run(
   };
   if (process.env.TESTS_USE_REGTEST) {
     // These deliberately unsplit fixtures are 790-1,486 bytes. Mocknet relaxes input/transaction density to
-    // exercise the C2 snapshot behavior, but BCH consensus cannot push a redeem script larger than 520 bytes.
+    // exercise the vmap snapshot behavior, but BCH consensus cannot push a redeem script larger than 520 bytes.
     // Keep the live matrix honest: the unsupported shape must fail before broadcast with the exact binding limit.
     await expect(execute()).rejects.toThrow(/maximum stack item length.*520 bytes/i);
     console.log('REFUSED AT BCH STACK-ITEM LIMIT', label);

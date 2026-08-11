@@ -38,7 +38,7 @@ describe('type utilities', () => {
   });
 
   describe('isChunkableValueType', () => {
-    it('keeps small fixed-width structs inline and chunks structs that can exceed the C2 tail', () => {
+    it('keeps small fixed-width structs inline and chunks structs that can exceed the vmap tail', () => {
       const small = new StructType('Small', [
         { name: 'amount', type: parseType('uint64')! },
         { name: 'height', type: parseType('uint32')! },

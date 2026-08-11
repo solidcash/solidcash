@@ -35,7 +35,9 @@ describe('deploy-then-call fold (deployFrom e2e)', () => {
     const make = factoryArtifact.abi.find((f) => f.name === 'deployConfigured')!;
     // constructorArgs records that new FoldChild(childOwner) forwards the 'childOwner' deploy param, so the
     // SDK can derive childConstructorArgs from the deploy args.
-    expect(make.deployTargets).toEqual([{ contractName: 'FoldChild', dataNftCount: 1, constructorArgs: ['childOwner'] }]);
+    expect(make.deployTargets).toEqual([expect.objectContaining({
+      contractName: 'FoldChild', dataNftCount: 1, constructorArgs: ['childOwner'], hasFoldedChildCall: true,
+    })]);
     expect((make as { externalCalls?: unknown[] }).externalCalls).toBeUndefined();
   });
 

@@ -8,28 +8,21 @@ import { createTestProvider, setupStatefulUtxos } from '../test-util.js';
 import { alicePriv } from '../fixture/vars.js';
 
 // =============================================================================
-// Sorted-mapping (C2) writes through a delegate LIBRARY facet: what settles.
+// Sorted-mapping (vmap) writes through a delegate LIBRARY facet: what settles.
 //
 // This probe was written when NO delegated mapping write settled at all, because
 // the consumer's `L.f()` forwarder publishes entryAccesses = null, so the SDK
 // provisioned no entry UTXOs and `hasNothingToDerive` skipped derivation
 // outright. X11 (837c8b8d) fixed that by reading the ROUTED accesses, and the
-// picture is now split cleanly in two:
+// the picture is split cleanly in two:
 //
 //   UPDATE (key already exists) - SETTLES, and the value lands.
-//   INSERT (new key)            - REFUSED, at the PROXY's own input.
+//   INSERT (new key)            - REFUSED by an ordinary strictly-conserving consumer.
 //
-// The INSERT refusal is a covenant fact, not a gap. An insert mints one new
-// entry node, so the transaction's own-category mutable (0x01) NFT count rises
-// by one, and a delegatecall master carries emitOwnCategoryMutableNftConservation
-// (C1 full-state authority - GenerateTargetTraversal, emitted unconditionally on
-// the delegatecall path) which pins that count input == output. It is the same
-// defence that refuses an appended fabricated entry node, so the proxy cannot
-// admit one without admitting the other.
-//
-// The consequence for facet-splitting: a facet may UPDATE any mapping, but the
-// KEY has to be created by a direct (non-delegated) function on the master. A
-// zero-value `register(k)` is enough and is cheap - see the last test.
+// upgrades.deployProxy can derive a relaxed forwarder only for implementations
+// that publish the delegateProxyStateOutputCountPinned certificate. This plain
+// branded-library consumer remains strict, so a direct master register is still
+// required before delegated updates.
 // =============================================================================
 const LIB = `library M {
   mapping(address => int) bal;
@@ -87,13 +80,10 @@ describe('delegate facet: mapping write vs scalar write', () => {
     expect((await c.getState()).counter).toBe(1n);
   });
 
-  // The proxy conserves its own-category mutable NFT count, and an INSERT mints one.
-  // It fails at input 0 - the master - not at the library's own input.
   it('a delegated mapping INSERT is refused by the proxy', async () => {
     const { c, signer, read } = await setup();
-    await expect(
-      c.connect(signer).call.setBal(KEY, 42n).send(),
-    ).rejects.toThrow(/input 0|OP_VERIFY/);
+    await expect(c.connect(signer).call.setBal(KEY, 42n).send())
+      .rejects.toThrow(/input 0|OP_VERIFY/);
     expect(await read(), 'nothing was written').toBeUndefined();
   });
 

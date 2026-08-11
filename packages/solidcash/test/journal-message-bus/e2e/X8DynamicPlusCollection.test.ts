@@ -79,9 +79,9 @@ contract X8InlineOnly() {
   }
 }`;
 
-// Physical layout of the honest journal transaction, measured: block is [master, dataNft, entry], then the
-// trailing region holds one chunk per dynamic variable and finally the vmap insert's NEW node.
-const OUT = { master: 0, dataNft: 1, predecessor: 2, chunkA: 3, chunkB: 4, entryNew: 5 } as const;
+// Physical layout of the honest journal transaction, measured after verified-mapping batch planning: the block
+// is [master, dataNft, NEW], then the trailing region recreates the predecessor before both dynamic chunks.
+const OUT = { master: 0, dataNft: 1, entryNew: 2, predecessor: 3, chunkA: 4, chunkB: 5 } as const;
 
 async function deploy(source: string): Promise<{ provider: Provider; sc: StatefulContract<any> }> {
   const provider = createTestProvider();
@@ -172,13 +172,13 @@ describe('X8 two chunk-backed dynamic writes beside a collection write', () => {
     await sc.checkBalance(alicePkh, 12n).send();
   }, 180_000);
 
-  it('places the vmap NEW node after both chunk outputs', async () => {
+  it('places the verified-mapping predecessor recreation before both chunk outputs', async () => {
     const { hex } = await honestCapture();
     const tx = decodeTransactionUnsafe(hexToBin(hex));
     const address = (index: number): string => binToHex(tx.outputs[index].lockingBytecode);
     const commitment = (index: number): string => binToHex(tx.outputs[index].token!.nft!.commitment);
-    // The two chunk outputs sit between the block's entry slot and the insert's NEW node, and each dynamic
-    // variable has its own chunk address, so the raw writes are physically present and distinguishable.
+    // The NEW node occupies the authenticated entry block slot. Batch planning recreates its predecessor at the
+    // start of the trailing band, followed by one distinguishable chunk output for each dynamic variable.
     expect(commitment(OUT.chunkA)).toBe('0002aabb');
     expect(commitment(OUT.chunkB)).toBe('0002ccdd');
     expect(address(OUT.chunkA)).not.toBe(address(OUT.chunkB));

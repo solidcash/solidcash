@@ -120,6 +120,8 @@ export interface ExternalCallUtxoGroup {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
+  /** The delegate implementation and its function resources are already carried in this physical proxy block. */
+  delegateEmbeddedInBlock?: boolean;
   /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
   sharedGroupIndex?: number;
   /** Honest SDK probe result for a read fused into another call sharing this master input. */
@@ -143,6 +145,8 @@ export interface ExternalCallUtxoGroup {
   };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
+  /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */
+  refreshInternalArgs?: (updates: Record<string, any>) => void;
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
@@ -719,13 +723,14 @@ export class StatefulTransactionBuilder {
         ? group.blockInputs : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos];
       const delegateInputs = (index: number): UnlockableUtxo[] => {
         const group = this.lowLevelCallUtxoGroups[index];
-        return group ? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos] : [];
+        return group
+          ? (group.blockInputs ?? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]) : [];
       };
       const nestedInputs: UnlockableUtxo[] = [];
       for (const group of this.externalCallUtxoGroups) {
         if (group.sharedGroupIndex !== undefined) continue;
         nestedInputs.push(...groupInputs(group));
-        if (group.delegateCallGroupIndex !== undefined) {
+        if (group.delegateCallGroupIndex !== undefined && !group.delegateEmbeddedInBlock) {
           nestedInputs.push(...delegateInputs(group.delegateCallGroupIndex));
         }
       }
@@ -1166,6 +1171,12 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  getDerivedChunkOutputs(): ReadonlyMap<number, {
+    commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
+  }> {
+    return this.derivedChunkOutputs;
+  }
+
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
@@ -1507,7 +1518,8 @@ export class StatefulTransactionBuilder {
   getIdentityAnchorInputIndex(anchorIdx: number): number {
     const anchor = this.externalIdentityAnchorUtxos[anchorIdx];
     if (!anchor) return -1;
-    return this.allInputs.findIndex((input) => input.txid === anchor.txid && input.vout === anchor.vout);
+    return this.allInputs.findIndex((input) => input !== undefined
+      && input.txid === anchor.txid && input.vout === anchor.vout);
   }
 
   getExternalCallMasterInputIndex(groupIdx: number): number {
@@ -1569,7 +1581,7 @@ export class StatefulTransactionBuilder {
       // A proxied participant's implementation output follows that participant block in both the legacy and
       // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
       // outputs remain interleaved; omitting it makes every later participant output base one slot too low.
-      if (g.delegateCallGroupIndex !== undefined) {
+      if (g.delegateCallGroupIndex !== undefined && !g.delegateEmbeddedInBlock) {
         const delegate = this.lowLevelCallUtxoGroups[g.delegateCallGroupIndex];
         if (delegate?.callMode === 'delegatecall') base += 1 + delegate.dataNftUtxos.length;
       }
@@ -2492,7 +2504,7 @@ export class StatefulTransactionBuilder {
         });
       }
       if (group.delegateCallGroupIndex !== undefined) {
-        appendDelegateGroupOutputs(group.delegateCallGroupIndex);
+        if (!group.delegateEmbeddedInBlock) appendDelegateGroupOutputs(group.delegateCallGroupIndex);
         if (group.compilerRoute) {
           // Preserve the displaced proxy master immediately after its associated implementation band, which
           // is the same absolute coordinate as the proxy-master input in the routed input layout.

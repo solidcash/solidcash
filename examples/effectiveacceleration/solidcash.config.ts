@@ -8,6 +8,7 @@ export default defineConfig({
     solidityImportCompat: true,
     // Keep the production state-partitioning layout while the mock VM relaxes execution ceilings.
     commitmentLimit: 128,
+    maximumInputBytes: 1_000_000,
     optimizeForCompilationSpeed: true,
     ecrecover: 'p2pkh',
     // Keep the Hardhat-compatible harness on the uniform fixed-entry backend.

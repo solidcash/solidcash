@@ -239,14 +239,32 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     byName.set(fn.name, defs);
   }
   const calls = new Map<number, Set<number>>();
+  const footprintCache: FootprintAnalysisCache = { directCalls: new WeakMap(), bodyNodes: new WeakMap() };
   for (const fn of functions) {
     const out = new Set<number>();
+    const directCalls = new Set<string>();
+    const locallyBound = new Set([
+      ...fn.parameters.map((parameter) => parameter.name),
+      ...fn.returnNames,
+    ]);
+    const bodyNodes: Node[] = [];
     walkInvocationAst(fn.body, (node) => {
-      if (!(node instanceof FunctionCallNode)) return;
-      const id = node.resolvedFunction?.functionId;
-      if (id !== undefined && byId.has(id)) out.add(id);
+      bodyNodes.push(node);
+      if (node instanceof VariableDefinitionNode) locallyBound.add(node.name);
+      if (node instanceof TupleAssignmentNode) {
+        for (const element of node.elements) {
+          if (element.name !== undefined && element.type !== undefined) locallyBound.add(element.name);
+        }
+      }
+      if (node instanceof FunctionCallNode) {
+        if (!node.fromThisCall) directCalls.add(node.identifier.name);
+        const id = node.resolvedFunction?.functionId;
+        if (id !== undefined && byId.has(id)) out.add(id);
+      }
     });
     calls.set(fn.functionId!, out);
+    footprintCache.directCalls.set(fn, directCalls);
+    footprintCache.bodyNodes.set(fn, { locallyBound, nodes: bodyNodes });
   }
 
   let next = 0;
@@ -302,7 +320,6 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
     }
     return [...result].sort((a, b) => a - b);
   };
-  const footprintCache: FootprintAnalysisCache = { directCalls: new WeakMap(), bodyNodes: new WeakMap() };
   const summaries = functions.map((fn) => {
     const id = fn.functionId!;
     const closure = closureOf(id);

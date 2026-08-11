@@ -103,6 +103,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // body cannot be selected by this path and therefore must not make the one eligible overload ambiguous.
   private exprAmbiguousInlineKeys: Set<string> = new Set();
   private exprStack: string[] = [];
+  private bodyNodes = new WeakMap<FunctionDefinitionNode, Node[]>();
 
   visitSourceFile(node: SourceFileNode): Node {
     this.freeFns = node.freeFunctions ?? [];
@@ -129,6 +130,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   visitContract(node: ContractNode): Node {
+    this.bodyNodes = new WeakMap();
     this.funcByName = new Map();
     this.funcByKey = new Map();
     for (const fn of [...node.functions, ...this.freeFns]) {
@@ -149,9 +151,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.stateVarNames = new Set(node.stateVariables.map((sv) => sv.name));
     this.constructorCalledFns = new Set();
     if (node.constructorDef?.body) {
-      this.walk(node.constructorDef.body, (candidate) => {
+      for (const candidate of this.nodesOf(node.constructorDef)) {
         if (candidate instanceof FunctionCallNode) this.constructorCalledFns.add(candidate.identifier.name);
-      });
+      }
     }
     // Effect metadata is populated after this pass. Build the equivalent pre-semantic call-graph closure so a
     // scalar writer which deploys/calls externally through an internal helper stays on the established inline
@@ -159,17 +161,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     this.journalEffectFns = new Set();
     const directEffect = (fn: FunctionDefinitionNode): boolean => {
       if (!fn.body) return false;
-      let found = false;
-      this.walk(fn.body, (candidate) => {
+      for (const candidate of this.nodesOf(fn)) {
         if (candidate instanceof InstantiationNode || candidate instanceof MethodCallNode
-          || candidate instanceof LowLevelCallNode || candidate instanceof LowLevelCallStatementNode) found = true;
+          || candidate instanceof LowLevelCallNode || candidate instanceof LowLevelCallStatementNode) return true;
         else if (candidate instanceof FunctionCallNode) {
           const name = candidate.identifier.name;
           const dot = name.lastIndexOf('.');
-          if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) found = true;
+          if (dot > 0 && !name.startsWith('super.') && !this.funcByName.has(name)) return true;
         }
-      });
-      return found;
+      }
+      return false;
     };
     for (const fn of node.functions) if (fn.body && directEffect(fn)) this.journalEffectFns.add(fn.name);
     let effectClosureChanged = true;
@@ -178,10 +179,10 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       for (const fn of node.functions) {
         if (!fn.body || this.journalEffectFns.has(fn.name)) continue;
         let reachesEffect = false;
-        this.walk(fn.body, (candidate) => {
+        for (const candidate of this.nodesOf(fn)) {
           if (candidate instanceof FunctionCallNode
             && this.journalEffectFns.has(candidate.identifier.name)) reachesEffect = true;
-        });
+        }
         if (reachesEffect) {
           this.journalEffectFns.add(fn.name);
           effectClosureChanged = true;
@@ -263,11 +264,11 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         if (!fn.body || fn.returnTypes.length > 0 || this.inlinedFns.has(fn.name)
           || this.keepsGraphEmissionBinding(fn) || valueReferenced.has(fn.name)) continue;
         let callsSelected = false;
-        this.walk(fn.body, (candidate) => {
+        for (const candidate of this.nodesOf(fn)) {
           if (candidate instanceof FunctionCallNode && this.inlinedFns.has(candidate.identifier.name)) {
             callsSelected = true;
           }
-        });
+        }
         if (!callsSelected) continue;
         this.inlinedFns.add(fn.name);
         if (!this.isInternalHelper(fn)) this.keepDefFns.add(fn.name);
@@ -349,15 +350,13 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // LowerExternalCalls runs, and `a.call/staticcall/delegatecall(..)` is either a LowLevelCall or a dotted
   // FunctionCall. Mirrors the `methodCallCount` test compiler.ts applies at route synthesis.
   private hasOutgoingCall(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (node) => {
-      if (found) return;
+    for (const node of this.nodesOf(fn)) {
       if (node instanceof MethodCallNode || node instanceof LowLevelCallNode
-        || node instanceof LowLevelCallStatementNode) found = true;
+        || node instanceof LowLevelCallStatementNode) return true;
       else if (node instanceof FunctionCallNode
-        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) found = true;
-    });
-    return found;
+        && /\.(call|staticcall|delegatecall)$/.test(node.identifier?.name ?? '')) return true;
+    }
+    return false;
   }
 
   private isScalarJournalEligible(fn: FunctionDefinitionNode): boolean {
@@ -369,7 +368,7 @@ export default class InlineStoragePointerCalls extends AstTraversal {
       || (fn.emitInfos?.length ?? 0) > 0 || (fn.transferInfos?.length ?? 0) > 0
       || (fn.tokenContainerAccesses?.length ?? 0) > 0 || (fn.deployTargets?.length ?? 0) > 0) return false;
     let unsupported = false;
-    this.walk(fn.body, (candidate) => {
+    for (const candidate of this.nodesOf(fn)) {
       const maybeState = candidate as Node & { stateVariable?: { isDynamic?: boolean } };
       if (maybeState.stateVariable?.isDynamic) unsupported = true;
       // This transform runs before emitInfos is populated. Inspect the source AST
@@ -392,17 +391,16 @@ export default class InlineStoragePointerCalls extends AstTraversal {
         || candidate instanceof ArrayAccessNode || candidate instanceof ArrayAssignNode
         || candidate instanceof StateArrayAssignNode
         || candidate.constructor.name.startsWith('StateArray')) unsupported = true;
-    });
+    }
     return !unsupported && this.writesScalarState(fn);
   }
 
   private writesScalarState(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body!, (candidate) => {
+    for (const candidate of this.nodesOf(fn)) {
       if ((candidate instanceof StateAssignNode || candidate instanceof DeleteStateNode)
-        && this.stateVarNames.has(candidate.name)) found = true;
-    });
-    return found;
+        && this.stateVarNames.has(candidate.name)) return true;
+    }
+    return false;
   }
 
   // Names referenced as VALUES: an IdentifierNode occurrence that is not the identifier of a plain call.
@@ -413,12 +411,12 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const bodies = [...node.functions, node.constructorDef, node.fallbackDef, node.receiveDef];
     for (const fn of bodies) {
       if (!fn?.body) continue;
-      this.walk(fn.body, (n) => {
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof FunctionCallNode && n.identifier) callIdentifiers.add(n.identifier);
-      });
-      this.walk(fn.body, (n) => {
+      }
+      for (const n of this.nodesOf(fn)) {
         if (n instanceof IdentifierNode && !callIdentifiers.has(n)) referenced.add(n.name);
-      });
+      }
     }
     return referenced;
   }
@@ -429,20 +427,19 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // that is NOT shadowed by a param/local (a shadowed match would alpha-rename-break the clone).
   private touchesScalarState(fn: FunctionDefinitionNode): boolean {
     const shadowed = new Set(fn.parameters.map((p) => p.name));
-    this.walk(fn.body, (n) => { if (n instanceof VariableDefinitionNode) shadowed.add(n.name); });
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
+    const nodes = this.nodesOf(fn);
+    for (const n of nodes) if (n instanceof VariableDefinitionNode) shadowed.add(n.name);
+    for (const n of nodes) {
       if ((n instanceof StateAccessNode || n instanceof StateAssignNode) && this.stateVarNames.has(n.name)) {
-        found = true;
+        return true;
       } else if (n instanceof IdentifierNode && this.stateVarNames.has(n.name) && !shadowed.has(n.name)) {
-        found = true;
+        return true;
       } else if (n instanceof AssignNode && this.stateVarNames.has(n.identifier.name)
         && !shadowed.has(n.identifier.name)) {
-        found = true;
+        return true;
       }
-    });
-    return found;
+    }
+    return false;
   }
 
   private hasStoragePointerParam(fn: FunctionDefinitionNode): boolean {
@@ -552,46 +549,34 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   // an entry-access input slot, which only an entry-point's block layout provides, so a private function
   // doing it cannot be an OP_INVOKE subroutine and is inlined.
   private readsEntry(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
-      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) found = true;
+    for (const n of this.nodesOf(fn)) {
+      if (n instanceof MappingAccessNode && this.collectionNames.has(n.name)) return true;
       else if (n instanceof ArrayAccessNode && n.array instanceof IdentifierNode
-        && this.collectionNames.has(n.array.name)) found = true;
-    });
-    return found;
+        && this.collectionNames.has(n.array.name)) return true;
+    }
+    return false;
   }
 
   // A function DIRECTLY writes a sorted (vmap) mapping entry: a MappingAssign/Field/Delete or single-key ArrayAssign
   // on a sorted collection. A vmap write co-spends the sorted-list entry slots (block layout), which only an entry
   // point has, so a void helper doing it cannot be an OP_INVOKE subroutine (the plain-entry-model write is fine).
   private directlyWritesSortedEntry(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (n) => {
-      if (found) return;
+    for (const n of this.nodesOf(fn)) {
       // A single-key mapping write `m[k] = v` is an ArrayAssignNode; nested / struct-field / delete forms are
       // MappingAssign / MappingFieldAssign / MappingDelete. All co-spend the sorted entry when the collection is vmap.
       if ((n instanceof ArrayAssignNode || n instanceof MappingAssignNode || n instanceof MappingFieldAssignNode
-        || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name)) found = true;
-    });
-    return found;
+        || n instanceof MappingDeleteNode) && this.sortedCollectionNames.has(n.name)) return true;
+    }
+    return false;
   }
 
   private hasTokenContainerEffects(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (node) => {
-      if (node instanceof TokenContainerMethodStatementNode) found = true;
-    });
-    return found;
+    return this.nodesOf(fn).some((node) => node instanceof TokenContainerMethodStatementNode);
   }
 
   private hasPhysicalEffects(fn: FunctionDefinitionNode): boolean {
-    let found = false;
-    this.walk(fn.body, (node) => {
-      if (node instanceof EmitStatementNode || node instanceof TransferStatementNode
-        || node instanceof TokenContainerMethodStatementNode) found = true;
-    });
-    return found;
+    return this.nodesOf(fn).some((node) => node instanceof EmitStatementNode
+      || node instanceof TransferStatementNode || node instanceof TokenContainerMethodStatementNode);
   }
 
   // The set of contract functions that DIRECTLY or TRANSITIVELY require an entry-point layout. A caller of a
@@ -602,9 +587,9 @@ export default class InlineStoragePointerCalls extends AstTraversal {
     const names = new Set(fns.map((f) => f.name));
     const calleesOf = (f: FunctionDefinitionNode): Set<string> => {
       const out = new Set<string>();
-      this.walk(f.body, (n) => {
+      for (const n of this.nodesOf(f)) {
         if (n instanceof FunctionCallNode && n.identifier && names.has(n.identifier.name)) out.add(n.identifier.name);
-      });
+      }
       return out;
     };
     const result = new Set<string>(fns.filter((f) => (
@@ -1017,6 +1002,17 @@ export default class InlineStoragePointerCalls extends AstTraversal {
   }
 
   // Pre-order walk over child Nodes (and Node arrays); skips Type/symbol-table fields.
+  private nodesOf(fn: FunctionDefinitionNode): Node[] {
+    let nodes = this.bodyNodes.get(fn);
+    if (nodes) return nodes;
+    // All classification and closure selection completes before this pass rewrites any body. Cache only that
+    // immutable pre-rewrite phase; cloned/inlined bodies continue to use walk directly below.
+    nodes = [];
+    this.walk(fn.body, (node) => nodes!.push(node));
+    this.bodyNodes.set(fn, nodes);
+    return nodes;
+  }
+
   private walk(node: Node | undefined, visit: (n: Node) => void): void {
     if (!node) return;
     visit(node);

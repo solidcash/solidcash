@@ -434,9 +434,9 @@ function replaceOps(
   optimisations: CompiledOptimisation[],
 ): ReplaceOpsResult {
   let asm = originalAsm;
-  let newLocationData = [...locationData];
-  let newLogs = [...logs];
-  let newRequires = [...requires];
+  let newLocationData = locationData;
+  let newLogs = logs;
+  let newRequires = requires;
 
   optimisations.forEach(({
     pattern, replacement, regex, patternLength, replacementLength, patternTokens,
@@ -446,6 +446,7 @@ function replaceOps(
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
     // round, per function body, on both codegen passes.
     if (matchIndex === -1) return;
+    if (newLocationData === locationData) newLocationData = [...locationData];
 
     // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
     // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of

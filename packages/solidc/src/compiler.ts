@@ -193,6 +193,10 @@ interface OptionalLoweringFeatures {
   needsCollectionJournal: boolean;
   needsExternalCallLowering: boolean;
   needsInlineAssembly: boolean;
+  statefulnessSurveyComplete: boolean;
+  hasContractInstantiation: boolean;
+  deploysWithValue: boolean;
+  emitsEvent: boolean;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -229,6 +233,9 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsCollectionJournal = false;
   let needsExternalCallLowering = false;
   let needsInlineAssembly = false;
+  let hasContractInstantiation = false;
+  let deploysWithValue = false;
+  let emitsEvent = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
@@ -254,10 +261,16 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     } else if (node instanceof NullaryOpNode && node.operator === NullaryOperator.MSG_SIG) {
       needsMsgSigContext = true;
     }
-    if (node instanceof InstantiationNode || node instanceof ContractReferenceNode
+    if (node instanceof InstantiationNode) {
+      needsSpecialMethodPruning = true;
+      hasContractInstantiation = true;
+      if (node.callOptions?.value) deploysWithValue = true;
+    } else if (node instanceof ContractReferenceNode
       || (node instanceof TypeIntrospectionNode
         && (node.property === 'creationCode' || node.property === 'runtimeCode'))) {
       needsSpecialMethodPruning = true;
+    } else if (node instanceof EmitStatementNode) {
+      emitsEvent = true;
     }
     if (node instanceof ExternalFunctionCallNode || node instanceof LowLevelCallNode
       || node instanceof LowLevelCallStatementNode || node instanceof MethodCallNode
@@ -291,6 +304,10 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
           needsCollectionJournal: true,
           needsExternalCallLowering: true,
           needsInlineAssembly: true,
+          statefulnessSurveyComplete: false,
+          hasContractInstantiation,
+          deploysWithValue,
+          emitsEvent,
         };
       }
       if ((value instanceof ArrayType || value instanceof MappingType
@@ -315,6 +332,10 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsCollectionJournal,
     needsExternalCallLowering,
     needsInlineAssembly,
+    statefulnessSurveyComplete: true,
+    hasContractInstantiation,
+    deploysWithValue,
+    emitsEvent,
   };
 }
 
@@ -4652,7 +4673,11 @@ function compileResolvedAst(
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
     needsExternalCallLowering, needsInlineAssembly,
+    statefulnessSurveyComplete, hasContractInstantiation, deploysWithValue, emitsEvent,
   } = surveyOptionalLowerings(ast);
+  const contractStatefulnessHint = statefulnessSurveyComplete && ast.freeFunctions.length === 0
+    ? { hasContractInstantiation, deploysWithValue, emitsEvent }
+    : undefined;
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
   // Desugar `return` inside a loop -> flag + break + post-loop return (before break/continue expansion so the
@@ -4889,7 +4914,7 @@ function compileResolvedAst(
   }
 
   // Semantic analysis
-  ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions)) as Ast;
+  ast = ast.accept(new SymbolTableTraversal(mergedCompilerOptions, contractStatefulnessHint)) as Ast;
   // Bare msg.sender collection accesses are normalized to compiler-owned route parameters before semantic
   // analysis. Preserve their origin in the published entry metadata: treating that synthetic parameter as a
   // source ABI argument leaves the SDK trying to read an argument the user-visible handler does not have.

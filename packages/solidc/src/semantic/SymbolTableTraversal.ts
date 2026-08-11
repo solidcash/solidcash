@@ -358,6 +358,12 @@ interface ActiveFunctionBodySurvey {
   keccakLoopDepth: number;
 }
 
+export interface ContractStatefulnessHint {
+  hasContractInstantiation: boolean;
+  deploysWithValue: boolean;
+  emitsEvent: boolean;
+}
+
 export default class SymbolTableTraversal extends AstTraversal {
   private activeBodySurvey?: ActiveFunctionBodySurvey;
 
@@ -547,7 +553,10 @@ export default class SymbolTableTraversal extends AstTraversal {
     return file ? ` at line ${line} of imported "${file}"` : ` at line ${line}`;
   }
 
-  constructor(compilerOptions: CompilerOptions = {}) {
+  constructor(
+    compilerOptions: CompilerOptions = {},
+    private readonly contractStatefulnessHint?: ContractStatefulnessHint,
+  ) {
     super();
     this.compilerOptions = compilerOptions;
     // Built-in + user-supplied external libraries for this compilation. User libraries are registered
@@ -883,6 +892,15 @@ export default class SymbolTableTraversal extends AstTraversal {
       || node.usesBlockhash;
     if (directlyStateful) {
       this.isStatefulContract = true;
+    } else if (this.contractStatefulnessHint && !this.contractStatefulnessHint.hasContractInstantiation) {
+      node.deploysStatefulChild = false;
+      node.deploysWithValue = this.contractStatefulnessHint.deploysWithValue;
+      if (node.deploysWithValue) {
+        this.isStatefulContract = true;
+      } else {
+        node.emitsEvent = this.contractStatefulnessHint.emitsEvent;
+        this.isStatefulContract = node.emitsEvent;
+      }
     } else {
       const survey = this.surveyContractStatefulness(node);
       // Preserve the former short-circuit assignments: later annotations remain untouched when an earlier

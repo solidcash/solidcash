@@ -28,6 +28,8 @@ export interface InvocationAnalysis {
   components: readonly InvocationComponentSummary[];
 }
 
+const contractInvocationAnalysisCache = new WeakMap<ContractNode, InvocationAnalysis>();
+
 const RESOLVED_BACKREF_KEYS = new Set([
   'resolvedFunction', 'functionReference', 'definition', 'symbolTable',
   'referencedContract', 'stateVariable', 'collection',
@@ -222,6 +224,8 @@ export function collectionResourceName(name: string, keys: Node[] | undefined): 
 /** Build one deterministic resolved call graph for diagnostics, recursion
  * preflight, splitting, and later message-bus eligibility. */
 export function analyseContractInvocations(contract: ContractNode): InvocationAnalysis {
+  const cached = contractInvocationAnalysisCache.get(contract);
+  if (cached) return cached;
   const functions = [
     ...contract.functions,
     ...(contract.fallbackDef ? [contract.fallbackDef] : []),
@@ -314,5 +318,7 @@ export function analyseContractInvocations(contract: ContractNode): InvocationAn
       footprint: analyseFunctionFootprint(fn, byName, footprintCache),
     };
   }).sort((a, b) => a.id - b.id);
-  return { functions: summaries, components };
+  const analysis = { functions: summaries, components };
+  contractInvocationAnalysisCache.set(contract, analysis);
+  return analysis;
 }

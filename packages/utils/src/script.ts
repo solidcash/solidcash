@@ -582,7 +582,7 @@ function replaceOps(
         // the constructor parameters still have to get added to the front of the script when a new Contract is created.
         const scriptIp = scriptIndex + constructorParamLength;
 
-        newRequires = newRequires.map((require) => {
+        if (newRequires.length !== 0) newRequires = newRequires.map((require) => {
         // We calculate the new ip of the require by subtracting the length diff between the matched pattern and replacement
           const newCalculatedRequireIp = require.ip - lengthDiff;
 
@@ -594,7 +594,7 @@ function replaceOps(
           };
         });
 
-        newLogs = newLogs.map((log) => {
+        if (newLogs.length !== 0) newLogs = newLogs.map((log) => {
         // We calculate the new ip of the log by subtracting the length diff between the matched pattern and replacement
           const newCalculatedLogIp = log.ip - lengthDiff;
 

@@ -43,8 +43,11 @@ export function walkInvocationAst(
   if (!(value instanceof Node) || seen.has(value)) return;
   seen.add(value);
   visit(value);
-  for (const [key, child] of Object.entries(value)) {
+  // Node data fields are enumerable; class prototype methods are not. Iterate them directly to avoid allocating
+  // an Object.entries pair array for every node in every call-graph and footprint walk.
+  for (const key in value) {
     if (RESOLVED_BACKREF_KEYS.has(key)) continue;
+    const child = value[key as keyof Node];
     if (child instanceof Node) walkInvocationAst(child, visit, seen);
     else if (Array.isArray(child)) {
       for (const item of child) walkInvocationAst(item, visit, seen);

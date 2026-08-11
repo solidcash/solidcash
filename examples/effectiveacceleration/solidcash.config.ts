@@ -20,14 +20,14 @@ export default defineConfig({
       target: 'ethers6', layout: 'typechain', outDir: 'typechain-types', sourceDir: 'contracts',
     }],
   },
-  // This compatibility run exercises the unmodified EACC contracts rather than production-limit sizing.
-  // Keep the mock VM's otherwise-permissive profile permissive for BCH-2026 operation-cost density too.
+  // The largest Marketplace entry is still an indivisible ~75KB call closure,
+  // so the strict splitter cannot produce a 10KB bundle. Keep the compatibility
+  // network permissive while exercising the unmodified application contracts.
   networks: {
     mock: {
       type: 'mock',
       consensus: {
         maximumInputBytes: 1_000_000,
-        // BCH-2026 uses 10,000 bytes (not the historical 520); this mock run deliberately widens it further.
         maximumStackItemBytes: 1_000_000,
         maximumTransactionBytes: 10_000_000,
         maximumNftCommitmentBytes: 1_000_000,

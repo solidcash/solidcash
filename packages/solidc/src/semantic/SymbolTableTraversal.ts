@@ -2667,6 +2667,26 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
             this.pushToStack(idxParam);
           }
+
+          // A Solidity-visible CREATE address can name a logical identity whose
+          // physical state covenant is a proxy. The SDK supplies the co-spent
+          // immutable identity-anchor index for those calls, or -1 when the
+          // visible address is already the physical master bytecode.
+          for (const slot of externalCallSlots) {
+            if (slot.loopArrayVar || slot.inlineLoopDispatch || !slot.addressParam
+              || slot.addressLiteral !== undefined || slot.addressIsMsgSender) continue;
+            const batchOwner = externalCallSlots.find((candidate) => candidate.slotIndex < slot.slotIndex
+              && candidate.addressParam === slot.addressParam && candidate.batchInvocations);
+            if (batchOwner) continue;
+            const anchorName = `__internal__extcallAnchorIdx${slot.slotIndex}`;
+            const anchorParam = new ParameterNode(PrimitiveType.BIGINT, anchorName);
+            anchorParam.location = node.location;
+            node.parameters.push(anchorParam);
+            this.symbolTables[0].set(Symbol.variable(anchorParam));
+            const anchorSymbol = this.symbolTables[0].get(anchorName);
+            if (anchorSymbol) anchorSymbol.references.push({ name: anchorName } as IdentifierNode);
+            this.pushToStack(anchorParam);
+          }
         }
       }
     }

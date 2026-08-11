@@ -7337,6 +7337,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
             const family = externalCallUtxoGroups.map((candidate, candidateIdx) => ({ candidate, candidateIdx }))
               .filter(({ candidate, candidateIdx }) => (candidate.sharedGroupIndex ?? candidateIdx) === physicalGroupIdx
                 && externalCalls[candidateIdx]?.hasReturnValues);
+            const physical = externalCallUtxoGroups[physicalGroupIdx];
             const complete = family.every(({ candidate }) => candidate.precomputedReturnCommitment !== undefined);
             const commitment = complete
               ? family.reduce((aggregate, { candidate }) => {
@@ -7346,18 +7347,22 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                 combined.set(part, aggregate.length);
                 return combined;
               }, new Uint8Array())
-              : new Uint8Array([0]);
-            const physical = externalCallUtxoGroups[physicalGroupIdx];
+              : physical.precomputedReturnCommitment ?? new Uint8Array([0]);
             const fusedGroupIdx = physical.fusedReturnGroupIndex
               ?? family.at(-1)?.candidateIdx ?? physicalGroupIdx;
-            for (const { candidateIdx } of family) {
+            for (const { candidate, candidateIdx } of family) {
+              const logicalCommitment = complete
+                ? candidate.precomputedReturnCommitment!
+                : commitment;
               stb.setReturnEventOutput(
-                physical.categoryId, commitment, `external-call:${candidateIdx}`,
+                physical.categoryId, logicalCommitment, `external-call:${candidateIdx}`,
               );
             }
-            stb.setReturnEventOutput(
-              physical.categoryId, commitment, `external-call:${fusedGroupIdx}`,
-            );
+            if (!complete) {
+              stb.setReturnEventOutput(
+                physical.categoryId, commitment, `external-call:${fusedGroupIdx}`,
+              );
+            }
           }
         }
 
@@ -11122,6 +11127,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       encodedArgs: any[];
       positions: { argIndex: number; band: number }[];
     }[] = [];
+    const topLevelAnchorFillPositions: { argIndex: number; band: number }[] = [];
     if (externalCalls?.some((ec) => ec.loopArrayVar)) {
       const expanded: ExternalCallAbi[] = [];
       presetResolved = [];
@@ -12343,7 +12349,28 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         };
         if (!anchorSlot.addressParam || anchorSlot.addressLiteral !== undefined
           || anchorSlot.addressIsMsgSender) continue;
-        finalArgs = [...finalArgs, externalCallAnchorIndices.get(i) ?? -1n];
+        const group = externalCallUtxoGroups[i];
+        const callee = group?.externalContract as StatefulContract | undefined;
+        const logicalAddress = callee?._logicalAddress;
+        let band: number | undefined;
+        if (logicalAddress) {
+          const logicalLbc = binToHex(addressToLockScript(logicalAddress));
+          if (logicalLbc !== callee!.inner.lockingBytecode) {
+            band = identityAnchorBandByAddress.get(logicalAddress);
+            if (band === undefined) {
+              const resolved = await resolveLogicalIdentity(this.inner.provider, logicalAddress);
+              band = identityAnchors.length;
+              identityAnchors.push({ ...resolved.anchor, unlocker: resolved.unlocker } as UnlockableUtxo);
+              identityAnchorBandByAddress.set(logicalAddress, band);
+            }
+          }
+        }
+        if (band === undefined) {
+          finalArgs = [...finalArgs, externalCallAnchorIndices.get(i) ?? -1n];
+        } else {
+          topLevelAnchorFillPositions.push({ argIndex: finalArgs.length, band });
+          finalArgs = [...finalArgs, -1n];
+        }
       }
 
 
@@ -12894,7 +12921,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               }
               let precomputedReturnCommitment: Uint8Array | undefined;
               const effectiveReturnFn = proxyTargetFn ?? selectedFn;
-              if (childCompilerRoute && proxyCallee && nested.hasReturnValues) {
+              if (childCompilerRoute && nested.hasReturnValues) {
                 const firstWrite = childCompilerRoute.rowArguments.findIndex(
                   (row) => row.handler.writesState === true,
                 );
@@ -12908,7 +12935,9 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
                   && returningRows.every(({ index }) => firstWrite < 0 || index < firstWrite)) {
                   const encodedResults: Uint8Array[] = [];
                   for (const { row } of returningRows) {
-                    const values = await proxyCallee.forward(row.handler.name, row.args).staticCall();
+                    const values = proxyCallee
+                      ? await proxyCallee.forward(row.handler.name, row.args).staticCall()
+                      : await callee._deriveReturnValue(row.handler.name, row.args);
                     const outputs = row.handler.outputs ?? [];
                     const resultValues = outputs.length === 1 ? [values] : values as unknown as StateValue[];
                     for (let index = 0; index < outputs.length; index++) {
@@ -13642,17 +13671,38 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
       const externalOutputStart = 1 + requiredNftIndices.length + externalReadUtxos.length
         + externalOutStateUtxoGroups.reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
         + iterationEntryInputs.length;
+      const delegatedCallerReturnCount = lowLevelCallUtxoGroups.some((group) => {
+        if (group.callMode !== 'delegatecall') return false;
+        const delegateFunction = group.compilerRoute?.abiFunction
+          ?? (group.externalContract.inner.artifact.abi as readonly AbiFunction[])
+            .find((candidate) => candidate.name === group.functionName);
+        return (delegateFunction?.outputs?.length ?? 0) > 0;
+      }) ? 1 : 0;
       const delegateReturnOutputBase = externalOutputStart + externalCallUtxoGroups.reduce(
         (sum, g) => sum + (g.blockInputs ? g.blockInputs.length : 1 + g.dataNftUtxos.length), 0,
       ) + lowLevelCallUtxoGroups
         .filter((g) => g.callMode === 'delegatecall')
-        .reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0);
+        .reduce((sum, g) => sum + 1 + g.dataNftUtxos.length, 0)
+        + delegatedCallerReturnCount;
       const returningExternalGroups = externalCallUtxoGroups
         .map((_, idx) => idx)
         .filter((idx) => allGroupEcSlots[idx]?.hasReturnValues);
-      const returnIndexForGroup = new Map(
-        returningExternalGroups.map((groupIdx, ordinal) => [groupIdx, delegateReturnOutputBase + ordinal]),
-      );
+      let delegateTailReturnRank = 0;
+      const returnIndexForGroup = new Map<number, number>();
+      for (const groupIdx of returningExternalGroups) {
+        const child = externalCallUtxoGroups[groupIdx];
+        const physicalGroupIdx = child.sharedGroupIndex ?? groupIdx;
+        const physical = externalCallUtxoGroups[physicalGroupIdx];
+        const returnSlot = physical.blockLayout?.slots.find((slot) => slot.kind === 'returnEvent');
+        // In-block events don't consume a position in the appended tail. Counting
+        // them here shifted every later logical return (for example MarketplaceData
+        // userRegistered after an in-block token balanceOf) onto unrelated outputs.
+        if (physical.returnEventInBlock && returnSlot) {
+          returnIndexForGroup.set(groupIdx, nestedOutputBases[physicalGroupIdx] + returnSlot.offset);
+        } else {
+          returnIndexForGroup.set(groupIdx, delegateReturnOutputBase + delegateTailReturnRank++);
+        }
+      }
       // Compiler routes reserve their return event inside the callee's fixed
       // block. Unlike legacy fused calls, no appended return output exists.
       const physicalReturnIndexForGroup = new Map(returnIndexForGroup);
@@ -13877,7 +13927,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           let delegateCallInputWitnessIndex = 0;
           const nestedGroups = delegateExternalGroupIndices.get(groupLocalIdx) ?? [];
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.SOLIDC_DEBUG_FAILURE_RING === '1' && group.functionName === 'publishJobPost') {
+            ?.SOLIDC_DEBUG_EXTERNAL_ARGS === '1' && group.functionName === 'publishJobPost') {
             console.error('publish-job-nested-groups', nestedGroups.map((groupIndex, slot) => ({
               slot,
               groupIndex,
@@ -14090,7 +14140,19 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
               return -1n; // patched once the builder materializes input positions
             }
             if (/^__internal__callInputIndex\d*$/.test(inp.name)) {
-              const nestedGroup = nestedGroups[delegateCallInputWitnessIndex++];
+              const callIndex = delegateCallInputWitnessIndex++;
+              const lowLevelCall = (bFunc as AbiFunction).lowLevelCalls?.[callIndex] as {
+                target?: { kind?: string; name?: string };
+              } | undefined;
+              const targetName = lowLevelCall?.target?.name;
+              const rawSlot = targetName === undefined ? -1 : ((bFunc as AbiFunction).externalCalls ?? [])
+                .findIndex((call) => call.interfaceName === '__raw__'
+                  && (call.addressParam === targetName || call.addressParam?.endsWith(`_${targetName}`)));
+              const typedSlot = targetName === undefined ? -1 : ((bFunc as AbiFunction).externalCalls ?? [])
+                .findIndex((call) => call.addressParam === targetName);
+              const targetSlot = rawSlot >= 0 ? rawSlot : typedSlot;
+              const nestedGroup = targetSlot >= 0
+                ? nestedGroups[targetSlot] : nestedGroups[callIndex];
               return BigInt(nestedGroup === undefined
                 ? masterInputIndex + 1 + group.dataNftUtxos.length
                 : nestedMasterIndices[nestedGroup]);
@@ -14125,7 +14187,7 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
           if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env
             ?.SOLIDC_DEBUG_FAILURE_RING === '1' && group.functionName === 'publishJobPost') {
             console.error('publish-job-index-args', bFunc.inputs.flatMap((input, index) => (
-              /(?:MasterIdx|ReturnOutputIdx|returnOutputIdx)/.test(input.name)
+              input.name.startsWith('__internal__')
                 ? [{ name: input.name, value: encodedArgs[index] }] : []
             )));
           }
@@ -15014,6 +15076,12 @@ export class StatefulContract<TArtifact extends Artifact = Artifact> {
         };
       }
       builder._refreshInputs();
+    }
+    if (topLevelAnchorFillPositions.length > 0) {
+      for (const position of topLevelAnchorFillPositions) {
+        finalArgs[position.argIndex] = BigInt(builder.getIdentityAnchorInputIndex(position.band));
+      }
+      builder._setMasterUnlocker(unlockFn(...finalArgs));
     }
 
     // Build token container transfer ops from ABI for auto-derivation.

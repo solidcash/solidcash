@@ -9,9 +9,16 @@ import { YulNode } from './YulAST.js';
  * position (e.g. storage-pointer aliasing, helper inlining).
  */
 export function cloneNode<T extends Node>(node: T): T {
+  return cloneNodeWithMemo(node, new WeakMap<object, unknown>());
+}
+
+function cloneNodeWithMemo<T extends Node>(node: T, memo: WeakMap<object, unknown>): T {
+  const existing = memo.get(node);
+  if (existing) return existing as T;
   const clone = Object.create(Object.getPrototypeOf(node));
+  memo.set(node, clone);
   for (const [key, value] of Object.entries(node)) {
-    clone[key] = cloneValue(value);
+    clone[key] = cloneValue(value, memo);
   }
   // Preserve INTRA-node aliasing of a MethodCallStatementNode's `.call` and `.expression`: post-first-traversal they
   // are the SAME object (visitMethodCallStatement sets `.expression = visit(.call)`, and visitors mutate in place).
@@ -22,27 +29,44 @@ export function cloneNode<T extends Node>(node: T): T {
   if (n.call instanceof Node && n.call === n.expression) {
     (clone as { expression?: unknown }).expression = (clone as { call?: unknown }).call;
   }
+  memo.delete(node);
   return clone;
 }
 
-function cloneValue(value: unknown): unknown {
-  if (value instanceof Node) return cloneNode(value);
+function cloneValue(value: unknown, memo: WeakMap<object, unknown>): unknown {
+  if (value instanceof Node) return cloneNodeWithMemo(value, memo);
   // AssemblyStatementNode owns a parallel Yul AST whose nodes do not inherit from the high-level Node class.
   // Treat it as an AST subtree too: inheritance/helper cloning followed by an in-place Yul rename must not mutate
   // the source contract's assembly (LowerMemoryModel otherwise renamed both copies but materialized a buffer in
   // only one, leaving the other with an undefined __memb_* reference).
   if (value instanceof YulNode) {
+    const existing = memo.get(value);
+    if (existing) return existing;
     const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
-    for (const [key, child] of Object.entries(value)) clone[key] = cloneValue(child);
+    memo.set(value, clone);
+    for (const [key, child] of Object.entries(value)) clone[key] = cloneValue(child, memo);
+    memo.delete(value);
     return clone;
   }
-  if (Array.isArray(value)) return value.map(cloneValue);
+  if (Array.isArray(value)) {
+    const existing = memo.get(value);
+    if (existing) return existing;
+    const clone: unknown[] = [];
+    memo.set(value, clone);
+    for (const child of value) clone.push(cloneValue(child, memo));
+    memo.delete(value);
+    return clone;
+  }
   if (value instanceof Map) return new Map(value);
   // Only plain objects (constructor === Object) are cloned; class instances (Type, Location) stay shared - they
   // are not mutated by the rename passes and cloning them would strip their prototype.
   if (value && typeof value === 'object' && (value as object).constructor === Object) {
+    const existing = memo.get(value as object);
+    if (existing) return existing;
     const obj: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(value as Record<string, unknown>)) obj[k] = cloneValue(v);
+    memo.set(value as object, obj);
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) obj[k] = cloneValue(v, memo);
+    memo.delete(value as object);
     return obj;
   }
   return value;

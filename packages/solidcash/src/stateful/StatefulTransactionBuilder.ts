@@ -521,6 +521,12 @@ export class StatefulTransactionBuilder {
     this.messageBusProbeMasterVout = undefined;
   }
 
+  /** @internal Replace the caller unlocker after tail identity-anchor indices become known. */
+  _setMasterUnlocker(unlocker: Unlocker): void {
+    this.masterUtxo = { ...this.masterUtxo, unlocker };
+    this._refreshInputs();
+  }
+
   /** Require the fully funded and signed transaction to pass the artifact's
    * BCH VM before any network submission. Used for concrete recursive calls,
    * whose resource usage depends on runtime arguments. */

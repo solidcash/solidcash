@@ -1523,7 +1523,7 @@ function resolveSuperAndBaseCalls(
   for (const fn of contract.functions) {
     const definingContract = fn.definingContract ?? fn.inheritedFrom ?? contract.name;
     const used = new Set<string>();
-    new SuperCallRewriter(makeResolve(definingContract, used), isDiscardedBaseReference).visit(fn.body);
+    new SuperCallRewriter(makeResolve(definingContract, used), isDiscardedBaseReference, used).visit(fn.body);
     references.set(fn.name, used);
   }
 
@@ -1533,7 +1533,9 @@ function resolveSuperAndBaseCalls(
   const entryRoots = new Set<string>();
   for (const special of [contract.constructorDef, contract.fallbackDef, contract.receiveDef]) {
     if (!special?.body) continue;
-    new SuperCallRewriter(makeResolve(contract.name, entryRoots), isDiscardedBaseReference).visit(special.body);
+    new SuperCallRewriter(
+      makeResolve(contract.name, entryRoots), isDiscardedBaseReference, entryRoots,
+    ).visit(special.body);
   }
   // Modifier bodies are expanded only after inheritance flattening. Resolve their super/Base calls now while
   // the linearization and preserved implementations are still available, and conservatively retain any base
@@ -1542,7 +1544,9 @@ function resolveSuperAndBaseCalls(
     const body = new BlockNode(modifier.statements);
     body.location = modifier.location;
     const definingContract = modifier.inheritedFrom ?? contract.name;
-    new SuperCallRewriter(makeResolve(definingContract, entryRoots), isDiscardedBaseReference).visit(body);
+    new SuperCallRewriter(
+      makeResolve(definingContract, entryRoots), isDiscardedBaseReference, entryRoots,
+    ).visit(body);
     modifier.statements = body.statements ?? [];
   }
 
@@ -1569,6 +1573,7 @@ class SuperCallRewriter extends AstTraversal {
   constructor(
     private readonly resolve: (callName: string) => string | undefined,
     private readonly isDiscardedBaseReference: (name: string) => boolean,
+    private readonly used?: Set<string>,
   ) {
     super();
   }
@@ -1576,6 +1581,10 @@ class SuperCallRewriter extends AstTraversal {
   visitFunctionCall(node: FunctionCallNode): Node {
     const target = this.resolve(node.identifier.name);
     if (target) node.identifier.name = target;
+    // Inheritance expansion is intentionally idempotent. On a prepared split
+    // facet the call is already rewritten, so preserve that helper as a live
+    // edge when the pass runs again with no remaining base list.
+    if (node.identifier.name.startsWith('__base_')) this.used?.add(node.identifier.name);
     return super.visitFunctionCall(node);
   }
 

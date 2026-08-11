@@ -1,7 +1,7 @@
 import { binToHex } from '@bitauth/libauth';
 import { SplitStateFootprint } from '@solidcash/utils';
 import {
-  ContractNode, FunctionCallNode, FunctionDefinitionNode, IndirectCallNode, Node, TupleAssignmentNode,
+  ContractNode, FunctionCallNode, FunctionCallStatementNode, FunctionDefinitionNode, IndirectCallNode, Node, TupleAssignmentNode,
   VariableDefinitionNode,
 } from '../ast/AST.js';
 
@@ -55,7 +55,13 @@ export function walkInvocationAst(
 export function directCallNames(fn: FunctionDefinitionNode): Set<string> {
   const calls = new Set<string>();
   walkInvocationAst(fn.body, (node) => {
-    if (node instanceof FunctionCallNode && !node.fromThisCall) calls.add(node.identifier.name);
+    // Resolved inheritance expansion can mark an explicit base-dispatch helper
+    // as a this-originated call even though the generated `__base_*` body must
+    // remain in the same physical shard. Names absent from `byName` are ignored
+    // by closure construction, so retaining all named calls is conservative and
+    // prevents facets from dropping required internal implementations.
+    if (node instanceof FunctionCallNode) calls.add(node.identifier.name);
+    if (node instanceof FunctionCallStatementNode) calls.add(node.call.identifier.name);
   });
   return calls;
 }

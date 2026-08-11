@@ -2756,6 +2756,26 @@ export default class SymbolTableTraversal extends AstTraversal {
             if (idxSymbol) idxSymbol.references.push({ name: idxName } as IdentifierNode);
             this.pushToStack(idxParam);
           }
+
+          // A Solidity-visible CREATE address can name a logical identity whose
+          // physical state covenant is a proxy. The SDK supplies the co-spent
+          // immutable identity-anchor index for those calls, or -1 when the
+          // visible address is already the physical master bytecode.
+          for (const slot of externalCallSlots) {
+            if (slot.loopArrayVar || slot.inlineLoopDispatch || !slot.addressParam
+              || slot.addressLiteral !== undefined || slot.addressIsMsgSender) continue;
+            const batchOwner = externalCallSlots.find((candidate) => candidate.slotIndex < slot.slotIndex
+              && candidate.addressParam === slot.addressParam && candidate.batchInvocations);
+            if (batchOwner) continue;
+            const anchorName = `__internal__extcallAnchorIdx${slot.slotIndex}`;
+            const anchorParam = new ParameterNode(PrimitiveType.BIGINT, anchorName);
+            anchorParam.location = node.location;
+            node.parameters.push(anchorParam);
+            this.symbolTables[0].set(Symbol.variable(anchorParam));
+            const anchorSymbol = this.symbolTables[0].get(anchorName);
+            if (anchorSymbol) anchorSymbol.references.push({ name: anchorName } as IdentifierNode);
+            this.pushToStack(anchorParam);
+          }
         }
       }
     }
@@ -7366,6 +7386,24 @@ export default class SymbolTableTraversal extends AstTraversal {
       throw new UndefinedReferenceError({ name: node.name, location: node.location } as IdentifierNode);
     }
     this.checkReadOnlyModification(sym);
+    // A local dynamic-bytes write normally becomes a value-copy splice in DesugarLocalBytesElementWrite (or an
+    // in-place memory write in LowerMemoryModel). Keep this semantic fallback for writes introduced/moved by
+    // earlier compatibility transforms after that pass has collected locals (e.g. PRB/IPFS loop bodies).
+    if (sym.type instanceof BytesType && sym.type.bound === undefined) {
+      const at = <T extends Node>(child: T): T => { child.location = node.location; return child; };
+      const read = (): IdentifierNode => at(new IdentifierNode(node.name));
+      const index = (): ExpressionNode => cloneNode(node.index) as ExpressionNode;
+      const prefix = at(new SliceNode(read(), at(new IntLiteralNode(0n)), index()));
+      const next = at(new BinaryOpNode(index(), BinaryOperator.PLUS, at(new IntLiteralNode(1n))));
+      const length = at(new UnaryOpNode(UnaryOperator.SIZE, read()));
+      const suffix = at(new SliceNode(read(), next, length));
+      const rebuilt = at(new BinaryOpNode(
+        at(new BinaryOpNode(prefix, BinaryOperator.PLUS, node.value)), BinaryOperator.PLUS, suffix,
+      ));
+      const assignment = at(new AssignNode(read(), rebuilt));
+      assignment.isReferenceDataWrite = true;
+      return this.visit(assignment);
+    }
     if (sym.type instanceof ArrayType) {
       node.arrayType = sym.type;
     }

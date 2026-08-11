@@ -7063,6 +7063,21 @@ function reresolveImportedStructTypes(ast: Ast): void {
   const udvtMap = new Map<string, ValueType>();
   for (const td of ast.typeDefinitions ?? []) udvtMap.set(td.name, td.valueType);
   for (const td of contract.typeDefinitions ?? []) udvtMap.set(td.name, td.valueType);
+  // Selectively importing an error/event does not expose that declaration's supporting type names in the
+  // consumer's source scope, but their AST parameters still need the definitions from the originating source.
+  // Walk resolved import units for type lookup only (without merging those names into the consumer symbol scope).
+  const seenSources = new Set<SourceFileNode>();
+  const collectImportedTypes = (source: SourceFileNode): void => {
+    if (seenSources.has(source)) return;
+    seenSources.add(source);
+    for (const td of source.typeDefinitions ?? []) udvtMap.set(td.name, td.valueType);
+    for (const sd of source.structDefinitions ?? []) structMap.set(sd.name, new StructType(sd.name, sd.fields));
+    for (const ed of source.enumDefinitions ?? []) enumMap.set(ed.name, new EnumType(ed.name, ed.members));
+    for (const imported of source.imports ?? []) {
+      if (imported.resolvedAst) collectImportedTypes(imported.resolvedAst);
+    }
+  };
+  collectImportedTypes(ast);
   if (structMap.size === 0 && enumMap.size === 0 && udvtMap.size === 0) return;
   const resolveName = (name: string): Type | undefined => {
     if (structMap.has(name)) return structMap.get(name)!;
@@ -7115,9 +7130,29 @@ function reresolveImportedStructTypes(ast: Ast): void {
     // Event parameters carry plain `{name, type}` objects (not Nodes), so fixDecls's Node walk misses them: an
     // `event X(Escrow escrow)` placeholder must be resolved here too, else the event signature / emit see address.
     for (const ev of c.eventDefinitions ?? []) for (const p of ev.parameters ?? []) p.type = fix(p.type);
+    for (const err of c.errorDefinitions ?? []) for (const p of err.parameters ?? []) p.type = fix(p.type);
   };
   fixContract(contract);
   for (const ic of ast.importedContracts ?? []) fixContract(ic);
+  // Error parameters are plain objects rather than Nodes, so the recursive node walk below cannot reach them.
+  // File-level and interface errors are both valid import targets and must receive the same placeholder repair.
+  for (const err of ast.errorDefinitions ?? []) for (const p of err.parameters ?? []) p.type = fix(p.type);
+  for (const iface of ast.interfaceDefinitions ?? []) {
+    for (const err of iface.errorDefinitions ?? []) for (const p of err.parameters ?? []) p.type = fix(p.type);
+  }
+  // validateKnownUserTypes walks ImportNode.resolvedAst as well as declarations merged into the root. Repair the
+  // plain-object event/error parameters in every resolved source unit too; fixDecls below handles their Node-based
+  // declarations, but cannot descend into these parameter records.
+  for (const source of seenSources) {
+    fixContract(source.contract);
+    for (const importedContract of source.importedContracts ?? []) fixContract(importedContract);
+    for (const ev of source.eventDefinitions ?? []) for (const p of ev.parameters ?? []) p.type = fix(p.type);
+    for (const err of source.errorDefinitions ?? []) for (const p of err.parameters ?? []) p.type = fix(p.type);
+    for (const iface of source.interfaceDefinitions ?? []) {
+      for (const ev of iface.eventDefinitions ?? []) for (const p of ev.parameters ?? []) p.type = fix(p.type);
+      for (const err of iface.errorDefinitions ?? []) for (const p of err.parameters ?? []) p.type = fix(p.type);
+    }
+  }
   // Comprehensive: fix placeholder param / local / return types everywhere in the merged AST (contract +
   // imported contracts + interfaces + free functions), so imported-struct locals, params, and external-call
   // return types all resolve to the real struct.

@@ -120,6 +120,8 @@ export interface ExternalCallUtxoGroup {
   callMode?: 'call' | 'staticcall' | 'delegatecall';
   /** If this external callee is itself a proxy, execute/derive its state transition at this delegate group. */
   delegateCallGroupIndex?: number;
+  /** The delegate implementation and its function resources are already carried in this physical proxy block. */
+  delegateEmbeddedInBlock?: boolean;
   /** Reuses another group's single master/data input/output block for repeated calls to one UTXO contract. */
   sharedGroupIndex?: number;
   /** Honest SDK probe result for a read fused into another call sharing this master input. */
@@ -143,6 +145,8 @@ export interface ExternalCallUtxoGroup {
   };
   /** ABI-named hidden witnesses resolved while assembling this callee's physical block. */
   internalArgs?: Record<string, any>;
+  /** Rebuild this group's master unlocker after probe-derived hidden witnesses become available. */
+  refreshInternalArgs?: (updates: Record<string, any>) => void;
   /** Active message-bus batch blockhash reads, retained until the group's absolute input base is known. */
   graphBlockhashSelections?: Array<{
     readKey: string; slotOrdinal: number; rowArgs: any[]; handler: AbiFunction;
@@ -521,6 +525,12 @@ export class StatefulTransactionBuilder {
     this.messageBusProbeMasterVout = undefined;
   }
 
+  /** @internal Replace the caller unlocker after tail identity-anchor indices become known. */
+  _setMasterUnlocker(unlocker: Unlocker): void {
+    this.masterUtxo = { ...this.masterUtxo, unlocker };
+    this._refreshInputs();
+  }
+
   /** Require the fully funded and signed transaction to pass the artifact's
    * BCH VM before any network submission. Used for concrete recursive calls,
    * whose resource usage depends on runtime arguments. */
@@ -713,17 +723,18 @@ export class StatefulTransactionBuilder {
         ? group.blockInputs : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos];
       const delegateInputs = (index: number): UnlockableUtxo[] => {
         const group = this.lowLevelCallUtxoGroups[index];
-        return group ? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos] : [];
+        return group
+          ? (group.blockInputs ?? [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]) : [];
       };
       const nestedInputs: UnlockableUtxo[] = [];
       for (const group of this.externalCallUtxoGroups) {
         if (group.sharedGroupIndex !== undefined) continue;
         nestedInputs.push(...groupInputs(group));
-        if (group.delegateCallGroupIndex !== undefined) {
+        if (group.delegateCallGroupIndex !== undefined && !group.delegateEmbeddedInBlock) {
           nestedInputs.push(...delegateInputs(group.delegateCallGroupIndex));
         }
       }
-      return [
+      const prefix = [
         this.masterUtxo, ...this.dataNftUtxos,
         ...this.lowLevelCallUtxoGroups.flatMap((group, index) => associatedDelegates.has(index)
           ? [] : [group.masterUtxo as UnlockableUtxo, ...group.dataNftUtxos]),
@@ -732,8 +743,46 @@ export class StatefulTransactionBuilder {
         ...this.keccakComputeCoSpendUtxos, ...this.keccakLoopSideCars, ...this.ecrecoverComputeCoSpendUtxos,
         ...externalOutStateInputs, ...entryInputs, ...this.iterationEntryInputs,
         ...this.insertLoopPredecessorInputs, ...nestedInputs,
+      ];
+      // A delegate's trailing storage is addressed from implementationInput + blockSize. Output-only fixed slots
+      // (most commonly an event) still need corresponding funder INPUTS before that trailing region. The legacy
+      // order previously appended every funder after dynamic chunks, placing an old chunk one index too low on the
+      // second read-modify-write. Consume only the funders needed to complete the fixed implementation block here;
+      // leave fee/change funders at the tail.
+      const routeDelegateIndex = this.lowLevelCallUtxoGroups.findIndex((group, index) =>
+        group.callMode === 'delegatecall' && !associatedDelegates.has(index));
+      const routeDelegate = routeDelegateIndex >= 0 ? this.lowLevelCallUtxoGroups[routeDelegateIndex] : undefined;
+      const routeDelegateInputIndex = routeDelegate?.masterUtxo
+        ? prefix.findIndex((input) => input.txid.toLowerCase() === routeDelegate.masterUtxo!.txid.toLowerCase()
+          && input.vout === routeDelegate.masterUtxo!.vout)
+        : -1;
+      const delegateAbiFunction = routeDelegate?.compilerRoute?.abiFunction
+        ?? routeDelegate?.externalContract?.inner.artifact.abi.find(
+          (fn: AbiFunction) => fn.name === routeDelegate.functionName,
+        );
+      const delegateLayout = delegateAbiFunction?.blockLayout;
+      const trailingBase = delegateLayout?.trailingBase ?? delegateLayout?.blockSize
+        ?? this.blockLayout?.trailingBase ?? this.blockLayout?.blockSize;
+      const expectedDynamicIndex = routeDelegateInputIndex >= 0 && trailingBase !== undefined
+        ? routeDelegateInputIndex + trailingBase
+          + this.iterationEntryInputs.length + this.insertLoopPredecessorInputs.length
+        : prefix.length;
+      const fixedPaddingCount = Math.min(
+        this.funderUtxos.length,
+        Math.max(0, expectedDynamicIndex - prefix.length),
+      );
+      if ((globalThis as { process?: { env?: Record<string, string> } }).process?.env?.SOLIDC_DEBUG_INPUTS === '1') {
+        console.error('delegate-trailing-input-geometry', {
+          routeDelegateIndex, routeDelegateInputIndex, delegateBlockSize: delegateLayout?.blockSize,
+          builderBlockSize: this.blockLayout?.blockSize, trailingBase, prefix: prefix.length,
+          fixedPaddingCount, dynamicChunks: this.dynamicChunkInputs.length,
+        });
+      }
+      return [
+        ...prefix,
+        ...this.funderUtxos.slice(0, fixedPaddingCount),
         ...this.dynamicChunkInputs, ...tokenContainerInputs, ...satoshiContainerInputs,
-        ...this.funderUtxos,
+        ...this.funderUtxos.slice(fixedPaddingCount),
       ];
     }
     // When the function also reads a dynamic-storage array (iterationEntryInputs = chunk run),
@@ -1122,6 +1171,12 @@ export class StatefulTransactionBuilder {
     return true;
   }
 
+  getDerivedChunkOutputs(): ReadonlyMap<number, {
+    commitment: string; lockingBytecode: Uint8Array; categoryId?: string;
+  }> {
+    return this.derivedChunkOutputs;
+  }
+
   addValueChunkOutput(output: { to: string | Uint8Array; amount: bigint; token?: Utxo['token'] }): this {
     this.valueChunkOutputs.push(output);
     return this;
@@ -1463,7 +1518,8 @@ export class StatefulTransactionBuilder {
   getIdentityAnchorInputIndex(anchorIdx: number): number {
     const anchor = this.externalIdentityAnchorUtxos[anchorIdx];
     if (!anchor) return -1;
-    return this.allInputs.findIndex((input) => input.txid === anchor.txid && input.vout === anchor.vout);
+    return this.allInputs.findIndex((input) => input !== undefined
+      && input.txid === anchor.txid && input.vout === anchor.vout);
   }
 
   getExternalCallMasterInputIndex(groupIdx: number): number {
@@ -1525,7 +1581,7 @@ export class StatefulTransactionBuilder {
       // A proxied participant's implementation output follows that participant block in both the legacy and
       // compiler-route layouts. Compiler routes move the implementation INPUT into a leading band, but their
       // outputs remain interleaved; omitting it makes every later participant output base one slot too low.
-      if (g.delegateCallGroupIndex !== undefined) {
+      if (g.delegateCallGroupIndex !== undefined && !g.delegateEmbeddedInBlock) {
         const delegate = this.lowLevelCallUtxoGroups[g.delegateCallGroupIndex];
         if (delegate?.callMode === 'delegatecall') base += 1 + delegate.dataNftUtxos.length;
       }
@@ -2448,7 +2504,7 @@ export class StatefulTransactionBuilder {
         });
       }
       if (group.delegateCallGroupIndex !== undefined) {
-        appendDelegateGroupOutputs(group.delegateCallGroupIndex);
+        if (!group.delegateEmbeddedInBlock) appendDelegateGroupOutputs(group.delegateCallGroupIndex);
         if (group.compilerRoute) {
           // Preserve the displaced proxy master immediately after its associated implementation band, which
           // is the same absolute coordinate as the proxy-master input in the routed input layout.

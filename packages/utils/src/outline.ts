@@ -296,6 +296,23 @@ function findCandidates(
   const groups: { occurrences: Occurrence[]; seed: number }[] = [];
   for (const bucket of windows.values()) {
     if (bucket.length < 2) continue;
+    const first = bucket[0];
+    const firstIds = bodyIds[first.body];
+    let collision = false;
+    for (let occurrenceIndex = 1; occurrenceIndex < bucket.length && !collision; occurrenceIndex += 1) {
+      const occurrence = bucket[occurrenceIndex];
+      const ids = bodyIds[occurrence.body];
+      for (let offset = 0; offset < minimumWindowElements; offset += 1) {
+        if (ids[occurrence.start + offset] !== firstIds[first.start + offset]) {
+          collision = true;
+          break;
+        }
+      }
+    }
+    if (!collision) {
+      groups.push({ occurrences: bucket, seed: minimumWindowElements });
+      continue;
+    }
     const exact = new Map<string, Occurrence[]>();
     for (const occurrence of bucket) {
       const ids = bodyIds[occurrence.body];

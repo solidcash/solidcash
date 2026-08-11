@@ -284,6 +284,7 @@ interface CandidateCorpus {
   bodyIds: number[][];
   bodyBytePrefixes: Uint32Array[];
   maximumBodyLength: number;
+  commonPrefixByDiagonal: Map<number, Int32Array>;
 }
 
 /** Immutable element identities and encoded-byte offsets shared by first-round strategy probes. */
@@ -306,7 +307,7 @@ function prepareCandidateCorpus(bodies: OutlineBody[]): CandidateCorpus {
     }
     return prefix;
   });
-  return { bodyIds, bodyBytePrefixes, maximumBodyLength };
+  return { bodyIds, bodyBytePrefixes, maximumBodyLength, commonPrefixByDiagonal: new Map() };
 }
 
 /**
@@ -319,14 +320,13 @@ function findCandidates(
   bodies: OutlineBody[], idPushBytes: number, ranking: 'savings' | 'density', minimumWindowElements: number,
   candidateGroupsPerRound: number, prepared: CandidateCorpus = prepareCandidateCorpus(bodies),
 ): Candidate[] {
-  const { bodyIds, bodyBytePrefixes, maximumBodyLength } = prepared;
+  const { bodyIds, bodyBytePrefixes, maximumBodyLength, commonPrefixByDiagonal } = prepared;
   // Pack (left body, right body, signed diagonal) into one collision-free numeric key. Body indices and offsets
   // are bounded by these in-memory arrays, so this stays far below Number.MAX_SAFE_INTEGER for compilable input.
   const diagonalSpan = maximumBodyLength * 2 + 1;
   // Candidate seeds at adjacent offsets often compare the same long equal runs again (particularly generated
   // function bodies with a shared prologue/epilogue). Memoize exact suffix-prefix lengths by body pair and
   // diagonal. Filling the run backwards makes every element on a diagonal participate in at most one scan.
-  const commonPrefixByDiagonal = new Map<number, Int32Array>();
   const commonPrefixLength = (leftBody: number, leftStart: number, rightBody: number, rightStart: number): number => {
     const left = bodyIds[leftBody];
     const right = bodyIds[rightBody];

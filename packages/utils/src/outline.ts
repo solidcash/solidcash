@@ -419,9 +419,11 @@ function findCandidates(
 
   const windows = new Map<number, Occurrence[]>();
   const windowHashes = hashesForWindow(prepared, minimumWindowElements);
-  bodyIds.forEach((ids, bodyIndex) => {
+  for (let bodyIndex = 0; bodyIndex < bodyIds.length; bodyIndex += 1) {
+    const ids = bodyIds[bodyIndex];
+    const hashes = windowHashes[bodyIndex];
     for (let i = 0; i + minimumWindowElements <= ids.length; i += 1) {
-      const hash = windowHashes[bodyIndex][i];
+      const hash = hashes[i];
       let group = windows.get(hash);
       if (group === undefined) {
         group = [];
@@ -429,7 +431,7 @@ function findCandidates(
       }
       group.push({ body: bodyIndex, start: i });
     }
-  });
+  }
 
   // A hash bucket can mix distinct windows; split each bucket on the actual element ids before extending.
   const groups: { occurrences: Occurrence[]; seed: number; rank?: number }[] = [];

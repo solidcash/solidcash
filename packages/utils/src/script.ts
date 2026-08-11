@@ -21,6 +21,8 @@ interface CompiledOptimisation {
   patternLength: number;
   replacementLength: number;
   patternTokens: string[];
+  firstToken: string;
+  replacementTokens: string[];
 }
 
 const compiledOptimisationReplacements: CompiledOptimisation[] = optimisationReplacements.map(
@@ -31,6 +33,8 @@ const compiledOptimisationReplacements: CompiledOptimisation[] = optimisationRep
     patternLength: [...pattern.matchAll(/\s+/g)].length + 1,
     replacementLength: replacement === '' ? 0 : [...replacement.matchAll(/\s+/g)].length + 1,
     patternTokens: pattern.split(/\s+/g),
+    firstToken: pattern.split(/\s+/g, 1)[0],
+    replacementTokens: replacement === '' ? [] : replacement.split(/\s+/g),
   }),
 );
 
@@ -437,16 +441,19 @@ function replaceOps(
   let newLocationData = locationData;
   let newLogs = logs;
   let newRequires = requires;
+  const presentTokens = new Set(asm.split(' '));
 
   optimisations.forEach(({
-    pattern, replacement, regex, patternLength, replacementLength, patternTokens,
+    pattern, replacement, regex, patternLength, replacementLength, patternTokens, firstToken, replacementTokens,
   }) => {
+    if (!presentTokens.has(firstToken)) return;
     let matchIndex = asm.search(regex);
     // Most of the ~100 rules match nothing, and for those the rebuild below is the identity (`asm` is already
     // single-spaced and trimmed). Leaving early skips the accumulator array and its two closures per rule, per
     // round, per function body, on both codegen passes.
     if (matchIndex === -1) return;
     if (newLocationData === locationData) newLocationData = [...locationData];
+    for (const token of replacementTokens) presentTokens.add(token);
 
     // Accumulate normalised ASM pieces in an array and join ONCE at the end - equivalent to repeated
     // mergeAsm(processedAsm, piece) (single-space separators, empties skipped) but O(n) instead of the O(n^2) of

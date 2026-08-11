@@ -192,6 +192,7 @@ interface OptionalLoweringFeatures {
   needsDynamicStateJournal: boolean;
   needsCollectionJournal: boolean;
   needsExternalCallLowering: boolean;
+  needsInlineAssembly: boolean;
 }
 
 function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
@@ -227,11 +228,13 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
   let needsDynamicStateJournal = false;
   let needsCollectionJournal = false;
   let needsExternalCallLowering = false;
+  let needsInlineAssembly = false;
   while (pending.length > 0) {
     const node = pending.pop()!;
     if (seenNodes.has(node)) continue;
     seenNodes.add(node);
     if (node instanceof AssemblyStatementNode) {
+      needsInlineAssembly = true;
       needsBlockOracle = true;
       needsMsgDataContext = true;
       needsMsgSigContext = true;
@@ -287,6 +290,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
           needsDynamicStateJournal: true,
           needsCollectionJournal: true,
           needsExternalCallLowering: true,
+          needsInlineAssembly: true,
         };
       }
       if ((value instanceof ArrayType || value instanceof MappingType
@@ -310,6 +314,7 @@ function surveyOptionalLowerings(root: Node): OptionalLoweringFeatures {
     needsDynamicStateJournal,
     needsCollectionJournal,
     needsExternalCallLowering,
+    needsInlineAssembly,
   };
 }
 
@@ -4646,7 +4651,7 @@ function compileResolvedAst(
   const {
     hasFunctionPointers, needsBlockOracle, needsMsgDataContext, needsMsgSigContext,
     needsSpecialMethodPruning, needsDynamicStateJournal, needsCollectionJournal,
-    needsExternalCallLowering,
+    needsExternalCallLowering, needsInlineAssembly,
   } = surveyOptionalLowerings(ast);
   if (hasFunctionPointers) ast = ast.accept(new DesugarExternalFunctionPointers()) as Ast;
 
@@ -4751,7 +4756,7 @@ function compileResolvedAst(
   if (hasFunctionPointers) ast = ast.accept(new LowerBlobFunctionPointers()) as Ast;
 
   // Lower supported Yul inline assembly to equivalent main-AST statements (value computation + control flow).
-  ast = ast.accept(new LowerInlineAssembly()) as Ast;
+  if (needsInlineAssembly) ast = ast.accept(new LowerInlineAssembly()) as Ast;
 
   // Inline void helpers that make external calls into their internal call sites (the external co-spend can't
   // cross an OP_INVOKE boundary); reduces to the entry-point-body external-call case.

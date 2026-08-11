@@ -2056,7 +2056,8 @@ export default class SymbolTableTraversal extends AstTraversal {
 
     // External-library pre-scan: record which libraries the function calls and how many times, so codegen
     // loads each one's blob (side-car or inline) and the inline decision has call counts.
-    const libraryCallCounts = this.countLibraryCalls(node.body);
+    const libraryCallCounts = bodySurvey.hasFunctionCall
+      ? this.countLibraryCalls(node.body) : new Map<string, number>();
     if (libraryCallCounts.size > 0) {
       node.usedLibraries = [...libraryCallCounts.keys()];
       node.libraryCallCounts = libraryCallCounts;
@@ -3917,12 +3918,14 @@ export default class SymbolTableTraversal extends AstTraversal {
     usesMsgSender: boolean;
     keccakInLoop: boolean;
     hasValueTransfer: boolean;
+    hasFunctionCall: boolean;
     recovery: { total: number; evm: number; inLoop: boolean };
   } {
     const result = {
       usesMsgSender: false,
       keccakInLoop: false,
       hasValueTransfer: false,
+      hasFunctionCall: false,
       recovery: { total: 0, evm: 0, inLoop: false },
     };
     const recoverySeen = new WeakMap<Node, boolean>();
@@ -3940,6 +3943,7 @@ export default class SymbolTableTraversal extends AstTraversal {
         }
         if (nowKeccakInLoop && current instanceof FunctionCallNode
           && current.identifier.name === GlobalFunction.KECCAK256) result.keccakInLoop = true;
+        if (current instanceof FunctionCallNode) result.hasFunctionCall = true;
         if (current instanceof TransferStatementNode || current instanceof AddressTransferStatementNode
           || current instanceof AddressSendExpressionNode
           || (current instanceof LowLevelCallStatementNode && current.callOptions?.value !== undefined)

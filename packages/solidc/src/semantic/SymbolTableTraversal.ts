@@ -2097,12 +2097,11 @@ export default class SymbolTableTraversal extends AstTraversal {
     // ecrecoverPubKey (+ its p2pkh/evm projections) recovers a secp256k1 pubkey via a co-spent recovery side-car
     // PAIR (A checkpoints, B finishes -> pubkey) per call. Slot-per-call: N calls -> 2N side-cars. See docs/ecrecover.md.
     if (node.body) {
-      const eCalls = this.countEcrecoverCalls(node.body);
-      if (eCalls >= 1) {
-        node.ecrecoverCompute = true; node.ecrecoverCallCount = eCalls;
-        const evmCalls = this.countEcrecoverCalls(node.body, true);
-        if (evmCalls >= 1) node.ecrecoverEvmCallCount = evmCalls;
-        if (this.ecrecoverCallInLoop(node.body)) node.ecrecoverLoopReads = true;
+      const recovery = this.surveyEcrecoverCalls(node.body);
+      if (recovery.total >= 1) {
+        node.ecrecoverCompute = true; node.ecrecoverCallCount = recovery.total;
+        if (recovery.evm >= 1) node.ecrecoverEvmCallCount = recovery.evm;
+        if (recovery.inLoop) node.ecrecoverLoopReads = true;
       }
     }
 
@@ -3947,46 +3946,41 @@ export default class SymbolTableTraversal extends AstTraversal {
     walk(node);
   }
 
-  // Count ecrecoverPubKey / ecrecoverP2pkh / ecrecoverEvm call sites (each = one recovery side-car pair).
-  private countEcrecoverCalls(node: Node, evmOnly = false, seen = new WeakSet<Node>()): number {
-    if (seen.has(node)) return 0;
-    seen.add(node);
-    let count = 0;
-    if (node instanceof FunctionCallNode && (
-      node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
-      || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
-      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) {
-      if (!evmOnly || node.identifier.name === GlobalFunction.ECRECOVER_EVM) count += 1;
-    }
-    for (const [key, value] of Object.entries(node)) {
-      if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) count += this.countEcrecoverCalls(value, evmOnly, seen);
-      else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node) count += this.countEcrecoverCalls(item, evmOnly, seen);
-      }
-    }
-    return count;
-  }
-
-  // Detect a recovery call inside a loop (dynamic-loop model: one PAIR read per iteration from the forward region).
-  private ecrecoverCallInLoop(node: Node, inLoop = false): boolean {
+  // Count all recovery projections and detect dynamic-loop use in one body walk. These were previously three
+  // independent recursive surveys, even for the overwhelmingly common function with no recovery call.
+  private surveyEcrecoverCalls(
+    node: Node, inLoop = false,
+    result = { total: 0, evm: 0, inLoop: false },
+    seen = new WeakMap<Node, boolean>(),
+  ): { total: number; evm: number; inLoop: boolean } {
     const nowInLoop = inLoop
       || node instanceof WhileNode
       || node instanceof DoWhileNode
       || node instanceof CollectionIterationNode;
-    if (nowInLoop && node instanceof FunctionCallNode && (
+    const previousLoopState = seen.get(node);
+    if (previousLoopState === true || previousLoopState === nowInLoop) return result;
+    seen.set(node, nowInLoop);
+    const recoveryCall = node instanceof FunctionCallNode && (
       node.identifier.name === GlobalFunction.ECRECOVER_PUBKEY
       || node.identifier.name === GlobalFunction.ECRECOVER_P2PKH
-      || node.identifier.name === GlobalFunction.ECRECOVER_EVM)) return true;
+      || node.identifier.name === GlobalFunction.ECRECOVER_EVM);
+    if (recoveryCall) {
+      if (previousLoopState === undefined) {
+        result.total += 1;
+        if (node.identifier.name === GlobalFunction.ECRECOVER_EVM) result.evm += 1;
+      }
+      if (nowInLoop) result.inLoop = true;
+    }
     for (const [key, value] of Object.entries(node)) {
       if (RESOLVED_BACKREF_KEYS.has(key)) continue;
-      if (value instanceof Node) {
-        if (this.ecrecoverCallInLoop(value, nowInLoop)) return true;
-      } else if (Array.isArray(value)) {
-        for (const item of value) if (item instanceof Node && this.ecrecoverCallInLoop(item, nowInLoop)) return true;
+      if (value instanceof Node) this.surveyEcrecoverCalls(value, nowInLoop, result, seen);
+      else if (Array.isArray(value)) {
+        for (const item of value) {
+          if (item instanceof Node) this.surveyEcrecoverCalls(item, nowInLoop, result, seen);
+        }
       }
     }
-    return false;
+    return result;
   }
 
   private keccakCallInLoop(node: Node, inLoop = false, seen = new WeakSet<Node>()): boolean {
@@ -11747,7 +11741,7 @@ export default class SymbolTableTraversal extends AstTraversal {
     // slots - A (checkpoints the GLV ladder) then B (finishes -> commits the recovered pubkey). Codegen reads
     // input[master+offsetA] (bind the sig args) and output[master+offsetB] (the pubkey). slotIndex = call index.
     if (node.ecrecoverCompute) {
-      const eCalls = this.countEcrecoverCalls(node.body!);
+      const eCalls = node.ecrecoverCallCount ?? 0;
       for (let i = 0; i < eCalls; i++) {
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i });     // A (checkpoint)
         slots.push({ kind: 'ecrecoverSideCar', offset: offset++, slotIndex: 2 * i + 1 }); // B (pubkey)

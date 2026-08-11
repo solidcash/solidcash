@@ -5603,7 +5603,7 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     const cached = measuredBytes.get(key);
     if (cached !== undefined) return cached;
     const artifact = compileFacet(probe, code, merged, group, 'ProbeFacet');
-    const bytes = byteSize(artifact);
+    const bytes = byteSize(artifact) + spendReserve(artifact, artifact.constructorInputs);
     measuredArtifacts.set(key, artifact);
     measuredBytes.set(key, bytes);
     return bytes;
@@ -5702,8 +5702,8 @@ export function compileStringSplit(code: string, compilerOptions: SplitCompileOp
     // The synthetic facet name is metadata only (the branded bytecode and constructor shape are identical), so a
     // measured ProbeFacet can be reused instead of recompiling the exact same AST solely to change this label.
     artifact.contractName = name;
-    if (byteSize(artifact) > maxShardBytes) {
-      const facetBytes = byteSize(artifact);
+    const facetBytes = byteSize(artifact) + spendReserve(artifact, artifact.constructorInputs);
+    if (facetBytes > maxShardBytes) {
       const handlers = group.map((plan) => plan.name);
       const callChain = group.flatMap((plan) => [plan.name, ...[...plan.closure].filter((fn) => fn !== plan.name)]);
       throw new SolidcDiagnosticError(

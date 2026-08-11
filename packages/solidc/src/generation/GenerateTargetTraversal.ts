@@ -3972,7 +3972,11 @@ export default class GenerateTargetTraversalWithLocation extends AstTraversal {
     this.emitInfos = node.emitInfos ?? [];
     this.pendingDeploys = [];
     this.deployCounter = 0;
-    const deploySurvey = surveyFunctionDeploys(node.body);
+    const deploySurvey = node.hasContractInstantiation === false
+      ? {
+        count: 0, hasConditional: false, hasLoopValue: false, contractNames: new Set<string>(),
+      }
+      : surveyFunctionDeploys(node.body);
     // A loop `new C{value: V}()` has transfer metadata because it spends the satoshi container, but it has no
     // fixed transfer region: each runtime iteration verifies its value output inline in the child deploy group.
     // Do not pre-allocate an ordinary transfer that the epilogue would try to settle at a nonexistent slot. The

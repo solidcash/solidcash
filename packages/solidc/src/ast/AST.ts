@@ -307,6 +307,9 @@ export interface CustomModifierInvocation {
 
 export class FunctionDefinitionNode extends Node implements Named {
   symbolTable?: SymbolTable;
+  // Set by semantic analysis after visiting the body. Codegen can skip its more detailed deploy-site survey when
+  // this is false; undefined remains the conservative value for compiler-synthesized functions created later.
+  declare hasContractInstantiation?: boolean;
   opRolls: Map<string, IdentifierNode> = new Map();
   // Direct whole-state storage-pointer aliases erased by AstBuilder (`mapping storage p = m`,
   // `S storage p = s`). Retained as metadata so inline assembly can resolve p.slot/p.offset later.

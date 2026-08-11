@@ -231,6 +231,7 @@ export function createTestProvider(): MockNetworkProvider | RegtestNetworkProvid
 export const DEFAULT_TEST_MNEMONIC = MockNetworkProvider.DEFAULT_MNEMONIC;
 
 let fundingNonce = 0x1000;
+let regtestFundedSignerIndex = 10_000;
 function nextFundingTxid(): string {
   return (fundingNonce++).toString(16).padStart(64, '0');
 }
@@ -275,9 +276,12 @@ export async function getSigner(
 }
 
 /**
- * A single pre-funded signer (account 0) with `count` funding UTXOs - the common shortcut for a
+ * A single pre-funded signer with `count` funding UTXOs - the common shortcut for a
  * ContractFactory runner: `getContractFactory(artifact, await fundedSigner()).deploy(...)`. Each funding UTXO
  * backs one `factory.deploy()` (its txid becomes the token category); pass `count > 1` to deploy repeatedly.
+ * Mocknet uses account 0 for stable fixture addresses. Live regtest calls use distinct high-numbered HD
+ * accounts within each Vitest process, so independently-created Signer objects cannot race to spend the same
+ * BCHN wallet outpoint during overlapping fixture setup.
  *
  * The default is several coins, not one, because a factory-deployed contract is CONNECTED to its signer, so
  * calls on it draw native P2PKH funders for msg.sender/tx.origin resolution the way `connect(signer)` always
@@ -289,7 +293,9 @@ export async function fundedSigner(count = 4, satoshis = 1_000_000n): Promise<HD
   if (provider instanceof MockNetworkProvider) {
     return (await provider.getSigners(1, { fundingUtxos: count, satoshis }))[0];
   }
-  const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, { count: 1 });
+  const [signer] = signersFromMnemonic(DEFAULT_TEST_MNEMONIC, provider, {
+    initialIndex: regtestFundedSignerIndex++, count: 1,
+  });
   await fundAddress(provider, signer.getAddress(), count, satoshis);
   return signer;
 }

@@ -2323,10 +2323,12 @@ export default class SymbolTableTraversal extends AstTraversal {
       const externalCallSlots: ExternalCallSlot[] = [];
       // Reduce a multi-use interface-typed local (view calls + one mutate) to single-use by turning each VIEW call
       // into a caller-provided witness; must run BEFORE the receiver-count snapshot so the mutate reads as single-use.
-      this.rewriteMultiUseViewCalls(node);
-      this.extCallReceiverCounts = this.buildExtCallReceiverCounts(node.body);
-      this.loopDeclaredLocals = this.collectLoopDeclaredLocals(node.body);
-      this.collectExternalCalls(node.body, externalCallSlots);
+      const hasExternalCalls = this.rewriteMultiUseViewCalls(node);
+      this.extCallReceiverCounts = hasExternalCalls
+        ? this.buildExtCallReceiverCounts(node.body) : new Map();
+      this.loopDeclaredLocals = hasExternalCalls
+        ? this.collectLoopDeclaredLocals(node.body) : new Set();
+      if (hasExternalCalls) this.collectExternalCalls(node.body, externalCallSlots);
       // A graph message-bus batch route invokes compiler-owned clones whose foreign calls are authenticated against the
       // participant emission frame. They are logical edges, not physical co-spends owned by this route, so do
       // not synthesize the ordinary external-call index/return witnesses for their transitive closure.
@@ -4948,14 +4950,17 @@ export default class SymbolTableTraversal extends AstTraversal {
   // pair-local co-spend handles it. SOUND by caller-permissive: a wrong witness feeds wrong values into the mutate,
   // whose co-spent covenant rejects (Router02 swap's K-invariant) -> fail-closed, the same argument as
   // extcall-target-pinning. Scoped to exactly-one-mutate + SINGLE-return views (tuple returns are a follow-up).
-  private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): void {
+  private rewriteMultiUseViewCalls(fn: FunctionDefinitionNode): boolean {
     const body = fn.body;
-    if (!body) return;
+    if (!body) return false;
     const byLocal = new Map<string, ExternalFunctionCallNode[]>();
+    const allCalls = new Set<ExternalFunctionCallNode>();
+    const removed = new Set<ExternalFunctionCallNode>();
     const gather = (n: Node | undefined, seen: Set<Node>): void => {
       if (!n || seen.has(n)) return;
       seen.add(n);
       if (n instanceof ExternalFunctionCallNode) {
+        if (!n.foldedIntoDeploy) allCalls.add(n);
         const nm = this.externalReceiverLocal(n.addressExpression);
         if (nm) {
           const list = byLocal.get(nm) ?? [];
@@ -5019,15 +5024,19 @@ export default class SymbolTableTraversal extends AstTraversal {
           } else {
             this.replaceNodeInTree(body, view, mkWitness(rets[0]));
           }
+          removed.add(view);
         } else {
           const ta = this.findTupleAssignmentWithRhs(body, view)!;
           const accesses = rets.map((rt) => mkWitness(rt));
           ta.tupleExpressions = accesses;
           // `.tuple` is walked by collect; replace it so the call is not re-collected.
           ta.tuple = accesses[0];
+          removed.add(view);
         }
       }
     }
+    for (const call of allCalls) if (!removed.has(call)) return true;
+    return false;
   }
 
   private externalReceiverLocal(expression: ExpressionNode): string | undefined {
